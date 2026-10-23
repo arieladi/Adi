@@ -21,7 +21,7 @@ try {
   _s.setProperty('--text', _m.text); _s.setProperty('--dim', _m.dim); _s.setProperty('--accent', _m.accent);
   _s.setProperty('--neg', _m.neg); _s.setProperty('--warn', _m.warn); _s.setProperty('--on-accent', _m.onAccent);
   _s.setProperty('--fs', _z.font + 'px'); _s.setProperty('--cell-pad', _z.pad + 'px');
-  _s.zoom = _z.zoom / 100;
+  _s.zoom = _z.zoom / 100; _s.setProperty('--z', _z.zoom / 100);
 } catch (e) { }
 </script>
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -89,6 +89,41 @@ try {
   <br>
   <button type="button" id="footHelp" class="helplink">? How it works</button>
 </footer>
+
+<!-- phones only (app.js): the track editor that slides up when a row is tapped -->
+<dialog id="dlgTrack" aria-labelledby="shPos">
+  <div class="shHead">
+    <button type="button" id="shDel" class="btn icon danger" title="Delete track" aria-label="Delete track">🗑</button>
+    <h2 id="shPos"><span>Track</span> <b id="shPosN">1</b> <span id="shPosOf">of 1</span></h2>
+    <button type="button" id="shUndo" class="btn icon" title="Undo" aria-label="Undo" disabled>↶</button>
+    <button type="button" id="shRedo" class="btn icon" title="Redo" aria-label="Redo" disabled>↷</button>
+    <button type="button" id="shDone" class="btn primary">Done</button>
+  </div>
+  <div class="shBody">
+    <textarea data-f="tt" rows="2" placeholder="Track name" aria-label="Track name" enterkeyhint="next" autocapitalize="words" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+    <div class="shFields">
+      <label>BPM<input data-f="bp" inputmode="decimal" placeholder="145" enterkeyhint="next" autocomplete="off"></label>
+      <label>Key<input data-f="ky" placeholder="A#" enterkeyhint="next" autocapitalize="characters" autocomplete="off" autocorrect="off" spellcheck="false"></label>
+      <label>Cue in<input data-f="ci" inputmode="decimal" placeholder="0:27.4" enterkeyhint="next" autocomplete="off"></label>
+      <label>Cue out<input data-f="co" inputmode="decimal" placeholder="6:10.2" enterkeyhint="next" autocomplete="off"></label>
+    </div>
+    <p class="shWarn" id="shWarn" hidden>Check this cue — e.g. 5:57.5, 5:57 or 5.57</p>
+    <div class="shTimes" aria-live="polite">
+      <div><span>Play Time</span><b id="shPlay">—</b></div>
+      <div><span>Set time</span><b id="shSet">—</b></div>
+    </div>
+    <div class="shTools">
+      <button type="button" class="btn shMk" data-k="markStart" title="Mark as the track the set starts with" aria-pressed="false"><i>S</i>Start</button>
+      <button type="button" class="btn shMk" data-k="markEnd" title="Mark as the track the set ends with" aria-pressed="false"><i>E</i>End</button>
+      <button type="button" id="shOpen" class="btn" title="Open track link (YouTube search by default)">▶ Open</button>
+      <button type="button" id="shLink" class="btn" title="Edit track link">✎ Link</button>
+    </div>
+    <div class="shNav">
+      <button type="button" id="shPrev" class="btn">‹ Prev</button>
+      <button type="button" id="shNext" class="btn">Next ›</button>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="dlgLink">
   <form method="dialog" class="dlg">

@@ -69,6 +69,7 @@ function applyTheme() {
   s.setProperty('--fs', (z.font || 16) + 'px');
   s.setProperty('--cell-pad', (z.pad != null ? z.pad : 10) + 'px');
   s.zoom = (z.zoom || 100) / 100;
+  s.setProperty('--z', (z.zoom || 100) / 100); // for the phone CSS's 16px form-text floor
   const meta = document.getElementById('metaTheme');
   if (meta) meta.content = m.bg;
 }
@@ -168,7 +169,10 @@ async function askConfirm(title, text, okLabel = 'Confirm', danger = true) {
   ok.className = 'btn ' + (danger ? 'danger' : 'primary');
   return (await openDialog(dlgConfirm)) === 'ok';
 }
-const isEditingRows = () => document.activeElement && rowsEl.contains(document.activeElement);
+const isEditingRows = () => {
+  const a = document.activeElement; // a row input, or a field of the phone track sheet
+  return !!a && (rowsEl.contains(a) || (sheet.contains(a) && !!a.dataset.f));
+};
 
 const te = new TextEncoder(), td = new TextDecoder();
 function b64(buf) {
@@ -244,15 +248,17 @@ function rowTemplate(i, t) {
   row.querySelector('.ci').value = t.cueIn;
   row.querySelector('.co').value = t.cueOut;
   row.querySelector('.pl').classList.toggle('custom', !!(t.link && t.link.trim()));
+  if (isPhone()) row.insertAdjacentHTML('beforeend', PH_ROW); // read-only list line, filled by phoneComputed
   return row;
 }
 
 function rebuildRows() {
   const L = cur();
   rowsEl.innerHTML = '';
-  if (!L) { updateComputed(); return; }
+  if (!L) { updateComputed(); sheetSync(); return; }
   L.tracks.forEach((t, i) => rowsEl.appendChild(rowTemplate(i, t)));
   updateComputed();
+  sheetSync();
 }
 
 function updateComputed() {
@@ -261,6 +267,7 @@ function updateComputed() {
     sumTracks.textContent = '0';
     sumClock.textContent = '0:00:00';
     saveBtn.classList.remove('dirty');
+    phoneComputed(null);
     return;
   }
   const res = computeRows(L.tracks);
@@ -282,6 +289,7 @@ function updateComputed() {
   sumClock.textContent = fmtClock(cum);
   saveBtn.classList.toggle('dirty', !!L.dirty);
   updateRange(L, res);
+  phoneComputed(L, res);
 }
 
 // Marked range: S on the first track you plan to play, E on the last one.
@@ -381,6 +389,7 @@ function updateHistBtns() {
   histSync();
   undoBtn.disabled = !(hist.undo.length || typingBurst);
   redoBtn.disabled = !hist.redo.length;
+  shUndo.disabled = undoBtn.disabled; shRedo.disabled = redoBtn.disabled; // the phone sheet's copies
 }
 function pushSnap() {
   const L = cur(); if (!L) return false;
@@ -554,7 +563,7 @@ rowsEl.addEventListener('pointerdown', e => {
   if (!L || !row || L.tracks.length < 2) return;
   e.preventDefault();
   endTyping();
-  if (isEditingRows()) document.activeElement.blur();
+  if (rowsEl.contains(document.activeElement)) document.activeElement.blur(); // a phone sheet field keeps its keyboard until the drag moves
   const base = rowsEl.getBoundingClientRect().top;
   const rects = [...rowsEl.children].map(r => r.getBoundingClientRect());
   const from = +row.dataset.i;
@@ -616,6 +625,7 @@ function addTrack() {
   L.tracks.push(blankTrack());
   markDirty();
   rebuildRows();
+  if (isPhone()) { sheetOpen(L.tracks.length - 1, 'tt'); return; } // phones type into the sheet
   const last = rowsEl.lastElementChild;
   if (last) last.querySelector('.tt').focus();
 }
@@ -682,7 +692,8 @@ function createList(name, tracks) {
   w.order.push(file);
   w.current = file;
   persist(); renderSelect(); rebuildRows(); setStatusAuto(); updateHistBtns();
-  if (!tracks) { const first = rowsEl.querySelector('.tt'); if (first) first.focus(); }
+  if (!tracks && isPhone()) sheetOpen(0, 'tt');
+  else if (!tracks) { const first = rowsEl.querySelector('.tt'); if (first) first.focus(); }
   return true;
 }
 
@@ -1131,7 +1142,7 @@ async function refreshFromRemote(manual) {
     if (!e || !e.file || !SAFE_FILE.test(String(e.file))) continue;
     const local = w.lists[e.file];
     if (local && local.dirty) continue;
-    if (user === currentUserId() && e.file === w.current && isEditingRows()) continue;
+    if (user === currentUserId() && e.file === w.current && (isEditingRows() || sheet.open)) continue; // the phone sheet edits that list's tracks
     if (!local || (e.updated || '') > (local.updated || '') || manual) {
       try {
         const got = await fetchList(user, e.file);
@@ -1157,7 +1168,10 @@ async function refreshFromRemote(manual) {
     }
   }
   if (!w.current || !w.lists[w.current]) w.current = w.order[0] || null;
-  if (changed && user === currentUserId()) { persist(); renderSelect(); if (!isEditingRows()) rebuildRows(); }
+  if (changed && user === currentUserId()) {
+    persist(); renderSelect();
+    if (!isEditingRows() || (sheet.open && histKey() !== shK)) rebuildRows(); // a phone sheet whose list went away closes (sheetSync)
+  }
   if (user === currentUserId()) setStatusAuto();
   if (manual) toast('Refreshed from GitHub ✓', 'ok');
 }
@@ -1175,6 +1189,382 @@ function toastHTML(html, cls) {
   toastTimer = setTimeout(() => { toastEl.hidden = true; }, 6000);
 }
 toastEl.onclick = () => { toastEl.hidden = true; };
+
+/* ---------------- phone: read-only list + track sheet ---------------- */
+// On phones (<= 740px) each row is a read-only list line — number + grip,
+// the title on up to two lines with BPM · key · cues under it, Play Time
+// over Set time on the right. Tapping a row opens #dlgTrack, a sheet that
+// edits that track with Prev / Next, so a whole set can be typed in one go.
+// The sheet writes through the row's own (hidden) inputs and buttons, so the
+// row handlers above still do the undo bursts, dirty-marking and recompute.
+// Up top the list bar is one sticky line: ↶ ↷ move into it and New /
+// Duplicate / Rename / Delete into its ⋯ menu (syncPhoneChrome).
+// Desktop never builds the list lines, never opens the sheet and keeps its
+// list bar as it is. Screens only: an A4 printout is narrower than 740px too.
+const phoneMQ = matchMedia('screen and (max-width: 740px)');
+const isPhone = () => phoneMQ.matches;
+const PH_ROW = '<button type="button" class="ph"><b class="ph-tt"></b><span class="ph-meta"></span></button>';
+const sheet = $('dlgTrack'), vv = window.visualViewport;
+const shUndo = $('shUndo'), shRedo = $('shRedo'), shPrev = $('shPrev'), shNext = $('shNext'), shDel = $('shDel');
+const SH_F = ['tt', 'bp', 'ky', 'ci', 'co']; // same order as the rows' Enter chain
+const SH_KEY = { tt: 'title', bp: 'bpm', ky: 'key', ci: 'cueIn', co: 'cueOut' };
+const shIn = c => sheet.querySelector(`[data-f="${c}"]`);
+let shI = -1, shK = null, shT = null, shF = null, shCloseT = null, shPopping = false, phGrip = false, phDelSnap = null, shOpener = null;
+// the sheet's track, only while it still is the one on screen (shK: the list's histKey)
+const shTrack = () => { const L = cur(); return L && histKey() === shK && L.tracks[shI] === shT ? shT : null; };
+// the same track by content (undo / redo put copies of the tracks in place)
+const sameTrack = (a, b) => ['title', 'bpm', 'key', 'cueIn', 'cueOut', 'link', 'markStart', 'markEnd'].every(k => (a[k] || '') === (b[k] || ''));
+const rowIn = c => { const r = rowsEl.children[shI]; return r && r.querySelector('.' + c); };
+
+// list bar: undo / redo sit next to Save, the list buttons go into ⋯ (they
+// press the hidden buttons, so those handlers run); all back on desktop
+const histEl = document.querySelector('.histbtns'), summaryEl = document.querySelector('.summary');
+const PH_LIST_ACTS = { new: ['btnNew', '＋ New list'], dup: ['btnDup', '⧉ Duplicate list'], rename: ['btnRename', '✎ Rename list'], delete: ['btnDelete', '🗑 Delete list'] };
+function syncPhoneChrome() {
+  const ph = isPhone();
+  if (ph) saveBtn.before(histEl);
+  else if (histEl.parentNode !== summaryEl) summaryEl.appendChild(histEl);
+  moreMenu.querySelectorAll('.phAct').forEach(b => b.remove());
+  if (!ph) return;
+  const item = act => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'phAct'; b.dataset.act = act; b.textContent = PH_LIST_ACTS[act][1];
+    return b;
+  };
+  moreMenu.prepend(item('new'), item('dup'), item('rename'));
+  moreMenu.append(item('delete')); // last, in red
+  sumH();
+}
+moreMenu.addEventListener('click', e => { const a = PH_LIST_ACTS[e.target.closest('.phAct')?.dataset.act]; if (a) $(a[0]).click(); });
+$('btnMore').addEventListener('click', () => { if (isPhone()) sheetClose(); }); // the menu would open under the sheet
+// the column header sticks under the list bar and the summary line
+const sumH = () => { if (isPhone()) document.documentElement.style.setProperty('--sum-h', summaryEl.offsetHeight + 'px'); };
+if (window.ResizeObserver) new ResizeObserver(sumH).observe(summaryEl);
+
+const cueTxt = v => {
+  v = String(v || '').trim();
+  return !v ? '–' : cueWarn(v) ? `<em class="warn">${esc(v)}</em>` : fmtPlay(parseCue(v));
+};
+function phRowFill(r, t) {
+  const tt = r.querySelector('.ph-tt'); if (!tt) return;
+  const title = (t.title || '').trim();
+  tt.textContent = title || 'Untitled track';
+  tt.classList.toggle('empty', !title);
+  const bpm = String(t.bpm || '').trim(), key = String(t.key || '').trim();
+  const cues = String(t.cueIn || '').trim() || String(t.cueOut || '').trim();
+  const bits = [bpm && esc(bpm) + ' BPM', key && esc(key), cues && `${cueTxt(t.cueIn)} → ${cueTxt(t.cueOut)}`].filter(Boolean)
+    .map(b => `<span class="bit">${b}</span>`); // each wraps as a whole, its · stays on its line
+  r.querySelector('.ph-meta').innerHTML =
+    (t.markStart ? '<i class="bd">Start</i>' : '') + (t.markEnd ? '<i class="bd">End</i>' : '') +
+    (bits.length ? bits.join('&nbsp;· ') : '<span class="hint">Tap to add BPM, key &amp; cues</span>');
+}
+function phoneComputed(L, res) {
+  if (!isPhone()) return;
+  sumTracks.parentNode.classList.toggle('one', !!L && L.tracks.length === 1); // "1 track", not "1 tracks"
+  if (!L) return;
+  const rows = rowsEl.children;
+  for (let i = 0; i < rows.length && i < L.tracks.length; i++) phRowFill(rows[i], L.tracks[i]);
+  sheetLive(L, res);
+}
+
+// live part of the sheet: times, cue warnings, marks, link, position, Prev / Next
+function sheetLive(L = cur(), res) {
+  const t = sheet.open && L && L.tracks[shI]; if (!t) return;
+  const { play, cum } = (res || computeRows(L.tracks))[shI];
+  const bP = $('shPlay'), bS = $('shSet'), pv = fmtPlay(play), sv = fmtClock(cum);
+  if (bP.textContent !== pv) bP.textContent = pv; // aria-live: only real changes are read out
+  if (bS.textContent !== sv) bS.textContent = sv;
+  bP.classList.toggle('neg', play < 0); bS.classList.toggle('neg', cum < 0);
+  $('shPosN').textContent = shI + 1;
+  $('shPosOf').textContent = 'of ' + L.tracks.length;
+  let warn = false;
+  for (const c of ['ci', 'co']) { const w = cueWarn(shIn(c).value); shIn(c).classList.toggle('warn', w); warn = warn || w; }
+  $('shWarn').hidden = !warn;
+  for (const b of sheet.querySelectorAll('.shMk')) { b.classList.toggle('on', !!t[b.dataset.k]); b.setAttribute('aria-pressed', !!t[b.dataset.k]); }
+  $('shOpen').classList.toggle('custom', !!(t.link && t.link.trim()));
+  shPrev.disabled = shI === 0;
+  shNext.textContent = shI === L.tracks.length - 1 ? '＋ Add track' : 'Next ›';
+}
+function sheetFill() {
+  const L = cur(), t = L && L.tracks[shI]; if (!t) return;
+  shT = t;
+  for (const c of SH_F) shIn(c).value = t[SH_KEY[c]] || '';
+  for (const r of rowsEl.children) r.classList.toggle('sel', +r.dataset.i === shI);
+  sheetLive(L);
+}
+// focus a sheet field with its text selected, so typing replaces it
+const shFocus = c => { const el = shIn(c); el.focus({ preventScroll: true }); el.select(); shShow(el); };
+// a field into the sheet's own view (a short sheet scrolls, the page never
+// does): below the header, which sticks unless the keyboard is up
+function shShow(el) {
+  const top = el.offsetTop - 4 - (sheet.classList.contains('kb') ? 0 : shHead.offsetHeight);
+  const bot = el.offsetTop + el.offsetHeight + 4 - sheet.clientHeight;
+  if (sheet.scrollTop > top) sheet.scrollTop = top; else if (sheet.scrollTop < bot) sheet.scrollTop = bot;
+}
+// Back closes the sheet (popstate below), as it does Help. Its entries carry
+// this page load's id: one left by a reload or a restored tab is no open sheet's.
+const SH_ID = Date.now() + Math.random();
+const shEntry = () => !!history.state && history.state.rqcSheet === SH_ID;
+// no scroll restoring on the way back (it would throw the list back to where
+// it was when the sheet opened); auto again once the entry is gone
+function shPush() { history.scrollRestoration = 'manual'; history.pushState({ rqcSheet: SH_ID }, ''); }
+function sheetOpen(i, f) {
+  const L = cur(); if (!isPhone() || !L || !L.tracks[i]) return;
+  const was = sheet.open && !sheet.classList.contains('closing');
+  clearTimeout(shCloseT); sheet.classList.remove('closing'); sheet.style.transform = '';
+  if (was) sheetCommit(); // a key still being typed belongs to the track being left
+  shK = histKey(); shI = i; shF = f || null;
+  if (!was) {
+    if (!sheet.open) shOpener = document.activeElement; // focus goes back to the row (or here) on close
+    if (!shPopping && !shEntry()) shPush();
+    // opened by attribute: show() would focus — and scroll to — Done while it is still sliding in
+    sheet.setAttribute('open', ''); document.body.classList.add('sheet-open'); sheetViewport();
+  }
+  sheetFill();
+  if (f) shFocus(f);
+  else if (!was) $('shDone').focus({ preventScroll: true });
+  sheetPad();
+  sheetReveal();
+}
+// popped: Back already took the sheet's history entry; any other close drops it
+function sheetClose(now, popped) {
+  if (!sheet.open) return;
+  const closing = sheet.classList.contains('closing');
+  if (closing && !now) return; // already sliding down
+  if (!closing && !popped && shEntry()) { shPopping = true; history.back(); }
+  if (sheet.contains(document.activeElement)) document.activeElement.blur(); // fires the key's 'change'
+  clearTimeout(shCloseT);
+  const done = () => {
+    const i = shI, a = document.activeElement;
+    sheet.classList.remove('closing', 'kb'); sheet.style.transform = '';
+    sheet.close(); document.body.classList.remove('sheet-open', 'sheet-unpin');
+    for (const r of rowsEl.querySelectorAll('.sel')) r.classList.remove('sel');
+    shI = -1; shK = shT = shF = null;
+    // keyboard / screen reader: back on the track's row, unless focus moved on elsewhere
+    if (!a || a === document.body || sheet.contains(a)) {
+      const r = rowsEl.children[i], to = (r && r.querySelector('.ph')) || shOpener;
+      if (to && to.isConnected) to.focus({ preventScroll: true });
+    }
+    shOpener = null;
+  };
+  if (now || matchMedia('(prefers-reduced-motion: reduce)').matches) { done(); return; }
+  sheet.style.transform = ''; sheet.classList.add('closing'); // slides down from wherever a swipe left it
+  shCloseT = setTimeout(done, 200);
+}
+addEventListener('popstate', () => {
+  if (shPopping) { // our own Back from a close; a sheet opened meanwhile (another list, a quick tap) gets its entry now
+    shPopping = false;
+    if (sheet.open && !sheet.classList.contains('closing')) shPush();
+  } else if (sheet.open && !shEntry()) sheetClose(false, true);
+  // the browser restores scroll right after this event (skipped: 'manual'), so auto only then
+  if (history.scrollRestoration === 'manual') setTimeout(() => { if (!shEntry()) history.scrollRestoration = 'auto'; });
+});
+// after the rows are rebuilt (undo / redo, move, delete, list switch, refresh)
+function sheetSync() {
+  if (!sheet.open || sheet.classList.contains('closing')) return;
+  const L = cur();
+  if (!isPhone() || !L || histKey() !== shK) { sheetClose(true); return; } // same list, even if a refresh replaced it
+  let j = L.tracks.indexOf(shT); // follow a moved track
+  // undo / redo put copies in place: the nearest one alike (an undone edit of it matches none)
+  if (j < 0 && shT) L.tracks.forEach((t, k) => { if (sameTrack(t, shT) && (j < 0 || Math.abs(k - shI) < Math.abs(j - shI))) j = k; });
+  shI = j >= 0 ? j : Math.min(shI, L.tracks.length - 1); // else stay in place
+  sheetFill();
+  sheetReveal();
+}
+// Prev / Next keep the field you are in, so a column of cues types straight down
+function sheetGo(d, f) {
+  const L = cur(); if (!shTrack()) return;
+  f = f || shF;
+  sheetCommit();
+  const i = shI + d;
+  if (i < 0) return;
+  if (i >= L.tracks.length) { addTrack(); return; } // the last track adds a new one (opens it in the sheet)
+  shI = i; sheetFill();
+  if (f) shFocus(f);
+  sheetReveal();
+}
+// Enter / the keyboard's Next: the next field; from Cue out on to the next
+// track — its Cue in when it has a name, else its name (the last track adds one)
+function sheetEnter(c) {
+  const pos = SH_F.indexOf(c);
+  if (pos < SH_F.length - 1) { shFocus(SH_F[pos + 1]); return; }
+  const L = cur(), n = L && L.tracks[shI + 1];
+  sheetGo(1, n && String(n.title || '').trim() ? 'ci' : 'tt');
+}
+// a key typed but not yet blurred: normalise it before leaving the track
+function sheetCommit() {
+  const k = shIn('ky');
+  if (document.activeElement === k) k.dispatchEvent(new Event('change', { bubbles: true }));
+}
+// keep the edited row in sight between the pinned bars and the sheet — at
+// once: a smooth scroll is cut short by the keyboard and the focus moves.
+// When the bars leave no room for it (keyboard up, big sizes) they unpin.
+function sheetReveal() {
+  const r = rowsEl.children[shI]; if (!r || !sheet.open || sheet.classList.contains('closing')) return;
+  const vTop = vv ? vv.offsetTop : 0;
+  const bot = (vv ? vTop + vv.height : innerHeight) - sheet.getBoundingClientRect().height - 8;
+  const bars = (listbarEl.offsetHeight + summaryEl.offsetHeight + theadWrap.offsetHeight) * zoomF();
+  const unpin = bot - vTop - bars - 4 < r.getBoundingClientRect().height;
+  document.body.classList.toggle('sheet-unpin', unpin);
+  // the room starts under the header where it pins (near the top of the list it
+  // sits lower until the page scrolls); unpinned it scrolls away: at the top
+  const b = r.getBoundingClientRect();
+  const top = (unpin ? vTop : Math.max(Math.min(theadWrap.getBoundingClientRect().bottom, bars), vTop)) + 4;
+  const d = b.top < top ? b.top - top : b.bottom > bot ? Math.min(b.bottom - bot, b.top - top) : 0;
+  if (d) scrollBy({ top: d, behavior: 'auto' });
+}
+sheet.addEventListener('animationend', sheetReveal); // slid all the way up: measure again
+// ride on top of the on-screen keyboard (it shrinks only the visual viewport)
+let shKb = 0, shVh = 0;
+function sheetViewport(e) {
+  if (!vv || !sheet.open) return;
+  const z = zoomF(), s = document.documentElement.style;
+  const kb = Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop));
+  s.setProperty('--kb', kb / z + 'px');
+  s.setProperty('--vvh', vv.height / z + 'px');
+  sheet.classList.toggle('kb', kb > 120);
+  // the keyboard came, went or changed size (not the URL bar sliding): the row back above the
+  // sheet, the field typed in back in the sheet's view
+  if (e && e.type === 'resize' && (kb !== shKb || Math.abs(vv.height - shVh) > 150)) {
+    sheetReveal();
+    const a = document.activeElement;
+    if (a && a.dataset && a.dataset.f && sheet.contains(a)) shShow(a);
+  }
+  shKb = kb; shVh = vv.height;
+}
+if (vv) for (const ev of ['resize', 'scroll']) vv.addEventListener(ev, sheetViewport);
+// room under the list so the last rows can scroll up above the sheet
+// (kept while closed, for a drag that put the sheet away)
+function sheetPad() {
+  const h = sheet.offsetHeight;
+  if (h) document.documentElement.style.setProperty('--sheet-h', h + 'px');
+  return h;
+}
+let shH = 0;
+if (window.ResizeObserver) new ResizeObserver(() => {
+  const h = sheetPad();
+  if (sheet.open && shH && h !== shH) sheetReveal(); // grew or shrank, e.g. the cue warning, the keyboard layout
+  shH = h;
+}).observe(sheet);
+
+// tap a row to edit it; its ⠿ grip drags. A drag that really moves puts the
+// sheet away but keeps the room under the list until the move is settled,
+// so a row near the end doesn't jump out from under the finger.
+rowsEl.addEventListener('pointerdown', e => { phGrip = !!e.target.closest('.grip'); }, true);
+rowsEl.addEventListener('click', e => {
+  const g = phGrip && e.detail > 0; phGrip = false; // detail 0: a keyboard click, no grip press
+  if (!isPhone() || g || e.target.closest('.grip, .rb')) return;
+  const row = e.target.closest('.row');
+  if (row) sheetOpen(+row.dataset.i);
+});
+addEventListener('pointermove', e => { // after the drag's own handler has marked it moved
+  if (!drag || !drag.moved || e.pointerId !== drag.id || !sheet.open) return;
+  document.body.classList.add('sheet-hold');
+  sheetClose(true);
+});
+const shHoldOff = () => {
+  if (dlgConfirm.open) dlgConfirm.addEventListener('close', shHoldOff, { once: true }); // the move's OK / Cancel
+  else document.body.classList.remove('sheet-hold');
+};
+for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => { if (!drag && document.body.classList.contains('sheet-hold')) shHoldOff(); });
+
+// sheet fields -> the row's own input, so its handlers do the rest
+sheet.addEventListener('input', e => {
+  const c = e.target.dataset.f, inp = c && shTrack() && rowIn(c); if (!inp) return;
+  if (c === 'tt' && /[\r\n]/.test(e.target.value)) e.target.value = e.target.value.replace(/\s*[\r\n]+\s*/g, ' ');
+  inp.value = e.target.value;
+  inp.dispatchEvent(new Event('input', { bubbles: true }));
+});
+sheet.addEventListener('change', e => {
+  const inp = e.target.dataset.f === 'ky' && shTrack() && rowIn('ky'); if (!inp) return;
+  inp.value = e.target.value;
+  inp.dispatchEvent(new Event('change', { bubbles: true })); // key normalisation
+  e.target.value = inp.value;
+  updateComputed();
+});
+sheet.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); sheetClose(); return; }
+  if (e.key === 'Tab' && e.target === (e.shiftKey ? shDel : shNext)) { // Tab goes round the sheet, not into the page under it
+    e.preventDefault(); (e.shiftKey ? shNext : shDel).focus(); return;
+  }
+  if (e.key !== 'Enter' || e.isComposing || !e.target.dataset.f) return;
+  e.preventDefault();
+  sheetEnter(e.target.dataset.f);
+});
+// a keyboard that sends the title's line break without an Enter keydown
+sheet.addEventListener('beforeinput', e => {
+  if (e.target.dataset.f !== 'tt' || !/^insert(LineBreak|Paragraph)$/.test(e.inputType)) return;
+  e.preventDefault();
+  sheetEnter('tt');
+});
+// the field being typed in, for Prev / Next; another sheet control clears it
+sheet.addEventListener('focusin', e => {
+  if (e.target.dataset.f) shF = e.target.dataset.f;
+  else if (!e.target.closest('.shNav, #shUndo, #shRedo')) shF = null;
+});
+
+$('shDone').onclick = () => sheetClose();
+shPrev.onclick = () => sheetGo(-1);
+shNext.onclick = () => sheetGo(1);
+shUndo.onclick = undo;
+shRedo.onclick = redo;
+for (const b of [shPrev, shNext, shUndo, shRedo]) b.addEventListener('mousedown', e => e.preventDefault()); // keep the keyboard up
+for (const b of sheet.querySelectorAll('.shMk')) b.onclick = () => {
+  if (!shTrack()) return;
+  toggleMark(shI, b.dataset.k);
+  sheetReveal(); // the S → E value in the summary line may have come or gone
+};
+$('shOpen').onclick = () => { if (shTrack()) openTrackLink(shI); };
+$('shLink').onclick = async () => { if (!shTrack()) return; await editTrackLink(shI); updateComputed(); }; // Save's ● too
+shDel.onclick = () => {
+  const t = shTrack(), r = rowsEl.children[shI]; if (!t || !r) return;
+  const name = (t.title || '').trim() || `track #${shI + 1}`;
+  sheetClose(true);
+  r.querySelector('.del').click(); // the rows' own delete: undo point, dirty, rebuild
+  phDelSnap = hist.undo[hist.undo.length - 1];
+  toastHTML(`Deleted “${esc(name)}” <button type="button" class="tUndo">↶ Undo</button>`, 'ok');
+};
+// the toast's Undo undoes that delete only (not a later change, nor another list's)
+toastEl.addEventListener('click', e => {
+  if (!e.target.closest('.tUndo')) return;
+  histSync();
+  if (phDelSnap && hist.undo[hist.undo.length - 1] === phDelSnap) undo();
+  else toast('There are newer changes — step back with ↶', 'err');
+  phDelSnap = null;
+});
+
+// swipe the sheet's header down to close it
+const shHead = sheet.querySelector('.shHead');
+let shSwipe = null;
+shHead.addEventListener('pointerdown', e => {
+  if (e.button > 0 || e.target.closest('button')) return;
+  shSwipe = { id: e.pointerId, y0: e.clientY, dy: 0 };
+  shHead.setPointerCapture(e.pointerId);
+  sheet.classList.add('swiping');
+});
+shHead.addEventListener('pointermove', e => {
+  if (!shSwipe || e.pointerId !== shSwipe.id) return;
+  shSwipe.dy = Math.max(0, e.clientY - shSwipe.y0);
+  sheet.style.transform = shSwipe.dy ? `translateY(${shSwipe.dy / zoomF()}px)` : '';
+});
+const shSwipeEnd = e => {
+  const s = shSwipe; if (!s || e.pointerId !== s.id) return;
+  shSwipe = null; sheet.classList.remove('swiping');
+  if (s.dy > 64) sheetClose(); else sheet.style.transform = '';
+};
+shHead.addEventListener('pointerup', shSwipeEnd);
+shHead.addEventListener('pointercancel', shSwipeEnd);
+
+// rotating / resizing across 740px: drop a drag in progress and the sheet,
+// swap the list bar and the row layout
+phoneMQ.addEventListener('change', () => {
+  if (drag) dragEnd(true);
+  sheetClose(true);
+  document.body.classList.remove('sheet-hold');
+  syncPhoneChrome();
+  rebuildRows();
+});
+syncPhoneChrome();
 
 /* ---------------- boot ---------------- */
 (function boot() {

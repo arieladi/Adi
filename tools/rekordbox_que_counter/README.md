@@ -77,8 +77,31 @@ profile (`{id,label,admin}`). Users are never listed in the public UI or repo.
 lines, text, muted text, accent), and size sliders — overall size (zoom),
 text size, row height. Saved per device, works on mobile and desktop.
 
-On phones the list stays a table: the # and Track columns are pinned and the
-rest scrolls sideways (the header follows along).
+### On phones
+
+At 740px wide and below the table becomes a read-only list. Desktop is unchanged.
+
+- **Pinned at the top** (the brand row and 👤 scroll away): one list bar line —
+  the list, ↶ ↷, Save (● when unsaved) and ⋯, which also holds New list,
+  Duplicate, Rename and Delete list — then one summary line: set time · tracks ·
+  status, plus S → E with its ✕ when marks are set — then the column header.
+- **Each track** is one list line: its number (accent-coloured inside the S → E
+  stretch) over the ⠿ grip, the title on up to two lines with `140 BPM · F# · 0:54 → 6:53`
+  and Start / End tags under it, Play Time over Set time on the right. An empty
+  track reads "Tap to add BPM, key & cues".
+- **Tap a track** to open its sheet from the bottom: big inputs for name, BPM,
+  key, cue in and cue out, the live Play Time / Set time, Start / End, ▶ Open /
+  ✎ Link, and Prev / Next; 🗑 Delete sits alone at the sheet's top left (the
+  toast offers Undo). The track stays in view above the sheet; when the keyboard
+  (or a big size setting) leaves no room, the pinned bars scroll away meanwhile.
+- **Typing a set straight through:** Prev / Next keep the field you are in, with
+  its text selected so typing replaces it. The keyboard's Next / Enter goes to
+  the next field; from Cue out it goes on to the next track's Cue in (or its
+  name if it has none), and on the last track it adds a new one.
+- **Close** with Done, by swiping the sheet down, or with the phone's Back
+  button (Back closes the sheet, not the page).
+- **Move a track:** drag its ⠿ grip; the rest of the row scrolls the list as
+  usual. The sheet steps aside once the drag starts.
 
 ## Files
 
