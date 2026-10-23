@@ -2,7 +2,9 @@
 
 DJ'ing Set Timer — enter each track's cue in & cue out to calculate the play time
 and how long the overall set will be. Live at
-**https://adiariel.com/tools/rekordbox_que_counter/** (GitHub Pages).
+**https://adiariel.com/tools/rekordbox_que_counter/** (GitHub Pages) — short link
+**https://adiariel.com/q** (a redirect page at `/q/index.html` in the repo root).
+(`avastha.info/q` is still to do — that site lives in the separate Avastha repo.)
 
 ## Cues & time formats
 
@@ -59,12 +61,24 @@ profile (`{id,label,admin}`). Users are never listed in the public UI or repo.
   by the Worker against the admin user in KV. No token, nothing in the repo.
 - Every track has a **▶ link** — YouTube search for the track name by default,
   or any custom link set via ✎.
+- **Move a track** by dragging its **⠿** handle (mouse or touch); the other rows
+  slide aside to preview the move and an OK / Cancel confirm commits it. ↶ / ↷
+  (or Ctrl/⌘+Z, Ctrl/⌘+Shift+Z) undo and redo every change, moves included.
+- **S / E marks:** press **S** on the track you plan to start with and **E** on the
+  one you plan to end with; the **S → E** box shows how long that stretch plays
+  (start of the S track to the end of the E track). One S and one E per list;
+  only one set → the stretch runs to the end / from the start of the list. Marks
+  travel with their track when it moves and are saved with the list
+  (`markStart` / `markEnd` on the track).
 
 ## Appearance
 
 ⋯ → Theme & size: Dark / Light presets, custom colors (background, cards,
 lines, text, muted text, accent), and size sliders — overall size (zoom),
 text size, row height. Saved per device, works on mobile and desktop.
+
+On phones the list stays a table: the # and Track columns are pinned and the
+rest scrolls sideways (the header follows along).
 
 ## Files
 
