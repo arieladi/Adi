@@ -115,7 +115,8 @@ select {
 
 /* ---------- table ---------- */
 /* One grid for header + rows. The table scrolls sideways inside .rowswrap
-   when it is wider than the screen (phones); the # and Track columns stay
+   when it is wider than the window (phones get a list instead, see the end
+   of this file); the # and Track columns stay
    pinned on the left and the header follows the scroll (app.js syncs it). */
 main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 :root {
@@ -286,8 +287,297 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
 #toast.ok { border-color: var(--accent-line); }
 #toast.err { border-color: var(--neg-line); }
 
-/* ---------- mobile: same table, scrolled sideways ---------- */
-@media (max-width: 740px) {
+/* ---------- phone: a list to read + a sheet to edit ---------- */
+/* Pinned at the top: the list bar as one line (list, ↶ ↷, Save, ⋯ — app.js
+   moves undo / redo up into it and New / Duplicate / Rename / Delete into ⋯),
+   a slim summary line and the column header; the brand row scrolls away.
+   Rows turn into read-only list lines: number over the drag grip, the title
+   on up to two lines with BPM · key · cues under it, and Play Time over Set
+   time on the right. Tapping a row opens #dlgTrack, a bottom sheet with big
+   inputs for that track (app.js, "phone" section). The desktop cells stay in
+   the DOM, hidden, and the sheet writes through them. Screens only: printing
+   (A4 is narrower than 740px too) keeps the table, see the very end. */
+@media screen and (max-width: 740px) {
+  :root {
+    --sel-bg: color-mix(in srgb, var(--bg) 72%, var(--accent));
+    --ph-cols: 44px minmax(0, 1fr) auto;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  /* brand + 👤 on one line down to 360px; bigger Overall / Text sizes wrap instead of overflowing */
+  .topbar { padding: 10px 14px 4px; gap: 8px; flex-wrap: wrap; }
+  .brand h1 { white-space: normal; }
+  .account { margin-left: auto; }
+  #userBtn { padding: 8px 10px; }
+
+  /* list bar, one sticky line: [list ▾] [↶|↷] [Save] [⋯] — the buttons wrap
+     under the list name when it would get under 8rem (big sizes, 320px phones);
+     Save's ● is a corner dot, so the bar never re-wraps on a first keystroke */
+  .listbar { gap: 6px; padding: 6px 14px; background: var(--bg); }
+  #listSelect {
+    flex: 1 1 8rem; min-width: min(8rem, 100%); min-height: 42px; padding: 8px 22px 8px 8px; font-size: max(calc(16px / var(--z, 1)), 1rem);
+    background-position: calc(100% - 14px) 55%, calc(100% - 9px) 55%;
+  }
+  #btnRename, #btnNew, #btnDup, #btnDelete { display: none; }
+  .listbtns { gap: 4px; margin-left: auto; }
+  .listbar .btn { min-height: 42px; padding: 8px 10px; }
+  .listbar .btn.icon { min-width: 40px; padding: 8px 9px; }
+  #btnSave { position: relative; }
+  #btnSave.dirty::after { position: absolute; top: 4px; right: 4px; margin: 0; line-height: 1; }
+  .listbtns .histbtns { gap: 0; margin: 0; }
+  .listbtns .histbtns .btn { min-width: 40px; padding: 8px 6px; font-size: 1.0625rem; }
+  .listbtns .histbtns .btn:first-child { border-radius: 10px 0 0 10px; }
+  .listbtns .histbtns .btn:last-child { border-radius: 0 10px 10px 0; border-left: 0; }
+  /* ⋯ menu: list actions first, Delete list last and red; Users… only when shown */
+  .menu button[hidden] { display: none; }
+  .menu .phAct + button:not(.phAct), .menu button:not(.phAct) + .phAct {
+    margin-top: 4px; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px;
+  }
+  .menu .phAct[data-act=delete] { color: var(--neg); }
+
+  /* summary, one sticky line: 4:02:11 · 39 tracks · status   [S → E 0:43:17 ✕]
+     (the status gives way first; at big sizes the S → E pill drops to a second line) */
+  .summary {
+    position: sticky; top: var(--lb-h, 54px); z-index: 25;
+    gap: 0; min-height: 34px; padding: 0 14px 2px; background: var(--bg);
+    white-space: nowrap;
+  }
+  .summary .chip { flex: none; gap: 0; padding: 0; background: none; border: 0; border-radius: 0; }
+  .summary .chip span { display: none; }
+  .summary .chip.blue span { /* "Set time": still read out by screen readers ("tracks" comes from ::after below) */
+    display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .chip.blue { order: 1; }
+  .chip.blue b { font-size: 1rem; font-weight: 700; }
+  .summary > .chip:first-child { order: 2; }
+  .summary > .chip:first-child b { font: inherit; font-size: .8125rem; font-variant-numeric: tabular-nums; }
+  .summary > .chip:first-child b::after { content: " tracks"; color: var(--dim); }
+  .summary > .chip.one b::after { content: " track"; }
+  .chip.status { order: 3; flex: 1 1 0; min-width: 0; margin-right: 10px; }
+  .chip.status b { overflow: hidden; text-overflow: ellipsis; font-size: .8125rem; font-weight: 500; }
+  .summary > .chip:first-child::before, .chip.status::before { content: "·"; margin: 0 7px; color: var(--dim); }
+  .summary .chip.range {
+    order: 4; align-items: center; gap: 6px; height: 26px; margin-left: auto; padding: 0 0 0 10px;
+    background: var(--range-bg); border: 1px solid var(--accent-line); border-radius: 999px;
+  }
+  .summary .chip.range span { display: inline; letter-spacing: .3px; }
+  .chip.range b { font-size: .875rem; font-weight: 700; }
+  #rangeInfo { display: none; }
+  .chip.range .rb { width: 40px; height: 40px; margin: -7px -8px -7px -6px; font-size: .75rem; } /* a 40px target in a slim line */
+
+  /* the column header, one line under them: #  TRACK  …  PLAY / SET */
+  main { padding: 0 0 16px; }
+  .rowswrap { overflow: visible; }
+  .thead, .row { min-width: 0; }
+  .row { grid-template-columns: var(--ph-cols); column-gap: 8px; }
+  .theadwrap { top: calc(var(--lb-h, 54px) + var(--sum-h, 36px)); border-bottom: 1px solid var(--line); }
+  .thead { display: flex; padding-right: 14px; }
+  .thead b:nth-child(n) { display: none; position: static; padding: 4px 0 5px; letter-spacing: .5px; }
+  .thead b:is(:nth-child(-n+2), :nth-child(7), :nth-child(8)) { display: flex; }
+  .thead b:nth-child(1) { flex: 0 0 44px; justify-content: center; }
+  .thead b:nth-child(2) { flex: 1 1 auto; margin-left: 8px; }
+  .thead b:is(:nth-child(7), :nth-child(8)) { font-size: 0; letter-spacing: 0; }
+  .thead b:nth-child(7)::before { content: "Play /\a0"; font-size: .6875rem; letter-spacing: .5px; }
+  .thead b:nth-child(8)::before { content: "Set"; font-size: .6875rem; letter-spacing: .5px; color: var(--accent); }
+
+  /* the list: full-width lines on hairlines, no sideways scroll */
+  #rows .row {
+    align-items: center; padding: var(--cell-pad) 14px var(--cell-pad) 0;
+    border-bottom: 1px solid var(--line); background: var(--bg);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  #rows .row > .f:not(.idx, .play, .stime) { display: none; }
+  #rows .row :is(input, .f > b, .f.idx) { background-color: transparent; } /* the row itself is tinted */
+  #rows .row.inrange { background: var(--range-bg); box-shadow: inset 3px 0 0 var(--accent); }
+  #rows .row.sel { background: var(--sel-bg); box-shadow: inset 4px 0 0 var(--accent); }
+  #rows .row:active { background: var(--row-hover); }
+  #rows .row.inrange:active { background: var(--range-hover); }
+  #rows .row.dragging { background: var(--panel2); box-shadow: var(--shadow); }
+
+  /* number on top; the gutter scrolls (and taps open the track) like the rest
+     of the row, only the 44 × 44 zone round the ⠿ grabs for a drag */
+  #rows .row .f.idx {
+    grid-area: 1 / 1 / 3 / 2; align-self: stretch; display: block; position: relative;
+    padding: 0; border: 0; box-shadow: none; touch-action: pan-y;
+  }
+  #rows .row .f.idx > b {
+    position: relative; z-index: 1; pointer-events: none;
+    padding: 2px 0 0; text-align: center; font-family: var(--mono); font-size: .8125rem;
+  }
+  #rows .row.inrange .f.idx > b { color: var(--accent); }
+  /* the row being edited: full-strength text on its tint (dim and accent read too faintly there) */
+  #rows .row.sel :is(.f.idx > b, .f.stime > b, .ph-meta) { color: var(--text); }
+  #rows .row.sel .grip { color: var(--dim); }
+  #rows .grip {
+    position: absolute; left: 0; bottom: calc(-1 * var(--cell-pad)); width: 44px; height: 44px;
+    display: flex; align-items: flex-end; justify-content: center; border-radius: 0;
+    padding-bottom: calc(var(--cell-pad) + 1px); font-size: 1.0625rem;
+    color: color-mix(in srgb, var(--dim) 75%, transparent);
+    touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+  }
+  #rows .grip:hover { background: none; }
+  #rows .row.dragging .grip { color: var(--accent); }
+
+  /* title (2 lines) + BPM · key · cues */
+  #rows .ph {
+    grid-area: 1 / 2 / 3 / 3; align-self: center; min-width: 0;
+    display: flex; flex-direction: column; gap: 3px;
+    margin: 0; padding: 0; border: 0; background: none; color: var(--text); text-align: left;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  #rows .ph:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+  .ph-tt {
+    font-size: 1rem; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  }
+  .ph-tt.empty { color: var(--dim); font-weight: 400; font-style: italic; }
+  .ph-meta {
+    display: block; font-family: var(--mono); font-size: .78125rem; line-height: 1.45; color: var(--dim);
+    overflow-wrap: anywhere;
+  }
+  .ph-meta .bit { display: inline-block; max-width: 100%; } /* BPM, key, in → out: each wraps as a whole */
+  .ph-meta em { font-style: normal; }
+  .ph-meta .warn { color: var(--warn); }
+  .ph-meta .hint { font-family: var(--sans); font-style: italic; }
+  .ph-meta .bd {
+    display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; vertical-align: 1px;
+    background: var(--accent); color: var(--on-accent);
+    font-family: var(--sans); font-style: normal; font-weight: 700; font-size: .6875rem; line-height: 1.55;
+  }
+
+  /* Play Time over Set time on the right, tabular figures (narrower than mono) */
+  #rows .row .f.play > b, #rows .row .f.stime > b {
+    grid-column: 3; padding: 0; border: 0; white-space: nowrap; line-height: 1.3;
+    font-family: var(--sans); font-variant-numeric: tabular-nums;
+  }
+  #rows .row .f.play > b { grid-row: 1; align-self: end; font-size: .875rem; }
+  #rows .row .f.stime > b { grid-row: 2; align-self: start; font-size: .9375rem; font-weight: 700; }
+
+  .addtrack {
+    margin: 0; min-height: 54px; padding: 15px 14px 15px 52px;
+    background: none; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+    color: var(--accent); text-align: left;
+  }
+  .addtrack:hover { color: var(--accent); border-color: var(--line); }
+  .addtrack:active { background: var(--row-hover); }
+
+  /* no zoom-on-focus in iOS: form text stays >= 16px on screen, also at an
+     Overall size under 100% (--z, the zoom on <html>, which iOS counts in) */
+  .dlg input:not([type=checkbox]):not([type=color]):not([type=range]) { font-size: max(calc(16px / var(--z, 1)), 1rem); }
+
+  /* ---------- the track sheet ---------- */
+  #dlgTrack {
+    position: fixed; inset: auto 0 var(--kb, 0px); z-index: 60;
+    width: auto; max-width: 640px; margin: 0 auto;
+    max-height: max(calc(var(--vvh, 100vh) - 40px), calc(var(--vvh, 100vh) * .9)); overflow-y: auto; overscroll-behavior: contain;
+    padding: 0 0 env(safe-area-inset-bottom);
+    background: var(--panel); border: 1px solid var(--line); border-bottom: 0; border-radius: 18px 18px 0 0;
+    box-shadow: 0 -12px 36px color-mix(in srgb, #000 38%, transparent);
+    transition: transform .2s ease; animation: shUp .26s cubic-bezier(.2, .9, .3, 1);
+  }
+  #dlgTrack.swiping { transition: none; }
+  #dlgTrack.closing { transform: translateY(105%); }
+  body:is(.sheet-open, .sheet-hold) main { padding-bottom: calc(var(--sheet-h, 420px) + var(--kb, 0px) + 12px); }
+  body.sheet-open #toast { bottom: auto; top: calc(12px + env(safe-area-inset-top)); }
+  /* no room for the track between the pinned bars and the sheet (keyboard up,
+     big sizes): the bars stop sticking and just scroll with the page (app.js) */
+  body.sheet-unpin :is(.listbar, .summary, .theadwrap) { position: static; }
+
+  /* header: 🗑 alone on the left, away from Link and Done; ↶ ↷ Done on the right */
+  .shHead {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 4px;
+    padding: 18px 12px 8px; background: var(--panel); touch-action: none;
+  }
+  .shHead::before {
+    content: ""; position: absolute; top: 7px; left: 50%; width: 40px; height: 4px; margin-left: -20px;
+    border-radius: 4px; background: color-mix(in srgb, var(--dim) 45%, transparent);
+  }
+  .shHead h2 {
+    flex: 1; min-width: 0; display: flex; align-items: baseline; gap: .3em;
+    margin: 0 0 0 6px; font-size: .9375rem; font-weight: 500; color: var(--dim); white-space: nowrap;
+  }
+  .shHead h2 b { flex: none; color: var(--text); font-family: var(--mono); font-size: 1.125rem; }
+  /* short of room "Track" goes first, then "of N"; the number never */
+  .shHead h2 span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .shHead h2 span:first-child { flex-shrink: 99; }
+  .shHead .btn { min-height: 40px; }
+  .shHead .btn.icon { width: 42px; padding: 0; font-size: 1.125rem; line-height: 1; }
+  .shHead .btn:disabled { opacity: .35; }
+  #shDel { font-size: 1rem; }
+  #shDone { padding: 0 14px; margin-left: 4px; }
+  #dlgTrack .btn:not(.primary, .on) { background: transparent; }
+
+  .shBody { display: flex; flex-direction: column; gap: 12px; padding: 4px 16px 14px; container-type: inline-size; }
+  #dlgTrack :is(textarea, input) {
+    width: 100%; min-width: 0; margin: 0; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; font-size: max(calc(16px / var(--z, 1)), 1.0625rem);
+  }
+  #dlgTrack :is(textarea, input):focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  #dlgTrack :is(textarea, input)::placeholder { color: color-mix(in srgb, var(--dim) 55%, transparent); }
+  #dlgTrack textarea { display: block; resize: none; padding: 9px 12px; font-family: inherit; font-weight: 600; line-height: 1.35; }
+  .shFields { display: grid; grid-template-columns: 1fr .9fr 1.3fr 1.3fr; gap: 8px; }
+  .shFields label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: .8125rem; color: var(--dim); }
+  .shFields input { height: 48px; padding: 0 6px; font-family: var(--mono); text-align: center; }
+  #dlgTrack .shFields input.warn { color: var(--warn); border-color: var(--warn); }
+  .shWarn { margin: -4px 0 0; color: var(--warn); font-size: .8125rem; }
+
+  .shTimes { display: grid; grid-template-columns: 1fr 1fr; border-block: 1px solid var(--line); }
+  .shTimes div { display: flex; flex-direction: column; padding: 8px 0 9px; }
+  .shTimes div + div { border-left: 1px solid var(--line); padding-left: 16px; }
+  .shTimes span { font-size: .8125rem; color: var(--dim); }
+  .shTimes b { font-family: var(--mono); font-size: 1.625rem; line-height: 1.2; }
+  .shTimes div + div b { color: var(--accent); }
+  #dlgTrack .shTimes b.neg { color: var(--neg); }
+  /* bigger Overall / Text sizes on a narrow phone (the body's content under 21 of
+     its own em, so zoom and text size both count): the cues get a line of their own
+     and the two times stack, label left and value right — nothing clips or scrolls
+     sideways */
+  @container (max-width: 21em) {
+    .shFields { grid-template-columns: 1fr 1fr; }
+    .shTimes { grid-template-columns: 1fr; }
+    .shTimes div { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .shTimes div + div { border-left: 0; border-top: 1px solid var(--line); padding-left: 0; }
+  }
+
+  .shTools { display: flex; flex-wrap: wrap; gap: 6px; } /* one row; two when the sizes are turned up */
+  .shTools .btn { flex: 1 1 0; min-width: max-content; min-height: 44px; padding: 0 6px; font-size: .875rem; }
+  .shMk i {
+    display: inline-block; min-width: 20px; margin-right: 5px; padding: 1px 0;
+    font-style: normal; font-weight: 700; font-size: .75rem;
+    border: 1px solid var(--line); border-radius: 5px;
+  }
+  #dlgTrack .shMk.on { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+  .shMk.on i { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+  #shOpen.custom { color: var(--accent); }
+  /* typing: the keyboard needs the room — the tools go, Prev / Next move up under
+     the fields (still in reach on short phones) and the times shrink to one line */
+  #dlgTrack.kb .shTools { display: none; }
+  #dlgTrack.kb { padding-bottom: 0; } /* the keyboard covers the home indicator */
+  /* and the header scrolls away with the rest: a short (landscape) sheet must show the field */
+  #dlgTrack.kb .shHead { position: static; padding-top: 12px; padding-bottom: 6px; }
+  #dlgTrack.kb .shBody { gap: 8px; }
+  #dlgTrack.kb textarea:not(:focus) { height: calc(1.35em + 20px); overflow: hidden; white-space: pre; } /* one line unless typed in */
+  #dlgTrack.kb .shTimes { order: 1; }
+  #dlgTrack.kb .shTimes div { flex-direction: row; align-items: baseline; gap: 8px; padding-block: 4px; }
+  #dlgTrack.kb .shTimes b { font-size: 1.25rem; }
+  #dlgTrack.kb .shNav .btn { min-height: 44px; }
+
+  .shNav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .shNav .btn { min-height: 50px; font-size: .9375rem; font-weight: 600; }
+  .shNav .btn:disabled { opacity: .35; }
+  #shNext { border-color: var(--accent-line); color: var(--accent); }
+
+  .helplink { min-height: 40px; padding: 8px 18px; }
+  #toast .tUndo {
+    min-height: 40px; margin-left: 10px; padding: 8px 14px; border-radius: 9px;
+    background: none; border: 1px solid var(--accent-line); color: var(--accent); font-weight: 700;
+  }
+
+  @keyframes shUp { from { transform: translateY(100%); } }
+  @media (prefers-reduced-motion: reduce) { #dlgTrack { animation: none; transition: none; } }
+}
+
+/* ---------- printing narrower than 740px (A4): the table, as it always printed ---------- */
+@media print and (max-width: 740px) {
   :root {
     --cols: 52px 132px 50px 44px 70px 70px 72px 84px 60px 60px 34px;
     --idx-w: 52px;
@@ -304,4 +594,5 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   .listbtns { flex: 1 1 100%; }
   .listbtns .btn.primary { margin-left: auto; }
   .chip.blue { margin-left: auto; }
+  .row .ph { display: none; } /* a phone's list line, should its rows not be rebuilt for print */
 }
