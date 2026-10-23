@@ -63,6 +63,10 @@ try {
 <section class="summary" aria-live="polite">
   <div class="chip"><span>Tracks</span><b id="sumTracks">0</b></div>
   <div class="chip blue"><span>Set time</span><b id="sumClock">0:00:00</b></div>
+  <div class="chip range" id="sumRange" hidden title="How long it plays from the track marked S (start) to the track marked E (end)">
+    <span>S → E</span><b id="rangeTime">0:00:00</b><i id="rangeInfo"></i>
+    <button type="button" class="rb" id="btnClearRange" title="Clear the start/end marks" aria-label="Clear the start/end marks">✕</button>
+  </div>
   <div class="chip status" id="sumStatus"><b>—</b></div>
   <div class="histbtns">
     <button id="btnUndo" class="btn icon" title="Undo (⌘/Ctrl+Z)" aria-label="Undo" disabled>↶</button>
@@ -71,10 +75,12 @@ try {
 </section>
 
 <main>
-  <div class="thead" aria-hidden="true">
-    <b>#</b><b>Track</b><b>BPM</b><b>Key</b><b>Cue in</b><b>Cue out</b><b>Play Time</b><b>Set time</b><b>Link</b><b></b>
+  <div class="theadwrap" id="theadWrap">
+    <div class="thead" aria-hidden="true">
+      <b>#</b><b>Track</b><b>BPM</b><b>Key</b><b>Cue in</b><b>Cue out</b><b>Play Time</b><b>Set time</b><b>S / E</b><b>Link</b><b></b>
+    </div>
   </div>
-  <div id="rows"></div>
+  <div class="rowswrap" id="rowsWrap"><div id="rows"></div></div>
   <button id="btnAdd" class="addtrack">＋ Add track</button>
 </main>
 
@@ -286,6 +292,10 @@ try {
       <code>5.57.5</code> (Excel style + tenths), or <code>1:02:37</code>.<br><br>
       <b>▶</b> opens the track in a new tab — a YouTube search for the track name by default,
       or any link you set with <b>✎</b> (YouTube, SoundCloud, …). Rename the list with the <b>✎</b> next to its name.<br><br>
+      <b>Move a track:</b> grab its <b>⠿</b> handle and drag it to a new place, then confirm with OK.
+      <b>↶ / ↷</b> undo and redo any change.<br><br>
+      <b>Start / End:</b> press <b>S</b> on the track you plan to start with and <b>E</b> on the one you plan to end with —
+      the <b>S → E</b> box shows how long it plays from the start of the S track to the end of the E track.<br><br>
       <b>Users:</b> Public is open to everyone. Log in (👤 button) with a username and password for your own lists —
       accounts are made by Adi. Up to 100 lists per user, 500 tracks per list.<br><br>
       Lists autosave to this device as you type. <b>Save</b> commits them to GitHub — no setup needed.

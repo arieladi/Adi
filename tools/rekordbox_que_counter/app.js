@@ -99,7 +99,8 @@ const blankTrack = () => ({ title: '', bpm: '', key: '', cueIn: '', cueOut: '', 
 const normTrack = t => ({
   title: String(t && t.title || ''), bpm: String(t && t.bpm || ''),
   key: normalizeKey(String(t && t.key || '')), cueIn: String(t && t.cueIn || ''),
-  cueOut: String(t && t.cueOut || ''), link: String(t && t.link || '')
+  cueOut: String(t && t.cueOut || ''), link: String(t && t.link || ''),
+  ...(t && t.markStart ? { markStart: true } : {}), ...(t && t.markEnd ? { markEnd: true } : {})
 });
 
 /* Keys are shown sharps-only: Db -> C#, Eb -> D#, Gb -> F#, Ab -> G#, Bb -> A# */
@@ -144,6 +145,8 @@ function saveSession() {
 const $ = id => document.getElementById(id);
 const rowsEl = $('rows'), listSelect = $('listSelect'), userBtn = $('userBtn'), saveBtn = $('btnSave');
 const sumTracks = $('sumTracks'), sumClock = $('sumClock'), sumStatus = $('sumStatus');
+const sumRange = $('sumRange'), rangeTime = $('rangeTime'), rangeInfo = $('rangeInfo');
+const rowsWrap = $('rowsWrap'), theadWrap = $('theadWrap');
 const dlgSetup = $('dlgSetup'), dlgName = $('dlgName'), dlgConfirm = $('dlgConfirm'),
   dlgHelp = $('dlgHelp'), dlgUserLogin = $('dlgUserLogin'), dlgDelete = $('dlgDelete'), dlgTheme = $('dlgTheme'),
   dlgLink = $('dlgLink'), dlgUsers = $('dlgUsers'), dlgAdmin = $('dlgAdmin');
@@ -157,6 +160,14 @@ function dialogClosed(dlg) {
   });
 }
 function openDialog(dlg) { dlg.returnValue = ''; dlg.showModal(); return dialogClosed(dlg); }
+async function askConfirm(title, text, okLabel = 'Confirm', danger = true) {
+  $('cfTitle').textContent = title;
+  $('cfText').textContent = text;
+  const ok = $('cfOk');
+  ok.textContent = okLabel;
+  ok.className = 'btn ' + (danger ? 'danger' : 'primary');
+  return (await openDialog(dlgConfirm)) === 'ok';
+}
 const isEditingRows = () => document.activeElement && rowsEl.contains(document.activeElement);
 
 const te = new TextEncoder(), td = new TextDecoder();
@@ -206,7 +217,9 @@ function rowTemplate(i, t) {
   row.className = 'row';
   row.dataset.i = i;
   row.innerHTML =
-    `<div class="f idx"><b>${i + 1}</b></div>` +
+    `<div class="f idx">` +
+    `<button type="button" class="grip" title="Drag to move" aria-label="Drag to move track">⠿</button>` +
+    `<b>${i + 1}</b></div>` +
     `<label class="f title"><span>Track</span><input class="tt" placeholder="Track name" enterkeyhint="next"></label>` +
     `<label class="f bpm"><span>BPM</span><input class="bp" inputmode="decimal" placeholder="145" enterkeyhint="next"></label>` +
     `<label class="f key"><span>Key</span><input class="ky" placeholder="A#" enterkeyhint="next" autocapitalize="characters"></label>` +
@@ -214,13 +227,15 @@ function rowTemplate(i, t) {
     `<label class="f cout"><span>Cue out</span><input class="cue co" inputmode="decimal" placeholder="6:10.2" enterkeyhint="next"></label>` +
     `<div class="f play"><span>Play Time</span><b>—</b></div>` +
     `<div class="f stime"><span>Set time</span><b>—</b></div>` +
+    `<div class="f mark"><span>Start/End</span>` +
+    `<button type="button" class="rb mk ms" title="Mark as the track the set starts with" aria-label="Mark as set start">S</button>` +
+    `<button type="button" class="rb mk me" title="Mark as the track the set ends with" aria-label="Mark as set end">E</button>` +
+    `</div>` +
     `<div class="f link"><span>Link</span>` +
     `<button type="button" class="rb pl" title="Open track link (YouTube search by default)" aria-label="Open track link">▶</button>` +
     `<button type="button" class="rb pe" title="Edit track link" aria-label="Edit track link">✎</button>` +
     `</div>` +
     `<div class="f ops">` +
-    `<button type="button" class="rb up" title="Move up" aria-label="Move track up">↑</button>` +
-    `<button type="button" class="rb down" title="Move down" aria-label="Move track down">↓</button>` +
     `<button type="button" class="rb del" title="Delete track" aria-label="Delete track">✕</button>` +
     `</div>`;
   row.querySelector('.tt').value = t.title;
@@ -266,7 +281,51 @@ function updateComputed() {
   sumTracks.textContent = L.tracks.length;
   sumClock.textContent = fmtClock(cum);
   saveBtn.classList.toggle('dirty', !!L.dirty);
+  updateRange(L, res);
 }
+
+// Marked range: S on the first track you plan to play, E on the last one.
+// Only one mark set -> the range runs to the end (or from the start) of the list.
+function markedRange(tracks) {
+  const si = tracks.findIndex(t => t.markStart), ei = tracks.findIndex(t => t.markEnd);
+  if (si < 0 && ei < 0) return null;
+  let lo = si >= 0 ? si : 0, hi = ei >= 0 ? ei : tracks.length - 1;
+  if (lo > hi) [lo, hi] = [hi, lo];
+  return { lo, hi };
+}
+function updateRange(L, res) {
+  const R = markedRange(L.tracks), rows = rowsEl.children;
+  for (let i = 0; i < rows.length && i < L.tracks.length; i++) {
+    const r = rows[i], t = L.tracks[i];
+    r.classList.toggle('inrange', !!R && i >= R.lo && i <= R.hi);
+    r.querySelector('.ms').classList.toggle('on', !!t.markStart);
+    r.querySelector('.me').classList.toggle('on', !!t.markEnd);
+    r.querySelector('.ms').setAttribute('aria-pressed', !!t.markStart);
+    r.querySelector('.me').setAttribute('aria-pressed', !!t.markEnd);
+  }
+  sumRange.hidden = !R;
+  if (!R) return;
+  const span = res[R.hi].cum - (R.lo ? res[R.lo - 1].cum : 0);
+  const n = R.hi - R.lo + 1;
+  rangeTime.textContent = fmtClock(span);
+  rangeInfo.textContent = `#${R.lo + 1} → #${R.hi + 1} · ${n} track${n === 1 ? '' : 's'}`;
+}
+function toggleMark(i, kind) {
+  const L = cur(); const t = L && L.tracks[i]; if (!t) return;
+  pushUndo();
+  const on = !t[kind];
+  for (const x of L.tracks) delete x[kind]; // one start and one end per list
+  if (on) t[kind] = true;
+  markDirty();
+  updateComputed();
+}
+$('btnClearRange').onclick = () => {
+  const L = cur(); if (!L || !markedRange(L.tracks)) return;
+  pushUndo();
+  for (const x of L.tracks) { delete x.markStart; delete x.markEnd; }
+  markDirty();
+  updateComputed();
+};
 
 function setStatus(text, cls) {
   sumStatus.className = 'chip status' + (cls ? ' ' + cls : '');
@@ -297,7 +356,7 @@ function markDirty() {
 
 /* ---------------- undo / redo ---------------- */
 // Per-list history of {name, tracks}. Snapshots are taken of the state
-// BEFORE a change: structural ops (add/delete/move/link/rename) snapshot
+// BEFORE a change: structural ops (add/delete/drag-move/mark/link/rename) snapshot
 // immediately, while typing is coalesced into a single burst so a word isn't
 // 5 undo steps. Histories are kept per list in memory for the whole page
 // session — saving or switching lists does NOT clear them.
@@ -446,20 +505,108 @@ rowsEl.addEventListener('click', e => {
   const L = cur(); if (!L) return;
   if (btn.classList.contains('pl')) { openTrackLink(i); return; }
   if (btn.classList.contains('pe')) { editTrackLink(i); return; }
-  if (btn.classList.contains('del')) {
-    pushUndo();
-    L.tracks.splice(i, 1);
-    if (!L.tracks.length) L.tracks.push(blankTrack());
-  } else if (btn.classList.contains('up') && i > 0) {
-    pushUndo();
-    [L.tracks[i - 1], L.tracks[i]] = [L.tracks[i], L.tracks[i - 1]];
-  } else if (btn.classList.contains('down') && i < L.tracks.length - 1) {
-    pushUndo();
-    [L.tracks[i + 1], L.tracks[i]] = [L.tracks[i], L.tracks[i + 1]];
-  } else return;
+  if (btn.classList.contains('ms')) { toggleMark(i, 'markStart'); return; }
+  if (btn.classList.contains('me')) { toggleMark(i, 'markEnd'); return; }
+  if (!btn.classList.contains('del')) return;
+  pushUndo();
+  L.tracks.splice(i, 1);
+  if (!L.tracks.length) L.tracks.push(blankTrack());
   markDirty();
   rebuildRows();
 });
+
+/* ---------------- drag to move ---------------- */
+// Grab a row by its ⠿ handle (mouse or touch), drag it to a new place; the
+// other rows slide aside to preview the move, and an OK / Cancel confirm
+// commits it as one undoable step.
+let drag = null;
+const zoomF = () => ((theme.size && theme.size.zoom) || 100) / 100;
+function dragShift() {
+  const d = drag, base = rowsEl.getBoundingClientRect().top, z = zoomF();
+  const y = d.y - base;
+  let to = 0;
+  for (let j = 0; j < d.tops.length; j++) if (j !== d.from && d.tops[j] + d.hs[j] / 2 < y) to++;
+  d.to = to;
+  const rows = rowsEl.children, h = d.hs[d.from] / z;
+  for (let j = 0; j < rows.length; j++) {
+    if (j === d.from) continue;
+    const s = d.from < to && j > d.from && j <= to ? -h : to < d.from && j >= to && j < d.from ? h : 0;
+    rows[j].style.transform = s ? `translateY(${s}px)` : '';
+  }
+  const last = d.tops.length - 1;
+  const top = Math.max(0, Math.min(y - d.grab, d.tops[last] + d.hs[last] - d.hs[d.from]));
+  d.row.style.transform = `translateY(${(top - d.tops[d.from]) / z}px)`;
+}
+function dragTick() {
+  if (!drag) return;
+  const d = drag, edge = 60, topEdge = theadWrap.getBoundingClientRect().bottom;
+  let v = 0;
+  if (d.y < topEdge + edge) v = -Math.ceil((topEdge + edge - d.y) / 5);
+  else if (d.y > innerHeight - edge) v = Math.ceil((d.y - (innerHeight - edge)) / 5);
+  if (v) { scrollBy(0, v); dragShift(); }
+  d.raf = requestAnimationFrame(dragTick);
+}
+function clearShifts() { for (const r of rowsEl.children) r.style.transform = ''; }
+rowsEl.addEventListener('pointerdown', e => {
+  const grip = e.target.closest('.grip');
+  if (!grip || e.button > 0 || drag) return;
+  const L = cur(), row = grip.closest('.row');
+  if (!L || !row || L.tracks.length < 2) return;
+  e.preventDefault();
+  endTyping();
+  if (isEditingRows()) document.activeElement.blur();
+  const base = rowsEl.getBoundingClientRect().top;
+  const rects = [...rowsEl.children].map(r => r.getBoundingClientRect());
+  const from = +row.dataset.i;
+  drag = {
+    from, to: from, row, id: e.pointerId, y: e.clientY, y0: e.clientY, moved: false,
+    tops: rects.map(r => r.top - base), hs: rects.map(r => r.height),
+    grab: e.clientY - rects[from].top, raf: 0
+  };
+  row.classList.add('dragging');
+});
+window.addEventListener('pointermove', e => {
+  if (!drag || e.pointerId !== drag.id) return;
+  drag.y = e.clientY;
+  if (!drag.moved) {
+    if (Math.abs(drag.y - drag.y0) < 4) return;
+    drag.moved = true;
+    document.body.classList.add('dragging-active');
+    drag.raf = requestAnimationFrame(dragTick);
+  }
+  e.preventDefault();
+  dragShift();
+}, { passive: false });
+window.addEventListener('pointerup', e => { if (drag && e.pointerId === drag.id) dragEnd(false); });
+window.addEventListener('pointercancel', e => { if (drag && e.pointerId === drag.id) dragEnd(true); });
+async function dragEnd(cancelled) {
+  const d = drag; drag = null;
+  cancelAnimationFrame(d.raf);
+  document.body.classList.remove('dragging-active');
+  d.row.classList.remove('dragging');
+  const L = cur(), t = L && L.tracks[d.from];
+  if (cancelled || !d.moved || d.to === d.from || !t) { clearShifts(); return; }
+  // park the row in its new slot while the confirm is open
+  const z = zoomF();
+  const slot = d.from < d.to ? d.tops[d.to] + d.hs[d.to] - d.hs[d.from] : d.tops[d.to];
+  d.row.style.transform = `translateY(${(slot - d.tops[d.from]) / z}px)`;
+  const name = (t.title || '').trim() || 'this track';
+  const ok = await askConfirm('Move this track?', `Move “${name}” from #${d.from + 1} to #${d.to + 1}?`, 'OK', false);
+  if (!ok || cur() !== L || L.tracks[d.from] !== t) { clearShifts(); return; }
+  pushUndo();
+  L.tracks.splice(d.to, 0, L.tracks.splice(d.from, 1)[0]);
+  markDirty();
+  rebuildRows();
+}
+
+/* ---------------- sideways-scrolling table ---------------- */
+// The header lives outside the scroller (so it can stick to the top of the
+// page); keep it lined up with the rows, and sit it just under the list bar.
+rowsWrap.addEventListener('scroll', () => { theadWrap.scrollLeft = rowsWrap.scrollLeft; }, { passive: true });
+const listbarEl = document.querySelector('.listbar');
+const setListbarH = () => document.documentElement.style.setProperty('--lb-h', listbarEl.offsetHeight + 'px');
+if (window.ResizeObserver) new ResizeObserver(setListbarH).observe(listbarEl);
+setListbarH();
 
 function addTrack() {
   let L = cur();
@@ -606,11 +753,9 @@ $('btnDelete').onclick = () => deleteCurrentList();
 
 async function confirmDelete(L) {
   if (currentUserId() !== 'public') {
-    $('cfTitle').textContent = `Delete “${L.name}”?`;
-    $('cfText').textContent = L.remote
+    return askConfirm(`Delete “${L.name}”?`, L.remote
       ? 'This removes the list from this device and from GitHub.'
-      : 'This list was never saved to GitHub — it is removed from this device.';
-    return (await openDialog(dlgConfirm)) === 'ok';
+      : 'This list was never saved to GitHub — it is removed from this device.', 'Delete');
   }
   // public: require the delete password, verified by the Worker
   $('dlTitle').textContent = `Delete “${L.name}”?`;
@@ -772,9 +917,8 @@ $('auAdd').onclick = async () => {
   } catch (e) { $('auAdd').disabled = false; err('Could not reach the server.'); }
 };
 async function removeUser(id) {
-  $('cfTitle').textContent = `Remove user “${id}”?`;
-  $('cfText').textContent = 'Their saved lists stay in the repo (lists/' + id + '/), but the account can no longer log in.';
-  const ok = (await openDialog(dlgConfirm)) === 'ok';
+  const ok = await askConfirm(`Remove user “${id}”?`,
+    'Their saved lists stay in the repo (lists/' + id + '/), but the account can no longer log in.', 'Remove');
   dlgUsers.showModal();
   if (!ok) return;
   const adminPass = await getAdminPass();
