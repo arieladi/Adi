@@ -118,6 +118,8 @@ REFERENCE=(
   "Ardour/ardour                          ardour              GPL-2.0-or-later"
   "helio-fm/helio-sequencer               helio-sequencer     GPL-3.0"
   "zrythm/zrythm                          zrythm              AGPL-3.0  READ-ONLY"
+  "storytold/soundcraft                   soundcraft          MIT-OR-Apache-2.0"
+  "storytold/filmcraft                    filmcraft           MIT-OR-Apache-2.0"
 
   # --- DSP references for the plugin roadmap (ADR-0093) ---------------------
   # Each is here for ONE piece of maths; the comment says which. Two of these

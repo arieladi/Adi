@@ -72,6 +72,9 @@ and much easier question than copying from `modules/`.
 
 ## `reference/` — we read these. They are never on the include path.
 
+| [`soundcraft`](https://github.com/storytold/soundcraft), [`filmcraft`](https://github.com/storytold/filmcraft) | MIT OR Apache-2.0 | 16 MB, 61 MB | ✅ usable (the director, 2026-10-25) | The ArtCraft integration (ADR-0206, `docs/INTEROP-ARTCRAFT.md`): the control channels, SoundCraft's sample-indexed session model and bounce commands, FilmCraft's interchange and media watcher; and anything useful for ADI itself. Unpinned reference clones, read-only |
+
+
 All GPL-family. Reading them to understand a problem is normal engineering.
 Copying code from them is a licensing act with consequences, so the boundary is
 explicit.
