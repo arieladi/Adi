@@ -16581,8 +16581,8 @@ those are d5 to d7.
    one AAC codec, a JSON manifest)**, played by Traktor and by any Stems-aware player. Decisions:
    - **Exporting stems as an NI Stems file rises from P3 to P1, and importing one from P2 to P1**
      (amends ADR-0191 d4; the director, confirming: stem files exist and ADI supports them; "the only
-     possibility is CDJs with a laptop running stem-enabled software", which is what ADiJ is, with
-     stems on a deck and its Pro DJ Link source, both P2). The export is a job of
+     possibility is CDJs with a laptop running stem-enabled software", which is what ADiJ is: **stems on a deck
+     and the Pro DJ Link source both rise to P1**, his word of the same evening). The export is a job of
      the export queue: the stems come from the queue's stem jobs (d5), the AAC from the platform
      encoders on Windows and macOS and FFmpeg's libavcodec on Linux (ADR-0204 d5), the manifest
      from the track's metadata; the Visual Story Director's Level 2 uses the same stem set.
