@@ -38,11 +38,12 @@ The drone (qwen on the 1070 and the A2000) keeps summarising files and manuals; 
 
 Phase A, then phase B/C/D of `BUILD-BRIEF.md`, with the rulings of 25 October applied:
 
-1. **64-bit end to end** (ADR-0207 d2, the director's choice): the sample type behind
-   `AudioIo`/`NodeIo`, the nodes, the hosts (VST3 `kSample64`, CLAP 64-bit ports), the Pd tier
-   (`PD_FLOATSIZE=64`), the native devices in double; a 32/64 Processing Precision switch on the
-   Audio page, default 64; double summing at every mix point first, with Live's Fact Sheet
-   cancellation case as the test. Several PRs: the seam, the graph, each host, the Pd tier.
+1. **Precision** (ADR-0207 d2): first **64-bit summing at every mix point** with 32-bit processing,
+   Live's scheme, with Live's Fact Sheet cancellation case as the test; then the **64-bit end to end
+   mode** behind a Processing Precision switch on the Audio page (32 by default, 64 optional): the
+   sample type behind `AudioIo`/`NodeIo`, the nodes, the hosts (VST3 `kSample64`, CLAP 64-bit ports),
+   the Pd tier (`PD_FLOATSIZE=64`), the native devices in double. Several PRs: the summing, the seam,
+   the graph, each host, the Pd tier.
 2. **Sends and returns play** (ADR-0203 d3): the planner, compensation across sends, the Live loop
    allowed and every other refused, Pre/Post per return, Enable Send, Solo in Place, the three tap
    points, ADI's sends into any track and a pan on a send; step 6 closes.
@@ -90,7 +91,7 @@ Phase A, then phase B/C/D of `BUILD-BRIEF.md`, with the rulings of 25 October ap
 
 | Gate | When | What he does |
 |---|---|---|
-| Rust toolchain on adi-ubuntu for the FilmCraft work | now | "yes" (one install: rustup; the box already has the compilers) |
+| Rust toolchain on adi-ubuntu for the FilmCraft work | approved 2026-10-25 | the box has 8 GB of RAM and a 3rd-gen i5 with its iGPU; builds are slow but unattended (`CARGO_BUILD_JOBS=2`, the target dir on its disk); no discrete GPU needed (Mesa's software Vulkan, as FilmCraft's own CI) |
 | Open the FilmCraft PR | when the clones lane reports PR 1 green on Linux | "go", then the PR is opened from his GitHub account |
 | ADI-Q / ADI-L hand-over | when Codex calls each ready | run the measurement round himself against Pro-Q 4 / Pro-L 2 on his machine, say "accepted" |
 | The first window | when the engine lane reports step 7.2 merged | open it, say what is wrong |

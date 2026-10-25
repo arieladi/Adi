@@ -133,7 +133,7 @@ signed. win measures `main` and updates the README count after each merge.
 
 ### Phase A — close step 6: sends and returns play (P0)
 
-0. 64-bit end to end (ADR-0207 d2 closed the choice): first the double summing at every mix point (ADR-0205 d6), `Graph::accumulate` and every other sum
+0. Precision (ADR-0207 d2): Live's scheme by default — first the double summing at every mix point (ADR-0205 d6), `Graph::accumulate` and every other sum
    accumulate in double and convert once; the Fact Sheet's cancellation case as a test. **The
    processing precision itself is the director's open choice (ADR-0205 d10)**: if he takes 64-bit
    end to end (win's recommendation), the sample type is templated through `AudioIo`/`NodeIo`, the
