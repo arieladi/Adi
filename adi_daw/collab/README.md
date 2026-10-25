@@ -246,6 +246,7 @@ subject, say so in your log instead of writing it twice.
 | 0203 | win | `win/v1.0-rulings` | the director's rulings on Master Reference v1.0: the standing rule (Live's way, additions first-class), sends and returns back, no added delay, history, Loudness Drive, freeze, the defaults, licensing closed (AGPLv3) (director) | used |
 | 0204 | win | `win/adr-0204` | the director's rulings on v1.0: the channel EQ is his Pro-Q 4 clone and ZL leaves; one installer with tiers; measurement clones welcome; the document's shape; every open item closed (director) | used |
 | 0205 | win | `win/adr-0205-visual-story` | the Export Page's AI Visual Story Director and the sharded `.adiviz` telemetry bundle, approved as specified; stem jobs and NI Stems export P1; the Export page with Cubase's and REAPER's abilities; the engine layer copies whoever does it best (precision back to the director); an AI companion noted (director) | used |
+| 0206 | win | `win/adr-0206-artcraft` | interoperability with the storytold ArtCraft suite: a converter plus a client of the control API; the exact time base and a schema reservation P1; the bridge P2; what waits on storytold P3 (director's request; the repositories read first) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

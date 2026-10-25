@@ -191,6 +191,10 @@ In this order unless a dependency says otherwise:
 7b. The installer with tiers (ADR-0204 d2): base · + tools · + ADI plug-ins · + local AI · + AI on
 7c. The export queue with stem jobs (ADR-0071, P1 by ADR-0205 d5): one pass renders the ticked
 7d. NI Stems export (`.stem.mp4`) as a queue job, P1 (ADR-0205 d8); the Export page's Cubase + REAPER
+7e. (phase F) The ArtCraft bridge (ADR-0206 d4): a surface-class client of the control API paired like
+   a surface, with a transport subscription on the API; Send to ADI through the OTIO/AAF converters (P2);
+   Return to FilmCraft as an After Export action; ADI as transport master. P3 waits on storytold
+   (`docs/INTEROP-ARTCRAFT.md` §8).
    parity set (ADR-0205 d9), the P1 part with the queue, the P2 part in phase F.
    sources; the `.adiviz` Visual Story Director rides on it at P2 (ADR-0205, `docs/EXPORT-VISUAL-STORY.md`).
    another machine; Windows first, the other two systems with Phase E.
@@ -213,6 +217,11 @@ In this order unless a dependency says otherwise:
 17. Range commands (cut, copy, delete, silence); ripple edit; take lanes and comping; the hitpoint
     detector serving slicing, Audio Alignment (P2) and tempo detection.
 18. Templates in the User Library; Collect and Export to ZIP (built) beside Collect All and Save.
+19. The exact time-base converter (ADR-0206 d3): one pure component in the time library,
+    `units_per_second` (FilmCraft's 254,016,000,000; samples for SoundCraft) ↔ frames, nanoseconds,
+    musical ticks, with the range check; tests from `docs/INTEROP-ARTCRAFT.md` §3.
+20. The schema reservation `external_sessions` + `external_links` (ADR-0206 d3) as an additive minor
+    of its own (ADR-0144), separate from the `project.sampleRate` default change.
 
 ### Phase E — Mac and Linux, immediately (ADR-0203 d23)
 
@@ -261,6 +270,8 @@ registry default that says "once measured" changes on the reading, as an amendme
 - The AI companion (ADR-0205 d7): a direction with no priority until the director rules.
 - Processing precision: the director chooses between 64-bit end to end (Cubase's switch, REAPER's default; recommended) and Live's scheme (ADR-0205 d10); the double summing is built either way.
 - A stem container CDJs read from USB: none exists; AWAITING row 17 (ADR-0205 d8).
+- ArtCraft: FilmCraft's `--control 0` behaviour, whether `file.importAaf` can target an existing sequence, EffectCraft's command set (unverified; read when phase F starts); whether the director proposes `events.subscribe` upstream (ADR-0206 d5).
+- `files.sampleEditorOpens` default → `inPlace` (Live's way; ADR-0206 d6) with the next registry PR, together with the `record.warpDetectTempoChanges` help fix.
   measurement-based and are never re-questioned (ADR-0204 d3).
 - The registry help of `record.warpDetectTempoChanges` cites Live 12 manual 9.2.3; the sentence is
   in 9.2.1 (one-line fix with the next registry PR).
@@ -271,4 +282,6 @@ Commit to `main`; use the main checkout (`D:\Documents\GitHub\Adi`) for work; ed
 count line, another agent's log or claim rows; take an ADR number outside the reservation table;
 change a licence or ask the director about one; publish anything under `AdiGuard/` or `adi-vst/`;
 undo a listed deviation because Live differs; hide an addition in Settings; call a step "done" that
-the director has not signed as verified; add delay anywhere Live has none.
+the director has not signed as verified; add delay anywhere Live has none; open a second control
+server for any external application, or let the core know a Craft app exists (ADR-0206 d1); write a row
+into `external_sessions` or `external_links` except through their ops (ADR-0206 d3).

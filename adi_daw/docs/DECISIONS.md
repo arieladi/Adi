@@ -16655,3 +16655,105 @@ those are d5 to d7.
 | ADR-0168, ADR-0064 | extended: the agent writes the story manifest; the companion learns on-device |
 | ADR-0203 d1 | applied: 64-bit summing at every mix point, as Live; processing stays 32-bit float |
 | ADR-0203 d14 (D-07) | the render matrix is the Level 2 source selection |
+
+## ADR-0206 — Interoperability with the storytold ArtCraft suite (FilmCraft, SoundCraft, EffectCraft): a converter plus a client of ADI's own control API; an exact time base and a schema reservation at P1; the live bridge at P2; what waits on storytold at P3 — `DECIDED (direction)` (2026-10-25) — **DIRECTOR'S REQUEST; EXTENDS README COMMITMENT 7, ADR-0127 d7 (THE CONVERTERS), ADR-0181 (THE SURFACE CLIENT), ADR-0071 (THE EXPORT QUEUE), ADR-0205; ADDS A FORMAT GAP TO FEATURES §12**
+
+**The request.** The director wants live, bidirectional, "Dynamic Link"-style interoperability
+between ADI and the storytold ArtCraft suite ("FilmCraft and all the Adobe clones"), and asked
+whether it is P2 or P3, allowing an obvious engine prerequisite at P1. He also intends to contribute
+to FilmCraft upstream. A Gemini-written prompt proposed a C++ bridge with a bespoke socket, schema
+tables and an OTIO fallback. **Before anything was written, the repositories were read** (FilmCraft
+at `a504f3c5`, SoundCraft at `541096d2`, EffectCraft at `99190488`, PhotoCraft and craft-libs at
+their heads of 2026-10-25) and every claim of the prompt checked; the design that survives is
+`docs/INTEROP-ARTCRAFT.md`, which this entry adopts as direction. No code is written now: the
+project builds step by step, and the bridge needs the control API (step 9), the export queue and a
+window.
+
+### Decisions
+
+1. **The shape is a converter plus a client, as commitment 7 and ADR-0181 d2 already say.** Interop
+   is import and export through ADI's converter layer, and a *bridge* that is a client of ADI's own
+   loopback control API (ADR-0039; the surface client class of ADR-0181 d2, paired once, an op
+   allow-list on the user's grant) on one side and of the Craft app's loopback control channel on the
+   other. ADI's core never learns that FilmCraft exists (ADR-0181 d4). No second server, no socket in
+   the engine, nothing on the audio thread (which was never in question).
+
+2. **The facts the priorities rest on (all read in the repositories; the design note cites paths).**
+   FilmCraft and EffectCraft launch with `--control <port>` and speak JSON lines on `127.0.0.1`;
+   FilmCraft requires a 64-hex token in the environment and in every request, EffectCraft and
+   SoundCraft have no authentication. **All three channels are request/reply only: nothing pushes.**
+   FilmCraft inspects a sequence (`sequence.inspect`: tracks, clips with start/end/sourceIn/sourceOut
+   in ticks, gain, markers, playhead), mutates through `Session::execute(id, params)` (more than 650
+   commands, each its own undo step; `command_batch` is not one transaction), exports and imports
+   AAF, OMF, OTIO, FCP7 XML (`xml`), FCPXML and CMX EDL with WAV/AIFF audio, handles and rendered
+   effects, and re-reads a media file another application wrote over (`media.refreshChanged`, a file
+   watcher that names "a render from EffectCraft or After Effects"). Its time base is
+   `TICKS_PER_SECOND = 254,016,000,000` (= 2¹² · 3⁴ · 5⁶ · 7²), shared with EffectCraft; **SoundCraft
+   counts in absolute samples**, not ticks, and has no AAF or OMF yet. There is no live link between
+   any two Craft apps today. The Gemini prompt's corrections are recorded in the note's §1.1 so
+   nobody builds on them: its "CLI commands" are MCP tool names, `fcp7` is not a format token, the
+   tick base is not suite-wide, the token was omitted, and batches are not one undo.
+
+3. **P1, two cheap prerequisites, nothing else of this entry.**
+   - **The exact time-base converter:** one pure component in ADI's time library, parameterised by
+     `units_per_second`, giving units ↔ sample frames at any rate (exact: 254,016,000,000 divides
+     every rate from 8 kHz to 768 kHz), units ↔ nanoseconds (exact on the shared 125 ns = 31,752-tick
+     grid, under 0.5 ns otherwise), musical ticks through the tempo map (rounded, under 2 ps), and a
+     range check against FilmCraft's `Tick::MAX`. Integer arithmetic, no floating point, tests from
+     the note's tables.
+   - **The schema reservation:** two whole tables, `external_sessions` and `external_links` (names
+     provisional), in an additive schema minor under ADR-0144 (not bundled with the
+     `project.sampleRate` default change, which takes ADR-0144 d3's own mechanism). A link row keeps
+     the remote's ticks **verbatim** beside ADI's placement, so round trips are exact whatever ADI
+     rounded. Nothing writes them until the bridge exists (P2), so no undo can lose one.
+
+4. **P2, the bridge, four parts, each first-class where a user looks for it (ADR-0203 d2):**
+   - **Attach** ("Link ArtCraft app…" in the File menu): launch or find the app with its control port
+     and token, read its sequence, write the `external_sessions` row through `external.attach`.
+   - **Send to ADI:** FilmCraft's AAF (separate 24-bit WAV, handles, rendered effects) or OTIO plus
+     media through ADI's converters; media by BLAKE3; clip gain to event volume (ADR-0115); the video
+     mixdown as Live's video clip; import with no warp (ADR-0132 d6); an `external_links` row per clip.
+   - **Return to FilmCraft:** an After Export action on the Export page (ADR-0205 d9): the ticked
+     sources render over the files FilmCraft's linked clips reference, then `media.refreshChanged`;
+     the cut updates without a re-import. A re-conform goes back as AAF or OTIO into a new sequence
+     (merging is FilmCraft's to add). The user presses render (ADR-0071 d3).
+   - **Transport, ADI as master:** a transport subscription on ADI's control API (position, state,
+     tempo, loop; surfaces and Link need it too) drives FilmCraft's `ui.playback` and `playhead.set`;
+     frame resolution, re-located during play.
+   - With it at P2: **OTIO and AAF import and export** in the converter layer (useful without the
+     bridge; the industry's handoff) and **Live's video clips and Video Window** (Live 12 manual
+     chapter 27) as the picture side — the last is **win's placement, to strike if wrong**.
+
+5. **P3, what waits on storytold or is long tail, named so nobody builds around its absence:** ADI
+   following FilmCraft's transport (only a poll of `sequence.inspect` at ~30 Hz with a flywheel,
+   MTC-class) until FilmCraft gains a push channel (an `events.subscribe` with a transport stream is
+   the one upstream change that would move this to P2 without redesign; proposing it is the
+   director's call, with his contributions, and no maintainer is contacted before his go);
+   sample-locked sync or a shared clock; frames streamed in; merging a returned timeline into an
+   existing FilmCraft sequence; OMF read; a SoundCraft bounce-back; SoundCraft AAF/OMF; EffectCraft as
+   a consumer of `.adiviz` (ADR-0205), whose command set was not read.
+
+6. **What is not done.** SoundCraft is not ADI's external Sample Editor: Live's Edit button (manual
+   8.4.3) opens the sample in an editor that writes it back in place, and SoundCraft, a Pro Tools
+   clone, writes nothing back; ADI's default for `files.sampleEditorOpens` is therefore *in place*,
+   as Live, with "copy" as ADI's addition from REAPER (the registry's text is corrected with the
+   next registry PR). PhotoCraft and the other Craft apps have no audio or timeline role.
+
+7. **What follows in the repository.** `docs/INTEROP-ARTCRAFT.md` (the design); FEATURES.md rows
+   (§1 the converter, §9 the bridge, §8 the converters, §4 video clips, §12 the reserved tables as a
+   format gap); BUILD-BRIEF phase D items for the two P1 pieces, phase F for the bridge, §8 the open
+   points, §9 the don'ts; `collab/README.md` reserves 0206. The Master Reference's v1.2 carries it
+   in sections 9.5 and 11, beside AudioGridder.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| README commitment 7 | applied: AAF and OTIO join `.dawproject`, MIDI and stems as converter paths (d4) |
+| ADR-0127 d7 | extended: OTIO and AAF converters at P2, OMF read P3 (d4, d5) |
+| ADR-0181 d2, d4 | applied: the bridge is a surface-class client on its own grant; the core knows no Craft app (d1) |
+| ADR-0071 d3 | applied: Return to FilmCraft is an export job the user starts (d4) |
+| ADR-0205 d9 | extended: an After Export action "Return to FilmCraft" (d4) |
+| ADR-0144 | applied: two whole tables in an additive minor; the sampleRate default is separate (d3) |
+| FEATURES §12 | a new format gap: the reserved tables (d3) |
+| `files.sampleEditorOpens` | the default is in place, as Live; copy is the addition (d6) |
