@@ -41,7 +41,7 @@ these; it never contradicts them on purpose.
 
 1. **The standing rule (ADR-0203 d1).** Always the Ableton way unless Live lacks the ability, in
    which case ADI adds. Never do something Live does in a different way. Read Live's behaviour in
-   the manual text (`reference/DOCS/_text/Ableton_live12/`, 41 chapter files) or measure it; never
+   the manual text (`reference/DOCS/_text/Ableton_live12/`, 61 chapter files) or measure it; never
    recall it from memory. Label every measurement with the Live version (the director's Mac has
    Live 11; Live 12 is coming to his PC).
 2. **Additions are first-class (ADR-0203 d2).** An ability Live lacks is shown where a user looks
