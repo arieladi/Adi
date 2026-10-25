@@ -41,7 +41,7 @@ these; it never contradicts them on purpose.
 
 1. **The standing rule (ADR-0203 d1).** Always the Ableton way unless Live lacks the ability, in
    which case ADI adds. Never do something Live does in a different way. Read Live's behaviour in
-   the manual text (`reference/DOCS/_text/Ableton_live12/`, 41 chapter files) or measure it; never
+   the manual text (`reference/DOCS/_text/Ableton_live12/`, 61 chapter files) or measure it; never
    recall it from memory. Label every measurement with the Live version (the director's Mac has
    Live 11; Live 12 is coming to his PC).
 2. **Additions are first-class (ADR-0203 d2).** An ability Live lacks is shown where a user looks
@@ -132,6 +132,13 @@ signed. win measures `main` and updates the README count after each merge.
 
 ### Phase A — close step 6: sends and returns play (P0)
 
+0. 64-bit summing at every mix point (ADR-0205 d6): `Graph::accumulate` and every other sum
+   accumulate in double and convert once; the Fact Sheet's cancellation case as a test. **The
+   processing precision itself is the director's open choice (ADR-0205 d10)**: if he takes 64-bit
+   end to end (win's recommendation), the sample type is templated through `AudioIo`/`NodeIo`, the
+   nodes, the hosts and the Pd tier (`PD_FLOATSIZE=64`) in this phase, with a 32/64 switch on the
+   Audio page; do the double summing first in either case.
+
 1. The planner: send rows planned, delay-compensated, the Live loop allowed, all other loops refused
    (test: a ring of two returns is refused; a return's self-send plays with measured latency).
 2. Pre/Post per return; Enable Send / Enable All Sends; a new send fully down (until measured).
@@ -182,6 +189,10 @@ In this order unless a dependency says otherwise:
    all (ADR-0204 d1), once the director hands over the two clones; until then both slots exist and
    are empty.
 7b. The installer with tiers (ADR-0204 d2): base · + tools · + ADI plug-ins · + local AI · + AI on
+7c. The export queue with stem jobs (ADR-0071, P1 by ADR-0205 d5): one pass renders the ticked
+7d. NI Stems export (`.stem.mp4`) as a queue job, P1 (ADR-0205 d8); the Export page's Cubase + REAPER
+   parity set (ADR-0205 d9), the P1 part with the queue, the P2 part in phase F.
+   sources; the `.adiviz` Visual Story Director rides on it at P2 (ADR-0205, `docs/EXPORT-VISUAL-STORY.md`).
    another machine; Windows first, the other two systems with Phase E.
 8. Freeze (track; Freeze All Channels; Freeze Group with its warning), Bounce in Place, Bounce to
    New Track; renders placed with Warp off; freeze fingerprint.
@@ -246,6 +257,10 @@ registry default that says "once measured" changes on the reading, as an amendme
 - The Vital fork's folder (`adi-vst/vital` → `adi-vital/vital`), outside this project.
 - The director's macro device file, for matching D-06's summing exactly.
 - The director's clones ADI-Q, ADI-L, ADI Still and ADI Prism: their hand-over dates; they are
+- The per-scene chunk schema (File 2) of `docs/EXPORT-VISUAL-STORY.md`, to be supplied by the director.
+- The AI companion (ADR-0205 d7): a direction with no priority until the director rules.
+- Processing precision: the director chooses between 64-bit end to end (Cubase's switch, REAPER's default; recommended) and Live's scheme (ADR-0205 d10); the double summing is built either way.
+- A stem container CDJs read from USB: none exists; AWAITING row 17 (ADR-0205 d8).
   measurement-based and are never re-questioned (ADR-0204 d3).
 - The registry help of `record.warpDetectTempoChanges` cites Live 12 manual 9.2.3; the sentence is
   in 9.2.1 (one-line fix with the next registry PR).
