@@ -132,6 +132,9 @@ signed. win measures `main` and updates the README count after each merge.
 
 ### Phase A — close step 6: sends and returns play (P0)
 
+0. 64-bit summing at every mix point (ADR-0205 d6): `Graph::accumulate` and every other sum
+   accumulate in double and convert once; the Fact Sheet's cancellation case as a test.
+
 1. The planner: send rows planned, delay-compensated, the Live loop allowed, all other loops refused
    (test: a ring of two returns is refused; a return's self-send plays with measured latency).
 2. Pre/Post per return; Enable Send / Enable All Sends; a new send fully down (until measured).
@@ -182,6 +185,8 @@ In this order unless a dependency says otherwise:
    all (ADR-0204 d1), once the director hands over the two clones; until then both slots exist and
    are empty.
 7b. The installer with tiers (ADR-0204 d2): base · + tools · + ADI plug-ins · + local AI · + AI on
+7c. The export queue with stem jobs (ADR-0071, P1 by ADR-0205 d5): one pass renders the ticked
+   sources; the `.adiviz` Visual Story Director rides on it at P2 (ADR-0205, `docs/EXPORT-VISUAL-STORY.md`).
    another machine; Windows first, the other two systems with Phase E.
 8. Freeze (track; Freeze All Channels; Freeze Group with its warning), Bounce in Place, Bounce to
    New Track; renders placed with Warp off; freeze fingerprint.
@@ -246,6 +251,9 @@ registry default that says "once measured" changes on the reading, as an amendme
 - The Vital fork's folder (`adi-vst/vital` → `adi-vital/vital`), outside this project.
 - The director's macro device file, for matching D-06's summing exactly.
 - The director's clones ADI-Q, ADI-L, ADI Still and ADI Prism: their hand-over dates; they are
+- The per-scene chunk schema (File 2) of `docs/EXPORT-VISUAL-STORY.md`, to be supplied by the director.
+- The AI companion (ADR-0205 d7): a direction with no priority until the director rules.
+- "64-bit from the start" (end-to-end double): the director's open option; ADR-0205 d6 takes Live's scheme.
   measurement-based and are never re-questioned (ADR-0204 d3).
 - The registry help of `record.warpDetectTempoChanges` cites Live 12 manual 9.2.3; the sentence is
   in 9.2.1 (one-line fix with the next registry PR).

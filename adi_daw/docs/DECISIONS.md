@@ -16489,3 +16489,93 @@ if wrong when he reads v1.1.
 | ADR-0203 d8 | the DJ Filter shares the channel EQ's cores (d1) |
 | ADR-0203 d14 | amended: the EQ is on every channel, present but off; no compressor, no gate (d1) |
 | A6-23 (ADR-0203 d13) | the stores wish becomes P3 (d5) |
+
+## ADR-0205 — The Export Page's AI Visual Story Director and the sharded `.adiviz` scene telemetry bundle, approved as specified; stem export, 64-bit summing at mix points, and an AI companion that learns the user's habits — `DECIDED` (2026-10-25) — **DIRECTOR'S SPECIFICATION, APPROVED AS WRITTEN; EXTENDS ADR-0071 (THE EXPORT QUEUE), ADR-0175 (THE TAPS), ADR-0168 (THE AGENT); AMENDS THE GRAPH'S SUMMING UNDER ADR-0203 d1**
+
+**The director's specification.** On 2026-10-25 the director handed over a complete feature
+specification, status *Approved*: an Export-page "Visual Director" that binds natural-language
+visual rules to buses, stems and channels; a connected AI that writes a story arc and per-scene
+scripts; and a C++ offline render tap that writes per-frame DSP telemetry into a sharded
+`.adiviz/` bundle (`00_master_manifest.adiviz.json` plus ~8-second scene files), in three
+granularity tiers and for two video-generation modes. **It is recorded verbatim in
+`docs/EXPORT-VISUAL-STORY.md`**, which also explains how it hooks into the render pipeline; this
+entry records the decisions and does not repeat the specification. The same message asked for
+stem export, an AI companion that learns the user's habits, and the engine's numeric precision;
+those are d5 to d7.
+
+### Decisions
+
+1. **The specification is adopted as written** (`docs/EXPORT-VISUAL-STORY.md`): the sharded
+   ~8-second scene architecture; the three tiers `aggregation_plus_heroes`,
+   `stems_with_featured_channels`, `full_300ch_uncompressed` with every field they name; the two
+   modes `vanilla_full_scene_generation` and `zero_redraw_layered_vfx` with their conditioning
+   fields; the Visual Director UI and the connected-AI workflow; the master manifest schema
+   (`schema_version` `3.0-sharded`). One part did not reach the repository: the per-scene chunk
+   schema (File 2) was announced but not in the text received; the document says so and is amended
+   when the director supplies it. Nothing is designed around its absence.
+
+2. **It is built on the export pipeline that exists in design, not beside it.** The telemetry is
+   read from the strips' `ScopeTap`s (ADR-0175: post- and pre-fader, stamped with the time each
+   frame is heard, so every channel lines up with the master's timeline whatever its plug-ins'
+   latency) inside the export job's offline loop (ADR-0071 d2: the offline graph, never the audio
+   thread; `renderOffline`'s block loop generalised into the job runner). Samples are bucketed into
+   video frames (`sample_rate / fps`); the fields of Level 3 are computed per bucket (`rms`,
+   `true_peak` from `dsp::TruePeakMeter`, `crest_factor`, `stereo_width`, the seven bands,
+   `spectral_centroid`, `spectral_flux`, `pitch_hz`, `onset_velocity` from the hitpoint detector of
+   ADR-0176 d4, `active_midi_notes` from the players' held notes). Level 2's stems are the queue's
+   own sources (the tracks, groups and master ticked in the render matrix, ADR-0203 d14); Level
+   1's Visual Buses are telemetry-only sums of member taps and route no audio; featured children
+   and heroes are the same tap read twice. **Audio stems and telemetry come out of one pass**, and
+   a scene file closes as the pass crosses its last bar, so a 500 MB job holds one scene in memory.
+
+3. **The story director is the agent** (ADR-0168), at the Propose tier: before the pass it reads
+   the project through the agent's view of it (the projection and the ops; ADR-0010: no render
+   reads the SQLite file), with the user's rule bindings from the Export page, and writes the
+   manifest and the scene scripts; the user reviews them as he reviews a queue and **presses
+   render** (ADR-0071 d3: files on disk have no undo). The rule bindings are job state (ADR-0071
+   d1), kept with the project's export presets, never a project op: they change no sound.
+
+4. **Priority and placement — win's, to strike if wrong:** the `.adiviz` exporter is **P2**, with
+   the export queue and the render matrix it rides on, a first-class addition on the Export page
+   (nothing like it exists in Live). Its FEATURES row sits with the export rows; its settings
+   (tier, chunk length in bars or seconds, FPS 24/30/60) sit on the Export page.
+
+5. **Stem export.** The director asked for it again; it is the export queue of ADR-0071 (a job per
+   source: track, group, region, master; wet or dry; through the master or not; wildcards) plus
+   the render matrix (ADR-0203 d14, D-07). **win's placement, to strike if wrong: the queue and its
+   stem jobs rise from P2 to P1**, because the Visual Story Director, the bounce commands and the
+   LUFS export all stand on it; the matrix's grid UI stays P2. The naming template is the
+   registry's `{project} - {track}` form (ADR-0071 wrote `$track`; one syntax, the braces).
+
+6. **Numeric precision: Live's way, decided under the standing rule (ADR-0203 d1).** Live
+   processes in 32-bit float and sums in 64-bit double at every single mix point (Live 12 Audio
+   Fact Sheet 38.2.4). ADI's graph today processes in 32-bit float **and sums in 32-bit float**
+   (`Graph::accumulate`, `d[i] += s[i]`); the console flavours compute in double inside. So: **every
+   mix point in the graph (clip sums, track inputs, group and master sums, send sums, the sidechain
+   sums) accumulates in double and converts once**; device processing stays 32-bit float. A small
+   engine change, phase A; a test proves the Fact Sheet's own case (pairs of inverted 24-bit files
+   summed many times cancel to zero). **End-to-end 64-bit ("64-bit from the start") is the
+   director's option, not taken by this entry:** it would double memory bandwidth and halve SIMD
+   width across 300 channels for no audible gain over Live's scheme, most third-party plug-ins
+   process float anyway, and libpd is float unless rebuilt (`PD_FLOATSIZE=64`); the buffer type is
+   kept behind the `AudioIo`/`NodeIo` seam so the option stays open.
+
+7. **An AI companion that learns the user's habits — noted, to be ruled.** The director's words:
+   "a companion that can learn what I do and help with repeated stuff and suggest to complete me."
+   What exists to build it on: every change is a typed, attributed op (ADR-0003), so the op log is
+   the record of what he does; the agent (ADR-0168) proposes through the same ops (Propose tier,
+   one undo); the interaction logger (PR #220) records Live sessions for the parity work and is a
+   model of what to capture. The shape win proposes for his ruling: an on-device model of repeated
+   sequences (the last N ops as a pattern), a non-modal suggestion that offers the completion as a
+   Propose changeset, learning that never leaves the machine (ADR-0064's offline rule), a switch
+   off by default until he asks. A FEATURES row carries it as a direction with no priority yet.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0071 | extended: the Visual Story Director is a job on the queue; the telemetry pass shares the stems' pass; stem jobs P1 (win's placement) |
+| ADR-0175 | extended: the taps feed the telemetry exporter offline |
+| ADR-0168, ADR-0064 | extended: the agent writes the story manifest; the companion learns on-device |
+| ADR-0203 d1 | applied: 64-bit summing at every mix point, as Live; processing stays 32-bit float |
+| ADR-0203 d14 (D-07) | the render matrix is the Level 2 source selection |
