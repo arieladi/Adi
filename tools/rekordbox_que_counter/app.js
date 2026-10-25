@@ -1,9 +1,13 @@
 /* Rekordbox Cue Counter v4 — server-side auth
    -------------------------------------------
    - Times: true time arithmetic in tenths of a second (see cuemath.js).
-   - SAVING "just works" with zero setup via the sync relay (config.syncUrl,
-     a Cloudflare Worker holding the GitHub token; see relay-worker.js). A
-     device GitHub token is still an optional fallback for list I/O.
+   - SAVING is automatic — no Save button: each list autosaves half a minute
+     after a change (see "autosave"), never over another device's newer save,
+     with zero setup via the sync relay
+     (config.syncUrl, a Cloudflare Worker holding the GitHub token; see
+     relay-worker.js). A device GitHub token is still an optional fallback.
+   - UNDO / REDO: per list, 2000 steps each way, kept on this device across
+     reloads (IndexedDB; see "undo / redo").
    - AUTH is server-side: the relay/Worker holds the user registry (usernames
      + salted hashes) in private Cloudflare KV. The browser NEVER sees a hash.
      Login, the public delete password, and admin user-management are all
@@ -37,7 +41,7 @@ const SAFE_USER = /^[a-z0-9][a-z0-9-]{0,19}$/;
 
 const LSK = {
   store: 'rqc.store.v2', user: 'rqc.user.v2', theme: 'rqc.theme.v2',
-  token: 'rqc.ghtoken.v3', config: 'rqc.config.v1'
+  token: 'rqc.ghtoken.v3', config: 'rqc.config.v1', histStale: 'rqc.histstale.v1'
 };
 const SSK_SESSION = 'rqc.session.v4';
 
@@ -144,7 +148,7 @@ function saveSession() {
 
 /* ---------------- DOM handles ---------------- */
 const $ = id => document.getElementById(id);
-const rowsEl = $('rows'), listSelect = $('listSelect'), userBtn = $('userBtn'), saveBtn = $('btnSave');
+const rowsEl = $('rows'), listSelect = $('listSelect'), userBtn = $('userBtn');
 const sumTracks = $('sumTracks'), sumClock = $('sumClock'), sumStatus = $('sumStatus');
 const sumRange = $('sumRange'), rangeTime = $('rangeTime'), rangeInfo = $('rangeInfo');
 const rowsWrap = $('rowsWrap'), theadWrap = $('theadWrap');
@@ -215,6 +219,13 @@ function renderSelect() {
   }
   listSelect.value = w.current || '';
 }
+// one list's ● in the select, without rebuilding it (an autosave may land while it is open)
+function selDot(file) {
+  const L = ws().lists[file], o = [...listSelect.options].find(x => x.value === file);
+  if (!L || !o) return;
+  const t = (L.dirty ? '● ' : '') + L.name;
+  if (o.textContent !== t) o.textContent = t;
+}
 
 function rowTemplate(i, t) {
   const row = document.createElement('div');
@@ -231,9 +242,8 @@ function rowTemplate(i, t) {
     `<label class="f cout"><span>Cue out</span><input class="cue co" inputmode="decimal" placeholder="6:10.2" enterkeyhint="next"></label>` +
     `<div class="f play"><span>Play Time</span><b>—</b></div>` +
     `<div class="f stime"><span>Set time</span><b>—</b></div>` +
-    `<div class="f mark"><span>Start/End</span>` +
-    `<button type="button" class="rb mk ms" title="Mark as the track the set starts with" aria-label="Mark as set start">S</button>` +
-    `<button type="button" class="rb mk me" title="Mark as the track the set ends with" aria-label="Mark as set end">E</button>` +
+    `<div class="f mark"><span>Start</span>` +
+    `<button type="button" class="rb mk ms" title="Mark as the track the set starts with — then drag the end marker to where it ends" aria-label="Mark as set start">S</button>` +
     `</div>` +
     `<div class="f link"><span>Link</span>` +
     `<button type="button" class="rb pl" title="Open track link (YouTube search by default)" aria-label="Open track link">▶</button>` +
@@ -254,6 +264,7 @@ function rowTemplate(i, t) {
 
 function rebuildRows() {
   const L = cur();
+  if (emDrag) emDrop(true, true); // the rows it measured are going
   rowsEl.innerHTML = '';
   if (!L) { updateComputed(); sheetSync(); return; }
   L.tracks.forEach((t, i) => rowsEl.appendChild(rowTemplate(i, t)));
@@ -266,8 +277,9 @@ function updateComputed() {
   if (!L) {
     sumTracks.textContent = '0';
     sumClock.textContent = '0:00:00';
-    saveBtn.classList.remove('dirty');
+    sumRange.hidden = true;
     phoneComputed(null);
+    emPlace(null);
     return;
   }
   const res = computeRows(L.tracks);
@@ -287,43 +299,47 @@ function updateComputed() {
   const cum = res.length ? res[res.length - 1].cum : 0;
   sumTracks.textContent = L.tracks.length;
   sumClock.textContent = fmtClock(cum);
-  saveBtn.classList.toggle('dirty', !!L.dirty);
-  updateRange(L, res);
+  const R = updateRange(L, res);
   phoneComputed(L, res);
+  emPlace(R, res); // last: it reads the layout the rest just wrote
 }
 
-// Marked range: S on the first track you plan to play, E on the last one.
-// Only one mark set -> the range runs to the end (or from the start) of the list.
+// Marked range: S on the first track you plan to play, then the end marker
+// (markEnd, set by dragging it) on the last one — none: the list's last track.
+// No S, no range. The end never goes above the S: one found there (a list from
+// elsewhere) counts as none. lo is the S, as si.
 function markedRange(tracks) {
-  const si = tracks.findIndex(t => t.markStart), ei = tracks.findIndex(t => t.markEnd);
-  if (si < 0 && ei < 0) return null;
-  let lo = si >= 0 ? si : 0, hi = ei >= 0 ? ei : tracks.length - 1;
-  if (lo > hi) [lo, hi] = [hi, lo];
-  return { lo, hi };
+  const si = tracks.findIndex(t => t.markStart); if (si < 0) return null;
+  const ei = tracks.findIndex(t => t.markEnd);
+  return { lo: si, hi: ei >= si ? ei : tracks.length - 1, si };
 }
+const rangeSpan = (res, R) => res[R.hi].cum - (R.lo ? res[R.lo - 1].cum : 0);
+const rangeTxt = R => { const n = R.hi - R.lo + 1; return `#${R.lo + 1} → #${R.hi + 1} · ${n} track${n === 1 ? '' : 's'}`; };
 function updateRange(L, res) {
   const R = markedRange(L.tracks), rows = rowsEl.children;
   for (let i = 0; i < rows.length && i < L.tracks.length; i++) {
-    const r = rows[i], t = L.tracks[i];
+    const r = rows[i], t = L.tracks[i], ms = r.querySelector('.ms');
     r.classList.toggle('inrange', !!R && i >= R.lo && i <= R.hi);
-    r.querySelector('.ms').classList.toggle('on', !!t.markStart);
-    r.querySelector('.me').classList.toggle('on', !!t.markEnd);
-    r.querySelector('.ms').setAttribute('aria-pressed', !!t.markStart);
-    r.querySelector('.me').setAttribute('aria-pressed', !!t.markEnd);
+    ms.classList.toggle('on', !!t.markStart);
+    ms.setAttribute('aria-pressed', !!t.markStart);
   }
   sumRange.hidden = !R;
-  if (!R) return;
-  const span = res[R.hi].cum - (R.lo ? res[R.lo - 1].cum : 0);
-  const n = R.hi - R.lo + 1;
-  rangeTime.textContent = fmtClock(span);
-  rangeInfo.textContent = `#${R.lo + 1} → #${R.hi + 1} · ${n} track${n === 1 ? '' : 's'}`;
+  if (R) { rangeTime.textContent = fmtClock(rangeSpan(res, R)); rangeInfo.textContent = rangeTxt(R); }
+  if (emDrag && emDrag.moved) emPaint(emDrag); // a drag's preview stays on screen, the S → E box's too
+  return R;
 }
-function toggleMark(i, kind) {
+// S on / off. One start per list; no start, no end — and a start put below the
+// end lets that end go (back to the last track)
+function toggleStart(i) {
   const L = cur(); const t = L && L.tracks[i]; if (!t) return;
   pushUndo();
-  const on = !t[kind];
-  for (const x of L.tracks) delete x[kind]; // one start and one end per list
-  if (on) t[kind] = true;
+  const on = !t.markStart;
+  for (const x of L.tracks) delete x.markStart;
+  if (on) {
+    t.markStart = true;
+    const ei = L.tracks.findIndex(x => x.markEnd);
+    if (ei >= 0 && ei < i) delete L.tracks[ei].markEnd;
+  } else for (const x of L.tracks) delete x.markEnd;
   markDirty();
   updateComputed();
 }
@@ -336,15 +352,22 @@ $('btnClearRange').onclick = () => {
 };
 
 function setStatus(text, cls) {
-  sumStatus.className = 'chip status' + (cls ? ' ' + cls : '');
-  sumStatus.firstElementChild.textContent = text;
+  const c = 'chip status' + (cls ? ' ' + cls : ''), b = sumStatus.firstElementChild;
+  if (sumStatus.className !== c) sumStatus.className = c;
+  if (b.textContent !== text) b.textContent = text; // aria-live: only real changes are read out
 }
+// the current list's autosave state (see "autosave")
 function setStatusAuto() {
   const L = cur();
   if (!L) return setStatus('—');
-  if (L.dirty) setStatus('Unsaved changes', 'dirty');
-  else if (L.remote) setStatus('Saved on GitHub', 'ok');
-  else setStatus('Local only');
+  if (!writable()) return setStatus('Local only');
+  if (!L.dirty) return L.remote ? setStatus('All changes saved', 'ok') : setStatus('Local only');
+  const a = autos.get(asKey(currentUserId(), ws().current));
+  if (!navigator.onLine || (a && a.offline)) return setStatus('Offline — kept on this device', 'warn');
+  if (a && a.e401) return setStatus(token ? 'Not saved — GitHub rejected the token' : 'Not saved — sync refused (401)', 'warn');
+  if (a && a.perm) return setStatus('Not saved — ' + a.perm, 'warn');
+  if (a && a.tries) return setStatus('Not saved yet — retrying', 'warn');
+  setStatus(a && a.busy ? 'Saving…' : 'Saving soon…');
 }
 
 function renderAll() {
@@ -358,6 +381,7 @@ function renderAll() {
 function markDirty() {
   const L = cur(); if (!L) return;
   if (!L.dirty) { L.dirty = true; renderSelect(); }
+  asBump(currentUserId(), ws().current); // autosave: this list, a few seconds on
   setStatusAuto();
   persistSoon();
 }
@@ -366,15 +390,24 @@ function markDirty() {
 // Per-list history of {name, tracks}. Snapshots are taken of the state
 // BEFORE a change: structural ops (add/delete/drag-move/mark/link/rename) snapshot
 // immediately, while typing is coalesced into a single burst so a word isn't
-// 5 undo steps. Histories are kept per list in memory for the whole page
-// session — saving or switching lists does NOT clear them.
+// 5 undo steps. Each list keeps HIST_MAX steps each way, from its first change
+// to its last, on this device across reloads and tab closes (IndexedDB, see
+// "history on disk"). Saving or switching lists does NOT clear them; deleting
+// the list does, and a new or duplicated list starts with an empty one.
+// Compact: a list's history interns every track's JSON once in its pool and a
+// snapshot is {name, ids} — a step of a 500-track list costs 500 ids plus the
+// tracks it changed, and a write only appends new steps and trims old ones.
 const undoBtn = $('btnUndo'), redoBtn = $('btnRedo');
-const HIST_MAX = 200; // snapshots kept per stack
-const histories = new Map(); // 'user/file' -> {undo:[], redo:[]} — lives until the tab closes
-let hist = { undo: [], redo: [] };
+const HIST_MAX = 2000; // snapshots kept per stack
+const histories = new Map(); // 'user/file' -> history (histNew), loaded from disk on first use
 let histKeyCur = null, typingBurst = false, typingTimer = null;
-const cloneTracks = ts => ts.map(t => ({ ...t }));
-const snapState = L => ({ name: L.name, tracks: cloneTracks(L.tracks) });
+const histNew = key => ({
+  key, undo: [], redo: [], // [{sid, name, ids}], oldest first
+  pool: new Map(), pid: new Map(), refs: new Map(), // id -> track JSON, JSON -> id, id -> uses
+  ready: false, mem: false, dead: false, // ready: loaded (undo / redo wait for it); mem: memory only
+  addS: new Map(), delS: new Set(), addP: new Set(), delP: new Set() // changes not yet on disk
+});
+let hist = histNew(null);
 const histKey = () => currentUserId() + '/' + (ws().current || '');
 function histSync() {
   const k = histKey();
@@ -382,20 +415,69 @@ function histSync() {
   endTyping();
   histKeyCur = k;
   let h = histories.get(k);
-  if (!h) { h = { undo: [], redo: [] }; histories.set(k, h); }
+  if (!h) { h = histNew(k); histories.set(k, h); histLoad(h); }
   hist = h;
 }
 function updateHistBtns() {
   histSync();
-  undoBtn.disabled = !(hist.undo.length || typingBurst);
-  redoBtn.disabled = !hist.redo.length;
-  shUndo.disabled = undoBtn.disabled; shRedo.disabled = redoBtn.disabled; // the phone sheet's copies
+  const ok = hist.ready, nu = hist.undo.length, nr = hist.redo.length;
+  undoBtn.disabled = !(ok && (nu || typingBurst));
+  redoBtn.disabled = !(ok && nr);
+  const tu = ok ? `Undo (${nu})` : 'Undo — loading history…', tr = ok ? `Redo (${nr})` : 'Redo — loading history…';
+  undoBtn.title = tu + ' · ⌘/Ctrl+Z'; redoBtn.title = tr + ' · ⌘/Ctrl+Shift+Z';
+  shUndo.title = tu; shRedo.title = tr; // the phone sheet's copies
+  shUndo.disabled = undoBtn.disabled; shRedo.disabled = redoBtn.disabled;
+}
+// a track's JSON into the pool (once), one more use of it. A pooled track's id
+// is a 52-bit hash of its JSON (two 32-bit passes) — a random one on a clash in
+// this tab, never a neighbour of it — and a snapshot's id is random, so two
+// tabs writing the same list's history can lose each other's steps, but never
+// point a step at the wrong track (an id another tab wrote names the same JSON).
+const hHash = j => {
+  let a = 0x811c9dc5, b = 0x1b873593;
+  for (let i = 0; i < j.length; i++) { const c = j.charCodeAt(i); a = Math.imul(a ^ c, 16777619); b = Math.imul(b ^ c, 0x5bd1e995); b ^= b >>> 15; }
+  return (a >>> 0) * 0x100000 + (b >>> 12) + 1;
+};
+function hIntern(h, j) {
+  let id = h.pid.get(j);
+  if (id === undefined) {
+    id = hHash(j);
+    while (h.pool.has(id)) id = Math.floor(Math.random() * 2 ** 52) + 1;
+    h.pid.set(j, id); h.pool.set(id, j); h.refs.set(id, 0);
+    h.delP.delete(id); h.addP.add(id);
+  }
+  h.refs.set(id, h.refs.get(id) + 1);
+  return id;
+}
+function hSnap(h, L) {
+  const s = { sid: Math.floor(Math.random() * 2 ** 52) + 1, name: L.name, ids: L.tracks.map(t => hIntern(h, JSON.stringify(t))) };
+  h.addS.set(s.sid, s);
+  return s;
+}
+// a snapshot leaves the history: its tracks are released, unused ones leave the pool
+function hDrop(h, s) {
+  if (!h.addS.delete(s.sid)) h.delS.add(s.sid);
+  for (const id of s.ids) {
+    const n = h.refs.get(id) - 1;
+    if (n > 0) { h.refs.set(id, n); continue; }
+    const j = h.pool.get(id);
+    if (h.pid.get(j) === id) h.pid.delete(j);
+    h.refs.delete(id); h.pool.delete(id);
+    if (!h.addP.delete(id)) h.delP.add(id);
+  }
+}
+const hTracks = (h, s) => s.ids.map(id => JSON.parse(h.pool.get(id)));
+function hPush(h, stack, s) {
+  stack.push(s);
+  while (stack.length > HIST_MAX) hDrop(h, stack.shift());
 }
 function pushSnap() {
   const L = cur(); if (!L) return false;
-  hist.undo.push(snapState(L));
-  if (hist.undo.length > HIST_MAX) hist.undo.shift();
+  const s = hSnap(hist, L); // before the redo steps go, so the tracks they share stay pooled
+  for (const r of hist.redo) hDrop(hist, r);
   hist.redo.length = 0;
+  hPush(hist, hist.undo, s);
+  histSave(hist);
   return true;
 }
 // Record the current (pre-change) state as an undo point — for structural ops
@@ -415,16 +497,33 @@ function beginTyping() {
 function endTyping() { typingBurst = false; clearTimeout(typingTimer); typingTimer = null; }
 function applyHist(from, to) {
   endTyping();
-  const L = cur(); if (!L || !from.length) return;
-  to.push(snapState(L));
-  if (to.length > HIST_MAX) to.shift();
+  const L = cur(); if (!L || !from.length || !hist.ready) return;
+  hPush(hist, to, hSnap(hist, L));
   const s = from.pop();
   L.name = s.name || L.name;
-  L.tracks = s.tracks;
+  L.tracks = hTracks(hist, s);
+  hDrop(hist, s);
+  histSave(hist);
   if (!L.tracks.length) L.tracks.push(blankTrack());
-  L.dirty = true;
-  renderSelect(); setStatusAuto(); persistSoon();
+  markDirty(); // -> autosave
+  renderSelect();
   rebuildRows(); updateHistBtns();
+}
+// a list replaced from outside (another device's version, by a refresh or a
+// save that found it): the state it replaces becomes an undo step of its own
+// and the redo steps go (they led to that one) — the first Undo reverts only
+// that. Its history loads first if need be (histMerge puts this step last).
+function histOutside(user, file, L) {
+  const k = asKey(user, file);
+  let h = histories.get(k);
+  if (!h) { h = histNew(k); histories.set(k, h); histLoad(h); }
+  if (h === hist) endTyping();
+  const s = hSnap(h, L);
+  for (const r of h.redo) hDrop(h, r);
+  h.redo.length = 0;
+  hPush(h, h.undo, s);
+  histSave(h);
+  if (h === hist) updateHistBtns();
 }
 function undo() { histSync(); applyHist(hist.undo, hist.redo); }
 function redo() { histSync(); applyHist(hist.redo, hist.undo); }
@@ -440,6 +539,187 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); redo();
   }
 });
+
+/* history on disk: IndexedDB 'rqc', store 'history'. Per list, the key
+   'user/file' holds {undo:[sid], redo:[sid]}, 'user/file#s<sid>' a snapshot
+   {s, n, ids} and 'user/file#p<id>' a pooled track {p, j}. A write puts only
+   what changed — new steps and tracks in, trimmed ones out — debounced, at once
+   when the page goes away, and committed straight off (no read first: a page
+   that is closing never runs a callback). What a write puts stays pending until
+   it is committed; a failed one reopens the database and goes again once. No
+   IndexedDB (private mode, blocked) or a second failure: the histories live in
+   memory, HIST_MAX steps all the same — and one that changed meanwhile is
+   marked stale (localStorage), so a later load drops its copy on disk instead
+   of offering steps that skip this session's changes. */
+let idbP = null, idbDb = null;
+const hRange = k => IDBKeyRange.bound(k + '#', k + '$', false, true); // every 'k#…' ('$' follows '#')
+function idb() {
+  if (!idbP) idbP = new Promise(res => {
+    let done = false;
+    const end = db => {
+      if (done) { if (db) db.close(); return; }
+      done = true; clearTimeout(t); idbDb = db;
+      if (!db) setTimeout(() => { if (!idbDb) idbP = null; }); // not this time: the next use tries again
+      res(db);
+    };
+    const t = setTimeout(() => end(null), 4000); // blocked by another tab's upgrade
+    try {
+      const rq = indexedDB.open('rqc', 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore('history');
+      rq.onsuccess = () => {
+        const db = rq.result, lost = () => { db.close(); if (idbDb === db) { idbDb = null; idbP = null; } }; // the next write reopens
+        db.onversionchange = lost; db.onclose = lost;
+        end(db);
+      };
+      rq.onerror = () => end(null);
+    } catch { end(null); }
+  });
+  return idbP;
+}
+// the lists whose copy on disk missed changes: k alone asks, on sets / clears
+function histStale(k, on) {
+  let s = [];
+  try { s = JSON.parse(localStorage.getItem(LSK.histStale)) || []; } catch { }
+  if (on === undefined || s.includes(k) === on) return s.includes(k);
+  try { localStorage.setItem(LSK.histStale, JSON.stringify(on ? s.concat(k) : s.filter(x => x !== k))); } catch { }
+  return on;
+}
+function histLoad(h) {
+  if (/\/$/.test(h.key)) { histMerge(h, null, null, true); return; } // no list
+  idb().then(db => {
+    if (!db) return histMerge(h, null, null, true);
+    if (histStale(h.key)) { // its copy on disk skips changes: it goes, the history starts empty
+      const tx = db.transaction('history', 'readwrite'), st = tx.objectStore('history');
+      st.delete(h.key); st.delete(hRange(h.key));
+      tx.oncomplete = () => { histStale(h.key, false); histMerge(h, null, null); };
+      tx.onabort = () => histMerge(h, null, null, true);
+      return;
+    }
+    const tx = db.transaction('history'), st = tx.objectStore('history');
+    const rm = st.get(h.key), rr = st.getAll(hRange(h.key));
+    tx.oncomplete = () => histMerge(h, rm.result, rr.result);
+    tx.onabort = () => histMerge(h, null, null, true);
+  }).catch(() => histMerge(h, null, null, true));
+}
+// the stored steps go first, then the ones taken while it loaded (re-pooled);
+// redo only survives when nothing was changed meanwhile. Steps whose tracks are
+// missing (another tab dropped them) are skipped, records nobody uses go.
+function histMerge(h, meta, recs, mem) {
+  if (h.dead || h.ready) return;
+  const pre = h.undo, tmp = h.pool;
+  Object.assign(h, histNew(h.key), { mem: !!mem });
+  if (meta && Array.isArray(meta.undo) && Array.isArray(recs)) {
+    const S = new Map();
+    for (const r of recs) {
+      if (!r) continue;
+      if (typeof r.j === 'string') { h.pool.set(r.p, r.j); h.pid.set(r.j, r.p); h.refs.set(r.p, 0); }
+      else if (Array.isArray(r.ids)) S.set(r.s, r);
+    }
+    const take = sids => {
+      const out = [];
+      for (const sid of sids || []) {
+        const r = S.get(sid);
+        if (r && r.ids.every(id => h.pool.has(id))) { out.push({ sid, name: r.n, ids: r.ids }); S.delete(sid); }
+      }
+      return out;
+    };
+    h.undo = take(meta.undo);
+    h.redo = pre.length ? [] : take(meta.redo);
+    for (const sid of S.keys()) h.delS.add(sid);
+    for (const s of h.undo.concat(h.redo)) for (const id of s.ids) h.refs.set(id, h.refs.get(id) + 1);
+    for (const [id, n] of h.refs) {
+      if (n) continue;
+      const j = h.pool.get(id);
+      if (h.pid.get(j) === id) h.pid.delete(j);
+      h.refs.delete(id); h.pool.delete(id); h.delP.add(id);
+    }
+  }
+  for (const s of pre) { // same objects, so a held reference (the delete toast's Undo) still matches
+    const js = s.ids.map(id => tmp.get(id));
+    s.ids = js.map(j => hIntern(h, j)); h.addS.set(s.sid, s);
+    hPush(h, h.undo, s);
+  }
+  h.ready = true;
+  if (h.addS.size || h.delS.size || h.addP.size || h.delP.size) histSave(h);
+  if (h === hist) updateHistBtns();
+}
+const histDirty = new Set();
+let histT = null;
+function histSave(h) {
+  if (!h.ready || h.dead) return;
+  if (h.mem) { histStale(h.key, true); return; } // a change the copy on disk will not have
+  histDirty.add(h);
+  if (!histT) histT = setTimeout(histFlush, 400);
+}
+// the histories that cannot be written: memory only from here (see above)
+function histMem(hs) { for (const h of hs) { h.mem = true; if (!h.dead) histStale(h.key, true); } }
+function histFlush(again) {
+  clearTimeout(histT); histT = null;
+  if (!histDirty.size) return;
+  if (!idbDb) { idb().then(db => { if (db) histFlush(again); else { histMem([...histDirty]); histDirty.clear(); } }); return; }
+  const hs = [...histDirty].filter(h => !h.dead && !h.mem), db = idbDb;
+  histDirty.clear();
+  // failed: the connection goes (the next use reopens it) and it all goes again once
+  const fail = e => {
+    console.warn('history not saved', e);
+    if (idbDb === db) { try { db.close(); } catch { } idbDb = null; idbP = null; }
+    if (again) histMem(hs); else { for (const h of hs) histDirty.add(h); histFlush(true); }
+  };
+  let tx = null;
+  const sent = [];
+  try {
+    tx = db.transaction('history', 'readwrite');
+    const st = tx.objectStore('history');
+    for (const h of hs) {
+      const k = h.key, p = { addS: new Map(h.addS), delS: [...h.delS], addP: [...h.addP], delP: [...h.delP] };
+      for (const sid of p.delS) st.delete(k + '#s' + sid);
+      for (const id of p.delP) st.delete(k + '#p' + id);
+      for (const [sid, s] of p.addS) st.put({ s: sid, n: s.name, ids: s.ids }, k + '#s' + sid);
+      for (const id of p.addP) st.put({ p: id, j: h.pool.get(id) }, k + '#p' + id);
+      st.put({ v: 1, undo: h.undo.map(s => s.sid), redo: h.redo.map(s => s.sid) }, k);
+      sent.push([h, p]);
+    }
+  } catch (e) { try { if (tx) tx.abort(); } catch { } fail(e); return; }
+  // committed: what it wrote is no longer pending (what changed since stays)
+  tx.oncomplete = () => {
+    for (const [h, p] of sent) {
+      for (const [sid, s] of p.addS) if (h.addS.get(sid) === s) h.addS.delete(sid);
+      for (const sid of p.delS) h.delS.delete(sid);
+      for (const id of p.addP) h.addP.delete(id);
+      for (const id of p.delP) h.delP.delete(id);
+    }
+  };
+  tx.onabort = () => fail(tx.error);
+  if (tx.commit) tx.commit();
+}
+// a list's history goes (list deleted) — or starts empty (new / duplicated list)
+function histDrop(k) {
+  const h = histories.get(k);
+  if (h) { h.dead = true; histories.delete(k); histDirty.delete(h); }
+  if (k === histKeyCur) histKeyCur = null;
+  const rm = db => {
+    try {
+      const tx = db.transaction('history', 'readwrite'), st = tx.objectStore('history');
+      st.delete(k); st.delete(hRange(k));
+      tx.oncomplete = () => { if (!histories.has(k) || !histories.get(k).mem) histStale(k, false); };
+      if (tx.commit) tx.commit();
+    } catch { }
+  };
+  if (idbDb) rm(idbDb); else idb().then(db => { if (db) rm(db); });
+}
+function histReset(k) { histDrop(k); const h = histNew(k); h.ready = true; histories.set(k, h); }
+// a list moves to another file (a name another device took first): its history
+// goes along — written again under the new key, the old one dropped
+function histMove(ko, kn) {
+  const h = histories.get(ko), cur = histKeyCur === ko;
+  histDrop(ko);
+  if (!h || !h.ready) { histReset(kn); return; }
+  Object.assign(h, { key: kn, dead: false, delS: new Set(), delP: new Set(), addP: new Set(h.pool.keys()) });
+  for (const s of h.undo.concat(h.redo)) h.addS.set(s.sid, s);
+  histories.set(kn, h);
+  if (cur) histKeyCur = kn;
+  histSave(h);
+}
 
 /* ---------------- track links ---------------- */
 function trackLink(t) {
@@ -514,11 +794,13 @@ rowsEl.addEventListener('click', e => {
   const L = cur(); if (!L) return;
   if (btn.classList.contains('pl')) { openTrackLink(i); return; }
   if (btn.classList.contains('pe')) { editTrackLink(i); return; }
-  if (btn.classList.contains('ms')) { toggleMark(i, 'markStart'); return; }
-  if (btn.classList.contains('me')) { toggleMark(i, 'markEnd'); return; }
+  if (btn.classList.contains('ms')) { toggleStart(i); return; }
   if (!btn.classList.contains('del')) return;
   pushUndo();
-  L.tracks.splice(i, 1);
+  const [t] = L.tracks.splice(i, 1);
+  // the end track goes: the end moves up a track (not above the S); the S goes: the end too
+  if (t.markStart) for (const x of L.tracks) delete x.markEnd;
+  else if (t.markEnd) { const si = L.tracks.findIndex(x => x.markStart); if (si >= 0 && i - 1 >= si) L.tracks[i - 1].markEnd = true; }
   if (!L.tracks.length) L.tracks.push(blankTrack());
   markDirty();
   rebuildRows();
@@ -542,10 +824,17 @@ function dragShift() {
     const s = d.from < to && j > d.from && j <= to ? -h : to < d.from && j >= to && j < d.from ? h : 0;
     rows[j].style.transform = s ? `translateY(${s}px)` : '';
   }
-  const last = d.tops.length - 1;
-  const top = Math.max(0, Math.min(y - d.grab, d.tops[last] + d.hs[last] - d.hs[d.from]));
+  const top = Math.max(0, Math.min(y - d.grab, d.max));
   d.row.style.transform = `translateY(${(top - d.tops[d.from]) / z}px)`;
+  emFollow(d.row, emStays(d));
 }
+// The end marker in a move's preview rides along with the end row — but a
+// track dropped right after the end row: under the end it set (markEnd) the
+// track lands below the marker's gap (dragSlot); with the end on the last track
+// (no markEnd) it becomes the new last one, the new end, and the marker stays
+// where it is, right under it.
+const emStays = d => d.from < d.to && d.to === d.dflt;
+const dragSlot = d => d.from < d.to ? d.tops[d.to] + d.hs[d.to] - d.hs[d.from] + (d.to === d.E ? d.G : 0) : d.tops[d.to];
 function dragTick() {
   if (!drag) return;
   const d = drag, edge = 60, topEdge = theadWrap.getBoundingClientRect().bottom;
@@ -555,10 +844,10 @@ function dragTick() {
   if (v) { scrollBy(0, v); dragShift(); }
   d.raf = requestAnimationFrame(dragTick);
 }
-function clearShifts() { for (const r of rowsEl.children) r.style.transform = ''; }
+function clearShifts() { for (const r of rowsEl.children) r.style.transform = ''; emFollow(null); }
 rowsEl.addEventListener('pointerdown', e => {
   const grip = e.target.closest('.grip');
-  if (!grip || e.button > 0 || drag) return;
+  if (!grip || e.button > 0 || drag || emDrag) return;
   const L = cur(), row = grip.closest('.row');
   if (!L || !row || L.tracks.length < 2) return;
   e.preventDefault();
@@ -566,12 +855,16 @@ rowsEl.addEventListener('pointerdown', e => {
   if (rowsEl.contains(document.activeElement)) document.activeElement.blur(); // a phone sheet field keeps its keyboard until the drag moves
   const base = rowsEl.getBoundingClientRect().top;
   const rects = [...rowsEl.children].map(r => r.getBoundingClientRect());
-  const from = +row.dataset.i;
+  const from = +row.dataset.i, R = markedRange(L.tracks), set = !!R && !!L.tracks[R.hi].markEnd;
   drag = {
     from, to: from, row, id: e.pointerId, y: e.clientY, y0: e.clientY, moved: false,
     tops: rects.map(r => r.top - base), hs: rects.map(r => r.height),
-    grab: e.clientY - rects[from].top, raf: 0
+    grab: e.clientY - rects[from].top, raf: 0,
+    E: set ? R.hi : -1, dflt: R && !set ? R.hi : -1, // the end row: set by the marker / the last track
+    G: endMark.hidden ? 0 : endMark.getBoundingClientRect().height // its gap
   };
+  const last = drag.tops.length - 1;
+  drag.max = drag.tops[last] + drag.hs[last] - drag.hs[from] + (drag.E === last ? drag.G : 0);
   row.classList.add('dragging');
 });
 window.addEventListener('pointermove', e => {
@@ -596,17 +889,248 @@ async function dragEnd(cancelled) {
   const L = cur(), t = L && L.tracks[d.from];
   if (cancelled || !d.moved || d.to === d.from || !t) { clearShifts(); return; }
   // park the row in its new slot while the confirm is open
-  const z = zoomF();
-  const slot = d.from < d.to ? d.tops[d.to] + d.hs[d.to] - d.hs[d.from] : d.tops[d.to];
-  d.row.style.transform = `translateY(${(slot - d.tops[d.from]) / z}px)`;
+  d.row.style.transform = `translateY(${(dragSlot(d) - d.tops[d.from]) / zoomF()}px)`;
+  emFollow(d.row, emStays(d));
   const name = (t.title || '').trim() || 'this track';
   const ok = await askConfirm('Move this track?', `Move “${name}” from #${d.from + 1} to #${d.to + 1}?`, 'OK', false);
   if (!ok || cur() !== L || L.tracks[d.from] !== t) { clearShifts(); return; }
+  // the marker drops the preview's offset at once — no slide in from it once the rows are rebuilt
+  endMark.style.transition = 'none'; emFollow(null, true); void endMark.offsetWidth; endMark.style.transition = '';
   pushUndo();
   L.tracks.splice(d.to, 0, L.tracks.splice(d.from, 1)[0]);
+  const si = L.tracks.findIndex(x => x.markStart), ei = L.tracks.findIndex(x => x.markEnd);
+  if (ei >= 0 && ei < si) delete L.tracks[ei].markEnd; // the end never above the S: back to the last track
   markDirty();
   rebuildRows();
 }
+
+/* ---------------- end marker ---------------- */
+// With a Start (S) marked, the END MARKER sits right after the end track: an
+// accent line across the list with a pill on it — the time from the start of
+// the S track to the end of the end track, and "#3 → #10 · 8 tracks". It has
+// a space of its own: the end row gets a gap under it (.endgap) and the marker,
+// which lives outside #rows, is laid over that gap. Drag the pill (mouse, pen,
+// touch: see the hold below) and it lifts off and follows the pointer: the end
+// snaps to the track boundary nearest to it (a line shows where), the rows from
+// the S down to it light up and the pill and the S → E box count along;
+// letting go sets markEnd there as one undo step (and autosaves); the rows the
+// gap moved past slide into place. It never goes above the S; Escape or a
+// cancelled pointer puts it back. Focused it is a slider: ↑ / ↓ one track,
+// Home the S track, End the last one.
+const endMark = $('endMark'), emPill = $('emPill'), emTime = $('emTime'), emInfo = $('emInfo'), emSnap = $('emSnap');
+let emDrag = null, emMoving = null, emStay = false, emKeyT = null, emKeySnap = null;
+const emRow = () => rowsEl.querySelector('.endgap');
+const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+// the pill's text and slider values, for the range R
+function emLabel(R, res) {
+  const t = fmtClock(rangeSpan(res, R)), info = rangeTxt(R);
+  if (emTime.textContent !== t) emTime.textContent = t;
+  if (emInfo.textContent !== info) emInfo.textContent = info;
+  emPill.setAttribute('aria-valuemin', R.si + 1);
+  emPill.setAttribute('aria-valuemax', res.length);
+  emPill.setAttribute('aria-valuenow', R.hi + 1);
+  emPill.setAttribute('aria-valuetext', `End at track ${R.hi + 1}, ${t} from track ${R.lo + 1}`);
+}
+// after any change to the rows (updateComputed): the gap under the end row, the marker over it
+function emPlace(R, res) {
+  const r = R ? rowsEl.children[R.hi] : null;
+  for (const x of rowsEl.querySelectorAll('.endgap')) if (x !== r) x.classList.remove('endgap');
+  if (!r) { endMark.hidden = true; return; }
+  r.classList.add('endgap');
+  if (!emDrag || !emDrag.moved) emLabel(R, res);
+  endMark.hidden = false;
+  emPos();
+}
+// rows change height (typing, a resize, the sizes, the phone layout): the marker stays on its gap
+function emPos() {
+  const r = emRow(); if (!r || endMark.hidden) return;
+  const top = r.offsetTop + r.offsetHeight + 'px'; // main is the offsetParent
+  if (endMark.style.top !== top) endMark.style.top = top;
+  emFollow(emMoving, emStay);
+}
+if (window.ResizeObserver) { const ro = new ResizeObserver(() => emPos()); ro.observe(rowsEl); ro.observe(theadWrap); }
+addEventListener('resize', () => emPos());
+// a row drag's preview slides the rows aside: the marker goes along with its
+// row (stay: it stays put, see emStays), out of sight while that row is the one being moved
+function emFollow(moving, stay) {
+  emMoving = moving; emStay = !!stay;
+  const r = emRow(), tf = (!emStay && r && r.style.transform) || '';
+  if (endMark.style.transform !== tf) endMark.style.transform = tf;
+  endMark.classList.toggle('away', !!r && r === moving);
+}
+
+// A touch grabs the pill by its ⇕ at once, anywhere else on it after a short
+// hold (it lifts then): a swipe that starts on the pill scrolls the list, as
+// it does anywhere else, and never moves the end by accident.
+emPill.addEventListener('pointerdown', e => {
+  if (e.button > 0 || emDrag || drag) return;
+  const L = cur(), R = L && markedRange(L.tracks); if (!R) return;
+  endTyping();
+  const d = emDrag = { id: e.pointerId, y: e.clientY, y0: e.clientY, moved: false, L, R, j: R.hi, raf: 0, hold: 0 };
+  if (e.pointerType === 'touch' && !e.target.closest('.emGrip')) d.hold = setTimeout(() => { if (emDrag === d && !d.moved) { emLift(d); emMove(); } }, 250);
+  try { emPill.setPointerCapture(e.pointerId); } catch { }
+});
+emPill.addEventListener('pointermove', e => {
+  const d = emDrag; if (!d || e.pointerId !== d.id) return;
+  d.y = e.clientY;
+  if (!d.moved) {
+    if (Math.abs(d.y - d.y0) < (d.hold ? 8 : 4)) return;
+    if (d.hold) { emDrop(true); return; } // moved before the hold: a scroll
+    emLift(d);
+  }
+  emMove();
+});
+emPill.addEventListener('touchmove', e => { if (emDrag && emDrag.moved) e.preventDefault(); }, { passive: false }); // lifted: the page stays put under the finger
+emPill.addEventListener('contextmenu', e => { if (emDrag) e.preventDefault(); }); // a long press is the hold
+emPill.addEventListener('pointerup', e => { if (emDrag && e.pointerId === emDrag.id) emDrop(false); });
+emPill.addEventListener('pointercancel', e => { if (emDrag && e.pointerId === emDrag.id) emDrop(true); });
+emPill.addEventListener('lostpointercapture', e => { if (emDrag && e.pointerId === emDrag.id) emDrop(true); });
+document.addEventListener('keydown', e => { if (emDrag && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); emDrop(true); } }, true);
+// it really moves: lift the pill off (fixed, under the finger) and measure the track ends
+function emLift(d) {
+  d.moved = true;
+  if (sheet.open) { document.body.classList.add('sheet-hold'); sheetClose(true); } // the sheet steps aside, as for a row drag
+  endMark.style.transform = '';
+  const z = zoomF(), p = emPill.getBoundingClientRect(), base = rowsEl.getBoundingClientRect().top;
+  d.grab = d.y0 - p.top; d.ph = p.height;
+  d.res = computeRows(d.L.tracks);
+  d.ends = [...rowsEl.children].map(r => r.getBoundingClientRect().bottom - base); // from the top of the list
+  emPill.style.left = (p.left + p.width / 2) / z + 'px';
+  emPill.style.top = p.top / z + 'px';
+  emPill.classList.add('lifted'); endMark.classList.add('dragging');
+  document.body.classList.add('dragging-active');
+  emSnap.hidden = false;
+  d.raf = requestAnimationFrame(emTick);
+}
+// the pill follows the pointer (kept under the pinned header, on screen); the
+// end snaps to the track end nearest to the pill's middle, from the S down
+function emMove() {
+  const d = emDrag, z = zoomF();
+  const head = Math.max(theadWrap.getBoundingClientRect().bottom, 0);
+  const top = Math.max(head, Math.min(d.y - d.grab, innerHeight - d.ph));
+  emPill.style.top = top / z + 'px';
+  const y = top + d.ph / 2 - rowsEl.getBoundingClientRect().top;
+  let j = d.R.si;
+  for (let k = d.R.si + 1; k < d.ends.length; k++) if (Math.abs(d.ends[k] - y) < Math.abs(d.ends[j] - y)) j = k;
+  if (j !== d.j || !d.painted) { d.j = j; emPaint(d); }
+}
+// the drag's preview: rows S..j lit, the pill's numbers, the snap line under track j
+function emPaint(d) {
+  const R = { lo: d.R.si, hi: d.j, si: d.R.si }, rows = rowsEl.children;
+  for (let i = 0; i < rows.length; i++) rows[i].classList.toggle('inrange', i >= R.lo && i <= R.hi);
+  emLabel(R, d.res);
+  const t = fmtClock(rangeSpan(d.res, R)), info = rangeTxt(R); // the S → E box counts along (a drop or a cancel puts it right)
+  if (rangeTime.textContent !== t) rangeTime.textContent = t;
+  if (rangeInfo.textContent !== info) rangeInfo.textContent = info;
+  const r = rows[d.j];
+  if (r) emSnap.style.top = r.offsetTop + r.offsetHeight + 'px';
+  d.painted = true;
+}
+// near the top (under the pinned header) or the bottom the list scrolls, as
+// for a row drag; any scroll (a wheel too) snaps again under the held pill
+function emTick() {
+  const d = emDrag; if (!d) return;
+  const edge = 60, topEdge = theadWrap.getBoundingClientRect().bottom;
+  let v = 0;
+  if (d.y < topEdge + edge) v = -Math.ceil((topEdge + edge - d.y) / 5);
+  else if (d.y > innerHeight - edge) v = Math.ceil((d.y - (innerHeight - edge)) / 5);
+  if (v) scrollBy(0, v);
+  if (v || scrollY !== d.sy) { d.sy = scrollY; emMove(); }
+  d.raf = requestAnimationFrame(emTick);
+}
+// let go: markEnd on the track it snapped to (one undo step), the track it was
+// dropped on held in place and the pill flown home; cancel: all as it was.
+// No change: the end it already has (markEnd, else the last track)
+function emDrop(cancel, quiet) {
+  const d = emDrag; emDrag = null;
+  cancelAnimationFrame(d.raf); clearTimeout(d.hold);
+  try { emPill.releasePointerCapture(d.id); } catch { }
+  if (!d.moved) return; // a click / tap: it only took the focus
+  document.body.classList.remove('dragging-active');
+  const from = emPill.getBoundingClientRect();
+  emPill.classList.remove('lifted'); emPill.style.left = emPill.style.top = '';
+  endMark.classList.remove('dragging'); emSnap.hidden = true;
+  const L = cur(), r = rowsEl.children[d.j], ei = L ? L.tracks.findIndex(x => x.markEnd) : -1;
+  if (cancel || L !== d.L || d.j === (ei >= 0 ? ei : L.tracks.length - 1) || !L.tracks[d.j] || !r) { updateComputed(); if (!quiet) emFly(from); return; }
+  const rs = [...rowsEl.children], tops = rs.map(x => x.getBoundingClientRect().top), y0 = tops[d.j];
+  emKeyEnd();
+  pushUndo();
+  for (const x of L.tracks) delete x.markEnd;
+  L.tracks[d.j].markEnd = true;
+  markDirty();
+  updateComputed();
+  const dy = r.getBoundingClientRect().top - y0;
+  if (dy) scrollBy(0, dy);
+  if (Math.abs(r.getBoundingClientRect().top - y0) >= 1) emSettle(rs, tops, r); // the page could not scroll that far (its top)
+  emFly(from);
+}
+// the rows the gap's move shifted on screen slide there instead of jumping,
+// the marker along with its track
+function emSettle(rs, tops, r) {
+  if (reduceMotion()) return;
+  const z = zoomF(), mv = [];
+  rs.forEach((x, k) => {
+    const dy = (tops[k] - x.getBoundingClientRect().top) / z;
+    if (Math.abs(dy) < .5) return;
+    x.style.transition = 'none'; x.style.transform = `translateY(${dy}px)`; mv.push(x);
+    if (x === r) { endMark.style.transition = 'none'; endMark.style.transform = `translateY(${dy}px)`; }
+  });
+  void rowsEl.offsetWidth;
+  for (const x of mv) x.style.transition = x.style.transform = '';
+  endMark.style.transition = endMark.style.transform = '';
+}
+// the pill glides from where it was let go to its place on the line
+function emFly(from) {
+  if (endMark.hidden || reduceMotion()) return;
+  const to = emPill.getBoundingClientRect(), z = zoomF();
+  const dx = (from.left + from.width / 2 - to.left - to.width / 2) / z, dy = (from.top + from.height / 2 - to.top - to.height / 2) / z;
+  if (Math.abs(dx) + Math.abs(dy) < 1) return;
+  emPill.style.transition = 'none';
+  emPill.style.transform = `translate(${dx}px, ${dy}px)`;
+  void emPill.offsetWidth;
+  emPill.style.transition = emPill.style.transform = '';
+}
+
+// keys: a run of presses is one undo step (until a pause, the focus leaves, or something else is undone)
+emPill.addEventListener('keydown', e => {
+  if (emDrag || e.altKey || e.ctrlKey || e.metaKey) return;
+  const L = cur(), R = L && markedRange(L.tracks); if (!R) return;
+  const n = L.tracks.length, to = { ArrowDown: R.hi + 1, ArrowUp: R.hi - 1, Home: R.si, End: n - 1 }[e.key];
+  if (to === undefined) return;
+  e.preventDefault();
+  const j = Math.max(R.si, Math.min(n - 1, to));
+  if (j === R.hi) return;
+  histSync();
+  if (!emKeyT || hist.undo[hist.undo.length - 1] !== emKeySnap) { pushUndo(); emKeySnap = hist.undo[hist.undo.length - 1]; }
+  clearTimeout(emKeyT); emKeyT = setTimeout(emKeyEnd, 1000);
+  for (const x of L.tracks) delete x.markEnd;
+  L.tracks[j].markEnd = true;
+  markDirty();
+  updateComputed();
+  emShow(false);
+});
+function emKeyEnd() { clearTimeout(emKeyT); emKeyT = null; emKeySnap = null; }
+emPill.addEventListener('blur', emKeyEnd);
+
+// the marker into view — centred (the S → E chip) or just in sight (the keys):
+// under the pinned bars, above a phone's sheet
+function emShow(center) {
+  if (endMark.hidden) return;
+  const m = endMark.getBoundingClientRect(), z = zoomF();
+  // centred: under the bars as they pin once the page has scrolled (the list bar, a phone's summary line, the header)
+  const pinned = document.body.classList.contains('sheet-unpin') ? 0 : (listbarEl.offsetHeight + (isPhone() ? summaryEl.offsetHeight : 0) + theadWrap.offsetHeight) * z;
+  const top = (center ? pinned : Math.max(theadWrap.getBoundingClientRect().bottom, 0)) + 8;
+  const bot = (sheet.open ? sheet.getBoundingClientRect().top : innerHeight) - 8;
+  const d = center ? (m.top + m.bottom - top - bot) / 2 : m.top < top ? m.top - top : m.bottom > bot ? m.bottom - bot : 0;
+  if (d) scrollBy({ top: d, behavior: center && !reduceMotion() ? 'smooth' : 'auto' });
+}
+// the S → E chip: off to the marker; the pill flashes (keyboard: it takes the focus)
+$('btnRangeGo').onclick = e => {
+  emShow(true);
+  endMark.classList.remove('flash'); void endMark.offsetWidth; endMark.classList.add('flash');
+  if (!e.detail) emPill.focus({ preventScroll: true });
+};
+endMark.addEventListener('animationend', () => endMark.classList.remove('flash'));
 
 /* ---------------- sideways-scrolling table ---------------- */
 // The header lives outside the scroller (so it can stick to the top of the
@@ -646,6 +1170,7 @@ dlgUserLogin.querySelector('form').addEventListener('submit', async e => {
   const v = e.submitter && e.submitter.value;
   if (v === 'cancel') { e.preventDefault(); dlgUserLogin.close('cancel'); return; }
   if (v === 'logout') {
+    asFlushAll(); // unsaved lists go now (each to its own user's folder)
     sessionUser = null; adminSecret = null; saveSession();
     persist(); renderAll(); refreshFromRemote(false);
     toast('Logged out — back to Public', 'ok');
@@ -662,6 +1187,7 @@ dlgUserLogin.querySelector('form').addEventListener('submit', async e => {
     const res = await authCall({ op: 'login', user: id, pass });
     okBtn.disabled = false;
     if (res.ok && res.user) {
+      asFlushAll();
       sessionUser = res.user; adminSecret = res.user.admin ? pass : null; saveSession();
       dlgUserLogin.close('done');
       ensureWorkspace(res.user.id);
@@ -677,9 +1203,14 @@ dlgUserLogin.querySelector('form').addEventListener('submit', async e => {
 });
 
 /* ---------------- list management ---------------- */
-const slugify = n => n.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'list';
-function uniqueFile(name) {
-  const w = ws(), base = slugify(name);
+// a list's file name: up to 60 characters (the relay takes 81, room for -2, -3 …)
+// and never 'index' (index.json is the user's list of lists)
+const slugify = n => {
+  const s = n.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, '-').slice(0, 60).replace(/^-+|-+$/g, '') || 'list';
+  return s === 'index' ? 'index-list' : s;
+};
+function uniqueFile(name, user = currentUserId()) {
+  const w = ensureWorkspace(user), base = slugify(name);
   let f = base + '.json', i = 2;
   while (w.lists[f]) f = `${base}-${i++}.json`;
   return f;
@@ -687,10 +1218,13 @@ function uniqueFile(name) {
 function createList(name, tracks) {
   const w = ws();
   if (w.order.length >= MAX_LISTS) { toast(`List limit reached — max ${MAX_LISTS} lists per user`, 'err'); return false; }
-  const file = uniqueFile(name);
+  const user = currentUserId(), file = uniqueFile(name), was = w.current;
   w.lists[file] = { name, created: null, updated: '', tracks: tracks || [blankTrack()], dirty: true, remote: false, sha: null };
   w.order.push(file);
   w.current = file;
+  histReset(asKey(user, file)); // starts empty — nothing a deleted namesake left on disk
+  if (was) asFlush(user, was); // the list left behind
+  asNow(user, file); // a new list (or a copy) is saved right away — under the next free name, should another device have this one
   persist(); renderSelect(); rebuildRows(); setStatusAuto(); updateHistBtns();
   if (!tracks && isPhone()) sheetOpen(0, 'tt');
   else if (!tracks) { const first = rowsEl.querySelector('.tt'); if (first) first.focus(); }
@@ -698,8 +1232,9 @@ function createList(name, tracks) {
 }
 
 listSelect.onchange = () => {
-  const w = ws();
+  const w = ws(), was = w.current;
   if (listSelect.value && w.lists[listSelect.value]) w.current = listSelect.value;
+  if (was && was !== w.current) asFlush(currentUserId(), was); // the list left behind saves now
   persist(); rebuildRows(); setStatusAuto(); updateHistBtns();
 };
 
@@ -728,15 +1263,16 @@ $('btnRename').onclick = async () => {
   pushUndo();
   L.name = name;
   markDirty();
+  asNow(currentUserId(), ws().current); // saved right away
   renderSelect();
-  toast(`Renamed to “${name}” — press Save to update GitHub`, 'ok');
+  toast(`Renamed to “${name}”`, 'ok');
 };
 
 $('btnDup').onclick = () => {
   const L = cur();
   if (!L) { toast('No list to duplicate', 'err'); return; }
   if (createList(L.name + ' copy', L.tracks.map(t => ({ ...t }))))
-    toast(`Duplicated as “${L.name} copy” — press Save to keep it on GitHub`, 'ok');
+    toast(`Duplicated as “${L.name} copy”`, 'ok');
 };
 
 /* more menu */
@@ -795,18 +1331,26 @@ async function deleteCurrentList() {
   const user = currentUserId(), w = ws(), file = w.current, L = cur();
   if (!L) { toast('No list to delete', 'err'); return; }
   if (!await confirmDelete(L)) return;
+  setStatus('Deleting…');
+  await asStop(user, file); // no late autosave brings it back; one under way lands first (its sha is the one to delete)
+  if (w.lists[file] !== L) { setStatusAuto(); return; } // gone meanwhile
   if (L.remote) {
     try {
-      setStatus('Deleting…');
       const path = cfgPath(`lists/${user}/${file}`);
-      let sha = L.sha;
-      if (!sha) { const ex = await repoGet(path); sha = ex && ex.sha; }
-      if (sha) await repoDelete(path, `cue counter — ${user}: delete "${L.name}"`, sha);
+      const msg = `cue counter — ${user}: delete "${L.name}"`, fresh = async () => { const ex = await repoGet(path); return ex && ex.sha; };
+      const sha = L.sha || await fresh();
+      if (sha) try { await repoDelete(path, msg, sha); } catch (e) { // saved since on another device: the list goes all the same
+        if (e.status !== 409 && e.status !== 422) throw e;
+        const s = await fresh(); if (s) await repoDelete(path, msg, s);
+      }
       removeLocal(user, file);
-      await saveIndexJson(user, file);
+      await saveIndex(user, null, file);
       persist();
       toast(`Deleted “${L.name}”`, 'ok');
-    } catch (e) { toast('Delete failed: ' + e.message, 'err'); }
+    } catch (e) {
+      toast('Delete failed: ' + e.message, 'err');
+      if (w.lists[file] === L) asWake(user, file); // still here: autosave on
+    }
     setStatusAuto();
   } else {
     removeLocal(user, file); persist(); toast(`Deleted “${L.name}”`, 'ok');
@@ -816,6 +1360,7 @@ function removeLocal(user, file) {
   const w = ensureWorkspace(user);
   delete w.lists[file];
   w.order = w.order.filter(f => f !== file);
+  autos.delete(asKey(user, file)); histDrop(asKey(user, file));
   if (w.current === file) w.current = w.order[0] || null;
   if (user === currentUserId()) { renderSelect(); rebuildRows(); setStatusAuto(); updateHistBtns(); }
 }
@@ -982,6 +1527,7 @@ dlgSetup.querySelector('form').addEventListener('submit', async e => {
   }
   dlgSetup.close('done');
   toast('Settings saved', 'ok');
+  asFlushAll(); // a new token / relay: what waits goes now
 });
 async function verifyToken(tok) {
   const h = { Accept: 'application/vnd.github+json', Authorization: 'Bearer ' + tok };
@@ -996,24 +1542,37 @@ async function verifyToken(tok) {
 const encPath = p => p.split('/').map(encodeURIComponent).join('/');
 const cfgPath = rel => (config.dir ? config.dir + '/' : '') + rel;
 async function safeJson(r) { try { return await r.json(); } catch { return null; } }
+const parseJson = s => { try { return JSON.parse(s); } catch { return null; } };
+// a list as read from the repo (d: its JSON; e: its index entry), clean
+const listFrom = (d, sha, e = {}) => ({
+  name: d.name || e.name || e.file, created: d.created || null, updated: d.updated || e.updated || '',
+  tracks: d.tracks.slice(0, MAX_TRACKS * 2).map(normTrack), dirty: false, remote: true, sha: sha || null
+});
+// the same name and tracks (d: a list's JSON, or a list)
+const sameList = (L, d) => L.name === String(d.name || '') && JSON.stringify(L.tracks.map(normTrack)) === JSON.stringify(d.tracks.map(normTrack));
 function ghErr(r, j) { const e = new Error((j && j.message) ? `${j.message} (${r.status})` : `GitHub error ${r.status}`); e.status = r.status; return e; }
-async function ghApi(path, opt = {}) {
-  return fetch('https://api.github.com' + path, {
-    ...opt,
+// ka: keepalive, for a page going away (best effort: bodies under 64 KB only,
+// and a plain fetch again should the browser refuse it)
+const kaOk = (ka, body) => !!ka && te.encode(body || '').length < 60000;
+async function ghApi(path, opt = {}, ka) {
+  const o = {
+    ...opt, keepalive: kaOk(ka, opt.body),
     headers: { Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opt.headers || {}) }
-  });
+  };
+  try { return await fetch('https://api.github.com' + path, o); }
+  catch (e) { if (!o.keepalive) throw e; return fetch('https://api.github.com' + path, { ...o, keepalive: false }); }
 }
-async function ghGetFile(path) {
-  const r = await ghApi(`/repos/${config.owner}/${config.repo}/contents/${encPath(path)}?ref=${encodeURIComponent(config.branch)}`, { cache: 'no-store' });
+async function ghGetFile(path, ka) {
+  const r = await ghApi(`/repos/${config.owner}/${config.repo}/contents/${encPath(path)}?ref=${encodeURIComponent(config.branch)}`, { cache: 'no-store' }, ka);
   if (r.status === 404) return null;
   if (!r.ok) throw ghErr(r, await safeJson(r));
   const j = await r.json();
   return { sha: j.sha, text: td.decode(unb64(String(j.content || '').replace(/\n/g, ''))) };
 }
-async function ghPutFile(path, content, message, sha) {
+async function ghPutFile(path, content, message, sha, ka) {
   const body = { message, branch: config.branch, content: b64(te.encode(content)) };
   if (sha) body.sha = sha;
-  const r = await ghApi(`/repos/${config.owner}/${config.repo}/contents/${encPath(path)}`, { method: 'PUT', body: JSON.stringify(body) });
+  const r = await ghApi(`/repos/${config.owner}/${config.repo}/contents/${encPath(path)}`, { method: 'PUT', body: JSON.stringify(body) }, ka);
   const j = await safeJson(r);
   if (!r.ok) throw ghErr(r, j);
   return j;
@@ -1024,22 +1583,26 @@ async function ghDeleteFile(path, message, sha) {
   if (!r.ok) throw ghErr(r, j);
   return j;
 }
-async function relayCall(payload) {
-  const r = await fetch(relayUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+async function relayCall(payload, ka) {
+  const body = JSON.stringify(payload);
+  ka = kaOk(ka, body); // sent as text/plain then: a simple request, no CORS preflight (the relay reads JSON either way)
+  let r;
+  try { r = await fetch(relayUrl(), { method: 'POST', headers: { 'Content-Type': ka ? 'text/plain;charset=UTF-8' : 'application/json' }, body, keepalive: ka }); }
+  catch (e) { if (!ka) throw e; r = await fetch(relayUrl(), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body }); }
   const j = await safeJson(r);
   if (r.status === 404) return null;
   if (!r.ok) throw ghErr(r, j);
   return j;
 }
-async function repoGet(path) {
-  if (token || !relayUrl()) return ghGetFile(path);
-  const j = await relayCall({ op: 'get', path });
+async function repoGet(path, ka) {
+  if (token || !relayUrl()) return ghGetFile(path, ka);
+  const j = await relayCall({ op: 'get', path }, ka);
   if (!j) return null;
   return { sha: j.sha, text: td.decode(unb64(String(j.content || '').replace(/\n/g, ''))) };
 }
-async function repoPut(path, content, message, sha) {
-  if (token) return ghPutFile(path, content, message, sha);
-  if (relayUrl()) return relayCall({ op: 'put', path, content, message, ...(sha ? { sha } : {}) });
+async function repoPut(path, content, message, sha, ka) {
+  if (token) return ghPutFile(path, content, message, sha, ka);
+  if (relayUrl()) return relayCall({ op: 'put', path, content, message, ...(sha ? { sha } : {}) }, ka);
   throw new Error('sync is not set up');
 }
 async function repoDelete(path, message, sha) {
@@ -1048,87 +1611,274 @@ async function repoDelete(path, message, sha) {
   throw new Error('sync is not set up');
 }
 
-/* ---------------- save / refresh ---------------- */
-saveBtn.onclick = () => {
-  if (!cur()) { toast('Nothing to save — create a list first', 'err'); return; }
-  if (!writable()) { toast('Saving is not configured', 'err'); return; }
-  doSave();
-};
-
-async function doSave() {
-  const user = currentUserId(), w = ws(), file = w.current, L = cur();
-  if (!L) return;
-  setStatus('Saving…'); saveBtn.disabled = true;
+/* ---------------- autosave ---------------- */
+// No Save button: every change saves itself. markDirty() bumps the list's
+// revision and arms a save of THAT list — user + file are captured there, so a
+// list switch or a login before it fires never saves the wrong one — 30 s after
+// the last change, and at most 3 min after the first unsaved one while edits
+// keep coming (each save is two commits in the public repo; the change is kept
+// on this device at once). A list switch, login / logout and the page going
+// away (pagehide, a frozen page; hidden too on a touch device: keepalive
+// fetches) save at once; New, Duplicate and Rename too.
+// One save in flight per list: it sends the list as it was when it started and
+// the list is clean only if no change came in meanwhile, else it goes again.
+// A save never writes over another device's: the file in the repo must still
+// be the version this copy came from (L.updated, its base), one this device
+// sent, or the same list — else that version takes the list's place and this
+// one is kept as a list of its own (asConflict). A new list whose file name
+// another device took first moves on to the next free one (asMove).
+// A failure keeps the list dirty (it is on this device anyway) and retries in
+// 5 s, 15 s, 60 s, then every 5 min (a rate limit: 5 min), and as soon as the
+// browser is online; one that cannot work (400, 403, 404, 413, 422) says why
+// and waits for the next change.
+const AS_IDLE = 30000, AS_MAX = 180000, AS_BACKOFF = [5000, 15000, 60000, 300000];
+const autos = new Map(); // 'user/file' -> autosave state (asGet)
+const asKey = (user, file) => user + '/' + file;
+function asGet(user, file) {
+  const k = asKey(user, file);
+  let a = autos.get(k);
+  if (!a) {
+    a = { user, file, rev: 0, putRev: -1, last: 0, first: 0, timer: null, retry: null, busy: null, again: false, tries: 0, offline: false, e401: false, perm: null, gone: false, sent: new Set(), pre: null };
+    autos.set(k, a);
+  }
+  return a;
+}
+// a save of this list is still to come or under way: a refresh must not replace it
+const asHeld = (user, file) => { const a = autos.get(asKey(user, file)); return !!a && !!(a.timer || a.retry || a.busy); };
+function asBump(user, file) {
+  const a = asGet(user, file), now = Date.now(), L = ensureWorkspace(user).lists[file];
+  a.rev++; a.last = now;
+  if (!a.first) a.first = now;
+  if (L && L.remote && !L.sha && !a.pre && writable()) a.pre = asPresha(a, L).finally(() => { a.pre = null; });
+  asArm(a);
+}
+// the sha of the version this copy came from, fetched ahead (a copy read from
+// the Pages site has none): a page going away can then send its save as its
+// first request — a closing page runs no JS after that
+async function asPresha(a, L) {
   try {
+    const ex = await repoGet(cfgPath(`lists/${a.user}/${a.file}`)), d = ex && parseJson(ex.text);
+    if (d && !L.sha && ensureWorkspace(a.user).lists[a.file] === L && String(d.updated || '') === (L.updated || '')) L.sha = ex.sha;
+  } catch { }
+}
+function asArm(a) {
+  if (a.busy || a.retry || a.gone || !writable()) return; // the save under way / the retry takes the change along
+  clearTimeout(a.timer);
+  a.timer = setTimeout(() => asRun(a), Math.max(0, Math.min(a.last + AS_IDLE, a.first + AS_MAX) - Date.now()));
+}
+const asNow = (user, file, ka) => asRun(asGet(user, file), ka);
+function asFlush(user, file, ka) { const L = ensureWorkspace(user).lists[file]; if (L && L.dirty) asNow(user, file, ka); }
+function asFlushAll(ka) { for (const [user, w] of Object.entries(store.workspaces)) for (const f of w.order) asFlush(user, f, ka); }
+const rateLimited = e => e.status === 429 || (e.status === 403 && /rate limit/i.test(e.message));
+const asPermanent = e => [400, 403, 404, 413, 422].includes(e.status) && !rateLimited(e);
+async function asRun(a, ka) {
+  clearTimeout(a.timer); clearTimeout(a.retry); a.timer = a.retry = null;
+  if (a.gone || !writable()) return;
+  if (a.busy) { a.again = true; return; } // goes again once that one lands
+  const L = ensureWorkspace(a.user).lists[a.file];
+  if (!L || !L.dirty) { a.first = 0; return; }
+  const rev = a.rev;
+  let land, err = null;
+  a.first = 0; a.busy = new Promise(r => { land = r; });
+  if (a.user === currentUserId()) setStatusAuto();
+  try { await asSave(a, L, rev, ka); } catch (e) { err = e; }
+  a.busy = null; land();
+  if (a.gone) return;
+  if (err && err.conflict) { asConflict(a, L, err.conflict); return; }
+  const again = a.again; a.again = false;
+  if (!err) {
+    a.tries = 0; a.offline = a.e401 = false; a.perm = null;
+    if (a.rev === rev) L.dirty = false; // else a change came in during the save: it goes next
+  } else {
+    console.warn('autosave failed:', a.user + '/' + a.file, err);
+    a.tries++;
+    a.offline = !err.status; // no HTTP answer: offline, or the relay out of reach
+    const perm = asPermanent(err) ? err.message : null; // no use trying again until something changes
+    if (perm && perm !== a.perm) toast(`“${L.name}” could not be saved: ${perm} — it stays on this device.`, 'err');
+    a.perm = perm;
+    if (err.status === 401) { // no retry storm: every 5 min from here
+      if (!a.e401) toast(token ? 'GitHub rejected the token (401) — lists stay on this device. ⋯ → GitHub sync to fix it.' : 'The sync server refused the save (401) — lists stay on this device.', 'err');
+      a.e401 = true; a.tries = Math.max(a.tries, AS_BACKOFF.length);
+    } else if (rateLimited(err)) a.tries = Math.max(a.tries, AS_BACKOFF.length); // GitHub's limit: back off
+  }
+  persist();
+  if (a.user === currentUserId()) { selDot(a.file); setStatusAuto(); }
+  if (!L.dirty || ensureWorkspace(a.user).lists[a.file] !== L) return;
+  if (err) { if (!a.perm) a.retry = setTimeout(() => asRun(a), AS_BACKOFF[Math.min(a.tries, AS_BACKOFF.length) - 1]); }
+  else if (again) asRun(a);
+  else asArm(a);
+}
+// the list file (unless only the index is left from a failed try), then the index
+async function asSave(a, L, rev, ka) {
+  if (a.putRev !== rev) {
     const now = new Date().toISOString();
     const body = JSON.stringify({ version: 2, name: L.name, created: L.created || now.slice(0, 10), updated: now, tracks: L.tracks.map(normTrack) }, null, 2) + '\n';
-    const path = cfgPath(`lists/${user}/${file}`);
-    const msg = `cue counter — ${user}: save "${L.name}"`;
-    let sha = L.sha;
-    if (!sha) { const ex = await repoGet(path); sha = ex ? ex.sha : undefined; }
-    let res;
-    try { res = await repoPut(path, body, msg, sha); }
-    catch (e) {
-      if (e.status === 409 || e.status === 422) { const ex = await repoGet(path); res = await repoPut(path, body, msg, ex ? ex.sha : undefined); }
-      else throw e;
+    const msg = `cue counter — ${a.user}: save "${L.name}"`;
+    const put = async sha => { // a.file at the time: asMove may change it
+      const r = await repoPut(cfgPath(`lists/${a.user}/${a.file}`), body, msg, sha, ka);
+      if (!r) throw Object.assign(new Error('not found (404)'), { status: 404 });
+      return r;
+    };
+    let res = null, b = null;
+    a.sent.add(now);
+    if (L.sha) try { res = await put(L.sha); } catch (e) { if (e.status !== 409 && e.status !== 422) throw e; } // not the version it came from (any more)
+    if (!res) {
+      b = await asBase(a, L, ka);
+      if (b && b.taken) { asMove(a, await asFreeFile(a)); b = null; }
+      if (b && b.same) { L.sha = b.sha; L.updated = b.updated; } // there already: a save whose answer never came back
+      else res = await put(b ? b.sha : undefined);
     }
-    L.sha = res && res.content && res.content.sha;
-    L.dirty = false; L.remote = true;
-    L.created = L.created || now.slice(0, 10); L.updated = now;
-    let indexWarn = '';
-    try { await saveIndexJson(user); } catch (e) { indexWarn = ' (list saved, but the index update failed — press Save again)'; }
-    persist();
-    if (user === currentUserId()) { renderSelect(); setStatusAuto(); updateComputed(); }
-    const url = res && res.commit && res.commit.html_url;
-    toastHTML(`Saved “${esc(L.name)}” ✓${url ? ` — <a href="${esc(url)}" target="_blank" rel="noopener">view commit</a>` : ''}${esc(indexWarn)}`, indexWarn ? 'err' : 'ok');
-  } catch (e) {
-    if (user === currentUserId()) setStatusAuto();
-    if (e.status === 401) toast('GitHub rejected the token (401). Open ⋯ → GitHub sync.', 'err');
-    else toast('Save failed: ' + e.message, 'err');
-  } finally { saveBtn.disabled = false; }
-}
-
-async function saveIndexJson(user, removeFile) {
-  const w = ensureWorkspace(user);
-  const path = cfgPath(`lists/${user}/index.json`);
-  const remote = await repoGet(path);
-  let entries = [];
-  if (remote) { try { const parsed = JSON.parse(remote.text); if (parsed && Array.isArray(parsed.lists)) entries = parsed.lists.filter(x => x && SAFE_FILE.test(String(x.file || ''))); } catch { } }
-  const byFile = new Map(entries.map(x => [x.file, x]));
-  for (const f of w.order) {
-    const L = w.lists[f];
-    if (!L || !L.remote) continue;
-    const res = computeRows(L.tracks);
-    const cum = res.length ? res[res.length - 1].cum : 0;
-    byFile.set(f, { file: f, name: L.name, tracks: L.tracks.length, setTime: fmtClock(cum), updated: L.updated || '' });
+    if (res) { L.sha = res.content && res.content.sha; L.created = L.created || now.slice(0, 10); L.updated = now; }
+    L.remote = true; a.putRev = rev; a.sent.clear();
   }
-  if (removeFile) byFile.delete(removeFile);
-  const body = JSON.stringify({ version: 2, lists: [...byFile.values()] }, null, 2) + '\n';
+  await saveIndex(a.user, a.file, null, ka); // other devices' refresh goes by its 'updated'
+}
+// the file in the repo against this copy: null for none; { sha, same, updated }
+// when it may be written over — the version this copy came from, one this
+// device sent, the same list, or not a list at all; { taken } for a new list's
+// name another device took first. A newer save from another device throws.
+async function asBase(a, L, ka) {
+  const ex = await repoGet(cfgPath(`lists/${a.user}/${a.file}`), ka);
+  if (!ex) return null;
+  if (!L.remote) return { taken: true };
+  const d = parseJson(ex.text), up = d ? String(d.updated || '') : '';
+  if (!d || !Array.isArray(d.tracks)) return { sha: ex.sha };
+  const same = sameList(L, d);
+  if (same || up === (L.updated || '') || a.sent.has(up)) return { sha: ex.sha, same, updated: up };
+  throw Object.assign(new Error('changed on another device'), { conflict: { d, sha: ex.sha } });
+}
+// the next file name free here and in the repo: base-2.json, base-3.json, …
+async function asFreeFile(a) {
+  const w = ensureWorkspace(a.user), base = a.file.replace(/\.json$/, '');
+  for (let i = 2; i < 100; i++) {
+    const f = `${base}-${i}.json`;
+    if (!w.lists[f] && !await repoGet(cfgPath(`lists/${a.user}/${f}`))) return f;
+  }
+  throw new Error('no free file name');
+}
+// a list to another file: its entry, its autosave and its undo steps go along
+function asMove(a, to) {
+  const w = ensureWorkspace(a.user), from = a.file, L = w.lists[from];
+  if (!L || w.lists[to]) throw new Error('list changed meanwhile');
+  const ko = asKey(a.user, from), kn = asKey(a.user, to);
+  w.lists[to] = L; delete w.lists[from];
+  w.order = w.order.map(f => (f === from ? to : f));
+  if (w.current === from) w.current = to;
+  autos.delete(ko); a.file = to; autos.set(kn, a);
+  histMove(ko, kn);
+  if (shK === ko) shK = kn; // the phone sheet stays on it
+  persist();
+  if (a.user === currentUserId()) renderSelect();
+}
+// another device saved this list since this copy was read: its version takes
+// the list's place — the one it replaces is an undo step there (histOutside),
+// so ↶ brings it back — and this one is kept too, as a new list,
+// "<name> (conflict <date time>)"
+function asConflict(a, L, c) {
+  const w = ensureWorkspace(a.user), f = a.file;
+  if (w.lists[f] !== L) return;
+  const name = `${L.name} (conflict ${new Date().toLocaleString([], { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })})`;
+  const copy = uniqueFile(name, a.user);
+  histOutside(a.user, f, L);
+  w.lists[f] = listFrom(c.d, c.sha);
+  w.lists[copy] = { name, created: null, updated: '', tracks: L.tracks.map(t => ({ ...t })), dirty: true, remote: false, sha: null };
+  w.order.splice(w.order.indexOf(f) + 1, 0, copy);
+  histReset(asKey(a.user, copy));
+  Object.assign(a, { rev: 0, putRev: -1, first: 0, tries: 0, offline: false, e401: false, perm: null, again: false }); a.sent.clear();
+  persist();
+  if (a.user === currentUserId()) { renderSelect(); if (w.current === f) rebuildRows(); setStatusAuto(); updateHistBtns(); }
+  asNow(a.user, copy);
+  toast(`“${L.name}” was changed on another device too: that version is in “${L.name}” now (↶ there brings yours back), and yours is kept as “${name}”.`, 'err');
+}
+// cancel a list's autosave for good (it is being deleted); one under way lands first
+async function asStop(user, file) {
+  const a = autos.get(asKey(user, file)); if (!a) return;
+  a.gone = true; clearTimeout(a.timer); clearTimeout(a.retry); a.timer = a.retry = null;
+  while (a.busy) await a.busy;
+}
+function asWake(user, file) { const a = autos.get(asKey(user, file)); if (a && a.gone) { a.gone = false; asFlush(user, file); } }
+// the page going away: everything unsaved goes now (keepalive), the store and
+// the history to disk. Hidden, a desktop only does the last part — its timers
+// still run, and a window covered by rekordbox counts as hidden — while a
+// phone or tablet may freeze a hidden page at any moment. Visible again: what
+// other devices saved meanwhile comes in.
+const touchDev = matchMedia('(pointer: coarse)');
+function asLeave(all) { persist(); histFlush(); if (all) asFlushAll(true); }
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') asLeave(touchDev.matches);
+  else if (Date.now() - refreshAt > 20000) refreshFromRemote(false);
+});
+addEventListener('pagehide', () => asLeave(true));
+document.addEventListener('freeze', () => asLeave(true));
+addEventListener('online', () => { for (const a of autos.values()) if (a.retry) asRun(a); setStatusAuto(); });
+addEventListener('offline', () => setStatusAuto());
+
+/* ---------------- index / refresh ---------------- */
+// one index write at a time per user, each on the latest remote copy, and each
+// changes one entry: the list just saved (never back to an older version) or
+// the one deleted — the other entries stay as they are in the repo, whatever
+// this device holds. Changed meanwhile (409 / 422): read again, the one change
+// made again, up to 3 times.
+const idxQ = new Map(); // user -> the last index write
+function saveIndex(user, file, removeFile, ka) {
+  const p = (idxQ.get(user) || Promise.resolve()).catch(() => { }).then(() => saveIndexJson(user, file, removeFile, ka));
+  idxQ.set(user, p);
+  return p;
+}
+async function saveIndexJson(user, file, removeFile, ka) {
+  const w = ensureWorkspace(user), path = cfgPath(`lists/${user}/index.json`);
   const msg = `cue counter — ${user}: update list index`;
-  try {
-    const res = await repoPut(path, body, msg, remote ? remote.sha : undefined);
-    w.indexSha = res && res.content && res.content.sha;
-  } catch (e) {
-    if (e.status === 409 || e.status === 422) { const ex = await repoGet(path); const res = await repoPut(path, body, msg, ex ? ex.sha : undefined); w.indexSha = res && res.content && res.content.sha; }
-    else throw e;
+  for (let n = 1; ; n++) {
+    const remote = await repoGet(path, ka), parsed = remote && parseJson(remote.text);
+    const entries = parsed && Array.isArray(parsed.lists) ? parsed.lists.filter(x => x && SAFE_FILE.test(String(x.file || '')) && x.file !== 'index.json') : [];
+    const byFile = new Map(entries.map(x => [x.file, x]));
+    const L = file && w.lists[file], old = file && byFile.get(file);
+    if (L && L.remote && (!old || String(old.updated || '') <= (L.updated || ''))) {
+      const res = computeRows(L.tracks);
+      byFile.set(file, { file, name: L.name, tracks: L.tracks.length, setTime: fmtClock(res.length ? res[res.length - 1].cum : 0), updated: L.updated || '' });
+    }
+    if (removeFile) byFile.delete(removeFile);
+    const body = JSON.stringify({ version: 2, lists: [...byFile.values()] }, null, 2) + '\n';
+    if (remote && remote.text === body) return; // nothing to change
+    try {
+      const res = await repoPut(path, body, msg, remote ? remote.sha : undefined, ka);
+      w.indexSha = res && res.content && res.content.sha;
+      return;
+    } catch (e) { if ((e.status !== 409 && e.status !== 422) || n >= 3) throw e; }
   }
 }
 
+// the index from the relay (fresh: a save is in it at once) — the Pages copy,
+// a minute or so behind, only when the relay cannot be reached
 async function fetchIndex(user) {
-  if (token) { const f = await ghGetFile(cfgPath(`lists/${user}/index.json`)); if (f) { ensureWorkspace(user).indexSha = f.sha; return JSON.parse(f.text); } return null; }
+  const path = cfgPath(`lists/${user}/index.json`);
+  if (token || relayUrl()) {
+    try { const f = await repoGet(path); if (!f) return null; ensureWorkspace(user).indexSha = f.sha; return JSON.parse(f.text); }
+    catch (e) { if (token) throw e; }
+  }
   try { const r = await fetch(`lists/${encodeURIComponent(user)}/index.json?ts=` + Date.now(), { cache: 'no-store' }); if (r.ok) return await r.json(); } catch { }
-  if (relayUrl()) { try { const f = await repoGet(cfgPath(`lists/${user}/index.json`)); if (f) return JSON.parse(f.text); } catch { } }
   return null;
 }
-async function fetchList(user, file) {
-  if (token) { const f = await ghGetFile(cfgPath(`lists/${user}/${file}`)); return f ? { data: JSON.parse(f.text), sha: f.sha } : null; }
-  try { const r = await fetch(`lists/${encodeURIComponent(user)}/${encodeURIComponent(file)}?ts=` + Date.now(), { cache: 'no-store' }); if (r.ok) return { data: await r.json(), sha: null }; } catch { }
-  if (relayUrl()) { try { const f = await repoGet(cfgPath(`lists/${user}/${file}`)); if (f) return { data: JSON.parse(f.text), sha: f.sha }; } catch { } }
-  return null;
+// a list: the Pages copy when it is the version the index names (no API call),
+// else the relay's (with its sha). null only when the repo says it is not there;
+// could not tell: it throws
+async function fetchList(user, file, want) {
+  const pages = async () => {
+    const r = await fetch(`lists/${encodeURIComponent(user)}/${encodeURIComponent(file)}?ts=` + Date.now(), { cache: 'no-store' });
+    if (r.ok) return r.json();
+    if (r.status === 404) return null;
+    throw ghErr(r, null);
+  };
+  if (want && !token) { try { const d = await pages(); if (d && d.updated === want) return { data: d, sha: null }; } catch { } }
+  if (!token && !relayUrl()) { const d = await pages(); return d ? { data: d, sha: null } : null; }
+  const f = await repoGet(cfgPath(`lists/${user}/${file}`));
+  return f ? { data: JSON.parse(f.text), sha: f.sha } : null;
 }
 
+let refreshAt = 0; // the last refresh (one comes when the page is visible again)
 async function refreshFromRemote(manual) {
   const user = currentUserId(), w = ws();
+  refreshAt = Date.now();
   if (manual) setStatus('Syncing…');
   let idx = null;
   try { idx = await fetchIndex(user); } catch { }
@@ -1139,20 +1889,21 @@ async function refreshFromRemote(manual) {
   }
   let changed = false;
   for (const e of idx.lists) {
-    if (!e || !e.file || !SAFE_FILE.test(String(e.file))) continue;
+    if (!e || !e.file || !SAFE_FILE.test(String(e.file)) || e.file === 'index.json') continue;
     const local = w.lists[e.file];
-    if (local && local.dirty) continue;
-    if (user === currentUserId() && e.file === w.current && (isEditingRows() || sheet.open)) continue; // the phone sheet edits that list's tracks
-    if (!local || (e.updated || '') > (local.updated || '') || manual) {
+    if (local && (local.dirty || asHeld(user, e.file))) continue; // unsaved here, or its autosave still to land
+    if (user === currentUserId() && e.file === w.current && (isEditingRows() || sheet.open || emDrag)) continue; // the phone sheet edits that list's tracks, the end marker is being dragged
+    if (!local || (e.updated || '') !== (local.updated || '') || manual) {
       try {
-        const got = await fetchList(user, e.file);
+        const got = await fetchList(user, e.file, e.updated);
         const nowLocal = w.lists[e.file];
-        if (nowLocal && nowLocal.dirty) continue;
+        if (nowLocal && (nowLocal.dirty || asHeld(user, e.file))) continue;
+        if (nowLocal && got && got.data && String(got.data.updated || '') < (nowLocal.updated || '')) continue; // older than what this device saved (meanwhile)
         if (got && got.data && Array.isArray(got.data.tracks)) {
-          w.lists[e.file] = {
-            name: got.data.name || e.name || e.file, created: got.data.created || null, updated: got.data.updated || e.updated || '',
-            tracks: got.data.tracks.slice(0, MAX_TRACKS * 2).map(normTrack), dirty: false, remote: true, sha: got.sha || (nowLocal ? nowLocal.sha : null)
-          };
+          const same = nowLocal && String(got.data.updated || '') === (nowLocal.updated || '');
+          const L = listFrom(got.data, got.sha || (same ? nowLocal.sha : null), e);
+          if (nowLocal && !sameList(nowLocal, L)) histOutside(user, e.file, nowLocal); // another device's version: one undo step
+          w.lists[e.file] = L;
           if (!w.order.includes(e.file)) w.order.push(e.file);
           changed = true;
         }
@@ -1162,15 +1913,19 @@ async function refreshFromRemote(manual) {
   const remoteFiles = new Set(idx.lists.map(e => e && e.file).filter(Boolean));
   for (const f of [...w.order]) {
     const L = w.lists[f];
-    if (L && L.remote && !L.dirty && !remoteFiles.has(f)) {
-      try { const still = await fetchList(user, f); if (still) continue; } catch { continue; }
+    if (L && L.remote && !L.dirty && !asHeld(user, f) && !remoteFiles.has(f)) {
+      if (!token && !relayUrl()) continue; // nothing can tell it is gone (the Pages copy lags)
+      try { if (await repoGet(cfgPath(`lists/${user}/${f}`))) continue; } catch { continue; } // there after all, or could not tell
+      if (w.lists[f] !== L || L.dirty || asHeld(user, f)) continue; // edited meanwhile
       delete w.lists[f]; w.order = w.order.filter(x => x !== f); changed = true;
+      autos.delete(asKey(user, f)); // deleted on another device; its undo steps stay (back with it, should it come back)
     }
   }
   if (!w.current || !w.lists[w.current]) w.current = w.order[0] || null;
   if (changed && user === currentUserId()) {
     persist(); renderSelect();
-    if (!isEditingRows() || (sheet.open && histKey() !== shK)) rebuildRows(); // a phone sheet whose list went away closes (sheetSync)
+    if (!emDrag && (!isEditingRows() || (sheet.open && histKey() !== shK))) rebuildRows(); // a phone sheet whose list went away closes (sheetSync); the marker's drag keeps its rows
+    updateHistBtns();
   }
   if (user === currentUserId()) setStatusAuto();
   if (manual) toast('Refreshed from GitHub ✓', 'ok');
@@ -1216,13 +1971,13 @@ const shTrack = () => { const L = cur(); return L && histKey() === shK && L.trac
 const sameTrack = (a, b) => ['title', 'bpm', 'key', 'cueIn', 'cueOut', 'link', 'markStart', 'markEnd'].every(k => (a[k] || '') === (b[k] || ''));
 const rowIn = c => { const r = rowsEl.children[shI]; return r && r.querySelector('.' + c); };
 
-// list bar: undo / redo sit next to Save, the list buttons go into ⋯ (they
+// list bar: undo / redo sit just before ⋯, the list buttons go into ⋯ (they
 // press the hidden buttons, so those handlers run); all back on desktop
 const histEl = document.querySelector('.histbtns'), summaryEl = document.querySelector('.summary');
 const PH_LIST_ACTS = { new: ['btnNew', '＋ New list'], dup: ['btnDup', '⧉ Duplicate list'], rename: ['btnRename', '✎ Rename list'], delete: ['btnDelete', '🗑 Delete list'] };
 function syncPhoneChrome() {
   const ph = isPhone();
-  if (ph) saveBtn.before(histEl);
+  if (ph) document.querySelector('.listbtns .moreWrap').before(histEl);
   else if (histEl.parentNode !== summaryEl) summaryEl.appendChild(histEl);
   moreMenu.querySelectorAll('.phAct').forEach(b => b.remove());
   if (!ph) return;
@@ -1255,7 +2010,7 @@ function phRowFill(r, t) {
   const bits = [bpm && esc(bpm) + ' BPM', key && esc(key), cues && `${cueTxt(t.cueIn)} → ${cueTxt(t.cueOut)}`].filter(Boolean)
     .map(b => `<span class="bit">${b}</span>`); // each wraps as a whole, its · stays on its line
   r.querySelector('.ph-meta').innerHTML =
-    (t.markStart ? '<i class="bd">Start</i>' : '') + (t.markEnd ? '<i class="bd">End</i>' : '') +
+    (t.markStart ? '<i class="bd">Start</i>' : '') + // the end is the marker under its row
     (bits.length ? bits.join('&nbsp;· ') : '<span class="hint">Tap to add BPM, key &amp; cues</span>');
 }
 function phoneComputed(L, res) {
@@ -1410,7 +2165,10 @@ function sheetReveal() {
   // sits lower until the page scrolls); unpinned it scrolls away: at the top
   const b = r.getBoundingClientRect();
   const top = (unpin ? vTop : Math.max(Math.min(theadWrap.getBoundingClientRect().bottom, bars), vTop)) + 4;
-  const d = b.top < top ? b.top - top : b.bottom > bot ? Math.min(b.bottom - bot, b.top - top) : 0;
+  // the end track: the end marker in the gap under it comes into sight with it, room allowing
+  const m = r.classList.contains('endgap') && !endMark.hidden && endMark.getBoundingClientRect();
+  const bb = m && m.bottom - b.top <= bot - top ? m.bottom : b.bottom;
+  const d = b.top < top ? b.top - top : bb > bot ? Math.min(bb - bot, b.top - top) : 0;
   if (d) scrollBy({ top: d, behavior: 'auto' });
 }
 sheet.addEventListener('animationend', sheetReveal); // slid all the way up: measure again
@@ -1462,11 +2220,25 @@ addEventListener('pointermove', e => { // after the drag's own handler has marke
   document.body.classList.add('sheet-hold');
   sheetClose(true);
 });
+// The room goes once the drag is over — unless the page is scrolled into it:
+// it would then shrink under the finger and throw the list down, so it stays
+// until a scroll up leaves it unused (shHoldY: the furthest scroll without it).
+let shHoldY = null;
 const shHoldOff = () => {
-  if (dlgConfirm.open) dlgConfirm.addEventListener('close', shHoldOff, { once: true }); // the move's OK / Cancel
-  else document.body.classList.remove('sheet-hold');
+  const b = document.body;
+  if (dlgConfirm.open) { dlgConfirm.addEventListener('close', shHoldOff, { once: true }); return; } // the move's OK / Cancel
+  if (!b.classList.contains('sheet-hold')) return;
+  const y = scrollY;
+  b.classList.remove('sheet-hold');
+  shHoldY = scrollY < y - 1 ? scrollY : null; // the browser cut the scroll back: room still in use
+  if (shHoldY === null) return;
+  b.classList.add('sheet-hold'); scrollTo(scrollX, y);
 };
 for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => { if (!drag && document.body.classList.contains('sheet-hold')) shHoldOff(); });
+addEventListener('scroll', () => {
+  if (shHoldY === null || drag || emDrag || dlgConfirm.open || scrollY > shHoldY) return; // a new drag settles it itself
+  shHoldY = null; document.body.classList.remove('sheet-hold');
+}, { passive: true });
 
 // sheet fields -> the row's own input, so its handlers do the rest
 sheet.addEventListener('input', e => {
@@ -1511,11 +2283,11 @@ shRedo.onclick = redo;
 for (const b of [shPrev, shNext, shUndo, shRedo]) b.addEventListener('mousedown', e => e.preventDefault()); // keep the keyboard up
 for (const b of sheet.querySelectorAll('.shMk')) b.onclick = () => {
   if (!shTrack()) return;
-  toggleMark(shI, b.dataset.k);
-  sheetReveal(); // the S → E value in the summary line may have come or gone
+  toggleStart(shI);
+  sheetReveal(); // the S → E value in the summary line may have come or gone, the end marker too
 };
 $('shOpen').onclick = () => { if (shTrack()) openTrackLink(shI); };
-$('shLink').onclick = async () => { if (!shTrack()) return; await editTrackLink(shI); updateComputed(); }; // Save's ● too
+$('shLink').onclick = async () => { if (!shTrack()) return; await editTrackLink(shI); updateComputed(); }; // the ▶ Open tint too
 shDel.onclick = () => {
   const t = shTrack(), r = rowsEl.children[shI]; if (!t || !r) return;
   const name = (t.title || '').trim() || `track #${shI + 1}`;
@@ -1560,7 +2332,7 @@ shHead.addEventListener('pointercancel', shSwipeEnd);
 phoneMQ.addEventListener('change', () => {
   if (drag) dragEnd(true);
   sheetClose(true);
-  document.body.classList.remove('sheet-hold');
+  document.body.classList.remove('sheet-hold'); shHoldY = null;
   syncPhoneChrome();
   rebuildRows();
 });
@@ -1590,4 +2362,5 @@ syncPhoneChrome();
 
   renderAll();
   refreshFromRemote(false);
+  asFlushAll(); // left unsaved last time (closed mid-save, offline): saved now
 })();
