@@ -47,7 +47,6 @@ try {
   <div class="listbtns">
     <button id="btnNew" class="btn" title="Create a new list">＋ New</button>
     <button id="btnDup" class="btn" title="Duplicate this list">⧉ Duplicate</button>
-    <button id="btnSave" class="btn primary" title="Save this list to GitHub">Save</button>
     <button id="btnDelete" class="btn icon danger" title="Delete this list" aria-label="Delete this list">🗑</button>
     <div class="moreWrap">
       <button id="btnMore" class="btn icon" aria-label="More actions" aria-haspopup="menu">⋯</button>
@@ -63,9 +62,11 @@ try {
 <section class="summary" aria-live="polite">
   <div class="chip"><span>Tracks</span><b id="sumTracks">0</b></div>
   <div class="chip blue"><span>Set time</span><b id="sumClock">0:00:00</b></div>
-  <div class="chip range" id="sumRange" hidden title="How long it plays from the track marked S (start) to the track marked E (end)">
-    <span>S → E</span><b id="rangeTime">0:00:00</b><i id="rangeInfo"></i>
-    <button type="button" class="rb" id="btnClearRange" title="Clear the start/end marks" aria-label="Clear the start/end marks">✕</button>
+  <div class="chip range" id="sumRange" hidden>
+    <button type="button" class="rangeGo" id="btnRangeGo" title="How long it plays from the start of the S track to the end marker — show the marker">
+      <span>S → E</span><b id="rangeTime">0:00:00</b><i id="rangeInfo"></i>
+    </button>
+    <button type="button" class="rb" id="btnClearRange" title="Clear the start and the end" aria-label="Clear the start and the end">✕</button>
   </div>
   <div class="chip status" id="sumStatus"><b>—</b></div>
   <div class="histbtns">
@@ -77,10 +78,18 @@ try {
 <main>
   <div class="theadwrap" id="theadWrap">
     <div class="thead" aria-hidden="true">
-      <b>#</b><b>Track</b><b>BPM</b><b>Key</b><b>Cue in</b><b>Cue out</b><b>Play Time</b><b>Set time</b><b>S / E</b><b>Link</b><b></b>
+      <b>#</b><b>Track</b><b>BPM</b><b>Key</b><b>Cue in</b><b>Cue out</b><b>Play Time</b><b>Set time</b><b>Start</b><b>Link</b><b></b>
     </div>
   </div>
   <div class="rowswrap" id="rowsWrap"><div id="rows"></div></div>
+  <!-- the end marker: laid over the gap under the end track (app.js, "end marker") -->
+  <div class="endmark" id="endMark" hidden>
+    <div class="emPill" id="emPill" tabindex="0" role="slider" aria-orientation="vertical" aria-label="End of the set: drag it, or use the arrow keys"
+      aria-valuemin="1" aria-valuemax="1" aria-valuenow="1" title="Drag to the track the set ends with (↑ / ↓ when focused)">
+      <span class="emGrip" aria-hidden="true">⇕</span><b id="emTime">0:00:00</b><span id="emInfo"></span>
+    </div>
+  </div>
+  <div class="emsnap" id="emSnap" hidden></div>
   <button id="btnAdd" class="addtrack">＋ Add track</button>
 </main>
 
@@ -113,8 +122,7 @@ try {
       <div><span>Set time</span><b id="shSet">—</b></div>
     </div>
     <div class="shTools">
-      <button type="button" class="btn shMk" data-k="markStart" title="Mark as the track the set starts with" aria-pressed="false"><i>S</i>Start</button>
-      <button type="button" class="btn shMk" data-k="markEnd" title="Mark as the track the set ends with" aria-pressed="false"><i>E</i>End</button>
+      <button type="button" class="btn shMk" data-k="markStart" title="Mark as the track the set starts with — then drag the end marker to where it ends" aria-pressed="false"><i>S</i>Start</button>
       <button type="button" id="shOpen" class="btn" title="Open track link (YouTube search by default)">▶ Open</button>
       <button type="button" id="shLink" class="btn" title="Edit track link">✎ Link</button>
     </div>
@@ -328,12 +336,22 @@ try {
       <b>▶</b> opens the track in a new tab — a YouTube search for the track name by default,
       or any link you set with <b>✎</b> (YouTube, SoundCloud, …). Rename the list with the <b>✎</b> next to its name.<br><br>
       <b>Move a track:</b> grab its <b>⠿</b> handle and drag it to a new place, then confirm with OK.
-      <b>↶ / ↷</b> undo and redo any change.<br><br>
-      <b>Start / End:</b> press <b>S</b> on the track you plan to start with and <b>E</b> on the one you plan to end with —
-      the <b>S → E</b> box shows how long it plays from the start of the S track to the end of the E track.<br><br>
+      <b>↶ / ↷</b> undo and redo any change — each list remembers its last 2000 changes on this device,
+      even after a reload, so you can step all the way back to the first one and forward again.<br><br>
+      <b>Start / End:</b> press <b>S</b> on the track you plan to start with (on a phone: <b>Start</b> in the track's sheet).
+      An <b>end marker</b> appears after the last track — a line with the time on it. Drag it up or down to the track you
+      plan to end with (on a touch screen: by its <b>⇕</b>, or press and hold it first — a quick swipe just scrolls):
+      the tracks in between light up and it shows how long the set plays from the start of the S track
+      to the end of that one, and #from → #to. The <b>S → E</b> box shows the same time; tap it to jump to the marker,
+      or its <b>✕</b> to clear the start and the end. With the marker selected, <b>↑ / ↓</b> move the end one track,
+      Home / End jump to the start track / the last one.<br><br>
       <b>Users:</b> Public is open to everyone. Log in (👤 button) with a username and password for your own lists —
       accounts are made by Adi. Up to 100 lists per user, 500 tracks per list.<br><br>
-      Lists autosave to this device as you type. <b>Save</b> commits them to GitHub — no setup needed.
+      Lists autosave — there is no Save button. Every change is kept on this device at once and saved to
+      GitHub half a minute after you stop typing (no setup needed); the status next to the set time shows
+      <i>Saving…</i>, <i>All changes saved</i>, or — offline — that your changes wait on this device.
+      A save never goes over a newer one from another device: that version is shown, and yours is kept as a
+      list of its own, “… (conflict …)”.
     </p>
     <div class="dlgBtns"><button value="ok" class="btn primary">Got it</button></div>
   </form>

@@ -74,7 +74,6 @@ select {
 .btn:hover { background: var(--panel2); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
 .btn.primary:hover { filter: brightness(1.08); }
-.btn.primary.dirty::after { content: "●"; margin-left: 6px; font-size: .5625rem; vertical-align: 2px; }
 .btn.danger { color: var(--neg); border-color: var(--neg-line); background: transparent; }
 .btn.danger:hover { background: color-mix(in srgb, var(--neg) 10%, transparent); }
 .btn.icon { padding: 9px 11px; }
@@ -104,10 +103,17 @@ select {
 .chip.range b { color: var(--accent); }
 .chip.range i { font-style: normal; color: var(--dim); font-size: .75rem; }
 .chip.range .rb { width: 22px; height: 22px; font-size: .6875rem; }
+/* S → E is a button: it takes you to the end marker */
+.rangeGo {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 0; padding: 0; border: 0; border-radius: 6px; background: none; text-align: left;
+}
+@media (hover: hover) { .rangeGo:hover b { text-decoration: underline; text-underline-offset: 3px; } }
+.rangeGo:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .chip.status { border-style: dashed; }
 .chip.status b { font-family: inherit; font-size: .75rem; font-weight: 600; color: var(--dim); }
 .chip.status.ok b { color: var(--accent); }
-.chip.status.dirty b { color: var(--warn); }
+.chip.status.warn b { color: var(--warn); } /* autosave: not saved yet / offline */
 .histbtns { display: flex; gap: 8px; align-items: center; margin-left: auto; }
 .histbtns .btn { font-size: 1.125rem; line-height: 1; }
 .histbtns .btn:disabled { opacity: .35; cursor: default; }
@@ -174,7 +180,7 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 .row:hover :is(input, .f > b, .f.idx, .f.mark, .f.ops, .f.link) { background-color: var(--row-hover); }
 .row .f.idx > b, .row:hover .f.idx > b { background: none; }
 
-/* start / end marks: the marked part of the set is tinted */
+/* start mark (S) to the end marker: the marked part of the set is tinted */
 .rb.mk { width: 24px; height: 22px; font-size: .6875rem; font-weight: 700; border: 1px solid var(--line); }
 .rb.mk.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .row.inrange :is(input, .f > b, .f.idx, .f.mark, .f.ops, .f.link) { background-color: var(--range-bg); }
@@ -195,6 +201,59 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 .row.dragging .f.idx > b { background: none; }
 .row.dragging .grip { color: var(--accent); }
 body.dragging-active, body.dragging-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+
+/* end marker (app.js, "end marker"): an accent line with a pill on it, in a gap
+   of its own under the end track (.endgap) — it never covers a row, a move's
+   preview included. The pill
+   drags: it lifts off (fixed, under the pointer) while a line shows where the
+   end snaps to. Heights are fixed (one line here, two on phones) so the gap fits. */
+main { position: relative; } /* the marker's offsetParent */
+:root {
+  --em-pill-h: calc(1.25rem * 1.25 + 14px);
+  --em-gap: calc(var(--em-pill-h) + 14px);
+}
+.row.endgap { margin-bottom: var(--em-gap); }
+.endmark {
+  position: absolute; left: 14px; right: 14px; z-index: 5; height: var(--em-gap);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none; transition: transform .16s ease; /* rides a row drag's preview along with its row */
+}
+.endmark[hidden], .emsnap[hidden] { display: none; }
+.endmark.away { visibility: hidden; }
+.endmark::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px;
+  border-radius: 2px; background: var(--accent);
+}
+.endmark.dragging::before { opacity: .45; background: repeating-linear-gradient(90deg, var(--accent) 0 10px, transparent 10px 16px); }
+.emPill {
+  position: relative; pointer-events: auto; max-width: calc(100% - 28px);
+  display: flex; align-items: center; gap: 10px; height: var(--em-pill-h); padding: 0 16px 0 12px;
+  background: var(--panel); color: var(--text); border: 2px solid var(--accent); border-radius: 999px;
+  box-shadow: 0 3px 12px color-mix(in srgb, #000 22%, transparent);
+  white-space: nowrap; cursor: grab; touch-action: pan-y; /* a swipe scrolls, on it too; a touch grabs it after a short hold (app.js) */
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.emPill:hover { background: var(--panel2); }
+.emPill:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.emGrip { color: var(--accent); font-size: 1rem; line-height: 1; padding: 8px; margin: -8px; touch-action: none; } /* the ⇕ grabs at once */
+#emTime { font-family: var(--mono); font-size: 1.25rem; line-height: 1.25; font-weight: 800; color: var(--accent); }
+#emInfo { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dim); font-size: .8125rem; font-variant-numeric: tabular-nums; }
+.emPill.lifted {
+  position: fixed; z-index: 1; transform: translateX(-50%) scale(1.04);
+  background: var(--panel2); box-shadow: var(--shadow), 0 0 0 4px var(--accent-bg); outline: none;
+  transition: box-shadow .18s ease;
+}
+.emsnap {
+  position: absolute; left: 14px; right: 14px; z-index: 4; height: 4px; margin-top: -2px;
+  border-radius: 2px; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); pointer-events: none;
+}
+.endmark.flash .emPill { animation: emFlash .5s ease 3; }
+@keyframes emFlash { 50% { box-shadow: 0 0 0 8px var(--accent-line); } }
+@media (prefers-reduced-motion: reduce) {
+  .endmark, .emPill { transition: none; }
+  .endmark.flash .emPill { animation: none; }
+}
 
 .rb {
   background: none; border: 0; color: var(--dim); border-radius: 6px;
@@ -288,7 +347,7 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
 #toast.err { border-color: var(--neg-line); }
 
 /* ---------- phone: a list to read + a sheet to edit ---------- */
-/* Pinned at the top: the list bar as one line (list, ↶ ↷, Save, ⋯ — app.js
+/* Pinned at the top: the list bar as one line (list, ↶ ↷, ⋯ — app.js
    moves undo / redo up into it and New / Duplicate / Rename / Delete into ⋯),
    a slim summary line and the column header; the brand row scrolls away.
    Rows turn into read-only list lines: number over the drag grip, the title
@@ -309,9 +368,9 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   .account { margin-left: auto; }
   #userBtn { padding: 8px 10px; }
 
-  /* list bar, one sticky line: [list ▾] [↶|↷] [Save] [⋯] — the buttons wrap
-     under the list name when it would get under 8rem (big sizes, 320px phones);
-     Save's ● is a corner dot, so the bar never re-wraps on a first keystroke */
+  /* list bar, one sticky line: [list ▾] [↶|↷] [⋯] — the buttons wrap under
+     the list name when it would get under 8rem (big sizes, 320px phones);
+     lists autosave, so there is no Save button */
   .listbar { gap: 6px; padding: 6px 14px; background: var(--bg); }
   #listSelect {
     flex: 1 1 8rem; min-width: min(8rem, 100%); min-height: 42px; padding: 8px 22px 8px 8px; font-size: max(calc(16px / var(--z, 1)), 1rem);
@@ -321,8 +380,6 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   .listbtns { gap: 4px; margin-left: auto; }
   .listbar .btn { min-height: 42px; padding: 8px 10px; }
   .listbar .btn.icon { min-width: 40px; padding: 8px 9px; }
-  #btnSave { position: relative; }
-  #btnSave.dirty::after { position: absolute; top: 4px; right: 4px; margin: 0; line-height: 1; }
   .listbtns .histbtns { gap: 0; margin: 0; }
   .listbtns .histbtns .btn { min-width: 40px; padding: 8px 6px; font-size: 1.0625rem; }
   .listbtns .histbtns .btn:first-child { border-radius: 10px 0 0 10px; }
@@ -356,9 +413,10 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   .chip.status b { overflow: hidden; text-overflow: ellipsis; font-size: .8125rem; font-weight: 500; }
   .summary > .chip:first-child::before, .chip.status::before { content: "·"; margin: 0 7px; color: var(--dim); }
   .summary .chip.range {
-    order: 4; align-items: center; gap: 6px; height: 26px; margin-left: auto; padding: 0 0 0 10px;
+    order: 4; align-items: center; gap: 6px; height: 26px; margin-left: auto; padding: 0;
     background: var(--range-bg); border: 1px solid var(--accent-line); border-radius: 999px;
   }
+  .summary .rangeGo { flex-wrap: nowrap; align-items: center; gap: 6px; height: 40px; margin: -7px 0; padding: 0 0 0 10px; } /* a 40px target too */
   .summary .chip.range span { display: inline; letter-spacing: .3px; }
   .chip.range b { font-size: .875rem; font-weight: 700; }
   #rangeInfo { display: none; }
@@ -451,6 +509,20 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   }
   #rows .row .f.play > b { grid-row: 1; align-self: end; font-size: .875rem; }
   #rows .row .f.stime > b { grid-row: 2; align-self: start; font-size: .9375rem; font-weight: 700; }
+
+  /* the end marker: full width, the pill on two lines — the time over #from → #to */
+  :root {
+    --em-pill-h: calc(1.25rem * 1.15 + .75rem * 1.35 + 12px);
+    --em-gap: calc(var(--em-pill-h) + 10px);
+  }
+  .endmark, .emsnap { left: 0; right: 0; }
+  .emPill {
+    display: grid; grid-template-columns: auto minmax(0, auto); align-content: center; column-gap: 10px;
+    padding: 0 18px 0 14px; border-radius: 14px;
+  }
+  .emGrip { grid-row: 1 / 3; padding: 12px 10px 12px 14px; margin: -12px -10px -12px -14px; } /* a 40px zone at the pill's left */
+  #emTime { line-height: 1.15; }
+  #emInfo { font-size: .75rem; line-height: 1.35; }
 
   .addtrack {
     margin: 0; min-height: 54px; padding: 15px 14px 15px 52px;
@@ -592,7 +664,11 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   .grip { width: 28px; height: 34px; }
   .topbar { flex-wrap: wrap; }
   .listbtns { flex: 1 1 100%; }
-  .listbtns .btn.primary { margin-left: auto; }
   .chip.blue { margin-left: auto; }
   .row .ph { display: none; } /* a phone's list line, should its rows not be rebuilt for print */
+}
+/* printing: the S → E box tells the stretch; no end marker (it is placed for the screen) */
+@media print {
+  .endmark, .emsnap { display: none; }
+  .row.endgap { margin-bottom: 0; }
 }
