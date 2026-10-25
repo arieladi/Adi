@@ -16490,7 +16490,7 @@ if wrong when he reads v1.1.
 | ADR-0203 d14 | amended: the EQ is on every channel, present but off; no compressor, no gate (d1) |
 | A6-23 (ADR-0203 d13) | the stores wish becomes P3 (d5) |
 
-## ADR-0205 — The Export Page's AI Visual Story Director and the sharded `.adiviz` scene telemetry bundle, approved as specified; stem export, 64-bit summing at mix points, and an AI companion that learns the user's habits — `DECIDED` (2026-10-25) — **DIRECTOR'S SPECIFICATION, APPROVED AS WRITTEN; EXTENDS ADR-0071 (THE EXPORT QUEUE), ADR-0175 (THE TAPS), ADR-0168 (THE AGENT); AMENDS THE GRAPH'S SUMMING UNDER ADR-0203 d1**
+## ADR-0205 — The Export Page's AI Visual Story Director and the sharded `.adiviz` scene telemetry bundle, approved as specified; stem export and stem files; the Export page with Cubase's and REAPER's abilities; the engine layer copies whoever does it best; an AI companion that learns the user's habits — `DECIDED` (2026-10-25) — **DIRECTOR'S SPECIFICATION, APPROVED AS WRITTEN; EXTENDS ADR-0071 (THE EXPORT QUEUE), ADR-0175 (THE TAPS), ADR-0168 (THE AGENT); AMENDS ADR-0191 d4 (NI STEMS EXPORT P1); ADDS AN ENGINE-LAYER EXCEPTION TO ADR-0203 d1; THE PRECISION CHOICE GOES BACK TO THE DIRECTOR**
 
 **The director's specification.** On 2026-10-25 the director handed over a complete feature
 specification, status *Approved*: an Export-page "Visual Director" that binds natural-language
@@ -16570,11 +16570,84 @@ those are d5 to d7.
    Propose changeset, learning that never leaves the machine (ADR-0064's offline rule), a switch
    off by default until he asks. A FEATURES row carries it as a direction with no priority yet.
 
+8. **Stem files, and the stems CDJs can use (the director, later the same day).** He wants stem
+   export to produce "stem files like the ones new CDJs can use". Read in the sources before
+   answering: the CDJ-3000X manual (122 pages) describes no stem playback at all; it plays MP3, AAC
+   (`.m4a`, `.aac`, `.mp4`), WAV and AIFF 16/24-bit to 96 kHz and FLAC from a OneLibrary export.
+   rekordbox 7's own stems are made by rekordbox from the full track; its FAQ says the extracted
+   stem files (`.rbsc`) "cannot be used in EXPORT mode … or with the USB Export function". So today
+   **no Pioneer player plays a stem file from a USB stick**, and there is no Pioneer stem file to
+   write. What exists and is open is **NI Stems (`.stem.mp4`: a master and up to four stereo stems,
+   one AAC codec, a JSON manifest)**, played by Traktor and by any Stems-aware player. Decisions:
+   - **Exporting stems as an NI Stems file rises from P3 to P1** (amends ADR-0191 d4), as a job of
+     the export queue: the stems come from the queue's stem jobs (d5), the AAC from the platform
+     encoders on Windows and macOS and FFmpeg's libavcodec on Linux (ADR-0204 d5), the manifest
+     from the track's metadata; the Visual Story Director's Level 2 uses the same stem set.
+   - **For CDJs today: ADiJ's USB export writes a track's stems as ordinary tracks in a playlist
+     beside the full mix** (a "stems playlist"), which every CDJ plays; win's placement, P2 with the
+     USB export (ADR-0191 d2).
+   - **A research row (AWAITING 17):** the day AlphaTheta publishes, or crate-digger documents, a
+     stem container that a player reads from USB, ADI writes it. Until then nothing is invented.
+   - **Normalising stays an option, never a default**: `export.normalize` is off by default
+     (ADR-0203 d14 a); Live's "Normalize" and the LUFS target are choices on the job.
+
+9. **The Export page carries Cubase's and REAPER's abilities, laid out better, with automation
+   and the AI (the director, the same day).** The parity set, read off both manuals today
+   (Cubase 15 chapter 60; REAPER chapter 21), is the content of the export rows of FEATURES.md:
+   - **from Cubase's Export Audio Mixdown:** channel selection and **channel batch export**
+     (Multiple); export range by locators, **cycle markers** (one file per marker range) or arranger
+     chain; Effects Inside / Outside / Dry; the **naming scheme editor** (attributes, counter,
+     separator, named schemes); the **export queue** (add, update, remove, start); file-format
+     presets; split channels; BWF, iXML and marker chunks, tempo definition, RF64, ID3; **After
+     Export** (open elsewhere, create a new project, create an audio track, insert to the pool);
+     keep the dialog open; realtime export; update display; deactivate external MIDI inputs;
+   - **from REAPER's Render:** the **region render matrix** (ADR-0203 d14, D-07), **stems (selected
+     tracks)** and stems pre-fader, multichannel tracks to multichannel files, **wildcards** with
+     metadata, **normalize to LUFS-I / RMS-I / true peak with a brickwall**, each file separately or
+     together, mono handling, **2nd pass render** for effect tails, dither and noise shaping, render
+     presets (bounds, options, all), the **batch converter**, "silently increment filenames", open
+     the render folder, add rendered items to the project, save a copy of the project with the
+     render;
+   - **ADI's own layer on top:** one page, not two dialogs; the queue is the model and everything
+     above is a property of a job (ADR-0071 d1); **the AI fills the form from a sentence and names
+     the files; the user presses render** (ADR-0071 d3); export presets per project and per user;
+     the LUFS targeting of ADR-0203 d14; the Loudness Drive's audition at any target; the stems
+     feeding NI Stems (d8) and the Visual Story Director (d1 to d4). Priority: the queue and its
+     batch and stem jobs P1 (d5); the matrix's grid, the cycle-marker batch, After Export actions
+     and the batch converter P2; nothing here needs a schema change (jobs are not project state).
+
+10. **In the engine layer, ADI copies the DAW that does it best, not Live by default (the
+    director: "if any DAW like Cubase or REAPER is doing better than Ableton in the engine layer I
+    want to copy them instead").** This is a named exception to ADR-0203 d1, for the engine only:
+    precision, summing, delay compensation, suspension, threading, resampling, the render path.
+    The user-facing layer stays Live's. **Applied to precision, the facts, read today:** Live
+    processes in 32-bit float and sums each mix point in 64-bit (Audio Fact Sheet 38.2.4); Cubase
+    offers **Processing Precision 32 or 64 bit float** for the whole engine, plug-ins that cannot
+    take 64 are processed at 32, and the manual warns of CPU and memory cost (Cubase 15 manual,
+    Setting up Your System); REAPER mixes in 64-bit float by default (Project Settings, "Track mixing
+    bit depth", a setting its user guide we hold does not describe; confirmed from users' reports of
+    the dialog) and sends 64-bit to plug-ins that accept it; Bitwig's own feature list says
+    32-bit floating-point processing. So Cubase and REAPER do better than Live here, and **d6 is
+    superseded by a choice the director makes**, win recommending the first:
+    - **(a) Cubase's switch, REAPER's default:** the engine processes in 64-bit float end to end,
+      sums in 64-bit, hands 64-bit to plug-ins that accept it (VST3 `kSample64`, CLAP 64-bit ports,
+      the Pd tier built with `PD_FLOATSIZE=64`, the native devices in double) and converts at the
+      boundary for the rest; a **Processing Precision switch, 32 or 64, on the Audio page**, default
+      64, for weak machines. Cost: the graph's buffers, the nodes, the hosts and the Pd tier are
+      templated on the sample type; a phase-A refactor of weeks, best paid now, before a window
+      exists; at run time about 2× buffer memory and half the SIMD width in native DSP — REAPER's
+      default proves it affordable. Summing in double happens in both modes.
+    - **(b) Live's scheme now** (d6 as written: 32-bit processing, 64-bit at every mix point),
+      end-to-end 64-bit later behind the same seam.
+    Until he rules, phase A implements the double summing of d6, which (a) also needs.
+
 ### Amendments, in one place
 
 | Entry | What this entry does to it |
 |---|---|
-| ADR-0071 | extended: the Visual Story Director is a job on the queue; the telemetry pass shares the stems' pass; stem jobs P1 (win's placement) |
+| ADR-0071 | extended: the Visual Story Director is a job on the queue; the telemetry pass shares the stems' pass; stem jobs P1 (win's placement); the Export page's parity set (d9) |
+| ADR-0191 d2, d4 | NI Stems export rises to P1; a stems playlist on ADiJ's USB export (P2); no Pioneer stem container exists to write (d8) |
+| ADR-0203 d1 | an engine-layer exception: copy whoever does it best (d10); the precision choice goes back to the director |
 | ADR-0175 | extended: the taps feed the telemetry exporter offline |
 | ADR-0168, ADR-0064 | extended: the agent writes the story manifest; the companion learns on-device |
 | ADR-0203 d1 | applied: 64-bit summing at every mix point, as Live; processing stays 32-bit float |
