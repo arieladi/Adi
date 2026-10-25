@@ -31,6 +31,7 @@ the P0 editing set; the P1 set; then the Mac and Linux builds immediately, then 
 | `docs/STEP-7-PLAN.md`, `docs/UI-ARCHITECTURE.md` | the first window: build order, seams, tests, the parity gate | |
 | `docs/SETTINGS.md`, `docs/SETTINGS-CATALOGUE.md` | every setting, generated from the registry | |
 | `docs/AWAITING.md` | what only the director can measure or hear; rows 6 to 15 are the Live readings the rulings wait for | |
+| `docs/LANES.md` | who builds what from 25 October: the win, engine and clones lanes, their queues, the director's gates (ADR-0207) | this file on the order of work |
 | `collab/README.md` | the rules of work: roster, branches, claims, ADR reservations, the build, what "done" means | |
 | `OPEN_SOURCE_POLICY.md` (repo root) | licensing, closed: §4a | |
 
@@ -132,7 +133,7 @@ signed. win measures `main` and updates the README count after each merge.
 
 ### Phase A — close step 6: sends and returns play (P0)
 
-0. 64-bit summing at every mix point (ADR-0205 d6): `Graph::accumulate` and every other sum
+0. 64-bit end to end (ADR-0207 d2 closed the choice): first the double summing at every mix point (ADR-0205 d6), `Graph::accumulate` and every other sum
    accumulate in double and convert once; the Fact Sheet's cancellation case as a test. **The
    processing precision itself is the director's open choice (ADR-0205 d10)**: if he takes 64-bit
    end to end (win's recommendation), the sample type is templated through `AudioIo`/`NodeIo`, the

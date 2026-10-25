@@ -16757,3 +16757,47 @@ window.
 | ADR-0144 | applied: two whole tables in an additive minor; the sampleRate default is separate (d3) |
 | FEATURES §12 | a new format gap: the reserved tables (d3) |
 | `files.sampleEditorOpens` | the default is in place, as Live; copy is the addition (d6) |
+
+## ADR-0207 — No orchestrator: three lanes (win, engine, clones) with queues for months; 64-bit end to end; the evening's rulings of 25 October — `DECIDED` (2026-10-25) — **DIRECTOR'S DECISIONS; CLOSES ADR-0205 d10's PRECISION CHOICE; CLOSES ADR-0206's QUESTIONS; ADDS `docs/LANES.md`**
+
+**The director's words.** After two weeks spent connecting his accounts to one orchestrator, which
+"just complicates things", he wants the work divided: his Claude Max account (Opus 5.5, a session of
+its own) on the parts it does best, the engine; his Codex Pro account on reading and building the
+plug-ins he wants to clone; both with enough work "for weeks or months", resuming after every usage
+limit, until he can test a window himself. He also approved, in one word, the open questions put to
+him the same day.
+
+### Decisions
+
+1. **No orchestrator. Three lanes** — win (coordination, review, merge, docs), engine (Claude Max),
+   clones (Codex Pro) — each a long-running session with its own queue, log and worktrees, as
+   `docs/LANES.md` lays out, with the standing prompts in `collab/prompts/2026-10-25-engine-lane.md`
+   and `2026-10-25-clones-lane.md`. win merges everything; a lane never merges its own PR. The
+   director's only work between sessions is "continue" and the gates of LANES §5.
+
+2. **Processing precision: 64-bit end to end** (closes ADR-0205 d10 with its option (a)): the engine
+   processes and sums in 64-bit float, hands 64-bit to plug-ins that accept it and converts at the
+   boundary for the rest, the Pd tier is built in double, and a Processing Precision switch (32 or
+   64, default 64) sits on the Audio page for weak machines. Double summing at every mix point comes
+   first, with Live's Fact Sheet cancellation case as the test; the engine lane's first item.
+
+3. **ADR-0206's questions, answered:** ADI drives FilmCraft's transport (master direction) and does
+   not follow it until FilmCraft gains a push channel; proposing `events.subscribe` upstream goes on
+   the director's FilmCraft contributions, after PR 1; Live's video clips and Video Window stay at P2.
+
+4. **The FilmCraft contribution runs on adi-ubuntu** (the director's Linux desktop, 192.168.1.97) for
+   its Linux gate, once he approves the Rust toolchain there; Codex found Windows alone could not
+   close the gate. No new machine.
+
+5. **The Master Reference** gets v1.2 when the rulings since v1.1 (ADR-0205 d8 to d10, ADR-0206,
+   this entry) are in; the document's job is unchanged: every wish of the director, with examples and
+   photos, and a plan that holds, now `LANES.md` beside `BUILD-BRIEF.md`.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0205 d10 | closed: 64-bit end to end, with a 32/64 switch, default 64 (d2) |
+| ADR-0206 d4, d5 | closed: master direction only; `events.subscribe` on the contributions list; video clips P2 (d3) |
+| ADR-0109 roster, ADR-0202 | the roster gains the engine and clones lanes; win_codex's roster row becomes the clones lane (d1) |
+| BUILD-BRIEF phase A | item 0 becomes the end-to-end refactor, double summing first (d2) |
