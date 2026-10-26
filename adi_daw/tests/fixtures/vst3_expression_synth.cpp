@@ -30,6 +30,17 @@
 // see it; it stands for what a real plugin keeps outside its parameter list.
 // Loading a chunk answers with restartComponent too, as real plugins do.
 //
+// ADR-0089 d4: a hidden one-shot Slow Block switch keeps the process call it
+// arrives in inside the plugin for 300 ms, so a test can reactivate the
+// device under it. A block longer than setupProcessing's maxSamplesPerBlock
+// is refused, as the SDK allows, and writes nothing: a host that resized its
+// buffers without setting the plugin up again is heard as silence. Exported
+// beside the factory, for tests: `adiFixtureLiveSynths`, how many plugin
+// objects are alive, so a reference the host never released shows;
+// `adiFixtureInProcess`, how many process calls are inside a plugin now; and
+// `adiFixtureOverlaps`, how many setActive or setupProcessing calls arrived
+// while a process call was inside the same plugin.
+//
 // Each voice is a sine at the note's pitch, with pressure as amplitude
 // (0.25 + 0.75 p) and timbre as a 3rd harmonic (0.05 + 0.95 t) -- chosen so a
 // dimension that never arrives still sounds, and reads "unchanged".
@@ -56,9 +67,11 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <thread>
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -87,7 +100,17 @@ constexpr ParamID kRpnMsb = 500, kRpnLsb = 501, kDataEntry = 502;    ///< channe
 /// would), which is the case the host's echo guard exists for.
 constexpr ParamID kDrive = 4000, kGestureTrigger = 4001, kDeferredEcho = 4002;
 constexpr ParamID kPresetTrigger = 4003, kPatch = 4004, kDeferredRestart = 4005;   // ADR-0142
-constexpr int32 kExtraParams = 6;
+constexpr ParamID kSlowBlock = 4006;   // ADR-0089 d4: this process call stays 300 ms
+constexpr int32 kExtraParams = 7;
+constexpr auto kSlowBlockFor = std::chrono::milliseconds(300);
+
+/// Plugin objects alive: one per instance a host created and has not yet
+/// released all the way. `adiFixtureLiveSynths` reads it.
+std::atomic<int> g_liveSynths{0};
+/// setActive and setupProcessing calls made under a process call.
+std::atomic<int> g_overlaps{0};
+/// Process calls inside a plugin now, across every plugin object.
+std::atomic<int> g_inProcess{0};
 constexpr double kPresetDrive7 = 0.45, kPresetDrive3 = 0.6;
 constexpr int32 kStateBytes = 16;   // 'ADS1', the patch, Drive
 constexpr char kStateMagic[4] = {'A', 'D', 'S', '1'};
@@ -130,6 +153,7 @@ class Synth final : public IComponent,
 public:
     explicit Synth(Variant v) : variant_(v) {
         for (auto& b : bend_) b = 0.5;
+        g_liveSynths.fetch_add(1);
     }
     // NOT virtual, and not `override` either: Steinberg's FUnknown has no
     // virtual destructor by design -- lifetime is `release()` calling
@@ -138,7 +162,7 @@ public:
     // which Apple clang reports as -Wunnecessary-virtual-specifier and
     // -Werror stops on. MSVC has no such warning, and this file had only ever
     // been compiled on Windows.
-    ~Synth() = default;
+    ~Synth() { g_liveSynths.fetch_sub(1); }
 
     // --- FUnknown ----------------------------------------------------------
     tresult PLUGIN_API queryInterface(const TUID queried, void** obj) override {
@@ -193,7 +217,10 @@ public:
     }
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }
     tresult PLUGIN_API activateBus(MediaType, BusDirection, int32, TBool) override { return kResultOk; }
-    tresult PLUGIN_API setActive(TBool) override { return kResultOk; }
+    tresult PLUGIN_API setActive(TBool) override {
+        if (inProcess_.load()) g_overlaps.fetch_add(1);
+        return kResultOk;
+    }
     // ADR-0142. One override serves IComponent and IEditController alike: this
     // class is both, so JUCE saves the same bytes twice and loads them twice.
     tresult PLUGIN_API setState(IBStream* stream) override {
@@ -239,14 +266,26 @@ public:
     }
     uint32 PLUGIN_API getLatencySamples() override { return 0; }
     tresult PLUGIN_API setupProcessing(ProcessSetup& setup) override {
+        if (inProcess_.load()) g_overlaps.fetch_add(1);
         sampleRate_ = setup.sampleRate > 0.0 ? setup.sampleRate : 48000.0;
+        maxBlock_ = setup.maxSamplesPerBlock;
         return kResultOk;
     }
     tresult PLUGIN_API setProcessing(TBool) override { return kResultOk; }
     uint32 PLUGIN_API getTailSamples() override { return 0; }
 
     tresult PLUGIN_API process(ProcessData& data) override {
+        struct Inside {
+            std::atomic<bool>& flag;
+            explicit Inside(std::atomic<bool>& f) : flag(f) { flag = true; g_inProcess.fetch_add(1); }
+            ~Inside() { g_inProcess.fetch_sub(1); flag = false; }
+        } inside(inProcess_);
+        if (data.numSamples > maxBlock_) return kInvalidArgument;
         applyParameters(data.inputParameterChanges);
+        if (slow_) {
+            slow_ = false;
+            std::this_thread::sleep_for(kSlowBlockFor);
+        }
         applyEvents(data.inputEvents);
         render(data);
         return kResultOk;
@@ -268,11 +307,13 @@ public:
         if (index >= baseParameterCount()) {
             const int32 k = index - baseParameterCount();
             static constexpr ParamID ids[kExtraParams] = {kDrive, kGestureTrigger, kDeferredEcho,
-                                                          kPresetTrigger, kPatch, kDeferredRestart};
+                                                          kPresetTrigger, kPatch, kDeferredRestart,
+                                                          kSlowBlock};
             static constexpr const char* titles[kExtraParams] = {
-                "Drive", "Gesture Trigger", "Deferred Echo", "Preset Trigger", "Patch", "Deferred Restart"};
+                "Drive", "Gesture Trigger", "Deferred Echo", "Preset Trigger", "Patch", "Deferred Restart",
+                "Slow Block"};
             static constexpr const char* shorts[kExtraParams] = {"Drive", "Trigger", "Echo",
-                                                                 "Preset", "Patch", "Restart"};
+                                                                 "Preset", "Patch", "Restart", "Slow"};
             const bool drive = k == 0;
             info.id = ids[k];
             copy128(info.title, titles[k]);
@@ -454,6 +495,7 @@ private:
         else if (id == kRpnLsb)   rpnLsb_ = static_cast<int>(std::lround(v * 127.0));
         else if (id == kDataEntry && rpnMsb_ == 0 && rpnLsb_ == 6)
             memberBend_ = std::lround(v * 127.0) > 0 ? 48.0 : 2.0;   // the MCM: MPE's +/-48
+        else if (id == kSlowBlock && v > 0.5) slow_ = true;
     }
 
     Voice* voiceFor(int32 noteId, int key, int channel) {
@@ -546,6 +588,9 @@ private:
     double pendingEcho_ = 0.0;
     bool hasPendingEcho_ = false;
     double sampleRate_ = 48000.0;
+    int32 maxBlock_ = 0;                     ///< setupProcessing's maxSamplesPerBlock
+    bool slow_ = false;                      ///< ADR-0089 d4: hold this process call
+    std::atomic<bool> inProcess_{false};     ///< a process call is inside
     std::array<Voice, 16> voices_{};
     std::array<double, 16> bend_{}, pressure_{}, timbre_{};
     int rpnMsb_ = 127, rpnLsb_ = 127;
@@ -626,6 +671,11 @@ extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
     return &factory;
 }
 
+/// Not part of the format: a test's window onto the plugin objects alive.
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureLiveSynths() { return g_liveSynths.load(); }
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureOverlaps() { return g_overlaps.load(); }
+extern "C" SMTG_EXPORT_SYMBOL int adiFixtureInProcess() { return g_inProcess.load(); }
+
 #if defined(__APPLE__)
 // A macOS VST3 is a BUNDLE, and a host opens it through CFBundle rather than
 // by dlopen'ing a file. The format requires these two beside the factory:
@@ -646,4 +696,9 @@ extern "C" SMTG_EXPORT_SYMBOL IPluginFactory* PLUGIN_API GetPluginFactory() {
 // variants out of the built bundle on macOS.
 extern "C" SMTG_EXPORT_SYMBOL bool bundleEntry(CFBundleRef) { return true; }
 extern "C" SMTG_EXPORT_SYMBOL bool bundleExit() { return true; }
+#elif defined(__linux__)
+// Linux's pair, with the same nothing to do: the format names them, and the
+// argument is the handle dlopen returned.
+extern "C" SMTG_EXPORT_SYMBOL bool ModuleEntry(void*) { return true; }
+extern "C" SMTG_EXPORT_SYMBOL bool ModuleExit() { return true; }
 #endif

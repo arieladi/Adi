@@ -119,7 +119,16 @@ public:
     /// here, and the infinite case is a branch rather than an arithmetic
     /// accident -- multiplying an infinity by a sample rate does not give you
     /// INT64_MAX, it gives you undefined behaviour.
-    [[nodiscard]] std::int64_t tailSamples() const noexcept override;
+    ///
+    /// READ ON THE MESSAGE THREAD, AND KEPT. The graph asks every block, on
+    /// the audio thread, and JUCE answers by calling the plug-in's
+    /// `getTailSamples`, which the SDK marks [UI-thread & Setup Done] -- and
+    /// during a reactivation it ran while the message thread had the plug-in
+    /// in `setupProcessing`. A VST3 says its tail when it is set up, so it is
+    /// read at construction and after each activation, and this returns that.
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override {
+        return tail_.load(std::memory_order_acquire);
+    }
 
     /// Whatever `getLatencySamples()` says, and nothing added. ADR-0058
     /// decision 4: the device buffer is NOT included here, or every
@@ -226,6 +235,8 @@ public:
     /// prepare with the same rate, size and channels must not -- see the guard
     /// at the top of `prepare`, which never fired until ADR-0097 found why.
     [[nodiscard]] std::int64_t activations() const noexcept { return activations_; }
+    /// A reactivation holds the plug-in now (`ReactivationGate`). Any thread.
+    [[nodiscard]] bool reactivating() const noexcept { return gate_.closed(); }
 
     /// True when the raw interface was reached and the fast path is live.
     [[nodiscard]] bool usingRawProcessor() const noexcept { return processor_ != nullptr; }
@@ -272,8 +283,14 @@ private:
     juce::MidiBuffer midi_;
 
     /// The raw interface, when we could reach it. Null means JUCE's
-    /// processBlock is driving and note expression is unavailable.
+    /// processBlock is driving and note expression is unavailable. Holds a
+    /// reference of its own (`queryInterface` adds one), released when it is
+    /// asked for again and in the destructor.
     Steinberg::Vst::IAudioProcessor* processor_ = nullptr;
+    /// `tailSamples`, as the plug-in last said it on the message thread.
+    std::atomic<std::int64_t> tail_{engine::kInfiniteTail};
+    /// What the plug-in says its tail is now. Message thread, set up.
+    [[nodiscard]] std::int64_t readTail() const noexcept;
     Vst3EventList   events_;
 
     // ADR-0097. The router's output is sized at prepare and reused.

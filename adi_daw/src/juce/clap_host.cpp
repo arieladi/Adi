@@ -404,7 +404,10 @@ ClapDevice::~ClapDevice() {
     // exactly that, by being pasted in from prepare().
     if (plugin_ == nullptr) return;
     if (activated_) {
-        if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+        // Only what started: plugin.h makes stop_processing legal only while
+        // processing, and a plug-in whose start_processing failed is active
+        // but not processing -- the guard `prepare` and `release` have.
+        if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
     // DEFENSIVE, AND SAY SO: this line is NOT what closes the use-after-free.
@@ -860,6 +863,15 @@ std::int64_t ClapDevice::tailSamples() const noexcept {
     // why it could never have found this.
     if (plugin_ == nullptr || tailExt_ == nullptr || tailExt_->get == nullptr)
         return engine::kInfiniteTail;
+    // NOT DURING A REACTIVATION. The graph asks every node for its tail on
+    // every block, on the audio thread and outside `process`, so without
+    // this the old graph of a live rebuild called `tail.get` while the
+    // message thread had the plug-in deactivated or inside `activate` --
+    // two threads in it at once, and `activated_` read as it is written.
+    // Infinite is the answer that cannot cut a tail: it keeps the node
+    // awake for the block.
+    const ReactivationGate::Pass pass(gate_);
+    if (!pass) return engine::kInfiniteTail;
     // NOT BEFORE ACTIVATE. Same rule as the latency below and the same
     // reason -- a tail is a number of samples and the plugin does not know
     // the sample rate yet. The conservative answer here is infinite, which

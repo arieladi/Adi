@@ -34,6 +34,7 @@
 #include <type_traits>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <thread>
 
 namespace {
@@ -2869,15 +2870,18 @@ void testA64BitClapThroughTheGraph() {
 
 // --- ADR-0089 d4: a reactivation holds the audio thread off the plug-in -----
 
-/// A plug-in whose `process` and `activate` can be held, so a test can put a
-/// call on the audio thread exactly where a live rebuild would meet it.
+/// A plug-in whose `process`, `activate` and `stop_processing` can be held,
+/// so a test can put a call on the audio thread exactly where a live rebuild
+/// would meet it. It has a tail (7 samples) and counts who asks for it.
 struct Holdable {
     clap_plugin_t plugin{};
-    std::atomic<bool> holdProcess{false}, holdActivate{false};
-    std::atomic<bool> inProcess{false}, inActivate{false};
-    std::atomic<int> calls{0}, activations{0}, deactivations{0};
-    std::atomic<int> deactivatedUnderACall{0}, calledWhileInactive{0};
+    clap_plugin_tail_t tail{};
+    std::atomic<bool> holdProcess{false}, holdActivate{false}, holdStop{false};
+    std::atomic<bool> inProcess{false}, inActivate{false}, inStop{false};
+    std::atomic<int> calls{0}, activations{0}, deactivations{0}, stops{0}, tailCalls{0};
+    std::atomic<int> deactivatedUnderACall{0}, calledWhileInactive{0}, tailWhileInactive{0};
     std::atomic<bool> active{false};
+    bool startFails = false;
 
     static Holdable& self(const clap_plugin_t* p) { return *static_cast<Holdable*>(p->plugin_data); }
 
@@ -2900,11 +2904,25 @@ struct Holdable {
             f.active = false;
             ++f.deactivations;
         };
-        plugin.start_processing = [](const clap_plugin_t*) { return true; };
-        plugin.stop_processing = [](const clap_plugin_t*) {};
+        plugin.start_processing = [](const clap_plugin_t* p) { return !self(p).startFails; };
+        plugin.stop_processing = [](const clap_plugin_t* p) {
+            Holdable& f = self(p);
+            f.inStop = true;
+            while (f.holdStop.load()) std::this_thread::yield();
+            f.inStop = false;
+            ++f.stops;
+        };
         plugin.reset = [](const clap_plugin_t*) {};
         plugin.on_main_thread = [](const clap_plugin_t*) {};
-        plugin.get_extension = [](const clap_plugin_t*, const char*) -> const void* { return nullptr; };
+        plugin.get_extension = [](const clap_plugin_t* p, const char* id) -> const void* {
+            return std::strcmp(id, CLAP_EXT_TAIL) == 0 ? &self(p).tail : nullptr;
+        };
+        tail.get = [](const clap_plugin_t* p) -> std::uint32_t {
+            Holdable& f = self(p);
+            if (!f.active.load() || f.inActivate.load()) ++f.tailWhileInactive;
+            ++f.tailCalls;
+            return 7;
+        };
         plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
             Holdable& f = self(p);
             if (!f.active.load()) ++f.calledWhileInactive;
@@ -2998,6 +3016,69 @@ void testAReactivationWaitsForTheCallInFlight() {
     rebuild.join();
 }
 
+void testNothingReachesThePlugInWhileItIsReactivated() {
+    section("ADR-0089 d4 -- while a reactivation holds it, nothing on the audio thread reaches "
+            "the plug-in: not process, not the tail query the graph makes every block");
+
+    Holdable f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Holdable";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 256);
+    check(d.tailSamples() == 7, "active, the tail is the plug-in's");
+
+    // Held inside stop_processing, the first thing a reactivation does: the
+    // plug-in is still active and processing, so only the gate keeps a call
+    // out (a reactivation held in activate has already stopped processing,
+    // and the call would pass through without the gate).
+    f.holdStop = true;
+    std::thread message([&] { d.prepare(44100.0, 256); });
+    check(within([&] { return f.inStop.load(); }), "a reactivation is inside stop_processing");
+    const int calls = f.calls.load(), tails = f.tailCalls.load();
+    Io64 b(256, 0.3, false);
+    d.process(b.io);
+    check(f.calls.load() == calls, "a call made meanwhile does not reach the plug-in");
+    check(b.gl[0] == 0.3f && b.gr[255] == 0.3f, "and passes its audio through");
+    check(d.tailSamples() == engine::kInfiniteTail && f.tailCalls.load() == tails,
+          "the tail query meanwhile is answered without the plug-in: infinite, so nothing sleeps");
+    f.holdStop = false;
+    message.join();
+
+    // Held inside activate: deactivated and being activated again.
+    f.holdActivate = true;
+    std::thread again([&] { d.prepare(48000.0, 256); });
+    check(within([&] { return f.inActivate.load(); }), "a reactivation is inside activate");
+    check(d.tailSamples() == engine::kInfiniteTail && f.tailCalls.load() == tails,
+          "and while it is, the tail query does not reach the plug-in either");
+    f.holdActivate = false;
+    again.join();
+    check(f.tailWhileInactive.load() == 0, "the plug-in was never asked for its tail while inactive");
+    check(d.tailSamples() == 7 && f.tailCalls.load() == tails + 1, "active again, it is asked");
+}
+
+void testADestroyedDeviceStopsOnlyWhatStarted() {
+    section("plugin.h -- a device destroyed stops processing only if processing started, "
+            "then deactivates");
+
+    DeviceIdentity id; id.format = "clap"; id.name = "Holdable";
+    {
+        Holdable f;
+        f.startFails = true;
+        {
+            ClapDevice d(&f.plugin, id);
+            d.prepare(48000.0, 256);
+            check(d.startFailures() == 1, "start_processing refused");
+        }
+        check(f.stops.load() == 0, "destroyed, it is never stopped: it never started");
+        check(f.deactivations.load() == 1, "and it is deactivated");
+    }
+    {
+        Holdable f;
+        { ClapDevice d(&f.plugin, id); d.prepare(48000.0, 256); }
+        check(f.stops.load() == 1 && f.deactivations.load() == 1,
+              "one that started is stopped, then deactivated");
+    }
+}
+
 void testAReleaseWaitsForTheCallInFlight() {
     section("ADR-0089 d4 -- a release waits for the process call in flight too");
 
@@ -3025,6 +3106,14 @@ void testAReleaseWaitsForTheCallInFlight() {
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_clap_tests -- the CLAP host, no JUCE and no plugin\n\n");
+    // Every wait in the threaded tests has a deadline, but a gate that never
+    // opens hangs in a Hold or a join, not in a wait. This ends the suite
+    // instead, well inside ctest's TIMEOUT for it.
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(240));
+        std::printf("\nFAILED -- still running after 240 s: a threaded test is stuck\n");
+        std::_Exit(1);
+    }).detach();
     testEveryDimensionHasANamedClapId();
     testTuningNeedsNoConversion();
     testEventListCarriesNoteIdAndDouble();
@@ -3073,6 +3162,8 @@ int main() {
     testTheAnswerIsReadAgainAtEachActivation();
     testAReactivationWaitsForTheCallInFlight();
     testAReleaseWaitsForTheCallInFlight();
+    testNothingReachesThePlugInWhileItIsReactivated();
+    testADestroyedDeviceStopsOnlyWhatStarted();
     testA64BitClapThroughTheGraph();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);

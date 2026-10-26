@@ -1204,7 +1204,13 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
     // rule impossible to test: planting a defect in the guard changes nothing
     // observable at any realistic duration. A decision that cannot be
     // falsified is one nobody can maintain, so it is a branch instead.
-    const bool infinite = s.node->tailSamples() == kInfiniteTail;
+    //
+    // ASKED ONCE A BLOCK. A device's answer can change between two calls:
+    // during a reactivation it answers kInfiniteTail without asking its
+    // plug-in (ADR-0089 d4). Asked twice, a finite answer then an infinite
+    // one made `tail + reach` below INT64_MAX plus something: an overflow.
+    const std::int64_t tail = s.node->tailSamples();
+    const bool infinite = tail == kInfiniteTail;
 
     if (!inputSilent || hasEvents || holding) {
         // RE-ARMED WITH WHAT IS STILL IN FLIGHT, not only the node's own tail.
@@ -1221,7 +1227,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
             if (d.reach() > reach) reach = d.reach();
         for (const DelayLine& d : s.sideDelays)
             if (d.reach() > reach) reach = d.reach();
-        s.tailRemaining = infinite ? 0 : s.node->tailSamples() + reach;
+        s.tailRemaining = infinite ? 0 : tail + reach;
     }
 
     // JUDGED AT THE START OF THE BLOCK, before any tail is spent.

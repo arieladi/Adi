@@ -214,12 +214,18 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
         // called from the audio thread.
         caps_ = probeExpressionCaps(*inst_);
     }
+    // The graph asks before it prepares this device, so the tail is read now,
+    // at the rate the instance was created at (0 with no instance, as before).
+    tail_.store(readTail(), std::memory_order_release);
     router_.configure(engine::resolveRoute(engine::RouteChoice::Auto, caps_), caps_);
     routeInUse_.store(static_cast<std::uint8_t>(router_.current()), std::memory_order_release);
 }
 
 Vst3Device::~Vst3Device() {
     if (inst_ != nullptr) inst_->removeListener(this);
+    // Ours, from `queryInterface`, and released before JUCE tears the
+    // component down. It never was, so the plug-in outlived its host.
+    if (processor_ != nullptr) processor_->release();
 }
 
 void Vst3Device::readParameters() {
@@ -385,15 +391,26 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // track would have had its key input disabled by the host, at prepare,
     // with nothing reported. The plugin's own bus layout is left alone and
     // only the rate and block size are set.
+    //
+    // RELEASED FIRST. JUCE's own `prepareToPlay` returns at once when the
+    // instance is active at the rate and block it is handed -- and the line
+    // below hands it them before it asks. So a format change to a device
+    // still active (a block size changed on an open stream, a retired device
+    // reused at a new size) resized our buffers and never reached the
+    // plug-in, which was then handed blocks larger than it was set up for.
+    // Releasing an instance that is not active does nothing.
+    inst_->releaseResources();
     inst_->setRateAndBufferSizeDetails(sampleRate, maxFrames);
     inst_->prepareToPlay(sampleRate, maxFrames);
     ++activations_;
+    tail_.store(readTail(), std::memory_order_release);   // set up again: ask again
 
     // ADR-0073's takeover. JUCE has now activated the component and set
     // processing; what it cannot do is carry note expression, because its
     // only event path is a MidiBuffer with noteId hardcoded to -1. So we
     // reach past it for `process` alone and leave discovery, state and
     // parameters where they are.
+    if (processor_ != nullptr) processor_->release();   // the last reactivation's
     processor_ = nullptr;
     if (const auto* client = inst_->getVST3Client()) {
         if (auto* comp = client->getIComponentPtr()) {
@@ -626,7 +643,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     }
 }
 
-std::int64_t Vst3Device::tailSamples() const noexcept {
+std::int64_t Vst3Device::readTail() const noexcept {
     if (inst_ == nullptr) return 0;
     const double secs = inst_->getTailLengthSeconds();
 

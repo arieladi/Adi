@@ -451,8 +451,9 @@ private:
 
     /// Holds the audio thread off the plug-in while `prepare` or `release`
     /// stops, deactivates and reallocates it, which a live rebuild does while
-    /// the last graph still renders this device (ADR-0089 d4).
-    ReactivationGate gate_;
+    /// the last graph still renders this device (ADR-0089 d4). Mutable:
+    /// `tailSamples` is const, and passes it too.
+    mutable ReactivationGate gate_;
 
     /// `glue_->flushRequests()` already answered. Message thread only.
     std::uint64_t flushSeen_ = 0;

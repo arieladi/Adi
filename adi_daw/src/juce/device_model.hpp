@@ -539,6 +539,11 @@ private:
 /// sequentially consistent: either the call sees the gate closed, or the
 /// wait sees the call inside; neither can miss the other. A `prepare` that
 /// changes nothing never takes it, so a rebuild costs a device no block.
+///
+/// Every audio-thread call into the plug-in passes it, not `process` alone:
+/// the graph also asks each node for its tail every block. A `Pass` never
+/// waits, so one made on the message thread inside a `Hold` -- a plug-in's
+/// callback during `activate` -- is turned away rather than deadlocked.
 class ReactivationGate {
 public:
     class Pass {
