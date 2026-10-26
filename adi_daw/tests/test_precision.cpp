@@ -226,6 +226,29 @@ void testOneRounding() {
     check(want != 1.0f, "converted once it is 1 + 2^-23: " + show(want));
     check(out.l[0] == want && out.r[511] == want,
           "the graph's sum is the double sum converted once: " + show(out.l[0]));
+
+    // The same, with the last input on a compensated edge: 1 and one tiny
+    // arrive 100 samples late, so the other tiny is delayed to meet them and
+    // is the input whose add the conversion rides on.
+    {
+        PlayNode p1(one), p2(small), p3(small);
+        LateNode l1(100), l2(100);
+        SumNode m;
+        Graph h;
+        const NodeId h1 = h.addNode(p1), h2 = h.addNode(p2), h3 = h.addNode(p3),
+                     hl1 = h.addNode(l1), hl2 = h.addNode(l2), hm = h.addNode(m);
+        h.connect(h1, hl1);
+        h.connect(h2, hl2);
+        h.connect(hl1, hm);
+        h.connect(hl2, hm);
+        h.connect(h3, hm);
+        h.setOutput(hm);
+        h.prepare(48000.0, 512);
+        check(h.compensationFor(h3, hm) == 100, "the last input is compensated by 100");
+        const Render late = renderGraph(h, 512, 512);
+        check(late.l[100] == want && late.r[511] == want,
+              "through the delay line too, converted once: " + show(late.l[100]));
+    }
 }
 
 void testMasterCancels() {

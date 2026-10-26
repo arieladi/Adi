@@ -874,18 +874,49 @@ bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delay
     // In the consumer's fixed input order, as before: ADR-0056's
     // order-independence across a level is about WHICH node runs first,
     // never about the order a sum is taken in, and double does not change it.
-    for (std::size_t k = 0; k < inputs.size(); ++k)
-        accumulate<double>(wide, slots_[static_cast<std::size_t>(inputs[k])], delays[k],
-                           begin, frames, k == 0);
-    const auto ch = static_cast<std::size_t>(channels_);
-    const auto n = static_cast<std::size_t>(frames);
-    for (std::size_t c = 0; c < ch; ++c) {
-        const double* w = wide[c] + begin;
-        float* d = dst[c] + begin;
-        for (std::size_t i = 0; i < n; ++i) d[i] = static_cast<float>(w[i]);
+    //
+    // The LAST input that adds anything is added and converted in one pass,
+    // straight into the float buffer the node reads: a separate conversion
+    // pass over the accumulator was a fifth of a cheap project's callback.
+    // Two live inputs mean it is never the first. Idle inputs after it add
+    // nothing and are only counted as skipped.
+    std::size_t last = inputs.size() - 1;
+    while (idle(slots_[static_cast<std::size_t>(inputs[last])], delays[last])) --last;
+    for (std::size_t k = 0; k < inputs.size(); ++k) {
+        const Slot& src = slots_[static_cast<std::size_t>(inputs[k])];
+        if (k == last) accumulateLast(dst, wide, src, delays[k], begin, frames);
+        else accumulate<double>(wide, src, delays[k], begin, frames, k == 0);
     }
     ++stats_.wideMixes;
     return true;
+}
+
+void Graph::accumulateLast(std::vector<float*>& dst, const std::vector<double*>& wide,
+                           const Slot& src, DelayLine& delay, std::int32_t begin,
+                           std::int32_t frames) noexcept {
+    const auto ch = static_cast<std::size_t>(channels_);
+    const auto n = static_cast<std::size_t>(frames);
+    if (!delay.busy() && delay.delay() == 0) {
+        for (std::size_t c = 0; c < ch; ++c) {
+            const float* s = src.chanPtrs[c] + begin;
+            const double* w = wide[c] + begin;
+            float* d = dst[c] + begin;
+            for (std::size_t i = 0; i < n; ++i) d[i] = static_cast<float>(w[i] + s[i]);
+        }
+        return;
+    }
+    // Compensated: the same cursor discipline as `accumulate`.
+    const DelayLine::Cursors before = delay.cursors();
+    for (std::size_t c = 0; c < ch; ++c) {
+        delay.setCursors(before);
+        float* tmp = delayScratch_.data();
+        std::memcpy(tmp, src.chanPtrs[c] + begin, n * sizeof(float));
+        delay.process(static_cast<std::int32_t>(c), tmp, tmp, frames);
+        const double* w = wide[c] + begin;
+        float* d = dst[c] + begin;
+        for (std::size_t i = 0; i < n; ++i) d[i] = static_cast<float>(w[i] + tmp[i]);
+    }
+    delay.endEdge();
 }
 
 void Graph::forwardEvents(std::int32_t frames) noexcept {

@@ -781,6 +781,12 @@ private:
     template <typename Sample>
     void accumulate(std::vector<Sample*>& dst, const Slot& src, DelayLine& delay,
                     std::int32_t begin, std::int32_t frames, bool first) noexcept;
+
+    /// The last live input of a double sum: added to `wide` and converted
+    /// into `dst` in the same pass, so the sum is narrowed once and read once.
+    void accumulateLast(std::vector<float*>& dst, const std::vector<double*>& wide,
+                        const Slot& src, DelayLine& delay, std::int32_t begin,
+                        std::int32_t frames) noexcept;
     void computeCompensation();
     void prepareLine(DelayLine& line, std::int32_t delaySamples);
     void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
