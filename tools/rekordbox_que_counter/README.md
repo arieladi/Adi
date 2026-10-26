@@ -124,7 +124,10 @@ profile (`{id,label,admin}`). Users are never listed in the public UI or repo.
   gap of its own (neither ever covers a row, nor does a move's preview put one
   over a row), with a pill on it. The End's pill shows the time from the start
   of the start track to the end of the end track (`0:43:17`) and
-  `#3 → #10 · 8 tracks`; the Start's is compact and tinted, `Start · #3`. Both
+  `#3 → #10 · 8 tracks`; the Start's is compact and tinted, `Start · #3`. A set
+  plays its start track from 0:00, not from its cue in, so that intro is added
+  to the time and noted on the Start pill (`Start · #9 · +0:46`); a start track
+  cued at 0 adds nothing. The Set time column is unchanged. Both
   are always there (a list has a track): until you move them they sit before
   the first track and after the last, so the End reads the whole set. **Drag a
   pill** (mouse or pen at once; touch: by its ⇕ at once, anywhere else on it
