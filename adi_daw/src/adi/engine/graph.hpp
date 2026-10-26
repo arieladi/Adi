@@ -356,6 +356,9 @@ public:
         targetDelay_ = o.targetDelay_;
         primeRemaining_ = o.primeRemaining_;
         limit_ = o.limit_;
+        filled_ = o.filled_;
+        inFilled_ = o.inFilled_;
+        ran_ = o.ran_;
         target_.store(o.target_.load(std::memory_order_relaxed),
                       std::memory_order_relaxed);
         gliding_.store(o.gliding_.load(std::memory_order_relaxed),
@@ -406,7 +409,10 @@ public:
     /// Safe to call from the message thread while the audio thread processes:
     /// it writes two atomics and reads nothing the audio thread writes. While
     /// a bigger ring is being handed over, "fits" means fits THAT ring, and
-    /// the move waits for the swap: the old ring is on its way out.
+    /// the move waits for the swap: the old ring is on its way out. Either
+    /// way a move waits, held, until the ring holds that much real history:
+    /// a ring fresh from a swap holds what was written since its offer, and
+    /// a tap past that reads zeros, which is a dropout (ADR-0085).
     bool beginGlide(std::int32_t d) noexcept;
 
     [[nodiscard]] bool gliding() const noexcept {
@@ -433,7 +439,9 @@ public:
     /// is silence, which is a dropout.
     ///
     /// Returns false when a previous offer is still in flight; the caller
-    /// retries after `collectRing`. A ring of the other width is refused.
+    /// retries after `collectRing`. A ring of the other width is refused, and
+    /// so is any ring for a line that has none (no delay and no headroom):
+    /// nothing would run its grow, and only a rebuild gives it a ring.
     bool offerRing(std::vector<float> ring, std::int32_t capacity,
                    std::int32_t targetDelay);
     bool offerRing(std::vector<double> ring, std::int32_t capacity,
@@ -620,6 +628,15 @@ private:
     // thread swaps `capacity_` itself, so the message thread never reads it
     // while a grow is in flight.
     std::int32_t limit_ = 0;
+    // AUDIO THREAD: how much of `buf_` behind the cursor is real history, up
+    // to the capacity. All of it at `prepare` (the silence before the stream
+    // is real); after a swap, what the new ring was written since its offer.
+    // A glide waits until the ring holds its target. `inFilled_` is the same
+    // count for the incoming ring: zeroed by the offer, the audio thread's
+    // from Priming to the swap. `ran_` is the frames the edge in hand ran.
+    std::int32_t filled_ = 0;
+    std::int32_t inFilled_ = 0;
+    std::int32_t ran_ = 0;
 
     // Written by the message thread, read by the audio thread. Two plain
     // atomics rather than a published schedule: while the new delay FITS, a
@@ -911,8 +928,10 @@ private:
              std::int32_t begin, std::int32_t frames) noexcept;
 
     /// An input that can add nothing to this segment: a sleeping source on an
-    /// edge with nothing in flight. The one test both `mix` and `accumulate`
-    /// use, so the count of live inputs and the reads skipped cannot disagree.
+    /// edge with nothing in flight. Taken ONCE per input per mix and handed to
+    /// `accumulate`, so the count of live inputs, the choice of the last and
+    /// the reads skipped cannot disagree: the message thread moves `busy()`
+    /// (an offer, a collection) between any two reads of it.
     [[nodiscard]] static bool idle(const Slot& src, const DelayLine& delay) noexcept;
 
     /// Accumulate one input's segment into a mix buffer. `first` copies, the
@@ -923,7 +942,8 @@ private:
     /// otherwise; at 64, `double` always.
     template <typename Src, typename Acc>
     void accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
-                    std::int32_t begin, std::int32_t frames, bool first) noexcept;
+                    std::int32_t begin, std::int32_t frames, bool first,
+                    bool asleep) noexcept;
 
     /// `mix` for a graph at 64: every source, delay line and sum is double,
     /// and the sum is left in `wide` for the node (or narrowed by the caller
@@ -968,6 +988,12 @@ private:
     /// (prepare, retap), for the audio thread to read when it forwards events
     /// (ADR-0123). Sized at prepare, never resized on the audio thread.
     std::vector<std::atomic<std::int32_t>> slotLatency_;
+    /// Each slot's arrival, likewise: `retapLatency` recomputes it while the
+    /// audio thread stamps an input tap with it.
+    std::vector<std::atomic<std::int32_t>> slotArrival_;
+    /// `idle` per input of the mix in hand, sized at prepare to the most
+    /// inputs any slot has.
+    std::vector<std::uint8_t> asleep_;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
 
