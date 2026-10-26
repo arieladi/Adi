@@ -114,6 +114,11 @@ select {
 .chip.status b { font-family: inherit; font-size: .75rem; font-weight: 600; color: var(--dim); }
 .chip.status.ok b { color: var(--accent); }
 .chip.status.warn b { color: var(--warn); } /* autosave: not saved yet / offline */
+/* the status is a button too: it opens the history view */
+button.chip.status { margin: 0; text-align: left; }
+button.chip.status::after { content: "🕘"; align-self: center; font-size: .75rem; line-height: 1; opacity: .55; }
+@media (hover: hover) { button.chip.status:hover { border-color: var(--accent-line); } button.chip.status:hover::after { opacity: 1; } }
+button.chip.status:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .histbtns { display: flex; gap: 8px; align-items: center; margin-left: auto; }
 .histbtns .btn { font-size: 1.125rem; line-height: 1; }
 .histbtns .btn:disabled { opacity: .35; cursor: default; }
@@ -126,9 +131,9 @@ select {
    pinned on the left and the header follows the scroll (app.js syncs it). */
 main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 :root {
-  --cols: 58px minmax(140px, 1fr) 60px 56px 84px 84px 96px 108px 66px 64px 40px;
+  --cols: 58px minmax(140px, 1fr) 60px 56px 84px 84px 96px 108px 64px 40px;
   --idx-w: 58px;
-  --table-min: 856px;
+  --table-min: 790px;
   --row-hover: color-mix(in srgb, var(--bg) 96%, var(--text));
   --range-bg: color-mix(in srgb, var(--bg) 88%, var(--accent));
   --range-hover: color-mix(in srgb, var(--bg) 83%, var(--accent));
@@ -145,13 +150,13 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
   white-space: nowrap; overflow: hidden;
 }
 .thead b:nth-child(n+3) { justify-content: flex-end; }
-.thead b:nth-child(9), .thead b:nth-child(10) { justify-content: center; }
+.thead b:nth-child(9) { justify-content: center; }
 
 .row .f { display: contents; }
 .row .f > span { display: none; }
-.row .f.idx, .row .f.mark, .row .f.ops, .row .f.link { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 4px; }
+.row .f.idx, .row .f.ops, .row .f.link { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 4px; }
 .row .f.ops { justify-content: flex-end; }
-.row .f.link, .row .f.mark { justify-content: center; }
+.row .f.link { justify-content: center; }
 .rb.pl { color: var(--accent); font-size: .6875rem; }
 .rb.pl.custom { background: var(--accent-bg); }
 .rb.pl:hover { background: var(--accent-bg); color: var(--accent); }
@@ -176,15 +181,13 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 .row .f.idx, .thead b:nth-child(1) { left: 0; }
 .row .tt, .thead b:nth-child(2) { left: var(--idx-w); }
 
-.row :is(input, .f > b, .f.idx, .f.mark, .f.ops, .f.link) { transition: background-color .12s; }
-.row:hover :is(input, .f > b, .f.idx, .f.mark, .f.ops, .f.link) { background-color: var(--row-hover); }
+.row :is(input, .f > b, .f.idx, .f.ops, .f.link) { transition: background-color .12s; }
+.row:hover :is(input, .f > b, .f.idx, .f.ops, .f.link) { background-color: var(--row-hover); }
 .row .f.idx > b, .row:hover .f.idx > b { background: none; }
 
-/* start mark (S) to the end marker: the marked part of the set is tinted */
-.rb.mk { width: 24px; height: 22px; font-size: .6875rem; font-weight: 700; border: 1px solid var(--line); }
-.rb.mk.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.row.inrange :is(input, .f > b, .f.idx, .f.mark, .f.ops, .f.link) { background-color: var(--range-bg); }
-.row.inrange:hover :is(input, .f > b, .f.idx, .f.mark, .f.ops, .f.link) { background-color: var(--range-hover); }
+/* the Start marker to the End marker: the marked part of the set is tinted (less than the whole list only) */
+.row.inrange :is(input, .f > b, .f.idx, .f.ops, .f.link) { background-color: var(--range-bg); }
+.row.inrange:hover :is(input, .f > b, .f.idx, .f.ops, .f.link) { background-color: var(--range-hover); }
 .row.inrange .f.idx > b { background: none; }
 .row.inrange .f.idx { box-shadow: inset 3px 0 0 var(--accent); }
 
@@ -197,12 +200,12 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
 .grip:hover { background: var(--panel2); color: var(--text); }
 .row { transition: transform .16s ease; }
 .row.dragging { position: relative; z-index: 10; transition: none; box-shadow: var(--shadow); }
-.row.dragging :is(input, .f > b, .f.idx, .f.mark, .f.ops, .f.link) { background-color: var(--panel2); }
+.row.dragging :is(input, .f > b, .f.idx, .f.ops, .f.link) { background-color: var(--panel2); }
 .row.dragging .f.idx > b { background: none; }
 .row.dragging .grip { color: var(--accent); }
 body.dragging-active, body.dragging-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
 
-/* end marker (app.js, "end marker"): an accent line with a pill on it, in a gap
+/* the end marker (app.js, "start + end markers"): an accent line with a pill on it, in a gap
    of its own under the end track (.endgap) — it never covers a row, a move's
    preview included. The pill
    drags: it lifts off (fixed, under the pointer) while a line shows where the
@@ -237,8 +240,8 @@ main { position: relative; } /* the marker's offsetParent */
 .emPill:hover { background: var(--panel2); }
 .emPill:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
 .emGrip { color: var(--accent); font-size: 1rem; line-height: 1; padding: 8px; margin: -8px; touch-action: none; } /* the ⇕ grabs at once */
-#emTime { font-family: var(--mono); font-size: 1.25rem; line-height: 1.25; font-weight: 800; color: var(--accent); }
-#emInfo { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dim); font-size: .8125rem; font-variant-numeric: tabular-nums; }
+.emT { font-family: var(--mono); font-size: 1.25rem; line-height: 1.25; font-weight: 800; color: var(--accent); }
+.emI { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dim); font-size: .8125rem; font-variant-numeric: tabular-nums; }
 .emPill.lifted {
   position: fixed; z-index: 1; transform: translateX(-50%) scale(1.04);
   background: var(--panel2); box-shadow: var(--shadow), 0 0 0 4px var(--accent-bg); outline: none;
@@ -250,6 +253,23 @@ main { position: relative; } /* the marker's offsetParent */
 }
 .endmark.flash .emPill { animation: emFlash .5s ease 3; }
 @keyframes emFlash { 50% { box-shadow: 0 0 0 8px var(--accent-line); } }
+/* the start marker: the same line and pill, in a gap of its own over the start
+   track (.startgap). Its pill is compact — "Start · #5", the time is the End's —
+   and tinted with the accent, so the two read apart at a glance. */
+:root {
+  --sm-pill-h: calc(.9375rem * 1.25 + 10px);
+  --sm-gap: calc(var(--sm-pill-h) + 12px);
+  --sm-bg: color-mix(in srgb, var(--panel) 82%, var(--accent));
+  --sm-bg-hover: color-mix(in srgb, var(--panel) 74%, var(--accent));
+}
+.row.startgap { margin-top: var(--sm-gap); }
+.endmark.smark { height: var(--sm-gap); }
+.smPill { height: var(--sm-pill-h); gap: 7px; padding: 0 14px 0 10px; background: var(--sm-bg); }
+.smPill:hover, .smPill.lifted { background: var(--sm-bg-hover); }
+/* the label: the accent toward the text, so it reads (4.5:1) on the tint in both themes */
+.smK { font-size: .6875rem; line-height: 1; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: color-mix(in srgb, var(--accent) 65%, var(--text)); }
+.smDot { font-style: normal; color: var(--dim); }
+.smN { font-family: var(--mono); font-size: .9375rem; line-height: 1.25; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) {
   .endmark, .emPill { transition: none; }
   .endmark.flash .emPill { animation: none; }
@@ -260,7 +280,6 @@ main { position: relative; } /* the marker's offsetParent */
   width: 26px; height: 26px; line-height: 1; font-size: .8125rem; padding: 0;
 }
 .rb:hover { background: var(--panel2); color: var(--text); }
-.rb.mk.on:hover { background: var(--accent); color: var(--on-accent); filter: brightness(1.08); }
 .rb.del:hover { color: var(--neg); }
 
 .addtrack {
@@ -334,6 +353,186 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
 }
 .urow b { font-weight: 600; font-size: .875rem; }
 .urow .rb { flex: none; }
+
+/* ---------- history view (app.js, "history view") ---------- */
+/* While it is open (body.hv) the list's rows, its markers, Add track and
+   the summary go (the rows stay in the DOM, untouched); a banner and a
+   read-only preview of the version picked take their place, and the timeline
+   of versions sits in a panel on the right (a sheet from the bottom on
+   phones). Changed = warn, new = accent, removed = neg — all from the theme. */
+:root {
+  --hv-chg: color-mix(in srgb, var(--bg) 76%, var(--warn));
+  --hv-add: color-mix(in srgb, var(--bg) 80%, var(--accent));
+  --hv-del: color-mix(in srgb, var(--bg) 87%, var(--neg));
+  --hp-w: 360px;
+  --hm-pill-h: calc(1rem * 1.25 + 12px);
+  --hm-gap: calc(var(--hm-pill-h) + 12px);
+}
+.hvbar[hidden], .hvwrap[hidden], .hpanel[hidden], .hvSum[hidden] { display: none !important; }
+body.hv :is(.summary, #rowsWrap, #startMark, #endMark, #emSnap, #btnAdd) { display: none !important; }
+body.hv main { max-width: 1100px; margin-left: max(0px, calc((100% - var(--hp-w) - 1100px) / 2)); margin-right: var(--hp-w); }
+body.hv .help { margin-right: var(--hp-w); }
+body.hv .theadwrap { top: calc(var(--lb-h, 54px) + var(--hv-h, 0px)); }
+@media screen and (min-width: 741px) {
+  /* the same grid, less its empty last column (nothing to delete here): the room goes to the titles —
+     its cells lose their padding too, or they would stick out of it and the table would scroll sideways */
+  body.hv { --cols: 58px minmax(140px, 1fr) 60px 56px 84px 84px 96px 108px 64px 0px; --table-min: 750px; }
+  body.hv #hvRows .f.ops, body.hv .thead b:last-child { padding: 0; border: 0; }
+}
+
+/* banner: History · name, the version shown, Restore as new list, ✕ — and what changed */
+.hvbar {
+  position: sticky; top: var(--lb-h, 54px); z-index: 21;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "t r x" "v r x" "s s s";
+  align-items: center; gap: 2px 8px; margin: 2px 0 8px; padding: 10px 12px 10px 14px;
+  background: var(--panel); border: 1px solid var(--accent-line); border-radius: var(--radius);
+  box-shadow: 0 -6px 0 2px var(--bg); /* rows scrolling under it stay out of sight at its corners */
+}
+.hvbar h2 { grid-area: t; margin: 0; min-width: 0; font-size: 1.0625rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hvbar .hvK { color: var(--accent); }
+.hvbar h2:focus { outline: none; }
+.hvbar h2 .was { display: inline; font-size: .8125rem; }
+.hvVer { grid-area: v; margin: 0; min-width: 0; color: var(--dim); font-size: .84375rem; }
+.hvVer b { color: var(--text); font-variant-numeric: tabular-nums; }
+.hvSep { font-style: normal; }
+#hvRestore { grid-area: r; }
+#hvRestore:disabled { opacity: .45; cursor: default; filter: none; }
+#hvClose { grid-area: x; }
+.hvSum { grid-area: s; margin: 6px 0 0; padding-top: 7px; border-top: 1px solid var(--line); font-size: .84375rem; font-variant-numeric: tabular-nums; }
+.hvSum b { color: var(--text); }
+.hvVs { color: var(--dim); }
+.hvTag { display: inline-block; padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; font-style: normal; font-size: .6875rem; line-height: 1.5; color: var(--dim); white-space: nowrap; }
+mark.chg { background: var(--hv-chg); color: var(--text); border-radius: 4px; padding: 0 3px; }
+.was {
+  display: block; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: .71875rem; font-weight: 400; line-height: 1.25; color: var(--dim); white-space: nowrap;
+}
+.was s { text-decoration-thickness: 1px; text-decoration-color: color-mix(in srgb, var(--dim) 80%, transparent); }
+
+/* preview (desktop): the table's grid, read-only cells */
+.hvwrap { overflow-x: auto; overscroll-behavior-x: contain; }
+.hvrow .f.title > b {
+  position: sticky; left: var(--idx-w); z-index: 2; background: var(--bg);
+  display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px;
+  font-family: inherit; font-size: inherit; text-align: left;
+}
+.hvrow .htT { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* one line, as the list's; its badges beside it */
+.hvrow .f.title .hb { flex: none; margin: 0; }
+.hvrow .f.title .was { flex: 1 0 100%; }
+.hvrow .f.idx > b { padding-left: 12px; font-family: var(--mono); }
+.hvrow .f.key > b { text-align: center; }
+.hvrow i.rb { font-style: normal; font-weight: 700; }
+.hvrow .f > b .was s { font-family: var(--mono); }
+.hvrow .f.title > b .was { overflow: hidden; text-overflow: ellipsis; }
+.hvrow .f.title > b .was s { font-family: inherit; }
+.hvrow .untitled { color: var(--dim); font-weight: 400; }
+.hvrow .rb { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; cursor: default; }
+.hvrow a.rb { cursor: pointer; }
+#hvRows .chg { background-color: var(--hv-chg); }
+#hvRows .row .f > b.chg { color: var(--text); font-weight: 700; }
+#hvRows .rb.pl.chg { box-shadow: inset 0 0 0 1px var(--warn); }
+#hvRows .row.add :is(.f > b, .f.idx, .f.ops, .f.link) { background-color: var(--hv-add); }
+#hvRows .row.add .f.idx { box-shadow: inset 4px 0 0 var(--accent); }
+#hvRows .row.del :is(.f > b, .f.idx, .f.ops, .f.link) { background-color: var(--hv-del); color: var(--dim); }
+#hvRows .row.del .f.idx { box-shadow: inset 4px 0 0 var(--neg); }
+#hvRows .row.del .htT, .hvph.del .ph-tt { text-decoration: line-through; text-decoration-color: var(--neg); }
+.hb {
+  display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 5px; vertical-align: 1px;
+  font-family: inherit; font-style: normal; font-weight: 700; font-size: .6875rem; line-height: 1.6; white-space: nowrap;
+}
+.hb.new { background: var(--accent); color: var(--on-accent); }
+.hb.rm { border: 1px solid var(--neg); color: var(--neg); }
+.hb.mv { border: 1px solid var(--warn); color: var(--warn); }
+.hvNote { margin: 22px 8px; color: var(--dim); text-align: center; }
+.hvNote .btn { margin-left: 8px; }
+/* the version's markers, drawn: a line with a pill, in the list where they were */
+.hvEndL { position: relative; display: flex; align-items: center; justify-content: center; min-width: var(--table-min); height: calc(var(--hm-pill-h) + 14px); }
+.hvEndL::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; border-radius: 2px; background: var(--accent); }
+.hvEndP {
+  position: relative; display: flex; align-items: baseline; gap: 8px; max-width: calc(100% - 28px); padding: 3px 14px;
+  background: var(--panel); border: 2px solid var(--accent); border-radius: 999px; color: var(--dim); font-size: .8125rem; white-space: nowrap;
+}
+.hvEndP i { font-style: normal; font-weight: 700; color: var(--text); }
+.hvEndP b { font-family: var(--mono); font-size: .9375rem; color: var(--accent); }
+.hvEndP .was { display: inline; color: var(--text); }
+.hvStartL { height: calc(var(--hm-pill-h) + 8px); }
+.hvStartL .hvEndP { align-items: center; padding: 2px 12px; background: var(--sm-bg); }
+.hvStartL .hvEndP i { font-size: .6875rem; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: color-mix(in srgb, var(--accent) 65%, var(--text)); }
+.hvStartL .hvEndP b { font-size: .875rem; color: var(--text); }
+.hvEndL.moved .hvEndP { border-color: var(--warn); background: var(--hv-chg); }
+/* ↓ Next change: the row it lands on flashes */
+.hvNext { margin-left: 8px; padding: 2px 10px; border: 1px solid var(--accent-line); border-radius: 999px; background: none; color: var(--accent); font-size: .78125rem; font-weight: 600; white-space: nowrap; }
+@media (hover: hover) { .hvNext:hover { background: var(--accent-bg); } }
+#hvRows .flash { animation: hvFlash .45s ease 3; }
+@keyframes hvFlash { 50% { box-shadow: inset 0 0 0 2px var(--warn); } }
+@media (prefers-reduced-motion: reduce) { #hvRows .flash { animation: none; outline: 2px solid var(--warn); outline-offset: -2px; } }
+
+/* the timeline: a panel on the right, under the list bar (app.js keeps its top there) */
+.hpanel {
+  position: fixed; right: 0; bottom: 0; top: var(--lb-h, 54px); z-index: 28; width: var(--hp-w);
+  display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--line);
+  box-shadow: -10px 0 28px color-mix(in srgb, #000 16%, transparent);
+}
+.hpHead { flex: none; padding: 12px 14px 9px; border-bottom: 1px solid var(--line); }
+.hpFold { display: none; } /* phones only: folds the sheet down to its head */
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.hpHead h2 { margin: 0; font-size: 1rem; }
+#hpCount { color: var(--dim); font-weight: 500; }
+.hpHint { margin: 2px 0 0; color: var(--dim); font-size: .75rem; }
+.hpHint b { color: var(--text); font-weight: 600; }
+.hpMsg { margin: 8px 0 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; font-size: .8125rem; color: var(--text); }
+.hpMsg.warn { border-color: var(--warn); background: color-mix(in srgb, var(--panel) 86%, var(--warn)); }
+.hpMsg .btn { margin-left: 4px; }
+.hpScroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 6px 0 16px; }
+.hpOlder { display: block; margin: 4px auto 8px; padding: 6px 14px; background: var(--bg); border: 1px dashed var(--line); border-radius: 999px; color: var(--accent); font-size: .8125rem; }
+.hpOlder:hover { border-color: var(--accent); }
+.hpOlder:disabled { color: var(--dim); cursor: default; }
+.hpOlder[hidden] { display: none; } /* no older versions: no button (display: block above would show it) */
+.hpTrack { position: relative; } /* the marker's offsetParent */
+#hpList { display: flex; flex-direction: column; } /* the Start's and End's gaps never collapse into one (two entries apart while the End is dragged) */
+.hvE { border-bottom: 1px solid var(--line); transition: transform .16s ease; }
+.hvE:first-child { border-top: 1px solid var(--line); }
+.hvEb {
+  display: flex; flex-direction: column; gap: 1px; width: 100%; min-width: 0; margin: 0; padding: 7px 12px 8px 16px;
+  background: none; border: 0; border-radius: 0; text-align: left; color: var(--text);
+}
+@media (hover: hover) { .hvEb:hover { background: var(--hover); } }
+.hvEb:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.hvL1 { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.hvWho { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .875rem; }
+.hvWhen { flex: none; margin-left: auto; padding-left: 6px; color: var(--dim); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.hvMsgL, .hvSm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8125rem; }
+.hvMsgL { font-style: italic; color: var(--dim); }
+.hvSm { color: var(--text); font-variant-numeric: tabular-nums; opacity: .88; }
+.hvSm.new { color: var(--accent); opacity: 1; }
+.hvSm.neg { color: var(--neg); opacity: 1; }
+.hvSm.warn { color: var(--warn); opacity: 1; }
+.hvSm.wait { color: var(--dim); }
+.hvE.repo .hvWho { font-style: italic; font-weight: 600; }
+.hvE.now .hvWho { color: var(--accent); }
+.hvE.inrange { background: var(--range-bg); box-shadow: inset 3px 0 0 var(--accent); }
+.hvE.isEnd .hvWho { color: var(--accent); }
+.hvE.endgap { margin-bottom: var(--hm-gap); }
+.hvE.startgap { margin-top: var(--hm-gap); }
+/* its markers: the list's (.endmark / .emPill / .emsnap), one line each; the
+   Start says "auto" while it follows the End, else offers ↺ auto beside it */
+.endmark.hmark { left: 8px; right: 8px; height: var(--hm-gap); }
+.hmark .emPill { height: var(--hm-pill-h); gap: 8px; padding: 0 14px 0 10px; }
+.hmark .emT { font-size: 1rem; }
+.hmark .emI { font-size: .8125rem; }
+.hmark .smPill { min-width: 0; } /* short of room (big sizes, ↺ auto beside it) the date gives way, the pill stays on screen */
+.hmark .smPill .emI { color: var(--text); }
+.smTag { font-style: normal; font-size: .6875rem; line-height: 1.45; padding: 0 5px; border: 1px solid var(--accent-line); border-radius: 5px; color: var(--dim); }
+.smTag[hidden], .hsAuto[hidden] { display: none; }
+.hsAuto {
+  position: relative; pointer-events: auto; flex: none; margin-left: 6px; height: 26px; padding: 0 10px;
+  background: var(--panel); border: 1px solid var(--accent-line); border-radius: 999px;
+  color: var(--accent); font-size: .75rem; font-weight: 700; white-space: nowrap;
+}
+@media (hover: hover) { .hsAuto:hover { background: var(--accent-bg); } }
+.hsAuto:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#hmSnap { left: 8px; right: 8px; }
 
 /* ---------- toast ---------- */
 #toast {
@@ -496,11 +695,6 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   .ph-meta em { font-style: normal; }
   .ph-meta .warn { color: var(--warn); }
   .ph-meta .hint { font-family: var(--sans); font-style: italic; }
-  .ph-meta .bd {
-    display: inline-block; margin-right: 6px; padding: 0 6px; border-radius: 5px; vertical-align: 1px;
-    background: var(--accent); color: var(--on-accent);
-    font-family: var(--sans); font-style: normal; font-weight: 700; font-size: .6875rem; line-height: 1.55;
-  }
 
   /* Play Time over Set time on the right, tabular figures (narrower than mono) */
   #rows .row .f.play > b, #rows .row .f.stime > b {
@@ -521,8 +715,15 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
     padding: 0 18px 0 14px; border-radius: 14px;
   }
   .emGrip { grid-row: 1 / 3; padding: 12px 10px 12px 14px; margin: -12px -10px -12px -14px; } /* a 40px zone at the pill's left */
-  #emTime { line-height: 1.15; }
-  #emInfo { font-size: .75rem; line-height: 1.35; }
+  .emT { line-height: 1.15; }
+  .emI { font-size: .75rem; line-height: 1.35; }
+  /* the start marker's pill: one line, a finger's height */
+  :root {
+    --sm-pill-h: calc(.9375rem * 1.25 + 16px);
+    --sm-gap: calc(var(--sm-pill-h) + 10px);
+  }
+  .smPill { display: flex; padding: 0 18px 0 14px; border-radius: 999px; }
+  .smPill .emGrip { grid-row: auto; padding: 10px 8px 10px 14px; margin: -10px -8px -10px -14px; }
 
   .addtrack {
     margin: 0; min-height: 54px; padding: 15px 14px 15px 52px;
@@ -612,13 +813,6 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
 
   .shTools { display: flex; flex-wrap: wrap; gap: 6px; } /* one row; two when the sizes are turned up */
   .shTools .btn { flex: 1 1 0; min-width: max-content; min-height: 44px; padding: 0 6px; font-size: .875rem; }
-  .shMk i {
-    display: inline-block; min-width: 20px; margin-right: 5px; padding: 1px 0;
-    font-style: normal; font-weight: 700; font-size: .75rem;
-    border: 1px solid var(--line); border-radius: 5px;
-  }
-  #dlgTrack .shMk.on { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
-  .shMk.on i { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
   #shOpen.custom { color: var(--accent); }
   /* typing: the keyboard needs the room — the tools go, Prev / Next move up under
      the fields (still in reach on short phones) and the times shrink to one line */
@@ -644,6 +838,85 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
     background: none; border: 1px solid var(--accent-line); color: var(--accent); font-weight: 700;
   }
 
+  /* ---------- the history view on phones ---------- */
+  /* the banner pins under the list bar (one line + the version and Restore + what
+     changed), the preview is the list's own lines, read-only, and the timeline is
+     a sheet from the bottom like the track sheet, about half the screen */
+  button.chip.status::after { content: none; }
+  body.hv main { margin: 0; padding-bottom: calc(var(--hp-h, 50vh) + 12px); }
+  body.hv .help { margin-right: 0; }
+  body.hv #toast { bottom: auto; top: calc(12px + env(safe-area-inset-top)); }
+  body.hv-unpin :is(.listbar, .hvbar, .theadwrap) { position: static; } /* no room under them (app.js, hpTop) */
+  .hvbar {
+    grid-template-areas: "t r x" "v v v" "s s s";
+    gap: 2px 4px; margin: 0; padding: 5px 4px 6px 14px; z-index: 25;
+    border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none;
+  }
+  .hvbar h2 { font-size: .9375rem; }
+  .hvbar h2 .was { display: none; } /* short of room: a rename shows highlighted, and "renamed" in the line of changes */
+  #hvClose { width: 40px; min-height: 40px; padding: 0; border: 0; background: none; font-size: 1rem; }
+  #hvRestore { min-height: 34px; padding: 4px 10px; font-size: .8125rem; }
+  .hvVer { margin-right: 10px; font-size: .8125rem; line-height: 1.35; }
+  /* what changed: one line, ↓ Next at its end */
+  .hvSum { display: flex; align-items: center; gap: 6px; margin: 2px 6px 0 0; padding-top: 4px; font-size: .78125rem; line-height: 1.4; }
+  .hvSumT { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hvNext { flex: none; margin: -6px 0; min-height: 34px; padding: 0 10px; }
+  .hvph {
+    display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
+    padding: var(--cell-pad) 14px var(--cell-pad) 0; border-bottom: 1px solid var(--line); background: var(--bg);
+  }
+  .hvph.inrange { background: var(--range-bg); box-shadow: inset 3px 0 0 var(--accent); }
+  .hvph.add { background: var(--hv-add); box-shadow: inset 4px 0 0 var(--accent); }
+  .hvph.del { background: var(--hv-del); box-shadow: inset 4px 0 0 var(--neg); }
+  .hvph.del :is(.ph-tt, .ph-meta, .hvN) { color: var(--dim); }
+  .hvN { align-self: start; padding-top: 2px; text-align: center; font-family: var(--mono); font-size: .8125rem; color: var(--dim); }
+  .hvph.inrange .hvN { color: var(--accent); }
+  .hvM { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .hvM .ph-tt.chg { align-self: flex-start; max-width: 100%; margin-left: -4px; padding: 0 4px; border-radius: 4px; background: var(--hv-chg); }
+  .hvM > .was { margin-top: -2px; overflow: hidden; text-overflow: ellipsis; } /* a long old title: one line, cut — never over the times */
+  .ph-meta s { color: var(--dim); }
+  .ph-meta .wasI { font-family: var(--sans); font-size: .6875rem; color: var(--dim); white-space: nowrap; }
+  .ph-meta .wasI s { font-family: var(--mono); font-size: .75rem; }
+  .ph-meta .hb { margin: 0 6px 0 0; font-family: var(--sans); }
+  .hvTm { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.3; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .hvTm span { font-size: .875rem; }
+  .hvTm b { font-size: .9375rem; font-weight: 700; color: var(--accent); }
+  .hvTm .neg { color: var(--neg); }
+  .hvEndL { min-width: 0; height: calc(var(--hm-pill-h) + 12px); }
+  .hvEndP { padding: 2px 12px; font-size: .75rem; }
+  .hvEndP span { overflow: hidden; text-overflow: ellipsis; }
+  /* the timeline sheet */
+  .hpanel {
+    top: auto; left: 0; right: 0; width: auto; max-width: 640px; margin: 0 auto;
+    height: min(46vh, 460px); min-height: 240px; padding-bottom: env(safe-area-inset-bottom);
+    border: 1px solid var(--line); border-bottom: 0; border-radius: 18px 18px 0 0;
+    box-shadow: 0 -12px 36px color-mix(in srgb, #000 38%, transparent);
+    animation: shUp .26s cubic-bezier(.2, .9, .3, 1);
+  }
+  .hpHead { position: relative; padding: 16px 16px 6px; border-bottom-color: var(--line); touch-action: none; }
+  /* the head folds the sheet down to itself and back: a tap, or a swipe down / up (app.js) */
+  .hpFold { display: block; position: absolute; inset: 0; z-index: 1; width: 100%; margin: 0; padding: 0; border: 0; background: none; cursor: pointer; }
+  .hpFold:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 18px 18px 0 0; }
+  .hpHead .hpMsg .btn { position: relative; z-index: 2; } /* Retry stays a button of its own */
+  body.hp-fold .hpanel { height: auto; min-height: 0; }
+  body.hp-fold .hpScroll { display: none; }
+  body.hp-fold .hpHead { border-bottom: 0; padding-bottom: 10px; }
+  .hpHead::before {
+    content: ""; position: absolute; top: 6px; left: 50%; width: 40px; height: 4px; margin-left: -20px;
+    border-radius: 4px; background: color-mix(in srgb, var(--dim) 45%, transparent);
+  }
+  .hpHead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; }
+  .hpHead h2 { font-size: .9375rem; white-space: nowrap; }
+  .hpHint { flex: 1 1 0; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  .hpMsg { flex: 1 1 100%; }
+  .hpScroll { padding-bottom: 10px; }
+  .hvEb { padding: 8px 14px 9px 16px; }
+  .hmark .emPill { display: flex; padding: 0 14px 0 10px; border-radius: 999px; }
+  .hmark .emGrip { grid-row: auto; padding: 10px 8px 10px 12px; margin: -10px -8px -10px -12px; }
+  .hmark .emT { line-height: 1.25; }
+  .hsAuto { height: 34px; padding: 0 12px; }
+  @media (prefers-reduced-motion: reduce) { .hpanel { animation: none; } }
+
   @keyframes shUp { from { transform: translateY(100%); } }
   @media (prefers-reduced-motion: reduce) { #dlgTrack { animation: none; transition: none; } }
 }
@@ -651,7 +924,7 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
 /* ---------- printing narrower than 740px (A4): the table, as it always printed ---------- */
 @media print and (max-width: 740px) {
   :root {
-    --cols: 52px 132px 50px 44px 70px 70px 72px 84px 60px 60px 34px;
+    --cols: 52px 192px 50px 44px 70px 70px 72px 84px 60px 34px;
     --idx-w: 52px;
     --table-min: 728px;
   }
@@ -660,15 +933,17 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
   /* edge line on the pinned Track column while the rest scrolls under it */
   .row .tt, .thead b:nth-child(2) { box-shadow: inset -1px 0 0 var(--line); }
   .rb { width: 30px; height: 30px; }
-  .rb.mk { width: 26px; height: 26px; }
   .grip { width: 28px; height: 34px; }
   .topbar { flex-wrap: wrap; }
   .listbtns { flex: 1 1 100%; }
   .chip.blue { margin-left: auto; }
   .row .ph { display: none; } /* a phone's list line, should its rows not be rebuilt for print */
 }
-/* printing: the S → E box tells the stretch; no end marker (it is placed for the screen) */
+/* printing: the S → E box tells the stretch; no markers (they are placed for the screen) */
 @media print {
   .endmark, .emsnap { display: none; }
   .row.endgap { margin-bottom: 0; }
+  .row.startgap { margin-top: 0; }
+  .hpanel { display: none !important; }
+  body.hv main { margin: 0 auto; }
 }
