@@ -2455,7 +2455,10 @@ struct Fake64 {
     std::uint32_t inputs = 1, outputs = 1;
     std::uint32_t flags = CLAP_AUDIO_PORT_SUPPORTS_64BITS;
     std::uint32_t secondInputFlags = CLAP_AUDIO_PORT_SUPPORTS_64BITS;
+    std::int64_t outputFlags = -1;         ///< the output ports' flags; -1: as `flags`
     bool fail = false;
+    int activations = 0;
+    std::vector<std::int64_t> steady;      ///< steady_time, per process call
     int calls = 0;
     bool saw32 = false, saw64 = false, mixed = false;
     bool sideFedZeros64 = true;            ///< the second input port, at 64, held zeros
@@ -2470,6 +2473,7 @@ struct Fake64 {
         plugin.destroy = [](const clap_plugin_t*) {};
         plugin.activate = [](const clap_plugin_t* p, double, std::uint32_t, std::uint32_t) {
             self(p).active = true;
+            ++self(p).activations;
             return true;
         };
         plugin.deactivate = [](const clap_plugin_t* p) { self(p).active = false; };
@@ -2497,7 +2501,8 @@ struct Fake64 {
             *info = clap_audio_port_info_t{};
             info->id = i;
             info->channel_count = 2;
-            info->flags = (isInput && i == 1) ? f.secondInputFlags : f.flags;
+            info->flags = isInput ? (i == 1 ? f.secondInputFlags : f.flags)
+                                  : (f.outputFlags >= 0 ? static_cast<std::uint32_t>(f.outputFlags) : f.flags);
             info->port_type = CLAP_PORT_STEREO;
             info->in_place_pair = CLAP_INVALID_ID;
             return true;
@@ -2505,6 +2510,7 @@ struct Fake64 {
         plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
             Fake64& f = self(p);
             ++f.calls;
+            f.steady.push_back(pd->steady_time);
             if (f.fail) return CLAP_PROCESS_ERROR;
             // Which width each port was handed: exactly one pointer per port,
             // and the same width on every port.
@@ -2592,13 +2598,31 @@ void testA64BitPluginSaysSo() {
         Fake64 f;
         f.declarePorts = false;
         ClapDevice d(&f.plugin, id);
-        check(!d.processesDouble(), "no ports extension is CLAP's default bus, 32-bit");
+        check(!d.processesDouble(), "no ports extension: no port says it takes 64 bits");
     }
     {
         Fake64 f;
         f.outputs = 0;
         ClapDevice d(&f.plugin, id);
         check(!d.processesDouble(), "no output port: nothing for it to hand back at 64");
+    }
+    {
+        Fake64 f;
+        f.outputFlags = 0;
+        ClapDevice d(&f.plugin, id);
+        check(!d.processesDouble(), "an output that cannot take 64 bits makes it a 32-bit device, "
+                                    "whatever its input says");
+    }
+    {
+        Fake64 f;
+        f.inputs = 0;                            // an instrument
+        f.outputFlags = 0;
+        ClapDevice a(&f.plugin, id);
+        check(!a.processesDouble(), "an instrument whose output cannot take 64 bits: 32-bit");
+        Fake64 g;
+        g.inputs = 0;
+        ClapDevice b(&g.plugin, id);
+        check(b.processesDouble(), "one whose output can: it processes double");
     }
 }
 
@@ -2649,29 +2673,53 @@ void testAt64AFloatOnlyPluginIsConverted() {
 }
 
 void testAt64TheSegmentAndTheErrorAreHonoured() {
-    section("ADR-0042/0207 -- at 64, the segment offset, and an error's silence");
+    section("ADR-0042/0207 -- at 64, the segment offset in and out, an error's silence, steady time");
 
-    Fake64 f;
+    // A RAMP, as the 32-bit test feeds, so an input read from the block's
+    // start instead of the segment's is a different number.
     DeviceIdentity id; id.format = "clap"; id.name = "Fake64";
-    ClapDevice d(&f.plugin, id);
-    d.prepare(48000.0, 256);
-    Io64 w(256, 0.3, true);
-    w.io.blockOffset = 64;
-    w.io.frames = 128;
-    d.process(w.io);
-    bool placed = true;
-    for (std::size_t i = 0; i < 256; ++i) {
-        const double want = (i >= 64 && i < 192) ? 0.3 * 0.1 : -1.0;
-        if (w.ol[i] != want || w.orr[i] != want) placed = false;
-    }
-    check(placed, "the segment lands at its offset in the block, and nothing else is touched");
+    for (const bool takes64 : {true, false}) {
+        const std::string where = takes64 ? "data64" : "narrowed";
+        Fake64 f;
+        if (!takes64) f.flags = 0;
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000.0, 256);
+        Io64 w(256, 0.0, true);
+        for (std::size_t i = 0; i < 256; ++i) w.il[i] = w.ir[i] = static_cast<double>(i);
+        w.io.blockOffset = 64;
+        w.io.frames = 128;
+        d.process(w.io);
+        bool placed = true;
+        for (std::size_t i = 0; i < 256; ++i) {
+            const double x = static_cast<double>(i);
+            const double y = takes64 ? x * 0.1
+                                     : static_cast<double>(static_cast<float>(x) * 0.1f);
+            const double want = (i >= 64 && i < 192) ? y : -1.0;
+            if (w.ol[i] != want || w.orr[i] != want) placed = false;
+        }
+        check(placed, where + ": the segment is read from its offset in the block, lands there, "
+                              "and nothing else is touched");
 
-    f.fail = true;
-    Io64 e(256, 0.3, true);
-    d.process(e.io);
-    bool silent = true;
-    for (std::size_t i = 0; i < 256; ++i) if (e.ol[i] != 0.0 || e.orr[i] != 0.0) silent = false;
-    check(silent, "CLAP_PROCESS_ERROR at 64 writes silence, not what the buffer held");
+        f.fail = true;
+        Io64 e(256, 0.3, true);
+        e.io.blockOffset = 64;
+        e.io.frames = 128;
+        d.process(e.io);
+        bool silenced = true;
+        for (std::size_t i = 0; i < 256; ++i) {
+            const double want = (i >= 64 && i < 192) ? 0.0 : -1.0;
+            if (e.ol[i] != want || e.orr[i] != want) silenced = false;
+        }
+        check(silenced, where + ": CLAP_PROCESS_ERROR silences its own segment, and only it");
+
+        f.fail = false;
+        Io64 n(256, 0.3, true);
+        d.process(n.io);
+        const bool timed = f.steady.size() == 3 && f.steady[1] == f.steady[0] + 128 &&
+                           f.steady[2] == f.steady[1] + 128;
+        check(timed, where + ": steady_time moves on by each call's frames, the failed one's "
+                             "too (process.h)");
+    }
 }
 
 /// A source that writes 0.1 at whichever width the graph hands it.
@@ -2712,6 +2760,71 @@ void testThePortsAreReadOnlyWhileDeactivated() {
     Io64 w(256, 0.3, true);
     d.process(w.io);
     check(f.saw64 && !f.saw32 && w.ol[9] == 0.3 * 0.1, "handed data64 after the reactivation");
+
+    // The prepare every rebuild makes of an unchanged plug-in: it stays
+    // active, so it must not read the layout at all.
+    const int atSecond = f.portReads, activations = f.activations;
+    d.prepare(44100.0, 256);
+    check(f.activations == activations, "an unchanged prepare leaves it active");
+    check(f.portReads == atSecond && f.portReadsWhileActive == 0,
+          "and reads no port: " + std::to_string(f.portReads - atSecond));
+}
+
+void testTheAnswerIsReadAgainAtEachActivation() {
+    section("ADR-0207 d2 -- the 64-bit answer is read at each activation, and a moved one is built again");
+
+    // A plug-in may change its ports while deactivated. The graph asks before
+    // it prepares, so the build that finds the answer moved hands the width it
+    // kept; `shapeEpoch` moves, and the next build asks again without
+    // reactivating anything.
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake64";
+    for (const bool to64 : {false, true}) {
+        const std::string where = to64 ? "32 to 64" : "64 to 32";
+        Fake64 f;
+        if (to64) f.flags = 0;
+        ClapDevice dev(&f.plugin, id);
+        DeviceNode node(dev);
+        WideConst src;
+        engine::Graph g;
+        g.setChannels(2);
+        g.setPrecision(engine::Precision::Float64);
+        const engine::NodeId ns = g.addNode(src), nd = g.addNode(node);
+        g.connect(ns, nd);
+        g.setOutput(nd);
+        g.prepare(48000.0, 256);
+        check(dev.processesDouble() != to64, where + ": the first answer");
+        const std::uint64_t epoch = dev.shapeEpoch();
+
+        std::vector<float> l(256), r(256);
+        std::vector<double> wl(256), wr(256);
+        float* outp[2] = {l.data(), r.data()};
+        double* out64[2] = {wl.data(), wr.data()};
+        engine::AudioIo io;
+        io.out = outp; io.numOut = 2; io.frames = 256; io.out64 = out64;
+
+        g.release();
+        f.flags = to64 ? CLAP_AUDIO_PORT_SUPPORTS_64BITS : 0;   // deactivated: allowed
+        g.prepare(48000.0, 256);
+        check(dev.processesDouble() == to64, where + ": the activation reads it again");
+        check(dev.shapeEpoch() - epoch == 1, where + ": and moves shapeEpoch, which asks for a build");
+        f.saw32 = f.saw64 = false;
+        g.process(io);
+        if (to64)
+            check(f.saw32 && !f.saw64, where + ": the build that found it keeps 32, converted");
+        else
+            check(f.saw32 && !f.saw64, where + ": the build that found it hands no data64 to a "
+                                              "plug-in that cannot take it");
+
+        const int activations = f.activations;
+        g.prepare(48000.0, 256);              // the build the epoch asked for
+        check(f.activations == activations, where + ": which leaves the plug-in active");
+        check(dev.shapeEpoch() - epoch == 1, where + ": and asks for no other");
+        f.saw32 = f.saw64 = false;
+        g.process(io);
+        check(to64 ? (f.saw64 && !f.saw32) : (f.saw32 && !f.saw64),
+              where + ": and is handed " + (to64 ? "data64" : "data32"));
+        if (to64) check(wl[100] == 0.1 * 0.1, where + ": its double result, every bit");
+    }
 }
 
 void testA64BitClapThroughTheGraph() {
@@ -2801,6 +2914,7 @@ int main() {
     testAt64AFloatOnlyPluginIsConverted();
     testAt64TheSegmentAndTheErrorAreHonoured();
     testThePortsAreReadOnlyWhileDeactivated();
+    testTheAnswerIsReadAgainAtEachActivation();
     testA64BitClapThroughTheGraph();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);

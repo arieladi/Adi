@@ -829,7 +829,12 @@ std::string ClapDevice::paramText(const std::string& paramId,
 }
 
 std::uint64_t ClapDevice::shapeEpoch() const noexcept {
-    return glue_ != nullptr ? glue_->portChanges() : 0;
+    // The port changes the plug-in announced, and every activation that found
+    // the 64-bit answer moved: the graph asked before that activation, so it
+    // is built once more to ask again (ADR-0207 d2). `prepare` compares only
+    // the first, so that build leaves the plug-in active.
+    return (glue_ != nullptr ? glue_->portChanges() : 0) +
+           widthMoves_.load(std::memory_order_acquire);
 }
 
 std::uint64_t ClapDevice::restartEpoch() const noexcept {
@@ -1010,7 +1015,9 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // ADR-0207 d2. Double buses beside the float ones, which stay: the
     // graph's precision is not this device's to know, and at 32 it is handed
     // float whatever it can take.
+    const bool wasDouble = double64_;
     double64_ = everyPortTakes64(plugin_);
+    if (double64_ != wasDouble) widthMoves_.fetch_add(1, std::memory_order_acq_rel);
     for (auto* buses : {&inBuses_, &outBuses_}) {
         for (Bus& b : *buses) {
             b.wstorage.clear();
@@ -1171,7 +1178,8 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     // it; `data64` carries it when every port does (`wide64`). Should the
     // plug-in's answer have changed since the graph asked (a rescan: the graph
     // asks before it prepares, and the layout is read in the prepare), it is
-    // converted on both sides, not bypassed, until the graph is next built.
+    // converted on both sides, not bypassed, until the graph is built again,
+    // which the moved answer asks for (`shapeEpoch`).
     const bool wideIo = io.wide();
     const bool wide64 = wideIo && double64_ && !outBuses_.empty() &&
                         !outBuses_[0].wptrs.empty();
@@ -1326,6 +1334,9 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
             }
         }
         events_.clear();
+        // The call happened, whatever it returned: process.h says steady_time
+        // "must be increased by at least frames_count for the next call".
+        steadyTime_ += n;
         return;
     }
 

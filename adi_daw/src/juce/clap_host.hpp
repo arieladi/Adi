@@ -245,14 +245,17 @@ public:
 
     /// ADR-0207 d2: true when EVERY audio port the plug-in declares says
     /// `CLAP_AUDIO_PORT_SUPPORTS_64BITS`, so a graph at 64 hands it double
-    /// and `data64` carries it. A plug-in with no ports extension has CLAP's
-    /// default, one 32-bit stereo bus each way, and is processed at 32 between
-    /// conversions, as is one whose ports do not all take 64 (a port that
-    /// cannot would need a mixed-width call, and `REQUIRES_COMMON_SAMPLE_SIZE`
-    /// forbids even that). Read when the layout may be read -- at construction
-    /// and at each activation, never while active (`audio-ports.h`; ADR-0123
-    /// item 6) -- and remembered, because the graph asks at every prepare and
-    /// a rebuild leaves an unchanged plug-in active.
+    /// and `data64` carries it. A plug-in with no ports extension declares no
+    /// port that takes 64, so it is processed at 32 between conversions, as
+    /// is one whose ports do not all take 64 (a port that cannot would need a
+    /// mixed-width call, and `REQUIRES_COMMON_SAMPLE_SIZE` forbids even that).
+    /// Read when the layout may be read -- at construction and at each
+    /// activation, never while active (`audio-ports.h`; ADR-0123 item 6) --
+    /// and remembered, because the graph asks at every prepare and a rebuild
+    /// leaves an unchanged plug-in active. The graph asks BEFORE it prepares
+    /// a node, so when an activation finds the answer moved, `shapeEpoch`
+    /// moves with it: the graph is built once more, asks again, and that build
+    /// leaves the plug-in active.
     [[nodiscard]] bool processesDouble() const noexcept override { return double64_; }
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
@@ -437,6 +440,12 @@ private:
     /// `prepare` reactivates when it has moved -- ADR-0179's legal
     /// replacement for reading the port layout off an active plugin.
     std::uint64_t shapeSeen_ = 0;
+
+    /// ADR-0207 d2: how many activations found `processesDouble`'s answer
+    /// moved. Part of `shapeEpoch`, not of `shapeSeen_`, so the build it asks
+    /// for does not reactivate the plug-in. Written on the message thread,
+    /// read wherever the coalescer polls.
+    std::atomic<std::uint64_t> widthMoves_{0};
 
     /// `glue_->flushRequests()` already answered. Message thread only.
     std::uint64_t flushSeen_ = 0;
