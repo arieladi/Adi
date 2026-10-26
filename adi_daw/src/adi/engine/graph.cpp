@@ -319,7 +319,9 @@ void DelayLine::adoptHistory(const DelayLine& old) noexcept {
     // the swap.
     const Grow g = old.grow_.load(std::memory_order_acquire);
     const bool growing = g == Grow::Priming || g == Grow::Fading;
-    const std::int32_t inOld = old.capacity_;
+    // Only what each ring really holds: one whose edge sat at zero, or
+    // slept, holds whatever it last had, and handing that on would play it.
+    const std::int32_t inOld = (std::min)(old.capacity_, old.filled_);
     const std::int32_t inNew = growing ? (std::min)(old.inCapacity_, old.inFilled_) : 0;
     const bool fromIncoming = inNew > inOld;
 
@@ -1007,6 +1009,7 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
         if (first)
             for (std::size_t c = 0; c < ch; ++c)
                 std::memset(dst[c] + begin, 0, n * sizeof(Acc));
+        delay.forget();   // its ring went unwritten
         ++stats_.inputsSkipped;
         return;
     }
@@ -1018,6 +1021,9 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
     // move to 128 is exactly the case this fast path would swallow: it would
     // memcpy, return, and leave the glide pending forever (ADR-0079).
     if (!delay.busy() && delay.delay() == 0) {
+        // The ring is not written, so it no longer holds this edge's
+        // history: a glide away from zero waits until it does (`forget`).
+        delay.forget();
         for (std::size_t c = 0; c < ch; ++c) {
             const Src* s = from[c] + begin;
             Acc* d = dst[c] + begin;
@@ -1145,6 +1151,7 @@ void Graph::accumulateLast(std::vector<float*>& dst, const std::vector<double*>&
     const auto ch = static_cast<std::size_t>(channels_);
     const auto n = static_cast<std::size_t>(frames);
     if (!delay.busy() && delay.delay() == 0) {
+        delay.forget();   // as in `accumulate`
         for (std::size_t c = 0; c < ch; ++c) {
             const float* s = src.chanPtrs[c] + begin;
             const double* w = wide[c] + begin;
@@ -1416,6 +1423,10 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
             }
             s.zeroed = true;
             ++stats_.suspendClears;
+            // Its input lines are not run while it sleeps, so their rings
+            // stop holding their edges' history (`DelayLine::forget`).
+            for (DelayLine& d : s.inDelays) d.forget();
+            for (DelayLine& d : s.sideDelays) d.forget();
         }
         return;
     }

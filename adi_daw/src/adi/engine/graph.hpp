@@ -582,7 +582,19 @@ public:
     /// line in the middle of a grow is copied from whichever of its two rings
     /// holds more of the edge's past. The line then counts what it was handed
     /// as its history and nothing more, so a glide past it waits for the rest.
+    /// Only what the old line really holds is copied: a ring its edge left
+    /// unwritten (`forget`) hands on silence, not what it last had.
     void adoptHistory(const DelayLine& old) noexcept;
+
+    /// AUDIO THREAD: this edge's segment went by without its ring being
+    /// written -- `Graph::accumulate`'s zero-delay fast path, a sleeping
+    /// source, a sleeping consumer -- so the ring no longer holds the edge's
+    /// history. One store, so zero compensation stays free. What it buys: a
+    /// glide away from zero waits, held, until the ring holds what its tap
+    /// reads, instead of reading what the ring held the last time the edge
+    /// had a delay (ADR-0079 d2: both taps read the SAME history). And a
+    /// handover carries nothing that is not this edge's.
+    void forget() noexcept { filled_ = 0; }
 
 private:
     template <typename T>
