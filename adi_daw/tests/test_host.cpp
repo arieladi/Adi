@@ -587,6 +587,7 @@ public:
             for (std::int32_t i = 0; i < io.frames; ++i) o[i] = v_;
         }
     }
+    void set(float v) noexcept { v_ = v; }
     // A SOURCE: inherits kInfiniteTail (ADR-0043).
     [[nodiscard]] const char* name() const noexcept override { return "dc"; }
 private:
@@ -794,6 +795,58 @@ void testTheSameEdgeIsMatchedHoweverTheRowSaysIt() {
         "no seam: 1->9 is the same edge whether a row or the default produced it");
 }
 
+void testARebuildInADrainPlaysWhatWasStillDue() {
+    section("ADR-0092 -- a rebuild in the middle of a drain plays what was still due, and the wake replays nothing");
+
+    // The dry track is compensated by 5120 against the wet track's latency,
+    // and stops: the master drains the 5120 samples of it still in flight.
+    // Three blocks in, a rebuild lands and the next graph's line adopts the
+    // 5120 its tap reaches, 3584 of them still the dry track's 0.75. Its
+    // master, fresh, saw silent inputs and slept on its first block: the
+    // 0.75s were cut there, and played when the track next played, seconds
+    // later, at the old level.
+    GraphHost host;
+    host.setKeepHistory(true);
+    host.setFadeFrames(0);
+    DcDevice wet(0.0f), dry(0.75f);
+    LatentDevice latent(5120);
+    RealizeOptions opts;
+    opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&wet, &latent};
+        if (id == 2) return {&dry};
+        return {};
+    };
+    const rows::Model m = twoTracks();
+    check(host.rebuild(m, opts, 48000.0, 512), "it builds");
+    Out o(512);
+    AudioIo io = makeIo(o, 512);
+    for (int b = 0; b < 30; ++b) host.process(io);
+    check(o.l[511] == 0.75f, "the dry track plays: " + std::to_string(o.l[511]));
+
+    dry.set(0.0f);
+    std::int64_t played = 0;
+    for (int b = 0; b < 3; ++b) {
+        host.process(io);
+        for (float v : o.l) if (v == 0.75f) ++played;
+    }
+    check(host.rebuild(m, opts, 48000.0, 512), "a rebuild, three blocks into the drain");
+    for (int b = 0; b < 200; ++b) {
+        host.process(io);
+        for (float v : o.l) if (v == 0.75f) ++played;
+    }
+    check(host.stats().historyCarried > 0, "the next graph adopted the line's history");
+    eqi(played, 5120, "every sample in flight when the track stopped is played, "
+                      "the 3584 the next graph adopted among them");
+
+    dry.set(0.5f);
+    std::int64_t stale = 0;
+    for (int b = 0; b < 14; ++b) {
+        host.process(io);
+        for (float v : o.l) if (v == 0.75f) ++stale;
+    }
+    eqi(stale, 0, "and the wake plays none of the old 0.75");
+}
+
 }  // namespace
 
 int main() {
@@ -818,6 +871,7 @@ int main() {
     testHistoryComesFromTheGraphThatActuallyRan();
     testHistoryIsCarriedAcrossRepeatedRebuilds();
     testTheSameEdgeIsMatchedHoweverTheRowSaysIt();
+    testARebuildInADrainPlaysWhatWasStillDue();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
