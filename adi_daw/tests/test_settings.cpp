@@ -202,6 +202,12 @@ void testRulings() {
     check(enabledAt + 1 == thresholdAt && dflt("audio.recordPdcThresholdMs") == 10.0,
           "the switch sits right before the 10 ms threshold");
     check(onPage("settings.logChanges", "Privacy", true), "settings.logChanges: a Privacy switch, on (A6-20)");
+    // ADR-0207 d2: the Processing Precision switch, Live's scheme by default.
+    const auto* precision = find("audio.processingPrecision");
+    check(precision && precision->page == "Audio" && precision->type == Type::Choice &&
+              precision->choices == std::vector<Value>{32, 64} && precision->defaultValue == 32 &&
+              precision->scope == Scope::App && !precision->agentMayChange,
+          "audio.processingPrecision: 32 or 64 on the Audio page, 32 by default, not the agent's");
 
     // The Export page: the dialog's defaults, and nothing else.
     const auto* fileType = find("export.fileType");

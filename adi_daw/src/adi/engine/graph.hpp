@@ -16,9 +16,12 @@
 //             special case anywhere
 //   ADR-0054  the split floor MUST NOT exceed sample_rate/500, or MPE+ is
 //             quantised in time
-//   ADR-0207  d2: nodes process in 32-bit float, but every edge sum into a
-//             node is accumulated in 64-bit double and converted once, as
-//             Live sums every mix point (Audio Fact Sheet 38.2.4)
+//   ADR-0207  d2, the Processing Precision switch. At 32 (the default) nodes
+//             process in 32-bit float and every edge sum into a node is
+//             accumulated in 64-bit double and converted once, as Live sums
+//             every mix point (Audio Fact Sheet 38.2.4). At 64 every buffer,
+//             sum and compensation ring is double, and a node that does not
+//             say processesDouble() is handed float, converted either side
 //
 // No JUCE, no SQLite, no allocation after `prepare` (ADR-0010, ADR-0036). A
 // `Graph` is a `BlockProcessor`, so `DeviceCore` drives it with no adapter.
@@ -106,6 +109,19 @@ struct NodeIo {
     /// Valid only during process; null without a Session. All segments see
     /// the same block-start values, not values shifted by blockOffset.
     const TransportInfo* transport = nullptr;
+
+    /// ADR-0207 d2, the Processing Precision switch at 64: the same three
+    /// buffers at full width. A graph at 64 hands these, and NOT `in`, `out`
+    /// and `sidechain`, to a node that says `processesDouble()`; every other
+    /// node is handed float pointers as always, the graph converting at its
+    /// edges (Cubase: a plug-in that cannot take 64 is processed at 32). At 32
+    /// these are null and nothing changes.
+    const double* const* in64 = nullptr;
+    double* const* out64 = nullptr;
+    const double* const* sidechain64 = nullptr;
+
+    /// This call is at full width: `out64` is the buffer to write.
+    [[nodiscard]] bool wide() const noexcept { return out64 != nullptr; }
 };
 
 /// What a node does with the note stream passing through it (ADR-0091).
@@ -216,6 +232,15 @@ public:
     /// reports no tail and then produces one.
     [[nodiscard]] virtual bool alwaysProcess() const noexcept { return false; }
 
+    /// Whether this node can be handed `NodeIo::in64`/`out64` (ADR-0207 d2).
+    /// **False by default, the answer that cannot corrupt:** a node that says
+    /// nothing is handed float, as it always was, and a graph at 64 converts
+    /// either side of it, so it is processed at 32 inside a 64-bit graph. A
+    /// node saying true must then handle BOTH widths: the same node runs in a
+    /// graph at 32, where it is handed float. Asked by the graph at `prepare`,
+    /// on the message thread, and kept; a value decided at construction.
+    [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
+
     /// Whether note events stop at this node or pass on (ADR-0091).
     ///
     /// **Through by default, and that is the conservative answer here.** The
@@ -297,6 +322,13 @@ struct GraphStats {
 /// A ring rather than a memmove: at 4096 frames and a few thousand samples of
 /// compensation, shuffling the history every block is real work for no reason.
 /// Prepared once, never allocates afterwards.
+///
+/// FLOAT OR DOUBLE, chosen at `prepare` (ADR-0207 d2): a graph at the
+/// Processing Precision switch's 64 compensates in double, so a delayed edge
+/// carries the bits it was given. One class with two storages rather than a
+/// template, so the graph's compensation code -- arrival, retap, escalation,
+/// collection, the handover -- stays one path for both widths; only `process`
+/// and `offerRing` come in two widths, and each refuses the other's line.
 class DelayLine {
 public:
     DelayLine() = default;
@@ -310,6 +342,9 @@ public:
         if (this == &o) return *this;
         buf_ = std::move(o.buf_);
         incoming_ = std::move(o.incoming_);
+        wbuf_ = std::move(o.wbuf_);
+        wincoming_ = std::move(o.wincoming_);
+        wide_ = o.wide_;
         capacity_ = o.capacity_;
         ring_ = o.ring_;
         delay_ = o.delay_;
@@ -334,8 +369,9 @@ public:
     /// `capacity` is the LARGEST delay this line will ever be asked for, not
     /// the delay itself. Sizing the ring bigger than the tap is what makes a
     /// runtime latency change possible without allocating: the tap moves
-    /// inside a ring that already holds the history (ADR-0079).
-    void prepare(std::int32_t channels, std::int32_t capacity);
+    /// inside a ring that already holds the history (ADR-0079). `wide` holds
+    /// the history in double (ADR-0207 d2).
+    void prepare(std::int32_t channels, std::int32_t capacity, bool wide = false);
 
     /// The delay in effect, taking hold at once. Message thread, before the
     /// graph runs.
@@ -344,12 +380,17 @@ public:
     void reset() noexcept;
 
     /// `frames` samples of `src` delayed into `dst`, for one channel. Safe to
-    /// call with src == dst.
+    /// call with src == dst. The width must be the line's: a call of the
+    /// other width passes `src` through undelayed, as an unprepared line does.
     void process(std::int32_t channel, const float* src, float* dst,
+                 std::int32_t frames) noexcept;
+    void process(std::int32_t channel, const double* src, double* dst,
                  std::int32_t frames) noexcept;
 
     [[nodiscard]] std::int32_t delay() const noexcept { return delay_; }
     [[nodiscard]] std::int32_t capacity() const noexcept { return capacity_; }
+    /// The history is held in double.
+    [[nodiscard]] bool wide() const noexcept { return wide_; }
 
     // --- moving the tap within the ring (ADR-0079) -------------------------
 
@@ -385,14 +426,22 @@ public:
     /// is silence, which is a dropout.
     ///
     /// Returns false when a previous offer is still in flight; the caller
-    /// retries after `collectRing`.
+    /// retries after `collectRing`. A ring of the other width is refused.
     bool offerRing(std::vector<float> ring, std::int32_t capacity,
+                   std::int32_t targetDelay);
+    bool offerRing(std::vector<double> ring, std::int32_t capacity,
                    std::int32_t targetDelay);
 
     /// MESSAGE THREAD. Takes back the buffer the audio thread finished with,
     /// and frees the line for another offer. Empty when there is nothing to
-    /// collect. The audio thread never deallocates; it swaps and parks.
+    /// collect. The audio thread never deallocates; it swaps and parks. A
+    /// wide line's retired ring is freed here too, and an empty vector
+    /// returned: `reclaim` is the call that says whether anything was.
     std::vector<float> collectRing();
+
+    /// MESSAGE THREAD: `collectRing` for either width. True when a retired
+    /// ring was freed.
+    bool reclaim();
 
     /// An offer is in flight: priming, fading, or waiting to be collected.
     [[nodiscard]] bool growing() const noexcept {
@@ -422,7 +471,8 @@ public:
 
     /// Bytes this line holds, both rings included while one is in flight.
     [[nodiscard]] std::size_t bytes() const noexcept {
-        return (buf_.size() + incoming_.size()) * sizeof(float);
+        return (buf_.size() + incoming_.size()) * sizeof(float) +
+               (wbuf_.size() + wincoming_.size()) * sizeof(double);
     }
 
     /// Anything that spans a block is in progress, so the caller must not take
@@ -474,16 +524,28 @@ private:
         Spent,     ///< swapped; the old buffer is parked for collection
     };
 
-    [[nodiscard]] static float tapAt(const float* hist, std::int32_t w,
-                                     std::int32_t ring, std::int32_t d) noexcept {
+    template <typename T>
+    [[nodiscard]] static T tapAt(const T* hist, std::int32_t w,
+                                 std::int32_t ring, std::int32_t d) noexcept {
         std::int32_t r = w - d;
         if (r < 0) r += ring;
         return hist[r];
     }
-    void processGrowing(std::int32_t channel, const float* src, float* dst,
-                        std::int32_t frames, Grow state) noexcept;
+    // One body for both widths, over the storage of that width.
+    template <typename T>
+    void run(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t channel,
+             const T* src, T* dst, std::int32_t frames) noexcept;
+    template <typename T>
+    void processGrowing(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t channel,
+                        const T* src, T* dst, std::int32_t frames, Grow state) noexcept;
+    template <typename T>
+    bool offer(std::vector<T>& incoming, std::vector<T> ring, std::int32_t capacity,
+               std::int32_t targetDelay);
+    template <typename T, typename U>
+    void adopt(std::vector<T>& buf, const std::vector<U>& from, std::int32_t fromRing,
+               std::int32_t fromWrite, std::int32_t k) noexcept;
 
-    std::vector<float> buf_;        ///< channels * ring_
+    std::vector<float> buf_;        ///< channels * ring_, at 32
     std::int32_t capacity_ = 0;     ///< the largest delay that fits
     std::int32_t ring_ = 0;         ///< capacity_ + 1; see graph.cpp
     std::int32_t delay_ = 0;
@@ -495,6 +557,10 @@ private:
     // `Priming`, the audio thread owns it until it publishes `Spent`, and the
     // message thread takes it back after observing that.
     std::vector<float> incoming_;
+    // The same two at 64; a line uses one pair, the other stays empty.
+    std::vector<double> wbuf_;
+    std::vector<double> wincoming_;
+    bool wide_ = false;
     std::int32_t inCapacity_ = 0;
     std::int32_t inRing_ = 0;
     std::int32_t inWrite_ = 0;
@@ -548,6 +614,18 @@ public:
     /// Channels for every buffer in the graph. One count for now; see the
     /// header's list of what this is not.
     void setChannels(std::int32_t n) { channels_ = n > 0 ? n : 2; }
+
+    /// The Processing Precision switch (ADR-0207 d2). Message thread, before
+    /// `prepare`, which sizes every buffer at this width. At 64 each node's
+    /// output, every sum and every compensation ring is double; a node that
+    /// does not `processesDouble()` is handed float, converted either side.
+    /// A different precision is a different graph, as a different block size
+    /// is: the caller builds one and publishes it.
+    void setPrecision(Precision p) noexcept {
+        if (p != precision_) prepared_ = false;
+        precision_ = p;
+    }
+    [[nodiscard]] Precision precision() const noexcept { return precision_; }
 
     /// Per-node event capacity. At 500 Hz with heavy polyphony this is a real
     /// design number rather than a formality (events.hpp).
@@ -615,7 +693,8 @@ public:
     /// phase modes. The sentence this replaces guessed "low thousands", which
     /// would have made 2048 and 4096 both look sufficient and both miss.
     ///
-    /// Cost is `channels * (delay + headroom) * 4` bytes per edge; see
+    /// Cost is `channels * (delay + headroom + 1) * 4` bytes per edge at 32,
+    /// `* 8` at 64 (ADR-0207 d2); see
     /// `compensationBytes()`, which measures it rather than estimating.
     void setLatencyHeadroom(std::int32_t n) noexcept {
         latencyHeadroom_ = n > 0 ? n : 0;
@@ -731,6 +810,14 @@ private:
         std::int32_t level = 0;
         std::vector<float> audio;       ///< channels * maxFrames, interleaved by channel
         std::vector<float*> chanPtrs;
+        /// ADR-0207 d2, at 64: the node's output at full width, which is what
+        /// every consumer reads. `audio` is then kept only for a node that
+        /// does not process double, as the float buffer it writes, widened
+        /// into this one after each segment.
+        std::vector<double> wideAudio;
+        std::vector<double*> widePtrs;
+        /// At 64, the node said `processesDouble()` at prepare.
+        bool doubles = false;
         std::vector<Event> eventStore;
         EventList events;
 
@@ -776,11 +863,30 @@ private:
 
     /// Accumulate one input's segment into a mix buffer. `first` copies, the
     /// rest add -- which is the whole of ADR-0044's summing, and why a group
-    /// is a node with no device rather than a case in the scheduler. `Sample`
-    /// is `float` when at most one input is live and `double` otherwise.
-    template <typename Sample>
-    void accumulate(std::vector<Sample*>& dst, const Slot& src, DelayLine& delay,
+    /// is a node with no device rather than a case in the scheduler. `Src` is
+    /// the width the sources hold (the graph's precision); `Acc` the width of
+    /// the sum: at 32, `float` when at most one input is live and `double`
+    /// otherwise; at 64, `double` always.
+    template <typename Src, typename Acc>
+    void accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
                     std::int32_t begin, std::int32_t frames, bool first) noexcept;
+
+    /// `mix` for a graph at 64: every source, delay line and sum is double,
+    /// and the sum is left in `wide` for the node (or narrowed by the caller
+    /// for a node that does not process double).
+    bool mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+                 std::vector<double*>& wide, std::int32_t begin, std::int32_t frames) noexcept;
+
+    /// One segment of a double sum, converted to the float a node reads.
+    void narrow(const std::vector<double*>& from, std::vector<float*>& to,
+                std::int32_t begin, std::int32_t frames) const noexcept;
+
+    /// A slot's output at the width `T`: `chanPtrs` at 32, `widePtrs` at 64.
+    template <typename T>
+    [[nodiscard]] static T* const* outputOf(const Slot& s) noexcept;
+    /// One channel of one segment, at the width `T`, for a delayed edge.
+    template <typename T>
+    [[nodiscard]] T* scratch() noexcept;
 
     /// The last live input of a double sum: added to `wide` and converted
     /// into `dst` in the same pass, so the sum is narrowed once and read once.
@@ -832,7 +938,9 @@ private:
     /// beyond one subtraction.
     std::int64_t now_ = 0;
     std::vector<float> delayScratch_;   ///< one channel of one segment
+    std::vector<double> delayScratch64_; ///< the same at 64
 
+    Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;
@@ -863,6 +971,7 @@ private:
 class SumNode final : public Node {
 public:
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "sum"; }
 };
@@ -878,8 +987,9 @@ class GainNode final : public Node {
 public:
     explicit GainNode(std::uint32_t paramId = 0) : paramId_(paramId) {}
 
-    void prepare(double, std::int32_t) override { gain_ = 1.0f; }
+    void prepare(double, std::int32_t) override { gain_ = 1.0f; gain64_ = 1.0; }
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "gain"; }
@@ -888,6 +998,7 @@ public:
 private:
     std::uint32_t paramId_ = 0;
     float gain_ = 1.0f;
+    double gain64_ = 1.0;   ///< the same value, unrounded, for a graph at 64
 };
 
 }  // namespace adi::engine

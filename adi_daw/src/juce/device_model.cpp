@@ -51,6 +51,17 @@ bool DeviceInstance::setParam(const std::string&, const ParamValue&) { return fa
 // ---------------------------------------------------------------------------
 
 void passThrough(const engine::NodeIo& io) noexcept {
+    if (io.wide()) {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            double* dst = io.out64[c];
+            if (dst == nullptr) continue;
+            dst += io.blockOffset;
+            const double* src = (io.in64 != nullptr) ? io.in64[c] : nullptr;
+            for (std::int32_t i = 0; i < io.frames; ++i)
+                dst[i] = src != nullptr ? src[io.blockOffset + i] : 0.0;
+        }
+        return;
+    }
     if (io.out == nullptr) return;
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* dst = io.out[c];

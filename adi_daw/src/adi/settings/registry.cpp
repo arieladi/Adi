@@ -602,6 +602,13 @@ std::vector<Setting> build() {
                        "automatic switching; a driver that grants less still runs and is shown "
                        "as granted (ADR-0145 d5). Default 512 (ADR-0203).",
                        {64, 128, 256, 512, 1024, 2048, 4096}, 512));
+    r.push_back(choice("audio.processingPrecision", "Audio", "Processing precision",
+                       "32: the engine processes in 32-bit float and sums every mix point in "
+                       "64-bit, as Live does (the default). 64: the whole engine in 64-bit float, "
+                       "as Cubase's Processing Precision; a plug-in that cannot take 64-bit is "
+                       "processed at 32. 64 costs about twice the engine's buffer memory and "
+                       "more CPU (ADR-0207 d2).",
+                       {32, 64}, 32));
     r.push_back(make("audio.silentResampling", Type::Bool, "Audio", "Resample silently",
                      "When the project and the hardware disagree on sample rate, resample "
                      "without showing the mismatch bar (ADR-0145 d3).",

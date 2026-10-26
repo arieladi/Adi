@@ -55,6 +55,9 @@ public:
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
+    /// ADR-0207 d2: every Airwindows algorithm has a double path of its own
+    /// (`processDoubleReplacing`), so at 64 a console half runs in double.
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override;
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "console"; }

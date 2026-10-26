@@ -29,12 +29,14 @@
 
 #include "adi/audio/wav_file.hpp"
 #include "adi/engine/graph.hpp"
+#include "adi/engine/mixer.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -177,23 +179,123 @@ public:
 
 struct Render {
     std::vector<float> l, r;
+    std::vector<double> l64, r64;   ///< the same output through AudioIo::out64
 };
 
-/// Renders `frames` in blocks of `block`, both channels, concatenated.
+/// Renders `frames` in blocks of `block`, both channels, concatenated, at
+/// both widths of the output.
 Render renderGraph(Graph& g, std::int32_t frames, std::int32_t block) {
     Render out;
-    out.l.resize(static_cast<std::size_t>(frames));
-    out.r.resize(static_cast<std::size_t>(frames));
+    const auto n0 = static_cast<std::size_t>(frames);
+    out.l.resize(n0); out.r.resize(n0); out.l64.resize(n0); out.r64.resize(n0);
     for (std::int32_t at = 0; at < frames; at += block) {
         const std::int32_t n = (std::min)(block, frames - at);
         float* ptrs[2] = {out.l.data() + at, out.r.data() + at};
+        double* wide[2] = {out.l64.data() + at, out.r64.data() + at};
         AudioIo io;
         io.out = ptrs;
+        io.out64 = wide;
         io.numOut = 2;
         io.frames = n;
         g.process(io);
     }
     return out;
+}
+
+/// Plays a fixed buffer of doubles, the same on every channel, at either
+/// width: a source that `processesDouble()`, so a graph at 64 keeps every bit.
+class WidePlayNode final : public Node {
+public:
+    explicit WidePlayNode(const std::vector<double>& data) : data_(&data) {}
+    void process(const NodeIo& io) noexcept override {
+        if (io.blockOffset == 0) { base_ += end_; end_ = 0; }
+        const std::size_t n = data_->size();
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) {
+                const double x = (*data_)[(base_ + static_cast<std::size_t>(io.blockOffset + i)) % n];
+                if (io.wide()) io.out64[c][io.blockOffset + i] = x;
+                else io.out[c][io.blockOffset + i] = static_cast<float>(x);
+            }
+        end_ = (std::max)(end_, static_cast<std::size_t>(io.blockOffset + io.frames));
+    }
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
+    [[nodiscard]] const char* name() const noexcept override { return "wide play"; }
+private:
+    const std::vector<double>* data_;
+    std::size_t base_ = 0;
+    std::size_t end_ = 0;
+};
+
+/// Delays its input by a declared latency at either width, so a graph at 64
+/// compensates its other paths with double delay lines.
+class WideLateNode final : public Node {
+public:
+    explicit WideLateNode(std::int32_t latency) : latency_(latency) {}
+    void prepare(double, std::int32_t) override {
+        ring_.assign(2 * static_cast<std::size_t>(latency_ + 1), 0.0);
+        write_ = 0;
+    }
+    void process(const NodeIo& io) noexcept override {
+        const auto ring = static_cast<std::size_t>(latency_ + 1);
+        std::size_t w = 0;
+        for (std::int32_t c = 0; c < io.channels && c < 2; ++c) {
+            double* hist = ring_.data() + static_cast<std::size_t>(c) * ring;
+            w = write_;
+            for (std::int32_t i = 0; i < io.frames; ++i) {
+                const std::int32_t at = io.blockOffset + i;
+                double x = 0.0;
+                if (io.wide()) { if (io.in64 != nullptr) x = io.in64[c][at]; }
+                else if (io.in != nullptr) x = io.in[c][at];
+                hist[w] = x;
+                std::size_t r = w + 1;
+                if (r == ring) r = 0;
+                if (io.wide()) io.out64[c][at] = hist[r];
+                else io.out[c][at] = static_cast<float>(hist[r]);
+                if (++w == ring) w = 0;
+            }
+        }
+        write_ = w;
+    }
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return latency_; }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return latency_; }
+    [[nodiscard]] const char* name() const noexcept override { return "wide late"; }
+private:
+    std::int32_t latency_;
+    std::vector<double> ring_;
+    std::size_t write_ = 0;
+};
+
+/// A float-only node (no `processesDouble()`) that passes its input through
+/// and records which pointers it was handed: in a graph at 64 it must see
+/// float and only float.
+class FloatProbe final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        sawWide = sawWide || io.in64 != nullptr || io.out64 != nullptr || io.sidechain64 != nullptr;
+        sawFloatOut = sawFloatOut || io.out != nullptr;
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i)
+                io.out[c][io.blockOffset + i] = io.in != nullptr ? io.in[c][io.blockOffset + i] : 0.0f;
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "float probe"; }
+    bool sawWide = false;
+    bool sawFloatOut = false;
+};
+
+/// Doubles no float can hold: 24 bits of noise plus a part below float's
+/// resolution, so a value that went through float anywhere is different.
+std::vector<double> noise53(std::uint32_t seed, std::size_t frames) {
+    std::mt19937 random(seed);
+    std::vector<double> v(frames);
+    for (auto& x : v) {
+        const auto a = static_cast<std::uint32_t>(random()), b = static_cast<std::uint32_t>(random());
+        const double hi = (static_cast<double>(a >> 8) - 8388608.0) / kFull;          // 24 bits
+        const double lo = static_cast<double>(b >> 3) * std::ldexp(1.0, -23 - 29);   // 29 more
+        x = hi + lo;
+    }
+    return v;
 }
 
 // --- the cases ----------------------------------------------------------------
@@ -487,21 +589,34 @@ struct Project {
         a.bind(3, frames);
         a.exec();
     }
-    Render play(std::int32_t block, std::int32_t frames) {
+    Render play(std::int32_t block, std::int32_t frames, Precision precision = Precision::Float32) {
         session.graph().setFadeFrames(0);
-        if (!session.load(*store, {}, {2, 48000.0, block})) throw std::runtime_error(session.error());
+        SessionSpec spec{2, 48000.0, block};
+        spec.precision = precision;
+        if (!session.load(*store, {}, spec)) throw std::runtime_error(session.error());
+        return render(block, frames);
+    }
+    /// Renders from the top (or on from where it is), at both widths.
+    Render render(std::int32_t block, std::int32_t frames, bool fromTop = true) {
+        if (fromTop) session.transport().locate(0);
         session.transport().play();
         if (!session.clips()->prime(std::chrono::seconds(60))) throw std::runtime_error("prime timeout");
         Render out;
-        out.l.resize(static_cast<std::size_t>(frames));
-        out.r.resize(static_cast<std::size_t>(frames));
+        const auto n0 = static_cast<std::size_t>(frames);
+        out.l.resize(n0); out.r.resize(n0); out.l64.resize(n0); out.r64.resize(n0);
         for (std::int32_t at = 0; at < frames; at += block) {
             const std::int32_t n = (std::min)(block, frames - at);
             std::vector<float> l(static_cast<std::size_t>(n)), r(static_cast<std::size_t>(n));
+            std::vector<double> l64(static_cast<std::size_t>(n)), r64(static_cast<std::size_t>(n));
             float* ptrs[2] = {l.data(), r.data()};
-            session.process({ptrs, nullptr, 2, 0, n, 0});
+            double* wide[2] = {l64.data(), r64.data()};
+            AudioIo io{ptrs, nullptr, 2, 0, n, 0};
+            io.out64 = wide;
+            session.process(io);
             std::copy(l.begin(), l.end(), out.l.begin() + at);
             std::copy(r.begin(), r.end(), out.r.begin() + at);
+            std::copy(l64.begin(), l64.end(), out.l64.begin() + at);
+            std::copy(r64.begin(), r64.end(), out.r64.begin() + at);
         }
         return out;
     }
@@ -723,6 +838,583 @@ void testOnlyASumGoesWide() {
     }
 }
 
+
+// --- 64-bit end to end: the Processing Precision switch at 64 ----------------
+
+bool sameBits(const std::vector<double>& a, const std::vector<double>& b) {
+    return a.size() == b.size() && std::memcmp(a.data(), b.data(), a.size() * sizeof(double)) == 0;
+}
+
+void test64KeepsEveryBit() {
+    section("ADR-0207 d2 at 64 -- a chain of double nodes keeps every bit, "
+            "and the same chain at 32 does not");
+
+    // A gain no float can hold, so the double path's own gain is what shows.
+    const std::vector<double> data = noise53(10000u, kFrames);
+    std::vector<double> half(data.size());
+    for (std::size_t i = 0; i < data.size(); ++i) half[i] = data[i] * 0.1;
+    bool someNotFloat = false;
+    for (double x : data) someNotFloat = someNotFloat || static_cast<double>(static_cast<float>(x)) != x;
+    check(someNotFloat, "the source holds values no float can");
+
+    for (const Precision p : {Precision::Float64, Precision::Float32}) {
+        WidePlayNode src(data);
+        SumNode a, b;
+        GainNode gain(7);
+        Graph g;
+        g.setPrecision(p);
+        const NodeId ns = g.addNode(src), na = g.addNode(a), ng = g.addNode(gain), nb = g.addNode(b);
+        g.connect(ns, na);
+        g.connect(na, ng);
+        g.connect(ng, nb);
+        g.setOutput(nb);
+        g.prepare(48000.0, 512);
+        check(g.ok() && g.precision() == p, "the graph prepares at its precision");
+        Event e;
+        e.type = EventType::ParamValue;
+        e.paramId = 7;
+        e.value = 0.1;
+        g.pushInputEvent(ng, e);
+        const Render out = renderGraph(g, kFrames, 512);
+        if (p == Precision::Float64) {
+            check(sameBits(out.l64, half) && sameBits(out.r64, half),
+                  "at 64 out64 is the source times 0.1 (a double 0.1), every bit of it");
+            bool narrowed = true;
+            for (std::size_t i = 0; i < half.size(); ++i)
+                narrowed = narrowed && out.l[i] == static_cast<float>(half[i]);
+            check(narrowed, "and the float output is that, rounded once at the very end");
+        } else {
+            check(!sameBits(out.l64, half), "at 32 the same chain loses the low bits, as it must");
+            bool floatChain = true;
+            for (std::size_t i = 0; i < half.size(); ++i)
+                floatChain = floatChain && out.l64[i] == static_cast<double>(static_cast<float>(data[i]) * 0.1f);
+            check(floatChain, "at 32 out64 is the float chain's result, widened: nothing else changed");
+        }
+    }
+}
+
+void test64FloatNodeIsConverted() {
+    section("ADR-0207 d2 at 64 -- a node that does not process double is handed "
+            "float, converted either side; the paths around it stay double");
+
+    const std::vector<double> a = noise53(11000u, kFrames), b = noise53(11001u, kFrames);
+    WidePlayNode pa(a), pb(b);
+    FloatProbe probe;
+    SumNode master;
+    Graph g;
+    g.setPrecision(Precision::Float64);
+    const NodeId na = g.addNode(pa), nb = g.addNode(pb), np = g.addNode(probe), nm = g.addNode(master);
+    g.connect(na, np);    // a goes through the float node
+    g.connect(np, nm);
+    g.connect(nb, nm);    // b does not
+    g.setOutput(nm);
+    g.prepare(48000.0, 512);
+    const Render out = renderGraph(g, kFrames, 512);
+    check(!probe.sawWide && probe.sawFloatOut, "the float node saw float pointers and only float");
+    bool exact = true;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        exact = exact && out.l64[i] == static_cast<double>(static_cast<float>(a[i])) + b[i];
+    check(exact, "the master is float(a) + b in double: a rounded once at the float node, b untouched");
+}
+
+void test64CompensatesInDouble() {
+    section("ADR-0207 d2 at 64 -- compensation delay lines hold double");
+
+    constexpr std::int32_t kLate = 300;
+    const std::vector<double> a = noise53(12000u, kFrames), b = noise53(12001u, kFrames);
+    WidePlayNode pa(a), pb(b);
+    WideLateNode late(kLate);
+    SumNode master;
+    Graph g;
+    g.setPrecision(Precision::Float64);
+    const NodeId na = g.addNode(pa), nb = g.addNode(pb), nl = g.addNode(late), nm = g.addNode(master);
+    g.connect(na, nm);    // direct: delayed by the graph to meet b
+    g.connect(nb, nl);
+    g.connect(nl, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    check(g.compensationFor(na, nm) == kLate, "the direct edge is compensated by 300");
+    const Render out = renderGraph(g, kFrames, 256);
+    bool exact = true;
+    for (std::size_t i = kLate; i < a.size(); ++i)
+        exact = exact && out.l64[i] == a[i - kLate] + b[i - kLate];
+    check(exact, "after 300 samples the master is a + b exactly: the delayed edge kept every bit");
+    // The same graph at 32 holds the same rings in float: exactly half.
+    std::size_t bytes32 = 0;
+    {
+        WidePlayNode qa(a), qb(b);
+        WideLateNode qlate(kLate);
+        SumNode qm;
+        Graph h;
+        const NodeId ha = h.addNode(qa), hb = h.addNode(qb), hl = h.addNode(qlate), hm = h.addNode(qm);
+        h.connect(ha, hm);
+        h.connect(hb, hl);
+        h.connect(hl, hm);
+        h.setOutput(hm);
+        h.prepare(48000.0, 256);
+        bytes32 = h.compensationBytes();
+    }
+    check(bytes32 > 0 && g.compensationBytes() == 2 * bytes32,
+          "and its rings are double: " + std::to_string(g.compensationBytes()) + " bytes, twice the " +
+              std::to_string(bytes32) + " the same graph holds at 32");
+}
+
+void test64DelayLine() {
+    section("ADR-0207 d2 -- a DelayLine prepared wide delays doubles and refuses floats");
+
+    DelayLine d;
+    d.prepare(2, 16, true);
+    d.setDelay(5);
+    check(d.wide() && d.bytes() == 2 * 17 * sizeof(double), "a wide line holds double: " + std::to_string(d.bytes()));
+    std::vector<double> in(32), out(32);
+    for (std::size_t i = 0; i < in.size(); ++i) in[i] = 1.0 + std::ldexp(static_cast<double>(i + 1), -40);
+    d.process(0, in.data(), out.data(), 32);
+    bool delayed = true;
+    for (std::size_t i = 0; i < 32; ++i) delayed = delayed && out[i] == (i < 5 ? 0.0 : in[i - 5]);
+    check(delayed, "the doubles come out five samples late, every bit kept");
+    std::vector<float> fin(8, 0.25f), fout(8, 0.0f);
+    d.process(1, fin.data(), fout.data(), 8);
+    check(fout[0] == 0.25f, "a float call on a wide line passes through undelayed, as an unprepared line does");
+    check(!d.offerRing(std::vector<float>(2 * 33, 0.0f), 32, 20), "a float ring is refused by a wide line");
+    check(d.offerRing(std::vector<double>(2 * 33, 0.0), 32, 20), "a double ring is taken");
+    check(!d.reclaim(), "nothing to reclaim while it is in flight");
+
+    // The whole grow at 64, driven as Graph::accumulate drives it: the shared
+    // cursors restored per channel, endEdge once per edge.
+    {
+        DelayLine g64;
+        g64.prepare(2, 16, true);
+        g64.setDelay(5);
+        auto x = [](int c, std::int64_t n) {
+            return static_cast<double>(c * 1000 + n) + std::ldexp(static_cast<double>(n + 1), -40);
+        };
+        std::int64_t at = 0;
+        std::vector<double> got[2] = {std::vector<double>(8), std::vector<double>(8)};
+        auto edge = [&] {
+            const DelayLine::Cursors before = g64.cursors();
+            for (int c = 0; c < 2; ++c) {
+                g64.setCursors(before);
+                std::vector<double> in(8);
+                for (int i = 0; i < 8; ++i) in[static_cast<std::size_t>(i)] = x(c, at + i);
+                g64.process(c, in.data(), got[c].data(), 8);
+            }
+            g64.endEdge();
+            at += 8;
+        };
+        for (int b = 0; b < 4; ++b) edge();             // history at the old delay
+        check(g64.offerRing(std::vector<double>(2 * 33, 0.0), 32, 20), "a wide line takes a bigger double ring");
+        bool primedOnOld = true;
+        for (int b = 0; b < 3; ++b) {                   // 24 samples prime a 20-sample tap
+            edge();
+            for (int i = 0; i < 8; ++i)
+                primedOnOld = primedOnOld && got[1][static_cast<std::size_t>(i)] == x(1, at - 8 + i - 5);
+        }
+        check(primedOnOld && g64.primeRemaining() == 0, "while priming it still plays the old delay, every bit");
+        edge();                                         // the fade, and the swap at its end
+        check(g64.delay() == 20 && g64.capacity() == 32 &&
+                  g64.bytes() == 2 * 33 * sizeof(double) + 2 * 17 * sizeof(double),
+              "swapped: delay 20 in the 32-sample ring, the old ring parked: " + std::to_string(g64.bytes()));
+        bool late20 = true;
+        for (int b = 0; b < 2; ++b) {
+            edge();
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < 8; ++i)
+                    late20 = late20 && got[c][static_cast<std::size_t>(i)] == x(c, at - 8 + i - 20);
+        }
+        check(late20, "after the swap both channels come out 20 late, every bit");
+        check(g64.reclaim() && g64.bytes() == 2 * 33 * sizeof(double) && !g64.growing(),
+              "and the parked double ring is reclaimed");
+    }
+    DelayLine f;
+    f.prepare(2, 16);
+    check(!f.wide() && f.bytes() == 2 * 17 * sizeof(float) &&
+              !f.offerRing(std::vector<double>(2 * 33, 0.0), 32, 20),
+          "a float line holds float and refuses a double ring");
+}
+
+void test64SleepsAndWakes() {
+    section("ADR-0207 d2 at 64 -- a sleeping node clears its double buffer once, "
+            "to capacity, and its consumer reads zeros until it wakes");
+
+    // Loud for 512 frames, silent for 768, loud again: the sleeper is the
+    // graph's output, so what its double buffer holds is what comes out.
+    std::vector<double> data = noise53(13000u, 4096);
+    std::fill(data.begin() + 512, data.begin() + 1280, 0.0);
+    class WidePass final : public Node {
+    public:
+        // Both widths, as the processesDouble() contract asks.
+        void process(const NodeIo& io) noexcept override {
+            for (std::int32_t c = 0; c < io.channels; ++c)
+                for (std::int32_t i = 0; i < io.frames; ++i) {
+                    const std::int32_t at = io.blockOffset + i;
+                    if (io.wide()) io.out64[c][at] = io.in64 != nullptr ? io.in64[c][at] : 0.0;
+                    else io.out[c][at] = io.in != nullptr ? io.in[c][at] : 0.0f;
+                }
+        }
+        [[nodiscard]] bool processesDouble() const noexcept override { return true; }
+        [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    };
+    WidePlayNode src(data);
+    WidePass sleeper;
+    Graph g;
+    g.setPrecision(Precision::Float64);
+    const NodeId ns = g.addNode(src), nz = g.addNode(sleeper);
+    g.connect(ns, nz);
+    g.setOutput(nz);
+    g.prepare(48000.0, 512);
+
+    std::vector<double> l(512), r(512);
+    double* wide[2] = {l.data(), r.data()};
+    auto block = [&](std::int32_t frames) {
+        AudioIo io;
+        io.out64 = wide;
+        io.numOut = 2;
+        io.frames = frames;
+        g.process(io);
+    };
+    block(512);                       // [0, 512): loud
+    check(std::equal(l.begin(), l.end(), data.begin()), "awake, the output is the source");
+    block(256);                       // [512, 768): silent, and it sleeps
+    check(g.stats().suspendClears == 1, "it sleeps and clears once: " + std::to_string(g.stats().suspendClears));
+    check(std::all_of(l.begin(), l.begin() + 256, [](double x) { return x == 0.0; }), "asleep, the output is zeros");
+    block(512);                       // [768, 1280): silent; a longer block than the one it slept on
+    check(std::all_of(l.begin(), l.end(), [](double x) { return x == 0.0; }),
+          "and the whole buffer was cleared, not the 256 frames it slept on: no stale loud block");
+    check(g.stats().suspendClears == 1, "cleared once per silence, not per block");
+    block(512);                       // [1280, 1792): loud again
+    check(std::equal(l.begin(), l.end(), data.begin() + 1280), "it wakes and the output is the source again");
+}
+
+void test64FactSheetCase() {
+    section("ADR-0207 d2 at 64 -- the Fact Sheet case cancels at 64 too, through "
+            "a real project");
+
+    constexpr int kPairs = 16;
+    std::vector<std::vector<float>> files, copies;
+    for (int i = 0; i < kPairs; ++i) {
+        files.push_back(noise24(14000u + static_cast<std::uint32_t>(i), kFrames));
+        std::vector<float> inv = files.back();
+        for (auto& x : inv) x = -x;
+        copies.push_back(std::move(inv));
+    }
+    Project p;
+    for (int i = 0; i < kPairs; ++i) {
+        p.track(i + 1, "audio");
+        p.clip(i + 1, p.file(files[static_cast<std::size_t>(i)]), kFrames);
+    }
+    for (int i = 0; i < kPairs; ++i) {
+        p.track(kPairs + i + 1, "audio");
+        p.clip(kPairs + i + 1, p.file(copies[static_cast<std::size_t>(i)]), kFrames);
+    }
+    const Render out = p.play(512, kFrames, Precision::Float64);
+    double worst = 0.0;
+    for (double x : out.l64) worst = (std::max)(worst, std::fabs(x));
+    check(worst == 0.0 && largest(out.l) == 0.0f,
+          "32 unity-gain tracks at the master render exact silence at 64 (largest " +
+              std::to_string(worst) + ")");
+}
+
+void test64ThroughAProject() {
+    section("ADR-0207 d2 at 64 -- a project's fader and pan and clip gain are "
+            "applied in double");
+
+    const std::vector<float> file = noise24(15000u, kFrames);
+    Project p;
+    p.track(1, "audio");
+    p.strip(1, -6.0, 0.25);
+    p.clip(1, p.file(file), kFrames);
+    p.store->db().exec("UPDATE clips SET gain_db=-3.0");
+    const Render wide = p.play(512, kFrames, Precision::Float64);
+
+    const double fader = faderGain(-6.0);
+    const StereoGainWide pan = panGainsWide(0.25, PanLaw::Live);
+    const double clipGain = std::pow(10.0, -3.0 / 20.0);
+    bool exactL = true, exactR = true;
+    for (std::size_t i = 0; i < file.size(); ++i) {
+        const double x = clipGain * static_cast<double>(file[i]);
+        exactL = exactL && wide.l64[i] == x * (fader * pan.left);
+        exactR = exactR && wide.r64[i] == x * (fader * pan.right);
+    }
+    check(exactL && exactR, "out64 is sample x clip gain x fader x pan, each in double");
+
+    // The same project at 32 is the float product, so the two differ, by no
+    // more than float's resolution of the signal.
+    Project q;
+    q.track(1, "audio");
+    q.strip(1, -6.0, 0.25);
+    q.clip(1, q.file(file), kFrames);
+    q.store->db().exec("UPDATE clips SET gain_db=-3.0");
+    const Render narrow = q.play(512, kFrames);
+    double diff = 0.0, peak = 0.0;
+    for (std::size_t i = 0; i < file.size(); ++i) {
+        diff = (std::max)(diff, std::fabs(wide.l64[i] - narrow.l64[i]));
+        peak = (std::max)(peak, std::fabs(wide.l64[i]));
+    }
+    check(diff > 0.0 && diff < peak * 1e-6,
+          "at 32 the same project differs below float's resolution: " + std::to_string(diff));
+}
+
+void test64SwitchIsARebuild() {
+    section("ADR-0207 d2 -- switching precision builds a new graph; the same "
+            "precision does nothing");
+
+    Project p;
+    p.track(1, "audio");
+    p.clip(1, p.file(noise24(16000u, kFrames)), kFrames);
+    (void)p.play(512, 1024);
+    const Graph* before = p.session.graph().currentGraph();
+    const auto rebuilds = p.session.stats().rebuilds;
+    check(before != nullptr && before->precision() == Precision::Float32, "a session starts at 32");
+    check(p.session.setPrecision(Precision::Float32) && p.session.stats().rebuilds == rebuilds,
+          "asking for 32 again rebuilds nothing");
+    check(p.session.setPrecision(Precision::Float64), "switching to 64 succeeds");
+    const Graph* after = p.session.graph().currentGraph();
+    check(p.session.stats().rebuilds == rebuilds + 1 && after != nullptr &&
+              after->precision() == Precision::Float64 && p.session.spec().precision == Precision::Float64,
+          "and is one rebuild, to a graph at 64");
+    const Render out = p.render(512, 1024);
+    check(largest(out.l) > 0.0f, "which plays");
+}
+
+void test64SwitchKeepsCompensationHistory() {
+    section("ADR-0207 d2 -- a precision switch mid-play carries every compensated "
+            "edge's history across the widths: no hole");
+
+    // Track 1 plays 300 samples late (a track delay), so the master delays
+    // track 2's edge by 300 to meet it. At the switch that edge's ring is
+    // rebuilt at the other width; without the history it would play 300
+    // samples of silence.
+    const std::vector<float> a = noise24(17000u, 4096), b = noise24(17001u, 4096);
+    auto build = [&](Project& p) {
+        p.track(1, "audio");
+        p.track(2, "audio");
+        p.strip(1, 0.0, 0.0);
+        p.store->db().exec("UPDATE mixer_strip SET delay_samples=300 WHERE track_id=1");
+        p.clip(1, p.file(a), 4096);
+        p.clip(2, p.file(b), 4096);
+    };
+    Project ref;
+    build(ref);
+    const Render whole = ref.play(512, 4096);
+
+    for (const Precision to : {Precision::Float64, Precision::Float32}) {
+        Project p;
+        build(p);
+        const Precision from = to == Precision::Float64 ? Precision::Float32 : Precision::Float64;
+        const Render first = p.play(512, 2048, from);
+        check(p.session.setPrecision(to), "the switch builds");
+        const Render second = p.render(512, 2048, false);
+        bool same = true;
+        for (std::size_t i = 0; i < 2048; ++i)
+            same = same && first.l[i] == whole.l[i] && second.l[i] == whole.l[2048 + i] &&
+                   second.r[i] == whole.r[2048 + i];
+        check(same, std::string("switching ") + (to == Precision::Float64 ? "32 -> 64" : "64 -> 32") +
+                        " mid-play renders exactly what staying at 32 renders");
+    }
+}
+
+void test64OutputContract() {
+    section("ADR-0207 d2 -- AudioIo::out64 is written wherever out is: no graph "
+            "yet, silence, and the swap's fade");
+
+    std::vector<double> wide(64, 7.0);
+    std::vector<float> narrow(64, 7.0f);
+    double* w[1] = {wide.data()};
+    float* f[1] = {narrow.data()};
+    AudioIo io;
+    io.out = f;
+    io.out64 = w;
+    io.numOut = 1;
+    io.frames = 64;
+    SilenceProcessor silence;
+    silence.process(io);
+    check(std::all_of(wide.begin(), wide.end(), [](double x) { return x == 0.0; }) &&
+              std::all_of(narrow.begin(), narrow.end(), [](float x) { return x == 0.0f; }),
+          "SilenceProcessor writes silence to both");
+    std::fill(wide.begin(), wide.end(), 7.0);
+    GraphHost host;
+    host.process(io);
+    check(std::all_of(wide.begin(), wide.end(), [](double x) { return x == 0.0; }),
+          "a GraphHost with nothing published writes silence to out64 too");
+
+    // The swap's fade-in ramps both outputs alike.
+    const std::vector<float> file = noise24(18000u, 4096);
+    Project p;
+    p.track(1, "audio");
+    p.clip(1, p.file(file), 4096);
+    (void)p.play(256, 1024);
+    p.session.graph().setFadeFrames(256);
+    check(p.session.setPrecision(Precision::Float64), "a switch to 64, faded in");
+    const Render faded = p.render(256, 256, false);
+    double worst = 0.0;
+    bool ramped = true;
+    for (std::size_t i = 0; i < 256; ++i) {
+        worst = (std::max)(worst, std::fabs(static_cast<double>(faded.l[i]) - faded.l64[i]));
+        const double want = static_cast<double>(file[1024 + i]) * static_cast<double>(i + 1) / 256.0;
+        ramped = ramped && std::fabs(faded.l64[i] - want) < 1e-12;
+    }
+    check(ramped, "out64 is the new graph's output on the fade's ramp");
+    check(worst < 1e-6, "and the float output agrees with it across the fade (largest gap " +
+                            std::to_string(worst) + ")");
+}
+
+/// A delay the test can change while the graph runs, at either width: its
+/// own ring always holds `maxLatency` samples of history.
+class WideVarLateNode final : public Node {
+public:
+    explicit WideVarLateNode(std::int32_t maxLatency) : max_(maxLatency) {}
+    void prepare(double, std::int32_t) override {
+        ring_.assign(2 * static_cast<std::size_t>(max_ + 1), 0.0);
+        write_ = 0;
+    }
+    void setLatency(std::int32_t l) noexcept { latency_.store(l); }
+    void process(const NodeIo& io) noexcept override {
+        const auto ring = static_cast<std::size_t>(max_ + 1);
+        const auto d = static_cast<std::size_t>(latency_.load());
+        std::size_t w = 0;
+        for (std::int32_t c = 0; c < io.channels && c < 2; ++c) {
+            double* hist = ring_.data() + static_cast<std::size_t>(c) * ring;
+            w = write_;
+            for (std::int32_t i = 0; i < io.frames; ++i) {
+                const std::int32_t at = io.blockOffset + i;
+                hist[w] = io.wide() ? (io.in64 != nullptr ? io.in64[c][at] : 0.0)
+                                    : (io.in != nullptr ? io.in[c][at] : 0.0);
+                const std::size_t r = (w + ring - d) % ring;
+                if (io.wide()) io.out64[c][at] = hist[r];
+                else io.out[c][at] = static_cast<float>(hist[r]);
+                if (++w == ring) w = 0;
+            }
+        }
+        write_ = w;
+    }
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return latency_.load(); }
+private:
+    std::int32_t max_;
+    std::atomic<std::int32_t> latency_{0};
+    std::vector<double> ring_;
+    std::size_t write_ = 0;
+};
+
+void test64EscalatesInDouble() {
+    section("ADR-0207 d2 at 64 -- a latency change past the headroom grows a "
+            "double ring, and the edge comes out aligned to every bit");
+
+    const std::vector<double> a = noise53(19000u, 8192), b = noise53(19001u, 8192);
+    WidePlayNode pa(a), pb(b);
+    WideVarLateNode late(200);
+    SumNode master;
+    Graph g;
+    g.setPrecision(Precision::Float64);
+    g.setLatencyHeadroom(16);    // so a change to 100 cannot fit the ring
+    const NodeId na = g.addNode(pa), nb = g.addNode(pb), nl = g.addNode(late), nm = g.addNode(master);
+    g.connect(na, nm);
+    g.connect(nb, nl);
+    g.connect(nl, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 256);
+    std::vector<double> l(256), r(256);
+    double* wide[2] = {l.data(), r.data()};
+    AudioIo io;
+    io.out64 = wide;
+    io.numOut = 2;
+    io.frames = 256;
+    for (int i = 0; i < 4; ++i) g.process(io);
+    late.setLatency(100);
+    check(!g.retapLatency(), "a change to 100 does not fit a 16-sample headroom");
+    check(g.escalateLatency() == 1, "so the direct edge is offered a bigger ring, at its width");
+    for (int i = 0; i < 8; ++i) g.process(io);
+    check(g.collectRings() == 1 && g.compensationFor(na, nm) == 100, "it swapped, delays 100, and the old ring is collected");
+    g.process(io);   // block 13: samples [3072, 3328)
+    bool aligned = true;
+    for (std::size_t i = 0; i < 256; ++i)
+        aligned = aligned && l[i] == a[3072 + i - 100] + b[3072 + i - 100];
+    check(aligned, "the master is a + b, 100 late, exactly: the grown ring is double");
+}
+
+void test64StripHandover() {
+    section("ADR-0207 d2 -- a strip switched between widths goes on from the "
+            "gain it was playing, never from the other width's old one");
+
+    StripNode strip;
+    strip.prepare(48000.0, 512);
+    strip.setStatic(0.0, 0.0, PanLaw::Live, true);
+    std::vector<float> fin(512, 1.0f), fl(512), fr(512);
+    std::vector<double> win(512, 1.0), wl(512), wr(512);
+    const float* fi[2] = {fin.data(), fin.data()};
+    float* fo[2] = {fl.data(), fr.data()};
+    const double* wi[2] = {win.data(), win.data()};
+    double* wo[2] = {wl.data(), wr.data()};
+    auto at32 = [&](std::int32_t frames) {
+        NodeIo io; io.in = fi; io.out = fo; io.channels = 2; io.frames = frames; io.sampleRate = 48000.0;
+        strip.process(io);
+    };
+    auto at64 = [&](std::int32_t frames) {
+        NodeIo io; io.in64 = wi; io.out64 = wo; io.channels = 2; io.frames = frames; io.sampleRate = 48000.0;
+        strip.process(io);
+    };
+    at32(512);
+    at64(512);
+    check(wl[0] == 1.0 && wl[511] == 1.0, "unity at 32, then at 64");
+    strip.setStatic(0.0, 0.0, PanLaw::Live, false);   // muted, while at 64
+    at64(512);
+    check(wl[511] == 0.0, "the mute ramps to silence at 64");
+    at32(512);
+    check(std::all_of(fl.begin(), fl.end(), [](float x) { return x == 0.0f; }),
+          "back at 32 it stays silent: no 5 ms of the old unity gain (first " + std::to_string(fl[0]) + ")");
+
+    // Mid-ramp: unmuted at 32, switched to 64 100 samples into the 240.
+    strip.setStatic(0.0, 0.0, PanLaw::Live, true);
+    at32(100);
+    const float before = fl[99];
+    at64(512);
+    check(before > 0.40f && before < 0.43f && wl[0] > before && wl[0] < 0.43 &&
+              wl[138] < 1.0 && wl[139] == 1.0,
+          "a ramp in flight goes on at 64 from where it was and lands on time (" +
+              std::to_string(before) + ", " + std::to_string(wl[0]) + ")");
+}
+
+void test64EveryEngineNode() {
+    section("ADR-0207 d2 at 64 -- a project that runs every engine node's double "
+            "path renders what 32 renders, to float's resolution, and not its bits");
+
+    // A group with Console9 summing (both console halves), a track with input
+    // gain and two overlapping faded clips, a six-channel file folded to mono,
+    // and a MIDI track.
+    std::vector<std::vector<float>> six;
+    for (int i = 0; i < 6; ++i) six.push_back(noise24(20000u + static_cast<std::uint32_t>(i), kFrames, 16));
+    auto build = [&](Project& p) {
+        p.track(100, "group");
+        p.store->db().exec("INSERT INTO group_summing(track_id,enabled,flavor) VALUES(100,1,'console9')");
+        p.track(1, "audio", 100);
+        p.track(2, "audio", 100);
+        p.track(3, "midi", 100);
+        p.strip(1, -2.0, -0.3);
+        p.store->db().exec("UPDATE mixer_strip SET input_gain_db=-3.0 WHERE track_id=1");
+        p.clip(1, p.file(noise24(20100u, kFrames, 16)), kFrames);
+        p.clip(1, p.file(noise24(20101u, kFrames, 16)), kFrames);
+        p.store->db().exec("UPDATE clips SET fade_in_ticks=24024, fade_out_ticks=24024 WHERE track_id=1");
+        p.clip(2, p.file(six), kFrames);
+        p.store->db().exec("UPDATE audio_clips SET channel_mode=3 WHERE clip_id=3");
+    };
+    Project p32, p64;
+    build(p32);
+    build(p64);
+    const Render a = p32.play(512, kFrames);
+    const Render b = p64.play(512, kFrames, Precision::Float64);
+    check(p64.session.graph().currentGraph() != nullptr &&
+              p64.session.graph().currentGraph()->precision() == Precision::Float64 &&
+              p64.session.problems().empty(),
+          "the project plays at 64 with no problems");
+    double diff = 0.0, peak = 0.0;
+    for (std::size_t i = 0; i < a.l64.size(); ++i) {
+        diff = (std::max)(diff, std::fabs(a.l64[i] - b.l64[i]));
+        peak = (std::max)(peak, std::fabs(b.l64[i]));
+    }
+    check(peak > 0.01 && diff > 0.0 && diff < peak * 1e-5,
+          "64 differs from 32 by no more than float's resolution of the signal: " +
+              std::to_string(diff) + " of " + std::to_string(peak));
+}
 }  // namespace
 
 int main() {
@@ -739,6 +1431,19 @@ int main() {
         testClipsOnOneTrackCancel();
         testAFoldIsASum();
         testOnlyASumGoesWide();
+        test64KeepsEveryBit();
+        test64FloatNodeIsConverted();
+        test64CompensatesInDouble();
+        test64DelayLine();
+        test64SleepsAndWakes();
+        test64FactSheetCase();
+        test64ThroughAProject();
+        test64SwitchIsARebuild();
+        test64SwitchKeepsCompensationHistory();
+        test64OutputContract();
+        test64EscalatesInDouble();
+        test64StripHandover();
+        test64EveryEngineNode();
     } catch (const std::exception& e) {
         std::printf("\nFAILED -- exception escaped: %s\n", e.what());
         return 1;

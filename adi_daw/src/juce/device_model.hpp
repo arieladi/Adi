@@ -187,6 +187,14 @@ public:
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
 
+    /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
+    /// default: the device is handed float in every graph, converted either
+    /// side in a graph at 64, which is Cubase's rule for a plug-in that cannot
+    /// take 64-bit. No host answers true yet: VST3 `kSample64`, CLAP 64-bit
+    /// ports and the Pd tier in double each come with their own host's PR.
+    /// Decided at construction.
+    [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
+
     // --- what the scheduler asks (ADR-0043, ADR-0058) ----------------------
 
     /// Conservative by default: never suspended. A plugin reporting no tail
@@ -418,6 +426,8 @@ public:
     [[nodiscard]] bool loaded() const noexcept override { return false; }
 
     void process(const engine::NodeIo& io) noexcept override;
+    /// A pass-through is exact at either width.
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
     /// A pass-through adds no delay and holds nothing back. Declaring a tail
     /// here would keep a whole chain awake for a device that is doing nothing.
@@ -481,6 +491,11 @@ public:
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
     [[nodiscard]] bool alwaysProcess() const noexcept override { return always_; }
     [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
+    /// The instance's answer. Bypass passes through at whichever width the
+    /// node is handed, so it does not change the answer.
+    [[nodiscard]] bool processesDouble() const noexcept override {
+        return inst_ != nullptr && inst_->processesDouble();
+    }
     [[nodiscard]] const char* name() const noexcept override { return "device"; }
 
     /// `devices.always_process`. Message thread.
@@ -502,7 +517,8 @@ private:
 
 /// Copy `io.in` to `io.out` for one segment, or zero the output when there is
 /// no input. Shared by `MissingDevice` and by a bypassed `DeviceNode` — the two
-/// places where "do nothing" has to mean something specific.
+/// places where "do nothing" has to mean something specific. At either width:
+/// `in64`/`out64` when the call is wide (ADR-0207 d2).
 void passThrough(const engine::NodeIo& io) noexcept;
 
 }  // namespace adi::device

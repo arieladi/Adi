@@ -151,12 +151,12 @@ A row is named `<section> / <setting>`: the section as the catalogue heads it,
 and the setting cell up to its first ` (`. Two settings, PTP and AudioGridder
 servers, appear in two sections each, so the section is part of the name.
 
-**225 settings on 21 pages:**
+**226 settings on 21 pages:**
 
 | Page | Settings | Notes |
 |---|---|---|
 | Look & Feel | 48 | Live's Display & Input and Theme & Colors |
-| Audio | 26 | 2 Device scope |
+| Audio | 27 | 2 Device scope |
 | Record | 18 | |
 | MIDI | 25 | 8 Device scope (per port) |
 | Editing | 20 | |
@@ -245,6 +245,19 @@ Live's default), `export.nameTemplate`, `export.normalize` (off; peak is Live's
 Normalize, loudness aims at `export.loudnessTargetLufs`, -14, under
 `export.truePeakCeilingDb`, -1; D-04 a). The destination stays
 `files.renderFolder`; freeze render settings stay on Devices.
+
+**ADR-0207 d2, the Processing Precision switch:** `audio.processingPrecision`
+on the Audio page, 32 or 64, **32 by default**. At 32 the engine processes in
+32-bit float and sums every mix point in 64-bit, as Live's Audio Fact Sheet
+describes; at 64 the whole graph runs in double, as Cubase's Processing
+Precision, and a plug-in that cannot take 64-bit is processed at 32 between
+conversions. In this build every device (VST3, CLAP, the Pd tier and the
+built-in devices it runs) is processed at 32 that way; the engine's own nodes
+(sums, junctions, strips, input gain, the console halves, clip playback) run
+in double. The engine takes it as `SessionSpec::precision`, and changing it
+is a rebuild (`Session::setPrecision`); no application layer reads the setting
+into the session yet, which is with the window (step 7). Not the agent's
+(ADR-0125 d2).
 
 **Registry-only for now:** the engine chases notes unconditionally and reads no
 setting for reduced-latency monitoring, the PDC bypass, envelope auto-reset or

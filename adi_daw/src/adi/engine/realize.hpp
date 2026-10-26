@@ -61,6 +61,8 @@ namespace adi::engine {
 class MixNode final : public Node {
 public:
     void process(const NodeIo& io) noexcept override;
+    /// A copy is exact at either width (ADR-0207 d2).
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
     /// Zero, and not the base class's `kInfiniteTail`. A summing junction holds
     /// nothing back: when its inputs go quiet, so does it, immediately. The
