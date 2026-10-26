@@ -361,6 +361,11 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
         (chans < 1 ? 2 : chans) == channels_) {
         return;
     }
+    // From here JUCE stops and reactivates the component and the buffers are
+    // rebuilt, while a live rebuild's last graph may still render this
+    // device: `process` passes audio through until it is done
+    // (`ReactivationGate`, as in `ClapDevice::prepare`).
+    const ReactivationGate::Hold hold(gate_);
 
     maxFrames_ = maxFrames;
     sampleRate_ = sampleRate;
@@ -443,11 +448,16 @@ bool Vst3Device::pushEvent(const engine::Event& e) noexcept {
 }
 
 void Vst3Device::release() {
+    const ReactivationGate::Hold hold(gate_);   // as in `prepare`
     prepared_ = false;
     if (inst_ != nullptr) inst_->releaseResources();
 }
 
 void Vst3Device::process(const engine::NodeIo& io) noexcept {
+    // A reactivation in progress on the message thread owns the component and
+    // the buffers: this call passes the audio through (`ReactivationGate`).
+    const ReactivationGate::Pass pass(gate_);
+    if (!pass) { passThrough(io); return; }
     if (inst_ == nullptr || io.out == nullptr) return;
 
     const std::int32_t n = std::min(io.frames, maxFrames_);

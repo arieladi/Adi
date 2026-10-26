@@ -301,6 +301,10 @@ private:
     double sampleRate_ = 0.0;
     bool prepared_ = false;
     std::int64_t activations_ = 0;
+    /// Holds the audio thread off the plug-in while `prepare` or `release`
+    /// reactivates it, which a live rebuild does while the last graph still
+    /// renders this device (ADR-0089 d4).
+    ReactivationGate gate_;
 };
 
 }  // namespace adi::device

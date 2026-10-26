@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace adi::device {
@@ -517,6 +518,60 @@ private:
     DeviceInstance* inst_ = nullptr;
     bool always_ = false;
     bool bypassed_ = false;
+};
+
+/// A device that must be DEACTIVATED to take a new layout, rate or sample
+/// size, held off the audio thread while it is. ADR-0089 d4 has a rebuild
+/// prepare the next graph while the last one still renders, and both hold
+/// the same devices: a `prepare` that stops, deactivates and reallocates a
+/// plug-in would do it under a `process` call the audio thread is still
+/// making, on buffers being freed (a use-after-free, measured under ASan).
+///
+///   audio thread:    `const ReactivationGate::Pass pass(gate);`
+///                    `if (!pass) { passThrough(io); return; }`
+///   message thread:  `const ReactivationGate::Hold hold(gate);` around the
+///                    span from the first stop to the last allocation.
+///
+/// `Hold` closes the gate and then waits for every call already inside to
+/// leave -- one `process` call at most, and nothing at all when no audio
+/// runs -- so the message thread owns the plug-in until it opens it again.
+/// A call that starts meanwhile passes its audio through. Both sides are
+/// sequentially consistent: either the call sees the gate closed, or the
+/// wait sees the call inside; neither can miss the other. A `prepare` that
+/// changes nothing never takes it, so a rebuild costs a device no block.
+class ReactivationGate {
+public:
+    class Pass {
+    public:
+        explicit Pass(ReactivationGate& g) noexcept : g_(g) {
+            g_.inside_.fetch_add(1, std::memory_order_seq_cst);
+            open_ = !g_.closed_.load(std::memory_order_seq_cst);
+        }
+        ~Pass() { g_.inside_.fetch_sub(1, std::memory_order_release); }
+        Pass(const Pass&) = delete;
+        Pass& operator=(const Pass&) = delete;
+        [[nodiscard]] explicit operator bool() const noexcept { return open_; }
+    private:
+        ReactivationGate& g_;
+        bool open_ = false;
+    };
+    class Hold {
+    public:
+        explicit Hold(ReactivationGate& g) noexcept : g_(g) {
+            g_.closed_.store(true, std::memory_order_seq_cst);
+            while (g_.inside_.load(std::memory_order_seq_cst) != 0) std::this_thread::yield();
+        }
+        ~Hold() { g_.closed_.store(false, std::memory_order_seq_cst); }
+        Hold(const Hold&) = delete;
+        Hold& operator=(const Hold&) = delete;
+    private:
+        ReactivationGate& g_;
+    };
+    /// Whether a reactivation holds the gate now. For tests and diagnostics.
+    [[nodiscard]] bool closed() const noexcept { return closed_.load(std::memory_order_acquire); }
+private:
+    std::atomic<bool> closed_{false};
+    std::atomic<std::int32_t> inside_{0};
 };
 
 /// Copy `io.in` to `io.out` for one segment, or zero the output when there is

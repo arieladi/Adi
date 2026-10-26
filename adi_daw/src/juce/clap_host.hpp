@@ -374,6 +374,8 @@ public:
     /// rather than calling it: plugin.h makes `process` legal only while
     /// processing, and a start that failed says the plugin is not.
     [[nodiscard]] std::int64_t startFailures() const noexcept { return startFailures_; }
+    /// A reactivation holds the plug-in now (`ReactivationGate`). Any thread.
+    [[nodiscard]] bool reactivating() const noexcept { return gate_.closed(); }
 
     /// Events refused because a queue was full. Non-zero means the capacity
     /// derived at prepare was too small for what arrived (ADR-0056).
@@ -446,6 +448,11 @@ private:
     /// for does not reactivate the plug-in. Written on the message thread,
     /// read wherever the coalescer polls.
     std::atomic<std::uint64_t> widthMoves_{0};
+
+    /// Holds the audio thread off the plug-in while `prepare` or `release`
+    /// stops, deactivates and reallocates it, which a live rebuild does while
+    /// the last graph still renders this device (ADR-0089 d4).
+    ReactivationGate gate_;
 
     /// `glue_->flushRequests()` already answered. Message thread only.
     std::uint64_t flushSeen_ = 0;

@@ -950,6 +950,12 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
         shapeNow == shapeSeen_) {
         return;
     }
+    // FROM HERE THE PLUG-IN IS STOPPED, DEACTIVATED AND ITS BUSES REBUILT,
+    // and a live rebuild gets here while the last graph still renders this
+    // device: `process` passes audio through until it is active again
+    // (`ReactivationGate`). Not before the early return, so a rebuild that
+    // changes nothing here costs the device no block.
+    const ReactivationGate::Hold hold(gate_);
     shapeSeen_ = shapeNow;
 
     if (activated_) {
@@ -1120,6 +1126,7 @@ bool ClapDevice::layoutMatches() const {
 
 void ClapDevice::release() {
     if (plugin_ == nullptr || !activated_) return;
+    const ReactivationGate::Hold hold(gate_);   // as in `prepare`
     // The THIRD call site, and the one the guard audit found by arithmetic --
     // "stop_processing: guarded=2 calls=3" -- which I read and did not act
     // on. Counting is not checking. And stop is legal only while processing
@@ -1174,6 +1181,10 @@ bool ClapDevice::outPush(const clap_output_events_t* list, const clap_event_head
 }
 
 void ClapDevice::process(const engine::NodeIo& io) noexcept {
+    // A reactivation in progress on the message thread owns the plug-in and
+    // its buses: this call passes the audio through (`ReactivationGate`).
+    const ReactivationGate::Pass pass(gate_);
+    if (!pass) { passThrough(io); return; }
     // ADR-0207 d2. A graph at 64 hands double to a device that said it takes
     // it; `data64` carries it when every port does (`wide64`). Should the
     // plug-in's answer have changed since the graph asked (a rescan: the graph
