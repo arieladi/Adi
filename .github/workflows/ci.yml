@@ -868,6 +868,43 @@ jobs:
           "$ADI_PLAY" render/vst3.adi --fixture --render 4 \
                   --require-devices --require-peak -60 --expect-no-edits
 
+      # ADR-0207 d2: the same project with the graph at 64. The fixture takes
+      # kSample64, so --require-double holds it to being set up at 64 and
+      # handed double, not converted at its seam.
+      - name: Render a project through a VST3 at 64-bit
+        run: |
+          set -euo pipefail
+          "$ADI_PLAY" render/vst3.adi --fixture --render 4 --precision 64 \
+                  --require-devices --require-double --require-peak -60 --expect-no-edits
+
+      # And --require-double can fail: ADI Test Plain refuses kSample64, so
+      # at 64 it plays, converted at its seam, and the gate must say so.
+      - name: --require-double fails on a VST3 that refuses kSample64
+        run: |
+          set -euo pipefail
+          tool=""
+          while IFS= read -r cand; do
+            case "$cand" in *adi_tool|*adi_tool.exe) tool="$cand"; break ;; esac
+          done < <(find adi_daw/build-juce -type f -name 'adi_tool*' 2>/dev/null)
+          rm -f render/vst3-plain.adi
+          "$tool" create render/vst3-plain.adi
+          uid=$("$ADI_PLAY" render/vst3-plain.adi --fixture --list \
+                | grep -o 'VST3-ADI Test Plain-[0-9a-f-]*' | head -1)
+          if [ -z "$uid" ]; then
+            echo "::error::ADI Test Plain did not appear in adi_play --list"
+            exit 1
+          fi
+          python3 adi_daw/tools/make_demo_project.py render/vst3-plain.adi \
+                  --clip-rates 48000 --midi --vst3-uid "$uid"
+          "$ADI_PLAY" render/vst3-plain.adi --fixture --render 1 --precision 64 \
+                  --require-devices --require-peak -60
+          if "$ADI_PLAY" render/vst3-plain.adi --fixture --render 1 --precision 64 \
+                         --require-devices --require-double; then
+            echo "::error::a VST3 that refuses kSample64 passed --require-double"
+            exit 1
+          fi
+          echo "ok -- a device converted at its seam fails --require-double"
+
       # PROVE THE GATE CAN FAIL. A render step that passes because its check
       # stopped checking looks exactly like a render step that passes. This
       # renders the same CLAP project with NO search path, so the plug-in is a

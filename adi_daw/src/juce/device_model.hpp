@@ -192,13 +192,19 @@ public:
     /// default: the device is handed float in every graph, converted either
     /// side in a graph at 64, which is Cubase's rule for a plug-in that cannot
     /// take 64-bit. A CLAP whose every port says `SUPPORTS_64BITS` answers
-    /// true; VST3 `kSample64` and the Pd tier in double each come with their
-    /// own host's PR. Known at construction, because the graph asks before it
-    /// prepares. A device may revise it in a `prepare` (a CLAP reads its ports
-    /// only while deactivated, and a rescan can move them) and is handed the
-    /// width the graph kept until the graph is next built, so it takes both;
-    /// one that does moves `shapeEpoch`, which asks for that build.
+    /// true, and a VST3 that says `canProcessSampleSize(kSample64)`; the Pd
+    /// tier in double comes with its own PR. Known at construction, because
+    /// the graph asks before it prepares. A device may revise it in a
+    /// `prepare` (a CLAP reads its ports only while deactivated, and a rescan
+    /// can move them) and is handed the width the graph kept until the graph
+    /// is next built, so it takes both; one that does moves `shapeEpoch`,
+    /// which asks for that build.
     [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
+
+    /// `engine::Node::willBeHanded`, for a device: the width the next
+    /// `prepare` is for. Message thread, just before `prepare`. A VST3 needs
+    /// it, because it is set up at one sample size when it is activated.
+    virtual void willBeHanded(engine::Precision /*width*/) {}
 
     // --- what the scheduler asks (ADR-0043, ADR-0058) ----------------------
 
@@ -500,6 +506,9 @@ public:
     /// node is handed, so it does not change the answer.
     [[nodiscard]] bool processesDouble() const noexcept override {
         return inst_ != nullptr && inst_->processesDouble();
+    }
+    void willBeHanded(engine::Precision width) override {
+        if (inst_ != nullptr) inst_->willBeHanded(width);
     }
     [[nodiscard]] const char* name() const noexcept override { return "device"; }
 

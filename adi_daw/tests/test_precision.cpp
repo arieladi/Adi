@@ -284,6 +284,27 @@ public:
     bool sawFloatOut = false;
 };
 
+/// Writes down what the graph tells it and when: "64" or "32" for each
+/// `willBeHanded`, "p" for each `prepare`. Says `processesDouble()` when asked to.
+class WidthProbe final : public Node {
+public:
+    explicit WidthProbe(bool doubles) : doubles_(doubles) {}
+    void willBeHanded(Precision width) override { log += width == Precision::Float64 ? "64" : "32"; }
+    void prepare(double, std::int32_t) override { log += "p"; }
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) {
+                if (io.wide()) io.out64[c][io.blockOffset + i] = 0.0;
+                else io.out[c][io.blockOffset + i] = 0.0f;
+            }
+    }
+    [[nodiscard]] bool processesDouble() const noexcept override { return doubles_; }
+    [[nodiscard]] const char* name() const noexcept override { return "width probe"; }
+    std::string log;
+private:
+    bool doubles_;
+};
+
 /// Doubles no float can hold: 24 bits of noise plus a part below float's
 /// resolution, so a value that went through float anywhere is different.
 std::vector<double> noise53(std::uint32_t seed, std::size_t frames) {
@@ -917,6 +938,28 @@ void test64FloatNodeIsConverted() {
     check(exact, "the master is float(a) + b in double: a rounded once at the float node, b untouched");
 }
 
+void test64TellsEachNodeItsWidth() {
+    section("ADR-0207 d2 -- the graph tells each node the width it will be handed, "
+            "before the node prepares: a VST3 fixes its sample size at activation");
+
+    WidthProbe wide(true), narrow(false);
+    SumNode master;
+    Graph g;
+    g.setPrecision(Precision::Float64);
+    const NodeId nw = g.addNode(wide), nn = g.addNode(narrow), nm = g.addNode(master);
+    g.connect(nw, nm);
+    g.connect(nn, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 512);
+    check(wide.log == "64p", "at 64, a node that processes double is told 64, then prepared: " + wide.log);
+    check(narrow.log == "32p", "and one that does not is told 32, which is what it is handed: " + narrow.log);
+
+    g.setPrecision(Precision::Float32);
+    g.prepare(48000.0, 512);
+    check(wide.log == "64p32p", "at 32, every node is told 32, whatever it supports: " + wide.log);
+    check(narrow.log == "32p32p", "the float node too: " + narrow.log);
+}
+
 void test64CompensatesInDouble() {
     section("ADR-0207 d2 at 64 -- compensation delay lines hold double");
 
@@ -1433,6 +1476,7 @@ int main() {
         testOnlyASumGoesWide();
         test64KeepsEveryBit();
         test64FloatNodeIsConverted();
+        test64TellsEachNodeItsWidth();
         test64CompensatesInDouble();
         test64DelayLine();
         test64SleepsAndWakes();

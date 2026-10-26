@@ -781,7 +781,10 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         s.tailRemaining = (t == kInfiniteTail) ? 0 : t;
         s.silent = true;
         s.zeroed = true;                 // `assign` above filled it with zeros
-        if (s.node != nullptr) s.node->prepare(sampleRate, maxFrames);
+        if (s.node != nullptr) {
+            s.node->willBeHanded(s.doubles ? Precision::Float64 : Precision::Float32);
+            s.node->prepare(sampleRate, maxFrames);
+        }
     }
 
     mixBuf_.assign(ch * fr, 0.0f);

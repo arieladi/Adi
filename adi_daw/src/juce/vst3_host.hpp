@@ -111,6 +111,23 @@ public:
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
+    // --- ADR-0207 d2: 64-bit processing -------------------------------------
+
+    /// True when the plug-in says `canProcessSampleSize(kSample64)`, which is
+    /// what JUCE's `supportsDoublePrecisionProcessing` asks. Asked once, at
+    /// construction: the graph asks before it prepares, and a VST3 does not
+    /// change what it supports.
+    [[nodiscard]] bool processesDouble() const noexcept override { return canDouble_; }
+    /// The graph's width for the next `prepare`. A VST3 fixes its sample
+    /// size in `setupProcessing`, at activation, so it is set up at 64 only
+    /// when it will be handed double, and at 32 in a graph at 32 whatever it
+    /// supports: the width is the graph's (Cubase's switch, ADR-0207 d2).
+    void willBeHanded(engine::Precision width) override {
+        handed64_ = width == engine::Precision::Float64;
+    }
+    /// Set up at `kSample64` now. Message thread, or while not processing.
+    [[nodiscard]] bool processingDouble() const noexcept { return double_; }
+
     // --- the two declarations, mapped straight through ----------------------
 
     /// VST3's `kInfiniteTail` is `INT64_MAX` and so is `engine::kInfiniteTail`;
@@ -280,6 +297,8 @@ private:
     std::vector<juce::AudioProcessorParameter*> handles_;
 
     juce::AudioBuffer<float> scratch_;
+    /// The same at 64, when the plug-in is set up at `kSample64`.
+    juce::AudioBuffer<double> scratch64_;
     juce::MidiBuffer midi_;
 
     /// The raw interface, when we could reach it. Null means JUCE's
@@ -308,6 +327,18 @@ private:
     std::vector<engine::Event> injected_;
     std::size_t injectedUsed_ = 0;
     std::vector<float*> rawIn_, rawOut_;
+    std::vector<double*> rawIn64_, rawOut64_;
+    bool canDouble_ = false;   ///< `canProcessSampleSize(kSample64)`, asked at construction
+    bool handed64_ = false;    ///< the next `prepare` is for a graph handing double
+    bool double_ = false;      ///< set up at `kSample64`
+
+    /// The segment into `scratch_` or `scratch64_`, whichever the plug-in is
+    /// set up at, from the graph's width: copied, or converted once.
+    void copyIn(const engine::NodeIo& io, std::int32_t n, std::int32_t ch) noexcept;
+    /// And back out, into the graph's width, the rest of the segment silent.
+    void copyOut(const engine::NodeIo& io, std::int32_t n, std::int32_t ch) noexcept;
+    /// This segment of the output silent, at the graph's width.
+    static void silence(const engine::NodeIo& io) noexcept;
     std::int64_t continuousTime_ = 0;
 
     std::atomic<std::uint64_t> latencyEpoch_{0};
