@@ -1222,6 +1222,11 @@ target_compile_definitions(adi_clip_playback_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
 set_tests_properties(adi_clip_playback_tests PROPERTIES TIMEOUT 600)
 
+# ADR-0207 d2: 64-bit summing at every mix point, Live's Fact Sheet case.
+add_executable(adi_precision_tests tests/test_precision.cpp)
+target_link_libraries(adi_precision_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_precision_tests COMMAND adi_precision_tests)
+
 # ADR-0156: one decoder for imported audio, into the decoding cache. The
 # libraries' implementations compile once, as C, outside the warning wall;
 # adi_core's clip worker asks the decoder for a playable file.

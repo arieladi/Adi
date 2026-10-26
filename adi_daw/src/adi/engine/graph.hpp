@@ -16,6 +16,9 @@
 //             special case anywhere
 //   ADR-0054  the split floor MUST NOT exceed sample_rate/500, or MPE+ is
 //             quantised in time
+//   ADR-0207  d2: nodes process in 32-bit float, but every edge sum into a
+//             node is accumulated in 64-bit double and converted once, as
+//             Live sums every mix point (Audio Fact Sheet 38.2.4)
 //
 // No JUCE, no SQLite, no allocation after `prepare` (ADR-0010, ADR-0036). A
 // `Graph` is a `BlockProcessor`, so `DeviceCore` drives it with no adapter.
@@ -283,6 +286,9 @@ struct GraphStats {
     std::int64_t eventsDropped = 0;
     std::int64_t eventsForwarded = 0; ///< deliveries made along an edge (ADR-0091)
     std::int64_t eventsDeferred = 0;  ///< held for a later block by a delay
+    /// Mix-point segments summed in double (ADR-0207 d2): two or more inputs
+    /// that could each add something. One live input needs no sum at all.
+    std::int64_t wideMixes = 0;
 };
 
 /// A fixed delay, applied to one input edge so that two paths of unequal
@@ -754,11 +760,33 @@ private:
 
     bool topoSort();
 
-    /// Accumulate one input's segment into the mix scratch. `first` copies,
-    /// the rest add -- which is the whole of ADR-0044's summing, and why a
-    /// group is a node with no device rather than a case in the scheduler.
-    void accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& delay,
+    /// One mix point: sum `inputs` (compensated by `delays`) into `dst` for
+    /// one segment, and say whether there was anything to sum. The node's
+    /// processing is 32-bit; the SUM is 64-bit and converted once, as Live
+    /// sums every mix point (ADR-0207 d2, Audio Fact Sheet 38.2.4). `wide` is
+    /// the double accumulator for this bus.
+    bool mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+             std::vector<float*>& dst, std::vector<double*>& wide,
+             std::int32_t begin, std::int32_t frames) noexcept;
+
+    /// An input that can add nothing to this segment: a sleeping source on an
+    /// edge with nothing in flight. The one test both `mix` and `accumulate`
+    /// use, so the count of live inputs and the reads skipped cannot disagree.
+    [[nodiscard]] static bool idle(const Slot& src, const DelayLine& delay) noexcept;
+
+    /// Accumulate one input's segment into a mix buffer. `first` copies, the
+    /// rest add -- which is the whole of ADR-0044's summing, and why a group
+    /// is a node with no device rather than a case in the scheduler. `Sample`
+    /// is `float` when at most one input is live and `double` otherwise.
+    template <typename Sample>
+    void accumulate(std::vector<Sample*>& dst, const Slot& src, DelayLine& delay,
                     std::int32_t begin, std::int32_t frames, bool first) noexcept;
+
+    /// The last live input of a double sum: added to `wide` and converted
+    /// into `dst` in the same pass, so the sum is narrowed once and read once.
+    void accumulateLast(std::vector<float*>& dst, const std::vector<double*>& wide,
+                        const Slot& src, DelayLine& delay, std::int32_t begin,
+                        std::int32_t frames) noexcept;
     void computeCompensation();
     void prepareLine(DelayLine& line, std::int32_t delaySamples);
     void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
@@ -787,6 +815,12 @@ private:
     std::vector<float*> mixPtrs_;
     std::vector<float> sideBuf_;        ///< summed sidechain inputs
     std::vector<float*> sidePtrs_;
+    // ADR-0207 d2: the 64-bit accumulators the two buffers above are
+    // converted from, once per segment, when two or more inputs are live.
+    std::vector<double> mixWide_;
+    std::vector<double*> mixWidePtrs_;
+    std::vector<double> sideWide_;
+    std::vector<double*> sideWidePtrs_;
     std::vector<std::vector<NodeId>> levels_;
     std::vector<Event> mixEventStore_;
     EventList mixEvents_;
