@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstring>
 #include <random>
+#include <type_traits>
 
 namespace adi::engine {
 
@@ -706,6 +707,12 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     sideBuf_.assign(ch * fr, 0.0f);
     sidePtrs_.resize(ch);
     for (std::size_t c = 0; c < ch; ++c) sidePtrs_[c] = sideBuf_.data() + c * fr;
+    mixWide_.assign(ch * fr, 0.0);
+    mixWidePtrs_.resize(ch);
+    for (std::size_t c = 0; c < ch; ++c) mixWidePtrs_[c] = mixWide_.data() + c * fr;
+    sideWide_.assign(ch * fr, 0.0);
+    sideWidePtrs_.resize(ch);
+    for (std::size_t c = 0; c < ch; ++c) sideWidePtrs_[c] = sideWide_.data() + c * fr;
     mixEventStore_.assign(static_cast<std::size_t>(eventCapacity_), Event{});
     mixEvents_ = EventList(mixEventStore_.data(), eventCapacity_);
 
@@ -734,9 +741,15 @@ void Graph::release() {
 // process
 // ---------------------------------------------------------------------------
 
-void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& delay,
+bool Graph::idle(const Slot& src, const DelayLine& delay) noexcept {
+    return src.zeroed && !delay.busy() && delay.delay() == 0;
+}
+
+template <typename Sample>
+void Graph::accumulate(std::vector<Sample*>& dst, const Slot& src, DelayLine& delay,
                        std::int32_t begin, std::int32_t frames, bool first) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
+    const auto n = static_cast<std::size_t>(frames);
 
     // Zero compensation is the common case and must cost nothing: most edges in
     // most projects join paths of equal latency, and this is the path they take.
@@ -761,20 +774,25 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
         // that so it is a fact rather than a surprise. A source that is
         // silent but NOT zeroed (a generator emitting -0.0f, a node whose
         // block was all zero but never slept) is read as before.
-        if (src.zeroed) {
+        if (idle(src, delay)) {
+            // All-bits-zero is +0.0 in both widths.
             if (first)
                 for (std::size_t c = 0; c < ch; ++c)
-                    std::memset(dst[c] + begin, 0, static_cast<std::size_t>(frames) * sizeof(float));
+                    std::memset(dst[c] + begin, 0, n * sizeof(Sample));
             ++stats_.inputsSkipped;
             return;
         }
         for (std::size_t c = 0; c < ch; ++c) {
             const float* s = src.chanPtrs[c] + begin;
-            float* d = dst[c] + begin;
+            Sample* d = dst[c] + begin;
             if (first) {
-                std::memcpy(d, s, static_cast<std::size_t>(frames) * sizeof(float));
+                if constexpr (std::is_same_v<Sample, float>) {
+                    std::memcpy(d, s, n * sizeof(float));
+                } else {
+                    for (std::size_t i = 0; i < n; ++i) d[i] = s[i];
+                }
             } else {
-                for (std::int32_t i = 0; i < frames; ++i) d[i] += s[i];
+                for (std::size_t i = 0; i < n; ++i) d[i] += s[i];
             }
         }
         return;
@@ -796,17 +814,25 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
     for (std::size_t c = 0; c < ch; ++c) {
         delay.setCursors(before);
         const float* s = src.chanPtrs[c] + begin;
-        float* d = dst[c] + begin;
+        Sample* d = dst[c] + begin;
+        if constexpr (std::is_same_v<Sample, float>) {
+            if (first) {
+                delay.process(static_cast<std::int32_t>(c), s, d, frames);
+                continue;
+            }
+        }
+        // Through scratch, then summed. `process` WRITES its output; used
+        // directly on a second input it would clobber the first rather than
+        // add to it, and the first input would vanish silently. The delay
+        // line is a float ring, which is exact: it moves samples, it does
+        // not add them.
+        float* tmp = delayScratch_.data();
+        std::memcpy(tmp, s, n * sizeof(float));
+        delay.process(static_cast<std::int32_t>(c), tmp, tmp, frames);
         if (first) {
-            delay.process(static_cast<std::int32_t>(c), s, d, frames);
+            for (std::size_t i = 0; i < n; ++i) d[i] = tmp[i];
         } else {
-            // Through scratch, then summed. `process` WRITES its output; used
-            // directly on a second input it would clobber the first rather than
-            // add to it, and the first input would vanish silently.
-            float* tmp = delayScratch_.data();
-            std::memcpy(tmp, s, static_cast<std::size_t>(frames) * sizeof(float));
-            delay.process(static_cast<std::int32_t>(c), tmp, tmp, frames);
-            for (std::int32_t i = 0; i < frames; ++i) d[i] += tmp[i];
+            for (std::size_t i = 0; i < n; ++i) d[i] += tmp[i];
         }
     }
     // ONCE PER EDGE, after every channel -- the same rule as the cursor, and
@@ -814,6 +840,52 @@ void Graph::accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& del
     // one edge. Ending it inside the loop would crossfade the left channel and
     // hard-switch the right.
     delay.endEdge();
+}
+
+bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+                std::vector<float*>& dst, std::vector<double*>& wide,
+                std::int32_t begin, std::int32_t frames) noexcept {
+    if (inputs.empty()) return false;
+
+    // ADR-0207 d2, Live's scheme: 32-bit processing, 64-bit summing at every
+    // mix point. In float every partial sum past the first rounds to 24 bits,
+    // so an input and its inverted copy arriving in different places in the
+    // order leave a residue that is not in either; in double a sum of float
+    // samples is exact for any count a project holds, and the one rounding
+    // is the conversion at the end.
+    //
+    // ONE LIVE INPUT IS NOT A SUM. With at most one input able to add
+    // anything, the others being asleep with nothing in flight, the result
+    // is that input's samples, and the float path below produces exactly
+    // the bytes the double path would (zeros add exactly in both widths, and
+    // IEEE signs zeros the same in both). So the 63-sleeping-tracks project
+    // ADR-0102 d5 measured keeps its cost, and nothing changes for a chain.
+    std::size_t live = 0;
+    for (std::size_t k = 0; k < inputs.size() && live < 2; ++k)
+        if (!idle(slots_[static_cast<std::size_t>(inputs[k])], delays[k])) ++live;
+
+    if (live < 2) {
+        for (std::size_t k = 0; k < inputs.size(); ++k)
+            accumulate<float>(dst, slots_[static_cast<std::size_t>(inputs[k])], delays[k],
+                              begin, frames, k == 0);
+        return true;
+    }
+
+    // In the consumer's fixed input order, as before: ADR-0056's
+    // order-independence across a level is about WHICH node runs first,
+    // never about the order a sum is taken in, and double does not change it.
+    for (std::size_t k = 0; k < inputs.size(); ++k)
+        accumulate<double>(wide, slots_[static_cast<std::size_t>(inputs[k])], delays[k],
+                           begin, frames, k == 0);
+    const auto ch = static_cast<std::size_t>(channels_);
+    const auto n = static_cast<std::size_t>(frames);
+    for (std::size_t c = 0; c < ch; ++c) {
+        const double* w = wide[c] + begin;
+        float* d = dst[c] + begin;
+        for (std::size_t i = 0; i < n; ++i) d[i] = static_cast<float>(w[i]);
+    }
+    ++stats_.wideMixes;
+    return true;
 }
 
 void Graph::forwardEvents(std::int32_t frames) noexcept {
@@ -1049,18 +1121,8 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
 
         // Summing here, for every node, is what makes a group (ADR-0044) a
         // node with no device rather than a special case in the scheduler.
-        bool anyMain = false;
-        for (std::size_t k = 0; k < s.inputs.size(); ++k) {
-            accumulate(mixPtrs_, slots_[static_cast<std::size_t>(s.inputs[k])],
-                       s.inDelays[k], begin, n, !anyMain);
-            anyMain = true;
-        }
-        bool anySide = false;
-        for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
-            accumulate(sidePtrs_, slots_[static_cast<std::size_t>(s.sidechains[k])],
-                       s.sideDelays[k], begin, n, !anySide);
-            anySide = true;
-        }
+        const bool anyMain = mix(s.inputs, s.inDelays, mixPtrs_, mixWidePtrs_, begin, n);
+        const bool anySide = mix(s.sidechains, s.sideDelays, sidePtrs_, sideWidePtrs_, begin, n);
 
         NodeIo nio;
         nio.transport = transport;

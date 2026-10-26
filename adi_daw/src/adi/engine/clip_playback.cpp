@@ -282,14 +282,30 @@ class TrackSource final : public Node {
 public:
     Transport& transport;
     std::int32_t maxFrames;
+    std::int32_t channels;
     std::int64_t track;
     std::vector<Clip*> clips;
     std::weak_ptr<void> owner;
+    // ADR-0207 d2: the clips of one track are a mix point, summed in double
+    // and converted once. Sized here, on the message thread, at the shape the
+    // session builds this rebuild's graph at, and never resized after.
+    std::vector<double> wide;
     std::shared_ptr<void> sourceLifetime() const override { return owner.lock(); }
-    TrackSource(Transport& t,std::int32_t f,std::int64_t id):transport(t),maxFrames(f),track(id){}
+    TrackSource(Transport& t,std::int32_t f,std::int32_t ch,std::int64_t id)
+        :transport(t),maxFrames(f),channels(ch),track(id),
+         wide(static_cast<std::size_t>(ch)*static_cast<std::size_t>(f),0.0){}
     void process(const NodeIo& io) noexcept override {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(io.out[c]+io.blockOffset,io.frames,0.0f);
         if(!transport.playing()) return;
+        // One clip is not a sum: its samples go straight out, bit for bit.
+        // Two or more may overlap, and then every sample is summed in double.
+        // The guard is the shape the accumulator was built for; the session
+        // builds this at the graph's own channels and block size.
+        const bool sum=clips.size()>1 && io.channels<=channels && io.blockOffset+io.frames<=maxFrames;
+        auto at=[&](std::int32_t c,std::int32_t i)->double& {
+            return wide[static_cast<std::size_t>(c)*static_cast<std::size_t>(maxFrames)+static_cast<std::size_t>(io.blockOffset+i)];
+        };
+        if(sum) for(std::int32_t c=0;c<io.channels;++c) for(std::int32_t i=0;i<io.frames;++i) at(c,i)=0.0;
         for(auto* clip:clips) {
             if(io.blockOffset==0) clip->request(clip->wanted(transport,maxFrames));
             Page* page=nullptr; std::int64_t number=-1; std::uint32_t missing=0;
@@ -309,16 +325,21 @@ public:
                     if(clip->mode==1) value=sample[0];
                     else if(clip->mode==2) value=sample[clip->channels>1?1:0];
                     else if(clip->mode==3) {
-                        for(std::uint16_t j=0;j<clip->channels;++j) value+=sample[j];
-                        value/=clip->channels;
+                        // A fold of the file's channels is a sum as well.
+                        double folded=0;
+                        for(std::uint16_t j=0;j<clip->channels;++j) folded+=sample[j];
+                        value=static_cast<float>(folded/clip->channels);
                     } else if(clip->channels==1) value=sample[0];
                     else if(c<clip->channels) value=sample[c];
-                    io.out[c][io.blockOffset+i]+=gain*value;
+                    if(sum) at(c,i)+=gain*value;
+                    else io.out[c][io.blockOffset+i]+=gain*value;
                 }
             }
             if(page) page->state.store(2,std::memory_order_release);
             if(missing) clip->underruns.fetch_add(missing,std::memory_order_relaxed);
         }
+        if(sum) for(std::int32_t c=0;c<io.channels;++c) for(std::int32_t i=0;i<io.frames;++i)
+            io.out[c][io.blockOffset+i]=static_cast<float>(at(c,i));
     }
     const char* name() const noexcept override { return "disk clips"; }
 };
@@ -414,7 +435,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(row.muted) continue;
             for(auto& p:clip->pages) p.data.resize(static_cast<std::size_t>(clip->pageFrames)*clip->channels);
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});
-            if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,row.trackId)); track=impl_->tracks.end()-1; }
+            if(track==impl_->tracks.end()) { impl_->tracks.push_back(std::make_unique<TrackSource>(transport,maxFrames,channels,row.trackId)); track=impl_->tracks.end()-1; }
             (*track)->clips.push_back(clip.get()); impl_->clips.push_back(std::move(clip));
         } catch(const std::exception& e) { impl_->problems.push_back(label+e.what()+"; silent"); }
     }
