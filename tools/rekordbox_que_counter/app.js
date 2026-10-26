@@ -335,7 +335,10 @@ function markedRange(tracks) {
   const hi = ei >= lo ? ei : n - 1;
   return { lo, hi, full: lo === 0 && hi === n - 1 };
 }
-const rangeSpan = (res, R) => res[R.hi].cum - (R.lo ? res[R.lo - 1].cum : 0);
+// a set starts the Start track from 0:00, not from its cue in: that intro plays too
+const rangeIntro = (ts, R) => Math.max(0, parseCue(ts[R.lo] && ts[R.lo].cueIn));
+const rangeSpan = (res, R, ts) => res[R.hi].cum - (R.lo ? res[R.lo - 1].cum : 0) + rangeIntro(ts, R);
+const introTxt = n => n > 0 ? '+' + fmtPlay(n) : '';
 const rangeTxt = R => { const n = R.hi - R.lo + 1; return `#${R.lo + 1} → #${R.hi + 1} · ${n} track${n === 1 ? '' : 's'}`; };
 // the rows from the Start to the End lit — only when that is less than the whole list
 function rangeTint(R) {
@@ -346,7 +349,7 @@ function updateRange(L, res) {
   const R = markedRange(L.tracks);
   rangeTint(R);
   sumRange.hidden = !R || R.full;
-  if (R) { rangeTime.textContent = fmtClock(rangeSpan(res, R)); rangeInfo.textContent = rangeTxt(R); }
+  if (R) { rangeTime.textContent = fmtClock(rangeSpan(res, R, L.tracks)); rangeInfo.textContent = rangeTxt(R); }
   if (emDrag && emDrag.moved) emPaint(emDrag); // a drag's preview stays on screen, the S → E box's too
   return R;
 }
@@ -947,7 +950,7 @@ async function dragEnd(cancelled) {
 // puts it back. Focused a pill is a slider: ↑ / ↓ one track, Home / End the
 // first track / the End (Start), the Start / the last track (End).
 const endMark = $('endMark'), emPill = $('emPill'), emTime = $('emTime'), emInfo = $('emInfo'), emSnap = $('emSnap');
-const startMark = $('startMark'), smPill = $('smPill'), smNum = $('smNum');
+const startMark = $('startMark'), smPill = $('smPill'), smNum = $('smNum'), smIntro = $('smIntro');
 // the two markers: the marker, its pill, the class of the row it makes a gap by, the mark it sets
 const MK = {
   start: { el: startMark, pill: smPill, gap: 'startgap', key: 'markStart' },
@@ -959,10 +962,14 @@ const emRow = m => rowsEl.querySelector('.' + m.gap);
 const reduceMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 // the pills' text and slider values, for the range R
 function emLabel(R, res) {
-  const t = fmtClock(rangeSpan(res, R)), info = rangeTxt(R), s = '#' + (R.lo + 1);
+  const L = cur(), ts = L ? L.tracks : [], intro = rangeIntro(ts, R), it = introTxt(intro);
+  const t = fmtClock(rangeSpan(res, R, ts)), info = rangeTxt(R), s = '#' + (R.lo + 1);
   if (emTime.textContent !== t) emTime.textContent = t;
   if (emInfo.textContent !== info) emInfo.textContent = info;
   if (smNum.textContent !== s) smNum.textContent = s;
+  if (smIntro.textContent !== it) smIntro.textContent = it;
+  smIntro.hidden = !it;
+  smIntro.title = it ? `Track ${R.lo + 1} starts from 0:00, so its ${fmtPlay(intro)} before the cue in is added to the time` : '';
   emPill.setAttribute('aria-valuemin', R.lo + 1);
   emPill.setAttribute('aria-valuemax', res.length);
   emPill.setAttribute('aria-valuenow', R.hi + 1);
@@ -970,7 +977,7 @@ function emLabel(R, res) {
   smPill.setAttribute('aria-valuemin', 1);
   smPill.setAttribute('aria-valuemax', R.hi + 1);
   smPill.setAttribute('aria-valuenow', R.lo + 1);
-  smPill.setAttribute('aria-valuetext', `Start at track ${R.lo + 1}, ${t} to track ${R.hi + 1}`);
+  smPill.setAttribute('aria-valuetext', `Start at track ${R.lo + 1}${it ? `, played from 0:00 (${it})` : ''}, ${t} to track ${R.hi + 1}`);
 }
 // after any change to the rows (updateComputed): the gaps by the start and end rows, the markers over them
 function emPlace(R, res) {
@@ -1095,7 +1102,7 @@ function emPaint(d) {
   R.full = R.lo === 0 && R.hi === d.res.length - 1;
   rangeTint(R);
   emLabel(R, d.res);
-  const t = fmtClock(rangeSpan(d.res, R)), info = rangeTxt(R); // the S → E box counts along, there only while less than the whole list (a drop or a cancel puts it right)
+  const t = fmtClock(rangeSpan(d.res, R, d.L.tracks)), info = rangeTxt(R); // the S → E box counts along, there only while less than the whole list (a drop or a cancel puts it right)
   if (rangeTime.textContent !== t) rangeTime.textContent = t;
   if (rangeInfo.textContent !== info) rangeInfo.textContent = info;
   sumRange.hidden = R.full;
@@ -3172,9 +3179,10 @@ function hvRowP(r, res, R) {
 // the S → E time and #from → #to; moved since: "was before #2", "was after #9" — or, on another
 // track with the number its own had (that one went), its name: "was before “Kick”"
 const hvWasAt = (w, n, n0, t0) => `<small class="was">${n0 < 0 ? 'new' : n0 !== n ? `was ${w} #${n0 + 1}` : `was ${w} “${esc((t0 || '').trim() || 'Untitled track')}”`}</small>`;
-const hvStartLine = (R, chg, R0, ts0) => `<div class="hvEndL hvStartL${chg ? ' moved hc' : ''}"><span class="hvEndP"><i>Start</i><b>#${R.lo + 1}</b>` +
+const hvStartLine = (R, ts, chg, R0, ts0) => `<div class="hvEndL hvStartL${chg ? ' moved hc' : ''}"><span class="hvEndP"><i>Start</i><b>#${R.lo + 1}</b>` +
+  (rangeIntro(ts, R) ? `<span class="smIn">${introTxt(rangeIntro(ts, R))}</span>` : '') +
   `${chg ? hvWasAt('before', R.lo, R0 ? R0.lo : -1, R0 && ts0[R0.lo].title) : ''}</span></div>`;
-const hvEndLine = (R, res, chg, R0, ts0) => `<div class="hvEndL${chg ? ' moved hc' : ''}"><span class="hvEndP"><i>End</i><b>${fmtClock(rangeSpan(res, R))}</b>` +
+const hvEndLine = (R, res, ts, chg, R0, ts0) => `<div class="hvEndL${chg ? ' moved hc' : ''}"><span class="hvEndP"><i>End</i><b>${fmtClock(rangeSpan(res, R, ts))}</b>` +
   `<span>${rangeTxt(R)}</span>${chg ? hvWasAt('after', R.hi, R0 ? R0.hi : -1, R0 && ts0[R0.hi].title) : ''}</span></div>`;
 function hvPreview() {
   if (!hv) return;
@@ -3227,9 +3235,9 @@ function hvPreview() {
   const startChg = !!d && !!d.c.start, endChg = !!d && !!d.c.end; // on another track (a default on the first / last track either way: no change)
   const row = hv.ph ? hvRowP : hvRowD, out = [];
   for (const r of rows) {
-    if (R && r.k !== 'del' && r.i === R.lo) out.push(hvStartLine(R, startChg, R0, ts0));
+    if (R && r.k !== 'del' && r.i === R.lo) out.push(hvStartLine(R, E.data.tracks, startChg, R0, ts0));
     out.push(row(r, res, R));
-    if (R && r.k !== 'del' && r.i === R.hi) out.push(hvEndLine(R, res, endChg, R0, ts0));
+    if (R && r.k !== 'del' && r.i === R.hi) out.push(hvEndLine(R, res, E.data.tracks, endChg, R0, ts0));
   }
   if (!rows.length) out.push('<p class="hvNote">No tracks in this version.</p>');
   hvRowsEl.innerHTML = out.join('');

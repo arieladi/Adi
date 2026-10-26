@@ -270,6 +270,9 @@ main { position: relative; } /* the marker's offsetParent */
 .smK { font-size: .6875rem; line-height: 1; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: color-mix(in srgb, var(--accent) 65%, var(--text)); }
 .smDot { font-style: normal; color: var(--dim); }
 .smN { font-family: var(--mono); font-size: .9375rem; line-height: 1.25; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+/* the Start track's intro (0:00 to its cue in), added to the Start → End time */
+.smIn { font-family: var(--mono); font-size: .8125rem; line-height: 1.25; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.smIn[hidden] { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .endmark, .emPill { transition: none; }
   .endmark.flash .emPill { animation: none; }

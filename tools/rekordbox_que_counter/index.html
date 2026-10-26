@@ -96,7 +96,7 @@ try {
   <div class="endmark smark" id="startMark" hidden>
     <div class="emPill smPill" id="smPill" tabindex="0" role="slider" aria-orientation="vertical" aria-label="Start of the set: drag it, or use the arrow keys"
       aria-valuemin="1" aria-valuemax="1" aria-valuenow="1" title="Drag to the track the set starts with (↑ / ↓ when focused)">
-      <span class="emGrip" aria-hidden="true">⇕</span><b class="smK">Start</b><i class="smDot" aria-hidden="true">·</i><b class="smN" id="smNum">#1</b>
+      <span class="emGrip" aria-hidden="true">⇕</span><b class="smK">Start</b><i class="smDot" aria-hidden="true">·</i><b class="smN" id="smNum">#1</b><span class="smIn" id="smIntro" hidden></span>
     </div>
   </div>
   <div class="endmark" id="endMark" hidden>
@@ -389,7 +389,8 @@ try {
       <b>Start</b> before the first track and <b>End</b> after the last one, with the time on it. Drag either up or down
       (on a touch screen: by its <b>⇕</b>, or press and hold it first — a quick swipe just scrolls) to the track you plan
       to start or end with: the tracks in between light up, and the End shows how long the set plays from the start of
-      the Start track to the end of the End track, and #from → #to. The Start never goes below the End.
+      the Start track to the end of the End track, and #from → #to. The Start track plays from 0:00, so its intro before
+      the cue in is added and shown on the Start (e.g. <b>+0:46</b>); a track cued at 0 adds nothing. The Start never goes below the End.
       The <b>S → E</b> box shows the same time; tap it to jump to the End, or its <b>✕</b> to put both back round the
       whole list. With a marker selected, <b>↑ / ↓</b> move it one track, Home / End jump as far as it can go.<br><br>
       <b>History:</b> ⋯ → <b>🕘 History…</b> (or a click on the save status) shows every version of the list saved to
