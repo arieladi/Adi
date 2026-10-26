@@ -458,6 +458,10 @@ public:
     /// ring was freed.
     bool reclaim();
 
+    /// MESSAGE THREAD: the largest delay a glide may be asked for now (the
+    /// ring's, or an offered ring's).
+    [[nodiscard]] std::int32_t limit() const noexcept { return limit_; }
+
     /// An offer is in flight: priming, fading, or waiting to be collected.
     [[nodiscard]] bool growing() const noexcept {
         return grow_.load(std::memory_order_acquire) != Grow::Idle;
@@ -574,7 +578,10 @@ public:
     /// old capacity)` samples per channel. A ring carries thousands of samples
     /// of headroom (ADR-0088), and copying all of it would make a rebuild cost
     /// in proportion to headroom rather than to compensation. What lies beyond
-    /// the old ring's capacity was never stored, and is not invented.
+    /// the old ring's capacity was never stored, and is not invented. An old
+    /// line in the middle of a grow is copied from whichever of its two rings
+    /// holds more of the edge's past. The line then counts what it was handed
+    /// as its history and nothing more, so a glide past it waits for the rest.
     void adoptHistory(const DelayLine& old) noexcept;
 
 private:
@@ -794,7 +801,16 @@ public:
     /// not per graph: growing one ring leaves every other edge's history
     /// untouched, where swapping a whole schedule would reset all of them and
     /// glitch the entire project to fix one plugin.
-    std::size_t escalateLatency();
+    /// What `escalateLatency` could not settle, for its caller to act on.
+    struct Unresolved {
+        /// Edges that need a delay and have no ring to grow (no delay and no
+        /// headroom): only a rebuild gives them one.
+        std::size_t ringless = 0;
+        /// Edges whose grow is still in flight for less than they now need:
+        /// they can be grown again once the old ring is collected.
+        std::size_t inFlight = 0;
+    };
+    std::size_t escalateLatency(Unresolved* left = nullptr);
 
     /// Message thread, on a timer. Frees the rings the audio thread has
     /// finished with. Returns how many were reclaimed.

@@ -1460,6 +1460,158 @@ void testALineWithNoRingIsNotOfferedOne() {
     eqi(static_cast<long long>(g.growingEdges()), 0, "nothing stuck in flight");
 }
 
+void testAnAdoptedLineHoldsOnlyWhatItWasHanded() {
+    section("ADR-0092 -- after a handover a glide past the carried history waits for it");
+
+    // The next graph's line, compensating the same edge by 40 after a
+    // rebuild, adopts the old line's history (GraphHost::handover): forty
+    // samples, in a ring of 64. A glide to 60 asked for soon after must wait
+    // until the ring holds sixty real samples, not read twenty slots that
+    // were zeroed when the line was prepared.
+    DelayLine full;
+    full.prepare(2, 64);
+    full.setDelay(40);
+    LiveEdge f(full);
+    for (int b = 0; b < 8; ++b) f.block(8);
+    DelayLine after;
+    after.prepare(2, 64);
+    after.setDelay(40);
+    after.adoptHistory(full);
+    LiveEdge g(after);
+    g.n = f.n;                         // the same stream, carried on
+    g.block(8);
+    check(g.delayedBy(40), "the next graph's line continues the stream, forty back exactly");
+
+    check(after.beginGlide(60), "it is asked for 60");
+    bool sound = true;
+    int blocks = 0;
+    while (after.delay() != 60 && blocks < 20) {
+        g.block(8);
+        ++blocks;
+        if (!g.noHoles() || !(g.delayedBy(40) || g.faded(40, 60))) sound = false;
+    }
+    check(sound, "every block until it lands is forty back or the fade to sixty, and no "
+                 "sample of either is one nobody stored");
+    eqi(blocks, 3, "two blocks held until the ring holds sixty, then the fade");
+    g.block(8);
+    check(g.delayedBy(60), "then sixty back exactly");
+}
+
+void testAHandoverMidGrowTakesTheRingBeingGrown() {
+    section("ADR-0092 -- a handover in the middle of a grow takes the ring that holds the past");
+
+    // The old line is growing from 16 to a ring for 40, primed and fading,
+    // when a rebuild lands with the edge at 40. Its small ring holds 16
+    // samples of the edge's past; the one it is growing into holds 40.
+    DelayLine old;
+    old.prepare(2, 16);
+    old.setDelay(4);
+    LiveEdge e(old);
+    for (int b = 0; b < 3; ++b) e.block(8);
+    check(old.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40), "a ring for 40 is offered");
+    int blocks = 0;
+    while (old.primeRemaining() > 0 && blocks < 20) { e.block(8); ++blocks; }
+    check(old.growing() && old.capacity() == 16, "primed, not yet swapped: the old ring still plays");
+
+    DelayLine next;
+    next.prepare(2, 64);
+    next.setDelay(40);
+    next.adoptHistory(old);
+    LiveEdge g(next);
+    g.n = e.n;
+    g.block(8);
+    check(g.noHoles() && g.delayedBy(40),
+          "the next graph's line reads forty back at once, every sample stored: it took the "
+          "ring being grown, where the small one would have left twenty-four holes");
+}
+
+void testARinglessEdgeBesideAGrownOneIsRebuilt() {
+    section("ADR-0088 -- an edge with no ring is rebuilt even when another edge grows");
+
+    // Headroom 0: an edge at zero has no ring. P1 has 64 of latency, so its
+    // edge into the mix is at zero and ringless; P2's and the direct path's
+    // carry 64. P2 goes to 128: the direct edge is grown, and P1's needs 64
+    // and has nothing to grow. The coalescer used to see "something grew"
+    // and stop there, leaving P1's path 64 samples early for good.
+    RampNode src;
+    SwitchableNode p1(64, 512), p2(0, 512);
+    SumNode direct, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), n1 = g.addNode(p1), n2 = g.addNode(p2);
+    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+    g.connect(ns, n1);
+    g.connect(ns, n2);
+    g.connect(ns, nd);
+    g.connect(n1, nm);
+    g.connect(n2, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(0);
+    g.prepare(48000.0, 256);
+
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(g);
+    c.addSource("p2", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(0);
+
+    p2.setLatency(128);
+    epoch.fetch_add(1, std::memory_order_release);
+    check(c.poll(0), "the retap ran");
+    eqi(c.stats().escalations, 1, "the direct edge was grown");
+    check(c.rebuildNeeded(), "and a rebuild is demanded for the edge that had nothing to grow");
+}
+
+void testAGrowTooSmallIsGrownAgain() {
+    section("ADR-0085 -- a grow in flight for less than the edge now needs is grown again");
+
+    // The plug-in goes to 1000 and the direct edge is grown for it. While that
+    // ring is still priming, it goes to 3000. The edge cannot be offered a
+    // second ring until the first is collected, so the coalescer waits for
+    // that and grows it again -- rather than giving up and asking for a
+    // rebuild, which costs every edge in the graph its history.
+    RampNode src;
+    SwitchableNode plugin(0, 4096);
+    SumNode direct, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), np = g.addNode(plugin);
+    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+    g.connect(ns, np);
+    g.connect(ns, nd);
+    g.connect(np, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(64);
+    g.prepare(48000.0, 256);
+
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(g);
+    c.addSource("plugin", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(0);
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    std::int64_t now = 0;
+    auto step = [&] { g.process(io); src.advance(); now += 5; c.poll(now); };
+
+    plugin.setLatency(1000);
+    epoch.fetch_add(1, std::memory_order_release);
+    c.poll(now);
+    eqi(c.stats().escalations, 1, "the direct edge is grown for 1000");
+    step();
+    plugin.setLatency(3000);
+    epoch.fetch_add(1, std::memory_order_release);
+    c.poll(now);
+    check(!c.rebuildNeeded(), "the second step asks for no rebuild");
+    check(c.stats().regrowsDeferred >= 1, "it waits for the first ring instead");
+
+    int blocks = 0;
+    while (g.compensationFor(nd, nm) != 3000 && blocks < 60) { step(); ++blocks; }
+    eqi(g.compensationFor(nd, nm), 3000, "the edge reaches 3000");
+    eqi(c.stats().escalations, 2, "grown twice, once per step");
+    check(!c.rebuildNeeded(), "and nothing was rebuilt");
+}
+
 }  // namespace
 
 int main() {
@@ -1495,6 +1647,10 @@ int main() {
     testAGlideWaitsForTheHistoryItReads();
     testAGlideBackDuringAnOfferIsNotLost();
     testALineWithNoRingIsNotOfferedOne();
+    testAnAdoptedLineHoldsOnlyWhatItWasHanded();
+    testAHandoverMidGrowTakesTheRingBeingGrown();
+    testARinglessEdgeBesideAGrownOneIsRebuilt();
+    testAGrowTooSmallIsGrownAgain();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

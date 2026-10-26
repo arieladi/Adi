@@ -65,6 +65,7 @@ public:
         std::int64_t rebuildsNeeded = 0;  ///< misfits nothing could fix
         std::int64_t maxWaitTrips = 0;    ///< bursts cut short by the ceiling
         std::int64_t escalations = 0;     ///< edges handed a bigger ring (ADR-0085)
+        std::int64_t regrowsDeferred = 0; ///< polls left pending: a grow in flight was too small
         std::int64_t ringsReclaimed = 0;  ///< old rings freed on the message thread
         std::int64_t shapeReports = 0;    ///< reports that were a topology change
     };

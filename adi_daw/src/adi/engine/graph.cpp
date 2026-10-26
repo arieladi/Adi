@@ -310,25 +310,41 @@ void DelayLine::adopt(std::vector<T>& buf, const std::vector<U>& from, std::int3
 void DelayLine::adoptHistory(const DelayLine& old) noexcept {
     if (ring_ <= 0 || old.ring_ <= 0 || channels_ != old.channels_) return;
 
-    std::int32_t k = delay_;
-    if (k > capacity_) k = capacity_;
-    if (k > old.capacity_) k = old.capacity_;
-    if (k <= 0) return;
-
     // `buf_` and `write_` are the live history in every state: while an old
     // ring is growing both rings are written and `buf_` is the one read, and
-    // after its swap `buf_` IS the grown ring. So nothing here has to know
-    // what the old line was in the middle of.
+    // after its swap `buf_` IS the grown ring. But while it grows, the ring
+    // it is growing INTO may already hold more of the edge's past than the
+    // small one can, and this line was built for the delay that ring is for.
+    // This is the audio thread, which owns the incoming ring from Priming to
+    // the swap.
+    const Grow g = old.grow_.load(std::memory_order_acquire);
+    const bool growing = g == Grow::Priming || g == Grow::Fading;
+    const std::int32_t inOld = old.capacity_;
+    const std::int32_t inNew = growing ? (std::min)(old.inCapacity_, old.inFilled_) : 0;
+    const bool fromIncoming = inNew > inOld;
+
+    std::int32_t k = delay_;
+    if (k > capacity_) k = capacity_;
+    if (k > (fromIncoming ? inNew : inOld)) k = fromIncoming ? inNew : inOld;
+    if (k < 0) k = 0;
+    // What it was handed is all it holds: a glide past it waits for the rest.
+    filled_ = k;
+    if (k == 0) return;
+    const std::int32_t fromRing = fromIncoming ? old.inRing_ : old.ring_;
+    const std::int32_t fromWrite = fromIncoming ? old.inWrite_ : old.write_;
+    const std::vector<float>& f32 = fromIncoming ? old.incoming_ : old.buf_;
+    const std::vector<double>& f64 = fromIncoming ? old.wincoming_ : old.wbuf_;
+
     //
     // ACROSS A PRECISION SWITCH TOO (ADR-0207 d2). The switch is a rebuild,
     // and a compensated edge that started its new ring from zeros would drop
     // `delay` samples of that track: a hole, not a seam. Float history widens
     // exactly; double history is rounded once, as the output it was going to
     // be would have been at 32.
-    if (wide_ && old.wide_)        adopt(wbuf_, old.wbuf_, old.ring_, old.write_, k);
-    else if (wide_ && !old.wide_)  adopt(wbuf_, old.buf_, old.ring_, old.write_, k);
-    else if (!wide_ && old.wide_)  adopt(buf_, old.wbuf_, old.ring_, old.write_, k);
-    else                           adopt(buf_, old.buf_, old.ring_, old.write_, k);
+    if (wide_ && old.wide_)        adopt(wbuf_, f64, fromRing, fromWrite, k);
+    else if (wide_ && !old.wide_)  adopt(wbuf_, f32, fromRing, fromWrite, k);
+    else if (!wide_ && old.wide_)  adopt(buf_, f64, fromRing, fromWrite, k);
+    else                           adopt(buf_, f32, fromRing, fromWrite, k);
     // The next write lands right after the newest carried sample, so a tap at
     // `delay_` reads exactly what the old line's tap would have read next.
     write_ = k % ring_;
@@ -715,17 +731,23 @@ std::int32_t requiredDelay(std::int32_t toArrival, std::int32_t fromArrival,
 
 }  // namespace
 
-std::size_t Graph::escalateLatency() {
+std::size_t Graph::escalateLatency(Unresolved* left) {
     if (!prepared_) return 0;
 
     std::size_t grown = 0;
+    Unresolved unresolved;
     // THE ALLOCATION IS HERE, on the message thread, and that is the whole
     // point of the split. The audio thread receives a ready-made buffer and
     // never does anything but write into it and swap a pointer.
     auto offer = [&](DelayLine& line, std::int32_t want) {
         // In this order: the audio thread swaps the capacity at the end of a
         // grow, so it is read only once no grow is in flight.
-        if (line.growing()) return;            // an offer is already in flight
+        if (line.growing()) {
+            // An offer is already in flight. If it is for less than this edge
+            // now needs, the edge is grown again once that ring is collected.
+            if (want > line.limit()) ++unresolved.inFlight;
+            return;
+        }
         if (want <= line.capacity()) return;   // the tap move already handles it
 
         // Headroom on top of the requirement, so a plugin that steps its
@@ -738,6 +760,10 @@ std::size_t Graph::escalateLatency() {
         const std::size_t size =
             static_cast<std::size_t>(channels_) * static_cast<std::size_t>(cap + 1);
         // The ring at the line's own width (ADR-0207 d2).
+        if (line.capacity() <= 0) {
+            ++unresolved.ringless;             // refused: nothing would run it
+            return;
+        }
         const bool taken = line.wide()
             ? line.offerRing(std::vector<double>(size, 0.0), cap, want)
             : line.offerRing(std::vector<float>(size, 0.0f), cap, want);
@@ -755,6 +781,7 @@ std::size_t Graph::escalateLatency() {
             offer(s.sideDelays[k], requiredDelay(s.arrival, u.arrival, u.node));
         }
     }
+    if (left != nullptr) *left = unresolved;
     return grown;
 }
 
