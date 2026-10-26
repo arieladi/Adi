@@ -1080,6 +1080,192 @@ void testAdoptionRefusesWhatItCannotDoHonestly() {
     check(oz[0] == 7.0f, "a zero-delay ring passes the current sample, untouched by adoption");
 }
 
+// --- a grow on a live graph: one snapshot per edge --------------------------
+//
+// `Graph::accumulate` drives a stereo edge as below: one `beginEdge`, every
+// channel, one `endEdge`. The message thread offers rings and asks for glides
+// WHILE it does, so an offer can land between the left channel and the right.
+// These run that interleaving on one thread, at the exact point a second
+// thread could put it, which a stress run under a race detector can only hope
+// to hit.
+
+/// A stereo edge fed a stream whose every sample says where it came from:
+/// left k+1, right -(k+1) at stream position k, so any output names the
+/// delay it was read at, and a zero is a sample nobody stored.
+struct LiveEdge {
+    explicit LiveEdge(DelayLine& line) : d(line) {}
+    DelayLine& d;
+    std::int64_t n = 0;
+    std::vector<float> l, r;
+
+    template <typename Between>
+    void block(std::int32_t frames, Between between) {
+        const auto f = static_cast<std::size_t>(frames);
+        std::vector<float> inL(f), inR(f);
+        for (std::size_t i = 0; i < f; ++i) {
+            inL[i] = static_cast<float>(n + static_cast<std::int64_t>(i) + 1);
+            inR[i] = -inL[i];
+        }
+        l.assign(f, -9.0f);
+        r.assign(f, -9.0f);
+        const DelayLine::Edge e = d.beginEdge();
+        d.process(e, 0, inL.data(), l.data(), frames);
+        between();
+        d.process(e, 1, inR.data(), r.data(), frames);
+        d.endEdge(e);
+        n += frames;
+    }
+    void block(std::int32_t frames) { block(frames, [] {}); }
+
+    /// Both channels of the last block read exactly `delay` samples back.
+    [[nodiscard]] bool delayedBy(std::int32_t delay) const {
+        const std::int64_t first = n - static_cast<std::int64_t>(l.size());
+        for (std::size_t i = 0; i < l.size(); ++i) {
+            const std::int64_t at = first + static_cast<std::int64_t>(i) - delay;
+            const float want = at >= 0 ? static_cast<float>(at + 1) : 0.0f;
+            if (l[i] != want || r[i] != -want) return false;
+        }
+        return true;
+    }
+};
+
+void testAnOfferBetweenTwoChannelsKeepsItsPrime() {
+    section("ADR-0085 -- an offer that lands mid-edge keeps its prime count");
+
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+
+    bool taken = false;
+    e.block(8, [&] { taken = d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40); });
+    check(taken, "a ring for a delay of 40 is offered between the left channel and the right");
+    check(e.delayedBy(4), "that edge plays the old delay on BOTH channels: it began before "
+                          "the offer, so its right channel does not start the grow alone");
+    // THE DEFECT. The edge's own cursors, written back after its right
+    // channel, used to include the incoming ring's prime count as it stood
+    // when the edge began: zero. The grow then swapped after one block, to a
+    // ring that held one block of history, and played its zeros.
+    eqi(d.primeRemaining(), 40, "and the offer's prime count survives the edge it landed in");
+
+    int blocks = 0;
+    bool stale = true;
+    while (d.growing() && d.delay() != 40 && blocks < 20) {
+        e.block(8);
+        ++blocks;
+        if (d.delay() != 40 && !e.delayedBy(4)) stale = false;
+    }
+    check(stale, "priming keeps the old delay exactly, block after block");
+    eqi(blocks, 6, "five blocks to prime forty samples, then the one that fades");
+    eqi(d.delay(), 40, "and the new delay is in effect");
+
+    e.block(8);
+    check(e.delayedBy(40), "the block after the swap reads forty back on both channels, "
+                           "every sample one that was stored, not a zero");
+    e.block(8);
+    check(e.delayedBy(40), "and the next one too");
+    check(d.reclaim(), "the old ring is collected");
+}
+
+void testAGlideAskedForMidEdgeIsNotLost() {
+    section("ADR-0079 -- a glide asked for while an edge glides is the next one");
+
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(2);
+    LiveEdge e(d);
+    e.block(8);
+    e.block(8);
+
+    check(d.beginGlide(6), "a glide from 2 to 6");
+    bool asked = false;
+    e.block(8, [&] { asked = d.beginGlide(10); });
+    check(asked, "and, between that edge's channels, another to 10");
+    eqi(d.delay(), 6, "the edge ends at the delay it glided to");
+    check(d.gliding(), "with the newer request still pending: ending a glide used to "
+                       "clear the flag whatever had been asked for meanwhile");
+    eqi(d.target(), 10, "for 10");
+
+    e.block(8);
+    eqi(d.delay(), 10, "the next edge glides on to it");
+    check(!d.gliding(), "and settles");
+    e.block(8);
+    check(e.delayedBy(10), "both channels then read ten back exactly");
+}
+
+void testAGlidePendingAtAnOfferIsSuperseded() {
+    section("ADR-0085 -- an offer supersedes a glide still pending");
+
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+
+    // The latency service retaps (6 fits), the plug-in reports again before
+    // a block has run, and this time the delay does not fit: a ring is offered.
+    check(d.beginGlide(6), "a glide to 6 is pending");
+    check(d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40), "when a ring for 40 is offered");
+    eqi(d.target(), 40, "the delay asked for is now the offer's");
+
+    bool held = true;
+    int blocks = 0;
+    while (d.delay() != 40 && blocks < 20) {
+        e.block(8);
+        ++blocks;
+        if (d.delay() != 40 && !e.delayedBy(4)) held = false;
+    }
+    check(held, "the old ring keeps its delay of 4 while the new one primes: the stale "
+                "glide is not played as a jump on a ring that is on its way out");
+    check(!d.gliding(), "and at the swap the glide is gone, not resumed");
+    e.block(8);
+    e.block(8);
+    eqi(d.delay(), 40, "so the edge stays at the offer's delay");
+    check(e.delayedBy(40), "reading forty back exactly");
+}
+
+void testAGlideDuringAGrowWaitsForTheNewRing() {
+    section("ADR-0085 -- a glide asked for during a grow fits the ring that is coming");
+
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+    check(d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40), "a ring for 40 is offered");
+    e.block(8);
+    e.block(8);
+
+    // 8 fits both rings. It still waits: played now it would be a jump on the
+    // old ring and then another at the swap, two moves for one request.
+    check(d.beginGlide(8), "a glide to 8, mid-grow");
+    e.block(8);
+    check(e.delayedBy(4), "waits: the old ring still plays its delay of 4");
+
+    // 50 does not fit the old ring of 16 and does fit the new one of 64, so
+    // this is a tap move after the swap, not a second grow and not a rebuild.
+    check(d.beginGlide(50), "a glide to 50, mid-grow, is accepted against the new ring");
+    check(!d.beginGlide(65), "one past the new ring is still refused");
+    check(d.beginGlide(50), "(50 again: the last request is the one that holds)");
+
+    bool held = true;
+    int blocks = 0;
+    while (d.capacity() != 64 && blocks < 20) {
+        e.block(8);
+        ++blocks;
+        if (d.capacity() != 64 && !e.delayedBy(4)) held = false;
+    }
+    check(held, "the old ring plays its delay of 4 until the swap, every sample");
+    eqi(d.delay(), 40, "the swap lands on the offer's delay");
+    check(d.gliding(), "with the glide to 50 still to come");
+    e.block(8);
+    eqi(d.delay(), 50, "which the next edge makes");
+    check(!d.gliding(), "and settles");
+    e.block(8);
+    check(e.delayedBy(50), "reading fifty back exactly: the new ring held them");
+}
+
 }  // namespace
 
 int main() {
@@ -1107,6 +1293,10 @@ int main() {
     testAdoptedHistoryContinuesTheStream();
     testAdoptionCopiesOnlyWhatTheTapReaches();
     testAdoptionRefusesWhatItCannotDoHonestly();
+    testAnOfferBetweenTwoChannelsKeepsItsPrime();
+    testAGlideAskedForMidEdgeIsNotLost();
+    testAGlidePendingAtAnOfferIsSuperseded();
+    testAGlideDuringAGrowWaitsForTheNewRing();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
