@@ -334,9 +334,35 @@ bool ClapDevice::paramIdFromText(const std::string& s, clap_id& out) noexcept {
     return true;
 }
 
+namespace {
+
+/// Every declared port takes 64 bits, and there is at least one output. Only
+/// where the layout may be read: the plug-in deactivated (audio-ports.h).
+bool everyPortTakes64(const clap_plugin_t* plugin) {
+    const auto* ports = static_cast<const clap_plugin_audio_ports_t*>(
+        plugin->get_extension(plugin, CLAP_EXT_AUDIO_PORTS));
+    if (ports == nullptr || ports->count == nullptr || ports->get == nullptr) return false;
+    std::uint32_t outputs = 0;
+    for (bool isInput : {true, false}) {
+        const std::uint32_t n = ports->count(plugin, isInput);
+        if (!isInput) outputs = n;
+        for (std::uint32_t i = 0; i < n; ++i) {
+            clap_audio_port_info_t info{};
+            if (!ports->get(plugin, i, isInput, &info)) return false;
+            if ((info.flags & CLAP_AUDIO_PORT_SUPPORTS_64BITS) == 0) return false;
+        }
+    }
+    return outputs > 0;
+}
+
+}  // namespace
+
 ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
     : plugin_(plugin), id_(std::move(id)) {
     if (plugin_ == nullptr) return;
+    // Not active yet: the one moment before `prepare` the layout may be read,
+    // and the graph asks `processesDouble` before it prepares its nodes.
+    double64_ = everyPortTakes64(plugin_);
     paramsExt_ = static_cast<const clap_plugin_params_t*>(
         plugin_->get_extension(plugin_, CLAP_EXT_PARAMS));
     stateExt_ = static_cast<const clap_plugin_state_t*>(
@@ -934,26 +960,12 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // MpeMidi's Configuration Message is sent again.
     readNotePorts();
     applyDialect(static_cast<ClapDialectChoice>(requestedDialect_.load(std::memory_order_acquire)));
-    // The MAX is the granted size (ADR-0049): a plugin told a larger maximum
-    // than it will get allocates more than it needs; one told a smaller
-    // maximum overruns when the driver hands over a full block. The MIN is
-    // 1, not the granted size: plugin.h promises every process call's
-    // frame count lies inside [min, max], and sub-block splitting (ADR-0042
-    // d2) hands a plugin segments as short as one frame. Passing the block
-    // size as the minimum was a promise the graph breaks on every split
-    // (linux's audit, C3; ADR-0123).
-    activated_ = plugin_->activate(plugin_, sampleRate, 1u,
-                                   static_cast<std::uint32_t>(maxFrames));
-    // `start_processing` RETURNS whether it worked, and `process` is legal
-    // only while processing (plugin.h). A start that failed leaves the plugin
-    // active and silent: `process` passes audio through, and the refusal is
-    // counted where a host can see it (C2; ADR-0123).
-    processing_ = activated_ && plugin_->start_processing != nullptr &&
-                  plugin_->start_processing(plugin_);
-    if (activated_ && !processing_) ++startFailures_;
-
     // Everything the audio thread touches, allocated here and never again
     // (ADR-0010). Sized from the GRANTED block size (ADR-0049).
+    // BEFORE `activate`: `audio-ports.h` says the scan "has to be done while
+    // the plugin is deactivated", the rule ADR-0123 item 6 applied to the
+    // layout check above. This scan ran just after `activate` until
+    // ADR-0207 d2 needed the 64-bit flags read here too.
     // ASK THE PLUGIN WHAT IT WANTS. See the header: hardcoding one bus each
     // way crashed Pro-Q 3 inside its own process, because it declares two
     // inputs and indexed the second one past the end of our array.
@@ -994,6 +1006,43 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     // A plugin with no output bus cannot be rendered; give it one so the
     // graph gets silence rather than a null dereference.
     if (outBuses_.empty()) addBus(outBuses_, channels_);
+
+    // ADR-0207 d2. Double buses beside the float ones, which stay: the
+    // graph's precision is not this device's to know, and at 32 it is handed
+    // float whatever it can take.
+    double64_ = everyPortTakes64(plugin_);
+    for (auto* buses : {&inBuses_, &outBuses_}) {
+        for (Bus& b : *buses) {
+            b.wstorage.clear();
+            b.wptrs.clear();
+            if (!double64_) continue;
+            b.wstorage.assign(static_cast<std::size_t>(b.channels) *
+                              static_cast<std::size_t>(maxFrames), 0.0);
+            b.wptrs.resize(static_cast<std::size_t>(b.channels));
+            for (std::int32_t ch = 0; ch < b.channels; ++ch)
+                b.wptrs[static_cast<std::size_t>(ch)] =
+                    b.wstorage.data() + static_cast<std::size_t>(ch) *
+                                        static_cast<std::size_t>(maxFrames);
+        }
+    }
+
+    // The MAX is the granted size (ADR-0049): a plugin told a larger maximum
+    // than it will get allocates more than it needs; one told a smaller
+    // maximum overruns when the driver hands over a full block. The MIN is
+    // 1, not the granted size: plugin.h promises every process call's
+    // frame count lies inside [min, max], and sub-block splitting (ADR-0042
+    // d2) hands a plugin segments as short as one frame. Passing the block
+    // size as the minimum was a promise the graph breaks on every split
+    // (linux's audit, C3; ADR-0123).
+    activated_ = plugin_->activate(plugin_, sampleRate, 1u,
+                                   static_cast<std::uint32_t>(maxFrames));
+    // `start_processing` RETURNS whether it worked, and `process` is legal
+    // only while processing (plugin.h). A start that failed leaves the plugin
+    // active and silent: `process` passes audio through, and the refusal is
+    // counted where a host can see it (C2; ADR-0123).
+    processing_ = activated_ && plugin_->start_processing != nullptr &&
+                  plugin_->start_processing(plugin_);
+    if (activated_ && !processing_) ++startFailures_;
 
     inBufs_.assign(inBuses_.size(), clap_audio_buffer_t{});
     outBufs_.assign(outBuses_.size(), clap_audio_buffer_t{});
@@ -1118,8 +1167,16 @@ bool ClapDevice::outPush(const clap_output_events_t* list, const clap_event_head
 }
 
 void ClapDevice::process(const engine::NodeIo& io) noexcept {
+    // ADR-0207 d2. A graph at 64 hands double to a device that said it takes
+    // it; `data64` carries it when every port does (`wide64`). Should the
+    // plug-in's answer have changed since the graph asked (a rescan: the graph
+    // asks before it prepares, and the layout is read in the prepare), it is
+    // converted on both sides, not bypassed, until the graph is next built.
+    const bool wideIo = io.wide();
+    const bool wide64 = wideIo && double64_ && !outBuses_.empty() &&
+                        !outBuses_[0].wptrs.empty();
     if (plugin_ == nullptr || !activated_ || !processing_ || plugin_->process == nullptr ||
-        io.out == nullptr) { passThrough(io); return; }
+        (wideIo ? io.out64 == nullptr : io.out == nullptr)) { passThrough(io); return; }
 
     const std::int32_t n  = io.frames < maxFrames_ ? io.frames : maxFrames_;
     const std::int32_t ch = io.channels < channels_ ? io.channels : channels_;
@@ -1136,9 +1193,25 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     for (std::size_t b = 0; b < inBuses_.size(); ++b) {
         Bus& bus = inBuses_[b];
         for (std::int32_t c = 0; c < bus.channels; ++c) {
+            const bool fed = b == 0 && c < ch;
+            if (wide64) {
+                double* dst = bus.wptrs[static_cast<std::size_t>(c)];
+                const double* src = (fed && io.in64 != nullptr) ? io.in64[c] + off : nullptr;
+                if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
+                else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0;
+                continue;
+            }
             float* dst = bus.ptrs[static_cast<std::size_t>(c)];
-            const float* src = (b == 0 && io.in != nullptr && c < ch)
-                                 ? io.in[c] + off : nullptr;
+            if (wideIo) {
+                // Double handed to a device processed at 32: narrowed once.
+                const double* src = (fed && io.in64 != nullptr) ? io.in64[c] + off : nullptr;
+                if (src != nullptr)
+                    for (std::int32_t i = 0; i < n; ++i) dst[i] = static_cast<float>(src[i]);
+                else
+                    for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
+                continue;
+            }
+            const float* src = (fed && io.in != nullptr) ? io.in[c] + off : nullptr;
             if (src != nullptr) for (std::int32_t i = 0; i < n; ++i) dst[i] = src[i];
             else                for (std::int32_t i = 0; i < n; ++i) dst[i] = 0.0f;
         }
@@ -1208,16 +1281,19 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     // start, AFTER notes later in it, until ADR-0099 sorted the list.
     events_.sortByTime();
 
+    // One width for every port, as `REQUIRES_COMMON_SAMPLE_SIZE` would ask
+    // of a plug-in that sets it: the other pointer null, which is how CLAP
+    // says which one to read.
     for (std::size_t b = 0; b < inBuses_.size(); ++b) {
-        inBufs_[b].data32 = inBuses_[b].ptrs.data();
-        inBufs_[b].data64 = nullptr;
+        inBufs_[b].data32 = wide64 ? nullptr : inBuses_[b].ptrs.data();
+        inBufs_[b].data64 = wide64 ? inBuses_[b].wptrs.data() : nullptr;
         inBufs_[b].channel_count = static_cast<std::uint32_t>(inBuses_[b].channels);
         inBufs_[b].latency = 0;
         inBufs_[b].constant_mask = 0;
     }
     for (std::size_t b = 0; b < outBuses_.size(); ++b) {
-        outBufs_[b].data32 = outBuses_[b].ptrs.data();
-        outBufs_[b].data64 = nullptr;
+        outBufs_[b].data32 = wide64 ? nullptr : outBuses_[b].ptrs.data();
+        outBufs_[b].data64 = wide64 ? outBuses_[b].wptrs.data() : nullptr;
         outBufs_[b].channel_count = static_cast<std::uint32_t>(outBuses_[b].channels);
         outBufs_[b].latency = 0;
         outBufs_[b].constant_mask = 0;
@@ -1241,10 +1317,39 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     // first block is whatever was there and on a later one is last block,
     // repeated. Silence is the only safe answer.
     if (st == CLAP_PROCESS_ERROR) {
-        for (std::int32_t c = 0; c < io.channels; ++c)
-            if (io.out[c] != nullptr)
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            if (wideIo) {
+                if (io.out64[c] != nullptr)
+                    for (std::int32_t i = 0; i < io.frames; ++i) io.out64[c][off + i] = 0.0;
+            } else if (io.out[c] != nullptr) {
                 for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][off + i] = 0.0f;
+            }
+        }
         events_.clear();
+        return;
+    }
+
+    if (wideIo) {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            double* out = io.out64[c];
+            if (out == nullptr) continue;
+            out += off;
+            if (!outBuses_.empty() && c < outBuses_[0].channels) {
+                const auto k = static_cast<std::size_t>(c);
+                if (wide64) {
+                    const double* src = outBuses_[0].wptrs[k];
+                    for (std::int32_t i = 0; i < n; ++i) out[i] = src[i];
+                } else {
+                    const float* src = outBuses_[0].ptrs[k];
+                    for (std::int32_t i = 0; i < n; ++i) out[i] = src[i];
+                }
+            } else {
+                for (std::int32_t i = 0; i < n; ++i) out[i] = 0.0;
+            }
+            for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0;
+        }
+        events_.clear();
+        steadyTime_ += n;
         return;
     }
 

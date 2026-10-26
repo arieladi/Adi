@@ -242,6 +242,18 @@ public:
     }
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
+
+    /// ADR-0207 d2: true when EVERY audio port the plug-in declares says
+    /// `CLAP_AUDIO_PORT_SUPPORTS_64BITS`, so a graph at 64 hands it double
+    /// and `data64` carries it. A plug-in with no ports extension has CLAP's
+    /// default, one 32-bit stereo bus each way, and is processed at 32 between
+    /// conversions, as is one whose ports do not all take 64 (a port that
+    /// cannot would need a mixed-width call, and `REQUIRES_COMMON_SAMPLE_SIZE`
+    /// forbids even that). Read when the layout may be read -- at construction
+    /// and at each activation, never while active (`audio-ports.h`; ADR-0123
+    /// item 6) -- and remembered, because the graph asks at every prepare and
+    /// a rebuild leaves an unchanged plug-in active.
+    [[nodiscard]] bool processesDouble() const noexcept override { return double64_; }
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
@@ -443,6 +455,7 @@ private:
     std::vector<ParamDescriptor> params_;
     std::vector<clap_id> paramIds_;
     bool activated_ = false;
+    bool double64_ = false;            ///< every port takes 64 bits (see processesDouble)
     bool processing_ = false;          ///< start_processing succeeded (ADR-0123)
     std::int64_t startFailures_ = 0;
     double sampleRate_ = 0.0;
@@ -476,6 +489,8 @@ private:
         std::int32_t channels = 0;
         std::vector<float> storage;      ///< channels * maxFrames
         std::vector<float*> ptrs;
+        std::vector<double> wstorage;    ///< the same at 64, when every port takes it
+        std::vector<double*> wptrs;
     };
     std::vector<Bus> inBuses_, outBuses_;
     std::vector<clap_audio_buffer_t> inBufs_, outBufs_;

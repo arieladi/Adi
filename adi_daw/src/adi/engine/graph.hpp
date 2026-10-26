@@ -238,7 +238,10 @@ public:
     /// either side of it, so it is processed at 32 inside a 64-bit graph. A
     /// node saying true must then handle BOTH widths: the same node runs in a
     /// graph at 32, where it is handed float. Asked by the graph at `prepare`,
-    /// on the message thread, and kept; a value decided at construction.
+    /// on the message thread, before it prepares the node, and kept until the
+    /// graph is next built: a value known at construction. A node that
+    /// revises it in its own `prepare` (a CLAP plug-in after a port rescan)
+    /// is still handed the width the graph kept, which it takes anyway.
     [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
 
     /// Whether note events stop at this node or pass on (ADR-0091).
