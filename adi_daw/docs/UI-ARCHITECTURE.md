@@ -205,6 +205,14 @@ design for rather than discover:
   gives us `AccessibilityHandler` for exactly this, and clips need virtual
   children.
 
+  *Built (window lane, 2026-10-27):* JUCE gathers accessibility children only from
+  child components (`AccessibilityHandler::getChildren` is not virtual), so the
+  "virtual children" are `ClipAccessible`s: one per clip on screen, painting
+  nothing, transparent to the mouse, recycled as the view scrolls (§10). A clip's
+  title ("<track>, clip at bar 3 beat 1, 4.00 beats") is built only when a reader
+  asks, so a frame allocates nothing for it. Its press action selects the clip, and
+  moving the selection by key posts an announcement of where it landed.
+
 ---
 
 ## 7. How the graph carries a hybrid track

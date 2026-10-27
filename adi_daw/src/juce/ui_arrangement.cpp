@@ -122,6 +122,92 @@ ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
 std::unique_ptr<juce::AccessibilityHandler> ArrangementCanvas::createAccessibilityHandler() {
     return std::make_unique<juce::AccessibilityHandler>(*this, juce::AccessibilityRole::list);
 }
+ClipAccessible::ClipAccessible(ArrangementView &v) : view(v) {
+    setInterceptsMouseClicks(false, false);
+    setWantsKeyboardFocus(false);
+}
+void ClipAccessible::bind(std::int64_t t, std::int64_t c) {
+    track = t;
+    clip = c;
+}
+namespace {
+// The title is built when a screen reader asks, never in the frame: a frame with no
+// reader listening allocates nothing for accessibility.
+class ClipHandler final : public juce::AccessibilityHandler {
+  public:
+    ClipHandler(ClipAccessible &c, ArrangementView &v)
+        : AccessibilityHandler(c, juce::AccessibilityRole::listItem,
+                               juce::AccessibilityActions().addAction(
+                                   juce::AccessibilityActionType::press,
+                                   [&c, &v] { v.selectClip(c.track, c.clip); })),
+          clip_(c), view_(v) {}
+    juce::String getTitle() const override { return view_.canvas.describe(clip_.track, clip_.clip); }
+
+  private:
+    ClipAccessible &clip_;
+    ArrangementView &view_;
+};
+} // namespace
+std::unique_ptr<juce::AccessibilityHandler> ClipAccessible::createAccessibilityHandler() {
+    return std::make_unique<ClipHandler>(*this, view);
+}
+juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clipId) const {
+    const auto &tracks = view.reader().tracks();
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (tracks[i]->id != trackId)
+            continue;
+        for (const auto &c : tracks[i]->clips) {
+            if (c->id != clipId)
+                continue;
+            // Bars and beats in 4/4 until the snapshot carries the meters (window log, N6).
+            const auto beat = c->posTicks / textproj::kPPQ;
+            const auto beats = static_cast<double>(c->lengthTicks) / textproj::kPPQ;
+            return juce::String::fromUTF8(displayName(tracks[i]->name, i + 1).c_str()) +
+                   ", clip at bar " + juce::String(beat / 4 + 1) + " beat " +
+                   juce::String(beat % 4 + 1) + ", " + juce::String(beats, 2) + " beats" +
+                   (c->muted ? ", muted" : "");
+        }
+    }
+    return {};
+}
+void ArrangementCanvas::realiseAccessible() {
+    std::size_t used = 0;
+    int y = -view.geometry.scrollY;
+    for (const auto &t : view.reader().tracks()) {
+        const int h = view.geometry.heightFor(t->id);
+        if (y + h > 0 && y < getHeight())
+            for (const auto &c : t->clips) {
+                const double x = view.geometry.x(c->posTicks),
+                             end = view.geometry.x(c->posTicks + c->lengthTicks);
+                if (end < 0 || x > getWidth())
+                    continue;
+                if (used == accessible_.size()) {
+                    accessible_.push_back(std::make_unique<ClipAccessible>(view));
+                    addChildComponent(*accessible_.back());
+                }
+                auto &a = *accessible_[used++];
+                a.bind(t->id, c->id);
+                const int left = static_cast<int>(std::max(0., x));
+                a.setBounds(left, y + 3, std::max(1, static_cast<int>(std::min(
+                                                         end, static_cast<double>(getWidth()))) -
+                                                         left),
+                            std::max(1, h - 7));
+                a.setVisible(true);
+            }
+        y += h;
+    }
+    for (std::size_t i = used; i < accessible_.size(); ++i)
+        accessible_[i]->setVisible(false);
+}
+void ArrangementCanvas::announceSelection() {
+    // The keyboard moves the selection; a screen reader says where it landed.
+    lastAnnouncement = view.geometry.selection.clip != 0
+                           ? describe(view.geometry.selection.track, view.geometry.selection.clip)
+                           : juce::String();
+    if (lastAnnouncement.isNotEmpty())
+        juce::AccessibilityHandler::postAnnouncement(
+            lastAnnouncement, juce::AccessibilityHandler::AnnouncementPriority::medium);
+}
 ArrangementView::ArrangementView(AdiRootComponent &r)
     : root(r), overview(*this), ruler(*this), headers(*this), canvas(*this) {
     for (auto *c :
@@ -145,6 +231,7 @@ void ArrangementView::frame(bool modelChanged) noexcept {
     playhead.setBounds(canvas.getX() + x, kTopHeight, 1, canvas.getHeight());
     playhead.toFront(false);
     if (modelChanged) {
+        canvas.realiseAccessible();
         overview.repaint();
         canvas.repaint();
         headers.repaint();
@@ -219,6 +306,20 @@ void ArrangementView::select(int x, int y) {
         locate();
         changed();
     }
+}
+void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
+    const auto *t = reader().findTrack(track);
+    if (t == nullptr)
+        return;
+    for (const auto &c : t->clips)
+        if (c->id == clip) {
+            geometry.selection.track = track;
+            geometry.selection.clip = clip;
+            geometry.selection.start = c->posTicks;
+            geometry.selection.end = c->posTicks + c->lengthTicks;
+            changed();
+            return;
+        }
 }
 void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     auto &commands = root.commands();
@@ -487,6 +588,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         view.geometry.selection.start = c->posTicks;
         view.geometry.selection.end = c->posTicks + c->lengthTicks;
         view.changed();
+        announceSelection();
         return true;
     }
     return view.root.keyPressed(k);
