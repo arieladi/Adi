@@ -12,6 +12,25 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-27, evening — LANES §3 item 2, sends and returns: Live's feedback loop
+
+**[arieladi/Adi#249](https://github.com/arieladi/Adi/pull/249) (`engine/return-loop`), stacked on #247: a return's send into itself plays (ADR-0203 d3).** With it, item 2's planner and loop work is done; what remains of item 2 waits on win's questions (PRs 8 to 11).
+- What the return sends itself comes back into its junction one largest block (D) later, at the send's gain each trip. A ring per row sits between a writer at the end of the send and a reader at the head of the return, outside the graph's order.
+- The loop is not compensated. The trip is D plus the return's chain latency up to the tap. A sender's latency does not move it, and neither does the return's own track delay. `Session::feedbackTrip` reports it.
+- A loop comes back into play empty. The swap decides this on the audio thread, against the graph that really played last.
+- The echoes in flight cross a rebuild, a precision change and a new block size. A new sample rate or a device stop empties the loop.
+- A loop that runs away is held at +120 dBFS. A NaN is written as silence. Below −600 dB the writer writes zero, so a decaying loop reaches true silence and its return sleeps (without it, a loop between −6 and 0 dB never gets below a subnormal).
+- `test_all.sh` 8460. 27 plants, each caught. A five-lens critique ran before the code. It found the writer's input edge playing the track delay, which made the trip depend on the senders. It also found the missing ceiling on a runaway loop, and two retap checks that could not fail. All three were fixed before the PR.
+
+**For win, adding to question 8 (the loop):**
+- D is the graph's largest block, offline too, until AWAITING 7(f) measures Live's figure.
+- Should the return's own track delay lengthen its loop? It is pinned at no.
+- The +120 dBFS ceiling and the −600 dB floor are ADI's guards. Live's behaviour is not measured.
+
+**Next:** LANES item 3: a bypassed device keeps its delay (ADR-0203 d4), then the master summed (d14). The Pd fixed block now belongs to the devices lane.
+
+---
+
 ## 2026-10-27, late afternoon — LANES §3 item 2, sends and returns: a return's own sends
 
 **[arieladi/Adi#247](https://github.com/arieladi/Adi/pull/247) (`engine/return-sends`), stacked on #245: a return's own sends play (ADR-0203 d3).**
