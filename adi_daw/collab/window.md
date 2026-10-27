@@ -67,6 +67,12 @@ Checks: 161. Parity: `parity-7.5-floating.md` (11 rows).
 
 Checks: 208. Parity: `parity-7.6-mixer.md` (15 rows).
 
+**MSVC caught one, and the stack was restacked.** #248's Windows GUI leg failed C4456: the
+shell test's second `opCount` hid the first. It was fixed on `window/application`, and a lambda's
+local `id` in the device panel's Configure menu was renamed against C4458. The four branches
+above were rebased onto that fix and force-pushed with lease: #251, #254, #256 and #257. The tip
+passes 208 shell checks.
+
 **The queue moves on to item 2:** what 7.2 to 7.6 lists and no PR covers. That is the Overview;
 the scrub area and locators; the Mixer View of vertical strips; Rename (Ctrl/Cmd+R); the
 DetailEditor (the Clip View); the browser's content; the Ctrl/Cmd+Alt+M Mixer section's
