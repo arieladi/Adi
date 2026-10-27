@@ -426,11 +426,13 @@ int main(int argc, char **argv) {
         integrated.frame();
         check(!integrated.playing() && document->mailbox().position() == 64,
               "engine stop reaches bar");
-        const auto opCount = document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+        const auto opsBeforeSnapshot =
+            document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
         check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier, 0)) &&
                   snapshots == 1,
               "Ctrl/Cmd+S takes a snapshot (ADR-0203 d6), not a save");
-        check(document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opCount,
+        check(document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
+                  opsBeforeSnapshot,
               "and writes no op");
         check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier |
                                                             juce::ModifierKeys::shiftModifier,
