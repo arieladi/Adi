@@ -242,12 +242,10 @@ GraphPlan planGraph(const rows::Model& m) {
                                               "return may feed itself, so it is not planned");
             continue;
         }
-        if (src == PlannedKind::Return) {
-            plan.problems.push_back(ref + ": a return's own sends (Enable Send) are not played yet");
-            continue;
-        }
-        // Would it close a loop? Only if its destination already reaches its
-        // source, over everything planned so far.
+        // A return's own sends play as any track's do (ADR-0203 d3): off until
+        // Enable Send, which is the row's switch, and into another return as
+        // into anything else. Would it close a loop? Only if its destination
+        // already reaches its source, over everything planned so far.
         {
             std::vector<bool> seen(plan.nodes.size(), false);
             std::vector<std::size_t> todo{to->second};
@@ -262,6 +260,14 @@ GraphPlan planGraph(const rows::Model& m) {
                         seen[e.to] = true;
                         todo.push_back(e.to);
                     }
+            }
+            if (loops && src == PlannedKind::Return && dst == PlannedKind::Return) {
+                // Whether Live lets two returns feed each other is not
+                // measured yet (AWAITING 7(f)); until it is, the later row
+                // loses, as for every other loop.
+                plan.problems.push_back(ref + ": this send would close a ring between returns, which "
+                                              "waits on Live's being measured; it is not planned");
+                continue;
             }
             if (loops) {
                 plan.problems.push_back(ref + ": this send would close a loop with the routing already "
