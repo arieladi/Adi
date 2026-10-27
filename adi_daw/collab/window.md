@@ -63,10 +63,22 @@ were both caught before push.
 **CI at this entry:** #246 and #248 are fully green; #251 to #262 have no failures and are still
 running.
 
+**The scrub area, now [#264](https://github.com/arieladi/Adi/pull/264) `window/scrub`, stacked
+on #263.**
+- A 14-unit strip under the ruler; a click there plays from that point, or jumps there while
+  playing, through `AdiRootComponent::playFrom`.
+- Unquantized until the global launch quantization exists; hold-to-loop waits for a transport
+  loop.
+- Checks: 250 shell checks, a real click through the fake peer; `test_all.sh` 8265 across 97
+  suites.
+
+**CI:** no failures on #251 to #264; the queued macOS legs are still running.
+
+**Where to resume:** the worktree is `~/adi-window`, on `window/scrub`, the tip of the stack.
+
 **Next in §3b item 2:**
-1. The scrub area and its click-to-play (manual 6.1, p. 161).
-2. The browser's content.
-3. Live's resettable peak indicators on a tall Mixer View.
+1. The browser's content.
+2. Live's resettable peak indicators on a tall Mixer View.
 
 After those, item 3: the window parts of phase C, the Settings window in Live's shape (ADR-0203
 d11), and the EQ/limiter window (ADR-0204 d1).
