@@ -33,7 +33,44 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N4 | An app-scoped home for each window's interface zoom, per window and per display (ADR-0129 d3; ADR-0203 d11 "kept with the application") | win (the settings registry) | Ctrl/Cmd + and - zoom each window, but the zoom is not remembered across launches | held per window for the session |
 | N5 | An undoable path from a file and a track to a clip that plays: `importMedia` that captures without committing (so media and clip are one undo step) and fills `sample_rate`/`channels`/`frames`, and an op pair that attaches an `audio_clips` row (STEP-7-PLAN §3.0). #199's commit `3feee62` has a working version (`prepareImport`, `clip.attachAudio`/`clip.detachAudio`) in `media_ops.*` and `ops_catalog.cpp`, for the engine lane to lift | engine | dropping audio onto a track, 7.3's headline gesture | the arrangement accepts the drop and the Status Bar says it waits for the engine; nothing is written |
 | N7 | A UI producer into the edit capture: `ParamOps` has one ring per plug-in and none for the window, so a drag in the device strip cannot become an op whose first touch emits its opener (ADR-0124, ADR-0181 d5). #203's `537c56d` has `ParamOps::uiEvent` (its own `ParamEditCapture`, begin/value/end, reusing the opener machinery) for the engine lane to lift | engine | editing a parameter from the strip, 7.4 | the strip shows every value; a gesture is refused and the Status Bar says why |
+| N8 | A plug-in's editor from the hosts: VST3 (`IPlugView`, through JUCE's `createEditor`) and CLAP (`clap_plugin_gui`), as a component the floating host can place, and the editor's own size | engine (`src/juce/*host*`) | Live's wrench toggle and Ctrl/Cmd+Alt+P; the floating host's main users (ADR-0076) | the host is built and tested; nothing opens a plug-in window |
+| N9 | The scalar meter of UI-ARCHITECTURE §9, one `{peak, rms}` per strip written by the audio thread (#205's `9e4f4af` has a `StripMeter` in `engine/mixer.*`) | engine | metering a hundred strips without reading a tap each | each visible row reads the newest 1024 frames of its track's post-fader tap |
+| N10 | A Learn target for a mixer control that has no automation lane yet (#205's `learnControllerTarget` in `controller_maps.*`) | engine | MIDI Learn on lane headers, P2 (ADR-0203 d7) | nothing; Live learns through MIDI Map mode, which comes later |
+| N11 | The snapshot to carry the send rows (`routing` with `kind='send'`: source, return, gain, pre/post) | engine | one send knob per return on every row (ADR-0203 d3) | no send knobs; the routing ops exist and are ready to be called |
+| N12 | Split Stereo Pan: a pan mode and two pans per strip in the format and the mixer (ADR-0203 d9) | engine | the pan control's context menu | the menu shows the mode disabled |
+| N13 | A loudness meter's DSP: momentary, short-term and integrated LUFS and true peak, cheap enough for the Main track at all times (ADR-0203 d14) | engine or devices | the Main track's loudness meter | none yet |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-27, late — #204 → [#256](https://github.com/arieladi/Adi/pull/256) `window/floating-windows`; #205 → [#257](https://github.com/arieladi/Adi/pull/257) `window/mixer`; the six are through
+
+**#204, the floating host, now #256, stacked on #254.**
+- **Kept:** the host and the analyser views, with their tests. Undocking reparents; a second view
+  shares one model; the monitor clamp; one clock per window; keys reach the app's commands; a
+  window closes when its device is deleted and does not reopen on undo.
+- **Gone:** the "Analyse" button on every device. Live has none; the analyser's big window is the
+  analyser device's, and plug-in editors need the hosts (N8).
+- **Added:** tooltips in every floating window.
+
+Checks: 161. Parity: `parity-7.5-floating.md` (11 rows).
+
+**#205, the mixer, now #257, stacked on #256.** Its engine half is left out (N9, N10).
+- **Live's Arrangement Track Controls:** one row per track, level with the lane and scrolling with
+  it, in the mixer slot. Each row holds the meter (from the track's post-fader tap), volume, a pan
+  knob, the numbered Track Activator and Solo.
+- **The ADI-Q and ADI-L slots** sit on every row, present and off.
+- **Auto Gain Stage** is in the right-click menu.
+- **Split Stereo Pan** is shown disabled (N12).
+- **Open:** send knobs, return strips and the Main track's loudness meter (N6, N11, N13).
+- **Per-strip Learn is gone:** Live learns through MIDI Map mode.
+
+Checks: 208. Parity: `parity-7.6-mixer.md` (15 rows).
+
+**The queue moves on to item 2:** what 7.2 to 7.6 lists and no PR covers. That is the Overview;
+the scrub area and locators; the Mixer View of vertical strips; Rename (Ctrl/Cmd+R); the
+DetailEditor (the Clip View); the browser's content; the Ctrl/Cmd+Alt+M Mixer section's
+show/hide options; and the ADR-0129 gate rows not yet built.
 
 ---
 
@@ -52,7 +89,7 @@ rulings applied:
 Checks: 131 shell checks, with real mouse dispatch through #199's fake peer;
 `test_all.sh` 8255 across 97 suites. Parity: `parity-7.3-arrangement.md` (22 rows).
 
-**#203, the device strip, now `window/device-strip`, stacked on #251.** Its `ParamOps::uiEvent`
+**#203, the device strip, now [#254](https://github.com/arieladi/Adi/pull/254), stacked on #251.** Its `ParamOps::uiEvent`
 is left out (N7), so the strip shows values and refuses edits, saying so in the Status Bar. The
 rulings applied:
 - **Live's Device View:** devices run left to right, and the controls sit in columns that fit
