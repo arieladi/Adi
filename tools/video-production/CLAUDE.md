@@ -1,0 +1,1 @@
+Read README.md and STATE.json before doing any work here. Follow the shared ownership and no-duplicate-job protocol. Worker snapshots are reference copies, not launch instructions. Private machine configuration is excluded from Git.

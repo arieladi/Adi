@@ -1,0 +1,7 @@
+private/
+*.mp4
+*.wav
+*.pth
+*.safetensors
+*.latent
+__pycache__/

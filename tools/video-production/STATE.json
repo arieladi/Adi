@@ -1,0 +1,22 @@
+{
+  "as_of_utc": "2026-10-27T03:39:30Z",
+  "owner": "codex",
+  "ownership_note": "Codex heartbeat monitors remain active. Read-only inspection is safe; coordinate before worker mutations or claiming ownership.",
+  "cosmic_rain": {
+    "scope": "First 120 seconds only; continuation requires user approval",
+    "remote_root": "D:/AvasthaAI/CosmicRainPilot120-20261026",
+    "local_root": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s",
+    "status": "Rendering and assembly complete per remote status; final visual review and local delivery pending",
+    "output": "Cosmic Rain - DRAFT first 120 seconds - musical edit - with music.mp4",
+    "next": "Verify receipt, copy final and receipts to local D, inspect actual motion/joins, deliver for approval; delete completion monitor after review"
+  },
+  "avastha": {
+    "remote_root": "D:/AvasthaAI/Avastha4K60-20261026",
+    "local_root": "D:/AvasthaAI/Projects/Avastha - Quantum Ascent/final-4k60",
+    "status": "4K60 enhancement running on RTX4000; last observed 445 encoded frames of 35648",
+    "output": "Avastha - Acid rework and Aleph boom - 4K60 - with music.mp4",
+    "next": "Monitor existing worker; no restart. Verify and deliver after completion"
+  },
+  "holds": ["Old full-track Cosmic Rain renderer", "Z-Image experiments", "All other stopped render jobs"],
+  "protected": ["Original masters", "Salon-TV GTX1070 stays idle", "ADI-MOBILE stays free"]
+}
