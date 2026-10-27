@@ -166,15 +166,19 @@ public:
     /// on which bus. Node ids are not it -- a new track shifts every id after
     /// it, and every junction is a fresh object per realisation. What the
     /// history on an edge means is "what track A has been sending to track B",
-    /// and that is exactly this key.
+    /// and that is exactly this key -- with what the wire carries (the tail's
+    /// `Node::wireKind`), because a summed child's output into its group is a
+    /// console's, not the track's own, and one must not play as the other.
     struct EdgeKey {
         std::int64_t fromTrack = 0;
         std::int64_t toTrack = 0;
         std::uint8_t bus = 0;
+        std::uint32_t wire = 0;
         friend bool operator<(const EdgeKey& a, const EdgeKey& b) noexcept {
             if (a.fromTrack != b.fromTrack) return a.fromTrack < b.fromTrack;
             if (a.toTrack != b.toTrack) return a.toTrack < b.toTrack;
-            return a.bus < b.bus;
+            if (a.bus != b.bus) return a.bus < b.bus;
+            return a.wire < b.wire;
         }
     };
     struct EdgeRecord {
@@ -196,21 +200,37 @@ public:
     /// into the next. Such an edge delays when the node before it reports a
     /// negative latency -- a strip playing a track delay (ADR-0172) with a
     /// node after it, as a summed child's channel half is -- or, for a source,
-    /// when something else into the junction arrives later. Its ends are the
-    /// caller's nodes, the same objects in every graph realised from them and
-    /// alive while any graph holding them runs, or the junction, which is new
-    /// each time and so is named by its track. A send's two edges are keyed
-    /// the same way (ADR-0203 d3): its tap into its node is its source
-    /// track's, and its node into the destination's junction is the
-    /// destination's.
+    /// when something else into the junction arrives later.
+    ///
+    /// Keyed by where the edge LEAVES, because a ring holds what that end
+    /// sent. A chain node has one next node, so its edge onward is `Next` from
+    /// it, whatever takes it now: a summed child's channel half replaced by
+    /// another flavour, a device swapped after it. A source is keyed as an
+    /// edge INTO its track's junction from it. Its end is the caller's node --
+    /// the same object in every graph realised from it, alive while any graph
+    /// holding it runs -- or the junction (null), new each time and so named
+    /// by its track; or, for a node that is new each time too, the name it
+    /// gives itself (`Node::historyName`).
+    ///
+    /// A send's two edges (ADR-0203 d3): its tap into its node is a `Send`
+    /// from the tap, named by the routing row, since a tap may feed several
+    /// sends as well as its next node; and its node into the destination's
+    /// junction is an `Into` from the send's node.
     struct ChainKey {
+        enum class Leg : std::uint8_t {
+            Into,   ///< from a source into the track's junction
+            Next,   ///< from the junction or a chain node to the next node
+            Send,   ///< from a tap into a send's node, named by its routing row
+        };
         std::int64_t track = 0;
-        const Node* from = nullptr;   ///< null: the track's junction
-        const Node* to = nullptr;     ///< null: the track's junction
+        Leg leg = Leg::Next;
+        const Node* from = nullptr;   ///< null: the junction, or a named node
+        std::uint64_t name = 0;       ///< a node's `historyName`, when it has one
         friend bool operator<(const ChainKey& a, const ChainKey& b) noexcept {
             if (a.track != b.track) return a.track < b.track;
+            if (a.leg != b.leg) return a.leg < b.leg;
             if (a.from != b.from) return std::less<const Node*>{}(a.from, b.from);
-            return std::less<const Node*>{}(a.to, b.to);
+            return a.name < b.name;
         }
     };
     struct ChainRecord {
@@ -233,6 +253,7 @@ private:
     struct Chain {
         NodeId head = kInvalidNode;
         NodeId tail = kInvalidNode;
+        const Node* tailNode = nullptr;   ///< null: the junction is the tail
         /// The caller's nodes after the junction, in order: where a tap is.
         std::vector<std::pair<const Node*, NodeId>> nodes;
     };

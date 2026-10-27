@@ -410,15 +410,18 @@ void testASendsEdgesAreKeyedForTheNextGraph() {
     };
     auto a = realize(rig.plan(Tap::PostFx), rig.opts);
     auto b = realize(rig.plan(Tap::PostFx), rig.opts);
-    auto find = [](const RealizedGraph& r, std::int64_t track, const Node* from, const Node* to) {
+    using Leg = RealizedGraph::ChainKey::Leg;
+    auto find = [](const RealizedGraph& r, std::int64_t track, Leg leg, const Node* from, std::uint64_t name) {
         for (const auto& rec : r.chainEdges())
-            if (rec.key.track == track && rec.key.from == from && rec.key.to == to) return true;
+            if (rec.key.track == track && rec.key.leg == leg && rec.key.from == from && rec.key.name == name)
+                return true;
         return false;
     };
-    check(find(*a, 1, &rig.fx, &rig.send) && find(*b, 1, &rig.fx, &rig.send),
-          "the tap into the send: track 1's, from its effect to the send, in both graphs");
-    check(find(*a, 3, &rig.send, nullptr) && find(*b, 3, &rig.send, nullptr),
-          "the send into the return: the return's, from the send to its junction, in both");
+    check(find(*a, 1, Leg::Send, &rig.fx, 11) && find(*b, 1, Leg::Send, &rig.fx, 11),
+          "the tap into the send: track 1's, a Send from its effect named by the row, in both graphs");
+    check(find(*a, 3, Leg::Into, &rig.send, 0) && find(*b, 3, Leg::Into, &rig.send, 0),
+          "the send into the return: the return's, Into its junction from the send, in both");
+    check(find(*a, 1, Leg::Next, &rig.fx, 0), "and the effect's own next edge is apart from the send's");
     check(std::is_sorted(a->chainEdges().begin(), a->chainEdges().end(),
                          [](const auto& x, const auto& y) { return x.key < y.key; }),
           "and the list the swap walks is sorted with them in it");

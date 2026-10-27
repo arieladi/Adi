@@ -103,11 +103,12 @@ std::int32_t carryHistory(const std::vector<Record>& a, const std::vector<Record
         const DelayLine* oldLine = ga.edgeLine(a[i].from, a[i].to, a[i].bus);
         DelayLine* newLine = gb.edgeLine(b[j].from, b[j].to, b[j].bus);
         // Only a line that DELAYS has history anyone will hear. A zero tap
-        // reads the sample just written, so there is nothing to carry.
-        if (oldLine != nullptr && newLine != nullptr && newLine->delay() > 0) {
-            newLine->adoptHistory(*oldLine);
+        // reads the sample just written, so there is nothing to carry. And
+        // only a line that took some is counted: one whose old ring held
+        // nothing, or had none, carried nothing.
+        if (oldLine != nullptr && newLine != nullptr && newLine->delay() > 0 &&
+            newLine->adoptHistory(*oldLine))
             ++carried;
-        }
         ++i;
         ++j;
     }

@@ -912,6 +912,96 @@ void testAnEdgeInsideAChainKeepsItsHistory() {
         for (float v : o.l) if (v < 0.99f) ++dropped;
     }
     eqi(dropped, 0, "and the edge after it keeps its 480 samples");
+
+    // And a node REPLACED after it -- a summed child's channel half in a new
+    // flavour. The edge leaves the same node, whose output the ring holds.
+    GraphHost replaced;
+    check(replaced.rebuild(m, opts, 48000.0, 512), "built");
+    for (int b = 0; b < 30; ++b) replaced.process(io);
+    LatentNode another(0);
+    RealizeOptions swapped = opts;
+    swapped.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&dc, &early, &another};
+        return {};
+    };
+    check(replaced.rebuild(m, swapped, 48000.0, 512), "rebuilt with the node after it replaced");
+    dropped = 0;
+    for (int b = 0; b < 30; ++b) {
+        replaced.process(io);
+        for (float v : o.l) if (v < 0.99f) ++dropped;
+    }
+    eqi(dropped, 0, "and the edge into the new node keeps its 480 samples too");
+}
+
+/// A tone that names itself (`Node::historyName`), or does not.
+class NamedTone final : public Node {
+public:
+    NamedTone(float v, std::uint64_t name) : v_(v), name_(name) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            for (std::int32_t i = 0; i < io.frames; ++i) o[i] = v_;
+        }
+    }
+    [[nodiscard]] std::uint64_t historyName() const noexcept override { return name_; }
+private:
+    float v_;
+    std::uint64_t name_;
+};
+
+void testASourceBuiltAfreshKeepsItsHistoryByName() {
+    section("ADR-0092 -- a source that is a new object at every rebuild keeps its history by its name");
+
+    // A session builds a track's clip reader afresh at every rebuild. The
+    // old one lives on in the graph that last ran, so the new one is at
+    // another address, and only its name says it is the same track's clips.
+    auto seam = [](std::uint64_t name) {
+        ToneNode wet(0.25f);
+        LatentNode late(5120);
+        std::vector<std::unique_ptr<NamedTone>> made;   // every graph's, alive to the end
+        RealizeOptions opts;
+        opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+            if (id == 1) return {&wet, &late};
+            return {};
+        };
+        opts.sourcesFor = [&](std::int64_t id) -> std::vector<Node*> {
+            if (id != 2) return {};
+            made.push_back(std::make_unique<NamedTone>(0.75f, name));
+            return {made.back().get()};
+        };
+        rows::Model m = twoTracks();
+        m.routing.push_back(route(100, 1, 2));
+        GraphHost host;
+        return seamOf(host, m, opts);
+    };
+    const auto unnamed = seam(0), named = seam(1);
+    eqi(unnamed.first, 5120, "unnamed, a new object is a new signal: its 5120 samples go missing");
+    eqi(named.first, 0, "named, it is the same track's source: none do");
+    eqi(named.second, 1, "and its line is the one carried");
+}
+
+void testTheCountIsOfWhatWasCarried() {
+    section("ADR-0092 -- historyCarried counts lines that took history, not lines that matched");
+
+    // A node turns early (-480) at a rebuild: the edge after it matches its
+    // old self, which delayed nothing and so holds nothing. It is not carried.
+    ToneNode dc(1.0f);
+    LatentNode early(0), after(0);
+    RealizeOptions opts;
+    opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&dc, &early, &after};
+        return {};
+    };
+    const rows::Model m = twoTracks();
+    GraphHost host;
+    check(host.rebuild(m, opts, 48000.0, 512), "built");
+    Out o(512);
+    AudioIo io = makeIo(o, 512);
+    for (int b = 0; b < 4; ++b) host.process(io);
+    early.setLatency(-480);
+    check(host.rebuild(m, opts, 48000.0, 512), "rebuilt with the node early");
+    host.process(io);
+    eqi(host.stats().historyCarried, 0, "the matched line held nothing, so nothing is counted");
 }
 
 void testASourceEdgeKeepsItsHistory() {
@@ -972,6 +1062,8 @@ int main() {
     testARebuildInADrainPlaysWhatWasStillDue();
     testAnEdgeInsideAChainKeepsItsHistory();
     testASourceEdgeKeepsItsHistory();
+    testASourceBuiltAfreshKeepsItsHistoryByName();
+    testTheCountIsOfWhatWasCarried();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
