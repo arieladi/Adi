@@ -1,6 +1,6 @@
 """Keyframe stills for every scene of the full-track plan (DreamShaperXL Turbo on the A2000 ComfyUI).
 
-usage: gen_stills_full.py <root> [seeds, default 1,2]   (root holds plan.json; writes raw/<scene>_s<seed>.png)
+usage: gen_stills_full.py <root> [seeds, default 1,2]   (root holds plan.json; writes raw/<scene key>_s<seed>.png)
 Same settings as the approved 16s test stills. Idempotent: existing PNGs are kept. Writes stills-status.json.
 """
 import json, sys, time, urllib.parse, urllib.request
@@ -37,13 +37,13 @@ def graph(pos, seed, prefix):
 done = 0
 for i, sc in enumerate(plan["scenes"]):
     for seed in SEEDS:
-        out = raw / f"{sc['id']}_s{seed}.png"
+        out = raw / f"{sc['key']}_s{seed}.png"
         if out.exists():
             continue
         (ROOT / "stills-status.json").write_text(json.dumps({"time": time.time(), "stage": "stills", "scene": sc["id"],
                                                              "n": i + 1, "total": len(plan["scenes"])}))
-        pid = json.loads(call("prompt", {"prompt": graph(f"{sc['subject']}, {plan['style']}", 9000 + 97 * i + seed,
-                                                         f"cosmicfull/{sc['id']}_s{seed}")}))["prompt_id"]
+        pid = json.loads(call("prompt", {"prompt": graph(f"{sc['subject']}, {plan['style']}", 9000 + int(sc["key"][1:7], 16) % 100000 + seed,
+                                                         f"cosmicfull/{sc['key']}_s{seed}")}))["prompt_id"]
         while True:
             h = json.loads(call(f"history/{pid}")).get(pid)
             if h and h.get("status", {}).get("completed"):

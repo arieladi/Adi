@@ -12,7 +12,7 @@ Slot kinds:
   half  - half-bar riser cut (41 frames at double speed -> 20)
   test  - reused slot from the approved 16s test (bars 28-38)
 """
-import json, sys
+import hashlib, json, sys
 
 BPM, PHASE, FPS = 143, 0.0215, 24
 BAR = 240 / BPM
@@ -29,11 +29,24 @@ STYLE = ("psychedelic psytrance poster illustration, visionary art, bold clean i
 GODDESS = ("the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three "
            "round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks")
 
-# (kind, start bar, end bar, composite, still subject, motion)
-# Bars may be fractional for half-bar riser cuts. "{G}" in a subject is replaced by GODDESS.
+# The user's own story moments (2026-10-27) use these recurring characters so they read as the same people.
+ELDERS = ("a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, "
+          "playing large glowing frame drums and djembes")
+FAMILY = "women and children with painted faces and glowing beads"
+ALIENS = ("tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan "
+          "markings on their bodies")
+TOKENS = {"{G}": GODDESS, "{E}": ELDERS, "{F}": FAMILY, "{A}": ALIENS}
+
+# (kind, start bar, end bar, composite, still subject, motion, extras)
+# Bars may be fractional for half-bar cuts. Tokens above are expanded in subjects and motions.
+# kind: calm (normal speed), drop (2 bars, bar B chained), one (single slot at double speed), half (riser cut).
+# extras: user=True marks a user story moment; dissolve_in=N crossfades from the previous slot (clock morphs);
+# no_portal=True suppresses the automatic portal after a half-bar cut.
 S = []
-def add(kind, a, b, comp, subject, motion):
-    S.append(dict(kind=kind, a=a, b=b, comp=comp, subject=subject.replace("{G}", GODDESS), motion=motion))
+def add(kind, a, b, comp, subject, motion, **extras):
+    for k, v in TOKENS.items():
+        subject, motion = subject.replace(k, v), motion.replace(k, v)
+    S.append(dict(kind=kind, a=a, b=b, comp=comp, subject=subject, motion=motion, **extras))
 
 # --- Chapter 1: Arrival (intro, after the original 8 s opening) -----------------------------------
 C = "Arrival"
@@ -52,7 +65,17 @@ add("calm", 22, 24, "mirror", "an ancient crystal temple on the ocean floor, glo
 add("calm", 24, 26, "none", "{G} face just beneath the water surface, eyes closed, tiny bubbles around her lips", "Water ripples over her face, bubbles rise, her hair waves gently.")
 add("calm", 26, 28, "radial8", "a spiral of glowing raindrops forming around a small bright black hole star", "The spiral of raindrops turns faster and tightens around the star.")
 
-# --- Approved 16s test: bars 28-38 are reused (see build()) ---------------------------------------
+# --- Approved 16s test: bar 28-30 (goddess) is reused (see build()); 30-38 is now the user's story ---
+
+# --- User story 0:50-1:04: elders drum, family joins on the drop, clock, brain, fast clock ----------
+add("calm", 30, 31, "mirror", "{E}, seen from the front around a fire, rain falling, cosmic sky", "The elders strike their drums together in a steady rhythm, firelight flickering, rain falling.", user=True)
+add("calm", 31, 32, "none", "close-up of an elder's weathered hands raised above a glowing frame drum, dust and raindrops in the air", "The hands strike the glowing drum and sparks of light fly up.", user=True)
+add("drop", 32, 33.5, "mirror", "{E} joined by {F}, everyone drumming together in a big circle, glowing drums, rain and cosmic light", "Everyone drums hard together, the women and children join in with joy, light bursts from every drum hit.", user=True)
+add("one", 33.5, 34.5, "none", "a giant ornate golden clock face formed from the circle of drummers seen from above, the drums are the numerals, glowing clock hands", "The clock hands sweep around and everything ticks into place.", user=True, dissolve_in=8)
+add("calm", 34.5, 35, "mirror", "{E} and {F} drumming together in a circle, calm and glowing", "They keep drumming, relaxed and steady.", user=True, dissolve_in=6)
+add("one", 35, 36, "mirror", "a glowing human brain made of light with neurons firing, electric cyan and gold synapses, black space", "The camera flies fast through the firing neurons toward a bright light.", user=True)
+add("drop", 36, 37.5, "mirror", "glowing neurons turning into streams of silver rain falling over a dark ocean", "The neuron lights stretch into rain and pour down toward the ocean.", user=True)
+add("half", 37.5, 38, "none", "a fast spinning golden clock face with glowing hands on black", "The clock hands spin very fast.", user=True)
 
 # --- Chapter 3: Rain Ocean (drop 1, bars 38-62) ---------------------------------------------------
 drop1 = [
@@ -72,7 +95,9 @@ drop1 = [
 b = 38
 for comp, subj, mot in drop1:
     add("drop", b, b + 2, comp, subj, mot); b += 2
-add("calm", 62, 64, "none", "a single raindrop hanging in silence in front of a black void, the reflection of a glowing eye inside it", "The raindrop trembles, the reflected eye inside opens slowly.")
+# User story 1:45: the elders drum again in the break before the 1:47 drop.
+add("calm", 62, 63, "mirror", "{E} drumming in the rain at night under a glowing cosmic sky", "The elders drum steadily, building up, rain falling around them.", user=True)
+add("calm", 63, 64, "none", "close-up of glowing drums being struck, raindrops bouncing on the drum skins", "Hands strike the drums faster, raindrops jump off the drum skins.", user=True)
 
 # --- Chapter 4: Crystal Cathedral (drop 1b, bars 64-90) -------------------------------------------
 drop1b = [
@@ -90,16 +115,37 @@ drop1b = [
     ("mirror", "an owl made of crystal with golden eyes, wings spread wide, facing the viewer", "The crystal owl beats its wings and its eyes flare."),
     ("mirror", "a diamond eye inside a golden pyramid radiating light beams", "The eye opens and the light beams pulse outward."),
 ]
+# User story 1:47 (drop at bar 64): aliens arrive and play impossible synths with the elders (bars 64-76).
+aliens = [
+    ("mirror", "a glowing alien ship of light descending from a cosmic sky above {E}", "The ship of light descends slowly over the drummers, beams of light sweep the circle."),
+    ("mirror", "{A} standing behind impossible floating crystal synthesizers with hundreds of glowing keys and holographic waveforms", "The aliens play the glowing synthesizers, the waveforms pulse in fast steady rhythm."),
+    ("mirror", "{E} drumming in front while {A} play floating crystal synthesizers behind them, cosmic sky", "The elders drum and the aliens play together, light pulses on every beat."),
+    ("radial8", "close-up of an alien synthesizer made of light, glowing keys and spinning holographic waveform rings", "The holographic waveforms spin and pulse in fast sixteenth-note rhythm."),
+    ("none", "{F} dancing joyfully around the drum circle while {A} play glowing synths and {E} drum", "The children and women dance, the elders drum, the aliens play, light everywhere."),
+    ("mirror", "rivers of glowing sound waves flowing from alien synthesizers up into the sky", "The sound waves ripple upward in fast rhythmic pulses."),
+]
 b = 64
-for comp, subj, mot in drop1b:
+for comp, subj, mot in aliens:
+    add("drop", b, b + 2, comp, subj, mot, user=True); b += 2
+# Crystal Cathedral resumes for the rest of the drop (bars 76-90).
+for k in (0, 2, 4, 5, 6, 11, 12):
+    comp, subj, mot = drop1b[k]
     add("drop", b, b + 2, comp, subj, mot); b += 2
+assert b == 90
 
-# --- Break and riser into drop 2 (bars 90-96) -----------------------------------------------------
+# --- Break and riser into drop 2 (bars 90-96); user story 2:34: the clock finds us ----------------
 add("calm", 90, 92, "none", "{G} meditating on a floating rock under soft rain, eyes closed, hands resting in her lap", "Rain falls softly around her, her hair drifts, the rock turns slowly.")
-add("calm", 92, 94, "none", "falling raindrops slowing down and freezing into tiny stars in black space", "The raindrops slow and turn into stars one by one.")
-add("calm", 94, 95, "none", "extreme close-up of an eye opening, the pupil is a black hole with a blazing golden accretion ring", "The eye opens wide and the golden ring flares.")
-add("half", 95, 95.5, "radial8", "a ring of twelve glowing eyes with black hole pupils on black", "The ring of eyes spins fast.")
-add("half", 95.5, 96, "none", "extreme close-up of a black hole pupil with a golden ring, falling into it", "The camera zooms fast straight into the black pupil.")
+add("calm", 92, 94, "mirror", "a giant ornate golden clock slowly appearing out of darkness and rain, glowing hands", "The clock slowly emerges and its hands begin to move, pulling the camera toward it.", user=True)
+add("calm", 94, 95, "mirror", "flying toward the center of a giant golden clock, the hands spinning around the camera", "The clock hands spin faster as the camera is pulled into the center.", user=True)
+add("half", 95, 95.5, "none", "looking down through the glass center of a golden clock at {E} far below", "The camera falls through the clock toward the drummers.", user=True)
+add("half", 95.5, 96, "mirror", "diving down fast toward {E} from above", "The camera dives fast toward the drum circle.", user=True)
+
+# --- User story 2:41-2:45 (drop 2 at bar 96): new synths and speakers, everyone dances; fast clock;
+#     heaven: a beautiful woman and man become golden statues, then elements. ----------------------
+add("drop", 96, 97.5, "mirror", "{A} with towering new synthesizers and giant glowing speaker towers, {E} drumming and {F} dancing in front", "Everyone dances, the speaker towers pulse with light on the beat, the aliens play.", user=True)
+add("half", 97.5, 98, "none", "a fast spinning golden clock face with glowing hands on black", "The clock hands spin very fast.", user=True)
+add("drop", 98, 100, "mirror", "a heavenly paradise of golden light and clouds, a beautiful woman and a beautiful man facing each other, turning into gleaming golden statues", "Gold spreads over their bodies and they become shining golden statues.", user=True)
+add("drop", 100, 102, "mirror", "two golden statues of a woman and a man dissolving into the elements, fire, water, air and earth swirling from them", "The statues break apart into swirling fire, water, wind and earth.", user=True)
 
 # --- Chapter 5a: Storm Spirits (drop 2, bars 96-128) ----------------------------------------------
 storm = [
@@ -120,9 +166,18 @@ storm = [
     ("mirror", "a giant thunder drum of the gods glowing in the clouds", "The drum is struck and a shockwave of light rings spreads."),
     ("none", "{G} standing in the storm with glowing eyes, hands resting over her heart, lightning behind her", "Lightning flashes behind her and her hair whips in the wind."),
 ]
-b = 96
-for comp, subj, mot in storm:
+b = 102
+for k in (0, 1, 2, 3, 4, 6, 7, 11):
+    comp, subj, mot = storm[k]
     add("drop", b, b + 2, comp, subj, mot); b += 2
+assert b == 118
+# User story 3:18 (bar 118): the brain again, free your mind; a rooftop leap, flying free, becoming
+# falling glowing letters (a nod to the reference the user named, not a copy of its characters).
+add("drop", 118, 120, "mirror", "a glowing human brain made of light breaking free of chains of light, neurons firing, black space", "The chains of light shatter and the brain glows brighter, neurons flashing.", user=True)
+add("drop", 120, 122, "none", "a man in a long black coat leaping across the gap between two skyscraper rooftops at night, city lights far below, rain", "He leaps in a huge arc between the rooftops, his coat flying behind him.", user=True)
+add("drop", 122, 124, "none", "a man in a long black coat flying freely up through the clouds above a night city, arms at his sides", "He flies upward fast through the clouds, free.", user=True)
+add("drop", 124, 126, "mirror", "a man's silhouette dissolving into cascading streams of glowing green and cyan code symbols falling like rain", "His body dissolves into streams of glowing symbols raining down.", user=True)
+add("drop", 126, 128, "none", storm[15][1], storm[15][2])
 
 # --- Chapter 5b: Cosmic Garden (bars 128-160) -----------------------------------------------------
 garden = [
@@ -221,9 +276,22 @@ ascend = [
     ("mirror", "a golden crown radiating beams of light, floating in space", "The crown's beams sweep and pulse."),
     ("radial8", "a final grand mandala of silver rain and gold", "The mandala expands and rotates."),
 ]
+# User story 6:15 (final drop at bar 224): the drummers at full power in the storm; the aliens shield
+# them from the lightning and play the lightning like synths. Then Ascension continues (bars 232-268).
+storm_drums = [
+    ("mirror", "{E} drumming at full power in heavy rain, cosmic rays streaking across the sky, wind and snow swirling", "The elders drum with full force, rain and snow whip around them, cosmic rays flash."),
+    ("mirror", "lightning striking all around {E} who keep drumming in the storm, snow and wind", "Lightning strikes around the circle while the elders keep drumming hard."),
+    ("mirror", "{A} raising a glowing dome shield of light over {E}, lightning bolts hitting the shield", "Lightning crashes into the shield and the aliens hold it, the drummers keep playing."),
+    ("mirror", "{A} holding captured lightning bolts like glowing strings and playing them like a synthesizer, sparks of sound", "The aliens pluck and play the lightning bolts, waves of light and sound burst out."),
+]
 b = 224
-for comp, subj, mot in ascend:
+for comp, subj, mot in storm_drums:
+    add("drop", b, b + 2, comp, subj, mot, user=True); b += 2
+for k, (comp, subj, mot) in enumerate(ascend):
+    if k in (3, 9, 13, 17):
+        continue
     add("drop", b, b + 2, comp, subj, mot); b += 2
+assert b == 268
 
 # --- Ending (bars 268-end) ------------------------------------------------------------------------
 add("calm", 268, 270, "none", "macro of {G} eye with a whole galaxy reflected in it", "The camera pulls slowly back from the eye.")
@@ -245,33 +313,39 @@ def build():
         sid = f"K{i + 1:03d}"
         f0 = 192 if s["a"] == "open" else F(s["a"])
         f1 = END_FRAME if s["b"] == "end" else F(s["b"])
-        scenes.append({"id": sid, "kind": s["kind"], "composite": s["comp"], "subject": s["subject"]})
+        key = "k" + hashlib.sha1(s["subject"].encode()).hexdigest()[:10]  # still name survives renumbering
+        scenes.append({"id": sid, "key": key, "kind": s["kind"], "composite": s["comp"], "subject": s["subject"],
+                       "user_story": bool(s.get("user"))})
         prompt = s["motion"]
+        first = len(slots)
         if s["kind"] == "drop":
             mid = F(s["a"] + 1)
             for part, (g0, g1) in (("a", (f0, mid)), ("b", (mid, f1))):
                 n = g1 - g0
-                slots.append({"id": f"{sid}{part}", "scene": sid, "frames": [g0, g1], "length": length_for(n, 2), "step": 2,
+                slots.append({"id": f"{sid}{part}", "scene": sid, "key": key, "frames": [g0, g1], "length": length_for(n, 2), "step": 2,
                               "composite": s["comp"], "prompt": prompt if part == "a" else prompt + " The motion continues and intensifies.",
                               **({"chain_from": f"{sid}a"} if part == "b" else {})})
         else:
-            step = 2 if s["kind"] == "half" else 1
+            step = 2 if s["kind"] in ("half", "one") else 1
             n = f1 - f0
-            slot = {"id": sid, "scene": sid, "frames": [f0, f1], "length": length_for(n, step), "step": step,
+            slot = {"id": sid, "scene": sid, "key": key, "frames": [f0, f1], "length": length_for(n, step), "step": step,
                     "composite": s["comp"], "prompt": prompt}
             if s["kind"] == "calm" and n > 60:
                 slot["push"] = [1.0, 1.1]
             slots.append(slot)
-    # Insert the approved test slots (bars 28-38) after bar 28.
+        for k in ("dissolve_in", "no_portal"):
+            if k in s:
+                slots[first][k] = s[k]
+    # Insert the approved test's goddess slot (bars 28-30); the rest of the test window is the user's story.
     if test:
         tslots = [dict(t, id="T" + t["id"], take_root="D:/AvasthaAI/CosmicKeyframes16-20261027",
-                       take=t.get("take", t["id"]), reused=True) for t in test["slots"]]
-        at = next(i for i, s in enumerate(slots) if s["frames"][0] >= F(38))
+                       take=t.get("take", t["id"]), reused=True) for t in test["slots"] if t["frames"][1] <= F(30)]
+        at = next(i for i, s in enumerate(slots) if s["frames"][0] >= F(30))
         slots[at:at] = tslots
     # Portals: the first slot after a half-bar riser opens through a growing circle, as in the test.
     kind = {sc["id"]: sc["kind"] for sc in scenes}
     for prev, cur in zip(slots, slots[1:]):
-        if kind.get(prev.get("scene")) == "half" and kind.get(cur.get("scene")) != "half":
+        if kind.get(prev.get("scene")) == "half" and kind.get(cur.get("scene")) != "half"                 and not cur.get("no_portal") and not cur.get("dissolve_in"):
             cur["portal_in"] = 6
     # Contiguity check.
     pos = 192
@@ -284,7 +358,8 @@ def build():
             "opening": {"source": "D:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4", "frames": [0, 192]},
             "audio": {"track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav", "start_frame": 0, "end_frame": END_FRAME},
             "style": STYLE, "scenes": scenes, "slots": slots,
-            "stats": {"scenes": len(scenes), "slots": len(slots), "wan_jobs": len(gens),
+            "stats": {"scenes": len(scenes), "user_story_scenes": sum(sc["user_story"] for sc in scenes),
+                      "slots": len(slots), "wan_jobs": len(gens),
                       "wan_frames": sum(s["length"] for s in gens)}}
     json.dump(plan, open(sys.argv[1], "w", encoding="utf-8"), indent=1, ensure_ascii=False)
     print(json.dumps(plan["stats"]))

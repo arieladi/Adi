@@ -3,7 +3,7 @@
 usage: animate_full.py <root> [comfy url, default http://127.0.0.1:8192] [worker name, default a2000]
                        [comfy data dir holding input/ and output/, default D:/AvasthaAI/VideoEditFour-20261025]
 Settings are the proven pilot/test ones (shift 8, 20 steps, CFG 5, uni_pc/simple, latent saved before the
-full-temporal tiled decode). Keyframe = the picked still of the slot's scene (picks.json), or for a drop's
+full-temporal tiled decode). Keyframe = the picked still of the slot's scene key (picks.json), or for a drop's
 bar B the last generated frame of its bar A (chain_from). Reused test slots are skipped.
 
 Resumable and safe to run as two workers on two GPUs: a slot is claimed by atomically creating
@@ -80,7 +80,7 @@ def main():
                 time.sleep(20)
             src = Path(json.loads((ROOT / "anim" / s["chain_from"] / "generated.json").read_text())["frames"][-1])
         else:
-            src = ROOT / "raw" / picks[s["scene"]]
+            src = ROOT / "raw" / picks[s["key"]]
         if shutil.disk_usage(ROOT).free < 8 * 1024 ** 3:
             raise RuntimeError("Less than 8 GiB free on D; preserve outputs and inspect")
         tag = f"cosmicfull-anim/{sid}"

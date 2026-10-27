@@ -3,7 +3,7 @@
 usage: assemble_full.py <root> [--preview]
 Frames 0-191: the original opening (as in the pilot). Then every plan slot in order, exactly like the
 approved 16s test assembler: every `step`-th generated frame, 8 px crop top/bottom (never stretched),
-per-frame symmetry, optional push, portal_in circle reveal, hard cuts on the slot's absolute frame.
+per-frame symmetry, optional push, portal_in circle reveal or dissolve_in crossfade, hard cuts on the slot's absolute frame.
 Reused test slots read their takes from take_root. --preview stops at the first slot not rendered yet
 and writes a shorter "PREVIEW" file; the full run requires every slot. Music is never retimed.
 """
@@ -72,6 +72,11 @@ try:
                 cw, ch = 1280 / z, 720 / z
                 f = np.asarray(Image.fromarray(f).resize((1280, 720), Image.BICUBIC,
                                                           box=(640 - cw / 2, 360 - ch / 2, 640 + cw / 2, 360 + ch / 2)))
+            nd = s.get("dissolve_in", 0)
+            if j < nd and previous is not None:
+                # Crossfade from the previous slot's last frame (the user's "everything turns into a clock").
+                w = (j + 1) / (nd + 1)
+                f = np.rint(f * w + previous * (1 - w)).astype(np.uint8)
             n = s.get("portal_in", 0)
             if j < n and previous is not None:
                 a = ((j + 1) / n) * (1 + 1 / 12)
