@@ -1,0 +1,18 @@
+{
+  "note": "v2 redo of the weak slots. The goddess identity text is shared so S01, S03 and S10 read as one character; S10 is img2img from the S01 pick so the face carries over.",
+  "identity": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks",
+  "seeds": [101, 202, 303, 404, 505, 606],
+  "jobs": [
+    {"slot": "S04", "name": "S04v2", "composite": "none",
+     "prompt": "extreme macro close-up of one wide open eye, the pupil is a black hole, a blazing golden accretion disk with swirling orange and white plasma ring replaces the iris, tiny stars swirling into the black center, silver eyelashes with raindrops, silver-blue skin"},
+    {"slot": "S05", "name": "S05v2", "composite": "mirror",
+     "prompt": "first-person view flying fast down a long cylindrical tunnel whose walls are made of falling silver rain streaks, thousands of raindrops streaking past toward the viewer, glowing golden rings spaced along the tunnel, a bright white-blue light at the vanishing point in the exact center, strong one-point perspective, motion lines"},
+    {"slot": "S03", "name": "S03v2", "composite": "mirror",
+     "prompt": "side profile of {identity}, she is on the left side of the picture facing right, her arm stretched straight forward with an open palm and fingers reaching toward a thin vertical beam of silver light in the center of the image, her fingertips almost touching the beam, black starry background, empty right side"},
+    {"slot": "S01", "name": "S01v2", "composite": "none",
+     "prompt": "front view portrait of {identity}, eyes closed, serene, a black hole with a blazing golden accretion ring as a halo behind her head, silver raindrops falling around her, starry deep space background"},
+    {"slot": "S10", "name": "S10v2", "composite": "none", "init": "S01_xl_s33.png", "denoise": [0.45, 0.55, 0.65],
+     "init_seeds": [101, 202],
+     "prompt": "front view portrait of {identity}, her eyes wide open and glowing bright cyan, a radiant crown of golden light and swirling rain rising above her head, a black hole with a blazing golden ring behind her, rain spiraling upward around her"}
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "note": "Final keyframes chosen 2026-10-27 (user asked Claude to pick and deliver the finished 16s). Slot frames come from round(24 * (phase + bar * 240/143)); 'step' 2 means every second generated frame (double speed) for drop energy. Music is never retimed.",
+  "fps": 24,
+  "audio": {"track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav", "start_frame": 1128, "end_frame": 1531},
+  "style": "psychedelic psytrance poster illustration, bold clean ink outlines, cel shading, vivid silver, cyan, ultramarine and gold with magenta accents",
+  "slots": [
+    {"id": "S01", "keyframe": "raw/S01_xl_s33.png", "frames": [1128, 1209], "length": 81, "step": 1, "composite": "none",
+     "prompt": "The serene cosmic goddess with closed eyes, silver raindrops slide down her face and fall around her, her silver hair flows in a cosmic wind, the golden ring behind her slowly glows brighter, the camera slowly pushes in toward her face. Smooth deliberate motion, readable forms."},
+    {"id": "S02", "keyframe": "raw/S02_xl_s22.png", "frames": [1209, 1249], "length": 81, "step": 2, "composite": "radial8",
+     "prompt": "The crystal raindrop with a galaxy inside spins and pulses, the galaxy inside swirls quickly, golden petals around it rotate clockwise, sparkles fly outward. Clear continuous motion."},
+    {"id": "S03", "keyframe": "raw/S03_xl_s33.png", "frames": [1249, 1269], "length": 41, "step": 2, "composite": "mirror",
+     "prompt": "Two mirrored goddess profiles face each other, each raises an open hand toward the vertical beam of silver light between them, their palms move inward and meet at the beam, the light flares. Decisive motion."},
+    {"id": "S04", "keyframe": "raw/S04v3_xl_d45_s707.png", "frames": [1269, 1289], "length": 41, "step": 2, "composite": "none",
+     "prompt": "Extreme close-up of the eye with a black hole pupil and blazing golden accretion ring, the ring swirls and the camera zooms quickly straight into the black pupil. Fast forward zoom."},
+    {"id": "S05", "keyframe": "raw/S05v2_xl_s404.png", "frames": [1289, 1330], "length": 81, "step": 2, "composite": "mirror", "portal_in": 6,
+     "prompt": "Flying very fast forward down the tunnel of falling silver rain streaks and glowing golden rings, the rings rush past the camera, the light at the center grows. Fast continuous forward flight."},
+    {"id": "S06", "keyframe": "raw/S06_xl_s44.png", "frames": [1330, 1370], "length": 81, "step": 2, "composite": "none",
+     "prompt": "Five cute glowing raindrop spirits dance in a row on the dark mirror ocean, they bounce and step together in sync, arms swinging, ripples spreading under their feet. Energetic rhythmic dancing."},
+    {"id": "S07", "keyframe": "raw/S07_xl_s44.png", "frames": [1370, 1410], "length": 81, "step": 2, "composite": "mirror",
+     "prompt": "The silver water serpent rears up toward the camera, its head lunges forward, its golden eyes glow, its coils tighten around the glowing ring. Powerful decisive motion."},
+    {"id": "S08", "keyframe": "raw/S08_xl_s33.png", "frames": [1410, 1451], "length": 81, "step": 2, "composite": "radial8",
+     "prompt": "Top-down view of the ornate mandala of rain ripples on the dark ocean, the ripples expand outward rhythmically, the mandala rotates, golden rings pulse. Clear continuous motion."},
+    {"id": "S09", "keyframe": "raw/S09_xl_s33.png", "frames": [1451, 1491], "length": 81, "step": 2, "composite": "mirror",
+     "prompt": "The luminous water lotus blooms open toward the camera, its petals unfold quickly, rain falls around it, the golden core glows brighter. Decisive blooming motion."},
+    {"id": "S10", "keyframe": "raw/S10v2_xl_d65_s202.png", "frames": [1491, 1531], "length": 81, "step": 2, "composite": "none",
+     "prompt": "The cosmic goddess opens her glowing eyes wide, rain spirals upward around her into a crown of light, her silver hair lifts, the camera pulls back. Strong rising motion."}
+  ]
+}

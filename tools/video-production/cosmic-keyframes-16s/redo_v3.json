@@ -1,0 +1,10 @@
+{
+  "note": "v3: S04 black-hole iris. Text-only prompts never produced it (10 tries), so blackhole_iris.py paints the hole and accretion ring into the v1 eye and a light img2img pass blends it in.",
+  "identity": "",
+  "seeds": [],
+  "jobs": [
+    {"slot": "S04", "name": "S04v3", "composite": "none", "init": "S04paint_s44.png", "denoise": [0.35, 0.45, 0.55],
+     "init_seeds": [707, 808],
+     "prompt": "extreme macro close-up of one wide open eye, the pupil is a black hole, a blazing golden accretion disk ring of swirling orange and white plasma around the black hole pupil, tiny stars spiraling into the black center, silver eyelashes with raindrops"}
+  ]
+}

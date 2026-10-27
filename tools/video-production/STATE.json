@@ -1,5 +1,5 @@
 {
-  "as_of_utc": "2026-10-27T11:45:00Z",
+  "as_of_utc": "2026-10-27T12:30:00Z",
   "owner": "split: claude owns Cosmic keyframe test only; codex owns Avastha 4K60 worker and its monitors",
   "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected).",
   "cosmic_rain": {
@@ -21,16 +21,17 @@
     ],
     "review_images": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s/review-claude-20261027",
     "gemini_ayana_analysis": "User gave Codex a Gemini breakdown of Ayana before the pilot: modular 1-bar/2-bar I2V clips, hard cuts on bar 1, eye/circle portal match-zooms, 2D mirror/radial/clone compositing, reverse-timed impacts, acts. The pilot applied the cut grid but not the compositing, fresh-keyframe-per-clip or portals, and chained last frames (the drift Gemini warned against). Gemini's '40 frames per bar at 24fps' drifts (bar is 40.28 frames); use absolute timestamps. Its timestamps are partly wrong against sampled frames; its waveform brightness pulses conflict with the no-strobe preference; Flow/Veo are paid and excluded.",
-    "next": "User picks/rejects stills per slot. Then regenerate weak slots, then animate each approved still separately (Wan2.2 TI2V5B from its own keyframe), cut on exact bar times. No animation until stills are approved.",
+    "next": "Wait for animate.py, then assemble.py (per-frame symmetry, step-2 speed on drop slots, circle portal into the drop, original track 47.0-63.79s unchanged), verify, deliver. Do not start another Wan job on the A2000 while anim.lock exists.",
     "keyframe_test": {
-      "status": "Stills v1 delivered to user for review; NOT animated. Awaiting picks/feedback.",
+      "status": "User asked Claude to pick final stills and deliver a finished 16s video. Final picks in cosmic-keyframes-16s/anim.json. Animation running on A2000 Comfy (animate.py, lock anim.lock, status anim-status.json, per-slot receipts in anim/<slot>/).",
       "window": "47.01-63.80s, bars 28-37 at 143 BPM, drop at 53.73s",
       "remote": "D:/AvasthaAI/CosmicKeyframes16-20261027 (raw/, receipt.json, status.json)",
       "local": "D:/AvasthaAI/Projects/Cosmic Rain/keyframes-16s-test (raw/, comp/, sheets/, storyboard-picks-v1.jpg)",
       "code": "tools/video-production/cosmic-keyframes-16s (storyboard.json, gen_keyframes.py, composite.py, picks_sheet.py)",
       "method": "ComfyUI 8192 on A2000, DreamShaperXL_Turbo_v2 1360x768, 8 steps, cfg 2, dpmpp_sde/karras, seeds 11/22/33/44; DreamShaper8 912x512 comparison on S01/S06/S07 (clearly weaker). 46 images. Symmetry by deterministic mirror/radial8 compositing, not by the model.",
       "server_notes": "A1111 webui 7865 (A2000) returns HTTP 500 for every txt2img, even DreamShaper8 512px; not restarted (shared). Added hard links DreamShaperXL_Turbo_v2 and DreamShaper_8_pruned in D:/AvasthaAI/ComfyUI/models/checkpoints pointing to the webui files; removable, no copies or downloads.",
-      "known_weak": "S04 iris is a normal eye, not a black hole; S05 tunnel is flat rings without rain; S03 profiles have no hands for the touch impact; goddess in S01 and S10 is not the same identity (anchor needs consistency before animation). Mirroring front faces/eyes melts the centre line, so S01/S04/S10 stay raw."
+      "known_weak": "S04 iris is a normal eye, not a black hole; S05 tunnel is flat rings without rain; S03 profiles have no hands for the touch impact; goddess in S01 and S10 is not the same identity (anchor needs consistency before animation). Mirroring front faces/eyes melts the centre line, so S01/S04/S10 stay raw.",
+      "v2_v3": "v2 (redo_v2.json): S05 rain tunnel fixed; S10 img2img from S01 v1 keeps the same face; S01/S03 v2 drifted to realistic painting, v1 kept. v3 (redo_v3.json): S04 black hole painted by blackhole_iris.py then img2img 0.45."
     }
   },
   "avastha": {
