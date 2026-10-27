@@ -12,6 +12,18 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-27, midday — LANES §3 item 2, sends and returns: Pre sends play
+
+**[arieladi/Adi#244](https://github.com/arieladi/Adi/pull/244) (`engine/sends-pre`), stacked on #243: Pre sends play, before the fader (ADR-0203 d3).**
+- A Pre row leaves after the effects and before the strip, so the source's fader, pan and track delay do not reach it.
+- Its own switch takes the source's mute and solo, and it reads the source's mute lane. Its lane is kept alive with every graph that plays it, as a strip's lanes are.
+- The send's own pan is now tested through the session.
+- Six plants, each caught on its own. `test_all.sh` 8313.
+
+**Question for win, the tenth:** does Live delay a Pre send by the source's Track Delay? Here the delay belongs to the strip, so a Pre send leaves before it. Changing the answer touches one place (where the tap is) and flips one test.
+
+---
+
 ## 2026-10-27, morning — LANES §3 item 2, sends and returns: the plan's first three PRs, and what they need from win
 
 The plan is in six steps after these: Pre sends and send pan, solo across sends, Live's return loop, sidechain keys reaching devices, Live's tap points on routes, the return switches and Sends Only, Cue. Each is its own PR.
