@@ -263,6 +263,22 @@ public:
 
     [[nodiscard]] virtual const char* name() const noexcept { return "node"; }
 
+    /// ADR-0092: who this node is across rebuilds, when it is a NEW OBJECT in
+    /// every graph -- a track's clip reader, which the session builds afresh
+    /// at each rebuild. 0, the default, means the object itself: a device, a
+    /// strip, anything the session keeps. A node that names itself is, on the
+    /// same track in the next graph, the same signal, and the line it feeds
+    /// keeps its history.
+    [[nodiscard]] virtual std::uint64_t historyName() const noexcept { return 0; }
+
+    /// ADR-0092: what an edge carries when this node ENDS a track's chain, as
+    /// a rebuild's handover sees it. A ring's history goes only to a line
+    /// carrying the same thing. 0 by default; a summed child's channel half
+    /// (ADR-0174) says its output is a console's -- with drive, hotter than
+    /// the track by the drive, made up after the group's buss -- so turning
+    /// summing on or off never plays one as the other.
+    [[nodiscard]] virtual std::uint32_t wireKind() const noexcept { return 0; }
+
     /// The notes this node has been handed and not released (ADR-0158).
     /// Audio thread; the graph keeps it, and a node never needs to touch it.
     ///
@@ -592,7 +608,9 @@ public:
     /// unwritten (`forget`) hands on silence, not what it last had. What it
     /// hands on that is not silence is audio still due out, which keeps this
     /// line's consumer awake until it has played it (`due`).
-    void adoptHistory(const DelayLine& old) noexcept;
+    ///
+    /// True when it copied anything: what a host may count as carried.
+    bool adoptHistory(const DelayLine& old) noexcept;
 
     /// AUDIO THREAD: this edge's segment went by without its ring being
     /// written, and the source may have been playing -- `Graph::accumulate`'s

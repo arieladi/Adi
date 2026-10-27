@@ -61,6 +61,10 @@ public:
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override;
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "console"; }
+    /// ADR-0092: a child's output through its channel half is a console's,
+    /// driven, so a rebuild never hands it to the plain track's line.
+    [[nodiscard]] std::uint32_t wireKind() const noexcept override { return kConsoleWire; }
+    static constexpr std::uint32_t kConsoleWire = 1;
 
     /// What this half is, for a test or a problem: "Console9Channel".
     [[nodiscard]] const std::string& what() const noexcept { return what_; }

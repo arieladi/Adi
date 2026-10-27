@@ -102,6 +102,17 @@ private:
     float v_;
 };
 
+/// Silence, 1000 samples late: a sibling the others are compensated against.
+class LateSilence final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][io.blockOffset + i] = 0.0f;
+    }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return 1000; }
+    [[nodiscard]] const char* name() const noexcept override { return "late"; }
+};
+
 /// A project of named tracks, each track id optionally a tone, and a session on it.
 struct Mix {
     adi::test::TempDirectory temp;
@@ -433,6 +444,73 @@ void testATrackDelayCrossesARebuild() {
         check(d1 == 0, tag + ": a child 300 samples late, and a rebuild moves no sample of the master past 1e-6 (" +
                            std::to_string(d1) + " do)");
         check(d3 == 0, tag + ": nor do three fader moves in a row (" + std::to_string(d3) + " do)");
+    }
+
+    // A NEW FLAVOUR is a new channel half after the same strip. The delayed
+    // edge leaves the strip, and the ring holds what the strip sent, so it is
+    // carried: the sound changes, and nothing drops out.
+    {
+        Mix m("delay-flavour");
+        SineNode a(220.0, 0.1f);
+        m.track(1, "audio", "A");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.extra[1] = &a;
+        m.set("group.setSumming", 5, "enabled", true);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        for (int k = 0; k < 6; ++k) m.render(512);
+        const ConsoleNode* before = m.session.summing().channelOf(1);
+        m.set("group.setSummingFlavor", 5, "flavor", "console.md");
+        m.refresh();
+        m.render(512);
+        std::size_t run = 0, longest = 0;
+        for (float x : m.l) {
+            run = std::fabs(x) < 1e-5f ? run + 1 : 0;
+            longest = std::max(longest, run);
+        }
+        check(m.session.summing().channelOf(1) != before, "a new flavour is a new half");
+        check(longest < 8, "and the block after it has no hole: its longest near-silent run is " +
+                               std::to_string(longest) + " samples, not the delay's 300");
+    }
+
+    // SUMMING TURNED ON OR OFF changes what the child's output into its group
+    // IS: with drive, a channel half's output is hotter than the track by the
+    // drive, and the group's buss takes it back. The old line's history is
+    // not handed to the new one (`wireKind`), so the swap never plays one as
+    // the other -- with +18 dB of drive that was a +12 dB burst.
+    for (const bool startOn : {true, false}) {
+        Mix m(startOn ? "toggle-off" : "toggle-on");
+        SineNode a(220.0, 0.1f);
+        LateSilence lag;
+        m.track(1, "audio", "A");
+        m.track(2, "audio", "B");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.set("track.setParent", 2, "parent", 5);
+        m.extra[1] = &a;
+        m.extra[2] = &lag;
+        m.set("group.setSumming", 5, "enabled", startOn);
+        m.set("group.setSummingDrive", 5, "db", 18.0);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        for (int k = 0; k < 8; ++k) m.render(512);
+        m.set("group.setSumming", 5, "enabled", !startOn);
+        m.refresh();
+        double swap = 0.0, settled = 0.0;
+        for (int k = 0; k < 10; ++k) {
+            m.render(512);
+            for (std::size_t i = 0; i < m.l.size(); ++i) {
+                const double v = std::fabs(static_cast<double>(m.l[i]));
+                if (k * 512 + static_cast<int>(i) < 1300) swap = std::max(swap, v);
+                else if (k >= 4) settled = std::max(settled, v);
+            }
+        }
+        check(swap <= settled * 1.05,
+              std::string("summing ") + (startOn ? "on to off" : "off to on") + ": no burst at the swap -- peak " +
+                  std::to_string(swap) + " against " + std::to_string(settled) + " settled");
     }
 }
 
