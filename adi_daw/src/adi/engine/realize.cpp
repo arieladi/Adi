@@ -236,17 +236,40 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 }
             }
             if (!placeOnce(send, ref, "a send's node")) continue;
-            if (auto owner = send->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
-            if (const auto& owner = send->eventSourceLifetime()) r->sourceOwners_.push_back(owner);
+            // ADR-0174: a send into a summing group enters it through a
+            // channel half of its own, as a child does, so the group's buss
+            // half decodes what a channel half encoded and the send's level
+            // is the same with summing on or off. Null for any other place.
+            Node* half = opts.sendTailFor ? opts.sendTailFor(e.routingId) : nullptr;
+            if (half != nullptr && !placeOnce(half, ref, "a send's channel half")) continue;
+            for (Node* n : {send, half}) {
+                if (n == nullptr) continue;
+                if (auto owner = n->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
+                if (const auto& owner = n->eventSourceLifetime()) r->sourceOwners_.push_back(owner);
+            }
             const NodeId sid = r->graph_.addNode(*send);
-            if (!r->graph_.connect(at, sid) || !r->graph_.connect(sid, to)) {
+            const NodeId hid = half != nullptr ? r->graph_.addNode(*half) : kInvalidNode;
+            const bool joined = r->graph_.connect(at, sid) &&
+                                (half == nullptr ? r->graph_.connect(sid, to)
+                                                 : r->graph_.connect(sid, hid) && r->graph_.connect(hid, to));
+            if (!joined) {
                 r->problems_.push_back(ref + ": the graph refused the send");
                 continue;
             }
             r->chainEdges_.push_back({{srcId, RealizedGraph::ChainKey::Leg::Send, tapNode,
                                        static_cast<std::uint64_t>(e.routingId)},
                                       at, sid, Bus::Main});
-            r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, 0}, sid, to, Bus::Main});
+            if (half == nullptr) {
+                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, 0}, sid, to, Bus::Main});
+            } else {
+                // Into the junction keyed by the send it carries, and named
+                // by its wire: a console's, so a rebuild that turns summing
+                // off or on never plays one wire's history as the other's,
+                // and one that changes the flavour keeps it, as a child's does.
+                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Next, send, 0}, sid, hid, Bus::Main});
+                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, half->wireKind()},
+                                          hid, to, Bus::Main});
+            }
             continue;
         }
         if (!r->graph_.connect(from, to, e.bus)) {

@@ -365,9 +365,11 @@ void Session::attach() {
     rs.maxFrames = spec_.maxFrames;
     rs.devicesFor = [this](std::int64_t trackId) { return trackChain(trackId); };
     // ADR-0203 d3: a send leaves its track at its tap and plays through the
-    // node the strips keep for its row.
+    // node the strips keep for its row, then, into a summing group, through
+    // the channel half the summing keeps for it (ADR-0174).
     rs.tapFor = [this](std::int64_t trackId, Tap tap) { return tapFor(trackId, tap); };
     rs.sendFor = [this](std::int64_t routingId) -> Node* { return strips_.sendFor(routingId); };
+    rs.sendTailFor = [this](std::int64_t routingId) { return summing_.sendTailFor(routingId); };
     auto* clipSource = clips();
     auto* midiSource = midi_.get();
     rs.sourcesFor = [this, clipSource, midiSource](std::int64_t id) {

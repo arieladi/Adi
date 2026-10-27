@@ -34,6 +34,7 @@
 #include "adi/engine/transport.hpp"
 #include "adi/store_rows.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -130,6 +131,11 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
+
+    /// Message thread: the next block starts AT the target, as a new strip
+    /// does, rather than ramping from whatever this one last played.
+    void restart() noexcept { restart_.store(true, std::memory_order_release); }
+
     /// ADR-0207 d2: at 64 the gains and their ramps are double too.
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
@@ -159,7 +165,10 @@ private:
     std::atomic<ScopeTap*> preFaderTap_{nullptr};
     std::atomic<std::int64_t> delayProject_{0};
     std::atomic<std::int64_t> delayRate_{48000};
-    double sampleRate_ = 48000.0;       ///< message thread, set by prepare
+    /// Set by prepare, which every graph that places this strip calls on the
+    /// message thread while the graph before may still be playing it; so an
+    /// atomic, as `rampFrames_` is, and never a plain write under a reader.
+    std::atomic<double> sampleRate_{48000.0};
     /// Left, right, and every other channel (the fader alone). `g` is what a
     /// graph at 32 plays, rounded exactly as it always was; `w` the same
     /// values unrounded, for a graph at 64.
@@ -182,6 +191,8 @@ private:
         std::int32_t remaining = 0;
         bool started = false;
         void retarget(const T (&t)[3], std::int32_t frames) noexcept;
+        /// At the target now, no ramp: for a strip asleep, whose input is silent.
+        void land(const T (&t)[3]) noexcept;
     };
     template <typename T>
     [[nodiscard]] Ramp<T>& ramp() noexcept;
@@ -194,6 +205,7 @@ private:
     std::atomic<float> volumeDb_{0.0f}, pan_{0.0f};
     std::atomic<int> law_{0};
     std::atomic<bool> audible_{true};
+    std::atomic<bool> restart_{false};
     std::atomic<const StripLanes*> lanes_{nullptr};
     std::shared_ptr<void> keepAlive_;   ///< message thread only
     const Transport* transport_ = nullptr;
@@ -209,8 +221,13 @@ private:
     Ramp<float> ramp32_;
     Ramp<double> ramp64_;
     std::int8_t lastWidth_ = 0;   ///< audio thread: 32 or 64 once a ramp has run, 0 before
-    std::int32_t rampFrames_ = 240;
+    std::atomic<std::int32_t> rampFrames_{240};
 };
+
+/// A send's highest level. Live's top is not read yet (AWAITING 7(a)); this is
+/// a guard, above any host's, so that a level no host offers -- +inf, or one
+/// whose gain a float cannot hold -- plays as a level and not as infinity.
+inline constexpr double kSendTopDb = 24.0;
 
 /// A send (ADR-0203 d3): its level, its pan and its switch, between the tap on
 /// its source track and the junction it feeds. The session owns one per
@@ -222,9 +239,12 @@ private:
 class SendNode final : public Node {
 public:
     /// Message thread. A level at or below kSilenceDb is silent, and so is
-    /// one that is not a number (the caller names it). `on` is Enable Send.
+    /// one that is not a number; one past kSendTopDb, +inf included, plays at
+    /// kSendTopDb (the caller names both). `on` is Enable Send.
     void set(double levelDb, double pan, PanLaw law, bool on) noexcept {
-        gain_.setStatic(std::isnan(levelDb) ? -std::numeric_limits<double>::infinity() : levelDb, pan, law, on);
+        const double db = std::isnan(levelDb) ? -std::numeric_limits<double>::infinity()
+                                              : std::min(levelDb, kSendTopDb);
+        gain_.setStatic(db, pan, law, on);
     }
 
     /// Message thread, for a Pre send: the source's mute lane (ADR-0164),
@@ -239,6 +259,12 @@ public:
 
     void prepare(double sampleRate, std::int32_t maxFrames) override { gain_.prepare(sampleRate, maxFrames); }
     void process(const NodeIo& io) noexcept override { gain_.process(io); }
+    /// Asleep, a send lands a level moved meanwhile, as a strip does.
+    void silenceTaps(const NodeIo& io) noexcept override { gain_.silenceTaps(io); }
+
+    /// Message thread: the next block starts at the level, without a ramp --
+    /// for a send back in the plan, which no graph has played meanwhile.
+    void restart() noexcept { gain_.restart(); }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     /// Zero, like a strip's: a send holds nothing back.
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
@@ -302,6 +328,7 @@ public:
 private:
     std::map<std::int64_t, std::unique_ptr<StripNode>> strips_;
     std::map<std::int64_t, std::unique_ptr<SendNode>> sends_;
+    std::set<std::int64_t> liveSends_;   ///< the rows planned at the last sync
     std::vector<std::string> problems_;
 };
 

@@ -174,8 +174,9 @@ public:
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
 
-    /// Scope-only notification when scheduling skips a silent node. No DSP
-    /// work; a strip uses it to keep watched rings current through silence.
+    /// Notification when scheduling skips a silent node. No DSP work; a strip
+    /// uses it to keep watched rings current through silence, and to land a
+    /// gain moved while it sleeps, so it wakes at that gain.
     virtual void silenceTaps(const NodeIo&) noexcept {}
 
     /// Session retains every tap until audio stops, including after close.
