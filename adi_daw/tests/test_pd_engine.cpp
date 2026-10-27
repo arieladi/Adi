@@ -29,6 +29,7 @@
 
 #include "juce/pd_engine.hpp"
 #include "juce/pd_declarations.hpp"
+#include "juce/pd_device.hpp"
 #include "juce/pd_builtins.hpp"
 #include "adi/engine/graph.hpp"
 #include "adi/blob.hpp"
@@ -291,6 +292,55 @@ void testAudioGoesThroughPdAndComesBack() {
           "at gain 0 the same patch returns silence -- so the pass-through "
           "above was Pd's doing and not a memcpy (peak " +
           std::to_string(peak) + ")");
+}
+
+void testAnUnchangedRebuildKeepsThePatchPlaying() {
+    section("ADR-0090 -- a Pd device prepared again at its own rate and block plays on, "
+            "sample for sample");
+
+    // Graph::prepare prepares every node on every rebuild. The engine's own
+    // prepare empties the adapter's FIFOs, so before PdDevice returned early
+    // a rebuild anywhere in the project put a block of silence into every Pd
+    // device and lost what it was holding.
+    auto owned = std::make_unique<LibPdEngine>(patchDir(), "adi-proof.pd", 2, 2);
+    LibPdEngine& eng = *owned;
+    adi::device::DeviceIdentity id;
+    id.format = "pd"; id.uid = "adi-proof"; id.name = "adi-proof";
+    adi::device::PdDevice dev(std::move(owned), id);
+    if (!dev.loaded()) { check(false, "open: " + dev.openError()); return; }
+    dev.prepare(48000.0, 512);
+    check(eng.sendFloat("gain", 1.f), "gain 1 reaches [r $0-gain]");
+
+    const int total = 4096;
+    Buffers b(2, total);
+    std::vector<float> sig(static_cast<std::size_t>(total));
+    for (int f = 0; f < total; ++f) {
+        sig[static_cast<std::size_t>(f)] = static_cast<float>(f) / total;
+        b.in[0][static_cast<std::size_t>(f)] = b.in[1][static_cast<std::size_t>(f)] = sig[static_cast<std::size_t>(f)];
+    }
+    const std::vector<int> awkward{100, 37, 411, 64, 7, 250};
+    int at = 0;
+    std::size_t s = 0;
+    bool again = false;
+    while (at < total) {
+        // Mid-stream, the prepare a rebuild elsewhere would make.
+        if (!again && at >= total / 2) { dev.prepare(48000.0, 512); again = true; }
+        const int n = std::min(awkward[s % awkward.size()], total - at);
+        auto io = b.io(2, total, at, n);
+        dev.process(io);
+        at += n;
+        ++s;
+    }
+    const int d = eng.adapterLatencySamples();
+    int matched = 0, compared = 0;
+    for (int f = d; f < total; ++f) {
+        ++compared;
+        if (std::fabs(b.out[0][static_cast<std::size_t>(f)] - sig[static_cast<std::size_t>(f - d)]) < 1e-6f)
+            ++matched;
+    }
+    check(compared > 3500 && matched == compared,
+          "the audio comes back unchanged and delayed by " + std::to_string(d) +
+          " across the second prepare: " + std::to_string(matched) + "/" + std::to_string(compared));
 }
 
 void testAnAbstractionOpenedAsATopLevelPatchRendersSilence() {
@@ -1396,6 +1446,7 @@ int main() {
     testPdOpensARealPatch();
     testTheAdapterCostsOneBlockAndSaysSo();
     testAudioGoesThroughPdAndComesBack();
+    testAnUnchangedRebuildKeepsThePatchPlaying();
     testAnAbstractionOpenedAsATopLevelPatchRendersSilence();
     testAPublishedArrayReachesTheReader();
     testTheBufferIsAtomicPerArray();
