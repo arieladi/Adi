@@ -384,6 +384,15 @@ void testTheWidthReachesTheDevice() {
     g.prepare(48000.0, 512);
     check(wide.widths() == "64p", "the device that processes double is told 64, then prepared: " + wide.widths());
     check(narrow.widths() == "32p", "the one that does not is told 32: " + narrow.widths());
+    check(nw.handed() == engine::Precision::Float64 && nn.handed() == engine::Precision::Float32,
+          "and each node remembers what it was told");
+    // A device whose answer moves after the build: the node still says what
+    // the graph decided, which is what it is handed until the next one.
+    narrow.setDoubles(true);
+    check(nn.processesDouble() && nn.handed() == engine::Precision::Float32,
+          "a device that now says double is still handed float until a rebuild");
+    g.prepare(48000.0, 512);
+    check(nn.handed() == engine::Precision::Float64, "and the rebuild hands it double");
 }
 
 // --- the missing plugin ------------------------------------------------------

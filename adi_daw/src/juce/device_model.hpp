@@ -508,8 +508,12 @@ public:
         return inst_ != nullptr && inst_->processesDouble();
     }
     void willBeHanded(engine::Precision width) override {
+        handed_ = width;
         if (inst_ != nullptr) inst_->willBeHanded(width);
     }
+    /// The width the graph that prepared this node last said it would hand
+    /// it, whatever the instance says now. Message thread.
+    [[nodiscard]] engine::Precision handed() const noexcept { return handed_; }
     [[nodiscard]] const char* name() const noexcept override { return "device"; }
 
     /// `devices.always_process`. Message thread.
@@ -525,6 +529,7 @@ public:
 
 private:
     DeviceInstance* inst_ = nullptr;
+    engine::Precision handed_ = engine::Precision::Float32;
     bool always_ = false;
     bool bypassed_ = false;
 };

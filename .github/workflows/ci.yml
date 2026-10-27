@@ -867,14 +867,21 @@ jobs:
                   --clip-rates 48000 --midi --vst3-uid "$uid"
           "$ADI_PLAY" render/vst3.adi --fixture --render 4 \
                   --require-devices --require-peak -60 --expect-no-edits
+          # The audio clip ends at 1.5 s and would meet --require-peak on its
+          # own: from 2 s only the VST3 sounds, so this is the plug-in's peak.
+          "$ADI_PLAY" render/vst3.adi --fixture --from 2 --render 2 \
+                  --require-devices --require-peak -60
 
       # ADR-0207 d2: the same project with the graph at 64. The fixture takes
       # kSample64, so --require-double holds it to being set up at 64 and
-      # handed double, not converted at its seam.
+      # handed double, not converted at its seam -- and from 2 s, where only
+      # the VST3 sounds, --require-peak holds it to playing so.
       - name: Render a project through a VST3 at 64-bit
         run: |
           set -euo pipefail
           "$ADI_PLAY" render/vst3.adi --fixture --render 4 --precision 64 \
+                  --require-devices --require-peak -60 --expect-no-edits
+          "$ADI_PLAY" render/vst3.adi --fixture --from 2 --render 2 --precision 64 \
                   --require-devices --require-double --require-peak -60 --expect-no-edits
 
       # And --require-double can fail: ADI Test Plain refuses kSample64, so
@@ -896,11 +903,16 @@ jobs:
           fi
           python3 adi_daw/tools/make_demo_project.py render/vst3-plain.adi \
                   --clip-rates 48000 --midi --vst3-uid "$uid"
-          "$ADI_PLAY" render/vst3-plain.adi --fixture --render 1 --precision 64 \
+          # From 2 s, where only the VST3 sounds: it plays at 64.
+          "$ADI_PLAY" render/vst3-plain.adi --fixture --from 2 --render 2 --precision 64 \
                   --require-devices --require-peak -60
-          if "$ADI_PLAY" render/vst3-plain.adi --fixture --render 1 --precision 64 \
-                         --require-devices --require-double; then
-            echo "::error::a VST3 that refuses kSample64 passed --require-double"
+          # And fails --require-double: exit 2 and its own line, not any failure.
+          rc=0
+          out=$("$ADI_PLAY" render/vst3-plain.adi --fixture --from 2 --render 1 --precision 64 \
+                            --require-devices --require-double 2>&1) || rc=$?
+          echo "$out"
+          if [ "$rc" -ne 2 ] || ! grep -q 'FAILED -- --require-double' <<<"$out"; then
+            echo "::error::a VST3 that refuses kSample64 did not fail --require-double (exit $rc)"
             exit 1
           fi
           echo "ok -- a device converted at its seam fails --require-double"

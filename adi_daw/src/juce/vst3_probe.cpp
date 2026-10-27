@@ -1057,22 +1057,27 @@ void fixturePrecision(adi::device::Vst3Host& host) {
         v3->prepare(sr, kBlock);
         return dev;
     };
-    // The left channel of kBlocks blocks, every block in segments of `segment`
-    // frames and a note at the very start. `extra` are block-relative events
-    // in block `extraBlock`, each handed to the segment it falls in. A device
-    // is played once per activation, so one voice sounds: two at one pitch
-    // and different phases can cancel.
+    // kBlocks blocks of the left channel, then the same of the right, every
+    // block in segments of `segment` frames and a note at the very start.
+    // `extra` are block-relative events in block `extraBlock`, each handed to
+    // the segment it falls in. A device is played once per activation, so one
+    // voice sounds: two at one pitch and different phases can cancel.
+    constexpr auto kLen = static_cast<std::size_t>(kBlock * kBlocks);   // one channel's samples
+    auto record = [&](std::vector<double>& to, const double* wide, const float* narrow) {
+        for (std::size_t i = 0; i < static_cast<std::size_t>(kBlock); ++i)
+            to.push_back(wide != nullptr ? wide[i] : static_cast<double>(narrow[i]));
+    };
     auto play = [&](Vst3Device& v3, bool wide, int segment, const std::vector<Event>& extra = {},
                     int extraBlock = 0) {
         Event on;
         on.type = EventType::NoteOn; on.noteId = 1; on.dim = 60; on.channel = 1; on.value = 0.8;
-        std::vector<double> l(kBlock), r(kBlock), all;
+        std::vector<double> l(kBlock), r(kBlock), all, right;
         std::vector<float> lf(kBlock), rf(kBlock);
         double* out64[2] = {l.data(), r.data()};
         float* out[2] = {lf.data(), rf.data()};
         for (int b = 0; b < kBlocks; ++b) {
-            std::fill(l.begin(), l.end(), kStale);
-            std::fill(lf.begin(), lf.end(), static_cast<float>(kStale));
+            for (auto* ch : {&l, &r}) std::fill(ch->begin(), ch->end(), kStale);
+            for (auto* ch : {&lf, &rf}) std::fill(ch->begin(), ch->end(), static_cast<float>(kStale));
             for (int at = 0; at < kBlock; at += segment) {
                 std::vector<Event> ev;
                 if (b == 0 && at == 0) ev.push_back(on);
@@ -1088,9 +1093,10 @@ void fixturePrecision(adi::device::Vst3Host& host) {
                 io.events = adi::engine::EventSpan{ev.data(), static_cast<std::int32_t>(ev.size())};
                 v3.process(io);
             }
-            for (int i = 0; i < kBlock; ++i)
-                all.push_back(wide ? l[static_cast<std::size_t>(i)] : static_cast<double>(lf[static_cast<std::size_t>(i)]));
+            record(all, wide ? l.data() : nullptr, lf.data());
+            record(right, wide ? r.data() : nullptr, rf.data());
         }
+        all.insert(all.end(), right.begin(), right.end());
         return all;
     };
     auto peak = [](const std::vector<double>& a) {
@@ -1179,27 +1185,32 @@ void fixturePrecision(adi::device::Vst3Host& host) {
     }
 
     // The input: the fixture passes it through, so what comes out is what the
-    // host handed the plugin. Doubles no float can hold, in segments of 128.
+    // host handed the plugin. Doubles no float can hold, in segments of 128,
+    // and a different stream on each channel, so a channel handed another's
+    // samples shows.
     if (const auto* d = find("ADI Test NoteExpr")) {
-        std::vector<double> noise(static_cast<std::size_t>(kBlock * kBlocks));
+        std::vector<double> noise(2 * kLen);   // the left channel's, then the right's
         std::uint64_t seed = 0x9E3779B97F4A7C15ull;
         for (double& x : noise) {
             seed = seed * 6364136223846793005ull + 1442695040888963407ull;
             x = (static_cast<double>(seed >> 11) / 9007199254740992.0 - 0.5) * 0.5;   // 53 bits
         }
         auto feed = [&](Vst3Device& v3, bool wide) {
-            std::vector<double> in(2 * static_cast<std::size_t>(kBlock)), l(kBlock), r(kBlock), all;
+            std::vector<double> in(2 * static_cast<std::size_t>(kBlock)), l(kBlock), r(kBlock), all, right;
             std::vector<float> inf(2 * static_cast<std::size_t>(kBlock)), lf(kBlock), rf(kBlock);
             const double* in64[2] = {in.data(), in.data() + kBlock};
             const float* in32[2] = {inf.data(), inf.data() + kBlock};
             double* out64[2] = {l.data(), r.data()};
             float* out[2] = {lf.data(), rf.data()};
             for (int b = 0; b < kBlocks; ++b) {
-                for (int i = 0; i < kBlock; ++i) {
-                    const double x = noise[static_cast<std::size_t>(b * kBlock + i)];
-                    in[static_cast<std::size_t>(i)] = in[static_cast<std::size_t>(kBlock + i)] = x;
-                    inf[static_cast<std::size_t>(i)] = inf[static_cast<std::size_t>(kBlock + i)] = static_cast<float>(x);
-                }
+                for (std::size_t c = 0; c < 2; ++c)
+                    for (std::size_t i = 0; i < static_cast<std::size_t>(kBlock); ++i) {
+                        const double x = noise[c * kLen + static_cast<std::size_t>(b * kBlock) + i];
+                        in[c * static_cast<std::size_t>(kBlock) + i] = x;
+                        inf[c * static_cast<std::size_t>(kBlock) + i] = static_cast<float>(x);
+                    }
+                for (auto* ch : {&l, &r}) std::fill(ch->begin(), ch->end(), kStale);
+                for (auto* ch : {&lf, &rf}) std::fill(ch->begin(), ch->end(), static_cast<float>(kStale));
                 for (int off = 0; off < kBlock; off += 128) {
                     adi::engine::NodeIo io;
                     if (wide) { io.in64 = in64; io.out64 = out64; }
@@ -1210,9 +1221,10 @@ void fixturePrecision(adi::device::Vst3Host& host) {
                     io.sampleRate = sr;
                     v3.process(io);
                 }
-                for (int i = 0; i < kBlock; ++i)
-                    all.push_back(wide ? l[static_cast<std::size_t>(i)] : static_cast<double>(lf[static_cast<std::size_t>(i)]));
+                record(all, wide ? l.data() : nullptr, lf.data());
+                record(right, wide ? r.data() : nullptr, rf.data());
             }
+            all.insert(all.end(), right.begin(), right.end());
             return all;
         };
         auto at64 = make(*d, Precision::Float64);
@@ -1244,13 +1256,16 @@ void fixturePrecision(adi::device::Vst3Host& host) {
             const std::vector<double> good = play(*vr, wide, 128);
             const std::vector<double> got = play(*vb, wide, 128, {refuse}, 1);
             const auto s = static_cast<std::size_t>(kBlock);
-            bool before = true, silent = true;
-            for (std::size_t i = s; i < s + 128; ++i) before = before && got[i] == good[i];
-            for (std::size_t i = s + 128; i < s + 256; ++i) silent = silent && got[i] == 0.0;
+            bool before = true, silent = true, after = true;
+            for (std::size_t c0 : {std::size_t{0}, kLen}) {   // each channel
+                for (std::size_t i = s; i < s + 128; ++i) before = before && got[c0 + i] == good[c0 + i];
+                for (std::size_t i = s + 128; i < s + 256; ++i) silent = silent && got[c0 + i] == 0.0;
+                const auto from = got.begin() + static_cast<std::ptrdiff_t>(c0 + s + 256);
+                after = after && peak(std::vector<double>(from, from + static_cast<std::ptrdiff_t>(kLen - s - 256))) > 0.05;
+            }
             check(before, "a refused segment " + at + ": the segment before it keeps its audio");
             check(silent, "and the refused one is silent, at its offset -- not left holding the last block");
-            check(peak(std::vector<double>(got.begin() + static_cast<std::ptrdiff_t>(s + 256), got.end())) > 0.05,
-                  "and the plugin plays on after it");
+            check(after, "and the plugin plays on after it");
         }
     }
 

@@ -278,7 +278,10 @@ bool reportPrecision(adi::engine::Session& s) {
         if (e.placeholder || e.retired) continue;
         ++loaded;
         adi::device::DeviceNode& node = s.devices().nodeAt(e.hostIndex);
-        const bool handed = wide && node.processesDouble();
+        // What the graph decided when it was built, and only while the device
+        // still takes it: a CLAP's answer can move at an activation, and the
+        // graph keeps the old width until its next rebuild.
+        const bool handed = wide && node.handed() == adi::engine::Precision::Float64 && node.processesDouble();
         if (handed) ++doubles;
         if (const auto* v3 = dynamic_cast<const adi::device::Vst3Device*>(&node.instance())) {
             ++vst3;
