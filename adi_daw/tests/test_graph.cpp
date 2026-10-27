@@ -2331,6 +2331,44 @@ void testTheAudioThreadNeverAsksALatency() {
     eqi(a.offMain, 0, "still never off the message thread");
 }
 
+/// Answers its tail alternately finite and infinite, as a device mid
+/// reactivation can (ADR-0089 d4), and counts how often it is asked.
+class FlipTail final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr) ? io.in[c] + io.blockOffset : nullptr;
+            for (std::int32_t k = 0; k < io.frames; ++k) o[k] = i != nullptr ? i[k] : 0.0f;
+        }
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override {
+        return (asks++ % 2 == 0) ? 64 : kInfiniteTail;
+    }
+    [[nodiscard]] const char* name() const noexcept override { return "flip tail"; }
+    mutable int asks = 0;
+};
+
+void testATailIsAskedOnceABlock() {
+    section("ADR-0089 d4 -- a node is asked its tail once a block: its answer can change between "
+            "two questions, and finite then infinite overflowed the tail counter");
+    Graph g;
+    ConstNode src(0.5f);
+    FlipTail f;
+    const NodeId is = g.addNode(src), iff = g.addNode(f);
+    check(g.connect(is, iff), "the source feeds it, so its input is live");
+    g.setOutput(iff);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+    std::vector<float> l(256, 0.0f), r(256, 0.0f);
+    std::vector<float*> out{l.data(), r.data()};
+    AudioIo io;
+    io.out = out.data(); io.numOut = 2; io.frames = 256;
+    const int before = f.asks;
+    for (int b = 0; b < 8; ++b) g.process(io);
+    eqi(f.asks - before, 8, "eight blocks, eight questions");
+}
+
 }  // namespace
 
 int main() {
@@ -2348,6 +2386,7 @@ int main() {
         testSuspendedNodeClearsOnceToCapacity();
         testMixSkipsSleepingSources();
         testTheAudioThreadNeverAsksALatency();
+        testATailIsAskedOnceABlock();
         testEventsAreNotSilence();
         testAHeldNoteIsNotSilence();
         testHeldNotesTable();

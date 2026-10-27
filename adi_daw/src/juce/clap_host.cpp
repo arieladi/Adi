@@ -404,7 +404,10 @@ ClapDevice::~ClapDevice() {
     // exactly that, by being pasted in from prepare().
     if (plugin_ == nullptr) return;
     if (activated_) {
-        if (plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
+        // Only what started: plugin.h makes stop_processing legal only while
+        // processing, and a plug-in whose start_processing failed is active
+        // but not processing -- the guard `prepare` and `release` have.
+        if (processing_ && plugin_->stop_processing != nullptr) plugin_->stop_processing(plugin_);
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
     // DEFENSIVE, AND SAY SO: this line is NOT what closes the use-after-free.
@@ -860,6 +863,15 @@ std::int64_t ClapDevice::tailSamples() const noexcept {
     // why it could never have found this.
     if (plugin_ == nullptr || tailExt_ == nullptr || tailExt_->get == nullptr)
         return engine::kInfiniteTail;
+    // NOT DURING A REACTIVATION. The graph asks every node for its tail on
+    // every block, on the audio thread and outside `process`, so without
+    // this the old graph of a live rebuild called `tail.get` while the
+    // message thread had the plug-in deactivated or inside `activate` --
+    // two threads in it at once, and `activated_` read as it is written.
+    // Infinite is the answer that cannot cut a tail: it keeps the node
+    // awake for the block.
+    const ReactivationGate::Pass pass(gate_);
+    if (!pass) return engine::kInfiniteTail;
     // NOT BEFORE ACTIVATE. Same rule as the latency below and the same
     // reason -- a tail is a number of samples and the plugin does not know
     // the sample rate yet. The conservative answer here is infinite, which
@@ -950,6 +962,12 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
         shapeNow == shapeSeen_) {
         return;
     }
+    // FROM HERE THE PLUG-IN IS STOPPED, DEACTIVATED AND ITS BUSES REBUILT,
+    // and a live rebuild gets here while the last graph still renders this
+    // device: `process` passes audio through until it is active again
+    // (`ReactivationGate`). Not before the early return, so a rebuild that
+    // changes nothing here costs the device no block.
+    const ReactivationGate::Hold hold(gate_);
     shapeSeen_ = shapeNow;
 
     if (activated_) {
@@ -1120,6 +1138,7 @@ bool ClapDevice::layoutMatches() const {
 
 void ClapDevice::release() {
     if (plugin_ == nullptr || !activated_) return;
+    const ReactivationGate::Hold hold(gate_);   // as in `prepare`
     // The THIRD call site, and the one the guard audit found by arithmetic --
     // "stop_processing: guarded=2 calls=3" -- which I read and did not act
     // on. Counting is not checking. And stop is legal only while processing
@@ -1174,6 +1193,10 @@ bool ClapDevice::outPush(const clap_output_events_t* list, const clap_event_head
 }
 
 void ClapDevice::process(const engine::NodeIo& io) noexcept {
+    // A reactivation in progress on the message thread owns the plug-in and
+    // its buses: this call passes the audio through (`ReactivationGate`).
+    const ReactivationGate::Pass pass(gate_);
+    if (!pass) { passThrough(io); return; }
     // ADR-0207 d2. A graph at 64 hands double to a device that said it takes
     // it; `data64` carries it when every port does (`wide64`). Should the
     // plug-in's answer have changed since the graph asked (a rescan: the graph

@@ -34,8 +34,11 @@
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <fstream>
+#include <thread>
 #include <string>
 #include <cstddef>
 #include <vector>
@@ -895,6 +898,128 @@ void fixtureState(adi::device::Vst3Host& host) {
     ec->release();
 }
 
+/// ADR-0089 d4 for VST3: a reactivation waits for the call in flight, reaches
+/// the plug-in, and leaves nothing behind. The fixture holds a process call
+/// for 300 ms when its Slow Block switch arrives in it, refuses a block
+/// longer than it was set up for, and counts its live plugin objects.
+void fixtureReactivation(adi::device::Vst3Host& host) {
+    using adi::engine::Event;
+    using adi::engine::EventType;
+    using adi::device::Vst3Device;
+
+    std::printf("\n[ADR-0089 d4] the fixture through a reactivation\n");
+    juce::OwnedArray<juce::PluginDescription> types;
+    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    const juce::PluginDescription* d = nullptr;
+    for (auto* t : types) if (t->name == "ADI Test NoteExpr") d = t;
+    check(d != nullptr, "ADI Test NoteExpr: found");
+    if (d == nullptr) return;
+
+    constexpr double sr = 48000.0;
+    auto make = [&](int block) {
+        std::string err;
+        auto dev = host.makeDevice(*d, sr, block, err);
+        if (auto* v3 = dynamic_cast<Vst3Device*>(dev.get()); v3 != nullptr && v3->loaded()) v3->prepare(sr, block);
+        else check(false, "the fixture loads: " + err);
+        return dev;
+    };
+    // One call of `frames` frames, with these events at its start; its peak.
+    auto once = [](Vst3Device& v3, int frames, std::vector<Event> ev) {
+        std::vector<float> l(static_cast<std::size_t>(frames)), r(static_cast<std::size_t>(frames));
+        float* out[2] = {l.data(), r.data()};
+        adi::engine::NodeIo io;
+        io.out = out; io.channels = 2; io.frames = frames; io.sampleRate = 48000.0; io.inputSilent = true;
+        io.events = adi::engine::EventSpan{ev.data(), static_cast<std::int32_t>(ev.size())};
+        v3.process(io);
+        float p = 0.0f;
+        for (float x : l) p = std::max(p, std::fabs(x));
+        return p;
+    };
+    Event note;
+    note.type = EventType::NoteOn; note.noteId = 1; note.dim = 60; note.channel = 1; note.value = 0.8;
+    Event slow;
+    slow.type = EventType::ParamValue; slow.paramId = 4006; slow.value = 1.0;   // Slow Block
+    auto waitFor = [](auto pred) {
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!pred()) {
+            if (std::chrono::steady_clock::now() > until) return false;
+            std::this_thread::yield();
+        }
+        return true;
+    };
+
+    // The fixture's counters, from its own binary inside the bundle.
+    juce::File bin;
+    const juce::File bundle(ADI_TEST_VST3);
+    for (const auto& f : bundle.getChildFile("Contents").findChildFiles(juce::File::findFiles, true))
+        if (f.getFileNameWithoutExtension() == bundle.getFileNameWithoutExtension()) bin = f;
+    juce::DynamicLibrary lib;
+    using Count = int (*)();
+    const bool opened = lib.open(bin.getFullPathName());
+    const auto live = opened ? reinterpret_cast<Count>(lib.getFunction("adiFixtureLiveSynths")) : nullptr;
+    const auto overlaps = opened ? reinterpret_cast<Count>(lib.getFunction("adiFixtureOverlaps")) : nullptr;
+    const auto inProcess = opened ? reinterpret_cast<Count>(lib.getFunction("adiFixtureInProcess")) : nullptr;
+    check(live != nullptr && overlaps != nullptr && inProcess != nullptr,
+          "the fixture's counters are reachable: " + bin.getFullPathName().toStdString());
+    if (live == nullptr || overlaps == nullptr || inProcess == nullptr) return;
+
+    // A new block size on a device still active reaches the plug-in. JUCE's
+    // prepareToPlay returns at once on an active instance at the rate and
+    // block it is handed, and prepare handed it them first.
+    {
+        auto dev = make(256);
+        auto* v3 = dynamic_cast<Vst3Device*>(dev.get());
+        if (v3 != nullptr) {
+            const std::int64_t before = v3->activations();
+            v3->prepare(sr, 1024);
+            check(v3->activations() == before + 1, "a new block size on an active device reactivates it");
+            check(once(*v3, 1024, {note}) > 0.05f,
+                  "and a block of 1024 plays: the plug-in was set up for 1024, not left at 256");
+        }
+    }
+
+    // The raw interface's reference is released, so a device that reactivated
+    // three times leaves no plug-in behind when it goes.
+    {
+        const int before = live();
+        {
+            auto dev = make(256);
+            if (auto* v3 = dynamic_cast<Vst3Device*>(dev.get())) {
+                v3->prepare(44100.0, 256);
+                v3->prepare(sr, 512);
+            }
+            check(live() == before + 1, "one plugin object is alive while its device is");
+        }
+        check(live() == before, "and none once the device is gone, after three activations: " +
+                                    std::to_string(live() - before) + " left");
+    }
+
+    // The gate, from the VST3 side: with a call held inside the plug-in, a
+    // reactivation and a release each wait for it to leave. The fixture
+    // counts any setActive or setupProcessing that arrives under a call.
+    {
+        auto dev = make(512);
+        auto* v3 = dynamic_cast<Vst3Device*>(dev.get());
+        if (v3 != nullptr) {
+            for (const bool rel : {false, true}) {
+                const std::string what = rel ? "a release" : "a reactivation";
+                const int before = overlaps();
+                std::thread audio([&] { (void)once(*v3, 512, {slow}); });
+                // Inside the plug-in, not only past the gate: a release made
+                // between the two would deactivate it before the call arrived.
+                check(waitFor([&] { return inProcess() > 0; }), "a call is inside the plug-in, held there");
+                if (rel) v3->release();
+                else     v3->prepare(44100.0, 512);
+                audio.join();
+                check(overlaps() == before, what + " never reached the plug-in under the call: " +
+                                                std::to_string(overlaps() - before) + " setup calls under it");
+                check(!v3->reactivating(), "and lets go");
+                if (!rel) check(once(*v3, 512, {note}) > 0.05f, "and the plug-in plays after it");
+            }
+        }
+    }
+}
+
 void fixtureAcceptance(adi::device::Vst3Host& host) {
     using adi::engine::Event;
     using adi::engine::EventType;
@@ -1048,6 +1173,7 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
 
     fixtureGesture(host);
     fixtureState(host);
+    fixtureReactivation(host);
 }
 #endif
 

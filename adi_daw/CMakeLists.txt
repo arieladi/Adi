@@ -660,6 +660,10 @@ add_test(NAME adi_device_host_tests COMMAND adi_device_host_tests)
 add_executable(adi_clap_tests tests/test_clap.cpp)
 target_link_libraries(adi_clap_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clap_tests COMMAND adi_clap_tests)
+# Its threaded tests wait on each other. Each wait has a deadline, and a
+# watchdog ends the suite if any wait outlives it, but a leg that runs ctest
+# with no --timeout gets this bound too (ADR-0089 d4).
+set_tests_properties(adi_clap_tests PROPERTIES TIMEOUT 300)
 
 add_executable(adi_mpe_tests tests/test_mpe.cpp)
 target_link_libraries(adi_mpe_tests PRIVATE adi_core adi_warnings)
@@ -983,7 +987,12 @@ if(ADI_WITH_JUCE)
     # the test is `adi_play --list` finding all three variants in the built
     # bundle. Without this, the macOS half of the render CI job could only
     # ever have covered CLAP.
-    if(WIN32 OR APPLE)
+    #
+    # And Linux, where CI has no JUCE leg: the bundle is
+    # Contents/<machine>-linux/<name>.so, and the entry points are
+    # ModuleEntry/ModuleExit. It is how the VST3 host is run end to end on a
+    # Linux machine rather than only on CI's two.
+    if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(_adi_vst3sdk
             "${ADI_THIRD_PARTY}/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK")
         # The SDK's own interface-id definitions, compiled WITHOUT our warning
@@ -994,6 +1003,9 @@ if(ADI_WITH_JUCE)
             "${_adi_vst3sdk}/public.sdk/source/vst/vstinitiids.cpp")
         target_include_directories(adi_test_vst3_sdk SYSTEM PRIVATE "${_adi_vst3sdk}")
         target_compile_features(adi_test_vst3_sdk PRIVATE cxx_std_20)
+        # Linked into a MODULE, so position-independent: the default already
+        # on Windows and macOS, not on Linux.
+        set_target_properties(adi_test_vst3_sdk PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
         add_library(adi_test_vst3 MODULE
             tests/fixtures/vst3_expression_synth.cpp
@@ -1004,9 +1016,11 @@ if(ADI_WITH_JUCE)
         # CFUUIDCreate on macOS, which is CoreFoundation.
         if(WIN32)
             target_link_libraries(adi_test_vst3 PRIVATE adi_warnings ole32)
-        else()
+        elseif(APPLE)
             target_link_libraries(adi_test_vst3 PRIVATE adi_warnings
                                   "-framework CoreFoundation")
+        else()
+            target_link_libraries(adi_test_vst3 PRIVATE adi_warnings)
         endif()
         set(ADI_FIXTURE_NAME "ADI Expression Test")
         set(_adi_fixture
@@ -1030,6 +1044,16 @@ if(ADI_WITH_JUCE)
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         "$<TARGET_FILE:adi_test_vst3>"
                         "${_adi_fixture}/Contents/x86_64-win/")
+        elseif(NOT APPLE)
+            set_target_properties(adi_test_vst3 PROPERTIES
+                PREFIX "" SUFFIX ".so" OUTPUT_NAME "${ADI_FIXTURE_NAME}"
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
+            add_custom_command(TARGET adi_test_vst3 POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${_adi_fixture}/Contents/${CMAKE_SYSTEM_PROCESSOR}-linux"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "$<TARGET_FILE:adi_test_vst3>"
+                        "${_adi_fixture}/Contents/${CMAKE_SYSTEM_PROCESSOR}-linux/")
         else()
             configure_file(tests/fixtures/Info.plist.in
                            "${CMAKE_CURRENT_BINARY_DIR}/fixtures/Info.plist" @ONLY)
