@@ -59,7 +59,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Move Insert Marker to Beginning",
                                   "Continue Play from Stop Point",
                                   "Insert Audio Track",  "Insert MIDI Track",
-                                  "Delete Track"};
+                                  "Delete Track",        "Rename"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -164,6 +164,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('t', cmd | shift);
         break;
     case DeleteTrack:
+        info.setActive(active_ != nullptr && active_->arrangement.geometry.selectedTrack != 0);
+        break;
+    case RenameTrack: // §41.5
+        info.addDefaultKeypress('r', cmd);
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selectedTrack != 0);
         break;
     default:
@@ -508,7 +512,8 @@ bool AdiRootComponent::insertTrack(bool midi) {
     request.opType = "track.create";
     request.payload = {{"id", id},
                        {"kind", midi ? "midi" : "audio"},
-                       {"name", std::to_string(index + 1) + (midi ? "-MIDI" : "-Audio")},
+                       // '#' shows the track's number and follows it (manual 18.2).
+                       {"name", midi ? "#-MIDI" : "#-Audio"},
                        {"index", index}};
     request.label = midi ? "Insert MIDI Track" : "Insert Audio Track";
     const auto result = submitter_.submit(std::move(request));
@@ -604,6 +609,10 @@ bool AdiRootComponent::command(int id) {
         if (!deleteTrack())
             return false;
         break;
+    case AppCommands::RenameTrack:
+        // The edit itself is its own op when the name is committed.
+        return arrangement.headers.beginRename(arrangement.geometry.selectedTrack) ||
+               fail("Select a track to rename.");
     case AppCommands::ZoomIn:
     case AppCommands::ZoomOut: {
         const auto at = std::find(kZoomSteps.begin(), kZoomSteps.end(), interfaceZoom_);
@@ -648,6 +657,8 @@ class ShellMenu final : public juce::MenuBarModel {
         } else if (index == 1) {
             add(AppCommands::Undo);
             add(AppCommands::Redo);
+            menu.addSeparator();
+            add(AppCommands::RenameTrack);
         } else if (index == 2) {
             add(AppCommands::InsertAudioTrack);
             add(AppCommands::InsertMidiTrack);
