@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
+#include <chrono>
 namespace adi::ui {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_) {}
@@ -39,6 +40,8 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
             return {};
         }
         document->realisedGeneration_ = document->view_.generation();
+        document->parameterOps_.attachSession(document->session_);
+        document->feed_.publish(document->session_);
         error.clear();
         return document;
     } catch (const std::exception &e) {
@@ -67,12 +70,54 @@ bool ProjectDocument::synchronise() {
         return false;
     }
     realisedGeneration_ = view_.generation();
+    for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+        const auto &entry = session_.entryAt(i);
+        if (entry.retired)
+            parameterOps_.detach(entry.deviceId);
+    }
+    parameterOps_.attachSession(session_);
     error_.clear();
     return true;
 }
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
+    std::vector<OpRequest> requests;
+    const auto captureNow = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now().time_since_epoch())
+                                .count();
+    parameterOps_.drain(captureNow, requests);
+    if (!requests.empty() && parameterOps_.writeBlobs(*store_, error_)) {
+        const auto result = ops_.submit(requests);
+        if (!result.ok)
+            error_ = result.error;
+        else
+            synchronise();
+    }
+    feed_.publish(session_);
+}
+bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
+    OpRequest r;
+    r.opType = op;
+    r.payload = std::move(payload);
+    const auto result = ops_.submit(r);
+    error_ = result.error;
+    if (!result.ok || !synchronise())
+        return false;
+    feed_.publish(session_);
+    return true;
+}
+bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &,
+                                       engine::ParamEventKind, double) {
+    const auto *entry = session_.entryFor(id);
+    if (!entry || entry->retired)
+        return false; // re-read on landing
+    // A drag in the strip is an edit and goes through the capture, so a first touch
+    // emits its opener and undo lands on a value (ADR-0124, ADR-0181 d5). ParamOps
+    // has a producer per plug-in and none yet for the UI: that is the engine lane's
+    // (collab/window.md, N7). Until then the strip shows values and edits nothing.
+    error_ = "Editing a parameter from the strip waits for the engine's UI producer.";
+    return false;
 }
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
     session_.prepare(rate, frames);
