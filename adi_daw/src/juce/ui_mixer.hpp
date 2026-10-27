@@ -56,7 +56,6 @@ class MixerPanel final : public juce::Component {
     // Auto Gain Stage, the one offline command (ADR-0195 d4, ADR-0203 d14): LUFS or RMS.
     std::function<bool(bool lufs)> autoGain;
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }
-    static constexpr int kHeaderHeight = 28; // level with the arrangement's ruler
 
   private:
     void place();

@@ -90,7 +90,8 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(0, 54, root.getWidth(), 30);
         // The ruler's numbers and the headers' track names are typography as well.
         const auto area = root.arrangement.getBounds();
-        g.fillRect(area.getX(), area.getY(), area.getWidth(), ArrangementView::kRulerHeight);
+        g.fillRect(area.getX(), area.getY() + ArrangementView::kOverviewHeight, area.getWidth(),
+                   ArrangementView::kRulerHeight);
         const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
         int laneY = headers.getY() - root.arrangement.geometry.scrollY;
         for (const auto &trackNode : root.reader().tracks()) {
@@ -630,6 +631,45 @@ int main(int argc, char **argv) {
             mouse(origin.translated(48, 0), 0);
             check(arrangement.geometry.selectionEnd == arrangement.geometry.tick(58),
                   "peer drag capture updates time selection");
+            // The Overview (Live 12 manual 6.1, ADR-0129's rows).
+            auto &overview = arrangement.overview;
+            check(overview.getY() == 0 &&
+                      arrangement.ruler.getY() == ArrangementView::kOverviewHeight &&
+                      arrangement.canvas.getY() == ArrangementView::kTopHeight,
+                  "the Overview sits above the beat-time ruler");
+            arrangement.geometry.left = 1;
+            arrangement.geometry.scale = 48;
+            arrangement.changed();
+            const auto outline = overview.outline();
+            const auto overviewPoint =
+                peerRoot
+                    .getLocalPoint(&overview,
+                                   juce::Point<int>{static_cast<int>(outline.getCentreX()), 8})
+                    .toFloat();
+            const double leftBefore = arrangement.geometry.left;
+            const double perPixel = static_cast<double>(overview.span()) / textproj::kPPQ /
+                                    overview.getWidth();
+            mouse(overviewPoint, 0);
+            mouse(overviewPoint, juce::ModifierKeys::leftButtonModifier);
+            mouse(overviewPoint.translated(10, 0), juce::ModifierKeys::leftButtonModifier);
+            mouse(overviewPoint.translated(10, 0), 0);
+            check(std::abs(arrangement.geometry.left - leftBefore - 10 * perPixel) < 1e-6,
+                  "dragging the Overview sideways scrolls by the Overview's own scale");
+            const double scaleBefore = arrangement.geometry.scale;
+            mouse(overviewPoint, juce::ModifierKeys::leftButtonModifier);
+            mouse(overviewPoint.translated(0, -20), juce::ModifierKeys::leftButtonModifier);
+            mouse(overviewPoint.translated(0, -20), 0);
+            check(arrangement.geometry.scale > scaleBefore, "dragging it up zooms in");
+            when += 1000;
+            for (int click = 0; click < 2; ++click) {
+                mouse(overviewPoint, juce::ModifierKeys::leftButtonModifier);
+                mouse(overviewPoint, 0);
+            }
+            check(arrangement.geometry.left == 0 &&
+                      std::abs(arrangement.geometry.x(arrangement.geometry.end(
+                                   integrated.reader())) -
+                               arrangement.canvas.getWidth()) < 1,
+                  "a double-click zooms out to the whole arrangement");
             peerRoot.removeChildComponent(&integrated);
             peerRoot.removeFromDesktop();
         }
@@ -693,7 +733,7 @@ int main(int argc, char **argv) {
               "the strip's floor comes from the desktop defaults");
         integrated.resizeDevices(10000);
         check(integrated.arrangement.getHeight() >=
-                  ArrangementView::kRulerHeight + integrated.state().laneHeight,
+                  ArrangementView::kTopHeight + integrated.state().laneHeight,
               "the strip's ceiling leaves the ruler and a row");
         integrated.resizeDevices(240);
         check(integrated.devices.getHeight() == 239 &&
