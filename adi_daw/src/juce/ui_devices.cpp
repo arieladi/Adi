@@ -264,10 +264,10 @@ void DevicePanelView::configure() {
                             const auto index = static_cast<std::size_t>(chosen - 4);
                             if (index >= candidates.size())
                                 return;
-                            const auto &id = candidates[index];
-                            auto it = std::find(ids.begin(), ids.end(), id);
+                            const auto &chosenId = candidates[index];
+                            auto it = std::find(ids.begin(), ids.end(), chosenId);
                             if (it == ids.end())
-                                ids.push_back(id);
+                                ids.push_back(chosenId);
                             else
                                 ids.erase(it);
                         }
