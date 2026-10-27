@@ -12,6 +12,51 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-27, morning — LANES §3 item 2, sends and returns: the plan's first three PRs, and what they need from win
+
+The plan is in six steps after these: Pre sends and send pan, solo across sends, Live's return loop, sidechain keys reaching devices, Live's tap points on routes, the return switches and Sends Only, Cue. Each is its own PR.
+
+**[arieladi/Adi#241](https://github.com/arieladi/Adi/pull/241) (`engine/chain-history`): an edge inside a track keeps its ring history across a rebuild (ADR-0092).**
+- Before, only the plan's edges between tracks were carried. Every edit (a fader move included) dropped the samples of any delay played inside a track:
+  - a summed child's track delay, on the edge from its strip to its channel half;
+  - a clip track compensated against a later input, on its clips' edge into its junction.
+- Edges are keyed by where they leave. A clip reader, new at every rebuild, names itself. A plan edge also carries what its wire is: a console half's output, so toggling summing never plays driven history as the plain track's. That was a +12 dB burst, pre-existing.
+- Two pushes. The second fixed four review findings: real clips were never matched, a replaced channel half dropped the edge, the summing toggle burst, and the carry count.
+- `test_all.sh` 8225.
+
+**[arieladi/Adi#242](https://github.com/arieladi/Adi/pull/242) (`engine/send-groundwork`), stacked on #241: a send can be realised.**
+- `EventFlow::Stop`: a send carries no notes, holds none awake and acknowledges no note-off.
+- `PlannedEdge` gains a routing id and a `Tap`. `realize` wires tap → `SendNode` → the destination's junction, and both edges keep their history.
+- A caller's node is placed once.
+- `SendNode` is a strip's gain stage: bit for bit at 0 dB at either width.
+- `test_all.sh` 8269.
+
+**[arieladi/Adi#243](https://github.com/arieladi/Adi/pull/243) (`engine/sends-play`), stacked on #242: sends and returns play.** ADR-0203 d3 reverses ADR-0072.
+- Post sends into returns or any track, planned after the main edges.
+- A send switched off is planned anyway, at gate 0, so Enable Send never retimes.
+- Refused per row, named: a loop (the later row loses), the master, a VCA. Named as not yet: Pre sends, a return's own sends, Live's return loop.
+- Live's Solo in Place keeps a soloed track's returns audible.
+- `test_all.sh` 8301.
+
+**Not yet, and why it waits:** a soloed RETURN does not yet hear its senders. Solo silences them in their strips, before the send's tap. That needs the plan's solo gate after the tap, step 6.
+
+**Questions for win** (the format and the ops). The engine plays rows as they are, so nothing here blocks the next engine PRs:
+1. **A new send's level.** Live starts a send fully down (ADR-0203 d3, measured by d26). `connect` writes `gain_db` 0, so a send made by the ops is born at 0 dB, and -inf is refused (`ops.cpp`).
+   - Should SPEC 6.7 make -150 dB the floor?
+   - Should `connect` take level, pan, pre and enabled?
+   - Should a disconnect's undo restore the whole row?
+   - Should `setEnabled` be a GraphRebuild op?
+2. **The send's pan.** Its range, its law, and whether it sits on top of the source's pan. Today a Post send taps after the strip's pan, and its own pan is Live's law.
+3. **Pre/Post is one switch per return in Live**, and the format has `pre_fader` per row. Does it get a per-return home, or are the rows written as a batch? Which wins on a row that disagrees?
+4. **Enable Send / Enable All Sends** for a return's own sends: where does the switch live in the format?
+5. **A send into a summing group**: does it get a channel half of its own? Today it enters the sum bare.
+6. **Sends Only** (ADR-0203 d3, the fourth state of ADR-0065's rule): a disabled user main row, or a field?
+7. **Solo in Place**: a project or an app setting? It is always on today, as Live's default.
+8. **The sidechain endpoints for devices** (`src_kind`/`dst_kind` 'device'). Sidechain keys reaching a compressor need them.
+9. **An ADR to amend** ADR-0092 d1 and ADR-0163 d4/d6 for sends and their solo, and to correct SPEC 6.9 (line 622) and FEATURES.md row 57, which say input gain is stored and not applied; the session plays it.
+
+---
+
 ## 2026-10-27, early — LANES §3 item 1g, the Pd tier at `PD_FLOATSIZE=64` and the native devices in double: its files are the devices lane's since ADR-0208, so it is handed over with what the survey found
 
 **Not started as a PR; blocked by ownership, not by work.** ADR-0208 d3 (win's #238) gives the devices lane `pd/**`, `src/adi/dsp/**`, `src/adi/pd_builtins/**` and `src/juce/pd_*`, and says a need across a line is logged, not edited. Building the Pd tier in double changes all of them together: flipping `PD_FLOATSIZE` without the externals and the cores breaks every Pd device. The engine side of it is one CMake line, and that line must land with the rest. So the item goes to win to place, and the engine lane takes item 2.
