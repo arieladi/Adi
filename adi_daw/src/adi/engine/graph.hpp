@@ -366,6 +366,11 @@ public:
         inWrite_ = o.inWrite_;
         targetDelay_ = o.targetDelay_;
         primeRemaining_ = o.primeRemaining_;
+        limit_ = o.limit_;
+        filled_ = o.filled_;
+        inFilled_ = o.inFilled_;
+        quiet_ = o.quiet_;
+        ran_ = o.ran_;
         target_.store(o.target_.load(std::memory_order_relaxed),
                       std::memory_order_relaxed);
         gliding_.store(o.gliding_.load(std::memory_order_relaxed),
@@ -398,6 +403,9 @@ public:
     void process(std::int32_t channel, const double* src, double* dst,
                  std::int32_t frames) noexcept;
 
+    /// The delay in effect. The audio thread moves it at the end of a glide
+    /// and at a grow's swap, so another thread reads it only while the line
+    /// is not being processed; `capacity` too, or once `growing()` is false.
     [[nodiscard]] std::int32_t delay() const noexcept { return delay_; }
     [[nodiscard]] std::int32_t capacity() const noexcept { return capacity_; }
     /// The history is held in double.
@@ -411,12 +419,18 @@ public:
     /// prohibition (ADR-0010). A false here is the signal to escalate.
     ///
     /// Safe to call from the message thread while the audio thread processes:
-    /// it writes one atomic and nothing else.
+    /// it writes two atomics and reads nothing the audio thread writes. While
+    /// a bigger ring is being handed over, "fits" means fits THAT ring, and
+    /// the move waits for the swap: the old ring is on its way out. Either
+    /// way a move waits, held, until the ring holds that much real history:
+    /// a ring fresh from a swap holds what was written since its offer, and
+    /// a tap past that reads zeros, which is a dropout (ADR-0085).
     bool beginGlide(std::int32_t d) noexcept;
 
     [[nodiscard]] bool gliding() const noexcept {
         return gliding_.load(std::memory_order_relaxed);
     }
+    /// The delay last asked for: by `setDelay`, a glide, or an offered ring.
     [[nodiscard]] std::int32_t target() const noexcept {
         return target_.load(std::memory_order_relaxed);
     }
@@ -437,7 +451,9 @@ public:
     /// is silence, which is a dropout.
     ///
     /// Returns false when a previous offer is still in flight; the caller
-    /// retries after `collectRing`. A ring of the other width is refused.
+    /// retries after `collectRing`. A ring of the other width is refused, and
+    /// so is any ring for a line that has none (no delay and no headroom):
+    /// nothing would run its grow, and only a rebuild gives it a ring.
     bool offerRing(std::vector<float> ring, std::int32_t capacity,
                    std::int32_t targetDelay);
     bool offerRing(std::vector<double> ring, std::int32_t capacity,
@@ -454,11 +470,16 @@ public:
     /// ring was freed.
     bool reclaim();
 
+    /// MESSAGE THREAD: the largest delay a glide may be asked for now (the
+    /// ring's, or an offered ring's).
+    [[nodiscard]] std::int32_t limit() const noexcept { return limit_; }
+
     /// An offer is in flight: priming, fading, or waiting to be collected.
     [[nodiscard]] bool growing() const noexcept {
         return grow_.load(std::memory_order_acquire) != Grow::Idle;
     }
     /// Samples of history the new ring still needs. Zero once it is ready.
+    /// The audio thread's count, read like `delay`.
     [[nodiscard]] std::int32_t primeRemaining() const noexcept {
         return primeRemaining_;
     }
@@ -493,11 +514,58 @@ public:
 
     // --- per-edge state, shared across channels ----------------------------
 
-    /// The cursors and counters an edge shares across its channels. A caller
+    /// One edge's view of the line, taken ONCE before its first channel and
+    /// handed to every channel and to `endEdge`. AUDIO THREAD.
+    ///
+    /// It is what makes a live graph's grow safe. The message thread writes
+    /// the incoming ring's cursor and prime count when it offers a ring
+    /// (Idle) and clears them when it collects one (Spent); the audio thread
+    /// owns them only from Priming to the swap. So the snapshot carries them
+    /// only in those two states, and only then are they written back: a
+    /// round trip in any other state is a write racing the message thread's,
+    /// and one that lands after an offer erases the prime count, so the edge
+    /// swaps to its new ring at once and plays its zeros.
+    ///
+    /// The state is loaded once for the same reason the cursors are shared:
+    /// a grow published between two channels would otherwise have the left
+    /// channel write one ring and the right both.
+private:
+    enum class Grow : std::uint8_t {
+        Idle,      ///< one ring
+        Priming,   ///< two rings; writing both, reading the old
+        Fading,    ///< two rings; crossfading old tap to new
+        Spent,     ///< swapped; the old buffer is parked for collection
+    };
+
+public:
+    class Edge {
+        friend class DelayLine;
+        Grow grow_ = Grow::Idle;
+        bool glide_ = false;
+        std::int32_t target_ = 0;
+        std::int32_t write_ = 0;
+        std::int32_t inWrite_ = 0;
+        std::int32_t primeRemaining_ = 0;
+    };
+    [[nodiscard]] Edge beginEdge() const noexcept;
+    /// `process` for one channel of the edge `e` began.
+    void process(const Edge& e, std::int32_t channel, const float* src, float* dst,
+                 std::int32_t frames) noexcept;
+    void process(const Edge& e, std::int32_t channel, const double* src, double* dst,
+                 std::int32_t frames) noexcept;
+    /// ONCE per edge, after its last channel: ends a glide and advances the
+    /// grow state machine, from the state the edge was processed in.
+    /// `silentSource`: what the edge wrote was the source's silence (its
+    /// block was all zero), which `due` and `forgetAllButSilence` count on.
+    void endEdge(const Edge& e, bool silentSource = false) noexcept;
+
+    /// The cursors and counters an edge shares across its channels, for a
+    /// line one thread drives alone (a node's own delay, a test). A caller
     /// processing several channels must restore these between them and call
     /// `endEdge` once after the last: getting it wrong does not pull stereo
     /// apart -- every channel drifts identically -- it makes the compensation
-    /// the wrong LENGTH from the next block on. See `Graph::accumulate`.
+    /// the wrong LENGTH from the next block on. A graph's edges, which the
+    /// message thread grows while they play, use `Edge` instead.
     struct Cursors {
         std::int32_t write = 0;
         std::int32_t inWrite = 0;
@@ -513,8 +581,8 @@ public:
     }
 
     /// Called ONCE per edge, after every channel has been processed. Ends a
-    /// glide and advances the grow state machine.
-    void endEdge() noexcept;
+    /// glide and advances the grow state machine. With `Cursors`: one thread.
+    void endEdge() noexcept { endEdge(beginEdge()); }
 
     /// ADR-0092: take the history `old` has been accumulating, so this line's
     /// tap reads what the old one would have read. AUDIO THREAD, at a graph
@@ -524,17 +592,52 @@ public:
     /// old capacity)` samples per channel. A ring carries thousands of samples
     /// of headroom (ADR-0088), and copying all of it would make a rebuild cost
     /// in proportion to headroom rather than to compensation. What lies beyond
-    /// the old ring's capacity was never stored, and is not invented.
+    /// the old ring's capacity was never stored, and is not invented. An old
+    /// line in the middle of a grow is copied from whichever of its two rings
+    /// holds more of the edge's past. The line then counts what it was handed
+    /// as its history and nothing more, so a glide past it waits for the rest.
+    /// Only what the old line really holds is copied: a ring its edge left
+    /// unwritten (`forget`) hands on silence, not what it last had. What it
+    /// hands on that is not silence is audio still due out, which keeps this
+    /// line's consumer awake until it has played it (`due`).
     void adoptHistory(const DelayLine& old) noexcept;
 
-private:
-    enum class Grow : std::uint8_t {
-        Idle,      ///< one ring
-        Priming,   ///< two rings; writing both, reading the old
-        Fading,    ///< two rings; crossfading old tap to new
-        Spent,     ///< swapped; the old buffer is parked for collection
-    };
+    /// AUDIO THREAD: this edge's segment went by without its ring being
+    /// written, and the source may have been playing -- `Graph::accumulate`'s
+    /// zero-delay fast path, and a sleeping source's edge at zero -- so the
+    /// ring no longer holds the edge's history. Two stores, so zero
+    /// compensation stays free. What it buys: a glide away from zero waits,
+    /// held, until the ring holds what its tap reads, instead of reading what
+    /// the ring held the last time the edge had a delay (ADR-0079 d2: both
+    /// taps read the SAME history). And a handover carries nothing that is
+    /// not this edge's.
+    void forget() noexcept { filled_ = 0; quiet_ = 0; }
 
+    /// AUDIO THREAD: the consumer falls asleep, so the ring goes unwritten
+    /// through a silence. Every input of a sleeping node is silent, so the
+    /// silence the ring last took in (`quiet_`) is still the edge's newest
+    /// past, and only what lies behind it stops being so. A glide that reads
+    /// no further than that silence goes on at the wake as if the ring had
+    /// been written all along, which is what the drain bought.
+    void forgetAllButSilence() noexcept {
+        if (filled_ > quiet_) filled_ = quiet_;
+    }
+
+    /// AUDIO THREAD: whether this line's consumer must run although every
+    /// input is silent. Either audio is still due out -- the newest real
+    /// history its taps reach is not all silence -- or a glide is pending.
+    /// Run now, in the silence, a glide crossfades silence into silence and
+    /// waits for any history it needs where nobody hears it, so the wake
+    /// plays at the new alignment from its first sample. Left for the wake,
+    /// it fades the onset in, or plays it at the old alignment while it
+    /// waits.
+    [[nodiscard]] bool due() const noexcept {
+        if (gliding_.load(std::memory_order_acquire)) return true;
+        const std::int32_t r = reach();
+        return quiet_ < (filled_ < r ? filled_ : r);
+    }
+
+private:
     template <typename T>
     [[nodiscard]] static T tapAt(const T* hist, std::int32_t w,
                                  std::int32_t ring, std::int32_t d) noexcept {
@@ -544,11 +647,14 @@ private:
     }
     // One body for both widths, over the storage of that width.
     template <typename T>
-    void run(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t channel,
-             const T* src, T* dst, std::int32_t frames) noexcept;
+    void run(const Edge& e, std::vector<T>& buf, std::vector<T>& incoming,
+             std::int32_t channel, const T* src, T* dst, std::int32_t frames) noexcept;
     template <typename T>
     void processGrowing(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t channel,
                         const T* src, T* dst, std::int32_t frames, Grow state) noexcept;
+    /// AUDIO THREAD, once `delay_` holds what a glide or a swap reached: the
+    /// glide flag comes down unless a newer delay was asked for meanwhile.
+    void settle() noexcept;
     template <typename T>
     bool offer(std::vector<T>& incoming, std::vector<T> ring, std::int32_t capacity,
                std::int32_t targetDelay);
@@ -577,6 +683,24 @@ private:
     std::int32_t inWrite_ = 0;
     std::int32_t targetDelay_ = 0;
     std::int32_t primeRemaining_ = 0;
+    // MESSAGE THREAD ONLY: the largest delay a glide may ask for, which is
+    // the ring's capacity, or the offered ring's from the offer on. The audio
+    // thread swaps `capacity_` itself, so the message thread never reads it
+    // while a grow is in flight.
+    std::int32_t limit_ = 0;
+    // AUDIO THREAD: how much of `buf_` behind the cursor is real history, up
+    // to the capacity. All of it at `prepare` (the silence before the stream
+    // is real); after a swap, what the new ring was written since its offer.
+    // A glide waits until the ring holds its target. `inFilled_` is the same
+    // count for the incoming ring: zeroed by the offer, the audio thread's
+    // from Priming to the swap. `ran_` is the frames the edge in hand ran.
+    std::int32_t filled_ = 0;
+    std::int32_t inFilled_ = 0;
+    // AUDIO THREAD: how much of the newest history is known silence, at most
+    // `filled_`: what a silent source wrote since the last block that was
+    // not, or all of the ring at `prepare`.
+    std::int32_t quiet_ = 0;
+    std::int32_t ran_ = 0;
 
     // Written by the message thread, read by the audio thread. Two plain
     // atomics rather than a published schedule: while the new delay FITS, a
@@ -734,7 +858,16 @@ public:
     /// not per graph: growing one ring leaves every other edge's history
     /// untouched, where swapping a whole schedule would reset all of them and
     /// glitch the entire project to fix one plugin.
-    std::size_t escalateLatency();
+    /// What `escalateLatency` could not settle, for its caller to act on.
+    struct Unresolved {
+        /// Edges that need a delay and have no ring to grow (no delay and no
+        /// headroom): only a rebuild gives them one.
+        std::size_t ringless = 0;
+        /// Edges whose grow is still in flight for less than they now need:
+        /// they can be grown again once the old ring is collected.
+        std::size_t inFlight = 0;
+    };
+    std::size_t escalateLatency(Unresolved* left = nullptr);
 
     /// Message thread, on a timer. Frees the rings the audio thread has
     /// finished with. Returns how many were reclaimed.
@@ -854,7 +987,15 @@ private:
         /// at 4096 frames, twelve times a 41-node project that was all awake
         /// (linux's measurement, 2026-09-23).
         bool zeroed = false;
+        /// The retap (`glides_`) as of which this sleeping node's lines were
+        /// all found not `due`. While that holds they stay so: nothing writes
+        /// a sleeping node's lines, so no audio comes due in them, and only a
+        /// retap starts a glide. So a sleeping node reads one shared counter
+        /// per block, not every line it has. `kLinesUnchecked` whenever the
+        /// node runs, and from `prepare` (a handover may hand it audio due).
+        std::uint64_t dozeGlides = kLinesUnchecked;
     };
+    static constexpr std::uint64_t kLinesUnchecked = ~std::uint64_t{0};
 
     bool topoSort();
 
@@ -868,8 +1009,10 @@ private:
              std::int32_t begin, std::int32_t frames) noexcept;
 
     /// An input that can add nothing to this segment: a sleeping source on an
-    /// edge with nothing in flight. The one test both `mix` and `accumulate`
-    /// use, so the count of live inputs and the reads skipped cannot disagree.
+    /// edge with nothing in flight. Taken ONCE per input per mix and handed to
+    /// `accumulate`, so the count of live inputs, the choice of the last and
+    /// the reads skipped cannot disagree: the message thread moves `busy()`
+    /// (an offer, a collection) between any two reads of it.
     [[nodiscard]] static bool idle(const Slot& src, const DelayLine& delay) noexcept;
 
     /// Accumulate one input's segment into a mix buffer. `first` copies, the
@@ -880,7 +1023,8 @@ private:
     /// otherwise; at 64, `double` always.
     template <typename Src, typename Acc>
     void accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
-                    std::int32_t begin, std::int32_t frames, bool first) noexcept;
+                    std::int32_t begin, std::int32_t frames, bool first,
+                    bool asleep) noexcept;
 
     /// `mix` for a graph at 64: every source, delay line and sum is double,
     /// and the sum is left in `wide` for the node (or narrowed by the caller
@@ -925,6 +1069,12 @@ private:
     /// (prepare, retap), for the audio thread to read when it forwards events
     /// (ADR-0123). Sized at prepare, never resized on the audio thread.
     std::vector<std::atomic<std::int32_t>> slotLatency_;
+    /// Each slot's arrival, likewise: `retapLatency` recomputes it while the
+    /// audio thread stamps an input tap with it.
+    std::vector<std::atomic<std::int32_t>> slotArrival_;
+    /// `idle` per input of the mix in hand, sized at prepare to the most
+    /// inputs any slot has.
+    std::vector<std::uint8_t> asleep_;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
 
@@ -963,6 +1113,10 @@ private:
     // is not the real risk on the platforms we target; the data race is, and
     // an int32 costs nothing to do properly.
     std::atomic<std::int32_t> graphLatency_{0};
+    // How many retaps have started glides (`retapLatency`), released after
+    // the glides it started: a sleeping node that sees it unmoved since its
+    // lines were checked need not check them again (`Slot::dozeGlides`).
+    std::atomic<std::uint64_t> glides_{0};
     std::int32_t latencyHeadroom_ = 8192;
     bool ok_ = false;
     bool prepared_ = false;

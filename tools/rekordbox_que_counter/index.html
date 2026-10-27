@@ -52,6 +52,7 @@ try {
       <button id="btnMore" class="btn icon" aria-label="More actions" aria-haspopup="menu">⋯</button>
       <div id="moreMenu" class="menu" hidden>
         <button data-act="refresh">↻ Refresh from GitHub</button>
+        <button data-act="history">🕘 History…</button>
         <button data-act="theme">🎨 Theme &amp; size…</button>
         <button data-act="users" id="menuUsers" hidden>👥 Users…</button>
       </div>
@@ -63,12 +64,12 @@ try {
   <div class="chip"><span>Tracks</span><b id="sumTracks">0</b></div>
   <div class="chip blue"><span>Set time</span><b id="sumClock">0:00:00</b></div>
   <div class="chip range" id="sumRange" hidden>
-    <button type="button" class="rangeGo" id="btnRangeGo" title="How long it plays from the start of the S track to the end marker — show the marker">
+    <button type="button" class="rangeGo" id="btnRangeGo" title="How long it plays from the Start marker to the End marker — show the End marker">
       <span>S → E</span><b id="rangeTime">0:00:00</b><i id="rangeInfo"></i>
     </button>
-    <button type="button" class="rb" id="btnClearRange" title="Clear the start and the end" aria-label="Clear the start and the end">✕</button>
+    <button type="button" class="rb" id="btnClearRange" title="Start and End back to the whole list" aria-label="Start and End back to the whole list">✕</button>
   </div>
-  <div class="chip status" id="sumStatus"><b>—</b></div>
+  <button type="button" class="chip status" id="sumStatus" title="History — every saved version of this list"><b>—</b></button>
   <div class="histbtns">
     <button id="btnUndo" class="btn icon" title="Undo (⌘/Ctrl+Z)" aria-label="Undo" disabled>↶</button>
     <button id="btnRedo" class="btn icon" title="Redo (⌘/Ctrl+Shift+Z)" aria-label="Redo" disabled>↷</button>
@@ -76,22 +77,68 @@ try {
 </section>
 
 <main>
+  <!-- the history view (app.js, "history view"): this banner over a read-only preview of a version -->
+  <section class="hvbar" id="hvBar" hidden aria-labelledby="hvTitle">
+    <h2 id="hvTitle" tabindex="-1"><span class="hvK">History</span> · <span id="hvName"></span></h2>
+    <p class="hvVer" id="hvVer"></p>
+    <button type="button" id="hvRestore" class="btn primary">Restore as new list</button>
+    <button type="button" id="hvClose" class="btn icon" title="Close the history (Esc)" aria-label="Close the history">✕</button>
+    <p class="hvSum" id="hvSum" aria-live="polite"></p>
+  </section>
   <div class="theadwrap" id="theadWrap">
     <div class="thead" aria-hidden="true">
-      <b>#</b><b>Track</b><b>BPM</b><b>Key</b><b>Cue in</b><b>Cue out</b><b>Play Time</b><b>Set time</b><b>Start</b><b>Link</b><b></b>
+      <b>#</b><b>Track</b><b>BPM</b><b>Key</b><b>Cue in</b><b>Cue out</b><b>Play Time</b><b>Set time</b><b>Link</b><b></b>
     </div>
   </div>
   <div class="rowswrap" id="rowsWrap"><div id="rows"></div></div>
-  <!-- the end marker: laid over the gap under the end track (app.js, "end marker") -->
+  <div class="rowswrap hvwrap" id="hvWrap" hidden><div id="hvRows"></div></div>
+  <!-- the start and end markers: laid over the gaps over the start track and under the end track (app.js, "start + end markers") -->
+  <div class="endmark smark" id="startMark" hidden>
+    <div class="emPill smPill" id="smPill" tabindex="0" role="slider" aria-orientation="vertical" aria-label="Start of the set: drag it, or use the arrow keys"
+      aria-valuemin="1" aria-valuemax="1" aria-valuenow="1" title="Drag to the track the set starts with (↑ / ↓ when focused)">
+      <span class="emGrip" aria-hidden="true">⇕</span><b class="smK">Start</b><i class="smDot" aria-hidden="true">·</i><b class="smN" id="smNum">#1</b><span class="smIn" id="smIntro" hidden></span>
+    </div>
+  </div>
   <div class="endmark" id="endMark" hidden>
     <div class="emPill" id="emPill" tabindex="0" role="slider" aria-orientation="vertical" aria-label="End of the set: drag it, or use the arrow keys"
       aria-valuemin="1" aria-valuemax="1" aria-valuenow="1" title="Drag to the track the set ends with (↑ / ↓ when focused)">
-      <span class="emGrip" aria-hidden="true">⇕</span><b id="emTime">0:00:00</b><span id="emInfo"></span>
+      <span class="emGrip" aria-hidden="true">⇕</span><b class="emT" id="emTime">0:00:00</b><span class="emI" id="emInfo"></span>
     </div>
   </div>
   <div class="emsnap" id="emSnap" hidden></div>
   <button id="btnAdd" class="addtrack">＋ Add track</button>
 </main>
+
+<!-- the history view's timeline: a panel on the right (desktop), a sheet from the bottom (phones) -->
+<aside class="hpanel" id="histPanel" hidden aria-labelledby="hpTitle">
+  <div class="hpHead">
+    <button type="button" class="hpFold" id="hpFold" aria-expanded="true" aria-controls="hpScroll" title="Fold the versions down (tap or swipe)">
+      <span class="vh">Show or hide the versions</span></button>
+    <h2 id="hpTitle">Versions <span id="hpCount"></span></h2>
+    <p class="hpHint">drag <b>Start</b> and <b>End</b> to compare</p>
+    <p class="hpMsg" id="hpMsg" hidden></p>
+  </div>
+  <div class="hpScroll" id="hpScroll">
+    <button type="button" class="hpOlder" id="hpOlder" hidden>Load older versions</button>
+    <div class="hpTrack" id="hpTrack">
+      <div id="hpList" role="list" aria-label="Versions, oldest first"></div>
+      <div class="endmark hmark smark" id="hsMark" hidden>
+        <div class="emPill smPill" id="hsPill" tabindex="0" role="slider" aria-orientation="vertical" aria-label="The version compared with: drag it, or use the arrow keys"
+          aria-valuemin="1" aria-valuemax="1" aria-valuenow="1" title="Drag to the version to compare from (↑ / ↓ when focused)">
+          <span class="emGrip" aria-hidden="true">⇕</span><b class="smK">Start</b><span class="emI" id="hsWhen"></span><i class="smTag" id="hsTag">auto</i>
+        </div>
+        <button type="button" class="hsAuto" id="hsAuto" hidden title="Back to auto: the version just before the End" aria-label="Start back to auto">↺ auto</button>
+      </div>
+      <div class="endmark hmark" id="hmMark" hidden>
+        <div class="emPill" id="hmPill" tabindex="0" role="slider" aria-orientation="vertical" aria-label="The version shown: drag it, or use the arrow keys"
+          aria-valuemin="1" aria-valuemax="1" aria-valuenow="1" title="Drag to the version to show (↑ / ↓ when focused)">
+          <span class="emGrip" aria-hidden="true">⇕</span><b class="emT" id="hmTime"></b><span class="emI" id="hmInfo"></span>
+        </div>
+      </div>
+      <div class="emsnap" id="hmSnap" hidden></div>
+    </div>
+  </div>
+</aside>
 
 <footer class="help">
   enter a track's first cue in &amp; first cue out to calculate how long the play time &amp; overall set will be, made by <a href="https://adiariel.com" target="_blank" rel="noopener">adiariel</a>
@@ -122,7 +169,6 @@ try {
       <div><span>Set time</span><b id="shSet">—</b></div>
     </div>
     <div class="shTools">
-      <button type="button" class="btn shMk" data-k="markStart" title="Mark as the track the set starts with — then drag the end marker to where it ends" aria-pressed="false"><i>S</i>Start</button>
       <button type="button" id="shOpen" class="btn" title="Open track link (YouTube search by default)">▶ Open</button>
       <button type="button" id="shLink" class="btn" title="Edit track link">✎ Link</button>
     </div>
@@ -158,6 +204,7 @@ try {
     <label>Password
       <input type="password" id="luPass" autocomplete="current-password">
     </label>
+    <p class="note">You'll stay logged in on this device until you log out.</p>
     <p class="err" id="luErr" hidden></p>
     <div class="dlgBtns">
       <button value="ok" class="btn primary">Log in</button>
@@ -338,15 +385,27 @@ try {
       <b>Move a track:</b> grab its <b>⠿</b> handle and drag it to a new place, then confirm with OK.
       <b>↶ / ↷</b> undo and redo any change — each list remembers its last 2000 changes on this device,
       even after a reload, so you can step all the way back to the first one and forward again.<br><br>
-      <b>Start / End:</b> press <b>S</b> on the track you plan to start with (on a phone: <b>Start</b> in the track's sheet).
-      An <b>end marker</b> appears after the last track — a line with the time on it. Drag it up or down to the track you
-      plan to end with (on a touch screen: by its <b>⇕</b>, or press and hold it first — a quick swipe just scrolls):
-      the tracks in between light up and it shows how long the set plays from the start of the S track
-      to the end of that one, and #from → #to. The <b>S → E</b> box shows the same time; tap it to jump to the marker,
-      or its <b>✕</b> to clear the start and the end. With the marker selected, <b>↑ / ↓</b> move the end one track,
-      Home / End jump to the start track / the last one.<br><br>
+      <b>Start / End:</b> two markers — lines across the list — bracket the part of the set you plan to play:
+      <b>Start</b> before the first track and <b>End</b> after the last one, with the time on it. Drag either up or down
+      (on a touch screen: by its <b>⇕</b>, or press and hold it first — a quick swipe just scrolls) to the track you plan
+      to start or end with: the tracks in between light up, and the End shows how long the set plays from the start of
+      the Start track to the end of the End track, and #from → #to. The Start track plays from 0:00, so its intro before
+      the cue in is added and shown on the Start (e.g. <b>+0:46</b>); a track cued at 0 adds nothing. The Start never goes below the End.
+      The <b>S → E</b> box shows the same time; tap it to jump to the End, or its <b>✕</b> to put both back round the
+      whole list. With a marker selected, <b>↑ / ↓</b> move it one track, Home / End jump as far as it can go.<br><br>
+      <b>History:</b> ⋯ → <b>🕘 History…</b> (or a click on the save status) shows every version of the list saved to
+      GitHub — by any user, on any device — oldest at the top, newest at the bottom, each with who saved it, when, and
+      what changed. It works like Start / End: the <b>End</b> marker picks the version shown (drag it, tap a version, or
+      ↑ / ↓), and the <b>Start</b> marker the version it is compared with — on its own the one just before (<i>auto</i>,
+      it follows the End); drag it to compare from further back, and its <b>↺ auto</b> puts it back. The list then shows that version,
+      read-only, with the changes marked: a changed value is highlighted with the old one struck through, new tracks
+      say NEW, removed ones stay as struck-through ghosts, moved ones say where they came from; <b>↓ Next change</b>
+      jumps from one to the next. <b>Restore as new list</b> makes a copy of that version as a new list — the list
+      itself never changes. Close with ✕, Esc or Back.<br><br>
       <b>Users:</b> Public is open to everyone. Log in (👤 button) with a username and password for your own lists —
-      accounts are made by Adi. Up to 100 lists per user, 500 tracks per list.<br><br>
+      accounts are made by Adi. You log in once per device: it stays logged in — reloads, new tabs, a restart — until
+      you log out (👤 → Log out), and logging in or out in one tab does it in the others too.
+      Up to 100 lists per user, 500 tracks per list.<br><br>
       Lists autosave — there is no Save button. Every change is kept on this device at once and saved to
       GitHub half a minute after you stop typing (no setup needed); the status next to the set time shows
       <i>Saving…</i>, <i>All changes saved</i>, or — offline — that your changes wait on this device.
@@ -360,6 +419,7 @@ try {
 <div id="toast" hidden></div>
 
 <script src="cuemath.js"></script>
+<script src="histdiff.js"></script>
 <script src="seed.js"></script>
 <script src="app.js"></script>
 </body>

@@ -172,6 +172,10 @@ void DelayLine::prepare(std::int32_t channels, std::int32_t capacity, bool wide)
     incoming_.clear();
     wincoming_.clear();
     inCapacity_ = inRing_ = inWrite_ = targetDelay_ = primeRemaining_ = 0;
+    limit_ = capacity_;
+    filled_ = capacity_;   // the silence before the stream is real history
+    quiet_ = capacity_;    // and it is silence
+    inFilled_ = ran_ = 0;
     target_.store(0, std::memory_order_relaxed);
     gliding_.store(false, std::memory_order_relaxed);
     grow_.store(Grow::Idle, std::memory_order_relaxed);
@@ -189,20 +193,45 @@ void DelayLine::reset() noexcept {
     for (auto& v : buf_) v = 0.0f;
     for (auto& v : wbuf_) v = 0.0;
     write_ = 0;
+    filled_ = capacity_;
+    quiet_ = capacity_;
 }
 
 bool DelayLine::beginGlide(std::int32_t d) noexcept {
-    if (d < 0 || d > capacity_) return false;
-    if (d == delay_) return true;               // nothing to do, and not a failure
+    // `limit_` and the two atomics, nothing else: `capacity_` and `delay_` are
+    // the audio thread's to move (a swap, the end of a glide) while this runs.
+    if (d < 0 || d > limit_) return false;
+    // Not gliding, the delay in effect is the target, or is about to be: a
+    // glide's end, or a swap, is already taking it there.
+    if (!gliding_.load(std::memory_order_acquire) &&
+        d == target_.load(std::memory_order_relaxed))
+        return true;                            // nothing to do, and not a failure
     target_.store(d, std::memory_order_relaxed);
     gliding_.store(true, std::memory_order_release);
     return true;
+}
+
+void DelayLine::settle() noexcept {
+    // Down FIRST, then the target read again, whether or not the flag was up.
+    // A glide the message thread raised after this edge's snapshot either
+    // lands before the exchange, which then reads its release and so sees
+    // its target here, or after it, and stays up on its own. And a target
+    // left behind with the flag down -- a glide back to the old delay asked
+    // for, and ended on the old ring, while a grow was being offered -- is
+    // seen at the swap, which has acquired the offer. None is lost.
+    gliding_.exchange(false, std::memory_order_acq_rel);
+    if (target_.load(std::memory_order_relaxed) != delay_)
+        gliding_.store(true, std::memory_order_release);
 }
 
 template <typename T>
 bool DelayLine::offer(std::vector<T>& incoming, std::vector<T> ring, std::int32_t capacity,
                       std::int32_t targetDelay) {
     if (grow_.load(std::memory_order_acquire) != Grow::Idle) return false;
+    // A line with no ring is never run (`process` passes it through), so a
+    // grow offered to it would prime forever. Refused: the caller's rebuild
+    // is what gives it a ring.
+    if (ring_ <= 0) return false;
     if (capacity <= 0 || targetDelay < 0 || targetDelay > capacity) return false;
     const std::int32_t r = capacity + 1;
     if (ring.size() < static_cast<std::size_t>(channels_) * static_cast<std::size_t>(r))
@@ -218,6 +247,12 @@ bool DelayLine::offer(std::vector<T>& incoming, std::vector<T> ring, std::int32_
     // many real samples. Until then it holds zeros, and reading it would be a
     // fade to silence rather than a change of alignment.
     primeRemaining_ = targetDelay;
+    inFilled_ = 0;
+    // From here a glide is asked for against the ring that is coming, and
+    // the delay asked for is this one: a glide still pending from before the
+    // offer is superseded, so the swap does not glide back to it.
+    limit_ = capacity;
+    target_.store(targetDelay, std::memory_order_relaxed);
 
     // RELEASE, and last: everything above must be visible to the audio thread
     // before it can observe the state that tells it to look.
@@ -277,37 +312,107 @@ void DelayLine::adopt(std::vector<T>& buf, const std::vector<U>& from, std::int3
 void DelayLine::adoptHistory(const DelayLine& old) noexcept {
     if (ring_ <= 0 || old.ring_ <= 0 || channels_ != old.channels_) return;
 
-    std::int32_t k = delay_;
-    if (k > capacity_) k = capacity_;
-    if (k > old.capacity_) k = old.capacity_;
-    if (k <= 0) return;
-
     // `buf_` and `write_` are the live history in every state: while an old
     // ring is growing both rings are written and `buf_` is the one read, and
-    // after its swap `buf_` IS the grown ring. So nothing here has to know
-    // what the old line was in the middle of.
+    // after its swap `buf_` IS the grown ring. But while it grows, the ring
+    // it is growing INTO may already hold more of the edge's past than the
+    // small one can, and this line was built for the delay that ring is for.
+    // This is the audio thread, which owns the incoming ring from Priming to
+    // the swap.
+    const Grow g = old.grow_.load(std::memory_order_acquire);
+    const bool growing = g == Grow::Priming || g == Grow::Fading;
+    // Only what each ring really holds: one whose edge sat at zero, or
+    // slept, holds whatever it last had, and handing that on would play it.
+    const std::int32_t inOld = (std::min)(old.capacity_, old.filled_);
+    const std::int32_t inNew = growing ? (std::min)(old.inCapacity_, old.inFilled_) : 0;
+    const bool fromIncoming = inNew > inOld;
+
+    std::int32_t k = delay_;
+    if (k > capacity_) k = capacity_;
+    if (k > (fromIncoming ? inNew : inOld)) k = fromIncoming ? inNew : inOld;
+    if (k < 0) k = 0;
+    // What it was handed is all it holds: a glide past it waits for the rest.
+    // And as much of it as the old line knew was silence is silence here: a
+    // handover in the middle of a drain hands on audio still due out, which
+    // this line's consumer must stay awake to play (`due`). Both rings of a
+    // grow take the same writes, so the old count holds for either.
+    filled_ = k;
+    quiet_ = (std::min)(old.quiet_, k);
+    if (k == 0) return;
+    const std::int32_t fromRing = fromIncoming ? old.inRing_ : old.ring_;
+    const std::int32_t fromWrite = fromIncoming ? old.inWrite_ : old.write_;
+    const std::vector<float>& f32 = fromIncoming ? old.incoming_ : old.buf_;
+    const std::vector<double>& f64 = fromIncoming ? old.wincoming_ : old.wbuf_;
+
     //
     // ACROSS A PRECISION SWITCH TOO (ADR-0207 d2). The switch is a rebuild,
     // and a compensated edge that started its new ring from zeros would drop
     // `delay` samples of that track: a hole, not a seam. Float history widens
     // exactly; double history is rounded once, as the output it was going to
     // be would have been at 32.
-    if (wide_ && old.wide_)        adopt(wbuf_, old.wbuf_, old.ring_, old.write_, k);
-    else if (wide_ && !old.wide_)  adopt(wbuf_, old.buf_, old.ring_, old.write_, k);
-    else if (!wide_ && old.wide_)  adopt(buf_, old.wbuf_, old.ring_, old.write_, k);
-    else                           adopt(buf_, old.buf_, old.ring_, old.write_, k);
+    if (wide_ && old.wide_)        adopt(wbuf_, f64, fromRing, fromWrite, k);
+    else if (wide_ && !old.wide_)  adopt(wbuf_, f32, fromRing, fromWrite, k);
+    else if (!wide_ && old.wide_)  adopt(buf_, f64, fromRing, fromWrite, k);
+    else                           adopt(buf_, f32, fromRing, fromWrite, k);
     // The next write lands right after the newest carried sample, so a tap at
     // `delay_` reads exactly what the old line's tap would have read next.
     write_ = k % ring_;
 }
 
-void DelayLine::endEdge() noexcept {
-    if (gliding_.load(std::memory_order_acquire)) {
-        delay_ = target_.load(std::memory_order_relaxed);
-        gliding_.store(false, std::memory_order_relaxed);
+DelayLine::Edge DelayLine::beginEdge() const noexcept {
+    Edge e;
+    e.grow_ = grow_.load(std::memory_order_acquire);
+    e.glide_ = gliding_.load(std::memory_order_acquire);
+    e.target_ = e.glide_ ? target_.load(std::memory_order_relaxed) : delay_;
+    // A target past the history THIS ring holds waits, held: it is meant for
+    // the ring being offered (an offer stores its delay, and a glide may be
+    // asked for against the new ring, before this thread is sure to see the
+    // Priming that says so), or it is a ring fresh from a swap that has not
+    // been written that far yet. Nothing reads past the ring it has, and no
+    // tap reads samples nobody stored. `filled_` is at most the capacity.
+    if (e.glide_ && e.target_ > filled_) {
+        e.glide_ = false;
+        e.target_ = delay_;
+    }
+    e.write_ = write_;
+    // The incoming ring's cursor and count are the audio thread's only from
+    // Priming to the swap; the acquire above is what makes the offer's
+    // values visible. In Idle and Spent they are the message thread's.
+    if (e.grow_ == Grow::Priming || e.grow_ == Grow::Fading) {
+        e.inWrite_ = inWrite_;
+        e.primeRemaining_ = primeRemaining_;
+    }
+    return e;
+}
+
+void DelayLine::endEdge(const Edge& e, bool silentSource) noexcept {
+    // The history this edge wrote, once for all its channels.
+    const std::int32_t ran = ran_;
+    ran_ = 0;
+    filled_ = static_cast<std::int32_t>(
+        (std::min)(static_cast<std::int64_t>(capacity_), static_cast<std::int64_t>(filled_) + ran));
+    // Silence written extends the silence; anything else ends it. A block is
+    // judged whole (`Slot::silent`), so a loud one counts for none of it.
+    quiet_ = silentSource ? static_cast<std::int32_t>((std::min)(
+                                static_cast<std::int64_t>(filled_),
+                                static_cast<std::int64_t>(quiet_) + ran))
+                          : 0;
+    const Grow g = e.grow_;
+    if (g == Grow::Priming || g == Grow::Fading)
+        inFilled_ = static_cast<std::int32_t>((std::min)(static_cast<std::int64_t>(inCapacity_),
+                                                         static_cast<std::int64_t>(inFilled_) + ran));
+    if (g == Grow::Idle || g == Grow::Spent) {
+        if (e.glide_) {
+            // The delay the crossfade reached, which is the snapshot's: a
+            // target the message thread moved since is the NEXT glide.
+            delay_ = e.target_;
+            settle();
+        }
+        return;
     }
 
-    const Grow g = grow_.load(std::memory_order_acquire);
+    // A glide asked for while a ring grows waits for the swap: the old ring
+    // is the one being read and it is on its way out.
     if (g == Grow::Priming) {
         // PRIMING ENDS ON A BLOCK BOUNDARY, not mid-call. Letting it end
         // mid-call means one call that is part prime and part crossfade, and
@@ -319,21 +424,24 @@ void DelayLine::endEdge() noexcept {
         }
         return;
     }
-    if (g == Grow::Fading) {
-        // The swap. A vector swap moves pointers -- no allocation, which is
-        // what lets this happen on the audio thread at all. The old buffer
-        // lands in the incoming slot and waits for `collectRing`; the audio
-        // thread never deallocates. Both widths are swapped: the unused pair
-        // is two empty vectors, and swapping them costs nothing.
-        buf_.swap(incoming_);
-        wbuf_.swap(wincoming_);
-        std::swap(capacity_, inCapacity_);
-        std::swap(ring_, inRing_);
-        write_ = inWrite_;
-        delay_ = targetDelay_;
-        target_.store(delay_, std::memory_order_relaxed);
-        grow_.store(Grow::Spent, std::memory_order_release);
-    }
+    // Fading: the swap. A vector swap moves pointers -- no allocation, which
+    // is what lets this happen on the audio thread at all. The old buffer
+    // lands in the incoming slot and waits for `collectRing`; the audio
+    // thread never deallocates. Both widths are swapped: the unused pair is
+    // two empty vectors, and swapping them costs nothing.
+    buf_.swap(incoming_);
+    wbuf_.swap(wincoming_);
+    std::swap(capacity_, inCapacity_);
+    std::swap(ring_, inRing_);
+    write_ = inWrite_;
+    filled_ = inFilled_;
+    if (quiet_ > filled_) quiet_ = filled_;   // the same writes, on a ring that holds less
+    delay_ = targetDelay_;
+    // `target_` is the message thread's: the offer set it to this delay, so
+    // a glide pending from before the offer comes down here, and one asked
+    // for during the grow (against the new ring) goes on from the next block.
+    settle();
+    grow_.store(Grow::Spent, std::memory_order_release);
 }
 
 template <typename T>
@@ -390,10 +498,17 @@ void DelayLine::processGrowing(std::vector<T>& buf, std::vector<T>& incoming,
 }
 
 template <typename T>
-void DelayLine::run(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t channel,
-                    const T* src, T* dst, std::int32_t frames) noexcept {
-    const Grow g = grow_.load(std::memory_order_acquire);
+void DelayLine::run(const Edge& e, std::vector<T>& buf, std::vector<T>& incoming,
+                    std::int32_t channel, const T* src, T* dst,
+                    std::int32_t frames) noexcept {
+    // Every channel starts from the edge's cursors. Only the ones this thread
+    // owns in the edge's state are written back (see `Edge`).
+    write_ = e.write_;
+    ran_ = frames > 0 ? frames : 0;
+    const Grow g = e.grow_;
     if (g == Grow::Priming || g == Grow::Fading) {
+        inWrite_ = e.inWrite_;
+        primeRemaining_ = e.primeRemaining_;
         processGrowing(buf, incoming, channel, src, dst, frames, g);
         return;
     }
@@ -402,8 +517,8 @@ void DelayLine::run(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t 
                            static_cast<std::size_t>(ring_);
     std::int32_t w = write_;
 
-    const bool glide = gliding_.load(std::memory_order_acquire);
-    const std::int32_t to = glide ? target_.load(std::memory_order_relaxed) : delay_;
+    const bool glide = e.glide_;
+    const std::int32_t to = e.target_;
 
     if (!glide || to == delay_ || frames <= 0) {
         const std::int32_t d = delay_;
@@ -442,24 +557,36 @@ void DelayLine::run(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t 
     write_ = w;
 }
 
-void DelayLine::process(std::int32_t channel, const float* src, float* dst,
+void DelayLine::process(const Edge& e, std::int32_t channel, const float* src, float* dst,
                         std::int32_t frames) noexcept {
     if (wide_ || ring_ <= 0 || channel < 0 || channel >= channels_) {
         if (src != dst)
             std::memcpy(dst, src, static_cast<std::size_t>(frames) * sizeof(float));
         return;
     }
-    run(buf_, incoming_, channel, src, dst, frames);
+    run(e, buf_, incoming_, channel, src, dst, frames);
 }
 
-void DelayLine::process(std::int32_t channel, const double* src, double* dst,
+void DelayLine::process(const Edge& e, std::int32_t channel, const double* src, double* dst,
                         std::int32_t frames) noexcept {
     if (!wide_ || ring_ <= 0 || channel < 0 || channel >= channels_) {
         if (src != dst)
             std::memcpy(dst, src, static_cast<std::size_t>(frames) * sizeof(double));
         return;
     }
-    run(wbuf_, wincoming_, channel, src, dst, frames);
+    run(e, wbuf_, wincoming_, channel, src, dst, frames);
+}
+
+// One thread alone: the state as it stands, which is the cursors the caller
+// restored.
+void DelayLine::process(std::int32_t channel, const float* src, float* dst,
+                        std::int32_t frames) noexcept {
+    process(beginEdge(), channel, src, dst, frames);
+}
+
+void DelayLine::process(std::int32_t channel, const double* src, double* dst,
+                        std::int32_t frames) noexcept {
+    process(beginEdge(), channel, src, dst, frames);
 }
 
 void Graph::prepareLine(DelayLine& line, std::int32_t delaySamples) {
@@ -533,9 +660,13 @@ void Graph::computeCompensation() {
     // getter is main-thread only.
     if (slotLatency_.size() != slots_.size())
         slotLatency_ = std::vector<std::atomic<std::int32_t>>(slots_.size());
-    for (std::size_t i = 0; i < slots_.size(); ++i)
+    if (slotArrival_.size() != slots_.size())
+        slotArrival_ = std::vector<std::atomic<std::int32_t>>(slots_.size());
+    for (std::size_t i = 0; i < slots_.size(); ++i) {
         slotLatency_[i].store(slots_[i].node != nullptr ? slots_[i].node->latencySamples() : 0,
                               std::memory_order_relaxed);
+        slotArrival_[i].store(slots_[i].arrival, std::memory_order_relaxed);
+    }
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
     graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
                         std::memory_order_release);
@@ -588,6 +719,9 @@ bool Graph::retapLatency() noexcept {
             if (!s.sideDelays[k].beginGlide(d > 0 ? d : 0)) allFit = false;
         }
     }
+    // After every glide it started: a sleeping node that sees this move looks
+    // at its lines again (`Slot::dozeGlides`).
+    glides_.fetch_add(1, std::memory_order_release);
 
     // ADR-0123: refresh the audio thread's copies. The event delay jumps to the
     // new value while the audio tap glides; that is what it did before, when
@@ -595,6 +729,8 @@ bool Graph::retapLatency() noexcept {
     for (std::size_t i = 0; i < slots_.size() && i < slotLatency_.size(); ++i)
         slotLatency_[i].store(slots_[i].node != nullptr ? slots_[i].node->latencySamples() : 0,
                               std::memory_order_relaxed);
+    for (std::size_t i = 0; i < slots_.size() && i < slotArrival_.size(); ++i)
+        slotArrival_[i].store(slots_[i].arrival, std::memory_order_relaxed);
     const Slot& out = slots_[static_cast<std::size_t>(output_)];
     graphLatency_.store(out.arrival + (out.node != nullptr ? out.node->latencySamples() : 0),
                         std::memory_order_release);
@@ -614,16 +750,24 @@ std::int32_t requiredDelay(std::int32_t toArrival, std::int32_t fromArrival,
 
 }  // namespace
 
-std::size_t Graph::escalateLatency() {
+std::size_t Graph::escalateLatency(Unresolved* left) {
     if (!prepared_) return 0;
 
     std::size_t grown = 0;
+    Unresolved unresolved;
     // THE ALLOCATION IS HERE, on the message thread, and that is the whole
     // point of the split. The audio thread receives a ready-made buffer and
     // never does anything but write into it and swap a pointer.
     auto offer = [&](DelayLine& line, std::int32_t want) {
+        // In this order: the audio thread swaps the capacity at the end of a
+        // grow, so it is read only once no grow is in flight.
+        if (line.growing()) {
+            // An offer is already in flight. If it is for less than this edge
+            // now needs, the edge is grown again once that ring is collected.
+            if (want > line.limit()) ++unresolved.inFlight;
+            return;
+        }
         if (want <= line.capacity()) return;   // the tap move already handles it
-        if (line.growing()) return;            // an offer is already in flight
 
         // Headroom on top of the requirement, so a plugin that steps its
         // latency up repeatedly does not force a grow per step. Doubling is
@@ -635,6 +779,10 @@ std::size_t Graph::escalateLatency() {
         const std::size_t size =
             static_cast<std::size_t>(channels_) * static_cast<std::size_t>(cap + 1);
         // The ring at the line's own width (ADR-0207 d2).
+        if (line.capacity() <= 0) {
+            ++unresolved.ringless;             // refused: nothing would run it
+            return;
+        }
         const bool taken = line.wide()
             ? line.offerRing(std::vector<double>(size, 0.0), cap, want)
             : line.offerRing(std::vector<float>(size, 0.0f), cap, want);
@@ -652,6 +800,7 @@ std::size_t Graph::escalateLatency() {
             offer(s.sideDelays[k], requiredDelay(s.arrival, u.arrival, u.node));
         }
     }
+    if (left != nullptr) *left = unresolved;
     return grown;
 }
 
@@ -781,6 +930,7 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         s.tailRemaining = (t == kInfiniteTail) ? 0 : t;
         s.silent = true;
         s.zeroed = true;                 // `assign` above filled it with zeros
+        s.dozeGlides = kLinesUnchecked;
         if (s.node != nullptr) {
             s.node->willBeHanded(s.doubles ? Precision::Float64 : Precision::Float32);
             s.node->prepare(sampleRate, maxFrames);
@@ -809,6 +959,10 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     delayScratch_.assign(fr, 0.0f);
     if (wide) delayScratch64_.assign(fr, 0.0);
     else std::vector<double>().swap(delayScratch64_);
+    std::size_t widest = 0;
+    for (const Slot& s : slots_)
+        widest = (std::max)(widest, (std::max)(s.inputs.size(), s.sidechains.size()));
+    asleep_.assign(widest, 0);
 
     // ADR-0058 decisions 2-5, after the buffers exist: a delay line is a
     // buffer too, and `process` may not allocate.
@@ -847,10 +1001,39 @@ T* Graph::scratch() noexcept {
 
 template <typename Src, typename Acc>
 void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
-                       std::int32_t begin, std::int32_t frames, bool first) noexcept {
+                       std::int32_t begin, std::int32_t frames, bool first,
+                       bool asleep) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
     Src* const* from = outputOf<Src>(src);
     const auto n = static_cast<std::size_t>(frames);
+
+    // A SLEEPING SOURCE IS NOT READ. `zeroed` says its whole buffer holds
+    // +0.0f (set only by the suspension clear, dropped the moment it
+    // processes), and this edge has nothing in flight, so reading it is 2 MB
+    // of zeros per block for 63 sleeping tracks -- the residual left after
+    // #60. This is the "active inputs" list, derived rather than kept: the
+    // source ran before this consumer in topological order on this same
+    // thread, so the flag is current, and no signalling, no second list and
+    // no lock can be more right than reading it. `asleep` is that reading,
+    // taken once by the caller (`idle`): the edge's half of it is the
+    // message thread's to move.
+    //
+    // Bytes: `first` writes the zeros it would have copied, identical. A
+    // later input's add of +0.0f is skipped, which differs from the sum in
+    // exactly one case -- a -0.0f already in the mix stays -0.0f instead of
+    // becoming +0.0f -- and testMixSkipsSleepingSources pins that so it is a
+    // fact rather than a surprise. A source that is silent but NOT zeroed (a
+    // generator emitting -0.0f, a node whose block was all zero but never
+    // slept) is read as before.
+    if (asleep) {
+        // All-bits-zero is +0.0 in both widths.
+        if (first)
+            for (std::size_t c = 0; c < ch; ++c)
+                std::memset(dst[c] + begin, 0, n * sizeof(Acc));
+        delay.forget();   // its ring went unwritten
+        ++stats_.inputsSkipped;
+        return;
+    }
 
     // Zero compensation is the common case and must cost nothing: most edges in
     // most projects join paths of equal latency, and this is the path they take.
@@ -859,30 +1042,9 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
     // move to 128 is exactly the case this fast path would swallow: it would
     // memcpy, return, and leave the glide pending forever (ADR-0079).
     if (!delay.busy() && delay.delay() == 0) {
-        // A SLEEPING SOURCE IS NOT READ. `zeroed` says its whole buffer holds
-        // +0.0f (set only by the suspension clear, dropped the moment it
-        // processes), and this edge has nothing in flight, so reading it is
-        // 2 MB of zeros per block for 63 sleeping tracks -- the residual left
-        // after #60. This is the "active inputs" list, derived rather than
-        // kept: the source ran before this consumer in topological order on
-        // this same thread, so the flag is current, and no signalling, no
-        // second list and no lock can be more right than reading it.
-        //
-        // Bytes: `first` writes the zeros it would have copied, identical. A
-        // later input's add of +0.0f is skipped, which differs from the sum
-        // in exactly one case -- a -0.0f already in the mix stays -0.0f
-        // instead of becoming +0.0f -- and testMixSkipsSleepingSources pins
-        // that so it is a fact rather than a surprise. A source that is
-        // silent but NOT zeroed (a generator emitting -0.0f, a node whose
-        // block was all zero but never slept) is read as before.
-        if (idle(src, delay)) {
-            // All-bits-zero is +0.0 in both widths.
-            if (first)
-                for (std::size_t c = 0; c < ch; ++c)
-                    std::memset(dst[c] + begin, 0, n * sizeof(Acc));
-            ++stats_.inputsSkipped;
-            return;
-        }
+        // The ring is not written, so it no longer holds this edge's
+        // history: a glide away from zero waits until it does (`forget`).
+        delay.forget();
         for (std::size_t c = 0; c < ch; ++c) {
             const Src* s = from[c] + begin;
             Acc* d = dst[c] + begin;
@@ -911,14 +1073,17 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
     // the ring is self-consistent within a call, so a single-block test is also
     // blind to it. It takes two blocks and a delay that does not divide the
     // block size. See testPhaseAlignment.
-    const DelayLine::Cursors before = delay.cursors();
+    //
+    // ONE SNAPSHOT for the whole edge, cursors and state together: the message
+    // thread grows this line while it plays, and a round trip of cursors it
+    // does not own here would overwrite an offer (`DelayLine::Edge`).
+    const DelayLine::Edge edge = delay.beginEdge();
     for (std::size_t c = 0; c < ch; ++c) {
-        delay.setCursors(before);
         const Src* s = from[c] + begin;
         Acc* d = dst[c] + begin;
         if constexpr (std::is_same_v<Src, Acc>) {
             if (first) {
-                delay.process(static_cast<std::int32_t>(c), s, d, frames);
+                delay.process(edge, static_cast<std::int32_t>(c), s, d, frames);
                 continue;
             }
         }
@@ -929,7 +1094,7 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
         // it does not add them.
         Src* tmp = scratch<Src>();
         std::memcpy(tmp, s, n * sizeof(Src));
-        delay.process(static_cast<std::int32_t>(c), tmp, tmp, frames);
+        delay.process(edge, static_cast<std::int32_t>(c), tmp, tmp, frames);
         if (first) {
             for (std::size_t i = 0; i < n; ++i) d[i] = tmp[i];
         } else {
@@ -940,7 +1105,7 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
     // for the same reason: the glide state is shared across the channels of
     // one edge. Ending it inside the loop would crossfade the left channel and
     // hard-switch the right.
-    delay.endEdge();
+    delay.endEdge(edge, src.silent);
 }
 
 bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
@@ -961,14 +1126,22 @@ bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delay
     // the bytes the double path would (zeros add exactly in both widths, and
     // IEEE signs zeros the same in both). So the 63-sleeping-tracks project
     // ADR-0102 d5 measured keeps its cost, and nothing changes for a chain.
+    //
+    // EACH INPUT IS JUDGED ONCE. `idle` reads the edge's `busy()`, which the
+    // message thread moves (an offer, a collection), so judging an input
+    // twice can count it live and then find it idle: with every input so
+    // found, the scan for the last one below ran off the front of the list.
     std::size_t live = 0;
-    for (std::size_t k = 0; k < inputs.size() && live < 2; ++k)
-        if (!idle(slots_[static_cast<std::size_t>(inputs[k])], delays[k])) ++live;
+    for (std::size_t k = 0; k < inputs.size(); ++k) {
+        const bool a = idle(slots_[static_cast<std::size_t>(inputs[k])], delays[k]);
+        asleep_[k] = a ? 1 : 0;
+        if (!a) ++live;
+    }
 
     if (live < 2) {
         for (std::size_t k = 0; k < inputs.size(); ++k)
             accumulate<float, float>(dst, slots_[static_cast<std::size_t>(inputs[k])], delays[k],
-                                     begin, frames, k == 0);
+                                     begin, frames, k == 0, asleep_[k] != 0);
         return true;
     }
 
@@ -982,11 +1155,12 @@ bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delay
     // Two live inputs mean it is never the first. Idle inputs after it add
     // nothing and are only counted as skipped.
     std::size_t last = inputs.size() - 1;
-    while (idle(slots_[static_cast<std::size_t>(inputs[last])], delays[last])) --last;
+    while (asleep_[last] != 0) --last;   // two are live: it stops at one of them
     for (std::size_t k = 0; k < inputs.size(); ++k) {
         const Slot& src = slots_[static_cast<std::size_t>(inputs[k])];
         if (k == last) accumulateLast(dst, wide, src, delays[k], begin, frames);
-        else accumulate<float, double>(wide, src, delays[k], begin, frames, k == 0);
+        else accumulate<float, double>(wide, src, delays[k], begin, frames, k == 0,
+                                       asleep_[k] != 0);
     }
     ++stats_.wideMixes;
     return true;
@@ -998,6 +1172,7 @@ void Graph::accumulateLast(std::vector<float*>& dst, const std::vector<double*>&
     const auto ch = static_cast<std::size_t>(channels_);
     const auto n = static_cast<std::size_t>(frames);
     if (!delay.busy() && delay.delay() == 0) {
+        delay.forget();   // as in `accumulate`
         for (std::size_t c = 0; c < ch; ++c) {
             const float* s = src.chanPtrs[c] + begin;
             const double* w = wide[c] + begin;
@@ -1006,18 +1181,17 @@ void Graph::accumulateLast(std::vector<float*>& dst, const std::vector<double*>&
         }
         return;
     }
-    // Compensated: the same cursor discipline as `accumulate`.
-    const DelayLine::Cursors before = delay.cursors();
+    // Compensated: the same one snapshot per edge as `accumulate`.
+    const DelayLine::Edge edge = delay.beginEdge();
     for (std::size_t c = 0; c < ch; ++c) {
-        delay.setCursors(before);
         float* tmp = delayScratch_.data();
         std::memcpy(tmp, src.chanPtrs[c] + begin, n * sizeof(float));
-        delay.process(static_cast<std::int32_t>(c), tmp, tmp, frames);
+        delay.process(edge, static_cast<std::int32_t>(c), tmp, tmp, frames);
         const double* w = wide[c] + begin;
         float* d = dst[c] + begin;
         for (std::size_t i = 0; i < n; ++i) d[i] = static_cast<float>(w[i] + tmp[i]);
     }
-    delay.endEdge();
+    delay.endEdge(edge, src.silent);
 }
 
 bool Graph::mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
@@ -1029,8 +1203,9 @@ bool Graph::mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& d
     std::size_t live = 0;
     for (std::size_t k = 0; k < inputs.size(); ++k) {
         const Slot& src = slots_[static_cast<std::size_t>(inputs[k])];
-        if (!idle(src, delays[k])) ++live;
-        accumulate<double, double>(wide, src, delays[k], begin, frames, k == 0);
+        const bool asleep = idle(src, delays[k]);
+        if (!asleep) ++live;
+        accumulate<double, double>(wide, src, delays[k], begin, frames, k == 0, asleep);
     }
     if (live >= 2) ++stats_.wideMixes;
     return true;
@@ -1172,6 +1347,10 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
     ScopeTap* const inputTap = s.node->inputTap();
     const bool advancing = transport != nullptr && transport->playing;
     const auto firstSample = transport != nullptr ? transport->timelineSample : 0;
+    // The audio thread's copy: `retapLatency` rewrites `s.arrival` as it runs.
+    const auto slotIndex = static_cast<std::size_t>(&s - slots_.data());
+    const std::int32_t arrival =
+        slotIndex < slotArrival_.size() ? slotArrival_[slotIndex].load(std::memory_order_relaxed) : 0;
 
     bool mainSilent = true;
     for (NodeId in : s.inputs)
@@ -1240,11 +1419,33 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
     // less was never heard at all, and every longer one lost its final partial
     // block -- up to 85 ms at the 4096-frame blocks this engine is built for.
     // The old test accepted "3 to 6 blocks" for a tail that is exactly 4.
-    const bool suspend = !infinite && !s.node->alwaysProcess() &&
-                         inputSilent && !hasEvents && !holding && s.tailRemaining == 0;
+    bool suspend = !infinite && !s.node->alwaysProcess() &&
+                   inputSilent && !hasEvents && !holding && s.tailRemaining == 0;
+    // AND NOTHING IS STILL DUE ON AN INPUT LINE (`DelayLine::due`). The tail
+    // above is armed on the last loud block, with the reach of that moment.
+    // A glide that reaches further, asked for during the drain, or a
+    // handover in the middle of one, leaves audio in a ring that the drain
+    // would not play and the next wake would, however much later. And a
+    // glide asked for while the node sleeps is run now, in the silence, so
+    // the wake is not where it happens.
+    //
+    // A node already asleep looks at its lines only when a retap has moved
+    // since it last did: they cannot come due otherwise (`Slot::dozeGlides`),
+    // and reading every sleeping node's lines every block was what a silent
+    // project paid for this check.
+    if (suspend) {
+        const std::uint64_t glides = glides_.load(std::memory_order_acquire);
+        if (s.dozeGlides != glides) {
+            for (const DelayLine& d : s.inDelays)
+                if (d.due()) suspend = false;
+            for (const DelayLine& d : s.sideDelays)
+                if (d.due()) suspend = false;
+            if (suspend) s.dozeGlides = glides;
+        }
+    }
     if (suspend) {
         if (inputTap)
-            inputTap->write(static_cast<const float*>(nullptr), nullptr, frames, firstSample - s.arrival, advancing);
+            inputTap->write(static_cast<const float*>(nullptr), nullptr, frames, firstSample - arrival, advancing);
         NodeIo silence;
         silence.frames = frames;
         silence.channels = channels_;
@@ -1271,10 +1472,17 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
             }
             s.zeroed = true;
             ++stats_.suspendClears;
+            // Its input lines are not run while it sleeps, so their rings
+            // stop holding their edges' history -- all but the silence they
+            // drained, which is still their newest past, because every input
+            // stays silent while the node sleeps (`forgetAllButSilence`).
+            for (DelayLine& d : s.inDelays) d.forgetAllButSilence();
+            for (DelayLine& d : s.sideDelays) d.forgetAllButSilence();
         }
         return;
     }
     s.zeroed = false;   // the node is about to write; what it leaves is its own
+    s.dozeGlides = kLinesUnchecked;
 
     // Only a block that actually runs on silence spends tail.
     if (inputSilent && !hasEvents && !holding && !infinite) {
@@ -1327,7 +1535,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         // The summed, compensated input belongs to this graph's arrival,
         // before the node's own latency. No device implementation is involved.
         if (inputTap && channels_ > 0) {
-            const std::int64_t stamp = firstSample + (advancing ? begin : 0) - s.arrival;
+            const std::int64_t stamp = firstSample + (advancing ? begin : 0) - arrival;
             if (wide)
                 inputTap->write(anyMain ? mixWidePtrs_[0] + begin : nullptr,
                                 anyMain && channels_ > 1 ? mixWidePtrs_[1] + begin : nullptr,
