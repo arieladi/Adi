@@ -12,6 +12,71 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-26, night — LANES §3 item 1f: a VST3 that takes `kSample64` is set up at 64 and handed double (ADR-0207 d2)
+
+**PR:** [arieladi/Adi#237](https://github.com/arieladi/Adi/pull/237) (`engine/vst3-64`), draft, stacked on #236. CI green on all 19 legs, the JUCE legs' new 64-bit render and its failing twin included.
+
+**What.**
+- The graph tells each node, just before it prepares it, the width it will be handed (`Node::willBeHanded`). A VST3 fixes its sample size in `setupProcessing`, at activation, so it has to know then.
+- `Vst3Device` says `processesDouble()` when the processor takes `kSample64`. At 64 it is set up at 64 and handed `channelBuffers64`; at 32 every VST3 is set up at 32.
+- A width change alone is a reactivation, under #236's gate.
+- Either graph width works at either setup, because a rebuild's last graph still plays the device.
+- **Pre-existing, fixed:** the raw path's error branch silenced from the block's start, not the segment's offset.
+- `adi_play --precision 32|64` and `--require-double`. CI renders the fixture at 64 with the gate, and proves the gate fails on the fixture variant that refuses 64.
+
+**Checks.**
+- `adi_precision_tests` 96 (+4), `adi_device_model_tests` 67 (+3), `adi_vst3_probe` 42 new fixture checks.
+- The fixture now computes in double and writes at the setup width, so a 64-bit render holds no float sample.
+- Sixteen plants, all caught.
+- `test_all.sh` 8003 checks across 95 suites. GCC and Clang `-Werror` clean.
+
+**Found, not fixed (pre-existing):** the router forgets its sounding notes when a device reactivates (`router_.reset()` in `Vst3Device::prepare`), so their note-offs never reach the plug-in. A plug-in that kept voices through `setActive(false)` would hang them. Fix: send the router's sounding notes their offs before a reactivation, as `switchTo` does.
+
+---
+
+## 2026-10-26, night — #236, second push: what the review of the reactivation gate found
+
+**PR:** [arieladi/Adi#236](https://github.com/arieladi/Adi/pull/236), second commit (`07443ec`). CI green on all 19 legs. A two-lens review, each finding put to a skeptic, confirmed seven distinct defects.
+
+**Fixed.**
+- **The gate covered `process` alone.** `Graph::runNode` asks each node its tail every block. The old graph of a live rebuild called CLAP `tail.get` while the plug-in was deactivated or inside `activate`: 18 545 such calls over 20 rounds of the review's TSan probe, and a race. Now:
+  - CLAP's tail query passes the gate and answers infinite while it is closed;
+  - VST3's tail is read on the message thread, at construction and after each activation.
+- **The graph asked the tail twice a block**, and finite then infinite overflowed `tail + reach`. It asks once.
+- **`Vst3Device::prepare` never reached an active plug-in on a format change**, because JUCE's own early return skipped it (pre-existing). It releases first.
+- **Every VST3 activation leaked an `IAudioProcessor` reference** (pre-existing).
+- **`~ClapDevice` stopped a plug-in whose start had failed** (pre-existing).
+- **The first push's test of a call made during a reactivation could not fail.** It now holds the reactivation in `stop_processing`, and plant P2 fails the suite rather than only TSan.
+- **A gate that never opens hung the suite.** A watchdog and a ctest `TIMEOUT` now end it.
+
+**Also.** The fixture VST3 builds on Linux (`Contents/<machine>-linux`), so the VST3 half runs here. Its hooks:
+- a held process call;
+- a strict block size;
+- a live-object count;
+- a count of setup calls made under a process call.
+
+**Checks.**
+- `adi_clap_tests` 486 (+13), `adi_graph_tests` 195 (+3), 14 new probe checks. Nine plants, all caught.
+- `test_all.sh` 7996. GCC and Clang `-Werror` clean. TSan 0.
+
+**Found, not fixed (pre-existing).** A plug-in's own `restartComponent(kReloadComponent | kIoChanged)` makes JUCE deactivate and reactivate it on the message thread, outside `prepare`. That runs under a raw process call that takes neither JUCE's private lock nor the gate: the same use-after-free class. After `kIoChanged` nothing rebuilds the graph either. Fix, as its own PR:
+- wrap JUCE's component handler, so a restart is marshalled to the message thread under the gate's `Hold`;
+- have `kIoChanged` move a shape epoch.
+
+---
+
+## 2026-10-26, evening — LANES §3 item 1f-a: a plug-in reactivated during a live rebuild is held off the audio thread
+
+**PR:** [arieladi/Adi#236](https://github.com/arieladi/Adi/pull/236) (`engine/device-gate`), draft, stacked on #233. It fixes the race #233's review found and this log recorded.
+
+**What.** `ReactivationGate` (`device_model.hpp`), one per device. `prepare`, after its early return, and `release` close it and wait for the call in flight. A call made meanwhile passes its audio through. Both sides are sequentially consistent. An unchanged `prepare` never takes it. `ClapDevice` and `Vst3Device` both use it.
+
+**Checks.** `adi_clap_tests` 473 (+15). TSan on the review's probe: 26 races without the gate, 0 with it. `test_all.sh` 7980.
+
+**Found, not fixed (pre-existing):** `PdDevice::prepare` has no early return. Every rebuild re-inits libpd on an instance the last graph may still be processing. It goes with the Pd tier's PR, which rewrites that `prepare`.
+
+---
+
 ## 2026-10-26, night — #232, second push: a sleeping mix keeps the silence it drained, and drains what is still due
 
 **PR:** [arieladi/Adi#232](https://github.com/arieladi/Adi/pull/232), second commit. The two-lens adversarial review of the first push found:
