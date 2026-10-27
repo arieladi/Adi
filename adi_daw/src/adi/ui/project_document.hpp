@@ -7,6 +7,7 @@
 #include "adi/store.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
+#include "adi/ui/session_state.hpp"
 #include "adi/ui/window_state.hpp"
 namespace adi::ui {
 using media::pathFromUtf8;
@@ -38,6 +39,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     engine::ProjectView &view() noexcept { return view_; }
     OpSubmitter &ops() noexcept { return ops_; }
     ViewStateStore &views() noexcept { return views_; }
+    SessionState &sessionState() noexcept { return sessionState_; }
     TransportMailbox &mailbox() noexcept { return mailbox_; }
     engine::Session &session() noexcept { return session_; }
     const std::string &error() const noexcept { return error_; }
@@ -56,6 +58,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     engine::ProjectView view_;
     OpSubmitter ops_;
     ViewStateStore views_;
+    SessionState sessionState_;
     engine::Session session_;
     engine::ParamOps parameterOps_; // destroyed before Session and its instances
     ParameterFeed feed_;

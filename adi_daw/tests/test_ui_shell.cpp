@@ -175,8 +175,9 @@ int main(int argc, char **argv) {
     settings::AppSettings settings(appdata::App::Daw, temp.path() / "settings.json");
     AppCommands commands(settings);
     ViewStateStore persistence(*store);
-    AdiRootComponent a(view, submitter, mailbox, commands, persistence, "main"),
-        b(view, submitter, mailbox, commands, persistence, "floating");
+    SessionState session(*store);
+    AdiRootComponent a(view, submitter, mailbox, commands, persistence, session, "main"),
+        b(view, submitter, mailbox, commands, persistence, session, "floating");
     a.setSize(960, 540);
     b.setSize(960, 540);
     a.frame();
@@ -313,11 +314,37 @@ int main(int argc, char **argv) {
     roView.refresh(*ro);
     OpSubmitter roSubmit(*ro, roView);
     TransportMailbox roMailbox;
-    AdiRootComponent readRoot(roView, roSubmit, roMailbox, commands, readonly, "main");
+    SessionState roSession(*ro);
+    AdiRootComponent readRoot(roView, roSubmit, roMailbox, commands, readonly, roSession, "main");
     const auto roOrder = readRoot.state().panels.slots()[0].panel;
     check(!readRoot.command(AppCommands::SwapPanels) &&
               readRoot.state().panels.slots()[0].panel == roOrder,
           "failed persistence rolls back visible order");
+    // Selection is the session's, one per project (ADR-0021, UI-ARCHITECTURE §2).
+    a.arrangement.geometry.selection.track = 2;
+    a.arrangement.geometry.selection.start = 0;
+    a.arrangement.geometry.selection.end = 960;
+    a.publishSelection();
+    b.frame();
+    check(b.arrangement.geometry.selection == a.arrangement.geometry.selection,
+          "every window presents the session's one selection");
+    check(SessionState(*store).selection().track == 2 &&
+              store->db().execAndGet("SELECT count(*) FROM ops WHERE op_type LIKE 'select%'")
+                      .getInt() == 0,
+          "it is kept in session_state, not in the op log");
+    readRoot.arrangement.geometry.selection.track = 2;
+    readRoot.publishSelection();
+    check(roSession.selection().track == 2, "a read-only project still selects, in memory");
+    // The first frame after a selection changes does work (the device strip follows the
+    // selected track); the frames after it, with nothing changed, do none.
+    a.frame();
+    b.frame();
+    allocations = 0;
+    audit = true;
+    a.frame();
+    b.frame();
+    audit = false;
+    check(allocations == 0, "an unchanged selection costs a frame nothing");
     // The rulings since 29 September (ADR-0203 d6, d7, d12): Live's view keys,
     // the strip's floor, the Info View and Status Bar, the AI tab, tooltips.
     const auto cmd = juce::ModifierKeys::commandModifier;
@@ -389,7 +416,7 @@ int main(int argc, char **argv) {
     check(a.command(AppCommands::Stop), "stop button command");
     mailbox.drain(driver);
     ZoomHost host(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
-                                                     persistence, "zoomed"));
+                                                     persistence, session, "zoomed"));
     host.setSize(1200, 720);
     auto &zoomed = host.root();
     check(zoomed.keyPressed(juce::KeyPress('=', cmd, 0)) && zoomed.interfaceZoom() == 1.25f,
@@ -402,14 +429,14 @@ int main(int argc, char **argv) {
           "Ctrl/Cmd+- zooms out");
     check(zoomed.deviceArea().getHeight() == 169, "the floor is in zoom-independent units");
     AdiWindow window(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
-                                                        persistence, "tips"),
+                                                        persistence, session, "tips"),
                      commands, false);
     check(window.tooltips() != nullptr && window.tooltipDelayMs() == 600,
           "floating tooltips are on, after 600 ms");
     check(settings.set("lookfeel.showTooltips", false, {}, why), "switch tooltips off");
     commands.reload();
     AdiWindow quiet(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
-                                                       persistence, "quiet"),
+                                                       persistence, session, "quiet"),
                     commands, false);
     check(quiet.tooltips() == nullptr, "the setting turns them off for new windows");
     // Step 7.2's application half (#198): a real document, its engine and its keys.
@@ -418,7 +445,8 @@ int main(int argc, char **argv) {
     check(document != nullptr, "application document opens");
     if (document) {
         AdiRootComponent integrated(document->view(), document->ops(), document->mailbox(),
-                                    commands, document->views(), "main");
+                                    commands, document->views(), document->sessionState(),
+                                    "main");
         int snapshots = 0, saveAs = 0;
         integrated.afterEdit = [&] { document->synchronise(); };
         integrated.applicationCommand = [&](int id) {
@@ -499,12 +527,12 @@ int main(int argc, char **argv) {
         auto &arrangement = integrated.arrangement;
         integrated.setSize(1200, 720);
         const auto cmdKey = juce::ModifierKeys::commandModifier;
-        arrangement.geometry.selectedTrack = 2;
+        arrangement.geometry.selection.track = 2;
         check(integrated.keyPressed(juce::KeyPress('t', cmdKey, 0)),
               "Ctrl/Cmd+T inserts an audio track");
         check(value(document->store(), "SELECT kind||' '||name FROM tracks WHERE id=3") ==
                       "audio #-Audio" &&
-                  arrangement.geometry.selectedTrack == 3,
+                  arrangement.geometry.selection.track == 3,
               "after the selected track, numbered by position, and selected");
         if (!integrated.error().empty())
             std::printf("status: %s\n", integrated.error().c_str());
@@ -521,11 +549,15 @@ int main(int argc, char **argv) {
         check(integrated.command(AppCommands::Undo) && document->synchronise(),
               "and undo brings it back");
         integrated.frame();
+        check(arrangement.geometry.selection.track == 4 &&
+                  document->sessionState().selection().track == 4,
+              "and undo selects it again, from the step's sel_before (ADR-0021)");
+        integrated.frame();
         // Rename (Ctrl/Cmd+R, the Edit menu; Live 12 manual 18.2).
         check(displayName("#-Audio", 3) == "3-Audio" && displayName("##Drums", 7) == "07Drums" &&
                   displayName("Bass", 2) == "Bass",
               "a name that begins with # shows the track's number, a # per digit");
-        arrangement.geometry.selectedTrack = 2;
+        arrangement.geometry.selection.track = 2;
         auto &headers = arrangement.headers;
         check(integrated.keyPressed(juce::KeyPress('r', cmdKey, 0)) && headers.renaming() == 2 &&
                   headers.editor.isVisible() && headers.editor.getText() == "Track",
@@ -545,7 +577,7 @@ int main(int argc, char **argv) {
         check(integrated.command(AppCommands::Undo) &&
                   value(document->store(), "SELECT name FROM tracks WHERE id=2") == "Track",
               "and undo restores the name");
-        arrangement.geometry.selectedTrack = 0;
+        arrangement.geometry.selection.track = 0;
         check(!integrated.command(AppCommands::RenameTrack) && !integrated.error().empty(),
               "with no track selected, Rename says why");
         integrated.frame();
@@ -567,9 +599,9 @@ int main(int argc, char **argv) {
                   arrangement.headers.getRight() == arrangement.getWidth() &&
                   arrangement.canvas.getX() == 0,
               "the track headers sit to the right of the clips, as Live's");
-        arrangement.geometry.selectedClip = 1;
-        arrangement.geometry.selectionStart = 0;
-        arrangement.geometry.selectionEnd = 4 * textproj::kPPQ;
+        arrangement.geometry.selection.clip = 1;
+        arrangement.geometry.selection.start = 0;
+        arrangement.geometry.selection.end = 4 * textproj::kPPQ;
         const double beforeScale = arrangement.geometry.scale;
         check(integrated.keyPressed(juce::KeyPress('z')),
               "synthesised Z reaches zoom-to-selection");
@@ -587,8 +619,8 @@ int main(int argc, char **argv) {
                   std::abs(arrangement.geometry.scale - beforeScale) < 1e-9,
               "- zooms back out around it");
         auto geometry = arrangement.geometry;
-        geometry.selectionStart = geometry.selectionEnd = 0;
-        geometry.marked = false;
+        geometry.selection.start = geometry.selection.end = 0;
+        geometry.selection.marked = false;
         check(geometry.anchor(777) == 777, "with no selection or marker, the playhead anchors");
         const auto anchor = geometry.tick(70);
         geometry.zoom(2., 70);
@@ -599,7 +631,7 @@ int main(int argc, char **argv) {
         check(integrated.keyPressed(juce::KeyPress('h')) && arrangement.geometry.heights.empty(),
               "H optimises the height");
         arrangement.geometry.resizeTrack(0, 64, true);
-        arrangement.geometry.insert = 0;
+        arrangement.geometry.selection.insert = 0;
         arrangement.locate();
         document->process(io);
         integrated.frame();
@@ -616,7 +648,7 @@ int main(int argc, char **argv) {
         check(arrangement.canvasPaints == paints && arrangement.playhead.getWidth() == 1 &&
                   !arrangement.playhead.hitTest(0, 1),
               "one-pixel playhead never repaints canvas and ignores hits");
-        arrangement.geometry.selectionStart = arrangement.geometry.selectionEnd = 0;
+        arrangement.geometry.selection.start = arrangement.geometry.selection.end = 0;
         arrangement.geometry.wheelHeight(integrated.reader(), 2, 8);
         check(arrangement.geometry.heightFor(2) == 72 && arrangement.geometry.height == 64,
               "Alt-wheel changes only target track");
@@ -648,16 +680,16 @@ int main(int argc, char **argv) {
                 peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, point,
                                        juce::ModifierKeys(mods), 1.f, 0.f, when += 100);
             };
-            arrangement.geometry.selectedClip = 0;
+            arrangement.geometry.selection.clip = 0;
             mouse(origin, 0);
             mouse(origin, juce::ModifierKeys::leftButtonModifier);
             mouse(origin, 0);
-            check(arrangement.geometry.selectedClip == 1 && arrangement.geometry.marked,
+            check(arrangement.geometry.selection.clip == 1 && arrangement.geometry.selection.marked,
                   "peer dispatch hit-tests, selects the painted clip and places the marker");
             mouse(origin, juce::ModifierKeys::leftButtonModifier);
             mouse(origin.translated(48, 0), juce::ModifierKeys::leftButtonModifier);
             mouse(origin.translated(48, 0), 0);
-            check(arrangement.geometry.selectionEnd == arrangement.geometry.tick(58),
+            check(arrangement.geometry.selection.end == arrangement.geometry.tick(58),
                   "peer drag capture updates time selection");
             // The Overview (Live 12 manual 6.1, ADR-0129's rows).
             auto &overview = arrangement.overview;
@@ -731,7 +763,7 @@ int main(int argc, char **argv) {
             ++gestures;
             return true;
         };
-        arrangement.geometry.selectedTrack = 2;
+        arrangement.geometry.selection.track = 2;
         integrated.frame();
         check(integrated.devices.panels.size() == 2 &&
                   integrated.devices.panels[0]->controls.size() == 5,
@@ -775,7 +807,7 @@ int main(int argc, char **argv) {
             integrated.frame();
         audit = false;
         check(allocations == 0, "unchanged parameter publication frame allocates zero");
-        arrangement.geometry.selectedTrack = 1;
+        arrangement.geometry.selection.track = 1;
         integrated.frame();
         check(integrated.devices.panels.empty(),
               "selection changes strip even with same parameter publication");
@@ -863,7 +895,7 @@ int main(int argc, char **argv) {
             floating.close("analyser");
         }
         integrated.devices.publication = {};
-        arrangement.geometry.selectedTrack = 2;
+        arrangement.geometry.selection.track = 2;
         integrated.frame();
         integrated.resizeDevices(169);
         // Step 7.6 (#205): the mixer, its rows in the arrangement's lanes.
