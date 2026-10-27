@@ -12,6 +12,73 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-27, early — LANES §3 item 1g, the Pd tier at `PD_FLOATSIZE=64` and the native devices in double: its files are the devices lane's since ADR-0208, so it is handed over with what the survey found
+
+**Not started as a PR; blocked by ownership, not by work.** ADR-0208 d3 (win's #238) gives the devices lane `pd/**`, `src/adi/dsp/**`, `src/adi/pd_builtins/**` and `src/juce/pd_*`, and says a need across a line is logged, not edited. Building the Pd tier in double changes all of them together: flipping `PD_FLOATSIZE` without the externals and the cores breaks every Pd device. The engine side of it is one CMake line, and that line must land with the rest. So the item goes to win to place, and the engine lane takes item 2.
+
+**What a four-agent survey measured** (libpd 0.16.1, Pd 0.56-5; scratch builds at both widths, nothing in the tree changed):
+- **libpd's CMake has no float-size option.** `PD_FLOATSIZE=64` has to be defined by ADI, PUBLIC on `libpd_static` and restated PUBLIC on `adi_core`, beside `PDINSTANCE`. A mismatch is refused for externals (`class_new64`) but silent for `pd_engine.cpp`, which builds atoms with `SETFLOAT` and calls `pd_float`.
+- **It is one width per process.** Two libpds in one binary link silently to whichever archive comes first. A dual build needs a renamed copy of the whole archive (`llvm-objcopy --redefine-syms` worked on Linux; Mach-O and COFF were tried on toy objects only), and the externals, `PdBuiltins` and `LibPdEngine` compiled once per width. So a double Pd computes in double at the default 32 too, converted at the device's seam. Vanilla Pd measured the same CPU in double (64 `biquad~`: 0.739 s against 0.727 s for 60 s of audio).
+- **At 64 every built-in device breaks without a word.** All 17 externals cast Pd's `t_sample*` to `float*` (70 casts, through `t_int`, so no warning) into cores that take `float*`. With the flag on, 15 compile clean under `-Werror` and produce wrong audio (`adi.utility~`: 3898 of 7872 samples wrong; AutoFilter peaks at NaN). All 16 device suites fail. Two fail to build: `combchord_tilde.cpp:35` (`std::clamp` of a `t_floatarg` against `float` bounds) and `colorcab_tilde.cpp:23` (`-Wfloat-conversion`). Both one-line fixes are no-ops at 32.
+- **With a conversion at each external's edge, all 16 device suites pass at 64.** 14 of the 15 render WAVs are bit-identical to 32. AutoFilter differs by at most 2.98e-8, from two patch defaults a float cannot hold. Every golden, exact and tolerance check survives.
+- **`LibPdEngine` itself compiles unchanged at 64**, and its float path stays exact against a double libpd. Going double end to end means:
+  - double interleave buffers with `libpd_process_double`, or `libpd_process_raw_double`, which is planar like the graph;
+  - templated push and pop for `in64`/`out64`;
+  - five `sizeof(float)` byte counts made generic;
+  - `PdDevice::processesDouble()`.
+- **`test_pd_engine.cpp`'s planted-loader check** (`d8`) fails at 64, because Pd at 64 looks only for deken names (`*.linux-amd64-64.so`). The plant needs the deken name.
+
+**The order the survey recommends** (for whichever lane win gives it):
+1. The two compile fixes.
+2. A guard so no perform routine can cast a signal vector to `float*`: a typed accessor or a `static_assert` on `sizeof(t_sample)`.
+3. Each core in double, templated on the sample type: "the native devices in double", and a per-core numeric review, not a mechanical edit.
+4. `LibPdEngine` and `PdDevice` double.
+5. The define, in one place that reaches every translation unit.
+6. The 20 Pd suites re-run, expecting last-bit render deltas.
+
+**For win (the policy, not a gate):** libpd's width is a build property, and the Audio page's switch is a runtime one. One libpd built at 64 means Pd computes in double at both settings. ADR-0207 d2's "building the Pd tier in double" reads that way, but at 32 it is not bit-identical to today.
+
+**Found, not fixed (pre-existing, device tier):**
+- After a sample-rate change, published arrays (the analysers' taps) publish at the old rate. `bindArrays` computes their timing at bind time, and `LibPdEngine::prepare` never recomputes it: 60 Hz instead of 30 at 96 kHz.
+- libpd's `libpd_read_array`/`libpd_write_array` return -2 still holding `sys_lock` on a range failure. ADI is safe only because it checks `libpd_arraysize` at bind time.
+- The Pd suites' `TempDir` is not unique per process, so parallel runs can collide.
+
+---
+
+## 2026-10-27, early — LANES §3 item 1g-a: a Pd device left alone by an unchanged rebuild, and held off the audio thread when it is not
+
+**PR:** [arieladi/Adi#239](https://github.com/arieladi/Adi/pull/239) (`engine/pd-prepare`), draft, on #236 (merged). It fixes the defect this log recorded under #236. CI green on the legs finished at writing.
+
+**What.**
+- `PdDevice::prepare` returns at once on an unchanged rate and block (ADR-0090). Before, every rebuild anywhere in a project re-initialised every Pd device: a block of audio lost, and every sounding note forgotten, its note-off never sent.
+- The rest runs under #236's gate. A rebuild prepares the next graph while the last one plays the same device (ADR-0089 d4), so the message thread was reassigning the adapter's buffers under the audio thread.
+- `release()` marks it unprepared, so a restart at the same format starts clean.
+
+**Checks.**
+- `adi_pd_tests` 78 (+16), on a fake engine whose `prepare` and `process` can be held.
+- `adi_pd_engine_tests` 600 (+2), through real libpd: across the `prepare` a rebuild makes, `adi-proof.pd` comes back unchanged. Without the fix, 64 samples are wrong.
+- Six plants, all caught. `test_all.sh` 8014. GCC and Clang `-Werror` clean. TSan 0.
+
+**Ownership:** it edits `src/juce/pd_device.*` and two Pd suites, which ADR-0208 gives the devices lane for the zero-delay adapter. It predates ADR-0208 and fixes the device contract (ADR-0090) that the adapter's work starts from. Win may merge it as it stands, or hand it over.
+
+---
+
+## 2026-10-27, early — #237, second push: what the review of the VST3 at 64 found
+
+**PR:** [arieladi/Adi#237](https://github.com/arieladi/Adi/pull/237), commits `25e040c` (the fixes) and `7dacaed` (main merged in; one conflict in `Graph::prepare`, both sides kept). A two-lens review, each finding put to a skeptic, confirmed three defects. All were introduced by #237; the first was also in the 32-bit step before it.
+
+**Fixed.**
+- **The VST3 render steps could not hear a silent plug-in.** The demo project's audio clip plays at -6 dBFS from 0 to 1.5 s, and `--require-peak` takes the whole render's peak, so the clip met it alone. `--require-double` reads what the host set up, not what it played. Each step now also renders from 2 s, where only the VST3 sounds, at 32 and at 64. Plain's negative run must exit 2 with its own line.
+- **The probe's 64-bit section read only the left channel, and both channels held the same signal.** It now records and pre-fills both, and feeds each its own noise.
+- **`adi_play` counted "handed double" from what a device says now**, not from what the graph decided. `DeviceNode` now remembers the width it was told, and the count needs both.
+
+**Checks.**
+- `adi_device_model_tests` 70 (+3).
+- Eight plants, all caught. Three are silences that the old step command lines passed; one of them, a session-path silence at 64, is invisible to the probe.
+- `test_all.sh` 8189 across 95 suites, merged with main. GCC and Clang `-Werror` clean.
+
+---
+
 ## 2026-10-26, night — LANES §3 item 1f: a VST3 that takes `kSample64` is set up at 64 and handed double (ADR-0207 d2)
 
 **PR:** [arieladi/Adi#237](https://github.com/arieladi/Adi/pull/237) (`engine/vst3-64`), draft, stacked on #236. CI green on all 19 legs, the JUCE legs' new 64-bit render and its failing twin included.
