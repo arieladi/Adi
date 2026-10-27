@@ -16806,3 +16806,46 @@ him the same day.
 | ADR-0206 d4, d5 | closed: master direction only; `events.subscribe` on the contributions list; video clips P2 (d3) |
 | ADR-0109 roster, ADR-0202 | the roster gains the engine and clones lanes; win_codex's roster row becomes the clones lane (d1) |
 | BUILD-BRIEF phase A | item 0: double summing first, then the 64-bit mode behind the switch (d2) |
+
+## ADR-0208 — Five lanes: the window and the devices get seats of their own; the clones lane adds ADI-C — `DECIDED` (2026-10-27) — **DIRECTOR'S DECISION; AMENDS ADR-0207 d1 AND `docs/LANES.md`**
+
+**The director's words.** The cloud session finished its credits on the engine lane and the lane
+continues on his Max allowance; he now wants two more seats, each with one self-contained task,
+"burning their tokens until the part is done … auto continue", so they never need him as the API
+between them. His Codex Pro stays his programmer and reverse-engineer for ADI-L, ADI-Q and
+**ADI-C** (the K-Clip-class clipper, named today) and for baking some of that into FilmCraft; a
+second Codex seat and a second Claude seat take ADI work he does not have to touch.
+
+### Decisions
+
+1. **Two lanes are carved out of the existing queues, so no lane waits on another:**
+   - the **window lane** (a Claude seat): step 7, the first window, from the six open step-7 PRs
+     through 7.6, then the window parts of phase C, the Settings window and the EQ/limiter window;
+     it owns `src/adi/ui/**`, `src/juce/ui_*`, `src/juce/app*`, the two UI documents. It was the
+     engine lane's item 8; the engine lane keeps the graph, the hosts and the export queue.
+   - the **devices lane** (a Codex seat): Live's devices as ADI's built-ins (`pd/**`,
+     `src/adi/dsp/**`, `src/adi/pd_builtins/**`), the zero-delay Pd adapter (ADR-0203 d4, taken from
+     the engine lane's item 3), the four device PRs of 30 September, every Live device not yet
+     built in the manual's order, the parity passes, the DJ Filter. It takes LANES §4 item 5 from
+     the clones lane.
+   Standing prompts: `collab/prompts/2026-10-27-window-lane.md`, `2026-10-27-devices-lane.md`;
+   logs `collab/window.md`, `collab/devices.md`; branches `window/*`, `devices/*`. The rules of
+   ADR-0207 d1 hold for all five: one item per branch, a PR when green, win merges, a lane never
+   merges its own PR, limits are not blockers.
+
+2. **ADI-C** joins the director's clones (ADR-0204 d1, ADR-0205 d3): a K-Clip-class clipper, built
+   from measurements under his name, the clipper stage of the Loudness Drive's cascade beside
+   ADI-L (ADR-0203 d14 c). The clones lane's queue becomes ADI-Q, ADI-L, ADI-C, ADI Still, ADI Prism.
+
+3. **Ownership by path, in one table (`docs/LANES.md` §1),** so two seats never edit the same
+   file: the engine owns the graph, hosts, export and format code; the window the UI; the devices
+   the device tier; the clones `plugins/`; win the documents, the collab tables and the merges.
+   A need across a line is logged, not edited.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0207 d1 | three lanes become five; the engine lane's items 3 (the Pd adapter) and 8 (the window) move (d1) |
+| ADR-0204 d1, ADR-0205 d3 | the clones gain ADI-C (d2) |
+| `docs/LANES.md` | §1, §3, §4 rewritten for five lanes (d1, d3) |
