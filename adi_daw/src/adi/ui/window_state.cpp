@@ -39,8 +39,9 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
             return state;
         state.panels = PanelLayout(a, b, 240);
         state.zoom = zoom;
-        state.deviceHeight = height;
+        state.setDeviceHeight(height);
         state.docked = j.at("docked").get<bool>();
+        state.aiChatOpen = j.value("aiChat", false);
         return state;
     } catch (const std::exception &) {
         return WindowState(defaults);
@@ -53,7 +54,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
             return false;
         }
         if (!std::isfinite(state.zoom) || state.zoom < .25 || state.zoom > 8 ||
-            state.deviceHeight < 0 || state.deviceHeight > 4000) {
+            state.deviceHeight < state.deviceFloor || state.deviceHeight > 4000) {
             error = "Invalid view geometry";
             return false;
         }
@@ -66,6 +67,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"zoom", state.zoom},
                             {"deviceHeight", state.deviceHeight},
                             {"docked", state.docked},
+                            {"aiChat", state.aiChatOpen},
                             {"panels", nlohmann::json::array()}};
         for (const auto &p : state.panels.slots())
             j["panels"].push_back({{"id", static_cast<int>(p.panel)},

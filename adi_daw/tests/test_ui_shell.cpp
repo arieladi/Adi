@@ -78,8 +78,16 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(8, 5, 190, 34);
         g.fillRect(228, 5, root.getWidth() - 228, 34);
         g.fillRect(0, 54, root.getWidth(), 30);
-        const int dock = root.state().docked ? root.state().deviceHeight : 0;
-        g.fillRect(0, root.getHeight() - dock + 10, root.getWidth(), 30);
+        const auto devices = root.deviceArea();
+        if (!devices.isEmpty())
+            g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
+        // The Status Bar's message and button, the AI tab's label and the Info
+        // View's text are typography too; their geometry is checked by bounds.
+        g.fillRect(root.status.getBounds().withTrimmedTop(1));
+        if (root.aiTab.isVisible())
+            g.fillRect(root.aiTab.getBounds());
+        if (!root.infoArea().isEmpty())
+            g.fillRect(root.infoArea().reduced(4));
     }
     const auto file = juce::File(ADI_UI_REFERENCES).getChildFile(juce::String(name) + ".png");
     if (write) {
@@ -169,7 +177,9 @@ int main(int argc, char **argv) {
           "queue immediate play before driver drains");
     mailbox.drain(driver);
     check(driver.playing(), "two rapid toggles preserve order");
-    check(b.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)), "other window routes stop");
+    check(!b.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)),
+          "Esc stops nothing: in Live it closes a window or dialog");
+    check(b.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)), "other window routes stop");
     mailbox.drain(driver);
     b.frame();
     check(!driver.playing() && !b.playing(), "stop feedback");
@@ -182,7 +192,7 @@ int main(int argc, char **argv) {
     mailbox.drain(driver);
     std::string why;
     check(settings.set("shortcuts.preset", "cubase", {}, why), "change app preset");
-    commands.reload(settings);
+    commands.reload();
     check(a.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)),
           "transport shortcut remains available after app preset reload");
     mailbox.drain(driver);
@@ -260,6 +270,100 @@ int main(int argc, char **argv) {
     check(!readRoot.command(AppCommands::SwapPanels) &&
               readRoot.state().panels.slots()[0].panel == roOrder,
           "failed persistence rolls back visible order");
+    // The rulings since 29 September (ADR-0203 d6, d7, d12): Live's view keys,
+    // the strip's floor, the Info View and Status Bar, the AI tab, tooltips.
+    const auto cmd = juce::ModifierKeys::commandModifier;
+    const auto alt = juce::ModifierKeys::altModifier;
+    a.setSize(1200, 720);
+    check(a.state().deviceFloor == 169 && a.deviceArea().getHeight() == 169,
+          "the device strip starts at its floor");
+    a.state().setDeviceHeight(40);
+    check(a.state().deviceHeight == 169, "the strip never goes below its floor");
+    a.state().setDeviceHeight(300);
+    a.resized();
+    check(a.deviceArea().getHeight() == 300, "the strip grows upward");
+    a.setSize(1200, 300);
+    check(a.deviceArea().getHeight() == 169, "a short window keeps the floor");
+    a.setSize(1200, 720);
+    check(a.keyPressed(juce::KeyPress('b', cmd | alt, 0)) &&
+              a.state().panels.find(Panel::Browser)->collapsed,
+          "Ctrl/Cmd+Alt+B hides the browser");
+    check(persistence.load("main").panels.find(Panel::Browser)->collapsed,
+          "browser visibility persists in ui_view");
+    check(!a.aiTab.isVisible() && a.browserArea().isEmpty(), "the AI tab goes with the browser");
+    check(a.keyPressed(juce::KeyPress('5', cmd | alt, 0)) &&
+              !a.state().panels.find(Panel::Browser)->collapsed,
+          "Ctrl/Cmd+Alt+5 shows it again");
+    check(a.keyPressed(juce::KeyPress('m', cmd | alt, 0)) &&
+              a.state().panels.find(Panel::Mixer)->collapsed,
+          "Ctrl/Cmd+Alt+M hides the mixer");
+    check(a.keyPressed(juce::KeyPress('m', cmd | alt, 0)), "and shows it");
+    check(a.keyPressed(juce::KeyPress('4', cmd | alt, 0)) && !a.state().docked &&
+              a.deviceArea().isEmpty(),
+          "Ctrl/Cmd+Alt+4 hides the Device View");
+    check(a.keyPressed(juce::KeyPress('4', cmd | alt, 0)) && a.state().docked &&
+              a.deviceArea().getHeight() == 300,
+          "and shows it at its own height");
+    check(!a.state().aiChatOpen && a.aiTab.isVisible() && a.chatArea().getHeight() == 24 &&
+              a.chatArea().getBottom() == a.browserArea().getBottom(),
+          "the AI chat is a collapsed tab at the browser's foot");
+    a.aiTab.onClick();
+    check(a.state().aiChatOpen && a.chatArea().getHeight() > 24 &&
+              persistence.load("main").aiChatOpen,
+          "the tab opens and is remembered per window");
+    a.aiTab.onClick();
+    check(commands.infoView() && a.infoArea().getX() == 0 &&
+              a.infoArea().getBottom() == a.status.getY() &&
+              a.infoArea().getRight() == a.deviceArea().getX(),
+          "the Info View is on, bottom-left, beside the Device View");
+    a.hover(&a.transport.play);
+    check(a.infoText().contains("Play") && a.infoText().contains("Space"),
+          "the Info View describes the element under the mouse");
+    a.hover(nullptr);
+    check(a.infoText().isEmpty(), "and clears when nothing is under it");
+    check(a.keyPressed(juce::KeyPress('?', juce::ModifierKeys::shiftModifier, 0)) &&
+              !commands.infoView() && a.infoArea().isEmpty() && a.deviceArea().getX() == 0,
+          "Shift+? hides the Info View");
+    b.frame();
+    check(b.infoArea().isEmpty(), "the Info View is app-scoped: every window follows");
+    check(settings.get("lookfeel.showInfoView") == false, "and the App setting records it");
+    a.status.infoToggle.onClick();
+    check(commands.infoView() && !a.infoArea().isEmpty(), "the Status Bar's toggle shows it");
+    a.setSize(400, 540);
+    check(!a.command(AppCommands::SwapPanels) && !a.error().empty(),
+          "a refused swap says why in the Status Bar");
+    check(a.status.getBounds() == juce::Rectangle<int>(0, 540 - 22, 400, 22),
+          "the Status Bar runs along the window's foot");
+    a.setSize(1200, 720);
+    check(a.command(AppCommands::PlayStop) && a.error().empty(),
+          "the next success clears the message");
+    mailbox.drain(driver);
+    check(a.command(AppCommands::Stop), "stop button command");
+    mailbox.drain(driver);
+    ZoomHost host(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                     persistence, "zoomed"));
+    host.setSize(1200, 720);
+    auto &zoomed = host.root();
+    check(zoomed.keyPressed(juce::KeyPress('=', cmd, 0)) && zoomed.interfaceZoom() == 1.25f,
+          "Ctrl/Cmd++ zooms this window in");
+    check(zoomed.getWidth() == 960 && zoomed.getHeight() == 576,
+          "the root lays out in logical units under the window's zoom");
+    check(a.interfaceZoom() == 1.f, "other windows keep their own zoom");
+    check(zoomed.keyPressed(juce::KeyPress('-', cmd, 0)) &&
+              zoomed.keyPressed(juce::KeyPress('-', cmd, 0)) && zoomed.interfaceZoom() == .75f,
+          "Ctrl/Cmd+- zooms out");
+    check(zoomed.deviceArea().getHeight() == 169, "the floor is in zoom-independent units");
+    AdiWindow window(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                        persistence, "tips"),
+                     commands, false);
+    check(window.tooltips() != nullptr && window.tooltipDelayMs() == 600,
+          "floating tooltips are on, after 600 ms");
+    check(settings.set("lookfeel.showTooltips", false, {}, why), "switch tooltips off");
+    commands.reload();
+    AdiWindow quiet(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
+                                                       persistence, "quiet"),
+                    commands, false);
+    check(quiet.tooltips() == nullptr, "the setting turns them off for new windows");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
