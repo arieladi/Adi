@@ -43,6 +43,46 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-27, later — Rename [#260](https://github.com/arieladi/Adi/pull/260), selection [#261](https://github.com/arieladi/Adi/pull/261), the canvas's accessibility [#262](https://github.com/arieladi/Adi/pull/262)
+
+**CI.** #246 and #248 are green on all 22 legs. Three failures elsewhere in the stack, all fixed
+on the branch that introduced them, with the branches above restacked:
+- #256: MSVC C4456. The floating-host test's `host` hid the `ZoomHost host`.
+- #257 and #258: GCC `-Wsign-conversion` on `size_t += cond ? 1 : 0`.
+- #261: Windows allocated in the frame that presents a new selection, where the device strip
+  follows the track. The check now audits the frames after it.
+
+Before each push, a Clang `-Wshadow-all` sweep now runs over the UI sources and the shell test,
+through `build-juce/compile_commands.json`. It caught two more shadowed loop variables before
+#262 went up. GCC 16 is installed (`/opt/homebrew/bin/g++-16`), but it cannot parse JUCE's
+headers on macOS, so GCC-only warnings still surface in CI.
+
+**Rename, now #260, stacked on #258.** Ctrl/Cmd+R, the Edit menu or the header's menu opens an
+editor in the track's title bar.
+- Enter commits one undo step; Esc cancels; Tab and Shift+Tab move on through a series.
+- A leading # shows the track's number and follows it, with a # per digit (manual 18.2). New
+  tracks are named "#-Audio" and "#-MIDI".
+- Checks: 219.
+
+**Selection, now #261, stacked on #260.** Selection is session state.
+- `adi::ui::SessionState` holds the project's one selection in `session_state`. It is never an op.
+- Every window presents a copy per frame.
+- Edits carry it as `sel_before`, and undo restores it.
+- Checks: 224 shell and 48 headless (+10, every ABI). `test_all.sh` 8265 across 97 suites.
+
+**The canvas's accessibility, now #262, stacked on #261.** Each clip on screen gets a transparent
+`ClipAccessible`, recycled as the view scrolls.
+- Its listItem title is built only when a reader asks; its press action selects the clip.
+- Keyboard moves are announced.
+- Checks: 229.
+
+**Next in §3b item 2:**
+1. The Mixer View of vertical strips (Live 12 18.1, p. 390, 393).
+2. The scrub area and its click-to-play.
+3. The browser's content.
+
+---
+
 ## 2026-10-27, night — LANES §3b item 2 begins: the Overview → [#258](https://github.com/arieladi/Adi/pull/258) `window/overview`
 
 **The Overview, now #258, stacked on #257.** It is a 16-unit strip above the ruler: every track's
@@ -55,7 +95,7 @@ clips in miniature over the whole span, and an outline around the part on screen
 Checks: 212 shell checks, with real mouse dispatch through the fake peer; `test_all.sh` 8255
 across 97 suites. Parity: row 20 of `parity-7.3-arrangement.md` is built.
 
-**Where to resume.** The worktree is `~/adi-window`, on `window/overview`. Its trees are
+**Where to resume** (superseded by the entry above for the branch). The worktree is `~/adi-window`, on `window/overview`. Its trees are
 `adi_daw/build` (core, `-DADI_WERROR=ON`) and `adi_daw/build-juce` (`-DADI_WITH_JUCE=ON`). This
 log lives in `~/adi-window-log` on `window/log` (#252). The next items of §3b item 2, in order:
 1. Rename (Ctrl/Cmd+R) and the double-click on a track's name: `track.rename` exists.
