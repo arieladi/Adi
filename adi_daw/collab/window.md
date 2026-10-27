@@ -43,6 +43,36 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-27, latest — the Mixer View [#263](https://github.com/arieladi/Adi/pull/263) `window/mixer-view`
+
+**The Mixer View, now #263, stacked on #262.** Live 12's Mixer in the Arrangement: vertical
+strips at the arrangement's foot, from Ctrl/Cmd+Alt+M, the View menu's Mixer, or the Status Bar's
+new bottom-right toggle.
+- It is the same `MixerPanel` in a vertical mode, so edits, meters and Auto Gain are shared.
+- Only the columns on screen are realised, and the wheel scrolls it sideways.
+- Dragged past 260 units tall, it shows ticks every 6 dB and a numeric volume field.
+- The manual settles parity-7.2 row 6: Ctrl/Cmd+Alt+M is the Mixer View's. The side panel of
+  track controls keeps a View-menu item, with no key.
+- Found by the render: the Track Activator showed the track's id. It now shows its place.
+
+Checks: 244 shell checks, with a new golden; `test_all.sh` 8265 across 97 suites.
+
+**The shadowing sweep earned its keep twice more:** an outer `order` and an `a` hidden by locals
+were both caught before push.
+
+**CI at this entry:** #246 and #248 are fully green; #251 to #262 have no failures and are still
+running.
+
+**Next in §3b item 2:**
+1. The scrub area and its click-to-play (manual 6.1, p. 161).
+2. The browser's content.
+3. Live's resettable peak indicators on a tall Mixer View.
+
+After those, item 3: the window parts of phase C, the Settings window in Live's shape (ADR-0203
+d11), and the EQ/limiter window (ADR-0204 d1).
+
+---
+
 ## 2026-10-27, later — Rename [#260](https://github.com/arieladi/Adi/pull/260), selection [#261](https://github.com/arieladi/Adi/pull/261), the canvas's accessibility [#262](https://github.com/arieladi/Adi/pull/262)
 
 **CI.** #246 and #248 are green on all 22 legs. Three failures elsewhere in the stack, all fixed
