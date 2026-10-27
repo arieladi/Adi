@@ -2,7 +2,9 @@
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
+#include "app_audio_page.hpp"
 #include "ui_floating.hpp"
+#include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
 namespace adi::ui {
@@ -22,6 +24,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 noAudio_ = true;
             else if (a == "--smoke-output" && i + 1 < args.size())
                 smokeOutput_ = juce::File(args[++i].unquoted());
+            else if (a == "--smoke-settings")
+                smokeSettings_ = true; // the smoke renders the Settings window's Audio page
             else if (a.startsWithChar('-')) {
                 setApplicationReturnValue(2);
                 quit();
@@ -65,8 +69,7 @@ class AdiApplication final : public juce::JUCEApplication,
     void shutdown() override {
         stopTimer();
         chooser_.reset();
-        if (audioDialog_ != nullptr)
-            delete audioDialog_.getComponent();
+        settingsWindow_.reset();
         if (snapshotPrompt_ != nullptr)
             delete snapshotPrompt_.getComponent();
         manager_.removeChangeListener(this);
@@ -253,26 +256,19 @@ class AdiApplication final : public juce::JUCEApplication,
             return false;
         }
         if (id == AppCommands::Settings) {
-            if (noAudio_) {
-                report("Audio devices are disabled for this file-only run");
-                return false;
+            // Live's Settings window (ADR-0203 d11): its Audio page holds the device
+            // chooser of STEP-7-PLAN §3.0, unless this run has no audio device.
+            if (!settingsWindow_) {
+                std::function<std::unique_ptr<juce::Component>()> devices;
+                // The smoke shows the page over an unopened device manager.
+                if (!noAudio_ || smokeSettings_)
+                    devices = [this]() -> std::unique_ptr<juce::Component> {
+                        return std::make_unique<AudioDevicePage>(manager_);
+                    };
+                settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
             }
-            if (audioDialog_ != nullptr) {
-                audioDialog_->toFront(true);
-                return true;
-            }
-            juce::DialogWindow::LaunchOptions options;
-            // The Settings window takes Live's shape later (ADR-0203 d11); until then
-            // Ctrl/Cmd+, opens its Audio page, the device chooser of STEP-7-PLAN §3.0.
-            options.dialogTitle = "Settings: Audio";
-            options.dialogBackgroundColour = juce::Colour(0xff20232b);
-            options.useNativeTitleBar = true;
-            options.resizable = true;
-            auto selector = std::make_unique<juce::AudioDeviceSelectorComponent>(
-                manager_, 0, 2, 2, 2, false, false, true, false);
-            selector->setSize(620, 440);
-            options.content.setOwned(selector.release());
-            audioDialog_ = options.launchAsync();
+            settingsWindow_->setVisible(true);
+            settingsWindow_->toFront(true);
             return true;
         }
         if (id != AppCommands::NewProject && id != AppCommands::OpenProject)
@@ -321,6 +317,8 @@ class AdiApplication final : public juce::JUCEApplication,
         set("audio.driverType", type.toStdString());
         if (!settings_->save(why))
             report(why);
+        if (settingsWindow_)
+            settingsWindow_->panel().refreshValues();
     }
     void timerCallback() override {
         if (!document_)
@@ -337,11 +335,16 @@ class AdiApplication final : public juce::JUCEApplication,
                 return;
             }
             root_->frame();
-            juce::Image image(juce::Image::ARGB, window_->getWidth(), window_->getHeight(), true,
+            juce::Component *shown = window_.get();
+            if (smokeSettings_ && applicationCommand(AppCommands::Settings)) {
+                settingsWindow_->panel().showPage("Audio");
+                shown = &settingsWindow_->panel();
+            }
+            juce::Image image(juce::Image::ARGB, shown->getWidth(), shown->getHeight(), true,
                               juce::SoftwareImageType{});
             {
                 juce::Graphics graphics(image);
-                window_->paintEntireComponent(graphics, true);
+                shown->paintEntireComponent(graphics, true);
             }
             auto stream = smokeOutput_.createOutputStream();
             if (!stream || !juce::PNGImageFormat{}.writeImageToStream(image, *stream))
@@ -350,7 +353,7 @@ class AdiApplication final : public juce::JUCEApplication,
             quit();
         }
     }
-    bool noAudio_ = false;
+    bool noAudio_ = false, smokeSettings_ = false;
     juce::File smokeOutput_;
     std::unique_ptr<settings::AppSettings> settings_;
     std::unique_ptr<AppCommands> commands_;
@@ -363,7 +366,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<FloatingHost> floating_;
     std::unique_ptr<juce::FileChooser> chooser_;
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
-    juce::Component::SafePointer<juce::DialogWindow> audioDialog_;
+    std::unique_ptr<SettingsWindow> settingsWindow_;
 };
 } // namespace adi::ui
 START_JUCE_APPLICATION(adi::ui::AdiApplication)

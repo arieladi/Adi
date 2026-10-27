@@ -23,7 +23,7 @@ Status: **built** (in this PR, with a check in `tests/test_ui_shell.cpp`), **par
 | 11 | Shift+Space continues from the stop point | §41.20, p. 1001 | — | open: needs the transport's seek, with the arrangement |
 | 12 | Esc closes a window or a dialog | §41.1, p. 985 | Esc no longer stops the transport (win_codex's original did) | built (no dialog exists yet) |
 | 13 | Tab toggles Session and Arrangement | §41.1, p. 984 | — | open: Session View is P2 (ADR-0203 d10) |
-| 14 | Ctrl/Cmd+, opens the Settings | §41.1, p. 985 | — | open: the Settings window is LANES §3b item 3 |
+| 14 | Ctrl/Cmd+, opens the Settings | §41.1, p. 985 | Opens the Settings window in Live's shape (`window/settings`, `parity-settings.md`) | built |
 | 15 | The Device View has one height | ADR-0203 d7, ADR-0184 | Floor 169 zoom-independent units, a desktop default; the strip grows upward only and keeps its height when hidden | measure: 169 is the director's figure, UNVERIFIED (AWAITING) |
 | 16 | — (ADI deviation) floating tooltips on after 600 ms | ADR-0203 d12, ADR-0131 | One tooltip window per native window, delay from `lookfeel.tooltipDelayMs`, off with `lookfeel.showTooltips` | built |
 | 17 | — (ADI addition) the AI chat is a tab at the browser's foot, collapsed | ADR-0203 d6 | A 24-unit tab at the browser's bottom; open, it takes the lower two fifths; remembered per window | built |
