@@ -43,7 +43,11 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
-## 2026-10-27, latest — Live's look [#265](https://github.com/arieladi/Adi/pull/265) `window/live-look`; held for the director's approval
+## 2026-10-27, latest — Live's look [#265](https://github.com/arieladi/Adi/pull/265) `window/live-look`; approved
+
+**Approved by the director, 27 October:** "Approved, the look is close enough to Live. Continue
+with the next window items." The hold on new windows is lifted. Each new window is measured
+against Live 11 the same way, and the director sees pictures as each one lands.
 
 **The director's ruling (27 October):** the window "looks very far from Ableton". It must look
 like Live, plus what the Master Reference adds. He approves from pictures, and no new window is
