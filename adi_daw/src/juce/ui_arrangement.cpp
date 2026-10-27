@@ -53,6 +53,23 @@ void ArrangementOverview::mouseDrag(const juce::MouseEvent &e) {
     view.changed();
 }
 void ArrangementOverview::mouseDoubleClick(const juce::MouseEvent &) { view.fit(false); }
+ScrubArea::ScrubArea(ArrangementView &v) : view(v) {
+    setTitle("Scrub area");
+    setTooltip("Click to play from that point.");
+    setMouseCursor(juce::MouseCursor::PointingHandCursor);
+}
+void ScrubArea::paint(juce::Graphics &g) {
+    g.fillAll(juce::Colour(0xff262e38));
+    g.setColour(juce::Colour(0xff3a4553));
+    g.fillRect(0, getHeight() - 1, getWidth(), 1);
+}
+void ScrubArea::mouseDown(const juce::MouseEvent &e) {
+    if (e.mods.isPopupMenu())
+        return;
+    // From the point clicked; Live's global launch quantization arrives with Session
+    // View's launch settings (ADR-0203 d10), so nothing is quantized yet.
+    view.root.playFrom(view.geometry.tick(e.position.x));
+}
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
     // The snapshot carries no time signatures yet (collab/window.md, N6).
@@ -209,9 +226,9 @@ void ArrangementCanvas::announceSelection() {
             lastAnnouncement, juce::AccessibilityHandler::AnnouncementPriority::medium);
 }
 ArrangementView::ArrangementView(AdiRootComponent &r)
-    : root(r), overview(*this), ruler(*this), headers(*this), canvas(*this) {
-    for (auto *c :
-         std::array<juce::Component *, 5>{&overview, &ruler, &headers, &canvas, &playhead})
+    : root(r), overview(*this), ruler(*this), scrub(*this), headers(*this), canvas(*this) {
+    for (auto *c : std::array<juce::Component *, 6>{&overview, &ruler, &scrub, &headers, &canvas,
+                                                     &playhead})
         addAndMakeVisible(c);
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
@@ -221,6 +238,7 @@ void ArrangementView::resized() {
     const int body = std::max(0, getHeight() - kTopHeight);
     overview.setBounds(0, 0, clipsW, kOverviewHeight);
     ruler.setBounds(0, kOverviewHeight, clipsW, kRulerHeight);
+    scrub.setBounds(0, kOverviewHeight + kRulerHeight, clipsW, kScrubHeight);
     canvas.setBounds(0, kTopHeight, clipsW, body);
     headers.setBounds(clipsW, kTopHeight, headerW, body);
     frame(true);
