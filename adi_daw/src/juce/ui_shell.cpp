@@ -23,6 +23,7 @@ void AppCommands::reload() {
     tooltips_ = flag(settings_, "lookfeel.showTooltips", true);
     const auto delay = settings_.get("lookfeel.tooltipDelayMs");
     tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
+    zoomOnSelection_ = flag(settings_, "lookfeel.zoomOnSelection", true);
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
@@ -50,7 +51,15 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Hide/Show Info View", "Zoom In Window",
                                   "Zoom Out Window",     "New Project",
                                   "Open Project...",     "Take Snapshot...",
-                                  "Save Project As...",  "Settings..."};
+                                  "Save Project As...",  "Settings...",
+                                  "Zoom In",             "Zoom Out",
+                                  "Zoom to Arrangement Time Selection",
+                                  "Zoom Back",           "Optimize Arrangement Width",
+                                  "Optimize Arrangement Height",
+                                  "Move Insert Marker to Beginning",
+                                  "Continue Play from Stop Point",
+                                  "Insert Audio Track",  "Insert MIDI Track",
+                                  "Delete Track"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -98,6 +107,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ZoomIn:
         info.addDefaultKeypress('+', cmd);
+        info.addDefaultKeypress('+', cmd | shift);
         info.addDefaultKeypress('=', cmd);
         break;
     case ZoomOut:
@@ -119,6 +129,42 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case Settings:
         info.addDefaultKeypress(',', cmd);
+        break;
+    // The arrangement: §6.2, §41.9, §41.16, §41.19, §41.20; ADR-0129's gate.
+    case TimeZoomIn:
+        info.addDefaultKeypress('+', 0);
+        info.addDefaultKeypress('+', shift);
+        info.addDefaultKeypress('=', 0);
+        break;
+    case TimeZoomOut:
+        info.addDefaultKeypress('-', 0);
+        break;
+    case ZoomToSelection:
+        info.addDefaultKeypress('z', 0);
+        break;
+    case ZoomBack:
+        info.addDefaultKeypress('x', 0);
+        break;
+    case OptimizeWidth:
+        info.addDefaultKeypress('w', 0);
+        break;
+    case OptimizeHeight:
+        info.addDefaultKeypress('h', 0);
+        break;
+    case GoStart:
+        info.addDefaultKeypress(juce::KeyPress::homeKey, 0);
+        break;
+    case ContinuePlay:
+        info.addDefaultKeypress(juce::KeyPress::spaceKey, shift);
+        break;
+    case InsertAudioTrack:
+        info.addDefaultKeypress('t', cmd);
+        break;
+    case InsertMidiTrack:
+        info.addDefaultKeypress('t', cmd | shift);
+        break;
+    case DeleteTrack:
+        info.setActive(active_ != nullptr && active_->arrangement.geometry.selectedTrack != 0);
         break;
     default:
         break;
@@ -190,7 +236,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
                                    TransportMailbox &mailbox, AppCommands &commands,
                                    ViewStateStore &persistence, std::string window,
                                    DesktopDefaults defaults)
-    : transport(*this), status(*this), view_(view), submitter_(submitter), mailbox_(mailbox),
+    : transport(*this), status(*this), arrangement(*this), view_(view), submitter_(submitter),
+      mailbox_(mailbox),
       commands_(commands), persistence_(persistence), window_(std::move(window)),
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
     setOpaque(true);
@@ -198,6 +245,11 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(transport);
     addAndMakeVisible(status);
     addAndMakeVisible(aiTab);
+    addAndMakeVisible(arrangement);
+    arrangement.geometry.left = state_.timelineLeft;
+    arrangement.geometry.scale = state_.pixelsPerQuarter;
+    arrangement.geometry.height = state_.laneHeight;
+    arrangement.geometry.heights = state_.laneHeights;
     aiTab.setTitle("AI");
     aiTab.setTooltip("The AI chat. Opens at the foot of the browser.");
     aiTab.onClick = [this] {
@@ -240,6 +292,7 @@ void AdiRootComponent::frame() noexcept {
     if (infoShown_)
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
     lastDrain_ = dirty_.drain();
+    arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (lastDrain_ & DirtySet::Transport)
         transport.repaint();
     if (lastDrain_ & DirtySet::Status)
@@ -262,6 +315,20 @@ void AdiRootComponent::hover(juce::Component *c) {
     hovered_ = c;
     infoText_ = client ? c->getTitle() + "\n" + client->getTooltip() : juce::String();
     dirty_.mark(DirtySet::Content);
+}
+std::int64_t AdiRootComponent::timelineTick() const noexcept {
+    const auto *tempo = reader_->tempo();
+    const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();
+    return tempo && rate > 0 ? tempo->secondsToTicks(static_cast<double>(position_) / rate) : 0;
+}
+bool AdiRootComponent::locate(std::int64_t tick) {
+    // Landing reads the current cell, not this window's presented frame.
+    const auto current = view_.current();
+    const double rate = mailbox_.sampleRate() > 0 ? mailbox_.sampleRate() : current->sampleRate;
+    if (!current->tempo || !mailbox_.hasRoom())
+        return false;
+    return mailbox_.post(TransportMailbox::Command::Locate,
+                         static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
 }
 double AdiRootComponent::bpm() const noexcept {
     const auto *tempo = reader_->tempo();
@@ -324,6 +391,7 @@ void AdiRootComponent::resized() {
     }
     leftWidth_ = left;
     rightWidth_ = right;
+    arrangement.setBounds(left, top, std::max(0, w - left - right), mid);
     dirty_.mark(DirtySet::All);
 }
 void AdiRootComponent::paint(juce::Graphics &g) {
@@ -364,7 +432,6 @@ void AdiRootComponent::paint(juce::Graphics &g) {
     if (right > 0)
         g.drawText(name(slots[1].panel), w - right + 12, top + 12, std::max(0, right - 24), 24,
                    juce::Justification::centredLeft);
-    g.drawText("Arrangement", left + 16, top + 12, 200, 24, juce::Justification::centredLeft);
     if (!deviceArea_.isEmpty())
         g.drawText("Devices", deviceArea_.getX() + 12, deviceArea_.getY() + 12, 160, 24,
                    juce::Justification::centredLeft);
@@ -398,23 +465,70 @@ bool AdiRootComponent::toggle(Panel p) {
     }
     return true;
 }
+bool AdiRootComponent::insertTrack(bool midi) {
+    // Live inserts after the selected track and selects the new one. The id is the
+    // payload's, never SQLite's (ADR-0021), and it comes from the CURRENT cell: an
+    // action lands on the project as it is now, not on this window's last frame.
+    const auto current = view_.current();
+    const auto &tracks = current->tracks;
+    std::int64_t id = 1, index = static_cast<std::int64_t>(tracks.size());
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        id = std::max(id, tracks[i]->id + 1);
+        if (tracks[i]->id == arrangement.geometry.selectedTrack)
+            index = static_cast<std::int64_t>(i) + 1;
+    }
+    OpRequest request;
+    request.opType = "track.create";
+    request.payload = {{"id", id},
+                       {"kind", midi ? "midi" : "audio"},
+                       {"name", std::to_string(index + 1) + (midi ? "-MIDI" : "-Audio")},
+                       {"index", index}};
+    request.label = midi ? "Insert MIDI Track" : "Insert Audio Track";
+    const auto result = submitter_.submit(std::move(request));
+    if (!result)
+        return fail(result.error);
+    arrangement.geometry.selectedTrack = id;
+    return true;
+}
+bool AdiRootComponent::deleteTrack() {
+    const auto id = arrangement.geometry.selectedTrack;
+    if (id == 0)
+        return fail("Select a track to delete.");
+    OpRequest request;
+    request.opType = "track.delete";
+    request.payload = {{"id", id}};
+    request.label = "Delete Track";
+    const auto result = submitter_.submit(std::move(request));
+    if (!result)
+        return fail(result.error);
+    arrangement.geometry.selectedTrack = 0;
+    arrangement.geometry.selectedClip = 0;
+    return true;
+}
 bool AdiRootComponent::command(int id) {
     if (id >= AppCommands::NewProject && id <= AppCommands::Settings)
         return applicationCommand && applicationCommand(id);
+    if (id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart)
+        return arrangement.command(id);
     // No action carries the presented frame into an edit: OpSubmitter resolves
     // current store/history state on arrival, even when this window is a frame behind.
     switch (id) {
     case AppCommands::PlayStop:
-    case AppCommands::Stop: {
-        if (!mailbox_.hasRoom())
+    case AppCommands::Stop:
+    case AppCommands::ContinuePlay: {
+        // Space plays from the insert marker, Shift+Space from where it stopped.
+        const bool play = id != AppCommands::Stop && !mailbox_.desiredPlaying();
+        const bool fromMarker = play && id == AppCommands::PlayStop;
+        if (!mailbox_.hasRoom(fromMarker ? 2 : 1))
             return fail("Transport command queue is full");
-        const bool play = id == AppCommands::PlayStop && !mailbox_.desiredPlaying();
         OpRequest request;
         request.opType = play ? "transport.play" : "transport.stop";
         request.payload = Payload::object();
         const auto result = submitter_.submit(std::move(request));
         if (!result)
             return fail(result.error);
+        if (fromMarker)
+            locate(arrangement.geometry.insert);
         mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
         break;
     }
@@ -454,6 +568,15 @@ bool AdiRootComponent::command(int id) {
         infoShown_ = commands_.infoView();
         break;
     }
+    case AppCommands::InsertAudioTrack:
+    case AppCommands::InsertMidiTrack:
+        if (!insertTrack(id == AppCommands::InsertMidiTrack))
+            return false;
+        break;
+    case AppCommands::DeleteTrack:
+        if (!deleteTrack())
+            return false;
+        break;
     case AppCommands::ZoomIn:
     case AppCommands::ZoomOut: {
         const auto at = std::find(kZoomSteps.begin(), kZoomSteps.end(), interfaceZoom_);
@@ -475,12 +598,12 @@ bool AdiRootComponent::command(int id) {
     resized();
     return true;
 }
-// Live's menu bar, as far as step 7 has commands for it: File, Edit, View.
+// Live's menu bar, as far as step 7 has commands for it: File, Edit, Create, View.
 // Transport has no menu in Live; Space is its key.
 class ShellMenu final : public juce::MenuBarModel {
   public:
     ShellMenu(AdiRootComponent &r, AppCommands &c) : root(r), commands(c) {}
-    juce::StringArray getMenuBarNames() override { return {"File", "Edit", "View"}; }
+    juce::StringArray getMenuBarNames() override { return {"File", "Edit", "Create", "View"}; }
     juce::PopupMenu getMenuForIndex(int index, const juce::String &) override {
         commands.activate(root);
         juce::PopupMenu menu;
@@ -499,6 +622,9 @@ class ShellMenu final : public juce::MenuBarModel {
             add(AppCommands::Undo);
             add(AppCommands::Redo);
         } else if (index == 2) {
+            add(AppCommands::InsertAudioTrack);
+            add(AppCommands::InsertMidiTrack);
+        } else if (index == 3) {
             add(AppCommands::ToggleBrowser);
             add(AppCommands::ToggleMixer);
             add(AppCommands::ToggleDeviceView);
@@ -506,6 +632,11 @@ class ShellMenu final : public juce::MenuBarModel {
             menu.addSeparator();
             add(AppCommands::ZoomIn);
             add(AppCommands::ZoomOut);
+            menu.addSeparator();
+            add(AppCommands::ZoomToSelection);
+            add(AppCommands::ZoomBack);
+            add(AppCommands::OptimizeWidth);
+            add(AppCommands::OptimizeHeight);
             menu.addSeparator();
             add(AppCommands::SwapPanels);
         }
