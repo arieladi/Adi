@@ -20,7 +20,8 @@
       "Shots 21-22 (97-104s) show a long-necked creature rising from a splash, not clearly the planned serpent/mandala; subject readability worth a user look."
     ],
     "review_images": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s/review-claude-20261027",
-    "next": "User reviews the draft. Do not extend past 120s or re-render shots without approval. Codex may delete its completion monitor (review-cosmic-rain-120-second-pilot)."
+    "gemini_ayana_analysis": "User gave Codex a Gemini breakdown of Ayana before the pilot: modular 1-bar/2-bar I2V clips, hard cuts on bar 1, eye/circle portal match-zooms, 2D mirror/radial/clone compositing, reverse-timed impacts, acts. The pilot applied the cut grid but not the compositing, fresh-keyframe-per-clip or portals, and chained last frames (the drift Gemini warned against). Gemini's '40 frames per bar at 24fps' drifts (bar is 40.28 frames); use absolute timestamps. Its timestamps are partly wrong against sampled frames; its waveform brightness pulses conflict with the no-strobe preference; Flow/Veo are paid and excluded.",
+    "next": "No generation until the user approves. Proposed first step is a ~16s test section, not another 120s. Codex may delete its completion monitor (review-cosmic-rain-120-second-pilot)."
   },
   "avastha": {
     "remote_root": "D:/AvasthaAI/Avastha4K60-20261026",
