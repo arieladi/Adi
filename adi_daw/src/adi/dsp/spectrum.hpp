@@ -45,6 +45,7 @@
 
 #pragma once
 
+#include <complex>
 #include <cstdint>
 #include <span>
 #include <vector>
@@ -99,6 +100,41 @@ void fillWindow(Window w, std::span<float> out) noexcept;
 /// bins.
 [[nodiscard]] float toDbfs(float calibratedMagnitude) noexcept;
 inline constexpr float kDbFloor = -200.f;
+
+/// Unwindowed real transform for convolution and other phase-sensitive DSP.
+/// PFFFT's packed layout stays in spectrum.cpp: callers see bins 0..N/2,
+/// including separate real DC and Nyquist values. Forward is unscaled;
+/// inverse includes 1/N, so a round trip preserves the input amplitude.
+/// Calculations have single-precision FFT accuracy. Construct off-thread;
+/// forward/inverse reuse aligned scratch and never allocate.
+class RealFft {
+public:
+    /// Same size/factor requirements as Spectrum, at most 2^26 samples.
+    /// An unsupported size gives an invalid plan; check valid() before use.
+    explicit RealFft(std::int32_t fftSize);
+    ~RealFft();
+    RealFft(const RealFft&) = delete;
+    RealFft& operator=(const RealFft&) = delete;
+
+    [[nodiscard]] bool valid() const noexcept { return setup_ != nullptr; }
+    [[nodiscard]] std::int32_t size() const noexcept { return n_; }
+    [[nodiscard]] std::int32_t bins() const noexcept { return n_ > 0 ? n_ / 2 + 1 : 0; }
+    /// Invalid plans or short spans return false without writing output.
+    /// Longer spans are accepted; only size()/bins() elements are used.
+    /// Inverse ignores imaginary DC/Nyquist parts, which cannot occur in a
+    /// real signal's Hermitian spectrum.
+    bool forward(std::span<const float> frame,
+                 std::span<std::complex<float>> out) noexcept;
+    bool inverse(std::span<const std::complex<float>> bins,
+                 std::span<float> out) noexcept;
+
+private:
+    std::int32_t n_ = 0;
+    void* setup_ = nullptr;
+    float* time_ = nullptr;
+    float* frequency_ = nullptr;
+    float* work_ = nullptr;
+};
 
 /// One FFT size's worth of state: the PFFFT setup, the window, and the
 /// scratch. Build it once and reuse it; `analyse` allocates nothing.
