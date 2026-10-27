@@ -722,30 +722,30 @@ int main(int argc, char **argv) {
             juce::Component dock, content;
             dock.addAndMakeVisible(content);
             content.setBounds(10, 20, 300, 180);
-            FloatingHost host(
+            FloatingHost floating(
                 integrated, commands, document->views(), document->view(),
                 [&](std::int64_t) { return alive; }, false);
-            check(host.detach("test", 11, content, dock), "detach existing component");
-            check(host.content("test") == &content && content.getParentComponent() != &dock,
+            check(floating.detach("test", 11, content, dock), "detach existing component");
+            check(floating.content("test") == &content && content.getParentComponent() != &dock,
                   "detach reparents same identity");
-            check(host.hasTooltips("test"), "a floating window has its own tooltips");
-            host.frame("test");
-            host.frame("test");
-            check(host.drains("test") == 2, "window drains on its own clock");
-            host.close("test");
+            check(floating.hasTooltips("test"), "a floating window has its own tooltips");
+            floating.frame("test");
+            floating.frame("test");
+            check(floating.drains("test") == 2, "window drains on its own clock");
+            floating.close("test");
             check(content.getParentComponent() == &dock &&
                       content.getBounds() == juce::Rectangle<int>(10, 20, 300, 180),
                   "dock restores exact component and bounds");
             check(!document->views().loadFloating("test").open, "close clears saved open state");
-            host.detach("deleted", 11, content, dock);
+            floating.detach("deleted", 11, content, dock);
             alive = false;
-            host.frame("deleted");
-            host.collect();
-            check(host.count() == 0 && !document->views().loadFloating("deleted").open,
+            floating.frame("deleted");
+            floating.collect();
+            check(floating.count() == 0 && !document->views().loadFloating("deleted").open,
                   "deleting the device closes its window and remembers it closed");
             alive = true;
-            host.collect();
-            check(host.count() == 0, "undo restores the device, not the window");
+            floating.collect();
+            check(floating.count() == 0, "undo restores the device, not the window");
             auto tap = std::make_shared<engine::ScopeTap>(48000, 1.);
             std::array<float, 1024> sine{};
             for (std::size_t i = 0; i < sine.size(); ++i)
@@ -756,7 +756,7 @@ int main(int argc, char **argv) {
             AnalyserView small(model);
             auto big = std::make_unique<AnalyserView>(model);
             auto *bigPtr = big.get();
-            check(host.openView("analyser", 11, std::move(big),
+            check(floating.openView("analyser", 11, std::move(big),
                                 [bigPtr](const SnapshotReader &) { bigPtr->frame(); }),
                   "a second view opens through the generic host");
             check(small.model() == bigPtr->model(),
@@ -768,14 +768,14 @@ int main(int argc, char **argv) {
             check(revision > 0 && bins[100] < -90 && std::abs(bins[32]) < .01,
                   "analyser worker calibrated floor before 0 dB sine");
             const std::string analyserKey = "analyser";
-            host.frame(analyserKey);
+            floating.frame(analyserKey);
             allocations = 0;
             audit = true;
             for (int i = 0; i < 20; ++i)
-                host.frame(analyserKey);
+                floating.frame(analyserKey);
             audit = false;
             check(allocations == 0, "floating analyser frame allocates zero");
-            host.close("analyser");
+            floating.close("analyser");
         }
         integrated.devices.publication = {};
         arrangement.geometry.selectedTrack = 2;
