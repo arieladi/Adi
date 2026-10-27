@@ -2,6 +2,7 @@
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
+#include "ui_floating.hpp"
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
 namespace adi::ui {
@@ -70,6 +71,7 @@ class AdiApplication final : public juce::JUCEApplication,
             delete snapshotPrompt_.getComponent();
         manager_.removeChangeListener(this);
         detachAudio();
+        floating_.reset();
         window_.reset();
         document_.reset();
         commands_.reset();
@@ -119,6 +121,7 @@ class AdiApplication final : public juce::JUCEApplication,
         }
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
+        floating_.reset();
         window_.reset();
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
@@ -148,6 +151,14 @@ class AdiApplication final : public juce::JUCEApplication,
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         window_->centreWithSize(1200, 720);
+        // The floating-window host, built before anything needs two windows (STEP-7-PLAN
+        // 7.5). Its users arrive with the hosts' plug-in editors (collab/window.md, N8)
+        // and the analyser device's big view (ADR-0183 d4).
+        floating_ = std::make_unique<FloatingHost>(
+            *root_, *commands_, document_->views(), document_->view(), [this](std::int64_t id) {
+                const auto *e = document_->session().entryFor(id);
+                return e && !e->retired;
+            });
         window_->setVisible(true);
         if (!noAudio_)
             attachAudio();
@@ -298,6 +309,8 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        if (floating_)
+            floating_->collect();
         if (smokeOutput_ != juce::File{}) {
             // Native-window smoke: software screenshot only, never an audio device.
             if (!window_->isShowing() || window_->getPeer() == nullptr) {
@@ -330,6 +343,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<device::DeviceBridge> bridge_;
     std::unique_ptr<AdiWindow> window_;
     AdiRootComponent *root_ = nullptr;
+    std::unique_ptr<FloatingHost> floating_;
     std::unique_ptr<juce::FileChooser> chooser_;
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     juce::Component::SafePointer<juce::DialogWindow> audioDialog_;
