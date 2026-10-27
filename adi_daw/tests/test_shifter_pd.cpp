@@ -51,7 +51,7 @@ void wav(const std::vector<float>& x) {
 }
 void run() {
     using namespace adi;
-    device::LibPdEngine engine(ADI_SHIFTER_PATCH_DIR,"Shifter.pd",2,2);engine.addSearchPath(ADI_PD_PATCH_DIR);
+    device::LibPdEngine engine(ADI_SHIFTER_PATCH_DIR,"Shifter.pd",2,2, adi::device::LibPdEngine::Execution::PureData);engine.addSearchPath(ADI_PD_PATCH_DIR);
     device::PdLatencyReceiver latency;std::string error;
     const bool opened=engine.open(latency,error);check(opened,"Shifter top-level patch opens");if(!opened)return;
     std::ifstream f(std::string(ADI_SHIFTER_PATCH_DIR)+"/Shifter.pd");std::stringstream text;text<<f.rdbuf();

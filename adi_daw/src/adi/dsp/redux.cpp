@@ -147,8 +147,11 @@ void Redux::process(const float *left, const float *right, float *outLeft, float
         processing_ = true;
     for (std::size_t i = 0; i < n; ++i) {
         advanceRamps();
-        outLeft[i] = static_cast<float>(sample(left[i], channels_[0]));
-        outRight[i] = static_cast<float>(sample(right[i], channels_[1]));
+        // Pd may recycle either inlet's signal vector for either outlet.
+        // Capture both inputs before a crossed output overwrites one of them.
+        const float inputLeft = left[i], inputRight = right[i];
+        outLeft[i] = static_cast<float>(sample(inputLeft, channels_[0]));
+        outRight[i] = static_cast<float>(sample(inputRight, channels_[1]));
     }
 }
 } // namespace adi::dsp

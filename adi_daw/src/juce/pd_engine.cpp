@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <mutex>
 #include <sstream>
 
@@ -145,10 +146,11 @@ std::int32_t PdRuntime::blockSize() noexcept {
 // ---------------------------------------------------------------------------
 
 LibPdEngine::LibPdEngine(std::string patchDir, std::string patchFile,
-                         std::int32_t inChannels, std::int32_t outChannels)
+                         std::int32_t inChannels, std::int32_t outChannels,
+                         Execution execution, BlockMode blockMode)
     : dir_(std::move(patchDir)), file_(std::move(patchFile)),
       inCh_(inChannels > 0 ? inChannels : 1),
-      outCh_(outChannels > 0 ? outChannels : 1) {}
+      outCh_(outChannels > 0 ? outChannels : 1), execution_(execution), blockMode_(blockMode) {}
 
 LibPdEngine::~LibPdEngine() { close(); }
 
@@ -166,8 +168,7 @@ void LibPdEngine::addSearchPath(const std::string& dir) {
 }
 
 bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
-    if (!PdRuntime::initialise(error)) return false;
-    if (patch_ != nullptr) return true;
+    if (patch_ != nullptr || native_ != nullptr) return true;
 
     // ADR-0188 d8, BEFORE anything is opened. Pd resolves a compiled external
     // through the same paths it resolves an abstraction through, so the only
@@ -198,12 +199,14 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
     // so both are found by the same static parse the declarations use, with Pd
     // not running -- which is the only moment at which refusing still costs
     // nothing.
+    std::string patchText;
     {
         std::ifstream in(dir_ + "/" + file_, std::ios::binary);
         if (in) {
             std::ostringstream buf;
             buf << in.rdbuf();
-            const auto requests = pdExternalRequests(buf.str());
+            patchText = buf.str();
+            const auto requests = pdExternalRequests(patchText);
             if (!requests.empty()) {
                 error = "refusing a patch that declares " + requests.front().flag +
                         " (ADR-0188 d8): box " + std::to_string(requests.front().box);
@@ -212,6 +215,40 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
             }
         }
     }
+
+    // A filename is not an identity: the project may have edited this canvas
+    // or any of its helper abstractions. Only the exact shipped program can
+    // take the native path. Resolve helpers in the same path order as Pd.
+    if (execution_ == Execution::Automatic) {
+        auto candidate = makeNativePdDevice(patchText, inCh_, outCh_);
+        bool helpersMatch = candidate != nullptr;
+        for (const char* helper : {"adi.param", "adi.transport", "adi.sample"}) {
+            if (!helpersMatch || patchText.find(std::string(helper) + " ") == std::string::npos)
+                continue;
+            const std::string filename = std::string(helper) + ".pd";
+            auto matches = [&](const std::string& directory) {
+                std::ifstream input(directory + "/" + filename, std::ios::binary);
+                if (!input) return 0;
+                std::ostringstream contents;
+                contents << input.rdbuf();
+                return nativePdAbstractionMatches(filename, contents.str()) ? 1 : -1;
+            };
+            int match = matches(dir_);
+            for (const auto& path : searchPaths_) {
+                if (match != 0) break;
+                match = matches(path);
+            }
+            helpersMatch = match == 1;
+        }
+        if (helpersMatch) {
+            native_ = std::move(candidate);
+            nativeLatency_ = &latency;
+            nativeLatency_->report(native_->latencySamples());
+            return true;
+        }
+    }
+
+    if (!PdRuntime::initialise(error)) return false;
 
     // The instance is created and SELECTED before anything else. Every libpd
     // call below acts on "the current instance", so an unselected instance
@@ -289,6 +326,11 @@ bool LibPdEngine::open(PdLatencyReceiver& latency, std::string& error) {
 }
 
 void LibPdEngine::close() noexcept {
+    native_.reset();
+    nativeLatency_ = nullptr;
+    nativePrepared_ = false;
+    adapterLatency_ = 0;
+    paramSymbols_.clear();
     if (instance_ == nullptr) return;
     selectInstance();
     if (patch_ != nullptr) {
@@ -318,10 +360,24 @@ void LibPdEngine::close() noexcept {
 }
 
 void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
+    const int rate = std::isfinite(sampleRate) && sampleRate >= 1.0 &&
+                             sampleRate <= static_cast<double>(std::numeric_limits<int>::max())
+                         ? static_cast<int>(sampleRate) : 44100;
+    if (native_ != nullptr) {
+        sampleRate_ = static_cast<double>(rate);
+        native_->prepare(sampleRate_, maxFrames);
+        nativePrepared_ = true;
+        adapterLatency_ = 0;
+        midiRouter_.configure(midiRoute_, engine::ExpressionCaps{}, 15);
+        midiRouter_.reset();
+        midiScratch_.assign(static_cast<std::size_t>(std::max<std::int32_t>(maxFrames, 64)) * 4 + 64,
+                            engine::MpeOut{});
+        requestLatencyReport();
+        return;
+    }
     if (patch_ == nullptr) return;
     selectInstance();
 
-    const int rate = static_cast<int>(sampleRate > 0 ? sampleRate : 44100);
     sampleRate_ = static_cast<double>(rate);
     libpd_init_audio(inCh_, outCh_, rate);
 
@@ -362,11 +418,15 @@ void LibPdEngine::prepare(double sampleRate, std::int32_t maxFrames) {
     // The price is one Pd block of latency, reported through
     // adapterLatencySamples() so the graph compensates it.
     inFill_ = 0;
-    outFill_ = block_;
-    adapterLatency_ = block_;
+    outFill_ = blockMode_ == BlockMode::Buffered ? block_ : 0;
+    adapterLatency_ = outFill_;
 }
 
 void LibPdEngine::requestLatencyReport() {
+    if (native_ != nullptr) {
+        nativeLatency_->report(native_->latencySamples());
+        return;
+    }
     if (patch_ == nullptr) return;
     selectInstance();
     libpd_bang(PdLatencyReceiver::queryFor(dollarZero_).c_str());
@@ -379,7 +439,7 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
     // Not open, or not prepared: pass through rather than silence. A device
     // that failed to load must not remove the signal (pd_device.hpp), and a
     // process() before prepare() is a bug elsewhere that silence would hide.
-    if (patch_ == nullptr || in_.empty()) {
+    if (native_ == nullptr ? (patch_ == nullptr || in_.empty()) : !nativePrepared_) {
         if (io.in != nullptr && io.out != nullptr) {
             for (std::int32_t c = 0; c < io.channels; ++c) {
                 if (io.in[c] != nullptr && io.out[c] != nullptr && io.in[c] != io.out[c]) {
@@ -388,6 +448,15 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
                 }
             }
         }
+        return;
+    }
+
+    if (native_ == nullptr && blockMode_ == BlockMode::WholeBlocks && n % block_ != 0) {
+        rejectedSegments_.fetch_add(1, std::memory_order_relaxed);
+        if (io.out != nullptr)
+            for (std::int32_t c = 0; c < io.channels; ++c)
+                if (io.out[c] != nullptr)
+                    std::fill_n(io.out[c] + io.blockOffset, n, 0.f);
         return;
     }
 
@@ -448,6 +517,41 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
         midiDropped_ += list.dropped();
     }
 
+    if (native_ != nullptr) {
+        native_->process(io);
+        nativeLatency_->report(native_->latencySamples());
+        return;
+    }
+
+    // Tile oversized calls into preallocated scratch. The old push clipped
+    // them at capacity, silently discarding input. WholeBlocks tiles stay on
+    // Pd boundaries even if prepare's maximum was not itself a multiple.
+    const auto capacity = static_cast<std::int32_t>(in_.size()) / inCh_ - block_;
+    const auto chunk = blockMode_ == BlockMode::WholeBlocks
+                         ? (capacity / block_) * block_ : capacity;
+    for (std::int32_t offset = 0; offset < n;) {
+        auto part = io;
+        part.frames = std::min(chunk, n - offset);
+        part.blockOffset += offset;
+        processPdAudio(part);
+        offset += part.frames;
+    }
+
+    // Publish only after all ticks belonging to this segment have completed.
+    for (auto& a : arrays_) {
+        if (a->framesPerRead <= 0.0) continue;
+        a->due -= static_cast<double>(n);
+        if (a->due > 0.0) continue;
+        a->due += a->framesPerRead;
+        if (a->due < 0.0) a->due = a->framesPerRead;
+        if (libpd_read_array(a->scratch.data(), a->tableName.c_str(), 0, a->length) == 0)
+            a->buffer.publish(a->scratch.data(), a->length);
+    }
+}
+
+void LibPdEngine::processPdAudio(const engine::NodeIo& io) noexcept {
+    const auto n = io.frames;
+
     // --- push: planar segment -> interleaved pending input -------------------
     const std::int32_t cap = static_cast<std::int32_t>(in_.size()) / inCh_;
     const std::int32_t push = std::min(n, cap - inFill_);
@@ -459,7 +563,8 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
             // three inlet~ gets two of signal and one of key (rmsc).
             const float* src = nullptr;
             if (c < io.channels && io.in != nullptr) src = io.in[c];
-            else if (io.sidechain != nullptr && (c - io.channels) < io.channels)
+            else if (c >= io.channels && io.sidechain != nullptr &&
+                     (c - io.channels) < io.channels)
                 src = io.sidechain[c - io.channels];
             dst[c] = src != nullptr ? src[io.blockOffset + f] : 0.f;
         }
@@ -485,20 +590,6 @@ void LibPdEngine::process(const engine::NodeIo& io) noexcept {
                         tickOut_.data(),
                         static_cast<std::size_t>(room) * static_cast<std::size_t>(outCh_) * sizeof(float));
             outFill_ += room;
-        }
-    }
-
-    // --- publish the declared arrays, at the rate each declared ---------------
-    // On the AUDIO thread, which is where ADR-0183 d2 puts the write, and after
-    // the ticks so a reader never sees a table half-written by this block.
-    for (auto& a : arrays_) {
-        if (a->framesPerRead <= 0.0) continue;
-        a->due -= static_cast<double>(n);
-        if (a->due > 0.0) continue;
-        a->due += a->framesPerRead;
-        if (a->due < 0.0) a->due = a->framesPerRead;   // a long segment, not a backlog
-        if (libpd_read_array(a->scratch.data(), a->tableName.c_str(), 0, a->length) == 0) {
-            a->buffer.publish(a->scratch.data(), a->length);
         }
     }
 
@@ -578,6 +669,10 @@ bool LibPdEngine::publishSample(std::int32_t id, std::unique_ptr<PdSampleBuffer>
 
 void LibPdEngine::bindParameters(const PdDeclarations& decls) {
     paramSymbols_.clear();
+    if (native_ != nullptr) {
+        for (const auto& p : decls.params) paramSymbols_.emplace_back(p.id, nullptr);
+        return;
+    }
     if (patch_ == nullptr) return;
     selectInstance();
     paramSymbols_.reserve(decls.params.size());
@@ -590,8 +685,14 @@ void LibPdEngine::bindParameters(const PdDeclarations& decls) {
 }
 
 bool LibPdEngine::sendParameter(std::int32_t id, float value) noexcept {
+    if (!std::isfinite(value)) return false;
     for (const auto& entry : paramSymbols_) {
         if (entry.first != id) continue;
+        if (native_ != nullptr) {
+            const bool sent = native_->sendParameter(id, value);
+            nativeLatency_->report(native_->latencySamples());
+            return sent;
+        }
         t_symbol* const sym = static_cast<t_symbol*>(entry.second);
         if (sym == nullptr || sym->s_thing == nullptr) return false;
         selectInstance();
@@ -616,6 +717,10 @@ void LibPdEngine::setTransport(const Transport& tr) noexcept {
 }
 
 void LibPdEngine::deliverTransport() noexcept {
+    if (native_ != nullptr) {
+        native_->tempo(static_cast<float>(transport_.bpm));
+        return;
+    }
     t_symbol* const sym = static_cast<t_symbol*>(transportSymbol_);
     // A patch with no [adi.transport] binds nothing, so this is the whole cost
     // of transport for every patch that does not ask for it.
@@ -636,6 +741,10 @@ void LibPdEngine::deliverTransport() noexcept {
 }
 
 void LibPdEngine::deliverMidi(const engine::MpeOut& m) noexcept {
+    if (native_ != nullptr) {
+        native_->midi(m);
+        return;
+    }
     // `inmidi_*` rather than `libpd_noteon` and friends, for the reason
     // `sendParameter` avoids `libpd_float`: every libpd MIDI entry point wraps
     // its call in `sys_lock()`/`sys_unlock()` (z_libpd.c at the pinned commit),
@@ -716,7 +825,8 @@ bool LibPdEngine::readArray(const char* suffix, std::vector<float>& out) noexcep
 LibPdEngine::Counters LibPdEngine::counters() const noexcept {
     return {ticks_.load(std::memory_order_relaxed),
             segments_.load(std::memory_order_relaxed),
-            starved_.load(std::memory_order_relaxed)};
+            starved_.load(std::memory_order_relaxed),
+            rejectedSegments_.load(std::memory_order_relaxed)};
 }
 
 
