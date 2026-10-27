@@ -1,6 +1,6 @@
 """Animate each approved keyframe of the Cosmic Rain 16s test with Wan2.2 TI2V 5B on the A2000 ComfyUI.
 
-usage: animate.py <root>   (root holds storyboard.json, anim.json and raw/ + comp/ keyframes)
+usage: animate.py <root> [slot file, default anim.json]   (root holds the slot file and raw/ keyframes)
 Same proven settings as the 120s pilot (shift 8, 20 steps, CFG 5, uni_pc/simple, latent saved before
 the full-temporal tiled decode). Differences: every slot starts from its own keyframe (no chaining).
 Resumable: a slot with generated.json is skipped; a slot with a receipt but no frames waits on that
@@ -14,7 +14,7 @@ from PIL import Image
 API = "http://127.0.0.1:8192"
 C = Path("D:/AvasthaAI/VideoEditFour-20261025")
 ROOT = Path(sys.argv[1])
-anim = json.loads((ROOT / "anim.json").read_text(encoding="utf-8"))
+anim = json.loads((ROOT / (sys.argv[2] if len(sys.argv) > 2 else "anim.json")).read_text(encoding="utf-8"))
 NEG = ("text, watermark, subtitles, collage, split screen, inset pictures, random duplicates, strobe, flicker, "
        "static image, frozen, slow motion, blurry, muddy detail, deformed geometry, abrupt cuts, photorealistic")
 
@@ -64,13 +64,13 @@ def main():
                 "2": node("CLIPLoader", clip_name="umt5_xxl_fp8_e4m3fn_scaled.safetensors", type="wan", device="default"),
                 "3": node("VAELoader", vae_name="wan2.2_vae.safetensors"),
                 "4": node("CLIPTextEncode", clip=["2", 0], text=f"{s['prompt']} {anim['style']}"),
-                "5": node("CLIPTextEncode", clip=["2", 0], text=NEG),
+                "5": node("CLIPTextEncode", clip=["2", 0], text=NEG + s.get("negative_extra", "")),
                 "6": node("LoadImage", image=inp.name),
                 "7": node("Wan22ImageToVideoLatent", vae=["3", 0], width=1280, height=736, length=s["length"],
                           batch_size=1, start_image=["6", 0]),
                 "8": node("ModelSamplingSD3", model=["1", 0], shift=8),
                 "9": node("KSampler", model=["8", 0], positive=["4", 0], negative=["5", 0], latent_image=["7", 0],
-                          seed=143270000 + i, steps=20, cfg=5, sampler_name="uni_pc", scheduler="simple", denoise=1),
+                          seed=s.get("seed", 143270000 + i), steps=20, cfg=5, sampler_name="uni_pc", scheduler="simple", denoise=1),
                 "90": node("SaveLatent", samples=["9", 0], filename_prefix=tag),
                 "10": node("VAEDecodeTiled", samples=["90", 0], vae=["3", 0], tile_size=512, overlap=64,
                            temporal_size=4096, temporal_overlap=4),

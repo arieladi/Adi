@@ -1,0 +1,18 @@
+{
+  "note": "Re-animation after Claude's review of test 1: S01 near-frozen, S03 disembodied praying hands, S10 screaming face and melting arms.",
+  "style": "psychedelic psytrance poster illustration, bold clean ink outlines, cel shading, vivid silver, cyan, ultramarine and gold with magenta accents",
+  "slots": [
+    {"id": "S01b", "keyframe": "raw/S01_xl_s33.png", "length": 81, "seed": 143271001,
+     "prompt": "The serene cosmic goddess with closed eyes, heavy silver rain pours down around her, her long silver hair streams and waves strongly in a cosmic wind, raindrops run down her cheeks, the golden ring behind her rotates and glows, the camera pushes in steadily toward her face. Clear continuous motion everywhere in the frame.",
+     "negative_extra": ", open mouth, screaming, still frame"},
+    {"id": "S03b", "keyframe": "raw/S03_xl_s33.png", "length": 41, "seed": 143271002,
+     "prompt": "Two mirrored goddess profiles face each other, the vertical beam of silver light between them flares brighter and widens, sparks and raindrops burst outward from the beam, the two profiles lean toward the light. No hands.",
+     "negative_extra": ", hands, fingers, arms, praying hands, extra limbs, floating body parts"},
+    {"id": "S03c", "keyframe": "raw/S03_xl_s33.png", "length": 41, "seed": 143271003,
+     "prompt": "Two mirrored goddess profiles face each other with eyes closed, a burst of white and gold light explodes from the thin vertical beam between them, glowing particles swirl around both faces, their hair flows backward from the light. No hands.",
+     "negative_extra": ", hands, fingers, arms, praying hands, extra limbs, floating body parts"},
+    {"id": "S10b", "keyframe": "raw/S10v2_xl_d65_s202.png", "length": 49, "seed": 143271004,
+     "prompt": "The cosmic goddess looks calmly at the viewer with glowing eyes and a closed mouth, a gentle confident expression, silver rain spirals upward around her head forming a glowing crown, her silver hair lifts and flows, the camera slowly pulls back. Calm, elegant, readable.",
+     "negative_extra": ", open mouth, screaming, shouting, eyes rolled back, distorted face, extra arms, raised arms, melting body, morphing"}
+  ]
+}

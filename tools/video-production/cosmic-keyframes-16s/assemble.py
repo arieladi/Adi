@@ -3,7 +3,8 @@
 usage: assemble.py <root>   (after animate.py finished every slot)
 Per slot: take every `step`-th generated frame (double speed on drop slots), crop 8 px top/bottom
 (1280x736 -> 1280x720, never stretched), apply the slot's symmetry to every frame, hard cut on the
-slot's absolute frame. A slot with portal_in reveals itself through a growing centre circle over the
+slot's absolute frame. Optional per slot: "take" (which anim/<take> render to use, default the slot id)
+and "push" [z0, z1] (smooth centred push-in, applied after symmetry so it stays symmetric). A slot with portal_in reveals itself through a growing centre circle over the
 previous slot's last frame. Music: the original track for the same frames, not retimed.
 """
 import json, subprocess, sys, time
@@ -31,16 +32,23 @@ total, previous, cuts = 0, None, []
 try:
     for s in anim["slots"]:
         need = s["frames"][1] - s["frames"][0]
-        gen = json.loads((ROOT / "anim" / s["id"] / "generated.json").read_text())["frames"]
+        gen = json.loads((ROOT / "anim" / s.get("take", s["id"]) / "generated.json").read_text())["frames"]
         idx = list(range(0, len(gen), s["step"]))[:need]
         assert len(idx) == need, (s["id"], len(gen), need)
         assert total + anim["audio"]["start_frame"] == s["frames"][0], (s["id"], total)
-        cuts.append({"slot": s["id"], "frame": s["frames"][0], "time": round(s["frames"][0] / FPS, 4)})
+        cuts.append({"slot": s["id"], "take": s.get("take", s["id"]), "push": s.get("push"),
+                     "frame": s["frames"][0], "time": round(s["frames"][0] / FPS, 4)})
         op = OPS.get(s["composite"])
         for j, k in enumerate(idx):
             f = np.asarray(Image.open(gen[k]).convert("RGB"))[8:728]
             if op:
                 f = op(f)
+            if s.get("push"):
+                z0, z1 = s["push"]
+                z = z0 + (z1 - z0) * j / max(1, need - 1)
+                cw, ch = 1280 / z, 720 / z
+                box = (640 - cw / 2, 360 - ch / 2, 640 + cw / 2, 360 + ch / 2)
+                f = np.asarray(Image.fromarray(f).resize((1280, 720), Image.BICUBIC, box=box))
             n = s.get("portal_in", 0)
             if j < n and previous is not None:
                 a = ((j + 1) / n) * (1 + 1 / 12)
