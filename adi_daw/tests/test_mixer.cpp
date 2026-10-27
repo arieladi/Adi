@@ -336,6 +336,57 @@ void testASendNode() {
         check(std::fabs(moved[1] - in64[1]) < 1e-3 && moved[300] == 0.0 && moved[100] != 0.0,
               "a level move ramps: still near the old level at once, gone after 240 samples");
     }
+    {
+        // A send pulled down while it sleeps -- its source silent, so the
+        // graph skips it and only tells it so -- lands the level there and
+        // then: woken, it does not play its old level's first 5 ms.
+        NodeIo asleep;
+        asleep.channels = 2;
+        asleep.frames = n;
+        for (const bool wide : {true, false}) {
+            auto s = made(0.0, 0.0, true);
+            run(*s, wide);
+            s->set(kSilenceDb, 0.0, PanLaw::Live, true);
+            s->silenceTaps(asleep);
+            check(silent(run(*s, wide)), std::string("a send pulled down while asleep wakes silent, at ") +
+                                             (wide ? "64" : "32"));
+        }
+        // A strip the same: a track muted in a gap between its clips.
+        StripNode strip;
+        strip.setStatic(0.0, 0.0, PanLaw::Live, true);
+        strip.prepare(48000.0, n);
+        std::vector<float> ol(n, 7.0f), orr(n, 7.0f), il(n, 0.5f), ir(n, 0.5f);
+        const float* lin[2] = {il.data(), ir.data()};
+        float* out[2] = {ol.data(), orr.data()};
+        NodeIo io;
+        io.channels = 2;
+        io.frames = n;
+        io.in = lin;
+        io.out = out;
+        strip.process(io);
+        strip.setStatic(0.0, 0.0, PanLaw::Live, false);
+        strip.silenceTaps(asleep);
+        strip.process(io);
+        float loudest = 0.0f;
+        for (float x : ol) loudest = std::max(loudest, std::fabs(x));
+        check(loudest == 0.0f, "a strip muted while asleep wakes silent: loudest " + std::to_string(loudest));
+    }
+    {
+        // A level past the top -- +inf, a number whose gain a float cannot
+        // hold, one no host offers -- plays at kSendTopDb, never as infinity.
+        for (const double db : {std::numeric_limits<double>::infinity(), 1e39, 800.0}) {
+            const std::vector<double> loud = run(*made(db, 0.0, true), true);
+            const double g = faderGain(kSendTopDb);
+            double worst = 0.0;
+            bool finite = true;
+            for (std::size_t i = 0; i < loud.size(); ++i) {
+                finite = finite && std::isfinite(loud[i]);
+                worst = std::max(worst, std::fabs(loud[i] - in64[i] * g));
+            }
+            check(finite && worst < 1e-12, "a send at " + std::to_string(db) + " dB plays at the top, " +
+                                               std::to_string(kSendTopDb) + " dB: worst " + std::to_string(worst));
+        }
+    }
     SendNode s;
     check(s.eventFlow() == EventFlow::Stop && s.tailSamples() == 0 && s.processesDouble() && s.latencySamples() == 0,
           "it stops notes, holds nothing back, takes double, and adds no latency");

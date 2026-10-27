@@ -75,16 +75,19 @@ std::int32_t StripNode::latencySamples() const noexcept {
     // 48 kHz opened at 96 kHz delays the same TIME, twice the samples.
     const double seconds = static_cast<double>(delayProject_.load(std::memory_order_relaxed)) /
                            static_cast<double>(delayRate_.load(std::memory_order_relaxed));
-    const double limit = kMaxDelaySeconds * sampleRate_;
-    const double samples = std::clamp(std::round(seconds * sampleRate_), -limit, limit);
+    const double rate = sampleRate_.load(std::memory_order_relaxed);
+    const double limit = kMaxDelaySeconds * rate;
+    const double samples = std::clamp(std::round(seconds * rate), -limit, limit);
     return static_cast<std::int32_t>(-samples);
 }
 
 void StripNode::prepare(double sampleRate, std::int32_t) {
-    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+    // Every graph that places this strip prepares it, while the graph before
+    // may still be playing it: both values are atomics for that reason.
+    sampleRate_.store(sampleRate > 0.0 ? sampleRate : 48000.0, std::memory_order_relaxed);
     // A time, not a count: five milliseconds at every rate ADR-0157 allows.
     const auto frames = std::lround(kRampSeconds * sampleRate);
-    rampFrames_ = static_cast<std::int32_t>(std::max<long>(1, frames));
+    rampFrames_.store(static_cast<std::int32_t>(std::max<long>(1, frames)), std::memory_order_relaxed);
 }
 
 StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame) noexcept {
@@ -142,6 +145,13 @@ void StripNode::Ramp<T>::retarget(const T (&t)[3], std::int32_t frames) noexcept
 }
 
 template <typename T>
+void StripNode::Ramp<T>::land(const T (&t)[3]) noexcept {
+    for (int k = 0; k < 3; ++k) cur[k] = to[k] = t[k];
+    remaining = 0;
+    started = true;
+}
+
+template <typename T>
 StripNode::Ramp<T>& StripNode::ramp() noexcept {
     if constexpr (std::is_same_v<T, float>) return ramp32_;
     else return ramp64_;
@@ -191,6 +201,13 @@ void StripNode::process(const NodeIo& io) noexcept {
 void StripNode::silenceTaps(const NodeIo& io) noexcept {
     writeTap<float>(preFaderTap_, io, nullptr);
     writeTap<float>(tap_, io, nullptr);
+    // Asleep (ADR-0043): the input is silent, so a gain set meanwhile -- a
+    // fader or a send pulled down, a mute -- is landed now, where nobody can
+    // hear it. Woken, the strip starts at it, rather than ramping away from
+    // the gain it fell asleep at and playing that gain's first 5 ms.
+    const Gains d = desired(lanes_.load(std::memory_order_acquire), io.blockOffset);
+    if (lastWidth_ == 32) ramp32_.land(d.g);
+    else if (lastWidth_ == 64) ramp64_.land(d.w);
 }
 
 template <typename T>
@@ -217,10 +234,11 @@ void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out
     auto gainIndex = [](std::int32_t c) { return c < 2 ? c : 2; };
     handover<T>();
     Ramp<T>& r = ramp<T>();
+    const std::int32_t frames = rampFrames_.load(std::memory_order_relaxed);
     auto retargetAt = [&](std::int32_t frame) {
         const Gains d = desired(lanes, frame);
-        if constexpr (std::is_same_v<T, float>) r.retarget(d.g, rampFrames_);
-        else r.retarget(d.w, rampFrames_);
+        if constexpr (std::is_same_v<T, float>) r.retarget(d.g, frames);
+        else r.retarget(d.w, frames);
     };
 
     retargetAt(off);
