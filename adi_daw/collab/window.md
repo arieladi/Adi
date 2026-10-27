@@ -39,11 +39,40 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N11 | The snapshot to carry the send rows (`routing` with `kind='send'`: source, return, gain, pre/post) | engine | one send knob per return on every row (ADR-0203 d3) | no send knobs; the routing ops exist and are ready to be called |
 | N12 | Split Stereo Pan: a pan mode and two pans per strip in the format and the mixer (ADR-0203 d9) | engine | the pan control's context menu | the menu shows the mode disabled |
 | N13 | A loudness meter's DSP: momentary, short-term and integrated LUFS and true peak, cheap enough for the Main track at all times (ADR-0203 d14) | engine or devices | the Main track's loudness meter | none yet |
+| N14 | The registry's pages in Live's ten tab names and order, then ADI's own (ADR-0203 d11, Master Reference V.2): the Display & Input / Theme & Colors split of "Look & Feel", Link, Tempo & MIDI, Record, Warp & Launch, Licenses & Updates | win (`src/adi/settings/registry.cpp`) | the Settings window lists `settings::pages()` as they are, by design: one source for the left-hand list | the window shows the registry's pages in the registry's order |
+| N15 | ADR-0104's library index (the app-scoped store of samples, presets and devices) and a catalogue of ADI's own devices by category, with a way to insert one (`device.insert` needs a plug-in reference row and the track's chain, neither of which the UI can make) | engine, devices | the browser's list (Live's folders under each category, double-click or drag to load) | the browser shows its sidebar and the list's header; a click on a category says it is not listed yet |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
 
 ---
 
-## 2026-10-27, latest — Live's look [#265](https://github.com/arieladi/Adi/pull/265) `window/live-look`; approved
+## 2026-10-27, latest — the Mixer View in Live's shape and its peak levels [#266](https://github.com/arieladi/Adi/pull/266) `window/peak-indicators`
+
+**#266, stacked on #265.**
+- The Mixer View is measured on Live 11's Session mixer (Live 11's Mixer View): 93-unit
+  strips, the name in the track's colour, and ADI-Q and ADI-L where Live has the sends.
+- The peak level pill (manual 18.1) is resettable by a click and turns red once the track
+  clips. That was 7.6's last open row (13b).
+- The meter and the fader share Live's measured scale, so the ◁ sits at the meter's dB.
+- Checks: 265 shell checks; `test_all.sh` 8265 across 97 suites PASS; the shadow sweep is clean.
+
+**§3b item 2 is done** as far as nothing blocks it. What remains open there waits on other
+lanes:
+- the audio drop (N5);
+- plug-in windows (N8);
+- returns, Main last and the meters' sources (N6, N9, N11);
+- the browser's list (N15, new).
+
+**Next: item 3, starting with the Settings window in Live's shape** (ADR-0203 d11, Master
+Reference Part V). Its pages are the registry's; their names in Live's ten tabs are win's
+(N14, new).
+
+**Driving Live:** a macOS prompt ("claude" would like to access data from other apps) sits over
+Live and blocks clean captures of Live's Preferences. It is the director's to answer; nothing
+clicks it.
+
+---
+
+## 2026-10-27, last — Live's look [#265](https://github.com/arieladi/Adi/pull/265) `window/live-look`; approved
 
 **Approved by the director, 27 October:** "Approved, the look is close enough to Live. Continue
 with the next window items." The hold on new windows is lifted. Each new window is measured
