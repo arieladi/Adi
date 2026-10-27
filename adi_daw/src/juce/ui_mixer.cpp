@@ -28,8 +28,12 @@ juce::LookAndFeel &smallKnob() {
 }
 } // namespace
 MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
-    volume.setSliderStyle(juce::Slider::LinearHorizontal);
-    volume.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
+    volume.setSliderStyle(panel.vertical() ? juce::Slider::LinearVertical
+                                           : juce::Slider::LinearHorizontal);
+    if (panel.vertical())
+        volume.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    else
+        volume.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
     volume.setRange(kFloorDb, kTopDb, .01);
     volume.textFromValueFunction = [](double v) {
         return v <= kFloorDb ? juce::String("-inf") : juce::String(v, 1) + " dB";
@@ -108,14 +112,24 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
 }
 void MixerStrip::bind(std::int64_t id) {
     track_ = id;
-    // The Track Activator shows the track's number, as Live's.
-    active.setButtonText(juce::String(id));
+    position_ = 0;
     tap_ = panel_.tap ? panel_.tap(id) : nullptr;
     peak_ = rms_ = 0;
     frame(true);
 }
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
+    if (changed) {
+        // The Track Activator shows the track's number, its place in the list, as
+        // Live's (and as a # in its name does); the text changes only when it moves.
+        const auto &tracks = panel_.root.reader().tracks();
+        for (std::size_t i = 0; i < tracks.size(); ++i)
+            if (tracks[i]->id == track_ && position_ != i + 1) {
+                position_ = i + 1;
+                active.setButtonText(juce::String(static_cast<int>(position_)));
+                break;
+            }
+    }
     if (changed && t && !dragging_) {
         volume.setValue(std::max(kFloorDb, static_cast<double>(t->volumeDb)),
                         juce::dontSendNotification);
@@ -143,6 +157,22 @@ void MixerStrip::frame(bool changed) noexcept {
     }
 }
 void MixerStrip::resized() {
+    if (panel_.vertical()) {
+        // Live's channel strip, top to bottom: the slots, pan, the activator and Solo,
+        // then the fader beside its meter.
+        const int w = getWidth();
+        eq.setBounds(4, 20, w / 2 - 6, 18);
+        limiter.setBounds(w / 2 + 2, 20, w / 2 - 6, 18);
+        pan.setBounds(w / 2 - 14, 41, 28, 28);
+        active.setBounds(4, 72, w / 2 - 6, 18);
+        solo.setBounds(w / 2 + 2, 72, w / 2 - 6, 18);
+        const bool tall = getHeight() >= MixerPanel::kTallHeight;
+        if (tall != (volume.getTextBoxPosition() == juce::Slider::TextBoxBelow))
+            volume.setTextBoxStyle(tall ? juce::Slider::TextBoxBelow : juce::Slider::NoTextBox,
+                                   false, tall ? w - 26 : 0, tall ? 18 : 0);
+        volume.setBounds(2, 94, std::max(0, w - 24), std::max(0, getHeight() - 98));
+        return;
+    }
     const int meterW = 12, h = std::min(getHeight() - 4, 22);
     int x = 4;
     active.setBounds(x, 3, 24, h);
@@ -158,10 +188,27 @@ void MixerStrip::resized() {
 void MixerStrip::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff242b35));
     g.setColour(juce::Colour(0xff313b47));
+    if (panel_.vertical()) {
+        g.drawVerticalLine(getWidth() - 1, 0, static_cast<float>(getHeight()));
+        const auto &tracks = panel_.root.reader().tracks();
+        for (std::size_t i = 0; i < tracks.size(); ++i)
+            if (tracks[i]->id == track_) {
+                g.setColour(juce::Colour(0xffe0e5ed));
+                g.setFont(juce::FontOptions(12.f));
+                g.drawText(juce::String::fromUTF8(displayName(tracks[i]->name, i + 1).c_str()),
+                           4, 2, getWidth() - 8, 16, juce::Justification::centredLeft);
+                break;
+            }
+        paintMeter(g, {getWidth() - 18, 94, 10, std::max(0, getHeight() - 98)});
+        return;
+    }
     g.drawHorizontalLine(getHeight() - 1, 0, static_cast<float>(getWidth()));
-    const int mx = getWidth() - 10, top = 2, height = getHeight() - 5;
+    paintMeter(g, {getWidth() - 10, 2, 8, getHeight() - 5});
+}
+void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
+    const int height = area.getHeight();
     g.setColour(juce::Colour(0xff11161c));
-    g.fillRect(mx, top, 8, height);
+    g.fillRect(area);
     auto level = [height](float v) {
         return static_cast<int>(
             static_cast<float>(height) *
@@ -169,9 +216,17 @@ void MixerStrip::paint(juce::Graphics &g) {
     };
     const int rmsH = level(rms_);
     g.setColour(juce::Colour(0xff65cf91));
-    g.fillRect(mx, top + height - rmsH, 8, rmsH);
+    g.fillRect(area.getX(), area.getBottom() - rmsH, area.getWidth(), rmsH);
     g.setColour(peak_ >= 1 ? juce::Colours::red : juce::Colours::white);
-    g.fillRect(mx, top + height - level(peak_), 8, 1);
+    g.fillRect(area.getX(), area.getBottom() - level(peak_), area.getWidth(), 1);
+    // A tall strip gets tick marks every 6 dB beside the meter.
+    if (panel_.vertical() && getHeight() >= MixerPanel::kTallHeight) {
+        g.setColour(juce::Colour(0xff8b95a3));
+        for (int db = 6; db >= -60; db -= 6) {
+            const int y = area.getBottom() - level(std::pow(10.f, static_cast<float>(db) / 20));
+            g.fillRect(area.getRight() + 1, y, 3, 1);
+        }
+    }
 }
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     if (!e.mods.isPopupMenu())
@@ -189,7 +244,7 @@ void MixerStrip::panMenu() {
     m.addItem(2, "Split Stereo Pan", false, false);
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
 }
-MixerPanel::MixerPanel(AdiRootComponent &r) : root(r) {}
+MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {}
 bool MixerPanel::submit(const std::string &op, Payload payload, const char *label) {
     return root.submitEdit(op, std::move(payload), label);
 }
@@ -199,7 +254,39 @@ void MixerPanel::retap() {
         if (s->track() != 0)
             s->bind(s->track());
 }
+void MixerPanel::placeColumns() {
+    // Strips left to right, realising only the columns on screen (UI-ARCHITECTURE §10).
+    const auto &tracks = root.reader().tracks();
+    const int total = static_cast<int>(tracks.size()) * kStripWidth;
+    scrollX_ = std::clamp(scrollX_, 0, std::max(0, total - getWidth()));
+    const std::size_t first = static_cast<std::size_t>(scrollX_ / kStripWidth);
+    const std::size_t wanted =
+        std::min(tracks.size() - std::min(first, tracks.size()),
+                 static_cast<std::size_t>(getWidth() / kStripWidth + 2));
+    while (strips_.size() < wanted) {
+        auto strip = std::make_unique<MixerStrip>(*this);
+        addChildComponent(*strip);
+        strips_.push_back(std::move(strip));
+    }
+    for (std::size_t n = 0; n < strips_.size(); ++n) {
+        auto &s = *strips_[n];
+        if (n >= wanted) {
+            if (!s.dragging())
+                s.setVisible(false);
+            continue;
+        }
+        const auto i = first + n;
+        if (s.track() != tracks[i]->id && !s.dragging())
+            s.bind(tracks[i]->id);
+        s.setBounds(static_cast<int>(i) * kStripWidth - scrollX_, 0, kStripWidth, getHeight());
+        s.setVisible(true);
+    }
+}
 void MixerPanel::place() {
+    if (vertical_) {
+        placeColumns();
+        return;
+    }
     // Realise what is visible and a margin, never a strip per track (UI-ARCHITECTURE
     // §10); rows follow the arrangement's lanes, so the two scroll as one.
     const auto &geometry = root.arrangement.geometry;
@@ -247,6 +334,8 @@ void MixerPanel::frame(bool changed) noexcept {
 }
 void MixerPanel::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff21262e));
+    if (vertical_)
+        return;
     g.setColour(juce::Colour(0xff303944));
     g.fillRect(0, 0, getWidth(), ArrangementView::kTopHeight);
 }
@@ -270,7 +359,25 @@ void MixerPanel::contextMenu(juce::Point<int> where) {
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
 }
 void MixerPanel::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
+    if (vertical_) {
+        // The Mixer View scrolls sideways, whichever way the wheel turns.
+        const float delta = std::abs(w.deltaX) > std::abs(w.deltaY) ? w.deltaX : w.deltaY;
+        scrollX_ -= static_cast<int>(delta * 300);
+        placeColumns();
+        return;
+    }
     // The rows belong to the arrangement's lanes: the wheel scrolls both.
     root.arrangement.wheel(e.getEventRelativeTo(&root.arrangement.canvas), w);
 }
+MixerViewResizer::MixerViewResizer(AdiRootComponent &r) : root(r) {
+    setMouseCursor(juce::MouseCursor::UpDownResizeCursor);
+    setTitle("Mixer View height");
+}
+void MixerViewResizer::mouseDown(const juce::MouseEvent &) {
+    start = root.state().mixerViewHeight;
+}
+void MixerViewResizer::mouseDrag(const juce::MouseEvent &e) {
+    root.resizeMixerView(start - e.getDistanceFromDragStartY());
+}
+void MixerViewResizer::mouseUp(const juce::MouseEvent &) { root.persist(); }
 } // namespace adi::ui
