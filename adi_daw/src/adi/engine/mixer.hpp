@@ -34,6 +34,7 @@
 #include "adi/engine/transport.hpp"
 #include "adi/store_rows.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -159,7 +160,10 @@ private:
     std::atomic<ScopeTap*> preFaderTap_{nullptr};
     std::atomic<std::int64_t> delayProject_{0};
     std::atomic<std::int64_t> delayRate_{48000};
-    double sampleRate_ = 48000.0;       ///< message thread, set by prepare
+    /// Set by prepare, which every graph that places this strip calls on the
+    /// message thread while the graph before may still be playing it; so an
+    /// atomic, as `rampFrames_` is, and never a plain write under a reader.
+    std::atomic<double> sampleRate_{48000.0};
     /// Left, right, and every other channel (the fader alone). `g` is what a
     /// graph at 32 plays, rounded exactly as it always was; `w` the same
     /// values unrounded, for a graph at 64.
@@ -182,6 +186,8 @@ private:
         std::int32_t remaining = 0;
         bool started = false;
         void retarget(const T (&t)[3], std::int32_t frames) noexcept;
+        /// At the target now, no ramp: for a strip asleep, whose input is silent.
+        void land(const T (&t)[3]) noexcept;
     };
     template <typename T>
     [[nodiscard]] Ramp<T>& ramp() noexcept;
@@ -209,8 +215,13 @@ private:
     Ramp<float> ramp32_;
     Ramp<double> ramp64_;
     std::int8_t lastWidth_ = 0;   ///< audio thread: 32 or 64 once a ramp has run, 0 before
-    std::int32_t rampFrames_ = 240;
+    std::atomic<std::int32_t> rampFrames_{240};
 };
+
+/// A send's highest level. Live's top is not read yet (AWAITING 7(a)); this is
+/// a guard, above any host's, so that a level no host offers -- +inf, or one
+/// whose gain a float cannot hold -- plays as a level and not as infinity.
+inline constexpr double kSendTopDb = 24.0;
 
 /// A send (ADR-0203 d3): its level, its pan and its switch, between the tap on
 /// its source track and the junction it feeds. The session owns one per
@@ -222,13 +233,18 @@ private:
 class SendNode final : public Node {
 public:
     /// Message thread. A level at or below kSilenceDb is silent, and so is
-    /// one that is not a number (the caller names it). `on` is Enable Send.
+    /// one that is not a number; one past kSendTopDb, +inf included, plays at
+    /// kSendTopDb (the caller names both). `on` is Enable Send.
     void set(double levelDb, double pan, PanLaw law, bool on) noexcept {
-        gain_.setStatic(std::isnan(levelDb) ? -std::numeric_limits<double>::infinity() : levelDb, pan, law, on);
+        const double db = std::isnan(levelDb) ? -std::numeric_limits<double>::infinity()
+                                              : std::min(levelDb, kSendTopDb);
+        gain_.setStatic(db, pan, law, on);
     }
 
     void prepare(double sampleRate, std::int32_t maxFrames) override { gain_.prepare(sampleRate, maxFrames); }
     void process(const NodeIo& io) noexcept override { gain_.process(io); }
+    /// Asleep, a send lands a level moved meanwhile, as a strip does.
+    void silenceTaps(const NodeIo& io) noexcept override { gain_.silenceTaps(io); }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     /// Zero, like a strip's: a send holds nothing back.
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
