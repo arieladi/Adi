@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/store.hpp"
+#include "adi/ui/session_state.hpp"
 #include "adi/ui/window_state.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -51,6 +52,43 @@ int main() {
     auto readonly = Store::open(temp.path() / "p.adi", err, true);
     ViewStateStore ro(*readonly);
     check(!ro.save("main", WindowState{}, error), "read-only view refuses save");
+    {
+        SessionState roSession(*readonly);
+        Selection s;
+        s.track = 3;
+        check(roSession.select(s, error) && roSession.selection().track == 3,
+              "a read-only project still selects, in memory");
+    }
+    // Selection is session state (ADR-0021): one per project, never an op.
+    {
+        SessionState session(*store);
+        check(session.selection() == Selection{}, "a new project selects nothing");
+        Selection s;
+        s.track = 7;
+        s.start = 10;
+        s.end = 20;
+        s.marked = true;
+        s.insert = 10;
+        const auto before = session.generation();
+        check(session.select(s, error) && session.generation() == before + 1,
+              "a new selection is a new generation");
+        check(session.select(s, error) && session.generation() == before + 1,
+              "the same selection again is no change");
+        check(SessionState(*store).selection() == s, "it is kept in session_state and reloads");
+        check(store->db().execAndGet("SELECT count(*) FROM ops").getInt() == 0,
+              "and selecting writes no op");
+        const auto blob = session.advisory();
+        Selection other;
+        other.track = 9;
+        check(session.select(other, error), "select something else");
+        session.restore(blob);
+        check(session.selection() == s, "an undo's sel_before puts the selection back");
+        session.restore(Payload::object());
+        check(session.selection() == s, "a step without one leaves it alone");
+        store->db().exec("UPDATE session_state SET value='{broken' WHERE key='selection'");
+        check(SessionState(*store).selection() == Selection{},
+              "a malformed row is a lost selection, never a failed open");
+    }
     DirtySet a, b;
     check(a.drain() == DirtySet::All && b.drain() == DirtySet::All, "new windows initially dirty");
     a.mark(DirtySet::Transport);

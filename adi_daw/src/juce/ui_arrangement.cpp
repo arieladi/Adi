@@ -158,13 +158,14 @@ void ArrangementView::changed() {
     state.laneHeight = geometry.height;
     state.laneHeights = geometry.heights;
     root.persist();
+    root.publishSelection();
     // The mixer's rows follow these lanes: re-place them on the next frame.
     root.mark(DirtySet::Layout);
     frame(true);
 }
 void ArrangementView::fit(bool selection) {
-    geometry.fit(selection ? std::min(geometry.selectionStart, geometry.selectionEnd) : 0,
-                 selection ? std::max(geometry.selectionStart, geometry.selectionEnd)
+    geometry.fit(selection ? std::min(geometry.selection.start, geometry.selection.end) : 0,
+                 selection ? std::max(geometry.selection.start, geometry.selection.end)
                            : geometry.end(reader()),
                  canvas.getWidth());
     changed();
@@ -178,7 +179,7 @@ bool ArrangementView::command(int id) {
         geometry.zoomAround(.8, geometry.anchor(root.timelineTick()));
         break;
     case AppCommands::ZoomToSelection:
-        fit(geometry.selectionStart != geometry.selectionEnd);
+        fit(geometry.selection.start != geometry.selection.end);
         return true;
     case AppCommands::ZoomBack:
         geometry.back();
@@ -194,8 +195,8 @@ bool ArrangementView::command(int id) {
         break;
     }
     case AppCommands::GoStart:
-        geometry.insert = 0;
-        geometry.marked = true;
+        geometry.selection.insert = 0;
+        geometry.selection.marked = true;
         locate();
         break;
     default:
@@ -204,17 +205,17 @@ bool ArrangementView::command(int id) {
     changed();
     return true;
 }
-void ArrangementView::locate() { root.locate(geometry.insert); }
+void ArrangementView::locate() { root.locate(geometry.selection.insert); }
 void ArrangementView::select(int x, int y) {
     if (const auto *t = geometry.trackAt(reader(), y)) {
-        geometry.selectedTrack = t->id;
+        geometry.selection.track = t->id;
         const auto tick = geometry.tick(x);
         const auto *c = geometry.hit(*t, tick);
-        geometry.selectedClip = c ? c->id : 0;
-        geometry.insert = tick;
-        geometry.marked = true;
-        geometry.selectionStart = c ? c->posTicks : tick;
-        geometry.selectionEnd = c ? c->posTicks + c->lengthTicks : tick;
+        geometry.selection.clip = c ? c->id : 0;
+        geometry.selection.insert = tick;
+        geometry.selection.marked = true;
+        geometry.selection.start = c ? c->posTicks : tick;
+        geometry.selection.end = c ? c->posTicks + c->lengthTicks : tick;
         locate();
         changed();
     }
@@ -225,7 +226,7 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     juce::PopupMenu menu;
     menu.addCommandItem(&commands.manager, AppCommands::InsertAudioTrack);
     menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
-    if (header && geometry.selectedTrack != 0) {
+    if (header && geometry.selection.track != 0) {
         menu.addSeparator();
         menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
         menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
@@ -278,7 +279,7 @@ void TimelineRuler::mouseDrag(const juce::MouseEvent &e) {
     view.changed();
 }
 void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &) {
-    view.fit(view.geometry.selectionStart != view.geometry.selectionEnd);
+    view.fit(view.geometry.selection.start != view.geometry.selection.end);
 }
 void TrackHeaderList::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff242b35));
@@ -287,7 +288,7 @@ void TrackHeaderList::paint(juce::Graphics &g) {
     for (const auto &t : view.reader().tracks()) {
         const int h = view.geometry.heightFor(t->id);
         ++position;
-        g.setColour(juce::Colour(t->id == view.geometry.selectedTrack ? 0xff416976 : 0xff343e4b));
+        g.setColour(juce::Colour(t->id == view.geometry.selection.track ? 0xff416976 : 0xff343e4b));
         g.fillRect(1, y, getWidth() - 1, h - 1);
         g.setColour(juce::Colour(0xffe0e5ed));
         if (t->id != renaming_)
@@ -307,7 +308,8 @@ bool TrackHeaderList::beginRename(std::int64_t track) {
     for (const auto &t : now->tracks) {
         if (t->id == track) {
             renaming_ = track;
-            view.geometry.selectedTrack = track;
+            view.geometry.selection.track = track;
+            view.root.publishSelection();
             editor.setBounds(4, y + 3, std::max(0, getWidth() - 8), 24);
             if (!editor.isVisible() || editor.getName() != juce::String(track)) {
                 editor.setName(juce::String(track));
@@ -345,7 +347,7 @@ void TrackHeaderList::endRename() {
 }
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
-        view.geometry.selectedTrack = t->id;
+        view.geometry.selection.track = t->id;
         resizeId = t->id;
         initialHeight = view.geometry.heightFor(t->id);
         view.changed();
@@ -392,22 +394,22 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                         right =
                             static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
             g.setColour(
-                juce::Colour(c->id == view.geometry.selectedClip ? 0xff89c7cf : 0xff488a9a));
+                juce::Colour(c->id == view.geometry.selection.clip ? 0xff89c7cf : 0xff488a9a));
             g.fillRect(left, static_cast<float>(y + 3), std::max(1.f, right - left),
                        static_cast<float>(h - 7));
         }
         y += h;
     }
-    if (view.geometry.selectionStart != view.geometry.selectionEnd) {
+    if (view.geometry.selection.start != view.geometry.selection.end) {
         const float x = static_cast<float>(
-            view.geometry.x(std::min(view.geometry.selectionStart, view.geometry.selectionEnd)));
+            view.geometry.x(std::min(view.geometry.selection.start, view.geometry.selection.end)));
         const float end = static_cast<float>(
-            view.geometry.x(std::max(view.geometry.selectionStart, view.geometry.selectionEnd)));
+            view.geometry.x(std::max(view.geometry.selection.start, view.geometry.selection.end)));
         g.setColour(juce::Colour(0x2265c4d0));
         g.fillRect(x, 0.f, end - x, static_cast<float>(getHeight()));
-    } else if (view.geometry.marked) {
+    } else if (view.geometry.selection.marked) {
         g.setColour(juce::Colour(0xffe0e5ed));
-        g.drawVerticalLine(static_cast<int>(view.geometry.x(view.geometry.insert)), 0,
+        g.drawVerticalLine(static_cast<int>(view.geometry.x(view.geometry.selection.insert)), 0,
                            static_cast<float>(getHeight()));
     }
 }
@@ -430,7 +432,7 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
             std::max(0, view.geometry.scrollY + static_cast<int>(last.y - e.position.y));
         last = e.position;
     } else
-        view.geometry.selectionEnd = view.geometry.tick(e.x);
+        view.geometry.selection.end = view.geometry.tick(e.x);
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &) { view.changed(); }
@@ -453,7 +455,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     if (k.getKeyCode() == juce::KeyPress::upKey || k.getKeyCode() == juce::KeyPress::downKey) {
         std::size_t at = tracks.size();
         for (std::size_t i = 0; i < tracks.size(); ++i)
-            if (tracks[i]->id == view.geometry.selectedTrack) {
+            if (tracks[i]->id == view.geometry.selection.track) {
                 at = i;
                 break;
             }
@@ -463,27 +465,27 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             at = at == tracks.size() ? 0 : std::min(at + 1, tracks.size() - 1);
         else
             at = at == tracks.size() || at == 0 ? 0 : at - 1;
-        view.geometry.selectedTrack = tracks[at]->id;
-        view.geometry.selectedClip = 0;
+        view.geometry.selection.track = tracks[at]->id;
+        view.geometry.selection.clip = 0;
         view.changed();
         return true;
     }
     if (k.getKeyCode() == juce::KeyPress::leftKey || k.getKeyCode() == juce::KeyPress::rightKey) {
-        const auto *t = view.reader().findTrack(view.geometry.selectedTrack);
+        const auto *t = view.reader().findTrack(view.geometry.selection.track);
         if (!t || t->clips.empty())
             return false;
         std::size_t i = 0;
         for (; i < t->clips.size(); ++i)
-            if (t->clips[i]->id == view.geometry.selectedClip)
+            if (t->clips[i]->id == view.geometry.selection.clip)
                 break;
         if (k.getKeyCode() == juce::KeyPress::rightKey)
             i = i == t->clips.size() ? 0 : std::min(i + 1, t->clips.size() - 1);
         else
             i = i > 0 && i < t->clips.size() ? i - 1 : 0;
         const auto &c = t->clips[i];
-        view.geometry.selectedClip = c->id;
-        view.geometry.selectionStart = c->posTicks;
-        view.geometry.selectionEnd = c->posTicks + c->lengthTicks;
+        view.geometry.selection.clip = c->id;
+        view.geometry.selection.start = c->posTicks;
+        view.geometry.selection.end = c->posTicks + c->lengthTicks;
         view.changed();
         return true;
     }

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "adi/textproj.hpp"
+#include "session_state.hpp"
 #include "snapshot_reader.hpp"
 #include <algorithm>
 #include <array>
@@ -47,9 +48,9 @@ struct ArrangementGeometry {
     // selection, every track with selected content.
     void wheelHeight(const SnapshotReader &reader, std::int64_t under, int delta) {
         bool changed = false;
-        if (selectionStart != selectionEnd) {
-            const auto a = std::min(selectionStart, selectionEnd),
-                       b = std::max(selectionStart, selectionEnd);
+        if (selection.start != selection.end) {
+            const auto a = std::min(selection.start, selection.end),
+                       b = std::max(selection.start, selection.end);
             for (const auto &t : reader.tracks())
                 for (const auto &c : t->clips)
                     if (c->posTicks < b && c->posTicks + c->lengthTicks > a) {
@@ -61,9 +62,9 @@ struct ArrangementGeometry {
         if (!changed)
             resizeTrack(under, heightFor(under) + delta);
     }
-    std::int64_t selectedTrack = 0, selectedClip = 0, selectionStart = 0, selectionEnd = 0,
-                 insert = 0;
-    bool marked = false; // the insert marker has been placed
+    // This window's presented copy of the session's selection (ADR-0021): read at the
+    // top of each frame, written back through the root. Never a second source of truth.
+    Selection selection;
     struct View {
         double left, scale;
     };
@@ -79,9 +80,9 @@ struct ArrangementGeometry {
     // What + and - zoom around (Live 12 manual 6.2, ADR-0129 deviation 2): the
     // time selection's middle, else the insert marker, else the playhead.
     std::int64_t anchor(std::int64_t playhead) const noexcept {
-        if (selectionStart != selectionEnd)
-            return (selectionStart + selectionEnd) / 2;
-        return marked ? insert : playhead;
+        if (selection.start != selection.end)
+            return (selection.start + selection.end) / 2;
+        return selection.marked ? selection.insert : playhead;
     }
     void pan(double pixels) noexcept { left = std::clamp(left + pixels / scale, 0., 1e9); }
     void zoom(double factor, double pixel) noexcept {
