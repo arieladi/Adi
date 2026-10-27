@@ -68,9 +68,17 @@ struct StereoGain {
     float right = 1.0f;
 };
 
+/// The same gains unrounded, for a graph at 64 (ADR-0207 d2).
+struct StereoGainWide {
+    double left = 1.0;
+    double right = 1.0;
+};
+
 /// The gains a stereo signal takes at `pan` (-1 hard left, +1 hard right;
-/// clamped) under `law`. Pure and allocation-free.
+/// clamped) under `law`. Pure and allocation-free. Each is `panGainsWide`'s
+/// value rounded once to float, which is how it was always computed.
 [[nodiscard]] StereoGain panGains(double pan, PanLaw law) noexcept;
+[[nodiscard]] StereoGainWide panGainsWide(double pan, PanLaw law) noexcept;
 
 /// A fader's linear gain. At or below kSilenceDb, and for -inf, it is 0.
 inline constexpr double kSilenceDb = -150.0;
@@ -120,6 +128,8 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
+    /// ADR-0207 d2: at 64 the gains and their ramps are double too.
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
     /// Message thread: the scope tap this strip's output feeds (ADR-0175), or
     /// null. The tap outlives every graph: the session keeps it.
@@ -137,20 +147,46 @@ public:
     static constexpr double kMaxDelaySeconds = 1.0;
 
 private:
-    void processGains(const NodeIo& io) noexcept;
+    template <typename T>
+    void processGains(const NodeIo& io, const T* const* in, T* const* out) noexcept;
+    template <typename T>
     void writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
-                  const float* const* audio) noexcept;
+                  const T* const* audio) noexcept;
 
     std::atomic<ScopeTap*> tap_{nullptr};
     std::atomic<ScopeTap*> preFaderTap_{nullptr};
     std::atomic<std::int64_t> delayProject_{0};
     std::atomic<std::int64_t> delayRate_{48000};
     double sampleRate_ = 48000.0;       ///< message thread, set by prepare
+    /// Left, right, and every other channel (the fader alone). `g` is what a
+    /// graph at 32 plays, rounded exactly as it always was; `w` the same
+    /// values unrounded, for a graph at 64.
     struct Gains {
         float g[3] = {1.0f, 1.0f, 1.0f};
+        double w[3] = {1.0, 1.0, 1.0};
     };
     [[nodiscard]] Gains desired(const StripLanes* lanes, std::int32_t frame) noexcept;
-    void retarget(const Gains& t) noexcept;
+
+    /// The five-millisecond ramp toward a target, at one width. A strip runs
+    /// one of the two in any graph. The strip outlives every graph, so at a
+    /// precision switch (a new graph) the ramp about to run TAKES OVER from
+    /// the one that just ran (`handover`): its own state is whatever it held
+    /// when that width last played, and resuming it would replay an old gain.
+    template <typename T>
+    struct Ramp {
+        T cur[3] = {1, 1, 1};
+        T step[3] = {0, 0, 0};
+        T to[3] = {1, 1, 1};
+        std::int32_t remaining = 0;
+        bool started = false;
+        void retarget(const T (&t)[3], std::int32_t frames) noexcept;
+    };
+    template <typename T>
+    [[nodiscard]] Ramp<T>& ramp() noexcept;
+    /// Audio thread: called with the width about to run; when it is not the
+    /// width that ran last, carries the gain that was playing across.
+    template <typename T>
+    void handover() noexcept;
 
     // The model's values, written by the message thread.
     std::atomic<float> volumeDb_{0.0f}, pan_{0.0f};
@@ -168,11 +204,9 @@ private:
     bool lastHeard_ = true;
     Gains lastGains_{};
     bool haveLast_ = false;
-    bool started_ = false;
-    float cur_[3] = {1.0f, 1.0f, 1.0f};
-    float step_[3] = {0.0f, 0.0f, 0.0f};
-    float rampTo_[3] = {1.0f, 1.0f, 1.0f};
-    std::int32_t remaining_ = 0;
+    Ramp<float> ramp32_;
+    Ramp<double> ramp64_;
+    std::int8_t lastWidth_ = 0;   ///< audio thread: 32 or 64 once a ramp has run, 0 before
     std::int32_t rampFrames_ = 240;
 };
 

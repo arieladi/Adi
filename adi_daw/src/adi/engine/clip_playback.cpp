@@ -13,6 +13,7 @@
 #include <limits>
 #include <numeric>
 #include <thread>
+#include <type_traits>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -46,13 +47,15 @@ std::int64_t samples(double seconds, double rate) {
     if (!std::isfinite(n) || n < 0 || n > static_cast<double>(limit)) throw std::runtime_error("time outside supported sample range");
     return static_cast<std::int64_t>(std::llround(n));
 }
-float fade(float x, std::int64_t curve) noexcept {
-    x = std::clamp(x, 0.0f, 1.0f);
+// One curve at either width: float at 32, as always; double at 64 (ADR-0207 d2).
+template <typename T>
+T fade(T x, std::int64_t curve) noexcept {
+    x = std::clamp(x, T{0}, T{1});
     switch (curve) {
-    case 0: return x >= 1 ? 1.0f : 0.0f;
+    case 0: return x >= 1 ? T{1} : T{0};
     case 2: return x*x;
     case 3: return std::sqrt(x);
-    case 4: return x*x*(3.0f-2.0f*x);
+    case 4: return x*x*(T{3}-T{2}*x);
     default: return x;
     }
 }
@@ -74,6 +77,7 @@ struct Clip {
     std::uint16_t channels = 0;
     int mode = 0;
     float gain = 1;
+    double gainWide = 1;   ///< the same gain unrounded, for a graph at 64
     fs::path path;
     fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
     std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
@@ -104,6 +108,28 @@ struct Clip {
         if (fadeIn > 0) g *= fade(static_cast<float>(time-start)/static_cast<float>(fadeIn),inCurve);
         if (fadeOut > 0) g *= fade(static_cast<float>(end-1-time)/static_cast<float>(fadeOut),outCurve);
         return g;
+    }
+    double envelopeWide(std::int64_t time) const noexcept {
+        double g = gainWide;
+        if (fadeIn > 0) g *= fade(static_cast<double>(time-start)/static_cast<double>(fadeIn),inCurve);
+        if (fadeOut > 0) g *= fade(static_cast<double>(end-1-time)/static_cast<double>(fadeOut),outCurve);
+        return g;
+    }
+    /// One output channel's sample of this clip at `sample` (a frame of the
+    /// file), by the clip's channel mode. A fold of the channels is a sum, in
+    /// double (ADR-0207 d2), rounded to `V` once.
+    template <typename V>
+    V valueOf(const float* sample, std::int32_t c) const noexcept {
+        if(mode==1) return sample[0];
+        if(mode==2) return sample[channels>1?1:0];
+        if(mode==3) {
+            double folded=0;
+            for(std::uint16_t j=0;j<channels;++j) folded+=sample[j];
+            return static_cast<V>(folded/channels);
+        }
+        if(channels==1) return sample[0];
+        if(c<channels) return sample[c];
+        return V{0};
     }
     std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames) const noexcept {
         std::array<std::int64_t,slots> out; out.fill(-1);
@@ -294,14 +320,24 @@ public:
     TrackSource(Transport& t,std::int32_t f,std::int32_t ch,std::int64_t id)
         :transport(t),maxFrames(f),channels(ch),track(id),
          wide(static_cast<std::size_t>(ch)*static_cast<std::size_t>(f),0.0){}
+    bool processesDouble() const noexcept override { return true; }
     void process(const NodeIo& io) noexcept override {
-        for(std::int32_t c=0;c<io.channels;++c) std::fill_n(io.out[c]+io.blockOffset,io.frames,0.0f);
+        if(io.wide()) play<double>(io,io.out64);
+        else play<float>(io,io.out);
+    }
+    template <typename T>
+    void play(const NodeIo& io, T* const* out) noexcept {
+        for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
         if(!transport.playing()) return;
         // One clip is not a sum: its samples go straight out, bit for bit.
-        // Two or more may overlap, and then every sample is summed in double.
-        // The guard is the shape the accumulator was built for; the session
-        // builds this at the graph's own channels and block size.
-        const bool sum=clips.size()>1 && io.channels<=channels && io.blockOffset+io.frames<=maxFrames;
+        // Two or more may overlap, and then every sample is summed in double:
+        // at 32 into `wide`, converted once at the end; at 64 the output is
+        // double already and is the sum. The guard is the shape the
+        // accumulator was built for; the session builds this at the graph's
+        // own channels and block size.
+        bool sum=false;
+        if constexpr (std::is_same_v<T,float>)
+            sum=clips.size()>1 && io.channels<=channels && io.blockOffset+io.frames<=maxFrames;
         auto at=[&](std::int32_t c,std::int32_t i)->double& {
             return wide[static_cast<std::size_t>(c)*static_cast<std::size_t>(maxFrames)+static_cast<std::size_t>(io.blockOffset+i)];
         };
@@ -319,27 +355,24 @@ public:
                 }
                 if(!page) { ++missing; continue; }
                 const auto* sample=page->data.data()+static_cast<std::size_t>(n%clip->pageFrames)*clip->channels;
-                const float gain=clip->envelope(time);
-                for(std::int32_t c=0;c<io.channels;++c) {
-                    float value=0;
-                    if(clip->mode==1) value=sample[0];
-                    else if(clip->mode==2) value=sample[clip->channels>1?1:0];
-                    else if(clip->mode==3) {
-                        // A fold of the file's channels is a sum as well.
-                        double folded=0;
-                        for(std::uint16_t j=0;j<clip->channels;++j) folded+=sample[j];
-                        value=static_cast<float>(folded/clip->channels);
-                    } else if(clip->channels==1) value=sample[0];
-                    else if(c<clip->channels) value=sample[c];
-                    if(sum) at(c,i)+=gain*value;
-                    else io.out[c][io.blockOffset+i]+=gain*value;
+                if constexpr (std::is_same_v<T,float>) {
+                    const float gain=clip->envelope(time);
+                    for(std::int32_t c=0;c<io.channels;++c) {
+                        const float value=clip->valueOf<float>(sample,c);
+                        if(sum) at(c,i)+=gain*value;
+                        else out[c][io.blockOffset+i]+=gain*value;
+                    }
+                } else {
+                    const double gain=clip->envelopeWide(time);
+                    for(std::int32_t c=0;c<io.channels;++c)
+                        out[c][io.blockOffset+i]+=gain*clip->valueOf<double>(sample,c);
                 }
             }
             if(page) page->state.store(2,std::memory_order_release);
             if(missing) clip->underruns.fetch_add(missing,std::memory_order_relaxed);
         }
         if(sum) for(std::int32_t c=0;c<io.channels;++c) for(std::int32_t i=0;i<io.frames;++i)
-            io.out[c][io.blockOffset+i]=static_cast<float>(at(c,i));
+            out[c][io.blockOffset+i]=static_cast<float>(at(c,i));
     }
     const char* name() const noexcept override { return "disk clips"; }
 };
@@ -431,7 +464,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(clip->loopLength<=0 || clip->loopBegin+clip->loopLength>clip->length) throw std::runtime_error("clip loop outside source window; silent");
             }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");
-            clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
+            clip->gain=static_cast<float>(std::pow(10.0,row.gainDb/20)); clip->gainWide=std::pow(10.0,row.gainDb/20); clip->mode=static_cast<int>(a->channelMode); clip->track=row.trackId;
             if(row.muted) continue;
             for(auto& p:clip->pages) p.data.resize(static_cast<std::size_t>(clip->pageFrames)*clip->channels);
             auto track=std::find_if(impl_->tracks.begin(),impl_->tracks.end(),[&](const auto& x){return x->track==row.trackId;});

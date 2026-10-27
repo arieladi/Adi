@@ -5,10 +5,11 @@
 #include <cmath>
 #include <numbers>
 #include <queue>
+#include <type_traits>
 
 namespace adi::engine {
 
-StereoGain panGains(double pan, PanLaw law) noexcept {
+StereoGainWide panGainsWide(double pan, PanLaw law) noexcept {
     const double p = std::isfinite(pan) ? std::clamp(pan, -1.0, 1.0) : 0.0;
     // THE CENTRE AND THE SIDES ARE EXACT, not computed. A centred track at 0 dB
     // must pass its samples through bit for bit -- ADR-0021's oracle compares
@@ -17,22 +18,26 @@ StereoGain panGains(double pan, PanLaw law) noexcept {
     const double theta = (p + 1.0) * std::numbers::pi / 4.0;
     switch (law) {
         case PanLaw::EqualPower:
-            if (p == -1.0) return {1.0f, 0.0f};
-            if (p == 1.0) return {0.0f, 1.0f};
-            return {static_cast<float>(std::cos(theta)), static_cast<float>(std::sin(theta))};
+            if (p == -1.0) return {1.0, 0.0};
+            if (p == 1.0) return {0.0, 1.0};
+            return {std::cos(theta), std::sin(theta)};
         case PanLaw::Balance:
-            return p <= 0.0 ? StereoGain{1.0f, static_cast<float>(1.0 + p)}
-                            : StereoGain{static_cast<float>(1.0 - p), 1.0f};
+            return p <= 0.0 ? StereoGainWide{1.0, 1.0 + p} : StereoGainWide{1.0 - p, 1.0};
         case PanLaw::Linear:
-            return {static_cast<float>((1.0 - p) / 2.0), static_cast<float>((1.0 + p) / 2.0)};
+            return {(1.0 - p) / 2.0, (1.0 + p) / 2.0};
         case PanLaw::Live:
             break;
     }
-    if (p == 0.0) return {1.0f, 1.0f};
-    if (p == -1.0) return {static_cast<float>(std::numbers::sqrt2), 0.0f};
-    if (p == 1.0) return {0.0f, static_cast<float>(std::numbers::sqrt2)};
-    return {static_cast<float>(std::numbers::sqrt2 * std::cos(theta)),
-            static_cast<float>(std::numbers::sqrt2 * std::sin(theta))};
+    if (p == 0.0) return {1.0, 1.0};
+    if (p == -1.0) return {std::numbers::sqrt2, 0.0};
+    if (p == 1.0) return {0.0, std::numbers::sqrt2};
+    return {std::numbers::sqrt2 * std::cos(theta), std::numbers::sqrt2 * std::sin(theta)};
+}
+
+StereoGain panGains(double pan, PanLaw law) noexcept {
+    // Every float gain was computed in double and rounded once; it still is.
+    const StereoGainWide w = panGainsWide(pan, law);
+    return {static_cast<float>(w.left), static_cast<float>(w.right)};
 }
 
 double faderGain(double volumeDb) noexcept {
@@ -101,11 +106,15 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
     if (haveLast_ && vol == lastVol_ && pan == lastPan_ && law == lastLaw_ && heard == lastHeard_)
         return lastGains_;
     const double fader = heard ? faderGain(vol) : 0.0;
+    const StereoGainWide w = panGainsWide(pan, static_cast<PanLaw>(law));
     const StereoGain g = panGains(pan, static_cast<PanLaw>(law));
     Gains out;
     out.g[0] = static_cast<float>(fader * g.left);
     out.g[1] = static_cast<float>(fader * g.right);
     out.g[2] = static_cast<float>(fader);
+    out.w[0] = fader * w.left;
+    out.w[1] = fader * w.right;
+    out.w[2] = fader;
     lastVol_ = vol;
     lastPan_ = pan;
     lastLaw_ = law;
@@ -115,65 +124,116 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
     return out;
 }
 
-void StripNode::retarget(const Gains& t) noexcept {
-    if (!started_) {
-        for (int k = 0; k < 3; ++k) cur_[k] = rampTo_[k] = t.g[k];
-        remaining_ = 0;
-        started_ = true;
+template <typename T>
+void StripNode::Ramp<T>::retarget(const T (&t)[3], std::int32_t frames) noexcept {
+    if (!started) {
+        for (int k = 0; k < 3; ++k) cur[k] = to[k] = t[k];
+        remaining = 0;
+        started = true;
         return;
     }
-    if (t.g[0] == rampTo_[0] && t.g[1] == rampTo_[1] && t.g[2] == rampTo_[2]) return;
+    if (t[0] == to[0] && t[1] == to[1] && t[2] == to[2]) return;
     // A new target, from wherever the gain is now -- mid-ramp included.
     for (int k = 0; k < 3; ++k) {
-        rampTo_[k] = t.g[k];
-        step_[k] = (t.g[k] - cur_[k]) / static_cast<float>(rampFrames_);
+        to[k] = t[k];
+        step[k] = (t[k] - cur[k]) / static_cast<T>(frames);
     }
-    remaining_ = rampFrames_;
+    remaining = frames;
+}
+
+template <typename T>
+StripNode::Ramp<T>& StripNode::ramp() noexcept {
+    if constexpr (std::is_same_v<T, float>) return ramp32_;
+    else return ramp64_;
+}
+
+template <typename T>
+void StripNode::handover() noexcept {
+    constexpr std::int8_t width = std::is_same_v<T, float> ? 32 : 64;
+    const std::int8_t last = lastWidth_;
+    lastWidth_ = width;
+    if (last == 0 || last == width) return;
+    using Other = std::conditional_t<std::is_same_v<T, float>, double, float>;
+    const Ramp<Other>& from = ramp<Other>();
+    Ramp<T>& to = ramp<T>();
+    if (from.remaining == 0) {
+        // At rest: snap to this width's own exact target on the next
+        // retarget, as a strip does when a project opens. At 32 that target
+        // is the float gain it always was, so the bytes are 32's own.
+        to.started = false;
+        return;
+    }
+    // Mid-ramp: go on from the gain actually playing, toward the same target
+    // and in the time that was left; the retarget that follows redirects it
+    // to this width's own target if that differs.
+    for (int k = 0; k < 3; ++k) {
+        to.cur[k] = static_cast<T>(from.cur[k]);
+        to.to[k] = static_cast<T>(from.to[k]);
+        to.step[k] = static_cast<T>(from.step[k]);
+    }
+    to.remaining = from.remaining;
+    to.started = true;
 }
 
 void StripNode::process(const NodeIo& io) noexcept {
-    writeTap(preFaderTap_, io, io.in);
-    processGains(io);
-    writeTap(tap_, io, io.out);
+    // ADR-0207 d2: one body, at the width the graph hands.
+    if (io.wide()) {
+        writeTap<double>(preFaderTap_, io, io.in64);
+        processGains<double>(io, io.in64, io.out64);
+        writeTap<double>(tap_, io, io.out64);
+        return;
+    }
+    writeTap<float>(preFaderTap_, io, io.in);
+    processGains<float>(io, io.in, io.out);
+    writeTap<float>(tap_, io, io.out);
 }
 
 void StripNode::silenceTaps(const NodeIo& io) noexcept {
-    writeTap(preFaderTap_, io, nullptr);
-    writeTap(tap_, io, nullptr);
+    writeTap<float>(preFaderTap_, io, nullptr);
+    writeTap<float>(tap_, io, nullptr);
 }
 
+template <typename T>
 void StripNode::writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
-                         const float* const* audio) noexcept {
+                         const T* const* audio) noexcept {
     // ADR-0175: a watched strip hands its output to the scope, stamped with
     // the timeline position it is heard at. One relaxed load when unwatched.
     if (ScopeTap* tap = slot.load(std::memory_order_relaxed); tap != nullptr && io.channels > 0) {
         std::atomic_thread_fence(std::memory_order_acquire);
         const bool playing = transport_ != nullptr && transport_->playing();
         const std::int64_t at = transport_ != nullptr ? transport_->sampleAt(playing ? io.blockOffset : 0) : 0;
-        tap->write(audio != nullptr && audio[0] != nullptr ? audio[0] + io.blockOffset : nullptr,
-                   audio != nullptr && io.channels > 1 && audio[1] != nullptr ? audio[1] + io.blockOffset : nullptr, io.frames,
-                   at - tap->latency(), playing);
+        const T* l = audio != nullptr && audio[0] != nullptr ? audio[0] + io.blockOffset : nullptr;
+        const T* r = audio != nullptr && io.channels > 1 && audio[1] != nullptr ? audio[1] + io.blockOffset : nullptr;
+        tap->write(l, r, io.frames, at - tap->latency(), playing);
     }
 }
 
-void StripNode::processGains(const NodeIo& io) noexcept {
+template <typename T>
+void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out) noexcept {
     const StripLanes* lanes = lanes_.load(std::memory_order_acquire);
     const bool moving = lanes != nullptr && transport_ != nullptr &&
                         (lanes->volume != nullptr || lanes->pan != nullptr || lanes->mute != nullptr);
     const std::int32_t off = io.blockOffset;
     auto gainIndex = [](std::int32_t c) { return c < 2 ? c : 2; };
+    handover<T>();
+    Ramp<T>& r = ramp<T>();
+    auto retargetAt = [&](std::int32_t frame) {
+        const Gains d = desired(lanes, frame);
+        if constexpr (std::is_same_v<T, float>) r.retarget(d.g, rampFrames_);
+        else r.retarget(d.w, rampFrames_);
+    };
 
-    retarget(desired(lanes, off));
+    retargetAt(off);
 
-    if (!moving && remaining_ == 0) {
+    if (!moving && r.remaining == 0) {
         // Steady: one gain per channel for the whole segment.
         for (std::int32_t c = 0; c < io.channels; ++c) {
-            float* out = io.out[c] + off;
-            const float* in = (io.in != nullptr && io.in[c] != nullptr) ? io.in[c] + off : nullptr;
-            const float g = cur_[gainIndex(c)];
-            if (in == nullptr || g == 0.0f) std::fill_n(out, io.frames, 0.0f);
-            else if (g == 1.0f) std::copy_n(in, io.frames, out);
-            else for (std::int32_t i = 0; i < io.frames; ++i) out[i] = in[i] * g;
+            T* o = out[c] + off;
+            const T* x = (in != nullptr && in[c] != nullptr) ? in[c] + off : nullptr;
+            const T g = r.cur[gainIndex(c)];
+            if (x == nullptr || g == T{0}) std::fill_n(o, io.frames, T{0});
+            else if (g == T{1}) std::copy_n(x, io.frames, o);
+            else for (std::int32_t i = 0; i < io.frames; ++i) o[i] = x[i] * g;
         }
         return;
     }
@@ -181,15 +241,15 @@ void StripNode::processGains(const NodeIo& io) noexcept {
     for (std::int32_t i = 0; i < io.frames; ++i) {
         // A bound lane is read on a fixed grid of the block, so where a
         // segment boundary falls does not move where it is read.
-        if (moving && i > 0 && (off + i) % kControlFrames == 0) retarget(desired(lanes, off + i));
-        if (remaining_ > 0) {
-            for (int k = 0; k < 3; ++k) cur_[k] += step_[k];
-            if (--remaining_ == 0)
-                for (int k = 0; k < 3; ++k) cur_[k] = rampTo_[k];   // land exactly
+        if (moving && i > 0 && (off + i) % kControlFrames == 0) retargetAt(off + i);
+        if (r.remaining > 0) {
+            for (int k = 0; k < 3; ++k) r.cur[k] += r.step[k];
+            if (--r.remaining == 0)
+                for (int k = 0; k < 3; ++k) r.cur[k] = r.to[k];   // land exactly
         }
         for (std::int32_t c = 0; c < io.channels; ++c) {
-            const float x = (io.in != nullptr && io.in[c] != nullptr) ? io.in[c][off + i] : 0.0f;
-            io.out[c][off + i] = x * cur_[gainIndex(c)];
+            const T x = (in != nullptr && in[c] != nullptr) ? in[c][off + i] : T{0};
+            out[c][off + i] = x * r.cur[gainIndex(c)];
         }
     }
 }

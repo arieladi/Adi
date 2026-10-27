@@ -149,7 +149,7 @@ bool Graph::topoSort() {
 // Delay, and the compensation that uses it
 // ---------------------------------------------------------------------------
 
-void DelayLine::prepare(std::int32_t channels, std::int32_t capacity) {
+void DelayLine::prepare(std::int32_t channels, std::int32_t capacity, bool wide) {
     channels_ = channels > 0 ? channels : 0;
     capacity_ = capacity > 0 ? capacity : 0;
     // ONE MORE THAN THE CAPACITY. The write happens before the read, so a tap
@@ -157,11 +157,20 @@ void DelayLine::prepare(std::int32_t channels, std::int32_t capacity) {
     // overwritten. With a ring of exactly `capacity_` it lands on the write
     // index itself and the longest delay silently becomes no delay at all.
     ring_ = capacity_ > 0 ? capacity_ + 1 : 0;
-    buf_.assign(static_cast<std::size_t>(channels_) * static_cast<std::size_t>(ring_),
-                0.0f);
+    wide_ = wide;
+    const std::size_t n = static_cast<std::size_t>(channels_) * static_cast<std::size_t>(ring_);
+    // One storage, the other emptied: a line's bytes are what it holds.
+    if (wide_) {
+        wbuf_.assign(n, 0.0);
+        std::vector<float>().swap(buf_);
+    } else {
+        buf_.assign(n, 0.0f);
+        std::vector<double>().swap(wbuf_);
+    }
     delay_ = 0;
     write_ = 0;
     incoming_.clear();
+    wincoming_.clear();
     inCapacity_ = inRing_ = inWrite_ = targetDelay_ = primeRemaining_ = 0;
     target_.store(0, std::memory_order_relaxed);
     gliding_.store(false, std::memory_order_relaxed);
@@ -178,6 +187,7 @@ void DelayLine::setDelay(std::int32_t d) noexcept {
 
 void DelayLine::reset() noexcept {
     for (auto& v : buf_) v = 0.0f;
+    for (auto& v : wbuf_) v = 0.0;
     write_ = 0;
 }
 
@@ -189,16 +199,17 @@ bool DelayLine::beginGlide(std::int32_t d) noexcept {
     return true;
 }
 
-bool DelayLine::offerRing(std::vector<float> ring, std::int32_t capacity,
-                          std::int32_t targetDelay) {
+template <typename T>
+bool DelayLine::offer(std::vector<T>& incoming, std::vector<T> ring, std::int32_t capacity,
+                      std::int32_t targetDelay) {
     if (grow_.load(std::memory_order_acquire) != Grow::Idle) return false;
     if (capacity <= 0 || targetDelay < 0 || targetDelay > capacity) return false;
     const std::int32_t r = capacity + 1;
     if (ring.size() < static_cast<std::size_t>(channels_) * static_cast<std::size_t>(r))
         return false;
 
-    incoming_ = std::move(ring);
-    for (auto& v : incoming_) v = 0.0f;   // message thread: the audio thread must not
+    incoming = std::move(ring);
+    for (auto& v : incoming) v = T{};   // message thread: the audio thread must not
     inCapacity_ = capacity;
     inRing_ = r;
     inWrite_ = 0;
@@ -214,13 +225,53 @@ bool DelayLine::offerRing(std::vector<float> ring, std::int32_t capacity,
     return true;
 }
 
+bool DelayLine::offerRing(std::vector<float> ring, std::int32_t capacity,
+                          std::int32_t targetDelay) {
+    if (wide_) return false;
+    return offer(incoming_, std::move(ring), capacity, targetDelay);
+}
+
+bool DelayLine::offerRing(std::vector<double> ring, std::int32_t capacity,
+                          std::int32_t targetDelay) {
+    if (!wide_) return false;
+    return offer(wincoming_, std::move(ring), capacity, targetDelay);
+}
+
 std::vector<float> DelayLine::collectRing() {
     if (grow_.load(std::memory_order_acquire) != Grow::Spent) return {};
     std::vector<float> old = std::move(incoming_);
     incoming_.clear();
+    std::vector<double>().swap(wincoming_);   // freed here, on the message thread
     inCapacity_ = inRing_ = inWrite_ = 0;
     grow_.store(Grow::Idle, std::memory_order_release);
     return old;
+}
+
+bool DelayLine::reclaim() {
+    if (grow_.load(std::memory_order_acquire) != Grow::Spent) return false;
+    // The vector returned is destroyed here, on the message thread: the
+    // deallocation the audio thread deliberately did not do.
+    (void)collectRing();
+    return true;
+}
+
+template <typename T, typename U>
+void DelayLine::adopt(std::vector<T>& buf, const std::vector<U>& from, std::int32_t fromRing,
+                      std::int32_t fromWrite, std::int32_t k) noexcept {
+    for (std::int32_t c = 0; c < channels_; ++c) {
+        const U* src = from.data() + static_cast<std::size_t>(c) *
+                                     static_cast<std::size_t>(fromRing);
+        T* dst = buf.data() + static_cast<std::size_t>(c) *
+                              static_cast<std::size_t>(ring_);
+        for (std::int32_t i = 0; i < k; ++i) {
+            // dst[0] is the OLDEST sample carried and dst[k-1] the newest.
+            // `fromWrite` is the NEXT write, so the newest written sample is
+            // one behind it.
+            std::int32_t r = (fromWrite - k + i) % fromRing;
+            if (r < 0) r += fromRing;
+            dst[i] = static_cast<T>(src[r]);
+        }
+    }
 }
 
 void DelayLine::adoptHistory(const DelayLine& old) noexcept {
@@ -235,20 +286,16 @@ void DelayLine::adoptHistory(const DelayLine& old) noexcept {
     // ring is growing both rings are written and `buf_` is the one read, and
     // after its swap `buf_` IS the grown ring. So nothing here has to know
     // what the old line was in the middle of.
-    for (std::int32_t c = 0; c < channels_; ++c) {
-        const float* src = old.buf_.data() + static_cast<std::size_t>(c) *
-                                             static_cast<std::size_t>(old.ring_);
-        float* dst = buf_.data() + static_cast<std::size_t>(c) *
-                                   static_cast<std::size_t>(ring_);
-        for (std::int32_t i = 0; i < k; ++i) {
-            // dst[0] is the OLDEST sample carried and dst[k-1] the newest.
-            // `old.write_` is the NEXT write, so the newest written sample is
-            // one behind it.
-            std::int32_t r = (old.write_ - k + i) % old.ring_;
-            if (r < 0) r += old.ring_;
-            dst[i] = src[r];
-        }
-    }
+    //
+    // ACROSS A PRECISION SWITCH TOO (ADR-0207 d2). The switch is a rebuild,
+    // and a compensated edge that started its new ring from zeros would drop
+    // `delay` samples of that track: a hole, not a seam. Float history widens
+    // exactly; double history is rounded once, as the output it was going to
+    // be would have been at 32.
+    if (wide_ && old.wide_)        adopt(wbuf_, old.wbuf_, old.ring_, old.write_, k);
+    else if (wide_ && !old.wide_)  adopt(wbuf_, old.buf_, old.ring_, old.write_, k);
+    else if (!wide_ && old.wide_)  adopt(buf_, old.wbuf_, old.ring_, old.write_, k);
+    else                           adopt(buf_, old.buf_, old.ring_, old.write_, k);
     // The next write lands right after the newest carried sample, so a tap at
     // `delay_` reads exactly what the old line's tap would have read next.
     write_ = k % ring_;
@@ -275,9 +322,11 @@ void DelayLine::endEdge() noexcept {
     if (g == Grow::Fading) {
         // The swap. A vector swap moves pointers -- no allocation, which is
         // what lets this happen on the audio thread at all. The old buffer
-        // lands in `incoming_` and waits for `collectRing`; the audio thread
-        // never deallocates.
+        // lands in the incoming slot and waits for `collectRing`; the audio
+        // thread never deallocates. Both widths are swapped: the unused pair
+        // is two empty vectors, and swapping them costs nothing.
         buf_.swap(incoming_);
+        wbuf_.swap(wincoming_);
         std::swap(capacity_, inCapacity_);
         std::swap(ring_, inRing_);
         write_ = inWrite_;
@@ -287,12 +336,14 @@ void DelayLine::endEdge() noexcept {
     }
 }
 
-void DelayLine::processGrowing(std::int32_t channel, const float* src, float* dst,
+template <typename T>
+void DelayLine::processGrowing(std::vector<T>& buf, std::vector<T>& incoming,
+                               std::int32_t channel, const T* src, T* dst,
                                std::int32_t frames, Grow state) noexcept {
-    float* oldHist = buf_.data() + static_cast<std::size_t>(channel) *
-                                   static_cast<std::size_t>(ring_);
-    float* newHist = incoming_.data() + static_cast<std::size_t>(channel) *
-                                        static_cast<std::size_t>(inRing_);
+    T* oldHist = buf.data() + static_cast<std::size_t>(channel) *
+                              static_cast<std::size_t>(ring_);
+    T* newHist = incoming.data() + static_cast<std::size_t>(channel) *
+                                   static_cast<std::size_t>(inRing_);
     std::int32_t w = write_, nw = inWrite_;
 
     // BOTH RINGS ARE WRITTEN THROUGHOUT. The new one is accumulating the
@@ -301,7 +352,7 @@ void DelayLine::processGrowing(std::int32_t channel, const float* src, float* ds
     if (state == Grow::Priming) {
         const std::int32_t d = delay_;
         for (std::int32_t i = 0; i < frames; ++i) {
-            const float in = src[i];   // src == dst is legal: read before writing
+            const T in = src[i];   // src == dst is legal: read before writing
             oldHist[w] = in;
             newHist[nw] = in;
             dst[i] = tapAt(oldHist, w, ring_, d);
@@ -321,15 +372,15 @@ void DelayLine::processGrowing(std::int32_t channel, const float* src, float* ds
     // taps live in different rings.
     const std::int32_t dOld = delay_;
     const std::int32_t dNew = targetDelay_;
-    const float step = frames > 0 ? 1.0f / static_cast<float>(frames) : 0.0f;
-    float t = 0.0f;
+    const T step = frames > 0 ? T{1} / static_cast<T>(frames) : T{0};
+    T t = T{0};
     for (std::int32_t i = 0; i < frames; ++i) {
-        const float in = src[i];
+        const T in = src[i];
         oldHist[w] = in;
         newHist[nw] = in;
         t += step;
-        const float a = tapAt(oldHist, w, ring_, dOld);
-        const float b = tapAt(newHist, nw, inRing_, dNew);
+        const T a = tapAt(oldHist, w, ring_, dOld);
+        const T b = tapAt(newHist, nw, inRing_, dNew);
         dst[i] = a + (b - a) * t;
         if (++w == ring_) w = 0;
         if (++nw == inRing_) nw = 0;
@@ -338,22 +389,17 @@ void DelayLine::processGrowing(std::int32_t channel, const float* src, float* ds
     inWrite_ = nw;
 }
 
-void DelayLine::process(std::int32_t channel, const float* src, float* dst,
-                        std::int32_t frames) noexcept {
-    if (ring_ <= 0 || channel < 0 || channel >= channels_) {
-        if (src != dst)
-            std::memcpy(dst, src, static_cast<std::size_t>(frames) * sizeof(float));
-        return;
-    }
-
+template <typename T>
+void DelayLine::run(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t channel,
+                    const T* src, T* dst, std::int32_t frames) noexcept {
     const Grow g = grow_.load(std::memory_order_acquire);
     if (g == Grow::Priming || g == Grow::Fading) {
-        processGrowing(channel, src, dst, frames, g);
+        processGrowing(buf, incoming, channel, src, dst, frames, g);
         return;
     }
 
-    float* hist = buf_.data() + static_cast<std::size_t>(channel) *
-                                static_cast<std::size_t>(ring_);
+    T* hist = buf.data() + static_cast<std::size_t>(channel) *
+                           static_cast<std::size_t>(ring_);
     std::int32_t w = write_;
 
     const bool glide = gliding_.load(std::memory_order_acquire);
@@ -362,7 +408,7 @@ void DelayLine::process(std::int32_t channel, const float* src, float* dst,
     if (!glide || to == delay_ || frames <= 0) {
         const std::int32_t d = delay_;
         for (std::int32_t i = 0; i < frames; ++i) {
-            const float in = src[i];   // src == dst is legal, so read before writing
+            const T in = src[i];   // src == dst is legal, so read before writing
             hist[w] = in;
             dst[i] = tapAt(hist, w, ring_, d);
             if (++w == ring_) w = 0;
@@ -382,18 +428,38 @@ void DelayLine::process(std::int32_t channel, const float* src, float* dst,
     // no crossfade makes that inaudible. What it does buy is that the
     // difference arrives as a brief flange rather than as a click.
     const std::int32_t from = delay_;
-    const float step = 1.0f / static_cast<float>(frames);
-    float t = 0.0f;
+    const T step = T{1} / static_cast<T>(frames);
+    T t = T{0};
     for (std::int32_t i = 0; i < frames; ++i) {
-        const float in = src[i];
+        const T in = src[i];
         hist[w] = in;
         t += step;
-        const float a = tapAt(hist, w, ring_, from);
-        const float b = tapAt(hist, w, ring_, to);
+        const T a = tapAt(hist, w, ring_, from);
+        const T b = tapAt(hist, w, ring_, to);
         dst[i] = a + (b - a) * t;
         if (++w == ring_) w = 0;
     }
     write_ = w;
+}
+
+void DelayLine::process(std::int32_t channel, const float* src, float* dst,
+                        std::int32_t frames) noexcept {
+    if (wide_ || ring_ <= 0 || channel < 0 || channel >= channels_) {
+        if (src != dst)
+            std::memcpy(dst, src, static_cast<std::size_t>(frames) * sizeof(float));
+        return;
+    }
+    run(buf_, incoming_, channel, src, dst, frames);
+}
+
+void DelayLine::process(std::int32_t channel, const double* src, double* dst,
+                        std::int32_t frames) noexcept {
+    if (!wide_ || ring_ <= 0 || channel < 0 || channel >= channels_) {
+        if (src != dst)
+            std::memcpy(dst, src, static_cast<std::size_t>(frames) * sizeof(double));
+        return;
+    }
+    run(wbuf_, wincoming_, channel, src, dst, frames);
 }
 
 void Graph::prepareLine(DelayLine& line, std::int32_t delaySamples) {
@@ -409,7 +475,7 @@ void Graph::prepareLine(DelayLine& line, std::int32_t delaySamples) {
     // need a delay tomorrow: it is the direct path everything else is
     // compensated against.
     const std::int32_t cap = d + latencyHeadroom_;
-    line.prepare(channels_, cap);
+    line.prepare(channels_, cap, precision_ == Precision::Float64);
     line.setDelay(d);
 }
 
@@ -566,10 +632,13 @@ std::size_t Graph::escalateLatency() {
         // the same slack the edge would have had if it had been built at this
         // size in the first place.
         const std::int32_t cap = want + latencyHeadroom_;
-        std::vector<float> ring(
-            static_cast<std::size_t>(channels_) * static_cast<std::size_t>(cap + 1),
-            0.0f);
-        if (line.offerRing(std::move(ring), cap, want)) ++grown;
+        const std::size_t size =
+            static_cast<std::size_t>(channels_) * static_cast<std::size_t>(cap + 1);
+        // The ring at the line's own width (ADR-0207 d2).
+        const bool taken = line.wide()
+            ? line.offerRing(std::vector<double>(size, 0.0), cap, want)
+            : line.offerRing(std::vector<float>(size, 0.0f), cap, want);
+        if (taken) ++grown;
     };
 
     for (NodeId id : order_) {
@@ -591,8 +660,7 @@ std::size_t Graph::collectRings() {
     // The returned vector is destroyed here, on the message thread. That is
     // the deallocation the audio thread deliberately did not do.
     auto take = [&](DelayLine& line) {
-        std::vector<float> old = line.collectRing();
-        if (!old.empty()) ++freed;
+        if (line.reclaim()) ++freed;
     };
     for (Slot& s : slots_) {
         for (DelayLine& d : s.inDelays) take(d);
@@ -678,10 +746,25 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     const auto ch = static_cast<std::size_t>(channels_);
     const auto fr = static_cast<std::size_t>(maxFrames);
 
+    const bool wide = precision_ == Precision::Float64;
     for (auto& s : slots_) {
-        s.audio.assign(ch * fr, 0.0f);
+        // ADR-0207 d2. At 64 every slot's output is double; a node that does
+        // not process double keeps a float buffer of its own as well, the
+        // one it writes, so its view of its output is exactly what it is at 32.
+        s.doubles = wide && s.node != nullptr && s.node->processesDouble();
+        if (wide) {
+            s.wideAudio.assign(ch * fr, 0.0);
+            s.widePtrs.resize(ch);
+            for (std::size_t c = 0; c < ch; ++c) s.widePtrs[c] = s.wideAudio.data() + c * fr;
+        } else {
+            std::vector<double>().swap(s.wideAudio);
+            s.widePtrs.clear();
+        }
+        if (s.doubles) std::vector<float>().swap(s.audio);
+        else s.audio.assign(ch * fr, 0.0f);
         s.chanPtrs.resize(ch);
-        for (std::size_t c = 0; c < ch; ++c) s.chanPtrs[c] = s.audio.data() + c * fr;
+        for (std::size_t c = 0; c < ch; ++c)
+            s.chanPtrs[c] = s.doubles ? nullptr : s.audio.data() + c * fr;
         s.eventStore.assign(static_cast<std::size_t>(eventCapacity_), Event{});
         s.events = EventList(s.eventStore.data(), eventCapacity_);
         // Same capacity as the live list. A deferred event is one that WOULD
@@ -721,6 +804,8 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     frameMark_.assign(fr, 0);
     now_ = 0;
     delayScratch_.assign(fr, 0.0f);
+    if (wide) delayScratch64_.assign(fr, 0.0);
+    else std::vector<double>().swap(delayScratch64_);
 
     // ADR-0058 decisions 2-5, after the buffers exist: a delay line is a
     // buffer too, and `process` may not allocate.
@@ -745,10 +830,23 @@ bool Graph::idle(const Slot& src, const DelayLine& delay) noexcept {
     return src.zeroed && !delay.busy() && delay.delay() == 0;
 }
 
-template <typename Sample>
-void Graph::accumulate(std::vector<Sample*>& dst, const Slot& src, DelayLine& delay,
+template <typename T>
+T* const* Graph::outputOf(const Slot& s) noexcept {
+    if constexpr (std::is_same_v<T, float>) return s.chanPtrs.data();
+    else return s.widePtrs.data();
+}
+
+template <typename T>
+T* Graph::scratch() noexcept {
+    if constexpr (std::is_same_v<T, float>) return delayScratch_.data();
+    else return delayScratch64_.data();
+}
+
+template <typename Src, typename Acc>
+void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
                        std::int32_t begin, std::int32_t frames, bool first) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
+    Src* const* from = outputOf<Src>(src);
     const auto n = static_cast<std::size_t>(frames);
 
     // Zero compensation is the common case and must cost nothing: most edges in
@@ -778,16 +876,16 @@ void Graph::accumulate(std::vector<Sample*>& dst, const Slot& src, DelayLine& de
             // All-bits-zero is +0.0 in both widths.
             if (first)
                 for (std::size_t c = 0; c < ch; ++c)
-                    std::memset(dst[c] + begin, 0, n * sizeof(Sample));
+                    std::memset(dst[c] + begin, 0, n * sizeof(Acc));
             ++stats_.inputsSkipped;
             return;
         }
         for (std::size_t c = 0; c < ch; ++c) {
-            const float* s = src.chanPtrs[c] + begin;
-            Sample* d = dst[c] + begin;
+            const Src* s = from[c] + begin;
+            Acc* d = dst[c] + begin;
             if (first) {
-                if constexpr (std::is_same_v<Sample, float>) {
-                    std::memcpy(d, s, n * sizeof(float));
+                if constexpr (std::is_same_v<Src, Acc>) {
+                    std::memcpy(d, s, n * sizeof(Acc));
                 } else {
                     for (std::size_t i = 0; i < n; ++i) d[i] = s[i];
                 }
@@ -813,9 +911,9 @@ void Graph::accumulate(std::vector<Sample*>& dst, const Slot& src, DelayLine& de
     const DelayLine::Cursors before = delay.cursors();
     for (std::size_t c = 0; c < ch; ++c) {
         delay.setCursors(before);
-        const float* s = src.chanPtrs[c] + begin;
-        Sample* d = dst[c] + begin;
-        if constexpr (std::is_same_v<Sample, float>) {
+        const Src* s = from[c] + begin;
+        Acc* d = dst[c] + begin;
+        if constexpr (std::is_same_v<Src, Acc>) {
             if (first) {
                 delay.process(static_cast<std::int32_t>(c), s, d, frames);
                 continue;
@@ -824,10 +922,10 @@ void Graph::accumulate(std::vector<Sample*>& dst, const Slot& src, DelayLine& de
         // Through scratch, then summed. `process` WRITES its output; used
         // directly on a second input it would clobber the first rather than
         // add to it, and the first input would vanish silently. The delay
-        // line is a float ring, which is exact: it moves samples, it does
-        // not add them.
-        float* tmp = delayScratch_.data();
-        std::memcpy(tmp, s, n * sizeof(float));
+        // line holds the sources' width, which is exact: it moves samples,
+        // it does not add them.
+        Src* tmp = scratch<Src>();
+        std::memcpy(tmp, s, n * sizeof(Src));
         delay.process(static_cast<std::int32_t>(c), tmp, tmp, frames);
         if (first) {
             for (std::size_t i = 0; i < n; ++i) d[i] = tmp[i];
@@ -866,8 +964,8 @@ bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delay
 
     if (live < 2) {
         for (std::size_t k = 0; k < inputs.size(); ++k)
-            accumulate<float>(dst, slots_[static_cast<std::size_t>(inputs[k])], delays[k],
-                              begin, frames, k == 0);
+            accumulate<float, float>(dst, slots_[static_cast<std::size_t>(inputs[k])], delays[k],
+                                     begin, frames, k == 0);
         return true;
     }
 
@@ -885,7 +983,7 @@ bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delay
     for (std::size_t k = 0; k < inputs.size(); ++k) {
         const Slot& src = slots_[static_cast<std::size_t>(inputs[k])];
         if (k == last) accumulateLast(dst, wide, src, delays[k], begin, frames);
-        else accumulate<double>(wide, src, delays[k], begin, frames, k == 0);
+        else accumulate<float, double>(wide, src, delays[k], begin, frames, k == 0);
     }
     ++stats_.wideMixes;
     return true;
@@ -917,6 +1015,22 @@ void Graph::accumulateLast(std::vector<float*>& dst, const std::vector<double*>&
         for (std::size_t i = 0; i < n; ++i) d[i] = static_cast<float>(w[i] + tmp[i]);
     }
     delay.endEdge();
+}
+
+bool Graph::mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+                    std::vector<double*>& wide, std::int32_t begin, std::int32_t frames) noexcept {
+    if (inputs.empty()) return false;
+    // At 64 the sources are double already, so even one input is a copy
+    // into the accumulator rather than a pass-through: the node reads its
+    // input from there either way, and a copy of doubles is exact.
+    std::size_t live = 0;
+    for (std::size_t k = 0; k < inputs.size(); ++k) {
+        const Slot& src = slots_[static_cast<std::size_t>(inputs[k])];
+        if (!idle(src, delays[k])) ++live;
+        accumulate<double, double>(wide, src, delays[k], begin, frames, k == 0);
+    }
+    if (live >= 2) ++stats_.wideMixes;
+    return true;
 }
 
 void Graph::forwardEvents(std::int32_t frames) noexcept {
@@ -1039,9 +1153,19 @@ std::int32_t Graph::computeSplits(std::int32_t frames) noexcept {
     return nsplit;
 }
 
+void Graph::narrow(const std::vector<double*>& from, std::vector<float*>& to,
+                   std::int32_t begin, std::int32_t frames) const noexcept {
+    for (std::size_t c = 0; c < static_cast<std::size_t>(channels_); ++c) {
+        const double* w = from[c] + begin;
+        float* f = to[c] + begin;
+        for (std::int32_t i = 0; i < frames; ++i) f[i] = static_cast<float>(w[i]);
+    }
+}
+
 void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
                     const TransportInfo* transport) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
+    const bool wide = precision_ == Precision::Float64;
     ScopeTap* const inputTap = s.node->inputTap();
     const bool advancing = transport != nullptr && transport->playing;
     const auto firstSample = transport != nullptr ? transport->timelineSample : 0;
@@ -1111,7 +1235,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
                          inputSilent && !hasEvents && !holding && s.tailRemaining == 0;
     if (suspend) {
         if (inputTap)
-            inputTap->write(nullptr, nullptr, frames, firstSample - s.arrival, advancing);
+            inputTap->write(static_cast<const float*>(nullptr), nullptr, frames, firstSample - s.arrival, advancing);
         NodeIo silence;
         silence.frames = frames;
         silence.channels = channels_;
@@ -1128,9 +1252,14 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         // Cleared once per silence and the flag does the rest; `process`
         // below clears the flag because the node has written.
         if (!s.zeroed) {
-            for (std::size_t c = 0; c < ch; ++c)
-                std::memset(s.chanPtrs[c], 0,
-                            static_cast<std::size_t>(maxFrames_) * sizeof(float));
+            const auto cap = static_cast<std::size_t>(maxFrames_);
+            for (std::size_t c = 0; c < ch; ++c) {
+                // At 64 the double buffer is what consumers read; a float
+                // node's own buffer is cleared too, so it wakes onto zeros
+                // exactly as it would at 32.
+                if (wide) std::memset(s.widePtrs[c], 0, cap * sizeof(double));
+                if (!s.doubles) std::memset(s.chanPtrs[c], 0, cap * sizeof(float));
+            }
             s.zeroed = true;
             ++stats_.suspendClears;
         }
@@ -1152,14 +1281,33 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
 
         // Summing here, for every node, is what makes a group (ADR-0044) a
         // node with no device rather than a special case in the scheduler.
-        const bool anyMain = mix(s.inputs, s.inDelays, mixPtrs_, mixWidePtrs_, begin, n);
-        const bool anySide = mix(s.sidechains, s.sideDelays, sidePtrs_, sideWidePtrs_, begin, n);
-
         NodeIo nio;
+        bool anyMain = false;
+        if (!wide) {
+            anyMain = mix(s.inputs, s.inDelays, mixPtrs_, mixWidePtrs_, begin, n);
+            const bool anySide = mix(s.sidechains, s.sideDelays, sidePtrs_, sideWidePtrs_, begin, n);
+            nio.in = anyMain ? mixPtrs_.data() : nullptr;
+            nio.sidechain = anySide ? sidePtrs_.data() : nullptr;
+            nio.out = s.chanPtrs.data();
+        } else {
+            // ADR-0207 d2 at 64: the sums stay double. A node that processes
+            // double reads them there; any other is handed them narrowed,
+            // once, and its float output is widened after it runs.
+            anyMain = mixWide(s.inputs, s.inDelays, mixWidePtrs_, begin, n);
+            const bool anySide = mixWide(s.sidechains, s.sideDelays, sideWidePtrs_, begin, n);
+            if (s.doubles) {
+                nio.in64 = anyMain ? mixWidePtrs_.data() : nullptr;
+                nio.sidechain64 = anySide ? sideWidePtrs_.data() : nullptr;
+                nio.out64 = s.widePtrs.data();
+            } else {
+                if (anyMain) narrow(mixWidePtrs_, mixPtrs_, begin, n);
+                if (anySide) narrow(sideWidePtrs_, sidePtrs_, begin, n);
+                nio.in = anyMain ? mixPtrs_.data() : nullptr;
+                nio.sidechain = anySide ? sidePtrs_.data() : nullptr;
+                nio.out = s.chanPtrs.data();
+            }
+        }
         nio.transport = transport;
-        nio.in = anyMain ? mixPtrs_.data() : nullptr;
-        nio.sidechain = anySide ? sidePtrs_.data() : nullptr;
-        nio.out = s.chanPtrs.data();
         nio.channels = channels_;
         nio.frames = n;
         nio.blockOffset = begin;
@@ -1169,10 +1317,17 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
 
         // The summed, compensated input belongs to this graph's arrival,
         // before the node's own latency. No device implementation is involved.
-        if (inputTap && channels_ > 0)
-            inputTap->write(anyMain ? mixPtrs_[0] + begin : nullptr,
-                            anyMain && channels_ > 1 ? mixPtrs_[1] + begin : nullptr,
-                            n, firstSample + (advancing ? begin : 0) - s.arrival, advancing);
+        if (inputTap && channels_ > 0) {
+            const std::int64_t stamp = firstSample + (advancing ? begin : 0) - s.arrival;
+            if (wide)
+                inputTap->write(anyMain ? mixWidePtrs_[0] + begin : nullptr,
+                                anyMain && channels_ > 1 ? mixWidePtrs_[1] + begin : nullptr,
+                                n, stamp, advancing);
+            else
+                inputTap->write(anyMain ? mixPtrs_[0] + begin : nullptr,
+                                anyMain && channels_ > 1 ? mixPtrs_[1] + begin : nullptr,
+                                n, stamp, advancing);
+        }
 
         const Event* first = nullptr;
         std::int32_t count = 0;
@@ -1186,15 +1341,29 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
 
         s.node->process(nio);
         ++stats_.nodeCalls;
+        // A float node in a graph at 64: its segment, widened (exact).
+        if (wide && !s.doubles) {
+            for (std::size_t c = 0; c < ch; ++c) {
+                const float* f = s.chanPtrs[c] + begin;
+                double* d = s.widePtrs[c] + begin;
+                for (std::int32_t i = 0; i < n; ++i) d[i] = f[i];
+            }
+        }
     }
 
     // Is this node's output silent? Measured rather than declared: a node that
     // claims silence and writes samples is a bug the next node inherits, and
     // the check is one pass over a buffer just written and therefore in cache.
     bool allZero = true;
-    for (std::size_t c = 0; c < ch && allZero; ++c)
-        for (std::int32_t i = 0; i < frames; ++i)
-            if (s.chanPtrs[c][i] != 0.0f) { allZero = false; break; }
+    for (std::size_t c = 0; c < ch && allZero; ++c) {
+        if (wide) {
+            for (std::int32_t i = 0; i < frames; ++i)
+                if (s.widePtrs[c][i] != 0.0) { allZero = false; break; }
+        } else {
+            for (std::int32_t i = 0; i < frames; ++i)
+                if (s.chanPtrs[c][i] != 0.0f) { allZero = false; break; }
+        }
+    }
     s.silent = allZero;
 }
 
@@ -1204,8 +1373,11 @@ void Graph::process(const AudioIo& io) noexcept {
     // memory, and on a first callback that is uninitialised.
     for (std::int32_t c = 0; c < io.numOut; ++c) {
         float* dst = io.out != nullptr ? io.out[c] : nullptr;
-        if (dst == nullptr) continue;
-        for (std::int32_t i = 0; i < io.frames; ++i) dst[i] = 0.0f;
+        if (dst != nullptr)
+            for (std::int32_t i = 0; i < io.frames; ++i) dst[i] = 0.0f;
+        double* wdst = io.out64 != nullptr ? io.out64[c] : nullptr;
+        if (wdst != nullptr)
+            for (std::int32_t i = 0; i < io.frames; ++i) wdst[i] = 0.0;
     }
 
     if (!ok_ || !prepared_) return;
@@ -1263,11 +1435,28 @@ void Graph::process(const AudioIo& io) noexcept {
     // --- out ---------------------------------------------------------------
     const Slot& outSlot = slots_[static_cast<std::size_t>(output_)];
     const std::int32_t n = (std::min)(io.numOut, channels_);
+    const bool wide = precision_ == Precision::Float64;
+    const auto bytes = static_cast<std::size_t>(frames);
     for (std::int32_t c = 0; c < n; ++c) {
-        float* dst = io.out != nullptr ? io.out[c] : nullptr;
-        if (dst == nullptr) continue;
-        std::memcpy(dst, outSlot.chanPtrs[static_cast<std::size_t>(c)],
-                    static_cast<std::size_t>(frames) * sizeof(float));
+        const auto k = static_cast<std::size_t>(c);
+        // A device is float: a graph at 64 is narrowed once, here, at the
+        // last moment (ADR-0207 d2). `out64` takes it whole.
+        if (float* dst = io.out != nullptr ? io.out[c] : nullptr) {
+            if (wide) {
+                const double* w = outSlot.widePtrs[k];
+                for (std::int32_t i = 0; i < frames; ++i) dst[i] = static_cast<float>(w[i]);
+            } else {
+                std::memcpy(dst, outSlot.chanPtrs[k], bytes * sizeof(float));
+            }
+        }
+        if (double* wdst = io.out64 != nullptr ? io.out64[c] : nullptr) {
+            if (wide) {
+                std::memcpy(wdst, outSlot.widePtrs[k], bytes * sizeof(double));
+            } else {
+                const float* f = outSlot.chanPtrs[k];
+                for (std::int32_t i = 0; i < frames; ++i) wdst[i] = f[i];
+            }
+        }
     }
 
     // A source off may have spent several blocks in a compensation queue.
@@ -1295,6 +1484,15 @@ void Graph::process(const AudioIo& io) noexcept {
 // ---------------------------------------------------------------------------
 
 void SumNode::process(const NodeIo& io) noexcept {
+    if (io.wide()) {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            double* out = io.out64[c] + io.blockOffset;
+            const auto n = static_cast<std::size_t>(io.frames);
+            if (io.in64 == nullptr || io.in64[c] == nullptr) std::memset(out, 0, n * sizeof(double));
+            else std::memcpy(out, io.in64[c] + io.blockOffset, n * sizeof(double));
+        }
+        return;
+    }
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* out = io.out[c];
         if (io.in == nullptr || io.in[c] == nullptr) {
@@ -1313,8 +1511,20 @@ void GainNode::process(const NodeIo& io) noexcept {
     // the scheduler cut it at the event, so "held across the segment" is a
     // ramp at segment resolution rather than a step at block resolution.
     for (const Event& e : io.events)
-        if (e.type == EventType::ParamValue && e.paramId == paramId_)
+        if (e.type == EventType::ParamValue && e.paramId == paramId_) {
             gain_ = static_cast<float>(e.value);
+            gain64_ = e.value;
+        }
+
+    if (io.wide()) {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            double* out = io.out64[c] + io.blockOffset;
+            const double* in = (io.in64 != nullptr && io.in64[c] != nullptr)
+                                   ? io.in64[c] + io.blockOffset : nullptr;
+            for (std::int32_t i = 0; i < io.frames; ++i) out[i] = in != nullptr ? in[i] * gain64_ : 0.0;
+        }
+        return;
+    }
 
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* out = io.out[c] + io.blockOffset;

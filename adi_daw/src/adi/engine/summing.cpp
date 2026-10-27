@@ -161,6 +161,25 @@ void ConsoleNode::process(const NodeIo& io) noexcept {
     const std::int32_t n = io.frames;
     const float pre = pre_.load(std::memory_order_relaxed);
     const float post = post_.load(std::memory_order_relaxed);
+    if (io.wide()) {
+        // The same three steps at full width: the algorithm's own double
+        // path, the gains applied in double (they are levels, set once).
+        const double wpre = pre, wpost = post;
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            double* out = io.out64[c] + off;
+            const double* in = (io.in64 != nullptr && io.in64[c] != nullptr) ? io.in64[c] + off : nullptr;
+            if (in == nullptr) std::fill_n(out, n, 0.0);
+            else if (wpre == 1.0) { if (in != out) std::copy_n(in, n, out); }
+            else for (std::int32_t i = 0; i < n; ++i) out[i] = in[i] * wpre;
+        }
+        if (io.channels <= 0 || n <= 0) return;
+        double* ch[2] = {io.out64[0] + off, io.out64[io.channels > 1 ? 1 : 0] + off};
+        fx_->processDoubleReplacing(ch, ch, n);
+        if (wpost != 1.0)
+            for (std::int32_t c = 0; c < io.channels && c < 2; ++c)
+                for (std::int32_t i = 0; i < n; ++i) io.out64[c][off + i] *= wpost;
+        return;
+    }
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* out = io.out[c] + off;
         const float* in = (io.in != nullptr && io.in[c] != nullptr) ? io.in[c] + off : nullptr;

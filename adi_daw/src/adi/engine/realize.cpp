@@ -20,6 +20,19 @@ std::string trackRef(std::int64_t id) { return "tracks#" + std::to_string(id); }
 // ---------------------------------------------------------------------------
 
 void MixNode::process(const NodeIo& io) noexcept {
+    if (io.wide()) {
+        // ADR-0207 d2: the same copy at full width.
+        const auto n = static_cast<std::size_t>(io.frames);
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            double* dst = io.out64[c];
+            if (dst == nullptr) continue;
+            dst += io.blockOffset;
+            const double* src = (io.in64 != nullptr) ? io.in64[c] : nullptr;
+            if (src != nullptr) std::memcpy(dst, src + io.blockOffset, n * sizeof(double));
+            else std::memset(dst, 0, n * sizeof(double));
+        }
+        return;
+    }
     if (io.out == nullptr) return;
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* dst = io.out[c];

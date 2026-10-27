@@ -78,6 +78,8 @@ struct SessionSpec {
     std::int32_t channels = 2;
     double sampleRate = 48000.0;
     std::int32_t maxFrames = 512;
+    /// `audio.processingPrecision` (ADR-0207 d2): Live's scheme by default.
+    Precision precision = Precision::Float32;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -181,6 +183,15 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const AudioIo& io) noexcept override;
     void release() override;
+
+    /// The Processing Precision switch (ADR-0207 d2). Message thread. A new
+    /// precision is a new graph, built and published as a format change is
+    /// (decision 3), and swapped in as any graph is: the handover carries
+    /// every compensated edge's history across, widened or narrowed, and
+    /// there is no crossfade (the swap is faded in only when
+    /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
+    /// does nothing. False only when a graph was due and could not be built.
+    bool setPrecision(Precision p);
 
     // --- inspection (message thread) ---------------------------------------
 

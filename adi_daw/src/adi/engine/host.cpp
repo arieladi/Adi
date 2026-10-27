@@ -32,6 +32,7 @@ bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
     }
 
     rg->graph().setLatencyHeadroom(latencyHeadroomAt(sampleRate));
+    rg->graph().setPrecision(precision_);
     rg->graph().prepare(sampleRate, maxFrames);
     if (!rg->graph().ok()) {
         error_ = rg->graph().error();
@@ -59,7 +60,7 @@ Graph* GraphHost::currentGraph() const noexcept {
 }
 
 void GraphHost::fadeIn(const AudioIo& io) noexcept {
-    if (fadeRemaining_ <= 0 || fadeLength_ <= 0 || io.out == nullptr) return;
+    if (fadeRemaining_ <= 0 || fadeLength_ <= 0 || (io.out == nullptr && io.out64 == nullptr)) return;
 
     const std::int32_t n = io.frames < fadeRemaining_ ? io.frames : fadeRemaining_;
     // Where in the ramp this block starts. The fade can span several blocks
@@ -69,13 +70,19 @@ void GraphHost::fadeIn(const AudioIo& io) noexcept {
     const std::int32_t done = fadeLength_ - fadeRemaining_;
 
     for (std::int32_t c = 0; c < io.numOut; ++c) {
-        float* dst = io.out[c];
-        if (dst == nullptr) continue;
-        for (std::int32_t i = 0; i < n; ++i) {
-            const float g = static_cast<float>(done + i + 1) /
-                            static_cast<float>(fadeLength_);
-            dst[i] *= g;
-        }
+        float* dst = io.out != nullptr ? io.out[c] : nullptr;
+        if (dst != nullptr)
+            for (std::int32_t i = 0; i < n; ++i) {
+                const float g = static_cast<float>(done + i + 1) /
+                                static_cast<float>(fadeLength_);
+                dst[i] *= g;
+            }
+        // The same ramp on the full-width output (ADR-0207 d2), so the two
+        // outputs of one block never disagree.
+        double* wdst = io.out64 != nullptr ? io.out64[c] : nullptr;
+        if (wdst != nullptr)
+            for (std::int32_t i = 0; i < n; ++i)
+                wdst[i] *= static_cast<double>(done + i + 1) / static_cast<double>(fadeLength_);
     }
     fadeRemaining_ -= n;
 }
@@ -126,6 +133,12 @@ void GraphHost::process(const AudioIo& io) noexcept {
                 if (io.out[c] != nullptr)
                     std::memset(io.out[c], 0,
                                 static_cast<std::size_t>(io.frames) * sizeof(float));
+        // Both outputs, as AudioIo promises (ADR-0207 d2).
+        if (io.out64 != nullptr)
+            for (std::int32_t c = 0; c < io.numOut; ++c)
+                if (io.out64[c] != nullptr)
+                    std::memset(io.out64[c], 0,
+                                static_cast<std::size_t>(io.frames) * sizeof(double));
         return;
     }
 

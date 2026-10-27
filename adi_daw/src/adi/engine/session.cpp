@@ -489,6 +489,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     }
     loader_ = std::move(loader);
     spec_ = spec;
+    graph_.setPrecision(spec_.precision);   // ADR-0207 d2
     stats_ = Stats{};
     model_ = rows::readModel(store);
     clipProject_ = readClipProject(store, model_);
@@ -693,6 +694,17 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     }
     if (!loaded_) return;   // `process` writes silence until a project arrives
     rebuild();
+}
+
+bool Session::setPrecision(Precision p) {
+    if (p == spec_.precision) return true;
+    // A format change of its own: every buffer, sum and ring changes width,
+    // so it is a new graph, never a change to the playing one (ADR-0207 d2).
+    ++stats_.formatChanges;
+    spec_.precision = p;
+    graph_.setPrecision(p);
+    if (!loaded_) return true;
+    return rebuild();
 }
 
 TransportInfo Session::TimingView::at(const Transport& transport) const noexcept {
