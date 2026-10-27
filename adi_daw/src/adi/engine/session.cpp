@@ -366,8 +366,13 @@ void Session::attach() {
     rs.devicesFor = [this](std::int64_t trackId) { return trackChain(trackId); };
     // ADR-0203 d3: a send leaves its track at its tap and plays through the
     // node the strips keep for its row, then, into a summing group, through
-    // the channel half the summing keeps for it (ADR-0174).
-    rs.tapFor = [this](std::int64_t trackId, Tap tap) { return tapFor(trackId, tap); };
+    // the channel half the summing keeps for it (ADR-0174). A Post send's
+    // node plays the strip's gain itself, without its solo (SendNode), so it
+    // reads where a Pre send does, after the effects: a track soloed away
+    // then still reaches a soloed return.
+    rs.tapFor = [this](std::int64_t trackId, Tap tap) {
+        return tapFor(trackId, tap == Tap::PostFader ? Tap::PostFx : tap);
+    };
     rs.sendFor = [this](std::int64_t routingId) -> Node* { return strips_.sendFor(routingId); };
     rs.sendTailFor = [this](std::int64_t routingId) { return summing_.sendTailFor(routingId); };
     auto* clipSource = clips();

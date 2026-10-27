@@ -391,16 +391,38 @@ void testASendNode() {
     check(s.eventFlow() == EventFlow::Stop && s.tailSamples() == 0 && s.processesDouble() && s.latencySamples() == 0,
           "it stops notes, holds nothing back, takes double, and adds no latency");
     {
-        // A Pre send's mute lane is the realiser's to keep alive with every
-        // graph that plays the send, as a strip's lanes are (ADR-0164).
+        // The lanes a send's source stage reads are the realiser's to keep
+        // alive with every graph that plays the send, as a strip's are (ADR-0164).
         auto program = std::make_shared<AutomationLaneProgram>();
         const long before = program.use_count();
-        s.setMuteLane(program.get(), program, nullptr);
+        StripLanes lanes;
+        lanes.mute = program.get();
+        StripConfig given;
+        given.lanes = &lanes;
+        given.keepAlive = program;
+        s.setSource(given, nullptr);
+        given = {};
         check(s.sourceLifetime() != nullptr && program.use_count() > before,
-              "a send given a mute lane hands out what keeps the lane alive");
-        s.setMuteLane(nullptr, {}, nullptr);
+              "a send given a source's lanes hands out what keeps them alive");
+        s.setSource({}, nullptr);
         check(s.sourceLifetime() == nullptr && program.use_count() == before,
               "and, given none, holds nothing");
+    }
+    {
+        // Its source stage plays a strip's values, track delay included: a
+        // Post send at 0 dB is what the strip would play, and reports the
+        // strip's latency, so the edge after it waits as the strip's does.
+        auto half = made(0.0, 0.0, true);
+        StripConfig strip;
+        strip.volumeDb = -6.0206;
+        strip.delaySamples = 100;
+        half->setSource(strip, nullptr);
+        const std::vector<double> out = run(*half, true);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < out.size(); ++i) worst = std::max(worst, std::fabs(out[i] - 0.5 * in64[i]));
+        check(worst < 1e-5 && half->latencySamples() == -100,
+              "a source at -6.02 dB halves it, and 100 samples late is latency -100: worst " + std::to_string(worst) +
+                  ", latency " + std::to_string(half->latencySamples()));
     }
 }
 
@@ -627,6 +649,537 @@ void testPreSendsAndTheSendsPan() {
         m.settle();
         check(m.r[511] == 0.5f && near(m.l[511], 0.5 + 0.5 * std::numbers::sqrt2, 1e-5),
               "a send panned hard left: the right is the dry alone, the left the dry and the send up 3 dB");
+    }
+}
+
+void testHearing() {
+    section("ADR-0203 d3 -- who is heard under solo, across sends: a soloed return hears its senders");
+
+    // Bare models: tracks by id and kind, sends by row. Master is 1.
+    struct T {
+        std::int64_t id;
+        const char* kind;
+        std::optional<std::int64_t> parent = std::nullopt;
+        bool muted = false, soloed = false, defeat = false;
+    };
+    struct S {
+        std::int64_t id, from, to;
+        bool pre = false;
+    };
+    auto heardIn = [](std::vector<T> tracks, std::vector<S> sends, HearingFlags flags = {}) {
+        rows::Model m;
+        m.tracks.push_back([] { rows::Track t; t.id = 1; t.kind = "master"; t.name = "Master"; return t; }());
+        for (const T& x : tracks) {
+            rows::Track t;
+            t.id = x.id;
+            t.kind = x.kind;
+            t.name = "t" + std::to_string(x.id);
+            t.parentId = x.parent;
+            t.muted = x.muted;
+            t.soloed = x.soloed;
+            t.soloDefeat = x.defeat;
+            m.tracks.push_back(t);
+        }
+        for (const S& s : sends) {
+            rows::Routing r;
+            r.id = s.id;
+            r.srcKind = r.dstKind = "track";
+            r.srcId = s.from;
+            r.dstId = s.to;
+            r.kind = "send";
+            r.preFader = s.pre;
+            m.routing.push_back(r);
+        }
+        return hearing(m, planGraph(m), flags);
+    };
+    auto is = [](const std::map<std::int64_t, bool>& m, std::int64_t id) {
+        const auto it = m.find(id);
+        return it != m.end() && it->second;
+    };
+
+    {
+        const Hearing h = heardIn({{2, "audio"}, {7, "return"}}, {{11, 2, 7}});
+        check(is(h.track, 2) && is(h.track, 7) && is(h.send, 11), "no solo: everything heard, the send too");
+        const Hearing m = heardIn({{2, "audio", std::nullopt, true}, {7, "return"}}, {{11, 2, 7}});
+        check(!is(m.track, 2) && is(m.send, 11) && is(m.track, 7),
+              "a muted track is silent; its send's gate is solo's alone, the mute is the send's first stage");
+    }
+    {
+        // R soloed: it hears A and B though they are soloed away; C is muted.
+        const Hearing h = heardIn({{2, "audio"}, {3, "audio"}, {4, "audio", std::nullopt, true},
+                                   {7, "return", std::nullopt, false, true}},
+                                  {{11, 2, 7}, {12, 3, 7}, {13, 4, 7}});
+        check(is(h.track, 7) && is(h.track, 1) && !is(h.track, 2) && !is(h.track, 3),
+              "R soloed: R and the master heard, its senders' own outputs not");
+        check(is(h.send, 11) && is(h.send, 12) && is(h.send, 13),
+              "and R hears what A, B and C send it (C, muted, is silent at its send's first stage)");
+    }
+    {
+        // R soloed hears a group's send: the children open into the group
+        // alone, the group's own output stays closed.
+        const Hearing h = heardIn({{2, "audio", 6}, {3, "audio", 6}, {6, "group"},
+                                   {7, "return", std::nullopt, false, true}},
+                                  {{11, 6, 7}});
+        check(is(h.track, 2) && is(h.track, 3) && !is(h.track, 6) && is(h.send, 11),
+              "R soloed hears G's send: G's children open into G, G's own output closed");
+        // R and the child X soloed: G is heard through X, so Y stays closed.
+        const Hearing x = heardIn({{2, "audio", 6, false, true}, {3, "audio", 6}, {6, "group"},
+                                   {7, "return", std::nullopt, false, true}},
+                                  {{11, 6, 7}});
+        check(is(x.track, 2) && !is(x.track, 3) && is(x.track, 6) && is(x.send, 11),
+              "R and X soloed: X and G heard, its sibling Y not");
+    }
+    {
+        // A send's send: A into B, B into the soloed R.
+        const Hearing h = heardIn({{2, "audio"}, {3, "audio"}, {7, "return", std::nullopt, false, true}},
+                                  {{11, 2, 3}, {12, 3, 7}});
+        check(!is(h.track, 2) && !is(h.track, 3) && is(h.send, 11) && is(h.send, 12),
+              "R soloed hears B's send and, through it, A's: neither one's own output");
+    }
+    {
+        // Both ends heard, by defeat: T soloed; A and its return R defeated.
+        const Hearing h = heardIn({{2, "audio", std::nullopt, false, true}, {3, "audio", std::nullopt, false, false, true},
+                                   {7, "return", std::nullopt, false, false, true}},
+                                  {{11, 3, 7}});
+        check(is(h.track, 3) && is(h.track, 7) && is(h.send, 11), "a defeated A into its defeated return: the send plays");
+        HearingFlags off;
+        off.soloInPlace = false;
+        const Hearing t = heardIn({{2, "audio", std::nullopt, false, true}, {7, "return", std::nullopt, false, false, true}},
+                                  {{11, 2, 7}}, off);
+        check(is(t.track, 7) && is(t.send, 11), "Solo in Place off: soloed T into its defeated return still plays");
+    }
+    {
+        // Pre sends told not to follow solo play wherever they go.
+        HearingFlags flags;
+        flags.preFollowsSolo = false;
+        const Hearing h = heardIn({{2, "audio", std::nullopt, false, true}, {3, "audio"}, {4, "audio"}},
+                                  {{11, 3, 4, true}}, flags);
+        check(is(h.send, 11), "a Pre send not following solo plays into a track nothing else opens");
+    }
+    {
+        // A soloed VCA is ignored, as a soloed master is: it carries no audio.
+        const Hearing h = heardIn({{2, "audio"}, {5, "vca", std::nullopt, false, true}}, {});
+        check(is(h.track, 2), "a soloed VCA silences nothing");
+    }
+    {
+        // A grandchild of a soloed group is heard.
+        const Hearing h = heardIn({{2, "audio", 5}, {5, "group", 6}, {6, "group", std::nullopt, false, true}}, {});
+        check(is(h.track, 2) && is(h.track, 5), "G soloed: its child group and that group's child");
+    }
+    {
+        // keepAllReturns: every return stays heard under Solo in Place.
+        const std::vector<T> tracks{{2, "audio", std::nullopt, false, true}, {7, "return"}, {8, "return"}};
+        const std::vector<S> sends{{11, 2, 7}};
+        HearingFlags all;
+        all.keepAllReturns = true;
+        check(!is(heardIn(tracks, sends).track, 8) && is(heardIn(tracks, sends, all).track, 8),
+              "a return nothing heard sends to: closed, or heard when every return is kept");
+    }
+    {
+        // A soloed, Solo in Place: A, its return, the master. B is not, nor its send.
+        const std::vector<T> tracks{{2, "audio", std::nullopt, false, true}, {3, "audio"}, {7, "return"}};
+        const std::vector<S> sends{{11, 2, 7}, {12, 3, 7}};
+        const Hearing on = heardIn(tracks, sends);
+        check(is(on.track, 2) && is(on.track, 7) && !is(on.track, 3) && is(on.send, 11) && !is(on.send, 12),
+              "A soloed, Solo in Place: A and its return, and nothing of B or B's send");
+        HearingFlags off;
+        off.soloInPlace = false;
+        const Hearing h = heardIn(tracks, sends, off);
+        check(is(h.track, 2) && !is(h.track, 7) && !is(h.send, 11),
+              "Solo in Place off: A alone, its return and its send silent");
+    }
+    {
+        // G soloed: its child C, and the return C sends to.
+        const Hearing h = heardIn({{4, "audio", 6}, {6, "group", std::nullopt, false, true}, {7, "return"}},
+                                  {{13, 4, 7}});
+        check(is(h.track, 4) && is(h.track, 6) && is(h.track, 7) && is(h.send, 13),
+              "G soloed: its child, and the return its child sends to, and the send");
+    }
+    {
+        // A soloed sends to R; D is solo-defeated and sends to R and to S,
+        // which nothing heard sends to.
+        const Hearing h = heardIn({{2, "audio", std::nullopt, false, true}, {5, "audio", std::nullopt, false, false, true},
+                                   {7, "return"}, {8, "return"}},
+                                  {{11, 2, 7}, {14, 5, 7}, {15, 5, 8}});
+        check(is(h.track, 5) && is(h.send, 14) && !is(h.send, 15) && !is(h.track, 8),
+              "a defeated D is heard, and its send into a heard return; not one into a return nothing opens");
+    }
+    {
+        // B's Pre send under A's solo, which keeps R open.
+        const std::vector<T> tracks{{2, "audio", std::nullopt, false, true}, {3, "audio"}, {7, "return"}};
+        const std::vector<S> sends{{11, 2, 7}, {12, 3, 7, true}};
+        check(!is(heardIn(tracks, sends).send, 12), "a Pre send follows its source's solo (preFollowsSolo)");
+        HearingFlags flags;
+        flags.preFollowsSolo = false;
+        check(is(heardIn(tracks, sends, flags).send, 12), "and, told not to, plays into the open return");
+    }
+    {
+        // A send into a soloed group's child: the child is listening.
+        const Hearing h = heardIn({{2, "audio"}, {4, "audio", 6}, {6, "group", std::nullopt, false, true}},
+                                  {{11, 2, 4}});
+        check(!is(h.track, 2) && is(h.send, 11), "a send into a soloed group's child is heard; its sender is not");
+    }
+    {
+        // Soloing the master is ignored.
+        const Hearing ms = [&] {
+            rows::Model mm;
+            rows::Track master;
+            master.id = 1;
+            master.kind = "master";
+            master.name = "Master";
+            master.soloed = true;
+            rows::Track a;
+            a.id = 2;
+            a.kind = "audio";
+            a.name = "A";
+            rows::Track r;
+            r.id = 7;
+            r.kind = "return";
+            r.name = "R";
+            mm.tracks = {master, a, r};
+            rows::Routing s;
+            s.id = 11;
+            s.srcKind = s.dstKind = "track";
+            s.srcId = 2;
+            s.dstId = 7;
+            s.kind = "send";
+            mm.routing = {s};
+            return hearing(mm, planGraph(mm));
+        }();
+        check(is(ms.track, 2) && is(ms.track, 7) && is(ms.send, 11), "the master soloed is ignored: all heard");
+    }
+}
+
+/// A main route row: what the user's own output routing writes.
+void mainRoute(Mix& m, std::int64_t id, std::int64_t from, std::int64_t to) {
+    SQLite::Statement q(m.store->db(),
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db,enabled) "
+        "VALUES(?,'track',?,'track',?,'main',0,1)");
+    q.bind(1, id);
+    q.bind(2, from);
+    q.bind(3, to);
+    q.exec();
+}
+
+void testSoloAcrossSends() {
+    section("ADR-0203 d3 -- solo across sends: a soloed return hears its senders, and nothing leaks");
+
+    for (const Precision width : {Precision::Float32, Precision::Float64}) {
+        const std::string at = width == Precision::Float64 ? " (at 64)" : "";
+        Mix m(width == Precision::Float64 ? "solo-r64" : "solo-r32");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(2, "audio", "B", 0.25f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4);
+        sendRow(m, 12, 2, 4);
+        m.set("track.setMute", 2, "muted", true);
+        m.set("track.setSolo", 4, "soloed", true);
+        m.load(48000.0, width);
+        m.settle();
+        check(m.l[511] == 0.5f, "R soloed hears A's send and not A's own output, nor the muted B" + at + ": " +
+                                    std::to_string(m.l[511]));
+    }
+    {
+        // A Pre send into a soloed return, from a track pulled all the way down.
+        Mix m("solo-pre");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4, 0.0, true, true);
+        m.set("mixer.setVolume", 1, "db", kSilenceDb);
+        m.set("track.setSolo", 4, "soloed", true);
+        m.load();
+        m.settle();
+        check(m.l[511] == 0.5f, "a soloed return hears a Pre send too: " + std::to_string(m.l[511]));
+    }
+    {
+        // A soloed group whose child sends: the child through the group, and its send.
+        Mix m("solo-group");
+        m.track(1, "audio", "C", 0.5f);
+        m.track(2, "audio", "D", 0.25f);
+        m.track(4, "return", "R");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        sendRow(m, 11, 1, 4);
+        sendRow(m, 12, 2, 4);
+        m.set("track.setSolo", 5, "soloed", true);
+        m.load();
+        m.settle();
+        check(m.l[511] == 1.0f, "G soloed: its child, 0.5, and the child's send, 0.5; nothing of D: " +
+                                    std::to_string(m.l[511]));
+    }
+    {
+        // R soloed hears a group's send: X 0.5 and Y 0.25 through G, G's own
+        // output closed. Then R and X soloed: X's dry through G, and R
+        // carrying X alone -- never Y.
+        auto run = [](bool soloX) {
+            Mix m(soloX ? "solo-gx" : "solo-g");
+            m.track(1, "audio", "X", 0.5f);
+            m.track(2, "audio", "Y", 0.25f);
+            m.track(4, "return", "R");
+            m.track(5, "group", "G");
+            m.track(9, "master", "Master");
+            m.set("track.setParent", 1, "parent", 5);
+            m.set("track.setParent", 2, "parent", 5);
+            sendRow(m, 11, 5, 4);
+            m.set("track.setSolo", 4, "soloed", true);
+            if (soloX) m.set("track.setSolo", 1, "soloed", true);
+            m.load();
+            m.settle();
+            return m.l[511];
+        };
+        const float g = run(false), gx = run(true);
+        check(g == 0.75f && gx == 1.0f, "a soloed return hears a group's send (0.75); with X soloed too, 1.0, "
+                                        "nothing of Y: " + std::to_string(g) + ", " + std::to_string(gx));
+    }
+    {
+        // A defeated vocal into its defeated reverb, under another's solo.
+        Mix m("solo-defeat");
+        m.track(1, "audio", "T", 0.5f);
+        m.track(2, "audio", "A", 0.25f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 2, 4);
+        m.store->db().exec("UPDATE tracks SET solo_defeat=1 WHERE id IN (2, 4)");
+        m.set("track.setSolo", 1, "soloed", true);
+        m.load();
+        m.settle();
+        check(m.l[511] == 1.0f, "T soloed; A and its reverb defeated: T, A, and A's wet: " + std::to_string(m.l[511]));
+    }
+    {
+        // Pinned, for win's question 7: Solo in Place opens a track that is
+        // not a return when a soloed track's send into it carries something,
+        // its own audio with it.
+        Mix m("solo-nonreturn");
+        m.track(1, "audio", "T", 0.5f);
+        m.track(2, "audio", "B", 0.25f);
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 2);
+        m.set("track.setSolo", 1, "soloed", true);
+        m.load();
+        m.settle();
+        check(m.l[511] == 1.25f, "T soloed, its send into B: T, the wet, and B's own (pinned): " +
+                                     std::to_string(m.l[511]));
+    }
+    {
+        // A soloed-away track gains its first send into a soloed return, then
+        // loses it: its own output is never heard on the way.
+        Mix m("solo-come-go");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        m.set("track.setSolo", 4, "soloed", true);
+        m.load();
+        m.settle();
+        const float before = m.l[511];
+        sendRow(m, 11, 1, 4);
+        m.refresh();
+        float loudest = 0.0f;
+        for (int k = 0; k < 4; ++k) {
+            m.render();
+            for (float x : m.l) loudest = std::max(loudest, x);
+        }
+        const float with = m.l[511];
+        m.store->db().exec("DELETE FROM routing WHERE id=11");
+        m.refresh();
+        for (int k = 0; k < 4; ++k) {
+            m.render();
+            for (float x : m.l) loudest = std::max(loudest, x);
+        }
+        check(before == 0.0f && with == 0.5f && loudest <= 0.5f && m.l[511] == 0.0f,
+              "the first send in, then gone: only ever the wet (" + std::to_string(before) + ", " +
+                  std::to_string(with) + ", loudest " + std::to_string(loudest) + ", after " +
+                  std::to_string(m.l[511]) + ")");
+    }
+    // A Post send plays what the source's strip plays, sample for sample: the
+    // dry alone against the wet alone, at 32 and 64, through each of these.
+    struct Case {
+        const char* what;
+        double rate;
+        double db, pan;
+        int law;                 // SPEC 6.9's pan law
+        std::int64_t delay;      // project samples (the project is at 48 kHz)
+        bool lanes;              // volume, pan and mute lanes playing
+        bool moves;              // a fader move, then a mute in and out, mid-run
+    };
+    const Case cases[] = {
+        {"a fader, a pan, three lanes, a delay and a mute", 48000.0, -3.0, 0.3, 0, 100, true, true},
+        {"at 96 kHz, a delay of 100 project samples played as 200", 96000.0, -6.0206, -0.2, 0, 100, false, false},
+        {"at 44.1 kHz, a fader move ramping over its own 220 frames", 44100.0, 0.0, 0.0, 0, 0, false, true},
+        {"constant power, panned left, 200 samples early", 48000.0, -6.0206, -0.4, 1, -200, false, false},
+    };
+    for (const Case& c : cases) {
+        for (const Precision width : {Precision::Float32, Precision::Float64}) {
+            auto run = [&c, width](const std::string& name, bool wet) {
+                Mix m(name.c_str());
+                SineNode a(220.0, 0.2f);
+                m.track(1, "audio", "A");
+                m.track(3, "audio", "Sink");
+                m.track(4, "return", "R");
+                m.track(9, "master", "Master");
+                m.extra[1] = &a;
+                m.set("mixer.setVolume", 1, "db", c.db);
+                m.set("mixer.setPan", 1, "pan", c.pan);
+                if (c.delay != 0) m.set("mixer.setDelay", 1, "samples", c.delay);
+                if (c.lanes) {
+                    m.lane(1, 1, "volume", {{0.0, -3.0}, {0.1, -12.0}});
+                    m.lane(2, 1, "pan", {{0.0, 0.3}, {0.1, -0.5}});
+                    m.lane(3, 1, "mute", {{0.0, 0.0, 0}, {0.05, 1.0, 0}, {0.07, 0.0, 0}});
+                }
+                if (wet) {
+                    m.set("track.setMute", 3, "muted", true);
+                    mainRoute(m, 20, 1, 3);
+                    sendRow(m, 21, 1, 4);
+                }
+                m.load(c.rate, width);
+                if (c.law != 0) {
+                    m.store->db().exec("UPDATE mixer_strip SET pan_law = " + std::to_string(c.law) +
+                                       " WHERE track_id = 1");
+                    m.refresh();
+                }
+                m.session.transport().play();
+                std::vector<float> out;
+                for (int k = 0; k < 16; ++k) {
+                    if (c.moves && k == 4) {
+                        m.set("mixer.setVolume", 1, "db", c.db - 12.0);
+                        m.refresh();
+                    }
+                    // A static mute, in and out, ramps the same in both.
+                    if (c.moves && (k == 10 || k == 12)) {
+                        m.set("track.setMute", 1, "muted", k == 10);
+                        m.refresh();
+                    }
+                    m.render(512);
+                    out.insert(out.end(), m.l.begin(), m.l.end());
+                    out.insert(out.end(), m.r.begin(), m.r.end());
+                }
+                return out;
+            };
+            const std::string w = width == Precision::Float64 ? "64" : "32";
+            const auto dry = run("strip-dry" + w, false), wet = run("strip-wet" + w, true);
+            std::size_t differ = 0;
+            float loudest = 0.0f;
+            for (std::size_t i = 0; i < dry.size() && i < wet.size(); ++i) {
+                if (dry[i] != wet[i]) ++differ;
+                loudest = std::max(loudest, std::fabs(dry[i]));
+            }
+            check(dry.size() == wet.size() && differ == 0 && loudest > 0.01f,
+                  std::string("a Post send's wet is its strip's output bit for bit: ") + c.what + ", at " + w +
+                      " (" + std::to_string(differ) + " samples differ)");
+        }
+    }
+    // A send's own level acts before the track delay, as the strip's does:
+    // a level move on a track 300 samples late reaches the return 300
+    // samples into the block it is made in, as a fader move would.
+    {
+        Mix m("send-level-late");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(3, "audio", "Sink");
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        m.set("track.setMute", 3, "muted", true);
+        mainRoute(m, 20, 1, 3);
+        sendRow(m, 21, 1, 4);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        m.settle();
+        m.settle();
+        m.store->db().exec("UPDATE routing SET gain_db=-6.0206 WHERE id=21");
+        m.refresh();
+        m.render(512);
+        long moved = -1;
+        for (std::size_t i = 0; i < m.l.size(); ++i)
+            if (moved < 0 && m.l[i] != 0.5f) moved = static_cast<long>(i);
+        check(m.l[0] == 0.5f && moved == 300, "a send level moved on a track 300 late: heard 300 samples on (" +
+                                                  std::to_string(moved) + ")");
+    }
+    // A delayed track's first send, and its last, with nothing soloed: the
+    // dry never moves (no node on its own path comes or goes).
+    {
+        Mix m("first-send-late");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        m.settle();
+        m.settle();
+        sendRow(m, 11, 1, 4, kSilenceDb);
+        m.refresh();
+        float lo = 1.0f, hi = 0.0f;
+        for (int k = 0; k < 3; ++k) {
+            m.render();
+            for (float x : m.l) {
+                lo = std::min(lo, x);
+                hi = std::max(hi, x);
+            }
+        }
+        m.store->db().exec("DELETE FROM routing WHERE id=11");
+        m.refresh();
+        for (int k = 0; k < 3; ++k) {
+            m.render();
+            for (float x : m.l) {
+                lo = std::min(lo, x);
+                hi = std::max(hi, x);
+            }
+        }
+        check(lo == 0.5f && hi == 0.5f, "a delayed track's first send in and out: its dry stays 0.5 (" +
+                                            std::to_string(lo) + " .. " + std::to_string(hi) + ")");
+    }
+    // A sender 300 samples late, soloed away, into a soloed return: the
+    // send's delayed edge crosses a rebuild.
+    {
+        auto run = [](const std::string& name, bool rename) {
+            Mix m(name.c_str());
+            SineNode a(220.0, 0.1f);
+            m.track(1, "audio", "A");
+            m.track(4, "return", "R");
+            m.track(9, "master", "Master");
+            m.extra[1] = &a;
+            sendRow(m, 11, 1, 4);
+            m.set("mixer.setDelay", 1, "samples", 300);
+            m.set("track.setSolo", 4, "soloed", true);
+            m.load();
+            std::vector<float> out;
+            for (int k = 0; k < 12; ++k) {
+                if (rename && k == 6) {
+                    m.set("track.rename", 1, "name", "A2");
+                    m.refresh();
+                }
+                m.render(512);
+                out.insert(out.end(), m.l.begin(), m.l.end());
+            }
+            return out;
+        };
+        const auto ref = run("solo-late-ref", false), edited = run("solo-late-edit", true);
+        std::size_t differ = 0;
+        float loudest = 0.0f;
+        for (std::size_t i = 0; i < ref.size() && i < edited.size(); ++i) {
+            if (ref[i] != edited[i]) ++differ;
+            loudest = std::max(loudest, std::fabs(ref[i]));
+        }
+        check(differ == 0 && loudest > 0.05f, "a late, soloed-away sender into a soloed return crosses a rebuild (" +
+                                                  std::to_string(differ) + " samples differ)");
+    }
+    // Solo adds no node: a project's graph is the same size soloed or not.
+    {
+        auto nodes = [](bool solo) {
+            Mix m(solo ? "nodes-solo" : "nodes-plain");
+            m.track(1, "audio", "A", 0.5f);
+            m.track(2, "audio", "B", 0.25f);
+            m.track(4, "return", "R");
+            m.track(9, "master", "Master");
+            sendRow(m, 11, 1, 4);
+            if (solo) m.set("track.setSolo", 4, "soloed", true);
+            m.load();
+            const Graph* g = m.session.graph().currentGraph();
+            return g != nullptr ? g->nodeCount() : std::size_t{0};
+        };
+        const std::size_t plain = nodes(false), soloed = nodes(true);
+        check(plain > 0 && plain == soloed, "solo adds no node: " + std::to_string(plain) + " and " +
+                                                std::to_string(soloed));
     }
 }
 
@@ -959,8 +1512,9 @@ void testSendsHoldTheirLevel() {
         check(m.l[511] == 0.5f && m.mentions("routing#0"),
               "a send row with id 0, off and fully down, is silent and named: " + std::to_string(m.l[511]));
     }
-    // A sender 300 samples late: the edge after its strip, into its send's
-    // node, plays the delay, and a rebuild carries that ring.
+    // A sender 300 samples late: the edge after its send's node, which plays
+    // the strip and its delay, into the return plays the delay, and a
+    // rebuild carries that ring.
     for (const Precision width : {Precision::Float32, Precision::Float64}) {
         auto run = [width](const std::string& name, bool rename) {
             Mix m(name.c_str());
@@ -1017,8 +1571,9 @@ void testSendsHoldTheirLevel() {
               "back in the plan fully down, nothing but the dry: away " + std::to_string(away) + ", loudest " +
                   std::to_string(worst));
     }
-    // Turned fully down while its source is muted, so asleep: when the
-    // source comes back, nothing reaches the return.
+    // Turned fully down while its source is muted: when the source comes
+    // back, nothing reaches the return. (A Post send reads before the strip,
+    // so it is awake through the mute; the gap below is where it sleeps.)
     {
         auto run = [](const char* name, double startDb) {
             Mix m(name);
@@ -1718,6 +2273,8 @@ int main() {
         testOverride();
         testTrackDelay();
         testATrackDelayCrossesARebuild();
+        testHearing();
+        testSoloAcrossSends();
         testSendsPlay();
         testSendsHoldTheirLevel();
         testPreSendsAndTheSendsPan();

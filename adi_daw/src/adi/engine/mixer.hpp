@@ -95,6 +95,25 @@ struct StripLanes {
     const AutomationLaneProgram* mute = nullptr;     ///< 0.5 or more is muted
 };
 
+/// One track's strip as the model has it, sanitised: what its StripNode
+/// plays, and what every Post send from it plays at its first stage
+/// (SendNode). One value, applied to both by `StripNode::configure`, so a
+/// strip and its sends never disagree about the track -- and a parameter
+/// the strip learns to play is a field here, played by both.
+struct StripConfig {
+    double volumeDb = 0.0;
+    double pan = 0.0;
+    PanLaw law = PanLaw::Live;
+    bool unmuted = true;   ///< the track's mute; its solo is not here (`Hearing`)
+    /// The lanes the strip reads (ADR-0164), or null; `keepAlive` holds them,
+    /// and the realiser keeps it with every graph that plays the node, so a
+    /// retired graph never reads a freed lane.
+    const StripLanes* lanes = nullptr;
+    std::shared_ptr<void> keepAlive;
+    std::int64_t delaySamples = 0;    ///< the track delay (ADR-0172), at `delayRate`
+    std::int64_t delayRate = 48000;   ///< the project's rate
+};
+
 class StripNode final : public Node {
 public:
     /// Message thread: the model's values. `audible` is mute and solo together.
@@ -109,6 +128,15 @@ public:
     /// Where a lane is read. Driver-thread state, read at the block's origin as
     /// every source reads it (Transport's contract).
     void setTransport(const Transport* transport) noexcept { transport_ = transport; }
+
+    /// Message thread: all of the above from one track's configuration, with
+    /// `audible` the gate to play it at (its mute, and its solo or not).
+    void configure(const StripConfig& config, bool audible, const Transport* transport) noexcept {
+        setTransport(transport);
+        setStatic(config.volumeDb, config.pan, config.law, audible);
+        setDelay(config.delaySamples, config.delayRate);
+        setLanes(config.lanes, config.lanes != nullptr ? config.keepAlive : std::shared_ptr<void>{});
+    }
 
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return keepAlive_; }
 
@@ -233,38 +261,67 @@ inline constexpr double kSendTopDb = 24.0;
 /// its source track and the junction it feeds. The session owns one per
 /// routing row and keeps it across rebuilds, as it keeps a strip, so a level
 /// move ramps rather than jumps and both edges around it keep their history
-/// (ADR-0092). The gain stage IS a strip's -- the same law, the same five
-/// milliseconds, the same width handover -- so a send at 0 dB, centred and on,
-/// is bit for bit its input at either precision.
+/// (ADR-0092).
+///
+/// Two gain stages, each a strip's -- the same law, the same five
+/// milliseconds, the same width handover -- run in turn: what its source
+/// plays at the tap (`setSource`), then the send's own level, pan and switch
+/// (`set`). A Post send leaves where a Pre send does, after the effects, and
+/// plays its source's strip in the first stage -- fader, pan, mute, lanes,
+/// track delay, the same ramps -- but not its solo, which is the second
+/// stage's switch (`hearing`). So a track soloed away is silent at its strip
+/// while a soloed return still hears it, with no node anywhere that a send's
+/// coming or going changes under a playing graph. At 0 dB, centred and on,
+/// the second stage is exact: a Post send is bit for bit what its strip
+/// plays without the solo, at either precision.
 class SendNode final : public Node {
 public:
+    SendNode() noexcept { source_.setStatic(0.0, 0.0, PanLaw::Live, true); }
+
     /// Message thread. A level at or below kSilenceDb is silent, and so is
     /// one that is not a number; one past kSendTopDb, +inf included, plays at
-    /// kSendTopDb (the caller names both). `on` is Enable Send.
+    /// kSendTopDb (the caller names both). `on` is Enable Send, with solo as
+    /// it reaches this send (`Hearing::send`).
     void set(double levelDb, double pan, PanLaw law, bool on) noexcept {
         const double db = std::isnan(levelDb) ? -std::numeric_limits<double>::infinity()
                                               : std::min(levelDb, kSendTopDb);
         gain_.setStatic(db, pan, law, on);
     }
 
-    /// Message thread, for a Pre send: the source's mute lane (ADR-0164),
-    /// which silences a send that leaves before the strip as the strip's own
-    /// mute silences a Post one; null for none. `keepAlive` holds the lane's
-    /// program, and the realiser keeps it with every graph that plays this
-    /// node (sourceLifetime), so a retired graph never reads a freed lane.
-    void setMuteLane(const AutomationLaneProgram* mute, std::shared_ptr<void> keepAlive,
-                     const Transport* transport) noexcept;
+    /// Message thread: what the source plays at the send's tap, before the
+    /// send's own gain, played at its mute (`unmuted`) and never its solo.
+    /// For a Post send, its strip's configuration, the same value the strip
+    /// is given; for a Pre send, unity, its mute and its mute lane (the sends
+    /// plan's preMute, on until Live is measured). The same transport every
+    /// time, as every strip is given it, so a send turned from Pre to Post
+    /// never changes it under a graph.
+    void setSource(const StripConfig& source, const Transport* transport) noexcept {
+        source_.configure(source, source.unmuted, transport);
+        gain_.setTransport(transport);
+    }
 
-    [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return gain_.sourceLifetime(); }
+    [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return source_.sourceLifetime(); }
+    /// The source's track delay, as its strip reports it: so the edge after
+    /// this node waits as the edge after the strip does.
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return source_.latencySamples(); }
 
-    void prepare(double sampleRate, std::int32_t maxFrames) override { gain_.prepare(sampleRate, maxFrames); }
-    void process(const NodeIo& io) noexcept override { gain_.process(io); }
+    void prepare(double sampleRate, std::int32_t maxFrames) override {
+        source_.prepare(sampleRate, maxFrames);
+        gain_.prepare(sampleRate, maxFrames);
+    }
+    void process(const NodeIo& io) noexcept override;
     /// Asleep, a send lands a level moved meanwhile, as a strip does.
-    void silenceTaps(const NodeIo& io) noexcept override { gain_.silenceTaps(io); }
+    void silenceTaps(const NodeIo& io) noexcept override {
+        source_.silenceTaps(io);
+        gain_.silenceTaps(io);
+    }
 
     /// Message thread: the next block starts at the level, without a ramp --
     /// for a send back in the plan, which no graph has played meanwhile.
-    void restart() noexcept { gain_.restart(); }
+    void restart() noexcept {
+        source_.restart();
+        gain_.restart();
+    }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     /// Zero, like a strip's: a send holds nothing back.
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
@@ -273,13 +330,44 @@ public:
     [[nodiscard]] const char* name() const noexcept override { return "send"; }
 
 private:
-    StripNode gain_;
+    StripNode source_;   ///< what the source plays at the tap
+    StripNode gain_;     ///< the send's own level, pan and switch
 };
 
-/// Which tracks are heard (ADR-0163 d4). A muted track is silent. When any
+/// How solo reaches across sends (ADR-0203 d3). Fixed until the format has a
+/// home for them (win's question 7); a test may change them.
+struct HearingFlags {
+    /// Live's Solo in Place: a soloed track's returns, and what they feed, stay heard.
+    bool soloInPlace = true;
+    /// Another track's solo silences a Pre send with its source, as it does
+    /// a Post one (the sends plan's preFollowsSolo, on until Live is measured).
+    bool preFollowsSolo = true;
+    /// With Solo in Place, every return stays heard, not only those a heard
+    /// track sends to (the sends plan's keepAllReturns, off until Live is
+    /// measured).
+    bool keepAllReturns = false;
+};
+
+/// Who is heard (ADR-0163 d4, ADR-0203 d3). A muted track is silent. When any
 /// track is soloed, a track is heard only if it is soloed, solo-defeated,
-/// feeds a soloed track (a group's children), or is fed by one (its group, the
-/// master) -- over main routes; a sidechain key keeps nothing audible.
+/// feeds a soloed track (a group's children), or is fed by one (its group,
+/// the master) -- over main routes; a sidechain key keeps nothing audible --
+/// or, with Solo in Place, is a soloed track's return or what that feeds. A
+/// soloed track hears what is sent to it: a sender soloed away stays silent
+/// in its own output while its send plays, and a group whose send it hears
+/// has its children play into it alone, its own output silent.
+struct Hearing {
+    /// By track id: its own output, mute included.
+    std::map<std::int64_t, bool> track;
+    /// By routing row: whether solo lets the send through -- into what a
+    /// soloed track hears, between two heard tracks, or Pre when Pre sends do
+    /// not follow solo. A muted source is silent in all its sends at the
+    /// send's own first stage, as at its strip, so the mute is not here.
+    std::map<std::int64_t, bool> send;
+};
+[[nodiscard]] Hearing hearing(const rows::Model&, const GraphPlan&, const HearingFlags& = {});
+
+/// Which tracks are heard: `hearing(...).track`.
 [[nodiscard]] std::map<std::int64_t, bool> audibleTracks(const rows::Model&, const GraphPlan&);
 
 /// A strip's automatable parameters (ADR-0164), as `automation_lanes.param_ref`
