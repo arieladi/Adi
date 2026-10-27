@@ -881,7 +881,8 @@ int main(int argc, char **argv) {
         integrated.frame();
         std::size_t visibleRows = 0;
         for (const auto &s : mixer.strips())
-            visibleRows += s->isVisible() ? 1 : 0;
+            if (s->isVisible())
+                ++visibleRows;
         check(mixer.strips().size() < integrated.reader().tracks().size() &&
                   visibleRows <= static_cast<std::size_t>(mixer.getHeight() / 24 + 2),
               "the mixer realises the visible rows only");
