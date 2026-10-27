@@ -371,6 +371,53 @@ void testTheAttackIsARampAndTheReleaseIsSlow() {
     check(gains[23999] > 0.99, "and back to unity after about five time constants");
 }
 
+void testLimiterReleaseTimeSurvivesPrepare() {
+    section("ADR-0096 -- preparing at another rate preserves release time in seconds");
+
+    // With no lookahead, a 4x spike gives gain 0.25. After N silent samples,
+    // the documented exponential recovery is 1 - 0.75 * exp(-N / (time * rate)).
+    // Reusing the old coefficient changes that recovery when the rate changes.
+    const auto verify = [](LookaheadLimiter& lim, double rate, double seconds,
+                           const char* setting) {
+        lim.prepare(rate, 2, 8);
+        lim.setLookahead(0);
+        lim.setCeiling(1.0);
+        const float spike = 4.0f;
+        float left = 0.0f, right = 0.0f;
+        const float* spikeIn[2] = {&spike, &spike};
+        float* spikeOut[2] = {&left, &right};
+        lim.process(spikeIn, spikeOut, 1);
+
+        const int frames = std::max(1, static_cast<int>(std::lround(rate * seconds)));
+        Buf silence(static_cast<std::size_t>(frames)), out(static_cast<std::size_t>(frames));
+        const float* ip[2] = {silence.l.data(), silence.r.data()};
+        float* op[2] = {out.l.data(), out.r.data()};
+        lim.process(ip, op, frames);
+        const double expected = 1.0 - 0.75 * std::exp(-static_cast<double>(frames) / (seconds * rate));
+        near(lim.lastGain(), expected, 1e-11,
+             std::string(setting) + " release survives prepare at " + std::to_string(rate) + " Hz");
+    };
+
+    LookaheadLimiter defaults;
+    for (double rate : {44100.0, 96000.0, 48000.0, 32000.0})
+        verify(defaults, rate, 0.05, "default 50 ms");
+
+    LookaheadLimiter beforePrepare;
+    beforePrepare.setReleaseSeconds(0.08);
+    verify(beforePrepare, 96000.0, 0.08, "80 ms set before first prepare");
+
+    LookaheadLimiter afterPrepare;
+    afterPrepare.prepare(48000.0, 2, 8);
+    afterPrepare.setReleaseSeconds(0.08);
+    for (double rate : {48000.0, 96000.0, 44100.0})
+        verify(afterPrepare, rate, 0.08, "80 ms set after prepare");
+
+    LookaheadLimiter clamped;
+    clamped.setReleaseSeconds(0.0);
+    for (double rate : {96000.0, 44100.0})
+        verify(clamped, rate, 1e-5, "minimum release");
+}
+
 void testRmsDetectionWouldHaveMissedTheSpike() {
     section("ADR-0096 -- why peak, not RMS: the spike env~ would never see");
 
@@ -1143,6 +1190,7 @@ int main() {
     testTheLimiterIsTransparentBelowTheCeiling();
     testTheLimiterNeverPassesTheCeiling();
     testTheAttackIsARampAndTheReleaseIsSlow();
+    testLimiterReleaseTimeSurvivesPrepare();
     testRmsDetectionWouldHaveMissedTheSpike();
     testTheLimiterIsLinkedAcrossChannels();
     testTheLimiterAllocatesNothing();
