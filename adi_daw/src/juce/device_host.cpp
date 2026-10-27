@@ -89,6 +89,7 @@ bool DeviceHost::rebuildNow() {
     opts.sourcesFor = spec_.sourcesFor;
     opts.tapFor = spec_.tapFor;
     opts.sendFor = spec_.sendFor;
+    opts.sendTailFor = spec_.sendTailFor;
 
     if (!host_->rebuild(*model, opts, spec_.sampleRate, spec_.maxFrames)) {
         lastError_ = host_->error();

@@ -661,8 +661,9 @@ void testSendsPlay() {
                                      std::to_string(m.l[511]));
     }
     {
-        // A send into a summing group is not one of its children: it takes
-        // no channel half, which is the group's children's alone (ADR-0174).
+        // A send into a summing group is not one of its children: the sender
+        // keeps its own output as it was, and the send gets a channel half
+        // of its own (ADR-0174), so the group's buss decodes what was encoded.
         Mix m("send-summing");
         m.track(1, "audio", "A", 0.5f);
         m.track(2, "audio", "Child", 0.25f);
@@ -673,8 +674,334 @@ void testSendsPlay() {
         sendRow(m, 11, 1, 5);
         m.load();
         m.settle();
-        check(m.session.summing().channelOf(2) != nullptr && m.session.summing().channelOf(1) == nullptr,
-              "the child has a channel half and the sender none");
+        const GroupSumming& s = m.session.summing();
+        check(s.channelOf(2) != nullptr && s.channelOf(1) == nullptr && s.sendChannelOf(11) != nullptr &&
+                  s.sendChannelOf(11) != s.channelOf(2),
+              "the child has a channel half, the sender none, and the send one of its own");
+    }
+}
+
+/// RMS of the left channel over the second half of `blocks` blocks of 512.
+double rmsOf(Mix& m, int blocks) {
+    double acc = 0.0;
+    long count = 0;
+    for (int k = 0; k < blocks; ++k) {
+        m.render(512);
+        if (k < blocks / 2) continue;
+        for (float x : m.l) {
+            acc += static_cast<double>(x) * static_cast<double>(x);
+            ++count;
+        }
+    }
+    return std::sqrt(acc / static_cast<double>(count));
+}
+
+void testSendsHoldTheirLevel() {
+    section("ADR-0203 d3 -- a send holds its level: into summing, under solo, asleep, away and back, past the top");
+
+    // A route into a muted sink, so the send alone reaches the group.
+    auto mainRow = [](Mix& m, std::int64_t id, std::int64_t from, std::int64_t to) {
+        SQLite::Statement q(m.store->db(),
+            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db,enabled) "
+            "VALUES(?,'track',?,'track',?,'main',0,1)");
+        q.bind(1, id);
+        q.bind(2, from);
+        q.bind(3, to);
+        q.exec();
+    };
+    // A send into a summing group plays at the level it plays with summing
+    // off, at every drive (ADR-0174: summing is a colour, not a level).
+    for (const char* flavor : {"console9", "console.md"}) {
+        for (const double drive : {0.0, 6.0}) {
+            auto viaSend = [&](bool summing) {
+                Mix m((std::string("send-sum-") + (summing ? "on-" : "off-") + flavor + std::to_string(int(drive))).c_str());
+                SineNode a(220.0, 0.1f);
+                m.track(1, "audio", "A");
+                m.track(3, "audio", "Sink");
+                m.track(5, "group", "G");
+                m.track(9, "master", "Master");
+                m.extra[1] = &a;
+                m.set("track.setMute", 3, "muted", true);
+                mainRow(m, 20, 1, 3);
+                sendRow(m, 21, 1, 5);
+                if (summing) {
+                    m.set("group.setSumming", 5, "enabled", true);
+                    m.set("group.setSummingFlavor", 5, "flavor", flavor);
+                    m.set("group.setSummingDrive", 5, "db", drive);
+                }
+                m.load();
+                return rmsOf(m, 40);
+            };
+            const double off = viaSend(false), on = viaSend(true);
+            const double db = 20.0 * std::log10(on / off);
+            check(std::fabs(db) < 0.1, std::string("a send into a group summed by ") + flavor + " at +" +
+                                           std::to_string(int(drive)) + " dB drive keeps its level: " +
+                                           std::to_string(db) + " dB");
+        }
+    }
+    // Summing turned on under a send whose last edge delays -- the group's
+    // child plays 300 early, so everything else into the sum, the send
+    // included, waits 300 -- never plays the plain send's history as a
+    // console's (ADR-0092): no burst.
+    {
+        Mix m("sum-toggle-send");
+        SineNode a(220.0, 0.1f), c(330.0, 0.1f);
+        m.track(1, "audio", "A");
+        m.track(2, "audio", "C");
+        m.track(3, "audio", "Sink");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.extra[1] = &a;
+        m.extra[2] = &c;
+        m.set("track.setParent", 2, "parent", 5);
+        m.set("mixer.setDelay", 2, "samples", -300);
+        m.set("track.setMute", 3, "muted", true);
+        mainRow(m, 20, 1, 3);
+        sendRow(m, 21, 1, 5);
+        m.load();
+        float steady = 0.0f;
+        for (int k = 0; k < 16; ++k) {
+            m.render(512);
+            if (k >= 8)
+                for (float x : m.l) steady = std::max(steady, std::fabs(x));
+        }
+        m.set("group.setSumming", 5, "enabled", true);
+        m.refresh();
+        float during = 0.0f;
+        for (int k = 0; k < 4; ++k) {
+            m.render(512);
+            for (float x : m.l) during = std::max(during, std::fabs(x));
+        }
+        check(steady > 0.1f && during < 1.1f * steady,
+              "summing turned on under a delayed send: no burst (steady peak " + std::to_string(steady) +
+                  ", through the switch " + std::to_string(during) + ")");
+    }
+    // A child sending into its own summing group: two paths into the sum,
+    // each through a channel half, so the level doubles as it does unsummed.
+    {
+        auto run = [](bool summing) {
+            Mix m(summing ? "own-group-on" : "own-group-off");
+            SineNode a(220.0, 0.1f);
+            m.track(1, "audio", "C");
+            m.track(5, "group", "G");
+            m.track(9, "master", "Master");
+            m.extra[1] = &a;
+            m.set("track.setParent", 1, "parent", 5);
+            sendRow(m, 11, 1, 5);
+            if (summing) m.set("group.setSumming", 5, "enabled", true);
+            m.load();
+            return rmsOf(m, 40);
+        };
+        const double off = run(false), on = run(true);
+        check(std::fabs(20.0 * std::log10(on / off)) < 0.1,
+              "a child's send into its own summing group: " + std::to_string(off) + " unsummed, " +
+                  std::to_string(on) + " summed");
+    }
+    // A summed child's Post send leaves at its strip, before its channel
+    // half: the wet is the same with summing on or off. The group is muted
+    // so only the wet reaches the master.
+    {
+        auto wetOnly = [](bool summing) {
+            Mix m(summing ? "child-send-on" : "child-send-off");
+            m.track(1, "audio", "A", 0.5f);
+            m.track(4, "return", "R");
+            m.track(5, "group", "G");
+            m.track(9, "master", "Master");
+            m.set("track.setParent", 1, "parent", 5);
+            if (summing) m.set("group.setSumming", 5, "enabled", true);
+            m.set("track.setMute", 5, "muted", true);
+            sendRow(m, 11, 1, 4);
+            m.load();
+            m.settle();
+            return m.l[511];
+        };
+        const float off = wetOnly(false), on = wetOnly(true);
+        check(off == 0.5f && std::fabs(on - off) < 1e-6f,
+              "a summed child's send leaves before its channel half: off " + std::to_string(off) + ", on " +
+                  std::to_string(on));
+    }
+    // A send is not a main route: soloing its destination does not make
+    // the sender's own output audible. (The send is fully down, so this
+    // holds when a soloed track hears its senders too.)
+    {
+        Mix m("solo-dst");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(2, "audio", "B", 0.25f);
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 2, kSilenceDb);
+        m.set("track.setSolo", 2, "soloed", true);
+        m.load();
+        m.settle();
+        check(m.l[511] == 0.25f, "B soloed: B alone, nothing of the sender's own output: " + std::to_string(m.l[511]));
+    }
+    // Solo in Place opens another track (ADI's addition) only through a send
+    // that carries something: switched off, or fully down, it opens nothing.
+    {
+        auto run = [](const char* name, bool enabled, double db) {
+            Mix m(name);
+            m.track(1, "audio", "A", 0.5f);
+            m.track(2, "audio", "B", 0.25f);
+            m.track(9, "master", "Master");
+            sendRow(m, 11, 1, 2, db, enabled);
+            m.set("track.setSolo", 1, "soloed", true);
+            m.load();
+            m.settle();
+            return m.l[511];
+        };
+        const float off = run("sip-off", false, 0.0), down = run("sip-down", true, kSilenceDb);
+        check(off == 0.5f && down == 0.5f, "A soloed, its send into B off or fully down: A alone (" +
+                                               std::to_string(off) + ", " + std::to_string(down) + ")");
+    }
+    // A send row with id 0 is refused, named, and plays nothing.
+    {
+        Mix m("id-zero");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 0, 1, 4, kSilenceDb, false);
+        m.load();
+        m.settle();
+        check(m.l[511] == 0.5f && m.mentions("routing#0"),
+              "a send row with id 0, off and fully down, is silent and named: " + std::to_string(m.l[511]));
+    }
+    // A sender 300 samples late: the edge after its strip, into its send's
+    // node, plays the delay, and a rebuild carries that ring.
+    for (const Precision width : {Precision::Float32, Precision::Float64}) {
+        auto run = [width](const std::string& name, bool rename) {
+            Mix m(name.c_str());
+            SineNode a(220.0, 0.1f);
+            m.track(1, "audio", "A");
+            m.track(4, "return", "R");
+            m.track(9, "master", "Master");
+            m.extra[1] = &a;
+            sendRow(m, 11, 1, 4, -6.0);
+            sendRow(m, 12, 1, 4, -12.0);
+            m.set("mixer.setDelay", 1, "samples", 300);
+            m.load(48000.0, width);
+            std::vector<float> out;
+            for (int k = 0; k < 12; ++k) {
+                if (rename && k == 6) {
+                    m.set("track.rename", 4, "name", "R2");
+                    m.refresh();
+                }
+                m.render(512);
+                out.insert(out.end(), m.l.begin(), m.l.end());
+            }
+            return out;
+        };
+        const std::string w = width == Precision::Float64 ? "64" : "32";
+        const auto ref = run("late-ref" + w, false), edited = run("late-edit" + w, true);
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < ref.size() && i < edited.size(); ++i)
+            if (ref[i] != edited[i]) ++differ;
+        check(differ == 0, "a late sender's two sends cross a rebuild seamlessly at " + w + " (" +
+                               std::to_string(differ) + " samples differ)");
+    }
+    // A send that leaves the plan and comes back fully down does not replay
+    // its old level on the way in.
+    {
+        Mix m("away-and-back");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4);
+        m.load();
+        m.settle();
+        m.store->db().exec("UPDATE routing SET dst_id=99 WHERE id=11");   // a track that is not there
+        m.refresh();
+        m.settle();
+        const float away = m.l[511];
+        m.store->db().exec("UPDATE routing SET gain_db=-150 WHERE id=11");
+        m.refresh();
+        m.store->db().exec("UPDATE routing SET dst_id=4 WHERE id=11");
+        m.refresh();
+        m.render();
+        float worst = 0.0f;
+        for (float x : m.l) worst = std::max(worst, x);
+        check(away == 0.5f && worst == 0.5f,
+              "back in the plan fully down, nothing but the dry: away " + std::to_string(away) + ", loudest " +
+                  std::to_string(worst));
+    }
+    // Turned fully down while its source is muted, so asleep: when the
+    // source comes back, nothing reaches the return.
+    {
+        auto run = [](const char* name, double startDb) {
+            Mix m(name);
+            m.track(1, "audio", "A", 0.5f);
+            m.track(4, "return", "R");
+            m.track(9, "master", "Master");
+            sendRow(m, 11, 1, 4, startDb);
+            m.load();
+            m.settle();
+            m.set("track.setMute", 1, "muted", true);
+            m.refresh();
+            m.settle();
+            m.settle();
+            m.store->db().exec("UPDATE routing SET gain_db=-150 WHERE id=11");
+            m.refresh();
+            m.settle();
+            m.set("track.setMute", 1, "muted", false);
+            m.refresh();
+            m.render();
+            return m.l;
+        };
+        const auto ref = run("asleep-ref", kSilenceDb), got = run("asleep", 0.0);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < ref.size(); ++i)
+            worst = std::max(worst, std::fabs(static_cast<double>(got[i]) - static_cast<double>(ref[i])));
+        check(worst < 1e-6, "a send turned down while asleep stays silent on waking: worst " + std::to_string(worst));
+    }
+    // The same with the source simply silent, a gap between clips: the send
+    // turned down, or the track muted, meanwhile.
+    {
+        struct Gate final : Node {
+            std::atomic<bool> on{true};
+            void process(const NodeIo& io) noexcept override {
+                const float v = on.load() ? 0.5f : 0.0f;
+                for (std::int32_t c = 0; c < io.channels; ++c)
+                    for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][io.blockOffset + i] = v;
+            }
+        };
+        auto run = [](const char* name, bool muteInstead) {
+            Mix m(name);
+            Gate src;
+            m.track(1, "audio", "A");
+            m.track(4, "return", "R");
+            m.track(9, "master", "Master");
+            m.extra[1] = &src;
+            sendRow(m, 11, 1, 4);
+            m.load();
+            m.settle();
+            src.on = false;
+            m.settle();
+            m.settle();
+            if (muteInstead) m.set("track.setMute", 1, "muted", true);
+            else m.store->db().exec("UPDATE routing SET gain_db=-150 WHERE id=11");
+            m.refresh();
+            m.settle();
+            src.on = true;
+            m.render();
+            float worst = 0.0f;
+            for (float x : m.l) worst = std::max(worst, x);
+            return worst;
+        };
+        const float send = run("gap-send", false), mute = run("gap-mute", true);
+        check(send == 0.5f, "a send pulled down in a gap: the next sound is the dry alone; loudest " +
+                                std::to_string(send));
+        check(mute == 0.0f, "a track muted in a gap is silent from its next sound; loudest " + std::to_string(mute));
+    }
+    // A level past the top plays there, named; the master stays finite.
+    {
+        Mix m("past-the-top");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4, 1000.0);
+        m.load();
+        m.settle();
+        const double expect = 0.5 + 0.5 * faderGain(kSendTopDb);
+        check(std::isfinite(m.l[511]) && near(m.l[511], expect, 1e-4) && m.mentions("routing#11: a send level"),
+              "a send at +1000 dB plays at the top and is named: " + std::to_string(m.l[511]));
     }
 }
 
@@ -1297,6 +1624,7 @@ int main() {
         testTrackDelay();
         testATrackDelayCrossesARebuild();
         testSendsPlay();
+        testSendsHoldTheirLevel();
         testGroupSumming();
         testScopeTaps();
     } catch (const std::exception& e) {

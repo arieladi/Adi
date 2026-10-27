@@ -115,6 +115,11 @@ struct RealizeOptions {
 
     /// Unset means no send can be made, and each is named.
     SendFn sendFor;
+
+    /// What a send passes through after its own node, by its routing row:
+    /// a channel half of its own when it enters a summing group (ADR-0174),
+    /// else null. Unset, nothing.
+    SendFn sendTailFor;
 };
 
 /// A live graph and everything it owns.
@@ -212,10 +217,13 @@ public:
     /// by its track; or, for a node that is new each time too, the name it
     /// gives itself (`Node::historyName`).
     ///
-    /// A send's two edges (ADR-0203 d3): its tap into its node is a `Send`
-    /// from the tap, named by the routing row, since a tap may feed several
-    /// sends as well as its next node; and its node into the destination's
-    /// junction is an `Into` from the send's node.
+    /// A send's edges (ADR-0203 d3): its tap into its node is a `Send` from
+    /// the tap, named by the routing row, since a tap may feed several sends
+    /// as well as its next node; and its node into the destination's junction
+    /// is an `Into` from the send's node. Into a summing group the send goes
+    /// through a channel half of its own (ADR-0174): `Next` from the send's
+    /// node into the half, and the half into the junction is an `Into` from
+    /// the send's node named by the half's wire (`Node::wireKind`).
     struct ChainKey {
         enum class Leg : std::uint8_t {
             Into,   ///< from a source into the track's junction
@@ -225,7 +233,9 @@ public:
         std::int64_t track = 0;
         Leg leg = Leg::Next;
         const Node* from = nullptr;   ///< null: the junction, or a named node
-        std::uint64_t name = 0;       ///< a node's `historyName`, when it has one
+        /// A node's `historyName`, when it has one; for a send's last edge, the
+        /// wire it carries.
+        std::uint64_t name = 0;
         friend bool operator<(const ChainKey& a, const ChainKey& b) noexcept {
             if (a.track != b.track) return a.track < b.track;
             if (a.leg != b.leg) return a.leg < b.leg;

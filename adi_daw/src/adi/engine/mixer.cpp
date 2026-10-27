@@ -233,6 +233,10 @@ void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out
     const std::int32_t off = io.blockOffset;
     auto gainIndex = [](std::int32_t c) { return c < 2 ? c : 2; };
     handover<T>();
+    if (restart_.load(std::memory_order_relaxed) && restart_.exchange(false, std::memory_order_acq_rel)) {
+        ramp32_.started = false;
+        ramp64_.started = false;
+    }
     Ramp<T>& r = ramp<T>();
     const std::int32_t frames = rampFrames_.load(std::memory_order_relaxed);
     auto retargetAt = [&](std::int32_t frame) {
@@ -301,10 +305,24 @@ std::map<std::int64_t, bool> audibleTracks(const rows::Model& model, const Graph
     // Main routes only. A sidechain key is not listening, so a soloed track's
     // key source is not kept audible by it (ADR-0163 d4). A send is not a
     // main route either: a return is not a soloed track's group.
+    std::map<std::int64_t, const rows::Routing*> sendRow;
+    for (const rows::Routing& r : model.routing)
+        if (r.kind == "send") sendRow[r.id] = &r;
     std::vector<std::vector<std::size_t>> down(n), up(n), sentTo(n);
     for (const PlannedEdge& e : plan.edges) {
         if (e.bus != Bus::Main || e.from >= n || e.to >= n) continue;
-        if (e.routingId != 0) { sentTo[e.from].push_back(e.to); continue; }
+        if (e.routingId != 0) {
+            // What Solo in Place keeps open through a send: a return it
+            // reaches, as Live keeps a soloed track's returns; any other
+            // track (ADI's addition) only through a send that carries
+            // something -- on, and above silence -- so a send switched off or
+            // fully down never opens that track's own audio.
+            const auto row = sendRow.find(e.routingId);
+            const bool carries = row != sendRow.end() && row->second->enabled &&
+                                 row->second->gainDb > kSilenceDb;   // false for NaN too
+            if (carries || plan.nodes[e.to].kind == PlannedKind::Return) sentTo[e.from].push_back(e.to);
+            continue;
+        }
         down[e.from].push_back(e.to);
         up[e.to].push_back(e.from);
     }
@@ -474,9 +492,17 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
     for (const rows::Routing& r : model.routing) {
         if (r.kind != "send" || !planned.count(r.id)) continue;
         auto& send = sends_[r.id];
-        if (!send) send = std::make_unique<SendNode>();
+        const bool fresh = !send;
+        if (fresh) send = std::make_unique<SendNode>();
+        // Back in the plan after time out of it, in no graph and so never
+        // ramped: it starts at its level, as a new send does, rather than
+        // ramping away from the one it last played.
+        else if (!liveSends_.count(r.id)) send->restart();
         const std::string who = "routing#" + std::to_string(r.id);
         if (std::isnan(r.gainDb)) problems_.push_back(who + ": the send's level is not a number; it is silent");
+        else if (r.gainDb > kSendTopDb)
+            problems_.push_back(who + ": a send level of " + std::to_string(r.gainDb) + " dB is past the top, " +
+                                std::to_string(kSendTopDb) + " dB, and is played there");
         double pan = r.pan;
         if (!std::isfinite(pan)) {
             problems_.push_back(who + ": the send's pan is not finite; centre is used");
@@ -487,6 +513,7 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
     }
     for (auto& [id, send] : sends_)
         if (!live.count(id)) send->set(kSilenceDb, 0.0, PanLaw::Live, false);
+    liveSends_ = std::move(live);
 }
 
 SendNode* MixerStrips::sendFor(std::int64_t routingId) noexcept {

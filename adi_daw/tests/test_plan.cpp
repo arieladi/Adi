@@ -195,7 +195,9 @@ void testASendThatCannotPlayIsRefusedByRow() {
                  route(26, 4, 4, "send", "user"),   // a return into itself
                  route(27, 4, 2, "send", "user"),   // a return's own send
                  route(28, 2, 6, "send", "user"),   // into a VCA
-                 route(29, 2, 99, "send", "user")}; // a track that is not there
+                 route(29, 2, 99, "send", "user"),  // a track that is not there
+                 route(30, 2, 2, "send", "user"),   // an audio track into itself: a loop
+                 route(0, 2, 4, "send", "user")};   // id 0, which planned edges keep for "not a send"
     const GraphPlan p = planGraph(m);
     check(sendEdge(p, 20) != nullptr, "X -> Y plays");
     check(sendEdge(p, 21) == nullptr && mentions(p, "routing#21", "would close a loop"),
@@ -212,8 +214,31 @@ void testASendThatCannotPlayIsRefusedByRow() {
           "a return's own send is named, not played yet");
     check(sendEdge(p, 28) == nullptr && mentions(p, "routing#28", "VCA"), "a VCA takes no send");
     check(sendEdge(p, 29) == nullptr && mentions(p, "routing#29", "not there"), "nor does a track that is not there");
+    check(sendEdge(p, 30) == nullptr && mentions(p, "routing#30", "would close a loop") &&
+              !mentions(p, "routing#30", "feedback loop"),
+          "an audio track into itself is a loop refused, not Live's return loop to come");
+    // X -> R with routing id 0 would be an edge the rest of the engine takes
+    // for a plain route: no send node, no level, no switch.
+    const auto ix = p.indexOf(2), ir = p.indexOf(4);
+    bool idZeroPlanned = false;
+    for (const PlannedEdge& e : p.edges)
+        idZeroPlanned = idZeroPlanned || (ix && ir && e.from == *ix && e.to == *ir && e.routingId == 0);
+    check(!idZeroPlanned && mentions(p, "routing#0", "other than 0"),
+          "a send row with id 0 is refused, named: it would play as a plain route" + problems(p));
     check(hasEdge(p, 2, 1) && hasEdge(p, 3, 5) && hasEdge(p, 5, 1) && hasEdge(p, 4, 1),
           "and every track's own output is planned as before");
+
+    // A loop through a sidechain is a loop: the return keys a device on X,
+    // so a send from X into it would close R -> X -> R, and the whole
+    // project, not just the row, would be refused if the check missed it.
+    rows::Model k;
+    k.tracks = {track(1, "master", "Master"), track(2, "audio", "X"), track(4, "return", "R")};
+    k.routing = {route(10, 4, 2, "sidechain", "user"),   // R keys X
+                 route(11, 2, 4, "send", "user")};       // X -> R
+    const GraphPlan pk = planGraph(k);
+    check(sendEdge(pk, 11) == nullptr && mentions(pk, "routing#11", "would close a loop") && !pk.cycle,
+          "a send closing a loop through a sidechain is refused as its row, and the plan has no cycle" +
+              problems(pk));
 }
 
 void testUserRoutingWins() {

@@ -131,6 +131,11 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
+
+    /// Message thread: the next block starts AT the target, as a new strip
+    /// does, rather than ramping from whatever this one last played.
+    void restart() noexcept { restart_.store(true, std::memory_order_release); }
+
     /// ADR-0207 d2: at 64 the gains and their ramps are double too.
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
@@ -200,6 +205,7 @@ private:
     std::atomic<float> volumeDb_{0.0f}, pan_{0.0f};
     std::atomic<int> law_{0};
     std::atomic<bool> audible_{true};
+    std::atomic<bool> restart_{false};
     std::atomic<const StripLanes*> lanes_{nullptr};
     std::shared_ptr<void> keepAlive_;   ///< message thread only
     const Transport* transport_ = nullptr;
@@ -245,6 +251,10 @@ public:
     void process(const NodeIo& io) noexcept override { gain_.process(io); }
     /// Asleep, a send lands a level moved meanwhile, as a strip does.
     void silenceTaps(const NodeIo& io) noexcept override { gain_.silenceTaps(io); }
+
+    /// Message thread: the next block starts at the level, without a ramp --
+    /// for a send back in the plan, which no graph has played meanwhile.
+    void restart() noexcept { gain_.restart(); }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     /// Zero, like a strip's: a send holds nothing back.
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
@@ -308,6 +318,7 @@ public:
 private:
     std::map<std::int64_t, std::unique_ptr<StripNode>> strips_;
     std::map<std::int64_t, std::unique_ptr<SendNode>> sends_;
+    std::set<std::int64_t> liveSends_;   ///< the rows planned at the last sync
     std::vector<std::string> problems_;
 };
 

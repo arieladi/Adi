@@ -201,6 +201,13 @@ GraphPlan planGraph(const rows::Model& m) {
     // a loop loses to the routing already there, the later row losing.
     for (const rows::Routing* r : sends) {
         const std::string ref = "routing#" + std::to_string(r->id);
+        // A planned edge's routing id 0 means "not a send", everywhere after
+        // this, so a send row with id 0 would play as a plain route at 0 dB.
+        if (r->id == 0) {
+            plan.problems.push_back(ref + ": a send needs a routing id other than 0, which the engine "
+                                          "keeps for a route that is not a send; it is not planned");
+            continue;
+        }
         if (r->srcKind != "track" || r->dstKind != "track") {
             plan.problems.push_back(ref + ": a send's ends are tracks, not '" + r->srcKind + "'/'" +
                                     r->dstKind + "'");
@@ -226,7 +233,13 @@ GraphPlan planGraph(const rows::Model& m) {
             continue;
         }
         if (r->srcId == r->dstId) {
-            plan.problems.push_back(ref + ": a return sending to itself (Live's feedback loop) is not played yet");
+            // Only a return may feed itself (ADR-0203 d3); the loop check
+            // below cannot see a loop of one, so it is refused here.
+            if (src == PlannedKind::Return)
+                plan.problems.push_back(ref + ": a return sending to itself (Live's feedback loop) is not played yet");
+            else
+                plan.problems.push_back(ref + ": this send would close a loop, a track into itself; only a "
+                                              "return may feed itself, so it is not planned");
             continue;
         }
         if (src == PlannedKind::Return) {
