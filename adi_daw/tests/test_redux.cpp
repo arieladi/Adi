@@ -286,11 +286,40 @@ void automation() {
     std::printf("METRIC Redux automated sweep largest step %.9f\n", sweepStep);
 }
 
+void crossedInPlace() {
+    constexpr std::size_t frames = 257;
+    std::vector<float> left(frames), right(frames), expectedLeft(frames), expectedRight(frames);
+    for (std::size_t i = 0; i < frames; ++i) {
+        left[i] = static_cast<float>(0.2 * std::sin(0.047 * static_cast<double>(i)));
+        right[i] = static_cast<float>(0.3 * std::cos(0.071 * static_cast<double>(i)));
+    }
+    const auto configure = [](Redux& core) {
+        core.prepare(48000);
+        core.setRate(7800);
+        core.setJitter(33);
+        core.setBits(7);
+        core.setMix(70);
+    };
+    Redux reference, crossed, same;
+    configure(reference); configure(crossed); configure(same);
+    reference.process(left.data(), right.data(), expectedLeft.data(), expectedRight.data(), frames);
+    auto crossedLeft = left, crossedRight = right;
+    // d_ugen.c frees inlet signal vectors before allocating outlet vectors;
+    // the first outlet can therefore reuse the right inlet, and vice versa.
+    crossed.process(crossedLeft.data(), crossedRight.data(), crossedRight.data(),
+                    crossedLeft.data(), frames);
+    check(crossedRight == expectedLeft && crossedLeft == expectedRight,
+          "crossed Pd input/output buffers retain both channel inputs");
+    same.process(left.data(), right.data(), left.data(), right.data(), frames);
+    check(left == expectedLeft && right == expectedRight,
+          "ordinary in-place buffers match separate output buffers");
+}
 } // namespace
 int main() {
     measurements();
     continuity();
     automation();
+    crossedInPlace();
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;
 }

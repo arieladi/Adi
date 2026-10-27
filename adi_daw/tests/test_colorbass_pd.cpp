@@ -65,7 +65,7 @@ std::unique_ptr<device::PdSampleBuffer> sample(bool silence=false) {
     return device::prepareColorCabSample(std::move(s),options);
 }
 void deviceTest(const char* file, bool cab) {
-    device::LibPdEngine e(ADI_COLORBASS_PATCH_DIR,file,2,2);
+    device::LibPdEngine e(ADI_COLORBASS_PATCH_DIR,file,2,2, adi::device::LibPdEngine::Execution::PureData);
     e.addSearchPath(ADI_PD_PATCH_DIR);
     device::PdLatencyReceiver latency; std::string error;
     check(e.open(latency,error),"top-level device opens");

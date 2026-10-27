@@ -62,7 +62,7 @@ double bin(const std::vector<float> &x, double hz) {
 }
 void run() {
     using namespace adi;
-    device::LibPdEngine engine(ADI_DEVICE_PATCH_DIR, "MultibandDynamics.pd", 4, 2);
+    device::LibPdEngine engine(ADI_DEVICE_PATCH_DIR, "MultibandDynamics.pd", 4, 2, adi::device::LibPdEngine::Execution::PureData);
     engine.addSearchPath(ADI_PD_PATCH_DIR);
     device::PdLatencyReceiver latency;
     std::string error;

@@ -25,8 +25,9 @@
 //      into 100 and 412 (graph.hpp). So the engine practically never sees a
 //      multiple of 64, and a block adapter is not an optimisation to add later
 //      -- without it there is no correct way to call `libpd_process_float` at
-//      all. The adapter costs exactly one Pd block of delay, which is real
-//      latency and is reported as such through `adapterLatencySamples()`.
+//      all. Canonical built-ins run their native core directly (ADR-0203 d4).
+//      User patches have an explicit WholeBlocks mode with zero adapter delay;
+//      arbitrary segments retain a stable, reported one-block buffering delay.
 //
 //   3. **libpd is interleaved; the graph is planar.** `libpd_process_float`
 //      wants `ticks * 64 * channels` interleaved floats. The adapter does that
@@ -62,6 +63,7 @@
 #include "juce/pd_device.hpp"
 #include "juce/pd_declarations.hpp"
 #include "adi/pd_builtins/sample_bridge.hpp"
+#include "adi/pd_builtins/native_devices.hpp"
 #include "adi/engine/published_array.hpp"
 #include "adi/engine/mpe_output.hpp"
 
@@ -126,6 +128,13 @@ public:
 /// patch twice.
 class LibPdEngine final : public PdPatchEngine {
 public:
+    /// Canonical shipped canvases run their native DSP (ADR-0203 d4).
+    /// PureData keeps the editable patch execution path available for parity tests.
+    enum class Execution { Automatic, PureData };
+    /// WholeBlocks is a caller guarantee about EVERY process segment, not just
+    /// prepare's maximum. Event-split callers must use Buffered for user patches.
+    /// A violation is counted and silenced; latency never changes mid-stream.
+    enum class BlockMode { Buffered, WholeBlocks };
     /// `patchDir` and `patchFile` are passed to `libpd_openfile` unchanged.
     ///
     /// `inChannels` is how many `inlet~` the patch has and `outChannels` how
@@ -135,7 +144,9 @@ public:
     /// `inlet~` than the instance has channels simply receives silence on the
     /// extras, with no error anywhere.
     LibPdEngine(std::string patchDir, std::string patchFile,
-                std::int32_t inChannels, std::int32_t outChannels);
+                std::int32_t inChannels, std::int32_t outChannels,
+                Execution execution = Execution::Automatic,
+                BlockMode blockMode = BlockMode::Buffered);
     ~LibPdEngine() override;
 
     LibPdEngine(const LibPdEngine&) = delete;
@@ -168,7 +179,9 @@ public:
     void requestLatencyReport() override;
     void process(const engine::NodeIo& io) noexcept override;
 
-    /// One Pd block, once prepared; 0 before that. See note 2 above.
+    [[nodiscard]] bool isNative() const noexcept { return native_ != nullptr; }
+
+    /// Zero for native DSP and WholeBlocks; one block for prepared Buffered Pd.
     [[nodiscard]] std::int32_t adapterLatencySamples() const noexcept override {
         return adapterLatency_;
     }
@@ -315,6 +328,7 @@ public:
         std::int64_t ticks = 0;      ///< Pd blocks rendered
         std::int64_t segments = 0;   ///< process() calls
         std::int64_t starved = 0;    ///< pops that found too little output
+        std::int64_t rejectedSegments = 0; ///< WholeBlocks contract violations
     };
     [[nodiscard]] Counters counters() const noexcept;
 
@@ -340,6 +354,12 @@ private:
     std::int32_t adapterLatency_ = 0;
     double sampleRate_ = 44100.0;
     bool dspOn_ = false;
+    Execution execution_;
+    BlockMode blockMode_;
+    std::unique_ptr<NativePdDevice> native_;
+    PdLatencyReceiver* nativeLatency_ = nullptr;
+    bool nativePrepared_ = false;
+    void processPdAudio(const engine::NodeIo& io) noexcept;
 
     /// The block adapter. `in_` and `out_` are interleaved by channel, sized
     /// for one tick plus the largest segment the graph promised.
@@ -404,6 +424,7 @@ private:
     PdReceiverTable receivers_;
 
     std::atomic<std::int64_t> ticks_{0}, segments_{0}, starved_{0};
+    std::atomic<std::int64_t> rejectedSegments_{0};
 };
 
 }  // namespace adi::device
