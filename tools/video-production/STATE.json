@@ -1,9 +1,9 @@
 {
-  "as_of_utc": "2026-10-27T16:00:00Z",
-  "owner": "split: claude owns Cosmic keyframe test only; codex owns Avastha 4K60 worker and its monitors",
+  "as_of_utc": "2026-10-27T16:40:00Z",
+  "owner": "split: claude owns Cosmic Rain (16s test and full-track job); codex owns Avastha 4K60 worker and its monitors",
   "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected).",
   "cosmic_rain": {
-    "scope": "First 120 seconds only; continuation requires user approval",
+    "scope": "User approved the 16s test on 2026-10-27 and asked for the ENTIRE track to be rendered with the same method.",
     "remote_root": "D:/AvasthaAI/CosmicRainPilot120-20261026",
     "local_root": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s",
     "status": "REJECTED by user 2026-10-27 after viewing: weird, not symmetrical, not interesting, develops far too slowly. Not flickering and continuous, but the chained Wan last-frame approach is the wrong method for the Ayana target. Keep the file as a reference only; do not extend, upscale or re-finish it.",
@@ -21,7 +21,7 @@
     ],
     "review_images": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s/review-claude-20261027",
     "gemini_ayana_analysis": "User gave Codex a Gemini breakdown of Ayana before the pilot: modular 1-bar/2-bar I2V clips, hard cuts on bar 1, eye/circle portal match-zooms, 2D mirror/radial/clone compositing, reverse-timed impacts, acts. The pilot applied the cut grid but not the compositing, fresh-keyframe-per-clip or portals, and chained last frames (the drift Gemini warned against). Gemini's '40 frames per bar at 24fps' drifts (bar is 40.28 frames); use absolute timestamps. Its timestamps are partly wrong against sampled frames; its waveform brightness pulses conflict with the no-strobe preference; Flow/Veo are paid and excluded.",
-    "next": "User reviews the 16s test. If approved: decide whether to extend this method across the first 120s (new storyboard per section), then finish with RIFE 4.26 + RealESRGAN. Nothing extended without approval.",
+    "next": "Pick stills, start animate_full.py on A2000, preview with assemble_full.py --preview, re-render bad slots, final assemble, then RIFE/upscale only if the user asks.",
     "keyframe_test": {
       "status": "16s test take 2 DELIVERED to user for review (not yet approved). Take 1 rejected by Claude review and kept as \"...take1 REJECTED by Claude review.mp4\".",
       "window": "47.01-63.80s, bars 28-37 at 143 BPM, drop at 53.73s",
@@ -36,6 +36,17 @@
       "verified": "403 frames counted by decode, 1280x720, 24 fps, 16.7917s, AAC 16.791s, full -xerror decode clean. Music = original track 47.000-63.792s, not retimed, 15 ms edge fades. Hard cuts on rounded absolute bar frames; circle portal S04->S05 on the drop at 53.708s. Every slot moving (mean frame change 2.4-18, 0% near-static).",
       "take2": "anim.json: S01 take S01b + push 1.0-1.15; S03 take S03c (no hands; the hands-touch idea produced floating praying hands so it was dropped); S04 push into pupil 1.0-1.4; S07 push 1.12; S09 push 1.1; S10 take S10b at normal speed + pull-back 1.12-1.0. Re-renders from anim_redo1.json.",
       "not_done": "No RIFE/60fps or 4K upscale yet (24 fps 720p like the pilot). Hands touching dropped. Beat-locked actions inside shots are not guaranteed; only the cuts are on the grid."
+    },
+    "full_track": {
+      "status": "Stills generating (274 = 137 scenes x 2 seeds). Then Claude reviews/picks (picks.json), then animate_full.py on the A2000.",
+      "remote_root": "D:/AvasthaAI/CosmicRainFull-20261027",
+      "local_root": "D:/AvasthaAI/Projects/Cosmic Rain/full-track (to be created on delivery)",
+      "code": "tools/video-production/cosmic-full (analyse_track.py, storyboard_full.py -> plan.json, gen_stills_full.py, stills_sheets.py, animate_full.py, assemble_full.py)",
+      "track": "463.285s, 276 bars at 143 BPM; drops at bars 32, 64, 96, 208, 224; breaks 62-63, 90-95, 189-207, 215-223; ending 268+ (track-bars.json)",
+      "plan": "137 scenes in 8 chapters; 242 slots; 232 new Wan clips (18,408 frames); bars 28-38 reuse the approved 16s test takes; frames 0-191 original opening.",
+      "estimate": "~7 Wan frames/min on the A2000 -> ~43 h alone. RTX4000 could run a second worker after Avastha is verified (needs a second ComfyUI on that GPU; coordinate with Codex first).",
+      "disk": "~38 GB of frames+latents expected; 60 GB free on D at start; animate_full stops below 8 GiB.",
+      "workers": "animate_full.py claims slots with anim/<slot>/claim.<worker>; never start a second copy with the same worker name."
     }
   },
   "avastha": {
@@ -48,7 +59,7 @@
     "next": "Monitor existing worker; no restart. On completion verify full decode, 35648 frames, 3840x2160 60fps, original AAC copied, then sample detail/motion and copy to local D."
   },
   "holds": [
-    "Old full-track Cosmic Rain renderer",
+    "Old full-track Cosmic Rain renderer (CosmicRain-20261025) stays held; the new keyframe full-track job replaces it",
     "Z-Image experiments",
     "All other stopped render jobs"
   ],

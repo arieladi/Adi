@@ -1,0 +1,4032 @@
+{
+ "title": "Cosmic Rain - full track, keyframe method",
+ "fps": 24,
+ "bpm": 143,
+ "phase": 0.0215,
+ "opening": {
+  "source": "D:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4",
+  "frames": [
+   0,
+   192
+  ]
+ },
+ "audio": {
+  "track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav",
+  "start_frame": 0,
+  "end_frame": 11119
+ },
+ "style": "psychedelic psytrance poster illustration, visionary art, bold clean ink outlines, cel shading, vivid saturated silver, cyan, deep ultramarine and gold palette with magenta accents, glowing highlights, high contrast, intricate ornamental detail, centered composition",
+ "scenes": [
+  {
+   "id": "K001",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a vast black hole with a blazing golden accretion ring in deep space, silver rain falling into it from above like a waterfall of light"
+  },
+  {
+   "id": "K002",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "silver raindrops falling through deep space past the viewer, each raindrop reflecting a tiny spiral galaxy"
+  },
+  {
+   "id": "K003",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks floating asleep in deep space, curled gently, her silver hair spreading out like a nebula, eyes closed"
+  },
+  {
+   "id": "K004",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "towering rain clouds made of stars and crystal, soft lightning of light glowing inside them"
+  },
+  {
+   "id": "K005",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "one giant crystal raindrop falling toward a dark blue ocean planet, the planet glowing below"
+  },
+  {
+   "id": "K006",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a crown-shaped splash rising from a dark ocean where a raindrop landed, concentric glowing rings spreading"
+  },
+  {
+   "id": "K007",
+   "kind": "calm",
+   "composite": "radial8",
+   "subject": "top-down view of glowing concentric ripples on a dark ocean forming an ornate mandala"
+  },
+  {
+   "id": "K008",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "underwater view looking up at rain hitting the ocean surface, golden light rays piercing the deep blue water"
+  },
+  {
+   "id": "K009",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "five glowing jellyfish rising slowly side by side in a row in dark deep water, long luminous tentacles"
+  },
+  {
+   "id": "K010",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "an ancient crystal temple on the ocean floor, glowing pillars, a beam of light from above"
+  },
+  {
+   "id": "K011",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks face just beneath the water surface, eyes closed, tiny bubbles around her lips"
+  },
+  {
+   "id": "K012",
+   "kind": "calm",
+   "composite": "radial8",
+   "subject": "a spiral of glowing raindrops forming around a small bright black hole star"
+  },
+  {
+   "id": "K013",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a giant whale made of starlight leaping out of a dark glowing ocean, water streaming off it"
+  },
+  {
+   "id": "K014",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "seven identical cute glowing raindrop spirits with small faces dancing in a straight row on a dark mirror ocean"
+  },
+  {
+   "id": "K015",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a huge ocean wave curling over into a glowing tunnel of silver light"
+  },
+  {
+   "id": "K016",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a giant octopus made of glowing water with golden rings on its tentacles, perfectly symmetrical, facing the viewer"
+  },
+  {
+   "id": "K017",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of a bioluminescent coral reef forming a glowing mandala"
+  },
+  {
+   "id": "K018",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a silver sea dragon spiraling upward out of the ocean toward the black hole"
+  },
+  {
+   "id": "K019",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "thousands of raindrops frozen in mid-air forming a perfect glowing sphere"
+  },
+  {
+   "id": "K020",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a formation of manta rays made of light gliding toward the viewer over a dark ocean"
+  },
+  {
+   "id": "K021",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "the ocean surface splitting open down the middle to reveal a glowing galaxy beneath"
+  },
+  {
+   "id": "K022",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks rising out of the ocean up to her shoulders, water streaming from her silver hair, eyes closed"
+  },
+  {
+   "id": "K023",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a giant golden nautilus shell with crystal chambers glowing, floating above the ocean"
+  },
+  {
+   "id": "K024",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a waterfall falling upward from the ocean into the black hole with a golden ring"
+  },
+  {
+   "id": "K025",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a single raindrop hanging in silence in front of a black void, the reflection of a glowing eye inside it"
+  },
+  {
+   "id": "K026",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "an endless cathedral corridor of crystal arches with silver rain falling inside"
+  },
+  {
+   "id": "K027",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a giant clockwork of golden gears and raindrops"
+  },
+  {
+   "id": "K028",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a stained glass window of a rain goddess glowing in a dark cathedral"
+  },
+  {
+   "id": "K029",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "five identical crystal monk statues in a row with glowing cyan eyes, rain falling"
+  },
+  {
+   "id": "K030",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "prisms splitting beams of light into rainbows of cyan, gold and magenta"
+  },
+  {
+   "id": "K031",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a staircase of water spiraling upward into the stars, impossible geometry"
+  },
+  {
+   "id": "K032",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "giant golden temple doors opening onto a blazing starfield"
+  },
+  {
+   "id": "K033",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a crystal tree whose leaves are glowing raindrops, black background"
+  },
+  {
+   "id": "K034",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "sacred geometry, a glowing golden Metatron's cube with floating crystals"
+  },
+  {
+   "id": "K035",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a hall of mirrors with silver rain falling, infinite reflections"
+  },
+  {
+   "id": "K036",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a giant glass bell glowing in a crystal tower"
+  },
+  {
+   "id": "K037",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "an owl made of crystal with golden eyes, wings spread wide, facing the viewer"
+  },
+  {
+   "id": "K038",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a diamond eye inside a golden pyramid radiating light beams"
+  },
+  {
+   "id": "K039",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks meditating on a floating rock under soft rain, eyes closed, hands resting in her lap"
+  },
+  {
+   "id": "K040",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "falling raindrops slowing down and freezing into tiny stars in black space"
+  },
+  {
+   "id": "K041",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "extreme close-up of an eye opening, the pupil is a black hole with a blazing golden accretion ring"
+  },
+  {
+   "id": "K042",
+   "kind": "half",
+   "composite": "radial8",
+   "subject": "a ring of twelve glowing eyes with black hole pupils on black"
+  },
+  {
+   "id": "K043",
+   "kind": "half",
+   "composite": "none",
+   "subject": "extreme close-up of a black hole pupil with a golden ring, falling into it"
+  },
+  {
+   "id": "K044",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a thunderbird made of lightning and rain bursting out of a storm vortex, wings spread, facing the viewer"
+  },
+  {
+   "id": "K045",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "two rain dragons coiling around a column of golden lightning"
+  },
+  {
+   "id": "K046",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a storm cloud shaped like the face of a sky god with a beard of lightning"
+  },
+  {
+   "id": "K047",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a tree of golden lightning branching across a dark sky"
+  },
+  {
+   "id": "K048",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "inside a tornado of rain and stars looking up"
+  },
+  {
+   "id": "K049",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "five drummers made of thunderclouds in a row drumming on glowing drums"
+  },
+  {
+   "id": "K050",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "lightning striking a crystal ocean creating a glowing fractal pattern"
+  },
+  {
+   "id": "K051",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "an eagle made of silver rain diving straight toward the viewer, wings spread"
+  },
+  {
+   "id": "K052",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a storm wolf made of clouds and aurora howling on a crystal cliff"
+  },
+  {
+   "id": "K053",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of rain spirit dancers spinning in a circle"
+  },
+  {
+   "id": "K054",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "macro of diamond hailstones bouncing on black glass with sparks"
+  },
+  {
+   "id": "K055",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of a cyclone eye with a golden ring"
+  },
+  {
+   "id": "K056",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a lightning serpent biting its own tail in a perfect circle, ouroboros"
+  },
+  {
+   "id": "K057",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a rainbow bridge of light forming through a dark storm"
+  },
+  {
+   "id": "K058",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a giant thunder drum of the gods glowing in the clouds"
+  },
+  {
+   "id": "K059",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks standing in the storm with glowing eyes, hands resting over her heart, lightning behind her"
+  },
+  {
+   "id": "K060",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a forest of giant glowing mushrooms of light in the rain"
+  },
+  {
+   "id": "K061",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a giant fractal flower opening, mandala petals"
+  },
+  {
+   "id": "K062",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "five crystal frogs sitting in a row on lotus pads in a rainy pond"
+  },
+  {
+   "id": "K063",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "golden vines growing into a glowing spiral"
+  },
+  {
+   "id": "K064",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a butterfly with stained glass wings, perfectly symmetrical, facing the viewer"
+  },
+  {
+   "id": "K065",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a meadow of glowing dandelions releasing seeds made of stars"
+  },
+  {
+   "id": "K066",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a tree of life with glowing rivers as roots"
+  },
+  {
+   "id": "K067",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a hummingbird made of light drinking from a glowing raindrop"
+  },
+  {
+   "id": "K068",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a sunflower with a fibonacci spiral of golden seeds"
+  },
+  {
+   "id": "K069",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a fern frond unrolling into a fractal spiral of light"
+  },
+  {
+   "id": "K070",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a tunnel of glowing hexagon honeycomb with bees of light"
+  },
+  {
+   "id": "K071",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a peacock made of rain spreading its glowing tail, facing the viewer"
+  },
+  {
+   "id": "K072",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a flower bud opening to reveal a tiny galaxy inside"
+  },
+  {
+   "id": "K073",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a forest spirit deer with antlers of crystal, facing the viewer"
+  },
+  {
+   "id": "K074",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "glowing seeds falling onto dark ground and bursting into flowers"
+  },
+  {
+   "id": "K075",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of a giant water lily mandala"
+  },
+  {
+   "id": "K076",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a galaxy whale swimming through pink and blue nebula clouds"
+  },
+  {
+   "id": "K077",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "planets lined up like pearls with glowing rings"
+  },
+  {
+   "id": "K078",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a comet made of rain streaking toward the viewer"
+  },
+  {
+   "id": "K079",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a fleet of cosmic jellyfish floating through space"
+  },
+  {
+   "id": "K080",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "macro of a whale eye with galaxies reflected inside"
+  },
+  {
+   "id": "K081",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a crystal astronaut floating among raindrops, facing the viewer"
+  },
+  {
+   "id": "K082",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "flying through the rings of a planet made of raindrops"
+  },
+  {
+   "id": "K083",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a nebula shaped like a goddess face"
+  },
+  {
+   "id": "K084",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a warp tunnel of stars"
+  },
+  {
+   "id": "K085",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "constellation animals connected by glowing lines"
+  },
+  {
+   "id": "K086",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "space rain falling on a silver moon surface making ripples in the dust"
+  },
+  {
+   "id": "K087",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of a spiral galaxy"
+  },
+  {
+   "id": "K088",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "the galaxy whale diving into a black hole with a golden ring"
+  },
+  {
+   "id": "K089",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a black hole swallowing streams of light, the golden ring dimming"
+  },
+  {
+   "id": "K090",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a single glowing raindrop falling in darkness"
+  },
+  {
+   "id": "K091",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks sleeping inside a floating bubble of water, curled peacefully"
+  },
+  {
+   "id": "K092",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "floating memory bubbles, each containing a tiny glowing scene of a whale, a crystal cathedral and a storm"
+  },
+  {
+   "id": "K093",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "golden light rays through dark deep water"
+  },
+  {
+   "id": "K094",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a silver feather falling slowly through soft rain"
+  },
+  {
+   "id": "K095",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a calm moonlit ocean reflecting a black hole with a golden ring"
+  },
+  {
+   "id": "K096",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a glowing raindrop resting inside an open lotus flower"
+  },
+  {
+   "id": "K097",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a deer made of light drinking from a still lake reflecting stars"
+  },
+  {
+   "id": "K098",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "snow of light falling on a sleeping city of crystal towers"
+  },
+  {
+   "id": "K099",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "close-up of the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks face, her eyes slowly opening, glowing cyan"
+  },
+  {
+   "id": "K100",
+   "kind": "half",
+   "composite": "radial8",
+   "subject": "a kaleidoscope ring of glowing cyan eyes"
+  },
+  {
+   "id": "K101",
+   "kind": "half",
+   "composite": "none",
+   "subject": "extreme close-up of a glowing cyan pupil, falling into it"
+  },
+  {
+   "id": "K102",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "an explosion of silver rain forming a giant mandala of light"
+  },
+  {
+   "id": "K103",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "two mirrored goddess profiles facing each other with a burst of light between them"
+  },
+  {
+   "id": "K104",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a kaleidoscope of glowing raindrop spirits multiplying"
+  },
+  {
+   "id": "K105",
+   "kind": "calm",
+   "composite": "radial8",
+   "subject": "a burst of golden particles on black"
+  },
+  {
+   "id": "K106",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "drifting through glowing clouds at night in soft rain"
+  },
+  {
+   "id": "K107",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a lighthouse of crystal beaming light through a gentle storm"
+  },
+  {
+   "id": "K108",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "ocean waves rolling slowly under moonlight with silver foam"
+  },
+  {
+   "id": "K109",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a black hole with a golden ring rising over the ocean horizon like a sunrise"
+  },
+  {
+   "id": "K110",
+   "kind": "half",
+   "composite": "radial8",
+   "subject": "a ring of black holes with golden rings on black"
+  },
+  {
+   "id": "K111",
+   "kind": "half",
+   "composite": "none",
+   "subject": "rushing straight into a black hole with a blazing golden ring"
+  },
+  {
+   "id": "K112",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks as a giant titan in space, a galaxy glowing over her heart, eyes glowing"
+  },
+  {
+   "id": "K113",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "silver rain turning into stars and rising upward"
+  },
+  {
+   "id": "K114",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a golden phoenix made of rain and fire, wings spread, facing the viewer"
+  },
+  {
+   "id": "K115",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a cathedral made of galaxies"
+  },
+  {
+   "id": "K116",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a mandala made of repeated glowing goddess faces"
+  },
+  {
+   "id": "K117",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "glowing raindrop spirits riding on the back of a galaxy whale"
+  },
+  {
+   "id": "K118",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a silver serpent coiled around a blooming lotus of light"
+  },
+  {
+   "id": "K119",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a giant cosmic eye opening in the sky"
+  },
+  {
+   "id": "K120",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a ladder of golden light rising into a black hole"
+  },
+  {
+   "id": "K121",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "five crystal angels standing in a row with glowing wings"
+  },
+  {
+   "id": "K122",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a fractal spiral of gold and silver"
+  },
+  {
+   "id": "K123",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a black hole blooming into a lotus of light"
+  },
+  {
+   "id": "K124",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "flying fast down a tunnel of falling silver rain and golden rings"
+  },
+  {
+   "id": "K125",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of glowing figures dancing in a circle around a fire made of rain"
+  },
+  {
+   "id": "K126",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "an ocean made of stars with glowing waves"
+  },
+  {
+   "id": "K127",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a cosmic tree of life with glowing planets as fruit"
+  },
+  {
+   "id": "K128",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks crowned with orbiting planets, eyes glowing, calm expression"
+  },
+  {
+   "id": "K129",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a kaleidoscope of a serpent, a whale and jellyfish"
+  },
+  {
+   "id": "K130",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a sun and a black hole orbiting each other like yin and yang"
+  },
+  {
+   "id": "K131",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a giant wave of light crashing toward the viewer"
+  },
+  {
+   "id": "K132",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a golden crown radiating beams of light, floating in space"
+  },
+  {
+   "id": "K133",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a final grand mandala of silver rain and gold"
+  },
+  {
+   "id": "K134",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "macro of the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks eye with a whole galaxy reflected in it"
+  },
+  {
+   "id": "K135",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a spiral galaxy shrinking into a single glowing raindrop"
+  },
+  {
+   "id": "K136",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a glowing raindrop falling into a black hole with a calm golden ring"
+  },
+  {
+   "id": "K137",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a black hole fading into darkness while silver rain keeps falling"
+  }
+ ],
+ "slots": [
+  {
+   "id": "K001",
+   "scene": "K001",
+   "frames": [
+    192,
+    282
+   ],
+   "length": 93,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The camera drifts slowly toward the golden ring while streams of silver rain pour into the black hole.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K002",
+   "scene": "K002",
+   "frames": [
+    282,
+    363
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "Raindrops fall steadily past the camera, the galaxies inside them glitter and turn.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K003",
+   "scene": "K003",
+   "frames": [
+    363,
+    444
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "She floats and turns slowly, her hair drifts like a nebula, raindrops orbit her.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K004",
+   "scene": "K004",
+   "frames": [
+    444,
+    524
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The star clouds swell and glow, soft lightning flickers inside, rain begins to fall.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K005",
+   "scene": "K005",
+   "frames": [
+    524,
+    605
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The giant raindrop falls toward the ocean planet, the camera follows it down.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K006",
+   "scene": "K006",
+   "frames": [
+    605,
+    685
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The crown splash rises and opens, rings of light spread outward across the water.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K007",
+   "scene": "K007",
+   "frames": [
+    685,
+    726
+   ],
+   "length": 41,
+   "step": 1,
+   "composite": "radial8",
+   "prompt": "Ripples expand outward and the mandala slowly turns."
+  },
+  {
+   "id": "K008",
+   "scene": "K008",
+   "frames": [
+    726,
+    806
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "Raindrops hit the surface above, light rays sway, bubbles rise toward the camera.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K009",
+   "scene": "K009",
+   "frames": [
+    806,
+    887
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The jellyfish pulse and rise together, tentacles trailing gracefully.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K010",
+   "scene": "K010",
+   "frames": [
+    887,
+    967
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The camera glides toward the temple, the light beam brightens, particles drift.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K011",
+   "scene": "K011",
+   "frames": [
+    967,
+    1048
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "Water ripples over her face, bubbles rise, her hair waves gently.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K012",
+   "scene": "K012",
+   "frames": [
+    1048,
+    1128
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "radial8",
+   "prompt": "The spiral of raindrops turns faster and tightens around the star.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "TS01",
+   "keyframe": "raw/S01_xl_s33.png",
+   "frames": [
+    1128,
+    1209
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The serene cosmic goddess with closed eyes, silver raindrops slide down her face and fall around her, her silver hair flows in a cosmic wind, the golden ring behind her slowly glows brighter, the camera slowly pushes in toward her face. Smooth deliberate motion, readable forms.",
+   "take": "S01b",
+   "push": [
+    1.0,
+    1.15
+   ],
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "reused": true
+  },
+  {
+   "id": "TS02",
+   "keyframe": "raw/S02_xl_s22.png",
+   "frames": [
+    1209,
+    1249
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The crystal raindrop with a galaxy inside spins and pulses, the galaxy inside swirls quickly, golden petals around it rotate clockwise, sparkles fly outward. Clear continuous motion.",
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "take": "S02",
+   "reused": true
+  },
+  {
+   "id": "TS03",
+   "keyframe": "raw/S03_xl_s33.png",
+   "frames": [
+    1249,
+    1269
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Two mirrored goddess profiles face each other, each raises an open hand toward the vertical beam of silver light between them, their palms move inward and meet at the beam, the light flares. Decisive motion.",
+   "take": "S03c",
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "reused": true
+  },
+  {
+   "id": "TS04",
+   "keyframe": "raw/S04v3_xl_d45_s707.png",
+   "frames": [
+    1269,
+    1289
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Extreme close-up of the eye with a black hole pupil and blazing golden accretion ring, the ring swirls and the camera zooms quickly straight into the black pupil. Fast forward zoom.",
+   "push": [
+    1.0,
+    1.4
+   ],
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "take": "S04",
+   "reused": true
+  },
+  {
+   "id": "TS05",
+   "keyframe": "raw/S05v2_xl_s404.png",
+   "frames": [
+    1289,
+    1330
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "portal_in": 6,
+   "prompt": "Flying very fast forward down the tunnel of falling silver rain streaks and glowing golden rings, the rings rush past the camera, the light at the center grows. Fast continuous forward flight.",
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "take": "S05",
+   "reused": true
+  },
+  {
+   "id": "TS06",
+   "keyframe": "raw/S06_xl_s44.png",
+   "frames": [
+    1330,
+    1370
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Five cute glowing raindrop spirits dance in a row on the dark mirror ocean, they bounce and step together in sync, arms swinging, ripples spreading under their feet. Energetic rhythmic dancing.",
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "take": "S06",
+   "reused": true
+  },
+  {
+   "id": "TS07",
+   "keyframe": "raw/S07_xl_s44.png",
+   "frames": [
+    1370,
+    1410
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The silver water serpent rears up toward the camera, its head lunges forward, its golden eyes glow, its coils tighten around the glowing ring. Powerful decisive motion.",
+   "push": [
+    1.0,
+    1.12
+   ],
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "take": "S07",
+   "reused": true
+  },
+  {
+   "id": "TS08",
+   "keyframe": "raw/S08_xl_s33.png",
+   "frames": [
+    1410,
+    1451
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Top-down view of the ornate mandala of rain ripples on the dark ocean, the ripples expand outward rhythmically, the mandala rotates, golden rings pulse. Clear continuous motion.",
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "take": "S08",
+   "reused": true
+  },
+  {
+   "id": "TS09",
+   "keyframe": "raw/S09_xl_s33.png",
+   "frames": [
+    1451,
+    1491
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The luminous water lotus blooms open toward the camera, its petals unfold quickly, rain falls around it, the golden core glows brighter. Decisive blooming motion.",
+   "push": [
+    1.0,
+    1.1
+   ],
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "take": "S09",
+   "reused": true
+  },
+  {
+   "id": "TS10",
+   "keyframe": "raw/S10v2_xl_d65_s202.png",
+   "frames": [
+    1491,
+    1531
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The cosmic goddess opens her glowing eyes wide, rain spirals upward around her into a crown of light, her silver hair lifts, the camera pulls back. Strong rising motion.",
+   "take": "S10b",
+   "push": [
+    1.12,
+    1.0
+   ],
+   "take_root": "D:/AvasthaAI/CosmicKeyframes16-20261027",
+   "reused": true
+  },
+  {
+   "id": "K013a",
+   "scene": "K013",
+   "frames": [
+    1531,
+    1571
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The star whale leaps up out of the ocean, water and stars spray outward."
+  },
+  {
+   "id": "K013b",
+   "scene": "K013",
+   "frames": [
+    1571,
+    1612
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The star whale leaps up out of the ocean, water and stars spray outward. The motion continues and intensifies.",
+   "chain_from": "K013a"
+  },
+  {
+   "id": "K014a",
+   "scene": "K014",
+   "frames": [
+    1612,
+    1652
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The raindrop spirits bounce and step in sync, arms swinging, ripples under their feet."
+  },
+  {
+   "id": "K014b",
+   "scene": "K014",
+   "frames": [
+    1652,
+    1692
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The raindrop spirits bounce and step in sync, arms swinging, ripples under their feet. The motion continues and intensifies.",
+   "chain_from": "K014a"
+  },
+  {
+   "id": "K015a",
+   "scene": "K015",
+   "frames": [
+    1692,
+    1733
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera surfs fast through the curling wave tunnel toward the light."
+  },
+  {
+   "id": "K015b",
+   "scene": "K015",
+   "frames": [
+    1733,
+    1773
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera surfs fast through the curling wave tunnel toward the light. The motion continues and intensifies.",
+   "chain_from": "K015a"
+  },
+  {
+   "id": "K016a",
+   "scene": "K016",
+   "frames": [
+    1773,
+    1813
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The octopus spreads its tentacles outward in a powerful pulse."
+  },
+  {
+   "id": "K016b",
+   "scene": "K016",
+   "frames": [
+    1813,
+    1853
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The octopus spreads its tentacles outward in a powerful pulse. The motion continues and intensifies.",
+   "chain_from": "K016a"
+  },
+  {
+   "id": "K017a",
+   "scene": "K017",
+   "frames": [
+    1853,
+    1894
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The coral mandala pulses with light and slowly rotates."
+  },
+  {
+   "id": "K017b",
+   "scene": "K017",
+   "frames": [
+    1894,
+    1934
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The coral mandala pulses with light and slowly rotates. The motion continues and intensifies.",
+   "chain_from": "K017a"
+  },
+  {
+   "id": "K018a",
+   "scene": "K018",
+   "frames": [
+    1934,
+    1974
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The sea dragon spirals upward fast, water trailing from its scales."
+  },
+  {
+   "id": "K018b",
+   "scene": "K018",
+   "frames": [
+    1974,
+    2015
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The sea dragon spirals upward fast, water trailing from its scales. The motion continues and intensifies.",
+   "chain_from": "K018a"
+  },
+  {
+   "id": "K019a",
+   "scene": "K019",
+   "frames": [
+    2015,
+    2055
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The sphere of raindrops spins and expands outward."
+  },
+  {
+   "id": "K019b",
+   "scene": "K019",
+   "frames": [
+    2055,
+    2095
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The sphere of raindrops spins and expands outward. The motion continues and intensifies.",
+   "chain_from": "K019a"
+  },
+  {
+   "id": "K020a",
+   "scene": "K020",
+   "frames": [
+    2095,
+    2135
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The manta rays glide forward in formation, wings rippling."
+  },
+  {
+   "id": "K020b",
+   "scene": "K020",
+   "frames": [
+    2135,
+    2176
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The manta rays glide forward in formation, wings rippling. The motion continues and intensifies.",
+   "chain_from": "K020a"
+  },
+  {
+   "id": "K021a",
+   "scene": "K021",
+   "frames": [
+    2176,
+    2216
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The ocean parts wider and the galaxy below blazes brighter."
+  },
+  {
+   "id": "K021b",
+   "scene": "K021",
+   "frames": [
+    2216,
+    2256
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The ocean parts wider and the galaxy below blazes brighter. The motion continues and intensifies.",
+   "chain_from": "K021a"
+  },
+  {
+   "id": "K022a",
+   "scene": "K022",
+   "frames": [
+    2256,
+    2296
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "She rises from the water, water pours from her hair, light spreads around her."
+  },
+  {
+   "id": "K022b",
+   "scene": "K022",
+   "frames": [
+    2296,
+    2337
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "She rises from the water, water pours from her hair, light spreads around her. The motion continues and intensifies.",
+   "chain_from": "K022a"
+  },
+  {
+   "id": "K023a",
+   "scene": "K023",
+   "frames": [
+    2337,
+    2377
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The nautilus rotates and its chambers light up one after another."
+  },
+  {
+   "id": "K023b",
+   "scene": "K023",
+   "frames": [
+    2377,
+    2417
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The nautilus rotates and its chambers light up one after another. The motion continues and intensifies.",
+   "chain_from": "K023a"
+  },
+  {
+   "id": "K024a",
+   "scene": "K024",
+   "frames": [
+    2417,
+    2458
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The water rushes upward into the black hole, the golden ring flares."
+  },
+  {
+   "id": "K024b",
+   "scene": "K024",
+   "frames": [
+    2458,
+    2498
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The water rushes upward into the black hole, the golden ring flares. The motion continues and intensifies.",
+   "chain_from": "K024a"
+  },
+  {
+   "id": "K025",
+   "scene": "K025",
+   "frames": [
+    2498,
+    2578
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The raindrop trembles, the reflected eye inside opens slowly.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K026a",
+   "scene": "K026",
+   "frames": [
+    2578,
+    2619
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies fast down the crystal corridor through the rain."
+  },
+  {
+   "id": "K026b",
+   "scene": "K026",
+   "frames": [
+    2619,
+    2659
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies fast down the crystal corridor through the rain. The motion continues and intensifies.",
+   "chain_from": "K026a"
+  },
+  {
+   "id": "K027a",
+   "scene": "K027",
+   "frames": [
+    2659,
+    2699
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The golden gears turn and raindrops roll along them."
+  },
+  {
+   "id": "K027b",
+   "scene": "K027",
+   "frames": [
+    2699,
+    2740
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The golden gears turn and raindrops roll along them. The motion continues and intensifies.",
+   "chain_from": "K027a"
+  },
+  {
+   "id": "K028a",
+   "scene": "K028",
+   "frames": [
+    2740,
+    2780
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The stained glass glows brighter and shatters outward into light."
+  },
+  {
+   "id": "K028b",
+   "scene": "K028",
+   "frames": [
+    2780,
+    2820
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The stained glass glows brighter and shatters outward into light. The motion continues and intensifies.",
+   "chain_from": "K028a"
+  },
+  {
+   "id": "K029a",
+   "scene": "K029",
+   "frames": [
+    2820,
+    2860
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The monks' eyes ignite one after another, light beams sweep."
+  },
+  {
+   "id": "K029b",
+   "scene": "K029",
+   "frames": [
+    2860,
+    2901
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The monks' eyes ignite one after another, light beams sweep. The motion continues and intensifies.",
+   "chain_from": "K029a"
+  },
+  {
+   "id": "K030a",
+   "scene": "K030",
+   "frames": [
+    2901,
+    2941
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The prisms rotate and the light beams sweep around."
+  },
+  {
+   "id": "K030b",
+   "scene": "K030",
+   "frames": [
+    2941,
+    2981
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The prisms rotate and the light beams sweep around. The motion continues and intensifies.",
+   "chain_from": "K030a"
+  },
+  {
+   "id": "K031a",
+   "scene": "K031",
+   "frames": [
+    2981,
+    3021
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera climbs fast up the spiral staircase of water."
+  },
+  {
+   "id": "K031b",
+   "scene": "K031",
+   "frames": [
+    3021,
+    3062
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera climbs fast up the spiral staircase of water. The motion continues and intensifies.",
+   "chain_from": "K031a"
+  },
+  {
+   "id": "K032a",
+   "scene": "K032",
+   "frames": [
+    3062,
+    3102
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The temple doors swing open and starlight floods out."
+  },
+  {
+   "id": "K032b",
+   "scene": "K032",
+   "frames": [
+    3102,
+    3142
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The temple doors swing open and starlight floods out. The motion continues and intensifies.",
+   "chain_from": "K032a"
+  },
+  {
+   "id": "K033a",
+   "scene": "K033",
+   "frames": [
+    3142,
+    3183
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The crystal tree grows and its raindrop leaves light up."
+  },
+  {
+   "id": "K033b",
+   "scene": "K033",
+   "frames": [
+    3183,
+    3223
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The crystal tree grows and its raindrop leaves light up. The motion continues and intensifies.",
+   "chain_from": "K033a"
+  },
+  {
+   "id": "K034a",
+   "scene": "K034",
+   "frames": [
+    3223,
+    3263
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The sacred geometry rotates and the crystals orbit."
+  },
+  {
+   "id": "K034b",
+   "scene": "K034",
+   "frames": [
+    3263,
+    3303
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The sacred geometry rotates and the crystals orbit. The motion continues and intensifies.",
+   "chain_from": "K034a"
+  },
+  {
+   "id": "K035a",
+   "scene": "K035",
+   "frames": [
+    3303,
+    3344
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera moves forward through the infinite reflections."
+  },
+  {
+   "id": "K035b",
+   "scene": "K035",
+   "frames": [
+    3344,
+    3384
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera moves forward through the infinite reflections. The motion continues and intensifies.",
+   "chain_from": "K035a"
+  },
+  {
+   "id": "K036a",
+   "scene": "K036",
+   "frames": [
+    3384,
+    3424
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The bell swings and rings, a shockwave of light rings spreads."
+  },
+  {
+   "id": "K036b",
+   "scene": "K036",
+   "frames": [
+    3424,
+    3465
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The bell swings and rings, a shockwave of light rings spreads. The motion continues and intensifies.",
+   "chain_from": "K036a"
+  },
+  {
+   "id": "K037a",
+   "scene": "K037",
+   "frames": [
+    3465,
+    3505
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The crystal owl beats its wings and its eyes flare."
+  },
+  {
+   "id": "K037b",
+   "scene": "K037",
+   "frames": [
+    3505,
+    3545
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The crystal owl beats its wings and its eyes flare. The motion continues and intensifies.",
+   "chain_from": "K037a"
+  },
+  {
+   "id": "K038a",
+   "scene": "K038",
+   "frames": [
+    3545,
+    3585
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The eye opens and the light beams pulse outward."
+  },
+  {
+   "id": "K038b",
+   "scene": "K038",
+   "frames": [
+    3585,
+    3626
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The eye opens and the light beams pulse outward. The motion continues and intensifies.",
+   "chain_from": "K038a"
+  },
+  {
+   "id": "K039",
+   "scene": "K039",
+   "frames": [
+    3626,
+    3706
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "Rain falls softly around her, her hair drifts, the rock turns slowly.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K040",
+   "scene": "K040",
+   "frames": [
+    3706,
+    3787
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The raindrops slow and turn into stars one by one.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K041",
+   "scene": "K041",
+   "frames": [
+    3787,
+    3827
+   ],
+   "length": 41,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The eye opens wide and the golden ring flares."
+  },
+  {
+   "id": "K042",
+   "scene": "K042",
+   "frames": [
+    3827,
+    3847
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The ring of eyes spins fast."
+  },
+  {
+   "id": "K043",
+   "scene": "K043",
+   "frames": [
+    3847,
+    3867
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The camera zooms fast straight into the black pupil."
+  },
+  {
+   "id": "K044a",
+   "scene": "K044",
+   "frames": [
+    3867,
+    3908
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The thunderbird bursts forward out of the vortex, lightning crackling.",
+   "portal_in": 6
+  },
+  {
+   "id": "K044b",
+   "scene": "K044",
+   "frames": [
+    3908,
+    3948
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The thunderbird bursts forward out of the vortex, lightning crackling. The motion continues and intensifies.",
+   "chain_from": "K044a"
+  },
+  {
+   "id": "K045a",
+   "scene": "K045",
+   "frames": [
+    3948,
+    3988
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The dragons spiral up the lightning column."
+  },
+  {
+   "id": "K045b",
+   "scene": "K045",
+   "frames": [
+    3988,
+    4028
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The dragons spiral up the lightning column. The motion continues and intensifies.",
+   "chain_from": "K045a"
+  },
+  {
+   "id": "K046a",
+   "scene": "K046",
+   "frames": [
+    4028,
+    4069
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The storm face's eyes flash and lightning pours from its beard."
+  },
+  {
+   "id": "K046b",
+   "scene": "K046",
+   "frames": [
+    4069,
+    4109
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The storm face's eyes flash and lightning pours from its beard. The motion continues and intensifies.",
+   "chain_from": "K046a"
+  },
+  {
+   "id": "K047a",
+   "scene": "K047",
+   "frames": [
+    4109,
+    4149
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The lightning tree branches outward fast across the sky."
+  },
+  {
+   "id": "K047b",
+   "scene": "K047",
+   "frames": [
+    4149,
+    4190
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The lightning tree branches outward fast across the sky. The motion continues and intensifies.",
+   "chain_from": "K047a"
+  },
+  {
+   "id": "K048a",
+   "scene": "K048",
+   "frames": [
+    4190,
+    4230
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The tornado spins fast around the camera."
+  },
+  {
+   "id": "K048b",
+   "scene": "K048",
+   "frames": [
+    4230,
+    4270
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The tornado spins fast around the camera. The motion continues and intensifies.",
+   "chain_from": "K048a"
+  },
+  {
+   "id": "K049a",
+   "scene": "K049",
+   "frames": [
+    4270,
+    4310
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The cloud drummers strike their drums together, light bursts on each hit."
+  },
+  {
+   "id": "K049b",
+   "scene": "K049",
+   "frames": [
+    4310,
+    4351
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The cloud drummers strike their drums together, light bursts on each hit. The motion continues and intensifies.",
+   "chain_from": "K049a"
+  },
+  {
+   "id": "K050a",
+   "scene": "K050",
+   "frames": [
+    4351,
+    4391
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Lightning strikes and the fractal spreads outward."
+  },
+  {
+   "id": "K050b",
+   "scene": "K050",
+   "frames": [
+    4391,
+    4431
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Lightning strikes and the fractal spreads outward. The motion continues and intensifies.",
+   "chain_from": "K050a"
+  },
+  {
+   "id": "K051a",
+   "scene": "K051",
+   "frames": [
+    4431,
+    4472
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The rain eagle dives fast toward the camera."
+  },
+  {
+   "id": "K051b",
+   "scene": "K051",
+   "frames": [
+    4472,
+    4512
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The rain eagle dives fast toward the camera. The motion continues and intensifies.",
+   "chain_from": "K051a"
+  },
+  {
+   "id": "K052a",
+   "scene": "K052",
+   "frames": [
+    4512,
+    4552
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The wolf howls and the aurora ripples across the sky."
+  },
+  {
+   "id": "K052b",
+   "scene": "K052",
+   "frames": [
+    4552,
+    4592
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The wolf howls and the aurora ripples across the sky. The motion continues and intensifies.",
+   "chain_from": "K052a"
+  },
+  {
+   "id": "K053a",
+   "scene": "K053",
+   "frames": [
+    4592,
+    4633
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The dancers spin around the circle."
+  },
+  {
+   "id": "K053b",
+   "scene": "K053",
+   "frames": [
+    4633,
+    4673
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The dancers spin around the circle. The motion continues and intensifies.",
+   "chain_from": "K053a"
+  },
+  {
+   "id": "K054a",
+   "scene": "K054",
+   "frames": [
+    4673,
+    4713
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Hailstones bounce and scatter sparks."
+  },
+  {
+   "id": "K054b",
+   "scene": "K054",
+   "frames": [
+    4713,
+    4754
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Hailstones bounce and scatter sparks. The motion continues and intensifies.",
+   "chain_from": "K054a"
+  },
+  {
+   "id": "K055a",
+   "scene": "K055",
+   "frames": [
+    4754,
+    4794
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The cyclone spins and the golden ring pulses."
+  },
+  {
+   "id": "K055b",
+   "scene": "K055",
+   "frames": [
+    4794,
+    4834
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The cyclone spins and the golden ring pulses. The motion continues and intensifies.",
+   "chain_from": "K055a"
+  },
+  {
+   "id": "K056a",
+   "scene": "K056",
+   "frames": [
+    4834,
+    4874
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The lightning ouroboros rotates and crackles."
+  },
+  {
+   "id": "K056b",
+   "scene": "K056",
+   "frames": [
+    4874,
+    4915
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The lightning ouroboros rotates and crackles. The motion continues and intensifies.",
+   "chain_from": "K056a"
+  },
+  {
+   "id": "K057a",
+   "scene": "K057",
+   "frames": [
+    4915,
+    4955
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The rainbow bridge extends forward through the storm."
+  },
+  {
+   "id": "K057b",
+   "scene": "K057",
+   "frames": [
+    4955,
+    4995
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The rainbow bridge extends forward through the storm. The motion continues and intensifies.",
+   "chain_from": "K057a"
+  },
+  {
+   "id": "K058a",
+   "scene": "K058",
+   "frames": [
+    4995,
+    5035
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The drum is struck and a shockwave of light rings spreads."
+  },
+  {
+   "id": "K058b",
+   "scene": "K058",
+   "frames": [
+    5035,
+    5076
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The drum is struck and a shockwave of light rings spreads. The motion continues and intensifies.",
+   "chain_from": "K058a"
+  },
+  {
+   "id": "K059a",
+   "scene": "K059",
+   "frames": [
+    5076,
+    5116
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Lightning flashes behind her and her hair whips in the wind."
+  },
+  {
+   "id": "K059b",
+   "scene": "K059",
+   "frames": [
+    5116,
+    5156
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Lightning flashes behind her and her hair whips in the wind. The motion continues and intensifies.",
+   "chain_from": "K059a"
+  },
+  {
+   "id": "K060a",
+   "scene": "K060",
+   "frames": [
+    5156,
+    5197
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The mushrooms pulse with light as the camera flies between them."
+  },
+  {
+   "id": "K060b",
+   "scene": "K060",
+   "frames": [
+    5197,
+    5237
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The mushrooms pulse with light as the camera flies between them. The motion continues and intensifies.",
+   "chain_from": "K060a"
+  },
+  {
+   "id": "K061a",
+   "scene": "K061",
+   "frames": [
+    5237,
+    5277
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The fractal petals unfold outward."
+  },
+  {
+   "id": "K061b",
+   "scene": "K061",
+   "frames": [
+    5277,
+    5317
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The fractal petals unfold outward. The motion continues and intensifies.",
+   "chain_from": "K061a"
+  },
+  {
+   "id": "K062a",
+   "scene": "K062",
+   "frames": [
+    5317,
+    5358
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The frogs hop in sync and ripples spread."
+  },
+  {
+   "id": "K062b",
+   "scene": "K062",
+   "frames": [
+    5358,
+    5398
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The frogs hop in sync and ripples spread. The motion continues and intensifies.",
+   "chain_from": "K062a"
+  },
+  {
+   "id": "K063a",
+   "scene": "K063",
+   "frames": [
+    5398,
+    5438
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The golden vines grow and curl into the spiral."
+  },
+  {
+   "id": "K063b",
+   "scene": "K063",
+   "frames": [
+    5438,
+    5479
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The golden vines grow and curl into the spiral. The motion continues and intensifies.",
+   "chain_from": "K063a"
+  },
+  {
+   "id": "K064a",
+   "scene": "K064",
+   "frames": [
+    5479,
+    5519
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The butterfly beats its wings and light shines through them."
+  },
+  {
+   "id": "K064b",
+   "scene": "K064",
+   "frames": [
+    5519,
+    5559
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The butterfly beats its wings and light shines through them. The motion continues and intensifies.",
+   "chain_from": "K064a"
+  },
+  {
+   "id": "K065a",
+   "scene": "K065",
+   "frames": [
+    5559,
+    5599
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The dandelions release their star seeds into the air."
+  },
+  {
+   "id": "K065b",
+   "scene": "K065",
+   "frames": [
+    5599,
+    5640
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The dandelions release their star seeds into the air. The motion continues and intensifies.",
+   "chain_from": "K065a"
+  },
+  {
+   "id": "K066a",
+   "scene": "K066",
+   "frames": [
+    5640,
+    5680
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Light flows up through the roots and the tree glows."
+  },
+  {
+   "id": "K066b",
+   "scene": "K066",
+   "frames": [
+    5680,
+    5720
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Light flows up through the roots and the tree glows. The motion continues and intensifies.",
+   "chain_from": "K066a"
+  },
+  {
+   "id": "K067a",
+   "scene": "K067",
+   "frames": [
+    5720,
+    5761
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The hummingbird hovers, wings blurring, drinking the raindrop."
+  },
+  {
+   "id": "K067b",
+   "scene": "K067",
+   "frames": [
+    5761,
+    5801
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The hummingbird hovers, wings blurring, drinking the raindrop. The motion continues and intensifies.",
+   "chain_from": "K067a"
+  },
+  {
+   "id": "K068a",
+   "scene": "K068",
+   "frames": [
+    5801,
+    5841
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The sunflower spiral rotates and glows."
+  },
+  {
+   "id": "K068b",
+   "scene": "K068",
+   "frames": [
+    5841,
+    5881
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The sunflower spiral rotates and glows. The motion continues and intensifies.",
+   "chain_from": "K068a"
+  },
+  {
+   "id": "K069a",
+   "scene": "K069",
+   "frames": [
+    5881,
+    5922
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The fern unrolls into its fractal spiral."
+  },
+  {
+   "id": "K069b",
+   "scene": "K069",
+   "frames": [
+    5922,
+    5962
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The fern unrolls into its fractal spiral. The motion continues and intensifies.",
+   "chain_from": "K069a"
+  },
+  {
+   "id": "K070a",
+   "scene": "K070",
+   "frames": [
+    5962,
+    6002
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies through the honeycomb tunnel."
+  },
+  {
+   "id": "K070b",
+   "scene": "K070",
+   "frames": [
+    6002,
+    6042
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies through the honeycomb tunnel. The motion continues and intensifies.",
+   "chain_from": "K070a"
+  },
+  {
+   "id": "K071a",
+   "scene": "K071",
+   "frames": [
+    6042,
+    6083
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The peacock spreads its tail and the eyes on it glow."
+  },
+  {
+   "id": "K071b",
+   "scene": "K071",
+   "frames": [
+    6083,
+    6123
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The peacock spreads its tail and the eyes on it glow. The motion continues and intensifies.",
+   "chain_from": "K071a"
+  },
+  {
+   "id": "K072a",
+   "scene": "K072",
+   "frames": [
+    6123,
+    6163
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The bud opens and the galaxy spins."
+  },
+  {
+   "id": "K072b",
+   "scene": "K072",
+   "frames": [
+    6163,
+    6204
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The bud opens and the galaxy spins. The motion continues and intensifies.",
+   "chain_from": "K072a"
+  },
+  {
+   "id": "K073a",
+   "scene": "K073",
+   "frames": [
+    6204,
+    6244
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The deer raises its head and its antlers glow."
+  },
+  {
+   "id": "K073b",
+   "scene": "K073",
+   "frames": [
+    6244,
+    6284
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The deer raises its head and its antlers glow. The motion continues and intensifies.",
+   "chain_from": "K073a"
+  },
+  {
+   "id": "K074a",
+   "scene": "K074",
+   "frames": [
+    6284,
+    6324
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The seeds land and burst into blooming flowers."
+  },
+  {
+   "id": "K074b",
+   "scene": "K074",
+   "frames": [
+    6324,
+    6365
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The seeds land and burst into blooming flowers. The motion continues and intensifies.",
+   "chain_from": "K074a"
+  },
+  {
+   "id": "K075a",
+   "scene": "K075",
+   "frames": [
+    6365,
+    6405
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The water lily mandala opens and turns."
+  },
+  {
+   "id": "K075b",
+   "scene": "K075",
+   "frames": [
+    6405,
+    6445
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The water lily mandala opens and turns. The motion continues and intensifies.",
+   "chain_from": "K075a"
+  },
+  {
+   "id": "K076a",
+   "scene": "K076",
+   "frames": [
+    6445,
+    6486
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The galaxy whale swims forward through the nebula."
+  },
+  {
+   "id": "K076b",
+   "scene": "K076",
+   "frames": [
+    6486,
+    6526
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The galaxy whale swims forward through the nebula. The motion continues and intensifies.",
+   "chain_from": "K076a"
+  },
+  {
+   "id": "K077a",
+   "scene": "K077",
+   "frames": [
+    6526,
+    6566
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The planets drift past the camera."
+  },
+  {
+   "id": "K077b",
+   "scene": "K077",
+   "frames": [
+    6566,
+    6606
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The planets drift past the camera. The motion continues and intensifies.",
+   "chain_from": "K077a"
+  },
+  {
+   "id": "K078a",
+   "scene": "K078",
+   "frames": [
+    6606,
+    6647
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The comet streaks toward the camera, rain trailing."
+  },
+  {
+   "id": "K078b",
+   "scene": "K078",
+   "frames": [
+    6647,
+    6687
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The comet streaks toward the camera, rain trailing. The motion continues and intensifies.",
+   "chain_from": "K078a"
+  },
+  {
+   "id": "K079a",
+   "scene": "K079",
+   "frames": [
+    6687,
+    6727
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The jellyfish pulse and drift forward."
+  },
+  {
+   "id": "K079b",
+   "scene": "K079",
+   "frames": [
+    6727,
+    6768
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The jellyfish pulse and drift forward. The motion continues and intensifies.",
+   "chain_from": "K079a"
+  },
+  {
+   "id": "K080a",
+   "scene": "K080",
+   "frames": [
+    6768,
+    6808
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The whale eye blinks and the galaxies swirl."
+  },
+  {
+   "id": "K080b",
+   "scene": "K080",
+   "frames": [
+    6808,
+    6848
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The whale eye blinks and the galaxies swirl. The motion continues and intensifies.",
+   "chain_from": "K080a"
+  },
+  {
+   "id": "K081a",
+   "scene": "K081",
+   "frames": [
+    6848,
+    6888
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The astronaut drifts and raindrops orbit around."
+  },
+  {
+   "id": "K081b",
+   "scene": "K081",
+   "frames": [
+    6888,
+    6929
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The astronaut drifts and raindrops orbit around. The motion continues and intensifies.",
+   "chain_from": "K081a"
+  },
+  {
+   "id": "K082a",
+   "scene": "K082",
+   "frames": [
+    6929,
+    6969
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies fast through the rings."
+  },
+  {
+   "id": "K082b",
+   "scene": "K082",
+   "frames": [
+    6969,
+    7009
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies fast through the rings. The motion continues and intensifies.",
+   "chain_from": "K082a"
+  },
+  {
+   "id": "K083a",
+   "scene": "K083",
+   "frames": [
+    7009,
+    7049
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The nebula face glows and its eyes open."
+  },
+  {
+   "id": "K083b",
+   "scene": "K083",
+   "frames": [
+    7049,
+    7090
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The nebula face glows and its eyes open. The motion continues and intensifies.",
+   "chain_from": "K083a"
+  },
+  {
+   "id": "K084a",
+   "scene": "K084",
+   "frames": [
+    7090,
+    7130
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The stars stream past in a warp."
+  },
+  {
+   "id": "K084b",
+   "scene": "K084",
+   "frames": [
+    7130,
+    7170
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The stars stream past in a warp. The motion continues and intensifies.",
+   "chain_from": "K084a"
+  },
+  {
+   "id": "K085a",
+   "scene": "K085",
+   "frames": [
+    7170,
+    7211
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The constellation lines draw themselves and glow."
+  },
+  {
+   "id": "K085b",
+   "scene": "K085",
+   "frames": [
+    7211,
+    7251
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The constellation lines draw themselves and glow. The motion continues and intensifies.",
+   "chain_from": "K085a"
+  },
+  {
+   "id": "K086a",
+   "scene": "K086",
+   "frames": [
+    7251,
+    7291
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Rain hits the moon and ripples spread."
+  },
+  {
+   "id": "K086b",
+   "scene": "K086",
+   "frames": [
+    7291,
+    7331
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Rain hits the moon and ripples spread. The motion continues and intensifies.",
+   "chain_from": "K086a"
+  },
+  {
+   "id": "K087a",
+   "scene": "K087",
+   "frames": [
+    7331,
+    7372
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The galaxy spiral rotates."
+  },
+  {
+   "id": "K087b",
+   "scene": "K087",
+   "frames": [
+    7372,
+    7412
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The galaxy spiral rotates. The motion continues and intensifies.",
+   "chain_from": "K087a"
+  },
+  {
+   "id": "K088a",
+   "scene": "K088",
+   "frames": [
+    7412,
+    7452
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The whale dives into the black hole and the ring flares."
+  },
+  {
+   "id": "K088b",
+   "scene": "K088",
+   "frames": [
+    7452,
+    7493
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The whale dives into the black hole and the ring flares. The motion continues and intensifies.",
+   "chain_from": "K088a"
+  },
+  {
+   "id": "K089",
+   "scene": "K089",
+   "frames": [
+    7493,
+    7573
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "Light streams into the black hole and the ring slowly dims.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K090",
+   "scene": "K090",
+   "frames": [
+    7573,
+    7613
+   ],
+   "length": 41,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The raindrop falls slowly through darkness."
+  },
+  {
+   "id": "K091",
+   "scene": "K091",
+   "frames": [
+    7613,
+    7694
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The bubble drifts and wobbles, her hair floats inside.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K092",
+   "scene": "K092",
+   "frames": [
+    7694,
+    7775
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The memory bubbles float past the camera, scenes glowing inside.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K093",
+   "scene": "K093",
+   "frames": [
+    7775,
+    7855
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The light rays sway slowly and particles drift.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K094",
+   "scene": "K094",
+   "frames": [
+    7855,
+    7936
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The feather drifts down slowly, turning.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K095",
+   "scene": "K095",
+   "frames": [
+    7936,
+    8016
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The ocean gently swells, the reflection shimmers.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K096",
+   "scene": "K096",
+   "frames": [
+    8016,
+    8097
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The lotus slowly opens wider and the raindrop glows.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K097",
+   "scene": "K097",
+   "frames": [
+    8097,
+    8177
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The deer drinks and ripples spread across the stars.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K098",
+   "scene": "K098",
+   "frames": [
+    8177,
+    8258
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "Light snow falls softly over the crystal city.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K099",
+   "scene": "K099",
+   "frames": [
+    8258,
+    8338
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "Her eyes slowly open and glow, rain falls around her.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K100",
+   "scene": "K100",
+   "frames": [
+    8338,
+    8359
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The ring of eyes spins."
+  },
+  {
+   "id": "K101",
+   "scene": "K101",
+   "frames": [
+    8359,
+    8379
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The camera zooms fast into the pupil."
+  },
+  {
+   "id": "K102a",
+   "scene": "K102",
+   "frames": [
+    8379,
+    8419
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The mandala explodes outward in rings of light.",
+   "portal_in": 6
+  },
+  {
+   "id": "K102b",
+   "scene": "K102",
+   "frames": [
+    8419,
+    8459
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The mandala explodes outward in rings of light. The motion continues and intensifies.",
+   "chain_from": "K102a"
+  },
+  {
+   "id": "K103a",
+   "scene": "K103",
+   "frames": [
+    8459,
+    8500
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Light bursts between the two faces, particles swirl."
+  },
+  {
+   "id": "K103b",
+   "scene": "K103",
+   "frames": [
+    8500,
+    8540
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Light bursts between the two faces, particles swirl. The motion continues and intensifies.",
+   "chain_from": "K103a"
+  },
+  {
+   "id": "K104a",
+   "scene": "K104",
+   "frames": [
+    8540,
+    8580
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The raindrop spirits multiply and spin."
+  },
+  {
+   "id": "K104b",
+   "scene": "K104",
+   "frames": [
+    8580,
+    8620
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The raindrop spirits multiply and spin. The motion continues and intensifies.",
+   "chain_from": "K104a"
+  },
+  {
+   "id": "K105",
+   "scene": "K105",
+   "frames": [
+    8620,
+    8661
+   ],
+   "length": 41,
+   "step": 1,
+   "composite": "radial8",
+   "prompt": "Golden particles burst outward."
+  },
+  {
+   "id": "K106",
+   "scene": "K106",
+   "frames": [
+    8661,
+    8741
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The camera drifts slowly through the clouds.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K107",
+   "scene": "K107",
+   "frames": [
+    8741,
+    8822
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The lighthouse beam sweeps slowly through the rain.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K108",
+   "scene": "K108",
+   "frames": [
+    8822,
+    8902
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The waves roll slowly toward the camera.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K109",
+   "scene": "K109",
+   "frames": [
+    8902,
+    8983
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The black hole rises slowly over the horizon, light spreading.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K110",
+   "scene": "K110",
+   "frames": [
+    8983,
+    9003
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The ring of black holes spins fast."
+  },
+  {
+   "id": "K111",
+   "scene": "K111",
+   "frames": [
+    9003,
+    9023
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The camera rushes into the black hole."
+  },
+  {
+   "id": "K112a",
+   "scene": "K112",
+   "frames": [
+    9023,
+    9063
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The galaxy over her heart blazes and her hair streams outward.",
+   "portal_in": 6
+  },
+  {
+   "id": "K112b",
+   "scene": "K112",
+   "frames": [
+    9063,
+    9104
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The galaxy over her heart blazes and her hair streams outward. The motion continues and intensifies.",
+   "chain_from": "K112a"
+  },
+  {
+   "id": "K113a",
+   "scene": "K113",
+   "frames": [
+    9104,
+    9144
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The rain rises upward, turning into stars."
+  },
+  {
+   "id": "K113b",
+   "scene": "K113",
+   "frames": [
+    9144,
+    9184
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The rain rises upward, turning into stars. The motion continues and intensifies.",
+   "chain_from": "K113a"
+  },
+  {
+   "id": "K114a",
+   "scene": "K114",
+   "frames": [
+    9184,
+    9225
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The phoenix spreads its wings and rises."
+  },
+  {
+   "id": "K114b",
+   "scene": "K114",
+   "frames": [
+    9225,
+    9265
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The phoenix spreads its wings and rises. The motion continues and intensifies.",
+   "chain_from": "K114a"
+  },
+  {
+   "id": "K115a",
+   "scene": "K115",
+   "frames": [
+    9265,
+    9305
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies forward through the galaxy cathedral."
+  },
+  {
+   "id": "K115b",
+   "scene": "K115",
+   "frames": [
+    9305,
+    9345
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies forward through the galaxy cathedral. The motion continues and intensifies.",
+   "chain_from": "K115a"
+  },
+  {
+   "id": "K116a",
+   "scene": "K116",
+   "frames": [
+    9345,
+    9386
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The mandala of faces rotates."
+  },
+  {
+   "id": "K116b",
+   "scene": "K116",
+   "frames": [
+    9386,
+    9426
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The mandala of faces rotates. The motion continues and intensifies.",
+   "chain_from": "K116a"
+  },
+  {
+   "id": "K117a",
+   "scene": "K117",
+   "frames": [
+    9426,
+    9466
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The whale swims forward and the spirits cheer."
+  },
+  {
+   "id": "K117b",
+   "scene": "K117",
+   "frames": [
+    9466,
+    9507
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The whale swims forward and the spirits cheer. The motion continues and intensifies.",
+   "chain_from": "K117a"
+  },
+  {
+   "id": "K118a",
+   "scene": "K118",
+   "frames": [
+    9507,
+    9547
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The serpent rears and the lotus blooms."
+  },
+  {
+   "id": "K118b",
+   "scene": "K118",
+   "frames": [
+    9547,
+    9587
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The serpent rears and the lotus blooms. The motion continues and intensifies.",
+   "chain_from": "K118a"
+  },
+  {
+   "id": "K119a",
+   "scene": "K119",
+   "frames": [
+    9587,
+    9627
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The cosmic eye opens wide and light pours out."
+  },
+  {
+   "id": "K119b",
+   "scene": "K119",
+   "frames": [
+    9627,
+    9668
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The cosmic eye opens wide and light pours out. The motion continues and intensifies.",
+   "chain_from": "K119a"
+  },
+  {
+   "id": "K120a",
+   "scene": "K120",
+   "frames": [
+    9668,
+    9708
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera climbs the ladder of light fast."
+  },
+  {
+   "id": "K120b",
+   "scene": "K120",
+   "frames": [
+    9708,
+    9748
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera climbs the ladder of light fast. The motion continues and intensifies.",
+   "chain_from": "K120a"
+  },
+  {
+   "id": "K121a",
+   "scene": "K121",
+   "frames": [
+    9748,
+    9788
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The angels spread their wings together."
+  },
+  {
+   "id": "K121b",
+   "scene": "K121",
+   "frames": [
+    9788,
+    9829
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The angels spread their wings together. The motion continues and intensifies.",
+   "chain_from": "K121a"
+  },
+  {
+   "id": "K122a",
+   "scene": "K122",
+   "frames": [
+    9829,
+    9869
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The fractal spiral rotates and zooms."
+  },
+  {
+   "id": "K122b",
+   "scene": "K122",
+   "frames": [
+    9869,
+    9909
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The fractal spiral rotates and zooms. The motion continues and intensifies.",
+   "chain_from": "K122a"
+  },
+  {
+   "id": "K123a",
+   "scene": "K123",
+   "frames": [
+    9909,
+    9950
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The black hole opens into a blooming lotus."
+  },
+  {
+   "id": "K123b",
+   "scene": "K123",
+   "frames": [
+    9950,
+    9990
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The black hole opens into a blooming lotus. The motion continues and intensifies.",
+   "chain_from": "K123a"
+  },
+  {
+   "id": "K124a",
+   "scene": "K124",
+   "frames": [
+    9990,
+    10030
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies very fast through the rain tunnel."
+  },
+  {
+   "id": "K124b",
+   "scene": "K124",
+   "frames": [
+    10030,
+    10070
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The camera flies very fast through the rain tunnel. The motion continues and intensifies.",
+   "chain_from": "K124a"
+  },
+  {
+   "id": "K125a",
+   "scene": "K125",
+   "frames": [
+    10070,
+    10111
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The figures dance around the circle."
+  },
+  {
+   "id": "K125b",
+   "scene": "K125",
+   "frames": [
+    10111,
+    10151
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The figures dance around the circle. The motion continues and intensifies.",
+   "chain_from": "K125a"
+  },
+  {
+   "id": "K126a",
+   "scene": "K126",
+   "frames": [
+    10151,
+    10191
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The star waves roll toward the camera."
+  },
+  {
+   "id": "K126b",
+   "scene": "K126",
+   "frames": [
+    10191,
+    10232
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The star waves roll toward the camera. The motion continues and intensifies.",
+   "chain_from": "K126a"
+  },
+  {
+   "id": "K127a",
+   "scene": "K127",
+   "frames": [
+    10232,
+    10272
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The planets on the tree glow and orbit."
+  },
+  {
+   "id": "K127b",
+   "scene": "K127",
+   "frames": [
+    10272,
+    10312
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The planets on the tree glow and orbit. The motion continues and intensifies.",
+   "chain_from": "K127a"
+  },
+  {
+   "id": "K128a",
+   "scene": "K128",
+   "frames": [
+    10312,
+    10352
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The planets orbit around her head."
+  },
+  {
+   "id": "K128b",
+   "scene": "K128",
+   "frames": [
+    10352,
+    10393
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "The planets orbit around her head. The motion continues and intensifies.",
+   "chain_from": "K128a"
+  },
+  {
+   "id": "K129a",
+   "scene": "K129",
+   "frames": [
+    10393,
+    10433
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The kaleidoscope rotates and pulses."
+  },
+  {
+   "id": "K129b",
+   "scene": "K129",
+   "frames": [
+    10433,
+    10473
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The kaleidoscope rotates and pulses. The motion continues and intensifies.",
+   "chain_from": "K129a"
+  },
+  {
+   "id": "K130a",
+   "scene": "K130",
+   "frames": [
+    10473,
+    10514
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The sun and the black hole orbit each other."
+  },
+  {
+   "id": "K130b",
+   "scene": "K130",
+   "frames": [
+    10514,
+    10554
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The sun and the black hole orbit each other. The motion continues and intensifies.",
+   "chain_from": "K130a"
+  },
+  {
+   "id": "K131a",
+   "scene": "K131",
+   "frames": [
+    10554,
+    10594
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The wave of light crashes toward the camera."
+  },
+  {
+   "id": "K131b",
+   "scene": "K131",
+   "frames": [
+    10594,
+    10634
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The wave of light crashes toward the camera. The motion continues and intensifies.",
+   "chain_from": "K131a"
+  },
+  {
+   "id": "K132a",
+   "scene": "K132",
+   "frames": [
+    10634,
+    10675
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The crown's beams sweep and pulse."
+  },
+  {
+   "id": "K132b",
+   "scene": "K132",
+   "frames": [
+    10675,
+    10715
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "The crown's beams sweep and pulse. The motion continues and intensifies.",
+   "chain_from": "K132a"
+  },
+  {
+   "id": "K133a",
+   "scene": "K133",
+   "frames": [
+    10715,
+    10755
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The mandala expands and rotates."
+  },
+  {
+   "id": "K133b",
+   "scene": "K133",
+   "frames": [
+    10755,
+    10795
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "The mandala expands and rotates. The motion continues and intensifies.",
+   "chain_from": "K133a"
+  },
+  {
+   "id": "K134",
+   "scene": "K134",
+   "frames": [
+    10795,
+    10876
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The camera pulls slowly back from the eye.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K135",
+   "scene": "K135",
+   "frames": [
+    10876,
+    10957
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "none",
+   "prompt": "The galaxy slowly shrinks into a raindrop.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K136",
+   "scene": "K136",
+   "frames": [
+    10957,
+    11037
+   ],
+   "length": 81,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The raindrop falls gently into the black hole.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  },
+  {
+   "id": "K137",
+   "scene": "K137",
+   "frames": [
+    11037,
+    11119
+   ],
+   "length": 85,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "The black hole slowly fades and the rain keeps falling.",
+   "push": [
+    1.0,
+    1.1
+   ]
+  }
+ ],
+ "stats": {
+  "scenes": 137,
+  "slots": 242,
+  "wan_jobs": 232,
+  "wan_frames": 18408
+ }
+}
