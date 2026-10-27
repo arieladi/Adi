@@ -12,6 +12,19 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-27, late afternoon — LANES §3 item 2, sends and returns: a return's own sends
+
+**[arieladi/Adi#247](https://github.com/arieladi/Adi/pull/247) (`engine/return-sends`), stacked on #245: a return's own sends play (ADR-0203 d3).**
+- A return's send is planned like any track's. Enable Send is the row's switch, so a send switched off is still planned and turning it on retimes nothing.
+- A return can send into another return. Solo follows through #245's closures, unchanged.
+- A return's send back into a track that feeds it is a loop, refused like every loop.
+- Two returns feeding each other (R1 into R2 and R2 into R1) is a ring. `docs/AWAITING.md` row 7(f) asks whether Live allows one. Until it is measured, the later row loses, with its own message.
+- `test_all.sh` 8396. Six plants, each caught.
+
+**Next:** PR 7b, Live's feedback loop, a return feeding itself.
+
+---
+
 ## 2026-10-27, afternoon — LANES §3 item 2, sends and returns: solo across sends
 
 **[arieladi/Adi#245](https://github.com/arieladi/Adi/pull/245) (`engine/sends-solo`), stacked on #244: a soloed return hears its senders (ADR-0203 d3).**
@@ -27,7 +40,7 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 **ADR-0172 d3** says sends follow the track delay "because they leave from the same tail". They still follow it, through the send's first stage. The ADR text is win's to amend.
 
-**Next:** PR 7, Live's return loop (a return feeding itself). PRs 8 to 11 wait on questions 5, 4, 1 and 7, and 9, so after PR 7 the lane moves to LANES item 3.
+**Next:** PR 7, Live's return loop (a return feeding itself). PRs 8 to 11 wait on questions 5, 4, 1 and 7, and 9, so after PR 7 the lane moves to LANES item 3. (PR 7 was split in two: #247 is its first half.)
 
 ---
 
