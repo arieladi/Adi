@@ -12,6 +12,25 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-27, afternoon — LANES §3 item 2, sends and returns: solo across sends
+
+**[arieladi/Adi#245](https://github.com/arieladi/Adi/pull/245) (`engine/sends-solo`), stacked on #244: a soloed return hears its senders (ADR-0203 d3).**
+- A Post send plays its source's strip itself, in its node's first stage, and leaves where a Pre send does. The strip keeps its solo, so a sender soloed away is silent while its send plays. No node comes or goes with a send or a solo.
+- `hearing()` gives one gate per track and one per send. A soloed return hears a group's send (the group's children open into the group alone) and a send's send; a defeated vocal plays into its defeated reverb; a soloed VCA no longer silences the project.
+- The plan's SoloGate node was not built. A three-lens critique confirmed it would leak a soloed-away track's dry for one callback on arrival, and drop a delayed track's dry for 300 samples when its first send came.
+- `test_all.sh` 8381. Twenty plants, each caught.
+
+**For win, adding to question 7:**
+- Should Solo in Place open a non-return track a soloed track sends to, its own audio included? It is pinned at yes.
+- Keep every return under Solo in Place, or only those sent to?
+- Should a defeated track inside a closed group have its reverb play without its dry?
+
+**ADR-0172 d3** says sends follow the track delay "because they leave from the same tail". They still follow it, through the send's first stage. The ADR text is win's to amend.
+
+**Next:** PR 7, Live's return loop (a return feeding itself). PRs 8 to 11 wait on questions 5, 4, 1 and 7, and 9, so after PR 7 the lane moves to LANES item 3.
+
+---
+
 ## 2026-10-27, afternoon — sends and returns: the review round of #242 and #243
 
 An adversarial review, two lenses with a skeptic each, of #242 and #243. Every confirmed defect is fixed, with a plant per fix, and #244 is merged forward and re-checked.
