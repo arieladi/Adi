@@ -174,6 +174,38 @@ public:
         return planEdges_;
     }
 
+    /// An edge INSIDE a track, across rebuilds (ADR-0092 too): a source into
+    /// the junction, the junction into the chain's first node, one chain node
+    /// into the next. Such an edge delays when the node before it reports a
+    /// negative latency -- a strip playing a track delay (ADR-0172) with a
+    /// node after it, as a summed child's channel half is -- or, for a source,
+    /// when something else into the junction arrives later. Its ends are the
+    /// caller's nodes, the same objects in every graph realised from them and
+    /// alive while any graph holding them runs, or the junction, which is new
+    /// each time and so is named by its track.
+    struct ChainKey {
+        std::int64_t track = 0;
+        const Node* from = nullptr;   ///< null: the track's junction
+        const Node* to = nullptr;     ///< null: the track's junction
+        friend bool operator<(const ChainKey& a, const ChainKey& b) noexcept {
+            if (a.track != b.track) return a.track < b.track;
+            if (a.from != b.from) return std::less<const Node*>{}(a.from, b.from);
+            return std::less<const Node*>{}(a.to, b.to);
+        }
+    };
+    struct ChainRecord {
+        ChainKey key;
+        NodeId from = kInvalidNode;
+        NodeId to = kInvalidNode;
+        Bus bus = Bus::Main;
+    };
+
+    /// Every edge realisation made inside a track, SORTED by key, matched
+    /// across a swap the same way as `planEdges`.
+    [[nodiscard]] const std::vector<ChainRecord>& chainEdges() const noexcept {
+        return chainEdges_;
+    }
+
 private:
     friend std::unique_ptr<RealizedGraph> realize(const GraphPlan&,
                                                   const RealizeOptions&);
@@ -189,6 +221,7 @@ private:
     std::vector<std::unique_ptr<Node>> owned_;
     std::unordered_map<std::int64_t, Chain> chains_;
     std::vector<EdgeRecord> planEdges_;
+    std::vector<ChainRecord> chainEdges_;
     std::vector<std::string> problems_;
     std::string error_;
     bool ok_ = false;

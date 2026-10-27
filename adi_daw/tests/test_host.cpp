@@ -847,6 +847,104 @@ void testARebuildInADrainPlaysWhatWasStillDue() {
     eqi(stale, 0, "and the wake plays none of the old 0.75");
 }
 
+/// Samples of the master under 99% of where it settled, over 30 blocks after
+/// one rebuild of `m`, and how many lines the host says it carried.
+std::pair<std::int64_t, std::int64_t> seamOf(GraphHost& host, const rows::Model& m,
+                                             const RealizeOptions& opts) {
+    if (!host.rebuild(m, opts, 48000.0, 512)) return {-1, -1};
+    Out o(512);
+    AudioIo io = makeIo(o, 512);
+    for (int b = 0; b < 30; ++b) host.process(io);
+    const double settled = std::fabs(static_cast<double>(o.l[511]));
+    if (!host.rebuild(m, opts, 48000.0, 512)) return {-1, -1};
+    std::int64_t below = 0;
+    for (int b = 0; b < 30; ++b) {
+        host.process(io);
+        for (float v : o.l) if (std::fabs(static_cast<double>(v)) < settled * 0.99) ++below;
+    }
+    return {below, host.stats().historyCarried};
+}
+
+void testAnEdgeInsideAChainKeepsItsHistory() {
+    section("ADR-0092 -- an edge INSIDE a chain carries its history: the node after a negative latency");
+
+    // A node that says it is 480 samples EARLY -- a strip playing a track
+    // delay (ADR-0172) -- with a node after it. The graph plays the delay on
+    // the edge between the two, which is no edge of the plan's: both ends are
+    // the track's own nodes.
+    ToneNode dc(1.0f);
+    LatentNode early(-480), after(0);
+    RealizeOptions opts;
+    opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&dc, &early, &after};
+        return {};
+    };
+    const rows::Model m = twoTracks();
+    {
+        GraphHost host;
+        host.setKeepHistory(false);
+        eqi(seamOf(host, m, opts).first, 480,
+            "the BEFORE, history off: the master drops for exactly the edge's 480 samples");
+    }
+    GraphHost host;
+    const auto [below, carried] = seamOf(host, m, opts);
+    eqi(below, 0, "history on: not one sample below settled");
+    eqi(carried, 1, "and the one line carried is that edge's");
+
+    // The edit a user makes: a device inserted EARLIER in the same chain. The
+    // delayed edge still joins the same two nodes, so it keeps its history,
+    // though every edge before it moved.
+    GraphHost edited;
+    check(edited.rebuild(m, opts, 48000.0, 512), "built");
+    Out o(512);
+    AudioIo io = makeIo(o, 512);
+    for (int b = 0; b < 30; ++b) edited.process(io);
+    LatentNode inserted(0);
+    RealizeOptions more = opts;
+    more.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&dc, &inserted, &early, &after};
+        return {};
+    };
+    check(edited.rebuild(m, more, 48000.0, 512), "rebuilt with a device inserted before it");
+    std::int64_t dropped = 0;
+    for (int b = 0; b < 30; ++b) {
+        edited.process(io);
+        for (float v : o.l) if (v < 0.99f) ++dropped;
+    }
+    eqi(dropped, 0, "and the edge after it keeps its 480 samples");
+}
+
+void testASourceEdgeKeepsItsHistory() {
+    section("ADR-0092 -- a source compensated against a later input carries its history");
+
+    // Track 2 plays its own source and track 1, which is 5120 samples late,
+    // so the source is delayed 5120 into track 2's junction. The source is
+    // the caller's node; the junction is new at every rebuild.
+    ToneNode wet(0.25f), dry(0.75f);
+    LatentNode late(5120);
+    RealizeOptions opts;
+    opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&wet, &late};
+        return {};
+    };
+    opts.sourcesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 2) return {&dry};
+        return {};
+    };
+    rows::Model m = twoTracks();
+    m.routing.push_back(route(100, 1, 2));
+    {
+        GraphHost host;
+        host.setKeepHistory(false);
+        eqi(seamOf(host, m, opts).first, 5120,
+            "the BEFORE, history off: the source's 5120 samples go missing");
+    }
+    GraphHost host;
+    const auto [below, carried] = seamOf(host, m, opts);
+    eqi(below, 0, "history on: none do");
+    eqi(carried, 1, "and the source's line is the one carried");
+}
+
 }  // namespace
 
 int main() {
@@ -872,6 +970,8 @@ int main() {
     testHistoryIsCarriedAcrossRepeatedRebuilds();
     testTheSameEdgeIsMatchedHoweverTheRowSaysIt();
     testARebuildInADrainPlaysWhatWasStillDue();
+    testAnEdgeInsideAChainKeepsItsHistory();
+    testASourceEdgeKeepsItsHistory();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -127,9 +127,11 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 if (auto owner = s->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
                 if (const auto& owner = s->eventSourceLifetime()) r->sourceOwners_.push_back(owner);
                 const NodeId id = r->graph_.addNode(*s);
-                r->graph_.connect(id, head);
+                if (r->graph_.connect(id, head))
+                    r->chainEdges_.push_back({{pn.trackId, s, nullptr}, id, head, Bus::Main});
             }
         }
+        const Node* prev = nullptr;   // the junction
         if (opts.devicesFor) {
             const std::vector<Node*> chain = opts.devicesFor(pn.trackId);
             for (Node* d : chain) {
@@ -147,12 +149,18 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 if (auto owner = d->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
                 if (const auto& owner = d->eventSourceLifetime()) r->sourceOwners_.push_back(owner);   // ADR-0165
                 const NodeId id = r->graph_.addNode(*d);
-                r->graph_.connect(tail, id);
+                if (r->graph_.connect(tail, id))
+                    r->chainEdges_.push_back({{pn.trackId, prev, d}, tail, id, Bus::Main});
                 tail = id;
+                prev = d;
             }
         }
         r->chains_[pn.trackId] = RealizedGraph::Chain{head, tail};
     }
+    std::sort(r->chainEdges_.begin(), r->chainEdges_.end(),
+              [](const RealizedGraph::ChainRecord& a, const RealizedGraph::ChainRecord& b) {
+                  return a.key < b.key;
+              });
 
     // --- the plan's edges, between chains ----------------------------------
     //
