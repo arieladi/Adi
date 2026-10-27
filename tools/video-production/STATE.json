@@ -1,21 +1,33 @@
 {
-  "as_of_utc": "2026-10-27T03:39:30Z",
+  "as_of_utc": "2026-10-27T10:45:00Z",
   "owner": "codex",
-  "ownership_note": "Codex heartbeat monitors remain active. Read-only inspection is safe; coordinate before worker mutations or claiming ownership.",
+  "ownership_note": "Codex heartbeat monitors remain active. Claude did read-only inspection and local delivery only on 2026-10-27; no worker was touched and ownership was not claimed. Coordinate before worker mutations.",
   "cosmic_rain": {
     "scope": "First 120 seconds only; continuation requires user approval",
     "remote_root": "D:/AvasthaAI/CosmicRainPilot120-20261026",
     "local_root": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s",
-    "status": "Rendering and assembly complete per remote status; final visual review and local delivery pending",
+    "status": "Complete and delivered to local D; awaiting user visual approval. No pilot worker process running remotely.",
     "output": "Cosmic Rain - DRAFT first 120 seconds - musical edit - with music.mp4",
-    "next": "Verify receipt, copy final and receipts to local D, inspect actual motion/joins, deliver for approval; delete completion monitor after review"
+    "output_sha256": "aa6322d321b299008ecd3fa98a0502a9ac77cc6cad7378f742b491a4c84676c2",
+    "verified_by_claude": "Remote and local SHA256 match. ffprobe: h264 1280x720 24/1, 2880 frames (counted by decode), 120.000s; AAC 44.1k stereo 120.000s; full ffmpeg decode with -xerror clean.",
+    "review_findings": [
+      "Opening join 8.0s (frame 191->192): small visible zoom/shift pop where the original opening hands over to generated shot 0.",
+      "Calm section 15-47s is nearly frozen: shot 1 (15.1-21.8s) 97% of frames near-static; shots 3-5 50-69% near-static.",
+      "Shot 16 (80.6-83.9s) is near-static inside the energetic section.",
+      "Tunnel portal 53.7s and ocean portal 77.2s joins read cleanly; tunnel shot 8 is a fast coherent fly-through, not strobing.",
+      "Shots 21-22 (97-104s) show a long-necked creature rising from a splash, not clearly the planned serpent/mandala; subject readability worth a user look."
+    ],
+    "review_images": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s/review-claude-20261027",
+    "next": "User reviews the draft. Do not extend past 120s or re-render shots without approval. Codex may delete its completion monitor (review-cosmic-rain-120-second-pilot)."
   },
   "avastha": {
     "remote_root": "D:/AvasthaAI/Avastha4K60-20261026",
     "local_root": "D:/AvasthaAI/Projects/Avastha - Quantum Ascent/final-4k60",
-    "status": "4K60 enhancement running on RTX4000; last observed 445 encoded frames of 35648",
+    "status": "4K60 enhancement still running, NOT done. At 2026-10-27 12:42 studio-local: 14443 of 35648 frames encoded (40.5%), no errors/OOM in enhance.log, RTX4000 83%, A2000 idle.",
+    "live_processes": "run.py PID 8952 (worker.lock) -> renderer.py PID 1860/3920 --config effective-config.json -> ffmpeg PID 12256. Recheck command lines before relying on PIDs.",
+    "rate_and_eta": "About 0.55 encoded frames/s, steady. Roughly 10.7 h left, so finish expected around 23:00-24:00 studio-local on 2026-10-27, then audio mux.",
     "output": "Avastha - Acid rework and Aleph boom - 4K60 - with music.mp4",
-    "next": "Monitor existing worker; no restart. Verify and deliver after completion"
+    "next": "Monitor existing worker; no restart. On completion verify full decode, 35648 frames, 3840x2160 60fps, original AAC copied, then sample detail/motion and copy to local D."
   },
   "holds": ["Old full-track Cosmic Rain renderer", "Z-Image experiments", "All other stopped render jobs"],
   "protected": ["Original masters", "Salon-TV GTX1070 stays idle", "ADI-MOBILE stays free"]
