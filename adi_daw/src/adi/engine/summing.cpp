@@ -242,9 +242,10 @@ void GroupSumming::sync(const rows::Model& model) {
         b.node->setGains(1.0f, dbToGain(-drive) * static_cast<float>(unityGain(*flavor)));
         liveBusses.insert(g.trackId);
 
-        // A channel half on every track whose main output is this group.
+        // A channel half on every track whose main output is this group. A
+        // send into it is not a child, and takes none.
         for (const PlannedEdge& e : plan.edges) {
-            if (e.bus != Bus::Main || e.to != at->second) continue;
+            if (e.bus != Bus::Main || e.routingId != 0 || e.to != at->second) continue;
             const PlannedNode& child = plan.nodes[e.from];
             if (child.kind == PlannedKind::Vca) continue;
             Half& c = channels_[child.trackId];

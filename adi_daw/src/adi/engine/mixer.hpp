@@ -280,12 +280,18 @@ public:
     /// The strip for a track the plan realises, or null.
     [[nodiscard]] StripNode* stripFor(std::int64_t trackId) noexcept;
 
+    /// The node a planned send plays through (ADR-0203 d3), by its routing
+    /// row, or null. One per row, kept for the session as a strip is, so a
+    /// level move ramps and the send's edges keep their history.
+    [[nodiscard]] SendNode* sendFor(std::int64_t routingId) noexcept;
+
     /// Rows the strip could not honour, named: an unknown pan law, a volume or
     /// pan that is not finite.
     [[nodiscard]] const std::vector<std::string>& problems() const noexcept { return problems_; }
 
 private:
     std::map<std::int64_t, std::unique_ptr<StripNode>> strips_;
+    std::map<std::int64_t, std::unique_ptr<SendNode>> sends_;
     std::vector<std::string> problems_;
 };
 

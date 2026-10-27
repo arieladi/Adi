@@ -87,6 +87,8 @@ bool DeviceHost::rebuildNow() {
     opts.channels = spec_.channels;
     opts.devicesFor = spec_.devicesFor ? spec_.devicesFor : chainSupplier();
     opts.sourcesFor = spec_.sourcesFor;
+    opts.tapFor = spec_.tapFor;
+    opts.sendFor = spec_.sendFor;
 
     if (!host_->rebuild(*model, opts, spec_.sampleRate, spec_.maxFrames)) {
         lastError_ = host_->error();

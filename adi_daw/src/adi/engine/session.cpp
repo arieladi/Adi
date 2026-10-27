@@ -363,29 +363,11 @@ void Session::attach() {
     rs.channels = spec_.channels;
     rs.sampleRate = spec_.sampleRate;
     rs.maxFrames = spec_.maxFrames;
-    rs.devicesFor = [this](std::int64_t trackId) {
-        std::vector<Node*> nodes;
-        // ADR-0174: a summing group's buss half is first, right after its sum.
-        if (Node* buss = summing_.headFor(trackId)) nodes.push_back(buss);
-        const auto chain = chainFor(trackId);
-        std::size_t firstAudio = 0;
-        for (std::size_t i = 0; i < chain.size(); ++i)
-            if (chain[i]->eventFlow() == EventFlow::Consume) firstAudio = i + 1;
-        for (std::size_t i = 0; i <= chain.size(); ++i) {
-            if (i == firstAudio) {
-                const auto gain = inputGains_.find(trackId);
-                if (gain != inputGains_.end()) nodes.push_back(gain->second.get());
-            }
-            if (i < chain.size()) nodes.push_back(chain[i]);
-        }
-        // ADR-0163: the strip is the last node of every chain, after the
-        // devices, so whatever the track feeds takes its output.
-        if (StripNode* strip = strips_.stripFor(trackId)) nodes.push_back(strip);
-        // ADR-0174: and a child of a summing group leaves through its
-        // channel half, after the strip, on its way into the group's sum.
-        if (Node* channel = summing_.tailFor(trackId)) nodes.push_back(channel);
-        return nodes;
-    };
+    rs.devicesFor = [this](std::int64_t trackId) { return trackChain(trackId); };
+    // ADR-0203 d3: a send leaves its track at its tap and plays through the
+    // node the strips keep for its row.
+    rs.tapFor = [this](std::int64_t trackId, Tap tap) { return tapFor(trackId, tap); };
+    rs.sendFor = [this](std::int64_t routingId) -> Node* { return strips_.sendFor(routingId); };
     auto* clipSource = clips();
     auto* midiSource = midi_.get();
     rs.sourcesFor = [this, clipSource, midiSource](std::int64_t id) {
@@ -401,6 +383,57 @@ void Session::attach() {
         return nodes;
     };
     devices_.attachHost(graph_, std::move(rs));
+}
+
+std::vector<Node*> Session::trackChain(std::int64_t trackId) {
+    std::vector<Node*> nodes;
+    // ADR-0174: a summing group's buss half is first, right after its sum.
+    if (Node* buss = summing_.headFor(trackId)) nodes.push_back(buss);
+    const auto chain = chainFor(trackId);
+    std::size_t firstAudio = 0;
+    for (std::size_t i = 0; i < chain.size(); ++i)
+        if (chain[i]->eventFlow() == EventFlow::Consume) firstAudio = i + 1;
+    for (std::size_t i = 0; i <= chain.size(); ++i) {
+        if (i == firstAudio) {
+            const auto gain = inputGains_.find(trackId);
+            if (gain != inputGains_.end()) nodes.push_back(gain->second.get());
+        }
+        if (i < chain.size()) nodes.push_back(chain[i]);
+    }
+    // ADR-0163: the strip is the last node of every chain, after the
+    // devices, so whatever the track feeds takes its output.
+    if (StripNode* strip = strips_.stripFor(trackId)) nodes.push_back(strip);
+    // ADR-0174: and a child of a summing group leaves through its
+    // channel half, after the strip, on its way into the group's sum.
+    if (Node* channel = summing_.tailFor(trackId)) nodes.push_back(channel);
+    return nodes;
+}
+
+Node* Session::tapFor(std::int64_t trackId, Tap tap) {
+    StripNode* strip = strips_.stripFor(trackId);
+    const std::vector<Node*> nodes = trackChain(trackId);
+    std::size_t at = nodes.size();   // the strip's place
+    for (std::size_t i = 0; i < nodes.size(); ++i)
+        if (nodes[i] == strip) at = i;
+    switch (tap) {
+        case Tap::Tail:
+            return nodes.empty() ? nullptr : nodes.back();
+        case Tap::PostFader:
+            return strip;
+        case Tap::PostMixer:
+            return at + 1 < nodes.size() ? nodes[at + 1] : strip;
+        case Tap::PostFx:
+            return at > 0 && at <= nodes.size() ? nodes[at - 1] : nullptr;
+        case Tap::PreFx: {
+            // After the instrument, before the first audio effect: the last
+            // node that plays the track's notes, or what comes before them.
+            Node* last = summing_.headFor(trackId);
+            for (Node* n : chainFor(trackId))
+                if (n->eventFlow() == EventFlow::Consume) last = n;
+            return last;
+        }
+    }
+    return strip;
 }
 
 bool Session::rebuild() {

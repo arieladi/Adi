@@ -470,6 +470,163 @@ void testTrackDelay() {
           "a delay past one second is named, and played at one second");
 }
 
+/// A send row, written as a converter or the next ops would write it.
+void sendRow(Mix& m, std::int64_t id, std::int64_t from, std::int64_t to, double db = 0.0,
+             bool enabled = true) {
+    SQLite::Statement q(m.store->db(),
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db,enabled) "
+        "VALUES(?,'track',?,'track',?,'send',?,?)");
+    q.bind(1, id);
+    q.bind(2, from);
+    q.bind(3, to);
+    q.bind(4, db);
+    q.bind(5, enabled ? 1 : 0);
+    q.exec();
+}
+
+void testSendsPlay() {
+    section("ADR-0203 d3 -- sends and returns play: after the fader, into any track, compensated");
+
+    for (const Precision width : {Precision::Float32, Precision::Float64}) {
+        const std::string at = width == Precision::Float64 ? " (at 64)" : "";
+        Mix m(width == Precision::Float64 ? "sends64" : "sends32");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4);
+        m.load(48000.0, width);
+        m.settle();
+        check(m.l[511] == 1.0f && m.r[511] == 1.0f,
+              "0.5 dry and 0.5 through the return, at 0 dB: 1.0 at the master, exactly" + at + ": " +
+                  std::to_string(m.l[511]));
+        check(m.session.problems().empty() || !m.mentions("routing#11"), "and nothing names the send" + at);
+
+        m.store->db().exec("UPDATE routing SET gain_db=-6.0206 WHERE id=11");
+        m.refresh();
+        m.settle();
+        check(near(m.l[511], 0.75, 1e-4), "the send at -6.02 dB: 0.5 + 0.25" + at);
+
+        m.set("mixer.setVolume", 1, "db", -6.0206);
+        m.refresh();
+        m.settle();
+        check(near(m.l[511], 0.375, 1e-4), "a Post send follows the source's fader: 0.25 + 0.125" + at);
+
+        m.set("track.setMute", 1, "muted", true);
+        m.refresh();
+        m.settle();
+        check(m.l[511] == 0.0f, "and its mute: the send is silent with the track" + at);
+        m.set("track.setMute", 1, "muted", false);
+        m.store->db().exec("UPDATE routing SET enabled=0 WHERE id=11");
+        m.refresh();
+        m.settle();
+        check(near(m.l[511], 0.25, 1e-4), "switched off, the send is silent and the track plays on" + at);
+    }
+    {
+        // ADI's addition: a send into a track that is not a return.
+        Mix m("send-any");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(2, "audio", "B", 0.25f);
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 2);
+        m.load();
+        m.settle();
+        check(m.l[511] == 1.25f, "a send into an audio track sums with its own: 0.5 + (0.25 + 0.5)");
+    }
+    {
+        // Compensation reaches across the send: a return 64 samples early
+        // holds the dry track back 64, so the wet leads by exactly that.
+        Mix m("send-pdc");
+        StepNode a(0.5f, 1000);
+        m.track(1, "audio", "A");
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        m.extra[1] = &a;
+        sendRow(m, 11, 1, 4);
+        m.set("mixer.setDelay", 4, "samples", -64);
+        m.load();
+        m.hist.clear();
+        for (int k = 0; k < 4; ++k) {
+            m.render(512);
+            m.hist.insert(m.hist.end(), m.l.begin(), m.l.end());
+        }
+        long wet = -1, both = -1;
+        for (std::size_t i = 0; i < m.hist.size(); ++i) {
+            if (wet < 0 && m.hist[i] >= 0.5f - 1e-6f) wet = static_cast<long>(i);
+            if (both < 0 && m.hist[i] >= 1.0f - 1e-6f) both = static_cast<long>(i);
+        }
+        check(wet == 1000 && both == 1064, "the return early by 64: the wet at 1000, the dry joins at 1064 (" +
+                                               std::to_string(wet) + ", " + std::to_string(both) + ")");
+    }
+    {
+        // A rebuild moves nothing: two sends from A, one from C whose strip
+        // is 32 early so A's sends wait 32 into the return, and the return
+        // 64 early so A's own output waits 64 into the master.
+        auto run = [](const std::string& name, bool rename) {
+            Mix m(name.c_str());
+            SineNode a(220.0, 0.1f), c(330.0, 0.1f);
+            m.track(1, "audio", "A");
+            m.track(3, "audio", "C");
+            m.track(4, "return", "R");
+            m.track(9, "master", "Master");
+            m.extra[1] = &a;
+            m.extra[3] = &c;
+            sendRow(m, 11, 1, 4, -6.0);
+            sendRow(m, 12, 1, 4, -12.0);
+            sendRow(m, 13, 3, 4);
+            m.set("mixer.setDelay", 3, "samples", -32);
+            m.set("mixer.setDelay", 4, "samples", -64);
+            m.load();
+            std::vector<float> out;
+            for (int k = 0; k < 12; ++k) {
+                if (rename && k == 6) {
+                    m.set("track.rename", 1, "name", "A2");
+                    m.refresh();
+                }
+                m.render(512);
+                out.insert(out.end(), m.l.begin(), m.l.end());
+            }
+            return out;
+        };
+        const auto ref = run("sends-ref", false), edited = run("sends-edit", true);
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < ref.size() && i < edited.size(); ++i) differ += ref[i] != edited[i] ? 1u : 0u;
+        check(differ == 0, "a rebuild with sends compensated both ways moves no sample of the master (" +
+                               std::to_string(differ) + " do)");
+    }
+    {
+        // Live's Solo in Place: a soloed track's return stays audible. B is
+        // not soloed, so its own output and its send are silent.
+        Mix m("send-solo");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(2, "audio", "B", 0.25f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4);
+        sendRow(m, 12, 2, 4);
+        m.set("track.setSolo", 1, "soloed", true);
+        m.load();
+        m.settle();
+        check(m.l[511] == 1.0f, "A soloed: A and its return, 0.5 + 0.5, and nothing of B: " +
+                                     std::to_string(m.l[511]));
+    }
+    {
+        // A send into a summing group is not one of its children: it takes
+        // no channel half, which is the group's children's alone (ADR-0174).
+        Mix m("send-summing");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(2, "audio", "Child", 0.25f);
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 2, "parent", 5);
+        m.set("group.setSumming", 5, "enabled", true);
+        sendRow(m, 11, 1, 5);
+        m.load();
+        m.settle();
+        check(m.session.summing().channelOf(2) != nullptr && m.session.summing().channelOf(1) == nullptr,
+              "the child has a channel half and the sender none");
+    }
+}
+
 void testATrackDelayCrossesARebuild() {
     section("ADR-0092, ADR-0172 -- a track delay crosses a rebuild, wherever in the chain it is played");
 
@@ -1088,6 +1245,7 @@ int main() {
         testOverride();
         testTrackDelay();
         testATrackDelayCrossesARebuild();
+        testSendsPlay();
         testGroupSumming();
         testScopeTaps();
     } catch (const std::exception& e) {

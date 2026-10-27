@@ -281,10 +281,12 @@ std::map<std::int64_t, bool> audibleTracks(const rows::Model& model, const Graph
     }
 
     // Main routes only. A sidechain key is not listening, so a soloed track's
-    // key source is not kept audible by it (ADR-0163 d4).
-    std::vector<std::vector<std::size_t>> down(n), up(n);
+    // key source is not kept audible by it (ADR-0163 d4). A send is not a
+    // main route either: a return is not a soloed track's group.
+    std::vector<std::vector<std::size_t>> down(n), up(n), sentTo(n);
     for (const PlannedEdge& e : plan.edges) {
         if (e.bus != Bus::Main || e.from >= n || e.to >= n) continue;
+        if (e.routingId != 0) { sentTo[e.from].push_back(e.to); continue; }
         down[e.from].push_back(e.to);
         up[e.to].push_back(e.from);
     }
@@ -301,8 +303,28 @@ std::map<std::int64_t, bool> audibleTracks(const rows::Model& model, const Graph
         }
         return seen;
     };
-    const std::vector<bool> fed = reach(down);      // what a soloed track feeds: its group, the master
+    std::vector<bool> fed = reach(down);            // what a soloed track feeds: its group, the master
     const std::vector<bool> feeding = reach(up);    // what feeds it: a soloed group's children
+    // ADR-0203 d3, Live's Solo in Place: a soloed track's returns stay
+    // audible, and whatever they feed. Over sends from anything kept so far,
+    // to a fixed point, so a return a soloed group's child sends to is kept.
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (std::size_t i = 0; i < n; ++i) {
+            if (!fed[i] && !feeding[i]) continue;
+            for (const std::size_t j : sentTo[i]) {
+                std::vector<std::size_t> todo{j};
+                while (!todo.empty()) {
+                    const std::size_t k = todo.back();
+                    todo.pop_back();
+                    if (fed[k]) continue;
+                    fed[k] = true;
+                    grew = true;
+                    for (const std::size_t next : down[k]) todo.push_back(next);
+                }
+            }
+        }
+    }
     for (std::size_t i = 0; i < n; ++i) {
         const bool kept = fed[i] || feeding[i] || defeat[i] || plan.nodes[i].kind == PlannedKind::Master;
         audible[plan.nodes[i].trackId] = !muted[i] && kept;
@@ -424,6 +446,34 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         strip->setStatic(0.0, 0.0, PanLaw::Live, false);
         strip->setLanes(nullptr, {});
     }
+
+    // ADR-0203 d3: a node for every send the plan made, its row's level, pan
+    // and switch. The source's fader, pan and mute are its strip's, which the
+    // send follows: a Post send leaves after it. A departed send stays, off.
+    std::set<std::int64_t> planned, live;
+    for (const PlannedEdge& e : plan.edges)
+        if (e.routingId != 0) planned.insert(e.routingId);
+    for (const rows::Routing& r : model.routing) {
+        if (r.kind != "send" || !planned.count(r.id)) continue;
+        auto& send = sends_[r.id];
+        if (!send) send = std::make_unique<SendNode>();
+        const std::string who = "routing#" + std::to_string(r.id);
+        if (std::isnan(r.gainDb)) problems_.push_back(who + ": the send's level is not a number; it is silent");
+        double pan = r.pan;
+        if (!std::isfinite(pan)) {
+            problems_.push_back(who + ": the send's pan is not finite; centre is used");
+            pan = 0.0;
+        }
+        send->set(r.gainDb, pan, PanLaw::Live, r.enabled);
+        live.insert(r.id);
+    }
+    for (auto& [id, send] : sends_)
+        if (!live.count(id)) send->set(kSilenceDb, 0.0, PanLaw::Live, false);
+}
+
+SendNode* MixerStrips::sendFor(std::int64_t routingId) noexcept {
+    const auto it = sends_.find(routingId);
+    return it == sends_.end() ? nullptr : it->second.get();
 }
 
 StripNode* MixerStrips::stripFor(std::int64_t trackId) noexcept {
