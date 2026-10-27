@@ -1,7 +1,7 @@
 {
-  "as_of_utc": "2026-10-27T10:45:00Z",
-  "owner": "codex",
-  "ownership_note": "Codex heartbeat monitors remain active. Claude did read-only inspection and local delivery only on 2026-10-27; no worker was touched and ownership was not claimed. Coordinate before worker mutations.",
+  "as_of_utc": "2026-10-27T11:20:00Z",
+  "owner": "split: claude owns Cosmic keyframe test only; codex owns Avastha 4K60 worker and its monitors",
+  "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected).",
   "cosmic_rain": {
     "scope": "First 120 seconds only; continuation requires user approval",
     "remote_root": "D:/AvasthaAI/CosmicRainPilot120-20261026",
@@ -21,7 +21,7 @@
     ],
     "review_images": "D:/AvasthaAI/Projects/Cosmic Rain/pilot-120s/review-claude-20261027",
     "gemini_ayana_analysis": "User gave Codex a Gemini breakdown of Ayana before the pilot: modular 1-bar/2-bar I2V clips, hard cuts on bar 1, eye/circle portal match-zooms, 2D mirror/radial/clone compositing, reverse-timed impacts, acts. The pilot applied the cut grid but not the compositing, fresh-keyframe-per-clip or portals, and chained last frames (the drift Gemini warned against). Gemini's '40 frames per bar at 24fps' drifts (bar is 40.28 frames); use absolute timestamps. Its timestamps are partly wrong against sampled frames; its waveform brightness pulses conflict with the no-strobe preference; Flow/Veo are paid and excluded.",
-    "next": "No generation until the user approves. Proposed first step is a ~16s test section, not another 120s. Codex may delete its completion monitor (review-cosmic-rain-120-second-pilot)."
+    "next": "Claude generating keyframe stills for 47.01-63.80s (10 bars at 143 BPM, build into drop). User reviews stills before any animation."
   },
   "avastha": {
     "remote_root": "D:/AvasthaAI/Avastha4K60-20261026",
@@ -32,6 +32,14 @@
     "output": "Avastha - Acid rework and Aleph boom - 4K60 - with music.mp4",
     "next": "Monitor existing worker; no restart. On completion verify full decode, 35648 frames, 3840x2160 60fps, original AAC copied, then sample detail/motion and copy to local D."
   },
-  "holds": ["Old full-track Cosmic Rain renderer", "Z-Image experiments", "All other stopped render jobs"],
-  "protected": ["Original masters", "Salon-TV GTX1070 stays idle", "ADI-MOBILE stays free"]
+  "holds": [
+    "Old full-track Cosmic Rain renderer",
+    "Z-Image experiments",
+    "All other stopped render jobs"
+  ],
+  "protected": [
+    "Original masters",
+    "Salon-TV GTX1070 stays idle",
+    "ADI-MOBILE stays free"
+  ]
 }
