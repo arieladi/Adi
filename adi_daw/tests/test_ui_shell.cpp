@@ -107,6 +107,15 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             g.fillRect(root.aiTab.getBounds());
         if (!root.infoArea().isEmpty())
             g.fillRect(root.infoArea().reduced(4));
+        for (const auto &strip : root.mixer.strips()) {
+            if (!strip->isVisible())
+                continue;
+            for (juce::Component *c : std::initializer_list<juce::Component *>{
+                     &strip->active, &strip->solo, &strip->eq, &strip->limiter})
+                g.fillRect(root.getLocalArea(c, c->getLocalBounds()));
+            const auto v = root.getLocalArea(&strip->volume, strip->volume.getLocalBounds());
+            g.fillRect(v.getRight() - 50, v.getY(), 50, v.getHeight());
+        }
         for (const auto &device : root.devices.panels) {
             const auto b = root.getLocalArea(device.get(), device->getLocalBounds());
             g.fillRect(b.getX() + 22, b.getY() + 1, std::max(0, b.getWidth() - 23), 20);
@@ -269,6 +278,14 @@ int main(int argc, char **argv) {
     audit = false;
     check(allocations == 0, "steady and dirty frame paths allocate zero");
     check(submitter.submit(track(2)).ok, "new model for changed frame audit");
+    // A new track realises its mixer row once; that is the one allocation a new
+    // generation may make. A new generation with the same rows makes none.
+    a.frame();
+    b.frame();
+    OpRequest rename;
+    rename.opType = "track.rename";
+    rename.payload = {{"id", 2}, {"name", "Renamed"}};
+    check(submitter.submit(std::move(rename)).ok, "a new generation with the same rows");
     allocations = 0;
     audit = true;
     a.frame();
@@ -781,6 +798,101 @@ int main(int argc, char **argv) {
         arrangement.geometry.selectedTrack = 2;
         integrated.frame();
         integrated.resizeDevices(169);
+        // Step 7.6 (#205): the mixer, its rows in the arrangement's lanes.
+        auto meterTap = std::make_shared<engine::ScopeTap>(48000, .1);
+        {
+            std::array<float, 1024> half{};
+            for (std::size_t i = 0; i < half.size(); ++i)
+                half[i] = .5f * static_cast<float>(std::sin(2 * 3.141592653589793 * 16 *
+                                                            static_cast<double>(i) / 1024.));
+            meterTap->write(half.data(), half.data(), 1024, 0, true);
+        }
+        auto &mixer = integrated.mixer;
+        mixer.tap = [&](std::int64_t id) {
+            return id == 2 ? std::shared_ptr<const engine::ScopeTap>(meterTap) : nullptr;
+        };
+        mixer.retap();
+        integrated.resized();
+        integrated.mark(DirtySet::All);
+        integrated.frame();
+        MixerStrip *row = nullptr;
+        for (const auto &s : mixer.strips())
+            if (s->isVisible() && s->track() == 2)
+                row = s.get();
+        check(row != nullptr && mixer.getX() == integrated.arrangement.getRight() + 1,
+              "every visible track has a mixer row, beside the headers");
+        int lane = integrated.arrangement.getY() + integrated.arrangement.canvas.getY() -
+                   arrangement.geometry.scrollY;
+        for (const auto &t : integrated.reader().tracks()) {
+            if (t->id == 2)
+                break;
+            lane += arrangement.geometry.heightFor(t->id);
+        }
+        check(row && mixer.getY() + row->getY() == lane &&
+                  row->getHeight() == arrangement.geometry.heightFor(2),
+              "a mixer row sits level with its track's lane, as Live's track controls");
+        if (row) {
+            check(std::abs(row->peak() - .5f) < .01f && row->rms() > .3f && row->rms() < .4f,
+                  "the meter reads the track's tap: peak and RMS");
+            row->volume.onDragStart();
+            row->volume.setValue(-6, juce::sendNotificationSync);
+            check(std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
+                  "nothing is written while the fader moves");
+            row->volume.onDragEnd();
+            integrated.frame();
+            check(std::abs(document->view().current()->findTrack(2)->volumeDb + 6) < .01 &&
+                      integrated.undoTitle(false) == "Undo Change Track Volume",
+                  "the fader's gesture commits as one named undo step");
+            check(integrated.command(AppCommands::Undo) &&
+                      std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
+                  "and undo restores it");
+            integrated.frame();
+            check(row->pan.isDoubleClickReturnEnabled() &&
+                      row->pan.getDoubleClickReturnValue() == 0,
+                  "a double-click resets the pan to centre");
+            row->pan.setValue(.4, juce::sendNotificationSync);
+            check(std::abs(document->view().current()->findTrack(2)->pan - .4) < .01,
+                  "a typed or keyboard pan commits at once");
+            row->pan.setValue(0, juce::sendNotificationSync);
+            row->active.onClick();
+            integrated.frame();
+            check(document->view().current()->findTrack(2)->muted &&
+                      !row->active.getToggleState() && row->active.getButtonText() == "2",
+                  "the Track Activator, numbered as Live's, mutes the track");
+            row->active.onClick();
+            row->solo.onClick();
+            integrated.frame();
+            check(document->view().current()->findTrack(2)->soloed, "Solo solos it");
+            row->solo.onClick();
+            const auto opsBefore =
+                document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            row->eq.onClick();
+            row->limiter.onClick();
+            check(!row->eq.getToggleState() && !row->limiter.getToggleState() &&
+                      !integrated.error().empty() &&
+                      document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
+                          opsBefore,
+                  "the ADI-Q and ADI-L slots are on every strip, present and off");
+        }
+        for (int i = 0; i < 30; ++i)
+            check(integrated.command(AppCommands::InsertAudioTrack), "many tracks");
+        integrated.frame();
+        integrated.mark(DirtySet::All);
+        integrated.frame();
+        std::size_t visibleRows = 0;
+        for (const auto &s : mixer.strips())
+            if (s->isVisible())
+                ++visibleRows;
+        check(mixer.strips().size() < integrated.reader().tracks().size() &&
+                  visibleRows <= static_cast<std::size_t>(mixer.getHeight() / 24 + 2),
+              "the mixer realises the visible rows only");
+        reference(integrated, "mixer", write);
+        allocations = 0;
+        audit = true;
+        for (int i = 0; i < 50; ++i)
+            integrated.frame();
+        audit = false;
+        check(allocations == 0, "a steady mixer frame, meters included, allocates zero");
         document->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);
