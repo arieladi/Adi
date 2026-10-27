@@ -155,25 +155,30 @@ void BrowserPanel::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         g.fillRect(area);
     }
-    int y = sidebarArea_.getY() + 1;
-    for (std::size_t i = 0; i < sidebar_.size(); ++i) {
-        const auto &e = sidebar_[i];
-        const juce::Rectangle<int> row(sidebarArea_.getX(), y, sidebarArea_.getWidth(), kRowHeight);
-        if (static_cast<int>(i) == selected_) {
-            g.setColour(look::selection);
-            g.fillRect(row);
+    // The rows stop at the pane's foot, under the AI tab, as a list does.
+    {
+        juce::Graphics::ScopedSaveState clip(g);
+        g.reduceClipRegion(sidebarArea_);
+        int y = sidebarArea_.getY() + 1;
+        for (std::size_t i = 0; i < sidebar_.size(); ++i) {
+            const auto &e = sidebar_[i];
+            const juce::Rectangle<int> row(sidebarArea_.getX(), y, sidebarArea_.getWidth(), kRowHeight);
+            if (static_cast<int>(i) == selected_) {
+                g.setColour(look::selection);
+                g.fillRect(row);
+            }
+            if (e.heading) {
+                g.setColour(look::textDim);
+                g.setFont(look::font(12.f));
+                g.drawText(e.name, row.withTrimmedLeft(5), juce::Justification::centredLeft);
+            } else {
+                icon(g, e.glyph, row.withTrimmedLeft(8).withWidth(13).toFloat().withSizeKeepingCentre(13, 13));
+                g.setColour(look::text);
+                g.setFont(look::font(12.5f));
+                g.drawText(e.name, row.withTrimmedLeft(25), juce::Justification::centredLeft);
+            }
+            y += kRowHeight;
         }
-        if (e.heading) {
-            g.setColour(look::textDim);
-            g.setFont(look::font(12.f));
-            g.drawText(e.name, row.withTrimmedLeft(5), juce::Justification::centredLeft);
-        } else {
-            icon(g, e.glyph, row.withTrimmedLeft(8).withWidth(13).toFloat().withSizeKeepingCentre(13, 13));
-            g.setColour(look::text);
-            g.setFont(look::font(12.5f));
-            g.drawText(e.name, row.withTrimmedLeft(25), juce::Justification::centredLeft);
-        }
-        y += kRowHeight;
     }
     // The content pane's header, as Live's list.
     const juce::Rectangle<int> header(contentArea_.getX(), contentArea_.getY(), contentArea_.getWidth(), 19);
