@@ -1,0 +1,142 @@
+{
+  "title": "Cosmic Rain - 16s keyframe test (build into drop)",
+  "bpm": 143,
+  "phase": 0.0215,
+  "bar_seconds": 1.6783216783,
+  "window": {
+    "start_bar": 28,
+    "end_bar": 38,
+    "start": 47.0145,
+    "end": 63.7977,
+    "drop_bar": 32,
+    "drop_time": 53.7278
+  },
+  "rule": "Times come from phase + bar * 240/143, rounded to frames per cut; never a fixed frame count per bar.",
+  "style": "psychedelic psytrance poster illustration, visionary art, bold clean ink outlines, cel shading, vivid saturated silver, cyan, deep ultramarine and gold palette with magenta accents, glowing highlights, high contrast, intricate ornamental detail, centered composition",
+  "negative": "photo, photorealistic, 3d render, realistic skin, blurry, soft focus, muddy colors, text, letters, watermark, logo, signature, frame, border, extra limbs, extra fingers, deformed hands, deformed face, ugly, lowres, jpeg artifacts, cropped head, collage, split panels",
+  "scenes": [
+    {
+      "id": "S01",
+      "bars": [
+        28,
+        30
+      ],
+      "role": "build, chapter anchor",
+      "subject": "the Rain Keeper, a serene cosmic goddess seen from the front, eyes closed, silver raindrops beaded on her face and falling around her, a black hole with a blazing golden accretion ring as a halo behind her head, flowing silver-blue hair, starry deep space background",
+      "motion_plan": "slow push-in",
+      "composite": "none"
+    },
+    {
+      "id": "S02",
+      "bars": [
+        30,
+        31
+      ],
+      "role": "riser, geometric multiplication",
+      "subject": "one huge crystal-clear raindrop floating in black space, a tiny spiral galaxy glowing inside it, golden rim light, silver sparkles",
+      "motion_plan": "radial ring rotates one step per kick",
+      "composite": "radial8"
+    },
+    {
+      "id": "S03",
+      "bars": [
+        31,
+        31.5
+      ],
+      "role": "riser, 2-kick cut",
+      "subject": "two mirrored side profiles of the Rain Keeper facing each other, open palms reaching toward a thin vertical beam of silver light in the exact center, black background",
+      "motion_plan": "palms touch exactly on the drop downbeat (reverse-timed impact)",
+      "composite": "mirror"
+    },
+    {
+      "id": "S04",
+      "bars": [
+        31.5,
+        32
+      ],
+      "role": "riser, 2-kick cut, portal in",
+      "subject": "extreme macro of one eye opening, the iris is a black hole with a blazing golden accretion ring, silver eyelashes with raindrops",
+      "motion_plan": "zoom into the pupil; exit from a matching circle in S05",
+      "composite": "none"
+    },
+    {
+      "id": "S05",
+      "bars": [
+        32,
+        33
+      ],
+      "role": "DROP downbeat, portal out",
+      "subject": "flying forward through a vortex tunnel of falling silver rain and concentric golden rings, a bright white-blue light at the vanishing point",
+      "motion_plan": "fast forward flight, gold flare on the downbeat",
+      "composite": "mirror"
+    },
+    {
+      "id": "S06",
+      "bars": [
+        33,
+        34
+      ],
+      "role": "drop, clone row",
+      "subject": "five identical cute glowing crystal raindrop spirits with small faces and tiny arms, standing in a straight row and dancing on a dark mirror-like ocean under a starry sky",
+      "motion_plan": "dance step on each kick",
+      "composite": "none"
+    },
+    {
+      "id": "S07",
+      "bars": [
+        34,
+        35
+      ],
+      "role": "drop, one big creature",
+      "subject": "a majestic silver serpent made of flowing water coiled symmetrically around a black hole with a golden ring, serpent head facing the viewer, raindrops trailing from its scales",
+      "motion_plan": "serpent rears up toward camera",
+      "composite": "mirror"
+    },
+    {
+      "id": "S08",
+      "bars": [
+        35,
+        36
+      ],
+      "role": "drop, mandala",
+      "subject": "top-down view of rain falling on a dark ocean, perfect concentric cyan and gold ripples forming an ornate mandala",
+      "motion_plan": "ripples expand on each kick, slow rotation",
+      "composite": "radial8"
+    },
+    {
+      "id": "S09",
+      "bars": [
+        36,
+        37
+      ],
+      "role": "drop",
+      "subject": "a giant luminous water lotus blooming out of a black hole, petals made of liquid silver and cyan light, golden core, rain falling around it",
+      "motion_plan": "petals open toward camera",
+      "composite": "mirror"
+    },
+    {
+      "id": "S10",
+      "bars": [
+        37,
+        38
+      ],
+      "role": "drop, return of the anchor",
+      "subject": "the Rain Keeper cosmic goddess from the front with glowing cyan eyes wide open, both arms raised, rain swirling up into a crown of light above her head, black hole with golden ring behind her",
+      "motion_plan": "rain spirals upward, camera pulls back",
+      "composite": "none"
+    }
+  ],
+  "composite_note": "Mirroring a front-facing face or eye melts the centre line; those slots stay raw (already near-symmetric).",
+  "picks_v1": {
+    "S01": "S01_xl_s33",
+    "S02": "S02_xl_s22_radial8",
+    "S03": "S03_xl_s33_mirror",
+    "S04": "S04_xl_s44",
+    "S05": "S05_xl_s22",
+    "S06": "S06_xl_s44",
+    "S07": "S07_xl_s44_mirror",
+    "S08": "S08_xl_s33_radial8",
+    "S09": "S09_xl_s33_mirror",
+    "S10": "S10_xl_s22"
+  }
+}
