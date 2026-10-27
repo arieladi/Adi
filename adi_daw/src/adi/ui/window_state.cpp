@@ -46,9 +46,9 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
             if (id < 0 || id > 1)
                 throw std::runtime_error("panel id");
             const auto width = slots.at(i).at("width").get<int>();
-            if (width < (id == 0 ? 120 : 160) || width > 10000)
+            if (width < 120 || width > 10000)
                 throw std::runtime_error("width");
-            return PanelGeometry{static_cast<Panel>(id), width, id == 0 ? 120 : 160,
+            return PanelGeometry{static_cast<Panel>(id), width, 120,
                                  slots.at(i).at("collapsed").get<bool>()};
         };
         auto a = panel(0), b = panel(1);
@@ -65,7 +65,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.aiChatOpen = j.value("aiChat", false);
         state.timelineLeft = j.value("timelineLeft", 0.);
         state.pixelsPerQuarter = j.value("pixelsPerQuarter", 48.);
-        state.laneHeight = j.value("laneHeight", 64);
+        state.laneHeight = j.value("laneHeight", 88);
         state.mixerView = j.value("mixerView", false);
         state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
         if (j.contains("folded"))

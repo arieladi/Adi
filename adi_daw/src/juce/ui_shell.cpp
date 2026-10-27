@@ -4,7 +4,11 @@
 #include <array>
 namespace adi::ui {
 namespace {
-constexpr int kTransportHeight = 44, kStatusHeight = 22, kTabHeight = 24;
+// Live's measures, in points at 100 % (ui_look.hpp): the control bar, the Status Bar,
+// the AI tab, the Info View's width and the browser's preview strip.
+constexpr int kTransportHeight = look::controlBarHeight, kStatusHeight = look::statusBarHeight,
+              kTabHeight = 20;
+constexpr int kInfoWidth = 200, kPreviewHeight = 27;
 // Interface zoom steps per window. PROVISIONAL: Live's own list is to be
 // measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
 constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
@@ -201,35 +205,18 @@ bool AppCommands::perform(const InvocationInfo &info) {
     active_->command(info.commandID);
     return true;
 }
-TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
-    addAndMakeVisible(play);
-    addAndMakeVisible(stop);
-    play.setTitle("Play");
-    play.setTooltip("Starts playback from the start marker, or stops it. Space.");
-    stop.setTitle("Stop");
-    stop.setTooltip("Stops playback.");
-    play.onClick = [this] { root_.command(AppCommands::PlayStop); };
-    stop.onClick = [this] { root_.command(AppCommands::Stop); };
-}
-void TransportBar::resized() {
-    play.setBounds(12, 8, 108, 28);
-    stop.setBounds(128, 8, 64, 28);
-}
-void TransportBar::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff282c34));
-    g.setColour(root_.playing() ? juce::Colour(0xff65cf91) : juce::Colour(0xff6a7280));
-    g.fillRect(205, 16, 12, 12);
-    g.setColour(juce::Colour(0xffe0e5ed));
-    g.setFont(juce::FontOptions(14.f));
-    g.drawText(juce::String(root_.bpm(), 2) + " BPM", 232, 8, 120, 28,
-               juce::Justification::centredLeft);
-    g.drawText("ADI", getWidth() - 80, 8, 64, 28, juce::Justification::centredRight);
-}
 StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
-    addAndMakeVisible(infoToggle);
+    // Live's corners: the Info View's toggle on the left, the Detail View's on the right.
+    for (auto *b : {&infoToggle, &detailToggle}) {
+        addAndMakeVisible(*b);
+        b->setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    }
     infoToggle.setTitle("Info View");
     infoToggle.setTooltip("Shows or hides the Info View. Shift+?.");
     infoToggle.onClick = [this] { root_.command(AppCommands::ToggleInfoView); };
+    detailToggle.setTitle("Detail View");
+    detailToggle.setTooltip("Shows or hides the Device View. Ctrl/Cmd+Alt+4.");
+    detailToggle.onClick = [this] { root_.command(AppCommands::ToggleDeviceView); };
     addAndMakeVisible(mixerToggle);
     mixerToggle.setTitle("Mixer View");
     mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
@@ -237,19 +224,45 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     mixerToggle.onClick = [this] { root_.command(AppCommands::ToggleMixerView); };
 }
 void StatusBar::resized() {
-    infoToggle.setBounds(2, 2, 22, getHeight() - 4);
-    mixerToggle.setBounds(getWidth() - 62, 2, 60, getHeight() - 4);
+    // Live's Status Bar at 100 %: round corner buttons, the message field, a second
+    // field, the selected track's box; 22 pt fields with the frame's 8 pt around them.
+    const int w = getWidth();
+    infoToggle.setBounds(8, 9, 19, 19);
+    detailToggle.setBounds(w - 27, 9, 19, 19);
+    mixerToggle.setBounds(w - 86, 11, 44, 16);
 }
 void StatusBar::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff1d2128));
-    g.setColour(juce::Colour(0xff343b47));
-    g.fillRect(0, 0, getWidth(), 1);
-    if (root_.error().empty())
-        return;
-    g.setColour(juce::Colour(0xffe6b45c));
-    g.setFont(juce::FontOptions(13.f));
-    g.drawText(juce::String(root_.error()), 32, 0, std::max(0, getWidth() - 40), getHeight(),
+    g.fillAll(look::frame);
+    const int w = getWidth();
+    const juce::Rectangle<int> message(35, 8, std::max(0, w - 419), 22);
+    const juce::Rectangle<int> second(w - 376, 8, 206, 22), track(w - 162, 8, 124, 22);
+    for (auto r : {message, second, track}) {
+        g.setColour(look::band);
+        g.fillRect(r);
+        g.setColour(look::panel);
+        g.fillRect(r.reduced(3));
+    }
+    // The corner buttons: dark and round, with Live's light triangles.
+    for (auto *b : {&infoToggle, &detailToggle}) {
+        const auto c = b->getBounds().toFloat();
+        g.setColour(look::band);
+        g.fillEllipse(c);
+        look::triangle(g, c.reduced(5.f), -juce::MathConstants<float>::halfPi, look::panel);
+    }
+    const bool error = !root_.error().empty();
+    g.setColour(look::text);
+    g.setFont(look::font(12.5f));
+    g.drawText(error ? juce::String(root_.error()) : root_.selectionText(), message.reduced(8, 0),
                juce::Justification::centredLeft);
+    // The selected track's name, as Live shows it at the right.
+    const auto &tracks = root_.reader().tracks();
+    for (std::size_t i = 0; i < tracks.size(); ++i)
+        if (tracks[i]->id == root_.arrangement.geometry.selection.track) {
+            g.setFont(look::font(11.5f));
+            g.drawText(juce::String::fromUTF8(displayName(tracks[i]->name, i + 1).c_str()),
+                       track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
+            break;
+        }
 }
 AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submitter,
                                    TransportMailbox &mailbox, AppCommands &commands,
@@ -260,21 +273,27 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
       commands_(commands), persistence_(persistence), session_(session),
       window_(std::move(window)),
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
+    // Live's look for everything this window holds (ui_look.hpp).
+    setLookAndFeel(&look::liveLook());
     setOpaque(true);
     setWantsKeyboardFocus(true);
     addAndMakeVisible(transport);
     addAndMakeVisible(status);
+    addAndMakeVisible(browser);
     addAndMakeVisible(aiTab);
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
     addAndMakeVisible(dockResizer);
     addAndMakeVisible(mixer);
+    // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
+    addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
     addChildComponent(mixerViewResizer);
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
     arrangement.geometry.heights = state_.laneHeights;
+    aiTab.setColour(juce::TextButton::buttonColourId, look::columnHead);
     aiTab.setTitle("AI");
     aiTab.setTooltip("The AI chat. Opens at the foot of the browser.");
     aiTab.onClick = [this] {
@@ -290,7 +309,10 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     setSize(1200, 720);
     frame();
 }
-AdiRootComponent::~AdiRootComponent() { commands_.detach(*this); }
+AdiRootComponent::~AdiRootComponent() {
+    commands_.detach(*this);
+    setLookAndFeel(nullptr);
+}
 void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
@@ -329,8 +351,10 @@ void AdiRootComponent::frame() noexcept {
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
-    if (lastDrain_ & DirtySet::Transport)
+    if (lastDrain_ & DirtySet::Transport) {
+        transport.refresh();
         transport.repaint();
+    }
     if (lastDrain_ & DirtySet::Status)
         status.repaint();
     if (lastDrain_ & (DirtySet::Layout | DirtySet::Content))
@@ -393,23 +417,26 @@ double AdiRootComponent::bpm() const noexcept {
                  : 120.;
 }
 void AdiRootComponent::resized() {
-    const int w = getWidth(), h = getHeight();
+    const int w = getWidth(), h = getHeight(), gap = look::gap;
     transport.setBounds(0, 0, w, kTransportHeight);
     status.setBounds(0, h - kStatusHeight, w, kStatusHeight);
-    const int body = std::max(0, h - kTransportHeight - kStatusHeight);
-    // The device strip never goes below its floor and grows upward only
-    // (ADR-0203 d7); it leaves the transport, the ruler and a row when it can.
-    const int dock =
-        state_.docked
-            ? std::min(body, std::max(state_.deviceFloor, std::min(state_.deviceHeight, body - 100)))
-            : 0;
-    // Live's Info View sits in the bottom-left corner beside the Device View.
+    const int top = kTransportHeight, bottom = h - kStatusHeight;
+    const int body = std::max(0, bottom - top);
+    // The detail row: Live's Info View and Device View. The strip never goes below its
+    // floor and grows upward only (ADR-0203 d7); it leaves the transport, the ruler and
+    // a row when it can.
+    const int dock = state_.docked ? std::min(body, std::max(state_.deviceFloor,
+                                                             std::min(state_.deviceHeight, body - 100)))
+                                   : 0;
     const int row = dock > 0 ? dock : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
-    const int rowY = h - kStatusHeight - row;
-    const int infoW = infoShown_ ? std::min(state_.panels.find(Panel::Browser)->width, w / 2) : 0;
-    infoArea_ = infoShown_ ? juce::Rectangle<int>(0, rowY, infoW, row) : juce::Rectangle<int>();
-    deviceArea_ = dock > 0 ? juce::Rectangle<int>(infoW, rowY, w - infoW, dock)
+    const int rowY = bottom - row;
+    // Live's Info View sits in the bottom-left corner beside the Device View.
+    const int infoW = infoShown_ ? std::min(kInfoWidth, w / 2) : 0;
+    infoArea_ = infoShown_ ? juce::Rectangle<int>(gap, rowY, infoW, row) : juce::Rectangle<int>();
+    const int deviceX = infoShown_ ? infoArea_.getRight() + gap : gap;
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(deviceX, rowY, w - deviceX - gap, dock)
                            : juce::Rectangle<int>();
+    // Each panel has Live's dark 4 pt edge, which the root draws; the strip sits inside.
     // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
     // lost space proportionally above each panel's own minimum; the centre
     // keeps its minimum. Stored preferences survive a temporary resize.
@@ -428,85 +455,106 @@ void AdiRootComponent::resized() {
         left = leftMin + leftExtra;
         right = rightMin + extra - leftExtra;
     }
-    const int top = kTransportHeight, mid = std::max(0, rowY - top);
+    const int mid = std::max(0, rowY - gap - top);
     const bool browserLeft = slots[0].panel == Panel::Browser;
+    // The mixer's columns sit against the arrangement, inside its frame, as Live's
+    // track headers do; the browser stands apart, a gap away.
     const int mw = browserLeft ? right : left;
-    mixerArea_ = mw > 0 ? juce::Rectangle<int>(browserLeft ? w - right : 0, top, mw, mid)
+    mixerArea_ = mw > 0 ? juce::Rectangle<int>(browserLeft ? w - right - gap : gap, top, mw, mid)
                         : juce::Rectangle<int>();
     mixer.setVisible(!mixerArea_.isEmpty());
-    mixer.setBounds(mixerArea_.withTrimmedLeft(browserLeft ? 1 : 0));
+    mixer.setBounds(mixerArea_);
     const int bw = browserLeft ? left : right;
-    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? 0 : w - right, top, bw, mid)
+    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? gap : w - right, top, bw - gap, mid)
                           : juce::Rectangle<int>();
+    browser.setVisible(!browserArea_.isEmpty());
+    browser.setBounds(browserArea_);
     // The AI chat is a tab at the browser's foot, collapsed by default, so the
     // column looks as Live's (ADR-0203 d6). Open, it takes the lower part.
     if (browserArea_.isEmpty()) {
         chatArea_ = {};
         aiTab.setVisible(false);
     } else {
-        const int chatH = state_.aiChatOpen ? std::max(kTabHeight, mid * 2 / 5) : kTabHeight;
-        chatArea_ = browserArea_.withTop(browserArea_.getBottom() - chatH);
+        // ADI's addition (Master Reference 3.1): the tab sits at the foot of the
+        // browser's panes, above Live's preview strip.
+        const int inner = browserArea_.getHeight() - kPreviewHeight - look::border;
+        const int chatH = state_.aiChatOpen ? std::max(kTabHeight, inner * 2 / 5) : kTabHeight;
+        chatArea_ = juce::Rectangle<int>(browserArea_.getX() + look::border, browserArea_.getY() + inner - chatH,
+                                         browserArea_.getWidth() - 2 * look::border, chatH);
         aiTab.setVisible(true);
         aiTab.setBounds(chatArea_.withHeight(kTabHeight));
     }
     leftWidth_ = left;
     rightWidth_ = right;
+    // The arrangement fills what the side panels leave, between the browser's gap and
+    // the mixer's columns.
+    const int centreX = browserLeft ? left + gap : mixerArea_.getRight();
+    const int centreW = std::max(0, (browserLeft ? mixerArea_.getX() : w - right - gap) - centreX);
     // Live's Mixer View sits at the foot of the arrangement, its full width (§18.1).
-    const int centreW = std::max(0, w - left - right);
     const int mvh = state_.mixerView
                         ? std::clamp(state_.mixerViewHeight, 120,
                                      std::max(120, mid - ArrangementView::kTopHeight - 64))
                         : 0;
-    mixerViewArea_ = mvh > 0 && mid > mvh ? juce::Rectangle<int>(left, top + mid - mvh, centreW, mvh)
-                                          : juce::Rectangle<int>();
+    mixerViewArea_ = mvh > 0 && mid > mvh
+                         ? juce::Rectangle<int>(centreX, top + mid - mvh, centreW, mvh)
+                         : juce::Rectangle<int>();
     mixerView.setVisible(!mixerViewArea_.isEmpty());
     mixerViewResizer.setVisible(!mixerViewArea_.isEmpty());
     mixerView.setBounds(mixerViewArea_.withTrimmedTop(1));
     mixerViewResizer.setBounds(mixerViewArea_.getX(), mixerViewArea_.getY() - 3, centreW, 6);
     status.mixerToggle.setToggleState(state_.mixerView, juce::dontSendNotification);
-    arrangement.setBounds(left, top, centreW, mid - mixerViewArea_.getHeight());
+    arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
+    // The Overview runs from the lanes' left edge to Live's H and W buttons.
+    const int overviewX = centreX + ArrangementView::kLeftMargin;
+    const int overviewRight = browserLeft && !mixerArea_.isEmpty()
+                                  ? mixerArea_.getRight() - MixerPanel::kRightStrip - 48
+                                  : centreX + centreW - 4;
+    arrangement.overview.setBounds(overviewX, top + 4, std::max(0, overviewRight - overviewX),
+                                   ArrangementView::kOverviewHeight - 4);
     devices.setVisible(!deviceArea_.isEmpty());
     dockResizer.setVisible(!deviceArea_.isEmpty());
-    devices.setBounds(deviceArea_.withTrimmedTop(1));
+    devices.setBounds(deviceArea_.reduced(look::border));
     dockResizer.setBounds(deviceArea_.getX(), deviceArea_.getY() - 3, deviceArea_.getWidth(), 6);
     dockResizer.toFront(false);
     dirty_.mark(DirtySet::All);
 }
 void AdiRootComponent::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff171a20));
-    const int w = getWidth();
-    const int top = kTransportHeight;
-    const int bottom = (infoArea_.isEmpty() && deviceArea_.isEmpty())
-                           ? getHeight() - kStatusHeight
-                           : std::max(infoArea_.getY(), deviceArea_.getY());
-    const int h = std::max(0, bottom - top);
-    const int left = leftWidth_, right = rightWidth_;
-    g.setColour(juce::Colour(0xff21262e));
-    g.fillRect(0, top, left, h);
-    g.fillRect(w - right, top, right, h);
-    g.setColour(juce::Colour(0xff20232b));
-    g.fillRect(deviceArea_);
-    g.setColour(juce::Colour(0xff1b1f26));
-    g.fillRect(infoArea_);
-    g.fillRect(chatArea_);
-    g.setColour(juce::Colour(0xff343b47));
-    g.fillRect(left, top, 1, h);
-    g.fillRect(w - right, top, 1, h);
+    g.fillAll(look::frame);
+    // Live's panels have a dark 4 pt edge with rounded corners.
+    auto panel = [&g](juce::Rectangle<int> r) {
+        g.setColour(look::band);
+        g.fillRoundedRectangle(r.toFloat(), 5.f);
+    };
     if (!deviceArea_.isEmpty())
-        g.fillRect(deviceArea_.getX(), deviceArea_.getY(), deviceArea_.getWidth(), 1);
+        panel(deviceArea_);
+    // Live's Info View: a title bar with the element's name, its description below.
     if (!infoArea_.isEmpty()) {
-        g.fillRect(0, infoArea_.getY(), infoArea_.getWidth(), 1);
-        g.fillRect(infoArea_.getRight(), infoArea_.getY(), 1, infoArea_.getHeight());
+        panel(infoArea_);
+        const auto inner = infoArea_.reduced(look::border);
+        g.setColour(look::panel);
+        g.fillRect(inner);
+        const auto titleBar = inner.withHeight(17);
+        g.setColour(look::field);
+        g.fillRect(titleBar);
+        const int split = infoText_.indexOfChar('\n');
+        const auto title = split < 0 ? infoText_ : infoText_.substring(0, split);
+        const auto body = split < 0 ? juce::String() : infoText_.substring(split + 1);
+        g.setColour(look::text);
+        g.setFont(look::font(12.f, true));
+        g.drawText(title, titleBar.reduced(5, 0), juce::Justification::centredLeft);
+        // Live's body text: small, on a 15 pt line.
+        juce::AttributedString words(body);
+        words.setFont(look::font(11.f));
+        words.setColour(look::text);
+        words.setLineSpacing(2.5f);
+        juce::TextLayout layout;
+        layout.createLayout(words, static_cast<float>(inner.getWidth() - 10));
+        layout.draw(g, inner.withTrimmedTop(20).reduced(5, 2).toFloat());
     }
-    if (!chatArea_.isEmpty())
-        g.fillRect(chatArea_.getX(), chatArea_.getY(), chatArea_.getWidth(), 1);
-    g.setColour(juce::Colour(0xffa5b0c0));
-    g.setFont(juce::FontOptions(14.f));
-    if (!browserArea_.isEmpty())
-        g.drawText("Browser", browserArea_.getX() + 12, top + 12,
-                   std::max(0, browserArea_.getWidth() - 24), 24, juce::Justification::centredLeft);
-    if (!infoArea_.isEmpty())
-        g.drawFittedText(infoText_, infoArea_.reduced(10), juce::Justification::topLeft, 8);
+    if (!chatArea_.isEmpty() && state_.aiChatOpen) {
+        g.setColour(look::panel);
+        g.fillRect(chatArea_);
+    }
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
 void AdiRootComponent::resizeMixerView(int height) {
@@ -517,7 +565,7 @@ void AdiRootComponent::resizeMixerView(int height) {
     resized();
 }
 void AdiRootComponent::resizeDevices(int height) {
-    const int ceiling = getHeight() - kTransportHeight - kStatusHeight -
+    const int ceiling = getHeight() - kTransportHeight - kStatusHeight - look::gap -
                         ArrangementView::kTopHeight - state_.laneHeight;
     state_.setDeviceHeight(std::min(height, ceiling));
     resized();
@@ -547,6 +595,29 @@ bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const 
 void AdiRootComponent::say(std::string message) {
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
+}
+juce::String AdiRootComponent::selectionText() const {
+    // Live's Status Bar: the insert marker with its time, or the time selection.
+    const auto &s = arrangement.geometry.selection;
+    auto where = [](std::int64_t tick) {
+        const auto sixteenths = tick / (textproj::kPPQ / 4);
+        return juce::String(sixteenths / 16 + 1) + "." + juce::String(sixteenths / 4 % 4 + 1) +
+               "." + juce::String(sixteenths % 4 + 1);
+    };
+    auto seconds = [this](std::int64_t tick) {
+        const auto *tempo = reader_->tempo();
+        const int t = tempo ? static_cast<int>(tempo->ticksToSeconds(tick)) : 0;
+        return juce::String(t / 60) + ":" + juce::String(t % 60).paddedLeft('0', 2);
+    };
+    if (s.start != s.end) {
+        const auto a = std::min(s.start, s.end), b = std::max(s.start, s.end);
+        const auto beats = (b - a) / (textproj::kPPQ / 4);
+        return "Time Selection   Start: " + where(a) + "   End: " + where(b) + "   Length: " +
+               juce::String(beats / 16) + "." + juce::String(beats / 4 % 4) + "." +
+               juce::String(beats % 4) + "   (Duration: " + seconds(b - a) + ")";
+    }
+    return "Insert Mark " + where(s.marked ? s.insert : 0) + " (Time: " +
+           seconds(s.marked ? s.insert : 0) + ")";
 }
 std::string AdiRootComponent::undoTitle(bool redo) const {
     const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
@@ -586,7 +657,7 @@ bool AdiRootComponent::insertTrack(bool midi) {
     request.payload = {{"id", id},
                        {"kind", midi ? "midi" : "audio"},
                        // '#' shows the track's number and follows it (manual 18.2).
-                       {"name", midi ? "#-MIDI" : "#-Audio"},
+                       {"name", midi ? "# MIDI" : "# Audio"},
                        {"index", index}};
     request.label = midi ? "Insert MIDI Track" : "Insert Audio Track";
     request.selBefore = session_.advisory();

@@ -13,16 +13,21 @@ class Store;
 }
 namespace adi::ui {
 struct DesktopDefaults {
-    int browser = 240, mixer = 280;
-    // The device strip's fixed minimum: Live's Device View at 100 % interface
-    // zoom, 169 zoom-independent units, the director's figure and UNVERIFIED
-    // (ADR-0203 d7, measured under d26). A desktop default handed in by the
-    // shell, never a constant inside a component (ADR-0200 d5, ADR-0180 d9).
-    int deviceFloor = 169;
+    // Live 11's widths at 100 %: the browser with the frame's margin, and the track
+    // header's In/Out and mixer columns with the meter and the right-hand strip,
+    // 78 + 116 + 27 (measured 2026-10-27; ui_mixer.hpp's MixerPanel::kFullWidth).
+    int browser = 316, mixer = 221;
+    // The device strip's fixed minimum: Live's Device View at 100 % interface zoom
+    // (ADR-0203 d7). Measured on Live 11.2.7, the director's Mac, 2026-10-27: the
+    // whole Device View panel is 196 points with its 4 pt edges, its device body
+    // under the title bars about 170, which is the director's 169. ADI's strip is the
+    // whole panel, so its floor is 196, to be read again on Live 12 (ADR-0203 d26). A desktop default
+    // handed in by the shell, never a constant in a component (ADR-0200 d5).
+    int deviceFloor = 196;
 };
 struct WindowState {
     explicit WindowState(DesktopDefaults d = {})
-        : panels({Panel::Browser, d.browser, 120, false}, {Panel::Mixer, d.mixer, 160, false}, 240),
+        : panels({Panel::Browser, d.browser, 120, false}, {Panel::Mixer, d.mixer, 120, false}, 240),
           deviceHeight(d.deviceFloor), deviceFloor(d.deviceFloor) {}
     PanelLayout panels;
     double zoom = 1; // the arrangement's own zoom; interface zoom is the window's
@@ -32,7 +37,7 @@ struct WindowState {
     bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
     // The arrangement's own view: where it starts, its time zoom and its lane heights.
     double timelineLeft = 0, pixelsPerQuarter = 48;
-    int laneHeight = 64;
+    int laneHeight = 88; // Live 11's default track: five rows of its controls
     std::map<std::int64_t, int> laneHeights;
     std::set<std::int64_t> foldedDevices; // devices folded in the strip, per window
     bool mixerView = false;               // Live's Mixer View, hidden until asked for

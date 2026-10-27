@@ -3,6 +3,7 @@
 #include "ui_shell.hpp"
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 namespace adi::ui {
 namespace {
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf.
@@ -28,27 +29,45 @@ juce::LookAndFeel &smallKnob() {
 }
 } // namespace
 MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
-    volume.setSliderStyle(panel.vertical() ? juce::Slider::LinearVertical
-                                           : juce::Slider::LinearHorizontal);
-    if (panel.vertical())
+    if (panel.vertical()) {
+        volume.setSliderStyle(juce::Slider::LinearVertical);
         volume.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-    else
-        volume.setTextBoxStyle(juce::Slider::TextBoxRight, false, 48, 18);
+        pan.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+        pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        pan.setLookAndFeel(&smallKnob());
+        pan.setColour(juce::Slider::rotarySliderOutlineColourId, juce::Colour(0xff4a5463));
+        pan.setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xff8fb4c8));
+    } else {
+        // Live's value boxes: the number in the box, the volume's filled in blue.
+        for (auto *s : {&volume, &pan}) {
+            s->setSliderStyle(juce::Slider::LinearBar);
+            s->setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
+            s->setSliderSnapsToMousePosition(false);
+            s->setColour(juce::Slider::textBoxTextColourId, look::text);
+        }
+        pan.getProperties().set("live.bipolar", true);
+    }
     volume.setRange(kFloorDb, kTopDb, .01);
+    // Live's 0 dB sits at 83 % of the box, not at the linear 92 %.
+    volume.setSkewFactor(2.27);
     volume.textFromValueFunction = [](double v) {
-        return v <= kFloorDb ? juce::String("-inf") : juce::String(v, 1) + " dB";
+        if (v <= kFloorDb)
+            return juce::String("-inf");
+        return std::abs(v - std::round(v)) < .005 ? juce::String(static_cast<int>(std::lround(v)))
+                                                  : juce::String(v, 1);
     };
     volume.updateText();
     volume.setTitle("Track Volume");
     volume.setTooltip("Adjusts the track's output level.");
-    pan.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
-    pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-    pan.setRange(-1, 1, .01);
+    pan.setRange(-1, 1, .02);
+    // Live's pan reads 50L to 50R, C in the middle.
+    pan.textFromValueFunction = [](double v) {
+        const auto n = static_cast<int>(std::lround(std::abs(v) * 50));
+        return n == 0 ? juce::String("C") : juce::String(n) + (v < 0 ? "L" : "R");
+    };
+    pan.updateText();
     // Double-clicking the Pan control resets it to its default (manual 18.1).
     pan.setDoubleClickReturnValue(true, 0);
-    pan.setLookAndFeel(&smallKnob());
-    pan.setColour(juce::Slider::rotarySliderOutlineColourId, juce::Colour(0xff4a5463));
-    pan.setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xff8fb4c8));
     pan.setTitle("Track Panning");
     pan.setTooltip("Places the track in the stereo field. Right-click for the pan mode.");
     for (auto *s : {&volume, &pan}) {
@@ -83,12 +102,19 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     active.setTooltip("Turns the track's output on or off.");
     solo.setTitle("Solo");
     solo.setTooltip("Solos the track.");
+    arm.setTitle("Arm Recording");
+    arm.setTooltip("Arms the track for recording.");
     eq.setTitle("ADI-Q");
     eq.setTooltip("The channel EQ, built in and off until a band is touched (ADR-0204 d1).");
     limiter.setTitle("ADI-L");
     limiter.setTooltip("The channel limiter, built in and off (ADR-0204 d1).");
-    for (auto *b : {&active, &solo, &eq, &limiter})
+    for (juce::TextButton *b : {&active, &solo, static_cast<juce::TextButton *>(&arm), &eq, &limiter}) {
         addAndMakeVisible(*b);
+        b->setColour(juce::TextButton::buttonColourId, look::button);
+    }
+    // Live's switches when on: the activator orange, Solo blue, Arm red.
+    solo.setColour(juce::TextButton::buttonOnColourId, look::value);
+    arm.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffff3a34));
     pan.addMouseListener(this, false);
     active.setClickingTogglesState(false);
     active.onClick = [this] {
@@ -101,6 +127,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             panel_.submit("track.setSolo", {{"id", track_}, {"soloed", !t->soloed}},
                           t->soloed ? "Unsolo Track" : "Solo Track");
     };
+    arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
     // Present but off: the slots exist on every strip; what fills them is ADI-Q and
     // ADI-L from the clones lane, in the engine's channel slots (LANES §3 item 7).
     eq.onClick = [this] {
@@ -109,6 +136,12 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     limiter.onClick = [this] {
         panel_.root.say("The channel limiter slot is off until ADI-L is handed over.");
     };
+}
+void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    getLookAndFeel().drawButtonBackground(g, *this, findColour(buttonColourId), over, down);
+    // Live's Arm switch: a dark dot, light on red when armed.
+    g.setColour(getToggleState() ? look::text : look::band);
+    g.fillEllipse(getLocalBounds().toFloat().withSizeKeepingCentre(8, 8));
 }
 void MixerStrip::bind(std::int64_t id) {
     track_ = id;
@@ -129,6 +162,12 @@ void MixerStrip::frame(bool changed) noexcept {
                 active.setButtonText(juce::String(static_cast<int>(position_)));
                 break;
             }
+    }
+    // The selected track's controls are lighter, as Live's.
+    const bool selected = track_ != 0 && panel_.root.arrangement.geometry.selection.track == track_;
+    if (selected != selected_) {
+        selected_ = selected;
+        repaint();
     }
     if (changed && t && !dragging_) {
         volume.setValue(std::max(kFloorDb, static_cast<double>(t->volumeDb)),
@@ -153,7 +192,8 @@ void MixerStrip::frame(bool changed) noexcept {
     if (p != peak_ || r != rms_) {
         peak_ = p;
         rms_ = r;
-        repaint(getWidth() - 10, 2, 8, getHeight() - 4);
+        repaint(panel_.vertical() ? getWidth() - 18 : (showsInOut() ? MixerPanel::kInOutWidth : 0) + 105,
+                0, 10, getHeight());
     }
 }
 void MixerStrip::resized() {
@@ -173,22 +213,29 @@ void MixerStrip::resized() {
         volume.setBounds(2, 94, std::max(0, w - 24), std::max(0, getHeight() - 98));
         return;
     }
-    const int meterW = 12, h = std::min(getHeight() - 4, 22);
-    int x = 4;
-    active.setBounds(x, 3, 24, h);
-    x += 26;
-    solo.setBounds(x, 3, 22, h);
-    x += 24;
-    pan.setBounds(x, 2, h + 2, h + 2);
-    x += h + 6;
-    eq.setBounds(getWidth() - meterW - 54, 3, 26, h);
-    limiter.setBounds(getWidth() - meterW - 28, 3, 26, h);
-    volume.setBounds(x, 3, std::max(0, getWidth() - meterW - 58 - x), h);
+    // Live's rows: 13 pt boxes on a 17 pt pitch, 3 pt from the track's top. A row
+    // shows only when the track is tall enough for it.
+    const int x = showsInOut() ? MixerPanel::kInOutWidth : 0;
+    const int rows = std::max(1, (getHeight() - 1) / 17);
+    auto place = [rows](juce::Component &c, int row, juce::Rectangle<int> r) {
+        c.setVisible(row < rows);
+        c.setBounds(r);
+    };
+    place(active, 0, {x + 4, 3, 45, 13});
+    place(solo, 0, {x + 54, 3, 20, 13});
+    place(arm, 0, {x + 78, 3, 21, 13});
+    place(volume, 1, {x + 4, 20, 35, 13});
+    place(pan, 1, {x + 54, 20, 45, 13});
+    place(eq, 2, {x + 4, 37, 29, 13});
+    place(limiter, 2, {x + 37, 37, 29, 13});
+}
+bool MixerStrip::showsInOut() const noexcept {
+    return !panel_.vertical() && getWidth() >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth;
 }
 void MixerStrip::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff242b35));
-    g.setColour(juce::Colour(0xff313b47));
     if (panel_.vertical()) {
+        g.fillAll(juce::Colour(0xff242b35));
+        g.setColour(juce::Colour(0xff313b47));
         g.drawVerticalLine(getWidth() - 1, 0, static_cast<float>(getHeight()));
         const auto &tracks = panel_.root.reader().tracks();
         for (std::size_t i = 0; i < tracks.size(); ++i)
@@ -202,13 +249,65 @@ void MixerStrip::paint(juce::Graphics &g) {
         paintMeter(g, {getWidth() - 18, 94, 10, std::max(0, getHeight() - 98)});
         return;
     }
-    g.drawHorizontalLine(getHeight() - 1, 0, static_cast<float>(getWidth()));
-    paintMeter(g, {getWidth() - 10, 2, 8, getHeight() - 5});
+    // Live's columns: grey, lighter for the selected track, a dark rule between them
+    // and under the track.
+    g.fillAll(selected_ ? look::laneSelectedAlt : look::panel);
+    g.setColour(look::separator);
+    g.fillRect(0, getHeight() - 2, getWidth(), 2);
+    const int x = showsInOut() ? MixerPanel::kInOutWidth : 0;
+    if (x > 0) {
+        g.fillRect(0, 0, 2, getHeight());
+        g.fillRect(x - 1, 0, 1, getHeight());
+        paintInOut(g, 2);
+    }
+    paintMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+}
+void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
+    // The In/Out column as Live draws an audio track's: where it records from, the
+    // monitoring switch, where it plays to. The snapshot does not carry a track's
+    // routing yet (window log, N11): the column shows ADI's fixed routing, every
+    // track to the Main track.
+    const int rows = std::max(1, (getHeight() - 1) / 17);
+    auto chooser = [&](int row, const char *label, bool enabled) {
+        if (row >= rows)
+            return;
+        const juce::Rectangle<float> r(static_cast<float>(x + 3), static_cast<float>(3 + 17 * row), 70, 13);
+        look::box(g, r, look::chooser);
+        g.setColour(enabled ? look::text : look::textDim);
+        g.setFont(look::font(11.5f));
+        g.drawText(label, r.withTrimmedLeft(3).withTrimmedRight(12), juce::Justification::centredLeft);
+        if (*label != 0)
+            look::triangle(g, {r.getRight() - 10, r.getY() + 4, 7, 5}, juce::MathConstants<float>::halfPi,
+                           enabled ? look::text : look::textDim);
+    };
+    chooser(0, "Ext. In", true);
+    chooser(1, "1/2", false);
+    if (rows > 2) {
+        const std::array<std::pair<const char *, int>, 3> monitor{{{"In", 16}, {"Auto", 23}, {"Off", 19}}};
+        float bx = static_cast<float>(x + 3);
+        for (const auto &[label, width] : monitor) {
+            const juce::Rectangle<float> r(bx, 37, static_cast<float>(width), 13);
+            const bool on = std::string_view(label) == "Auto";
+            look::box(g, r, on ? look::accent : look::button);
+            g.setColour(look::text);
+            g.setFont(look::font(11.5f));
+            g.drawText(label, r, juce::Justification::centred);
+            bx += static_cast<float>(width) + 6;
+        }
+    }
+    chooser(3, "Master", true);
+    chooser(4, "", false);
 }
 void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
     const int height = area.getHeight();
-    g.setColour(juce::Colour(0xff11161c));
-    g.fillRect(area);
+    g.setColour(look::display);
+    if (panel_.vertical())
+        g.fillRect(area);
+    else {
+        // Live's two channels, side by side.
+        g.fillRect(area.withWidth(area.getWidth() / 2 - 1));
+        g.fillRect(area.withTrimmedLeft(area.getWidth() / 2 + 1));
+    }
     auto level = [height](float v) {
         return static_cast<int>(
             static_cast<float>(height) *
@@ -316,7 +415,7 @@ void MixerPanel::place() {
             auto &s = *strips_[used++];
             if (s.track() != tracks[i]->id && !s.dragging())
                 s.bind(tracks[i]->id);
-            s.setBounds(0, y, getWidth(), h);
+            s.setBounds(0, y, std::max(0, getWidth() - kRightStrip), h);
             s.setVisible(true);
         }
         y += h;
@@ -333,11 +432,56 @@ void MixerPanel::frame(bool changed) noexcept {
             s->frame(changed);
 }
 void MixerPanel::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff21262e));
-    if (vertical_)
+    if (vertical_) {
+        g.fillAll(juce::Colour(0xff21262e));
         return;
-    g.setColour(juce::Colour(0xff303944));
-    g.fillRect(0, 0, getWidth(), ArrangementView::kTopHeight);
+    }
+    // Live's arrangement frame above the rows and down the right-hand edge; the
+    // columns' grey under the last track.
+    g.fillAll(look::band);
+    const int strip = getWidth() - kRightStrip;
+    int bottom = ArrangementView::kTopHeight - root.arrangement.geometry.scrollY;
+    for (const auto &t : root.reader().tracks())
+        bottom += root.arrangement.geometry.heightFor(t->id);
+    bottom = std::clamp(bottom, ArrangementView::kTopHeight, getHeight());
+    g.setColour(look::panel);
+    g.fillRect(0, bottom, strip, std::max(0, getHeight() - bottom - ArrangementView::kTimeRulerHeight));
+    g.setColour(look::separator);
+    g.fillRect(0, bottom, 2, getHeight() - bottom);
+    // H and W, Live's Optimize Arrangement Height and Width, beside the Overview's end.
+    g.setFont(look::font(12.f));
+    for (const auto &[label, x] : {std::pair{"H", strip - 43}, std::pair{"W", strip - 21}}) {
+        const juce::Rectangle<float> r(static_cast<float>(x), 4, 18, 15);
+        look::box(g, r, look::chooser);
+        g.setColour(look::text);
+        g.drawText(label, r, juce::Justification::centred);
+    }
+    // At the strip's head, Live's switches between Arrangement and Session View; the
+    // Arrangement's is lit.
+    for (int i = 0; i < 2; ++i) {
+        const juce::Rectangle<float> r(static_cast<float>(strip) + 4, 3.f + 22.f * static_cast<float>(i), 19, 19);
+        g.setColour(juce::Colour(0xff3c3c3c));
+        g.fillEllipse(r);
+        g.setColour(i == 0 ? look::accent : look::panel);
+        for (int line = 0; line < 3; ++line)
+            if (i == 0)
+                g.fillRect(r.getX() + 5, r.getY() + 6 + 3.f * static_cast<float>(line), 9.f, 1.6f);
+            else
+                g.fillRect(r.getX() + 6 + 3.f * static_cast<float>(line), r.getY() + 5, 1.6f, 9.f);
+    }
+    // The strip's round switches at its foot: In/Out, Returns, Mixer, Delay.
+    const std::array<std::pair<const char *, bool>, 4> switches{
+        {{"I-O", true}, {"R", true}, {"M", true}, {"D", false}}};
+    float y = static_cast<float>(getHeight() - ArrangementView::kTimeRulerHeight) - 4 * 19.f;
+    for (const auto &[label, on] : switches) {
+        const juce::Rectangle<float> r(static_cast<float>(strip) + 7, y, 15, 15);
+        g.setColour(on ? look::accent : juce::Colour(0xff0a0a0a));
+        g.fillEllipse(r);
+        g.setColour(on ? look::text : look::textOnBand);
+        g.setFont(look::font(std::string_view(label).size() > 1 ? 7.f : 9.f, true));
+        g.drawText(label, r, juce::Justification::centred);
+        y += 19;
+    }
 }
 void MixerPanel::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
