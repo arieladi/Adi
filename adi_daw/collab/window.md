@@ -43,6 +43,35 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-27, night — LANES §3b item 2 begins: the Overview → [#258](https://github.com/arieladi/Adi/pull/258) `window/overview`
+
+**The Overview, now #258, stacked on #257.** It is a 16-unit strip above the ruler: every track's
+clips in miniature over the whole span, and an outline around the part on screen.
+- Dragging sideways scrolls by the Overview's own scale; dragging vertically zooms.
+- A double-click zooms out to the whole arrangement.
+- The lanes, the playhead, the mixer's rows and the strip's ceiling now start below it
+  (`kTopHeight`).
+
+Checks: 212 shell checks, with real mouse dispatch through the fake peer; `test_all.sh` 8255
+across 97 suites. Parity: row 20 of `parity-7.3-arrangement.md` is built.
+
+**Where to resume.** The worktree is `~/adi-window`, on `window/overview`. Its trees are
+`adi_daw/build` (core, `-DADI_WERROR=ON`) and `adi_daw/build-juce` (`-DADI_WITH_JUCE=ON`). This
+log lives in `~/adi-window-log` on `window/log` (#252). The next items of §3b item 2, in order:
+1. Rename (Ctrl/Cmd+R) and the double-click on a track's name: `track.rename` exists.
+2. The scrub area and its click-to-play: the locators wait for their ops.
+3. Selection as session state, which UI-ARCHITECTURE §2 requires. The arrangement still keeps it
+   in view geometry, as #199 did.
+4. The canvas's accessibility layer, one virtual child per clip (UI-ARCHITECTURE §6).
+5. The Mixer View of vertical strips.
+6. The browser's content.
+
+Then item 3: the window parts of phase C, the Settings window in Live's shape, and the EQ/limiter
+window. Before any of that, check CI on #246, #248, #251, #254, #256, #257 and #258; their reruns
+after the restack were pending at this entry.
+
+---
+
 ## 2026-10-27, late — #204 → [#256](https://github.com/arieladi/Adi/pull/256) `window/floating-windows`; #205 → [#257](https://github.com/arieladi/Adi/pull/257) `window/mixer`; the six are through
 
 **#204, the floating host, now #256, stacked on #254.**
