@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <thread>
 #include <string>
@@ -143,9 +144,13 @@ public:
                                  ? io.in[c] + io.blockOffset : nullptr;
             for (std::int32_t k = 0; k < io.frames; ++k) o[k] = (i != nullptr ? i[k] : 0.0f);
         }
+        ++calls;
     }
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] bool alwaysProcess() const noexcept override { return always; }
     [[nodiscard]] const char* name() const noexcept override { return "sum"; }
+    bool always = false;   ///< a mix kept awake, for a test that needs its edges run
+    int calls = 0;
 };
 
 struct Out {
@@ -469,10 +474,18 @@ void testAZeroEdgeCanStillBeGivenADelay() {
 
     plugin.setLatency(100);
     check(g.retapLatency(), "the retap fits");
-    g.process(io);           // the crossfade block -- must NOT take the memcpy path
-    src.advance();
+    // The fast path left the edge's ring unwritten, so the glide first waits
+    // a block for 100 samples of the edge's real past (ADR-0079 d2), then
+    // crossfades: it is not dropped, and it does not read a stale ring.
+    int blocks = 0;
+    while (g.compensationFor(nd, nm) != 100 && blocks < 4) {
+        g.process(io);       // must NOT take the memcpy path
+        src.advance();
+        ++blocks;
+    }
     eqi(g.compensationFor(nd, nm), 100,
         "an edge that was at zero now carries 100 -- the glide was not dropped");
+    eqi(blocks, 2, "one block held while its history is written, then the crossfade");
 }
 
 // === the coalescer (ADR-0066 d2) ==========================================
@@ -1612,6 +1625,481 @@ void testAGrowTooSmallIsGrownAgain() {
     check(!c.rebuildNeeded(), "and nothing was rebuilt");
 }
 
+// --- an edge at zero delay, and a glide away from it (ADR-0079 d2) ----------
+//
+// An edge at zero takes `Graph::accumulate`'s fast path: the source is copied
+// and the edge's ring is not written, because zero compensation must cost
+// nothing. So the ring stops holding the edge's history, and a glide away
+// from zero used to read whatever it held the last time the edge had a delay.
+
+/// A ramp straight into a mix, beside a path whose plug-in's latency the test
+/// moves and whose own signal is silence: the mix is then exactly the ramp's
+/// edge, so every output sample names the delay that edge read it at. The
+/// ramp's value is its stream position.
+struct ZeroEdgeRig {
+    RampNode src;
+    SumNode silent;                    // never fed: a source of zeros
+    SwitchableNode plugin{128, 512};
+    SumNode direct, mix;
+    Graph g;
+    NodeId ns{}, nq{}, np{}, nd{}, nm{};
+    std::int32_t frames;
+    Out o;
+    AudioIo io;
+    std::int64_t at = 0;               // the stream position after the last block
+
+    ZeroEdgeRig(std::int32_t blockFrames, bool directFirst, Precision p)
+        : frames(blockFrames), o(blockFrames), io(makeIo(o, blockFrames)) {
+        ns = g.addNode(src); nq = g.addNode(silent); np = g.addNode(plugin);
+        nd = g.addNode(direct); nm = g.addNode(mix);
+        g.connect(ns, nd);
+        g.connect(nq, np);
+        // Both orders: the last live input of a double sum is added in its own
+        // pass (`accumulateLast`), every other one in `accumulate`.
+        if (directFirst) { g.connect(nd, nm); g.connect(np, nm); }
+        else             { g.connect(np, nm); g.connect(nd, nm); }
+        g.setOutput(nm);
+        g.setLatencyHeadroom(512);
+        g.setPrecision(p);
+        g.prepare(48000.0, blockFrames);
+    }
+    void block() {
+        g.process(io);
+        src.advance();
+        at += frames;
+    }
+    void retap(std::int32_t latency) {
+        plugin.setLatency(latency);
+        (void)g.retapLatency();
+    }
+    [[nodiscard]] std::int32_t delay() const { return g.compensationFor(nd, nm); }
+    [[nodiscard]] bool delayedBy(std::int32_t d) const {
+        for (std::int32_t i = 0; i < frames; ++i) {
+            const auto want = static_cast<float>(at - frames + i - d);
+            if (o.l[static_cast<std::size_t>(i)] != want || o.r[static_cast<std::size_t>(i)] != want)
+                return false;
+        }
+        return true;
+    }
+    /// The last block is the crossfade from the tap `from` back to `to` back,
+    /// both reading the ramp's REAL past: a tap reading a stale slot misses
+    /// by thousands, so a tolerance for the double path's rounding is safe.
+    [[nodiscard]] bool faded(std::int32_t from, std::int32_t to) const {
+        const float step = 1.0f / static_cast<float>(frames);
+        float t = 0.0f;
+        for (std::int32_t i = 0; i < frames; ++i) {
+            t += step;
+            const auto p = static_cast<float>(at - frames + i);
+            const float a = p - static_cast<float>(from), b = p - static_cast<float>(to);
+            const float want = a + (b - a) * t;
+            const float l = o.l[static_cast<std::size_t>(i)];
+            if (std::fabs(l - want) > 0.05f || o.r[static_cast<std::size_t>(i)] != l) return false;
+        }
+        return true;
+    }
+};
+
+void testAGlideFromZeroReadsTheEdgesRealPast() {
+    section("ADR-0079 d2 -- a glide away from zero reads the edge's real past, never an old one");
+
+    for (const Precision p : {Precision::Float32, Precision::Float64}) {
+        for (const bool directFirst : {true, false}) {
+            for (const std::int32_t frames : {256, 64}) {
+                const std::string where = std::string(p == Precision::Float64 ? "at 64" : "at 32") +
+                                          (directFirst ? ", summed first" : ", summed last") +
+                                          ", blocks of " + std::to_string(frames);
+                ZeroEdgeRig r(frames, directFirst, p);
+                for (int b = 0; b < 2048 / frames; ++b) r.block();
+                check(r.delayedBy(128), where + ": compensated by 128 to begin with");
+
+                // To zero, and long enough there that the ring, had it been
+                // read, would still hold audio from its 128 days.
+                r.retap(0);
+                for (int b = 0; b < 40 * 256 / frames; ++b) r.block();
+                check(r.delayedBy(0), where + ": at zero, the ramp straight through");
+
+                // THE DEFECT: the new tap read the ring as it was 40 blocks
+                // ago -- mid-glide the output fell thousands of positions
+                // behind both taps, old audio crossfaded in, and at blocks
+                // shorter than the delay the block after played it outright.
+                r.retap(128);
+                bool real = true;
+                int blocks = 0;
+                while (r.delay() != 128 && blocks < 40) {
+                    r.block();
+                    ++blocks;
+                    if (!(r.delayedBy(0) || r.faded(0, 128))) real = false;
+                }
+                check(real, where + ": every block on the way is the ramp at 0 or the fade "
+                                    "from 0 to 128 over its real past");
+                // Exactly: held until the ring holds 128 written since the
+                // glide was asked for, then the one block of the fade.
+                eqi(blocks, (128 + frames - 1) / frames + 1,
+                    where + ": and it waits only for that past to be written, blocks");
+                r.block();
+                check(r.delayedBy(128), where + ": then 128 exactly");
+            }
+        }
+    }
+}
+
+class ConstNode final : public Node {
+public:
+    explicit ConstNode(float v) : v_(v) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            for (std::int32_t i = 0; i < io.frames; ++i) o[i] = v_;
+        }
+    }
+    void set(float v) noexcept { v_ = v; }
+    [[nodiscard]] const char* name() const noexcept override { return "const"; }
+private:
+    float v_;
+};
+
+/// A generator into a pass-through that sleeps when it goes quiet (test_graph's
+/// testMixSkipsSleepingSources), into a mix beside a switchable silent path.
+struct SleepRig {
+    ConstNode gen{0.25f};
+    SumNode sleeper;                   // tail 0: it suspends
+    SumNode silent, mix;
+    SwitchableNode plugin;
+    Graph g;
+    NodeId ng{}, ns{}, nq{}, np{}, nm{};
+    Out o{64};
+    AudioIo io;
+
+    SleepRig(std::int32_t latency, bool mixAwake) : plugin(latency, 512), io(makeIo(o, 64)) {
+        mix.always = mixAwake;
+        ng = g.addNode(gen); ns = g.addNode(sleeper); nq = g.addNode(silent);
+        np = g.addNode(plugin); nm = g.addNode(mix);
+        g.connect(ng, ns);
+        g.connect(ns, nm);
+        g.connect(nq, np);
+        g.connect(np, nm);
+        g.setOutput(nm);
+        g.setLatencyHeadroom(512);
+        g.prepare(48000.0, 64);
+    }
+    void retap(std::int32_t latency) {
+        plugin.setLatency(latency);
+        (void)g.retapLatency();
+    }
+    [[nodiscard]] bool all(float v) const {
+        for (std::size_t i = 0; i < 64; ++i) if (o.l[i] != v || o.r[i] != v) return false;
+        return true;
+    }
+};
+
+void testASleepingSourceEdgeGlidesThroughSilence() {
+    section("ADR-0102 d5 -- a sleeping source's edge is not read, and a glide on it reads silence");
+
+    // The mix stays awake; its edge at zero from the sleeper is skipped,
+    // unread and unwritten. The edge's real past is silence. A ring left as it
+    // was when the edge last had a delay still holds the 0.25s.
+    SleepRig r(128, true);
+    for (int b = 0; b < 16; ++b) r.g.process(r.io);
+    check(r.o.l[60] == 0.25f, "compensated by 128, the generator's level comes through");
+    r.retap(0);
+    for (int b = 0; b < 8; ++b) r.g.process(r.io);
+    r.gen.set(0.0f);
+    const std::int64_t skipped = r.g.stats().inputsSkipped;
+    for (int b = 0; b < 32; ++b) r.g.process(r.io);
+    check(r.g.stats().inputsSkipped - skipped >= 30, "the source sleeps, and the mix skips it");
+
+    r.retap(128);
+    bool silent = true;
+    for (int b = 0; b < 6; ++b) {
+        r.g.process(r.io);
+        if (!r.all(0.0f)) silent = false;
+    }
+    check(silent, "every block of the glide to 128 and after is silence, the edge's real past");
+    eqi(r.g.compensationFor(r.ns, r.nm), 128, "and the edge is at 128");
+
+    // The same, with the source falling asleep in the very block its edge
+    // glides to zero: the edge never takes the fast path, only the sleeping
+    // source's skip, and that skip must leave the ring as unwritten too.
+    SleepRig q(128, true);
+    for (int b = 0; b < 16; ++b) q.g.process(q.io);
+    q.retap(0);
+    q.gen.set(0.0f);
+    for (int b = 0; b < 32; ++b) q.g.process(q.io);
+    q.retap(128);
+    silent = true;
+    for (int b = 0; b < 6; ++b) {
+        q.g.process(q.io);
+        if (!q.all(0.0f)) silent = false;
+    }
+    check(silent, "asleep from the block it reached zero: the glide back reads silence too");
+}
+
+void testAWakingConsumerGlidesThroughWhatItReallyHeard() {
+    section("ADR-0043 -- a consumer that slept, its edge at a delay, glides past it through real history");
+
+    // Here the EDGE has a delay, 128, so its consumer drains 128 samples of
+    // silence and then sleeps, and the edge is not run at all while it does:
+    // its ring keeps the 0.25s from before, 128 samples further back than
+    // the drained silence. The mix wakes with the generator at 0.5 and the
+    // plug-in at 400 in the same block, which fits the ring: a tap 400 back
+    // must not reach past the drained silence into the 0.3s.
+    SleepRig r(128, false);
+    r.gen.set(0.3f);   // a level no fade between the 0.5 and silence lands on
+    for (int b = 0; b < 16; ++b) r.g.process(r.io);
+    check(r.o.l[60] == 0.3f, "compensated by 128, the generator's level comes through");
+    r.gen.set(0.0f);
+    for (int b = 0; b < 4; ++b) r.g.process(r.io);   // the drain
+    const int calls = r.mix.calls;
+    for (int b = 0; b < 30; ++b) r.g.process(r.io);
+    check(r.mix.calls == calls, "the mix slept, its edges unrun");
+
+    r.retap(400);
+    r.gen.set(0.5f);
+    r.g.process(r.io);
+    check(r.all(0.0f), "the block it wakes in plays the edge's past, which is silence: "
+                       "sample 63 = " + std::to_string(r.o.l[63]));
+    bool sound = true;
+    for (int b = 0; b < 16; ++b) {
+        r.g.process(r.io);
+        for (std::size_t i = 0; i < 64; ++i) {
+            const float v = r.o.l[i];
+            // Silence, the 0.5, or a fade between them, which at 64 frames
+            // is always a whole number of 128ths: any part of a 0.3 is not.
+            const float k = v * 128.0f;
+            if (v < 0.0f || v > 0.5f || k != std::floor(k) || r.o.r[i] != v) sound = false;
+        }
+    }
+    check(sound, "and nothing after it plays the level from before the sleep");
+    eqi(r.g.compensationFor(r.ns, r.nm), 400, "the edge lands on 400");
+    r.g.process(r.io);
+    check(r.all(0.5f), "playing the 0.5, 400 samples late");
+}
+
+void testAHandoverCarriesOnlyWhatTheOldRingHolds() {
+    section("ADR-0092 -- a handover carries only the history the old line really holds");
+
+    // The next graph's line, compensating the same edge by 40 after a
+    // rebuild, adopts the old line's history (GraphHost::handover). The old
+    // line had a delay of 40, then sat at zero: its ring still holds the
+    // stream from then, which is not this edge's past any more.
+    DelayLine old;
+    old.prepare(2, 64);
+    old.setDelay(40);
+    LiveEdge e(old);
+    for (int b = 0; b < 8; ++b) e.block(8);
+    check(old.beginGlide(0), "the old line glides to zero");
+    e.block(8);
+    for (int b = 0; b < 20; ++b) old.forget();   // the fast path: unwritten, every block
+
+    DelayLine next;
+    next.prepare(2, 64);
+    next.setDelay(40);
+    next.adoptHistory(old);
+    std::vector<float> zl(40, 0.0f), zr(40, 0.0f), ol(40, -1.0f), orr(40, -1.0f);
+    const DelayLine::Cursors c0 = next.cursors();
+    next.process(0, zl.data(), ol.data(), 40);
+    next.setCursors(c0);
+    next.process(1, zr.data(), orr.data(), 40);
+    bool silent = true;
+    for (std::size_t i = 0; i < 40; ++i) if (ol[i] != 0.0f || orr[i] != 0.0f) silent = false;
+    check(silent, "nothing is carried: the new line plays silence for its 40, not the stream "
+                  "from when the old one last had a delay: sample 0 = " + std::to_string(ol[0]));
+}
+
+/// A source that is its stream position + 1 while on and 0 while off, so a
+/// nonzero sample names the position it was generated at.
+class GateNode final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            for (std::int32_t i = 0; i < io.frames; ++i)
+                o[i] = on ? static_cast<float>(at + io.blockOffset + i + 1) : 0.0f;
+        }
+    }
+    [[nodiscard]] const char* name() const noexcept override { return "gate"; }
+    bool on = true;
+    std::int64_t at = 0;               ///< the stream position of this block's first sample
+};
+
+/// Plays its SIDECHAIN input, so the compensation of a key is heard.
+class KeyNode final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* k = (io.sidechain != nullptr && io.sidechain[c] != nullptr)
+                                 ? io.sidechain[c] + io.blockOffset : nullptr;
+            for (std::int32_t i = 0; i < io.frames; ++i) o[i] = (k != nullptr ? k[i] : 0.0f);
+        }
+        ++calls;
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    [[nodiscard]] const char* name() const noexcept override { return "key"; }
+    int calls = 0;
+};
+
+/// The gate into a pass-through that sleeps when it goes quiet, into a mix
+/// beside a switchable silent path that sets the gate edge's compensation.
+/// With `key`, the gate edge is the mix's sidechain, and the mix plays it.
+struct WakeRig {
+    GateNode gate;
+    SumNode sleeper, silent, sum;
+    KeyNode keyed;
+    SwitchableNode plugin;
+    Graph g;
+    NodeId ng{}, ns{}, nq{}, np{}, nm{};
+    bool key;
+    std::int32_t frames;
+    Out o;
+    AudioIo io;
+    std::int64_t offAt = std::numeric_limits<std::int64_t>::max();
+    std::int64_t onAt = std::numeric_limits<std::int64_t>::max();
+
+    WakeRig(std::int32_t latency, std::int32_t blockFrames, bool keyed_)
+        : plugin(latency, 4096), key(keyed_), frames(blockFrames), o(blockFrames),
+          io(makeIo(o, blockFrames)) {
+        ng = g.addNode(gate); ns = g.addNode(sleeper); nq = g.addNode(silent);
+        np = g.addNode(plugin);
+        nm = key ? g.addNode(keyed) : g.addNode(sum);
+        g.connect(ng, ns);
+        g.connect(nq, np);
+        g.connect(np, nm);
+        g.connect(ns, nm, key ? Bus::Sidechain : Bus::Main);
+        g.setOutput(nm);
+        g.setLatencyHeadroom(2048);
+        g.prepare(48000.0, blockFrames);
+    }
+    [[nodiscard]] int calls() const { return key ? keyed.calls : sum.calls; }
+    void block() {
+        g.process(io);
+        gate.at += frames;
+    }
+    void off() { gate.on = false; offAt = gate.at; }
+    void on() { gate.on = true; onAt = gate.at; }
+    void retap(std::int32_t latency) {
+        plugin.setLatency(latency);
+        (void)g.retapLatency();
+    }
+    /// Every sample of the last block is the gate read exactly `d` back: what
+    /// it played then, or the silence it played. A fade, a stale sample, a
+    /// lost one and a late onset all miss.
+    [[nodiscard]] bool exact(std::int32_t d) const {
+        const std::int64_t first = gate.at - frames;
+        for (std::int32_t i = 0; i < frames; ++i) {
+            const std::int64_t x = first + i - d;
+            const bool played = x >= 0 && (x < offAt || x >= onAt);
+            const float want = played ? static_cast<float>(x + 1) : 0.0f;
+            if (o.l[static_cast<std::size_t>(i)] != want || o.r[static_cast<std::size_t>(i)] != want)
+                return false;
+        }
+        return true;
+    }
+    [[nodiscard]] bool quiet() const {
+        for (std::int32_t i = 0; i < frames; ++i)
+            if (o.l[static_cast<std::size_t>(i)] != 0.0f || o.r[static_cast<std::size_t>(i)] != 0.0f)
+                return false;
+        return true;
+    }
+};
+
+void testAGlideAskedForWhileItsConsumerSleepsSparesTheOnset() {
+    section("ADR-0043/0079 -- a glide asked for while its consumer sleeps never lands on the onset");
+
+    // While a mix sleeps its edges are not run, so a retap -- a plug-in's
+    // latency switched while the project is stopped -- leaves their glides
+    // pending. The silence the mix drained is the edge's real past: a glide
+    // reading no further than it goes on at the wake as if the ring had been
+    // written all along. And given a block of silence before the sound, the
+    // mix runs the glide there, so the wake plays at the new alignment from
+    // its first sample, where at the wake it would fade the onset in, or
+    // play it at the old alignment while waiting for history.
+    struct Case {
+        const char* what;
+        std::int32_t from, to, frames;
+        int gap;
+    };
+    const Case cases[] = {
+        {"down, asked for in the block the sound comes back", 1024, 300, 256, 0},
+        {"down, a block of silence before the sound", 400, 100, 256, 1},
+        {"up within the drained silence, a block of it before the sound", 100, 400, 512, 1},
+        {"up past the drained silence, silence enough to write it", 128, 400, 64, 8},
+    };
+    for (const bool key : {false, true}) {
+        for (const Case& k : cases) {
+            const std::string where = std::string(key ? "a key, " : "") + k.what;
+            WakeRig r(k.from, k.frames, key);
+            for (int b = 0; b < 16; ++b) r.block();
+            check(r.exact(k.from), where + ": compensated by " + std::to_string(k.from));
+            r.off();
+            for (int b = 0; b < 60; ++b) r.block();
+            const int asleep = r.calls();
+            for (int b = 0; b < 4; ++b) r.block();
+            check(r.calls() == asleep, where + ": the mix sleeps");
+
+            r.retap(k.to);
+            bool quiet = true;
+            for (int b = 0; b < k.gap; ++b) {
+                r.block();
+                if (!r.quiet()) quiet = false;
+            }
+            if (k.gap > 0) {
+                check(quiet, where + ": the silence before the sound stays silent");
+                check(r.calls() > asleep, where + ": the mix runs the glide in it");
+            }
+            if (k.gap > 1)
+                check(r.calls() - asleep < k.gap, where + ": and sleeps again once it has landed, "
+                                                  "after " + std::to_string(r.calls() - asleep) + " blocks");
+
+            r.on();
+            bool exact = true;
+            const int n = (k.to + 2 * k.frames) / k.frames + 1;
+            for (int b = 0; b < n; ++b) {
+                r.block();
+                if (!r.exact(k.to)) exact = false;
+            }
+            check(exact, where + ": from the wake every sample is the sound exactly " +
+                             std::to_string(k.to) + " late, its onset whole");
+        }
+    }
+}
+
+void testAGlideUpWhileAMixDrainsPlaysWhatIsStillDue() {
+    section("ADR-0058 -- a glide up while a mix drains plays what is still due, and the wake replays nothing");
+
+    // The mix's tail is armed on its last loud block, with the reach of that
+    // moment: 128. A plug-in moving to 400 one block into the drain leaves
+    // 272 more samples of the sound in the ring. The mix slept on the old
+    // count, cutting them there, and its next wake, however much later,
+    // played them.
+    for (const bool key : {false, true}) {
+        const std::string where = key ? "a key" : "an input";
+        WakeRig r(128, 64, key);
+        for (int b = 0; b < 16; ++b) r.block();
+        r.off();
+        r.block();
+        r.retap(400);
+        r.block();                          // the fade from 128 to 400, over the sound's real past
+        bool due = true;
+        for (int b = 0; b < 20; ++b) {
+            r.block();
+            if (!r.exact(400)) due = false;
+        }
+        check(due, where + ": every block after the glide is the sound 400 late, to its last sample");
+        const int asleep = r.calls();
+        for (int b = 0; b < 30; ++b) r.block();
+        check(r.calls() == asleep, where + ": and then the mix sleeps");
+
+        r.on();
+        bool exact = true;
+        for (int b = 0; b < 10; ++b) {
+            r.block();
+            if (!r.exact(400)) exact = false;
+        }
+        check(exact, where + ": the wake plays the new sound 400 late, and nothing from before the sleep");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1651,6 +2139,12 @@ int main() {
     testAHandoverMidGrowTakesTheRingBeingGrown();
     testARinglessEdgeBesideAGrownOneIsRebuilt();
     testAGrowTooSmallIsGrownAgain();
+    testAGlideFromZeroReadsTheEdgesRealPast();
+    testASleepingSourceEdgeGlidesThroughSilence();
+    testAWakingConsumerGlidesThroughWhatItReallyHeard();
+    testAHandoverCarriesOnlyWhatTheOldRingHolds();
+    testAGlideAskedForWhileItsConsumerSleepsSparesTheOnset();
+    testAGlideUpWhileAMixDrainsPlaysWhatIsStillDue();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
