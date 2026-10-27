@@ -12,6 +12,33 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-27, afternoon — sends and returns: the review round of #242 and #243
+
+An adversarial review, two lenses with a skeptic each, of #242 and #243. Every confirmed defect is fixed, with a plant per fix, and #244 is merged forward and re-checked.
+
+**[arieladi/Adi#242](https://github.com/arieladi/Adi/pull/242), `7f8c41e`.** `test_all.sh` 8275.
+- Asleep, a strip lands its gain. A send pulled down in a gap between clips used to play its old level for 5 ms on the next sound, and so did a track muted in a gap (pre-existing).
+- A send's level has a top, +24 dB, as a guard until Live's is read (AWAITING 7(a)). +inf or 800 dB used to put infinity into the master.
+- `StripNode::prepare` no longer races the audio thread. ThreadSanitizer: one race before, none after.
+
+**[arieladi/Adi#243](https://github.com/arieladi/Adi/pull/243), `b0f72ca`.** `test_all.sh` 8327.
+- A send into a summing group gets a channel half of its own. It used to play +5.49 dB at console9, because the buss decoded what nothing had encoded.
+- Solo in Place opens a track that is not a return only through a send that carries something.
+- A send row with id 0 is refused; it used to play as a plain route at 0 dB.
+- A self-send that is not a return's is refused as a loop.
+- A send back in the plan starts at its level.
+
+**[arieladi/Adi#244](https://github.com/arieladi/Adi/pull/244), merge `20eff41`.** `test_all.sh` 8339.
+
+**Found, not fixed (pre-existing, outside these PRs):**
+- A strip's own volume has the same hole a send's had: `volume_db` of +inf, or `mixer.setVolume` at 1000 dB, plays as infinity. The fix is a fader top, which is AWAITING's too.
+- A track that leaves the plan and comes back ramps its strip from the last gain it played, as a send did. That is rare: a delete undone.
+- `StripNode::setTransport` writes a plain pointer each sync while the audio thread reads it. The value never changes, so the race is benign, but it is formally a race.
+
+**For win, with question 7 (Solo in Place):** with a send ON from a soloed track into an audio track (ADI's addition), that track's own audio is heard too, as it is through a main route into it. Should Solo in Place open only what arrives by the send? That needs the plan's per-send gates (PR 6).
+
+---
+
 ## 2026-10-27, midday — LANES §3 item 2, sends and returns: Pre sends play
 
 **[arieladi/Adi#244](https://github.com/arieladi/Adi/pull/244) (`engine/sends-pre`), stacked on #243: Pre sends play, before the fader (ADR-0203 d3).**
