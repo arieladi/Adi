@@ -227,6 +227,16 @@ public:
         gain_.setStatic(std::isnan(levelDb) ? -std::numeric_limits<double>::infinity() : levelDb, pan, law, on);
     }
 
+    /// Message thread, for a Pre send: the source's mute lane (ADR-0164),
+    /// which silences a send that leaves before the strip as the strip's own
+    /// mute silences a Post one; null for none. `keepAlive` holds the lane's
+    /// program, and the realiser keeps it with every graph that plays this
+    /// node (sourceLifetime), so a retired graph never reads a freed lane.
+    void setMuteLane(const AutomationLaneProgram* mute, std::shared_ptr<void> keepAlive,
+                     const Transport* transport) noexcept;
+
+    [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return gain_.sourceLifetime(); }
+
     void prepare(double sampleRate, std::int32_t maxFrames) override { gain_.prepare(sampleRate, maxFrames); }
     void process(const NodeIo& io) noexcept override { gain_.process(io); }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }

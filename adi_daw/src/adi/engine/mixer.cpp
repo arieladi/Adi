@@ -448,11 +448,20 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
     }
 
     // ADR-0203 d3: a node for every send the plan made, its row's level, pan
-    // and switch. The source's fader, pan and mute are its strip's, which the
-    // send follows: a Post send leaves after it. A departed send stays, off.
+    // and switch. A Post send leaves after the strip, so it follows the
+    // source's fader, pan, mute and solo there. A Pre send leaves before it
+    // and follows none of the fader and pan; its own switch takes the
+    // source's mute and solo, so a track muted or soloed away is silent in
+    // all its sends (the sends plan's preMute and preFollowsSolo, both on
+    // until Live is measured), and it reads the source's mute lane. A
+    // departed send stays, off.
     std::set<std::int64_t> planned, live;
+    std::map<std::int64_t, Tap> tapOf;
     for (const PlannedEdge& e : plan.edges)
-        if (e.routingId != 0) planned.insert(e.routingId);
+        if (e.routingId != 0) {
+            planned.insert(e.routingId);
+            tapOf[e.routingId] = e.tap;
+        }
     for (const rows::Routing& r : model.routing) {
         if (r.kind != "send" || !planned.count(r.id)) continue;
         auto& send = sends_[r.id];
@@ -464,11 +473,48 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
             problems_.push_back(who + ": the send's pan is not finite; centre is used");
             pan = 0.0;
         }
-        send->set(r.gainDb, pan, PanLaw::Live, r.enabled);
+        const bool pre = tapOf[r.id] == Tap::PostFx;
+        bool on = r.enabled;
+        if (pre) {
+            const auto heard = audible.find(r.srcId);
+            on = on && heard != audible.end() && heard->second;
+            const AutomationLaneProgram* mute = nullptr;
+            if (automation) {
+                const auto it = automation->byTrack.find(r.srcId);
+                if (it != automation->byTrack.end()) mute = it->second.mute;
+            }
+            send->setMuteLane(mute, mute != nullptr ? std::shared_ptr<void>(automation) : std::shared_ptr<void>{},
+                              transport);
+        } else {
+            // The same transport either way, as every strip is given it: a
+            // send turned from Pre to Post never changes it under a graph.
+            send->setMuteLane(nullptr, {}, transport);
+        }
+        send->set(r.gainDb, pan, PanLaw::Live, on);
         live.insert(r.id);
     }
     for (auto& [id, send] : sends_)
         if (!live.count(id)) send->set(kSilenceDb, 0.0, PanLaw::Live, false);
+}
+
+void SendNode::setMuteLane(const AutomationLaneProgram* mute, std::shared_ptr<void> keepAlive,
+                           const Transport* transport) noexcept {
+    gain_.setTransport(transport);
+    if (mute == nullptr) {
+        gain_.setLanes(nullptr, {});
+        return;
+    }
+    // A new holder each time, never the old one rewritten: the audio thread
+    // may be reading the lanes the last graph was given.
+    struct Held {
+        StripLanes lanes;
+        std::shared_ptr<void> program;
+    };
+    auto held = std::make_shared<Held>();
+    held->lanes.mute = mute;
+    held->program = std::move(keepAlive);
+    const StripLanes* lanes = &held->lanes;
+    gain_.setLanes(lanes, std::move(held));
 }
 
 SendNode* MixerStrips::sendFor(std::int64_t routingId) noexcept {

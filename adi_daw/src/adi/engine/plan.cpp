@@ -195,7 +195,7 @@ GraphPlan planGraph(const rows::Model& m) {
     // --- the sends (ADR-0203 d3) --------------------------------------------
     //
     // In row-id order, after everything else. A send leaves its source after
-    // the fader (Post); it plays through a node of its own -- level, pan,
+    // the fader (Post) or before it (Pre); it plays through a node of its own -- level, pan,
     // switch -- into the destination's junction. Each one that cannot play is
     // refused AS ITS ROW, named, and the row is kept: a send that would close
     // a loop loses to the routing already there, the later row losing.
@@ -233,10 +233,6 @@ GraphPlan planGraph(const rows::Model& m) {
             plan.problems.push_back(ref + ": a return's own sends (Enable Send) are not played yet");
             continue;
         }
-        if (r->preFader) {
-            plan.problems.push_back(ref + ": a Pre send is not played yet; it is not planned");
-            continue;
-        }
         // Would it close a loop? Only if its destination already reaches its
         // source, over everything planned so far.
         {
@@ -266,7 +262,9 @@ GraphPlan planGraph(const rows::Model& m) {
         e.bus = Bus::Main;
         e.kind = "send";
         e.routingId = r->id;
-        e.tap = Tap::PostFader;
+        // Pre leaves after the effects and before the strip: the source's
+        // fader, pan and track delay do not reach it (ADR-0203 d3).
+        e.tap = r->preFader ? Tap::PostFx : Tap::PostFader;
         plan.edges.push_back(e);
     }
 

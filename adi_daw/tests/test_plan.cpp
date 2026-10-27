@@ -189,7 +189,7 @@ void testASendThatCannotPlayIsRefusedByRow() {
     m.routing = {route(20, 2, 3, "send", "user"),   // X -> Y: plays
                  route(21, 3, 2, "send", "user"),   // Y -> X: would close the loop
                  route(22, 5, 3, "send", "user"),   // a group into its own child: a loop
-                 pre,                               // a Pre send: not yet
+                 pre,                               // a Pre send: before the fader
                  off,                               // switched off: planned all the same
                  route(25, 2, 1, "send", "user"),   // into the master
                  route(26, 4, 4, "send", "user"),   // a return into itself
@@ -203,7 +203,8 @@ void testASendThatCannotPlayIsRefusedByRow() {
     check(sendEdge(p, 22) == nullptr && mentions(p, "routing#22", "would close a loop"),
           "a group into its own child is a loop too");
     check(!p.cycle, "and the plan has no cycle: the loops were refused, not planned");
-    check(sendEdge(p, 23) == nullptr && mentions(p, "routing#23", "Pre send"), "a Pre send is named, not played yet");
+    check(sendEdge(p, 23) != nullptr && sendEdge(p, 23)->tap == Tap::PostFx && !mentions(p, "routing#23"),
+          "a Pre send is planned, leaving after the effects and before the fader");
     check(sendEdge(p, 24) != nullptr, "a send switched off is planned, so Enable Send never retimes");
     check(sendEdge(p, 25) == nullptr && mentions(p, "routing#25", "master"), "a send into the master is refused");
     check(sendEdge(p, 26) == nullptr && mentions(p, "routing#26", "itself"),

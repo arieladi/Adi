@@ -339,6 +339,18 @@ void testASendNode() {
     SendNode s;
     check(s.eventFlow() == EventFlow::Stop && s.tailSamples() == 0 && s.processesDouble() && s.latencySamples() == 0,
           "it stops notes, holds nothing back, takes double, and adds no latency");
+    {
+        // A Pre send's mute lane is the realiser's to keep alive with every
+        // graph that plays the send, as a strip's lanes are (ADR-0164).
+        auto program = std::make_shared<AutomationLaneProgram>();
+        const long before = program.use_count();
+        s.setMuteLane(program.get(), program, nullptr);
+        check(s.sourceLifetime() != nullptr && program.use_count() > before,
+              "a send given a mute lane hands out what keeps the lane alive");
+        s.setMuteLane(nullptr, {}, nullptr);
+        check(s.sourceLifetime() == nullptr && program.use_count() == before,
+              "and, given none, holds nothing");
+    }
 }
 
 void testVolumePanMute() {
@@ -472,16 +484,99 @@ void testTrackDelay() {
 
 /// A send row, written as a converter or the next ops would write it.
 void sendRow(Mix& m, std::int64_t id, std::int64_t from, std::int64_t to, double db = 0.0,
-             bool enabled = true) {
+             bool enabled = true, bool pre = false) {
     SQLite::Statement q(m.store->db(),
-        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db,enabled) "
-        "VALUES(?,'track',?,'track',?,'send',?,?)");
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db,enabled,pre_fader) "
+        "VALUES(?,'track',?,'track',?,'send',?,?,?)");
     q.bind(1, id);
     q.bind(2, from);
     q.bind(3, to);
     q.bind(4, db);
     q.bind(5, enabled ? 1 : 0);
+    q.bind(6, pre ? 1 : 0);
     q.exec();
+}
+
+void testPreSendsAndTheSendsPan() {
+    section("ADR-0203 d3 -- a Pre send leaves before the fader; a send has a pan of its own");
+
+    for (const Precision width : {Precision::Float32, Precision::Float64}) {
+        const std::string at = width == Precision::Float64 ? " (at 64)" : "";
+        Mix m(width == Precision::Float64 ? "pre64" : "pre32");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4, 0.0, true, true);
+        m.set("mixer.setVolume", 1, "db", kSilenceDb);
+        m.load(48000.0, width);
+        m.settle();
+        check(m.l[511] == 0.5f, "the fader all the way down: the dry is gone and the Pre send plays on" + at +
+                                    ": " + std::to_string(m.l[511]));
+        m.set("mixer.setVolume", 1, "db", -6.0206);
+        m.set("mixer.setPan", 1, "pan", -1.0);
+        m.refresh();
+        m.settle();
+        check(near(m.r[511], 0.5, 1e-6), "the source's pan does not reach it either: hard left, the right is "
+                                         "the send's alone" + at + ": " + std::to_string(m.r[511]));
+        m.set("track.setMute", 1, "muted", true);
+        m.refresh();
+        m.settle();
+        check(m.l[511] == 0.0f && m.r[511] == 0.0f, "the source's mute silences it" + at);
+    }
+    {
+        // The mute lane too: the strip mutes the dry, the send's own gate the wet.
+        Mix m("pre-lane");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4, 0.0, true, true);
+        m.lane(1, 1, "mute", {{0.0, 0.0, 0}, {0.02, 1.0, 0}});
+        m.load();
+        m.session.transport().play();
+        m.hist.clear();
+        m.play(0.05);
+        check(m.at(0.01) == 1.0f, "before the lane mutes: the dry and the Pre send, 1.0: " + std::to_string(m.at(0.01)));
+        check(m.at(0.04) == 0.0f, "after it: both silent, the send's gate reading the lane: " +
+                                      std::to_string(m.at(0.04)));
+    }
+    {
+        // A Pre send leaves before the strip, so the track delay is not on it.
+        Mix m("pre-delay");
+        StepNode a(0.5f, 1000);
+        m.track(1, "audio", "A");
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        m.extra[1] = &a;
+        sendRow(m, 11, 1, 4, 0.0, true, true);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        m.hist.clear();
+        for (int k = 0; k < 4; ++k) {
+            m.render(512);
+            m.hist.insert(m.hist.end(), m.l.begin(), m.l.end());
+        }
+        long wet = -1, both = -1;
+        for (std::size_t i = 0; i < m.hist.size(); ++i) {
+            if (wet < 0 && m.hist[i] >= 0.5f - 1e-6f) wet = static_cast<long>(i);
+            if (both < 0 && m.hist[i] >= 1.0f - 1e-6f) both = static_cast<long>(i);
+        }
+        check(wet == 1000 && both == 1300, "the track 300 late: its Pre send at 1000, the dry at 1300 (" +
+                                               std::to_string(wet) + ", " + std::to_string(both) + ")");
+    }
+    {
+        // The send's own pan (ADI's addition, ADR-0203 d3), Live's law: hard
+        // left, the return hears the left alone, 3 dB up.
+        Mix m("send-pan");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4);
+        m.store->db().exec("UPDATE routing SET pan=-1 WHERE id=11");
+        m.load();
+        m.settle();
+        check(m.r[511] == 0.5f && near(m.l[511], 0.5 + 0.5 * std::numbers::sqrt2, 1e-5),
+              "a send panned hard left: the right is the dry alone, the left the dry and the send up 3 dB");
+    }
 }
 
 void testSendsPlay() {
@@ -1246,6 +1341,7 @@ int main() {
         testTrackDelay();
         testATrackDelayCrossesARebuild();
         testSendsPlay();
+        testPreSendsAndTheSendsPan();
         testGroupSumming();
         testScopeTaps();
     } catch (const std::exception& e) {
