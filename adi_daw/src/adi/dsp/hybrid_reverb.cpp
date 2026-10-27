@@ -4,38 +4,9 @@
 #include "hybrid_reverb.hpp"
 #include <algorithm>
 #include <cmath>
-#include <numbers>
+#include <new>
 #include <stdexcept>
 namespace adi::dsp {
-namespace {
-void fft(HybridImpulse::Spectrum &x, bool inverse) noexcept {
-    constexpr auto n = HybridImpulse::fftSize;
-    for (std::size_t i = 1, j = 0; i < n; ++i) {
-        std::size_t bit = n >> 1;
-        for (; j & bit; bit >>= 1)
-            j ^= bit;
-        j ^= bit;
-        if (i < j)
-            std::swap(x[i], x[j]);
-    }
-    for (std::size_t size = 2; size <= n; size *= 2) {
-        const auto step =
-            std::polar(1., (inverse ? 2 : -2) * std::numbers::pi / static_cast<double>(size));
-        for (std::size_t at = 0; at < n; at += size) {
-            std::complex<double> w = 1;
-            for (std::size_t k = 0; k < size / 2; ++k) {
-                const auto a = x[at + k], b = w * x[at + k + size / 2];
-                x[at + k] = a + b;
-                x[at + k + size / 2] = a - b;
-                w *= step;
-            }
-        }
-    }
-    if (inverse)
-        for (auto &v : x)
-            v /= static_cast<double>(n);
-}
-} // namespace
 HybridImpulse prepareHybridImpulse(std::span<const float> samples, int channels, double rate,
                                    HybridImpulseOptions options) {
     if (channels < 1 || channels > 2 || samples.empty() ||
@@ -55,6 +26,9 @@ HybridImpulse prepareHybridImpulse(std::span<const float> samples, int channels,
     HybridImpulse ir;
     ir.sampleRate = rate;
     ir.frames = std::max<std::size_t>(1, static_cast<std::size_t>(std::ceil(length)));
+    RealFft transform(static_cast<std::int32_t>(HybridImpulse::fftSize));
+    if (!transform.valid()) throw std::bad_alloc();
+    std::array<float, HybridImpulse::fftSize> frame{};
     for (std::size_t c = 0; c < 2; ++c) {
         auto &spectra = ir.spectra[c];
         spectra.resize((ir.frames + 255) / 256);
@@ -72,14 +46,20 @@ HybridImpulse prepareHybridImpulse(std::span<const float> samples, int channels,
             if (options.decaySeconds > 0)
                 value *= std::exp(-std::log(1000.) * static_cast<double>(i) /
                                   (options.decaySeconds * rate));
-            spectra[i / 256][i % 256] = value;
+            spectra[i / 256][i % 256] = static_cast<float>(value);
         }
-        for (auto &spectrum : spectra)
-            fft(spectrum, false);
+        for (auto &spectrum : spectra) {
+            // The first partition samples temporarily hold the shaped IR.
+            // The second half of frame stays zero for overlap-add padding.
+            for (std::size_t i = 0; i < HybridImpulse::partition; ++i)
+                frame[i] = spectrum[i].real();
+            transform.forward(frame, spectrum);
+        }
     }
     return ir;
 }
-HybridReverb::HybridReverb() {
+HybridReverb::HybridReverb() : fft_(static_cast<std::int32_t>(HybridImpulse::fftSize)) {
+    if (!fft_.valid()) throw std::bad_alloc();
     for (int i = 0; i < Count; ++i)
         p_[static_cast<std::size_t>(i)] = ranges[i].initial;
 }
@@ -114,10 +94,13 @@ void HybridReverb::partition(const HybridImpulse *ir) noexcept {
     used_ = std::min(used_ + 1, capacity);
     for (std::size_t c = 0; c < 2; ++c) {
         auto &newest = history_[c][head_];
-        newest = {};
+        std::array<float, HybridImpulse::fftSize> frame{};
         for (std::size_t i = 0; i < 256; ++i)
-            newest[i] = input_[c][i];
-        fft(newest, false);
+            frame[i] = static_cast<float>(input_[c][i]);
+        fft_.forward(frame, newest);
+        // Accumulate partitions in double, then round once before the float
+        // inverse. This avoids a long-IR error growing with float additions.
+        std::array<std::complex<double>, HybridImpulse::fftSize / 2 + 1> accumulated{};
         HybridImpulse::Spectrum sum{};
         if (ir && ir->sampleRate == rate_) {
             const auto parts = std::min(used_, ir->spectra[c].size());
@@ -125,13 +108,16 @@ void HybridReverb::partition(const HybridImpulse *ir) noexcept {
                 const auto &prior = history_[c][(head_ + capacity - p) % capacity];
                 const auto &kernel = ir->spectra[c][p];
                 for (std::size_t k = 0; k < sum.size(); ++k)
-                    sum[k] += prior[k] * kernel[k];
+                    accumulated[k] += std::complex<double>(prior[k]) *
+                                      std::complex<double>(kernel[k]);
             }
         }
-        fft(sum, true);
+        for (std::size_t k = 0; k < sum.size(); ++k)
+            sum[k] = static_cast<std::complex<float>>(accumulated[k]);
+        fft_.inverse(sum, frame);
         for (std::size_t i = 0; i < 256; ++i) {
-            output_[c][i] = sum[i].real() + overlap_[c][i];
-            overlap_[c][i] = sum[i + 256].real();
+            output_[c][i] = static_cast<double>(frame[i]) + overlap_[c][i];
+            overlap_[c][i] = frame[i + 256];
         }
     }
     head_ = (head_ + 1) % capacity;

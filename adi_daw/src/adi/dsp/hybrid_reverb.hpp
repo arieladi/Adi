@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "live_reverb.hpp"
+#include "spectrum.hpp"
 #include <complex>
 #include <span>
 namespace adi::dsp {
 struct HybridImpulse {
     static constexpr std::size_t partition = 256, fftSize = 512, maxFrames = 262144;
-    using Spectrum = std::array<std::complex<double>, fftSize>;
+    // Real input has only N/2+1 independent bins. PFFFT's packed layout never
+    // escapes RealFft; DC and Nyquist each have their own complex entry here.
+    using Spectrum = std::array<std::complex<float>, fftSize / 2 + 1>;
     std::array<std::vector<Spectrum>, 2> spectra;
     double sampleRate = 48000;
     std::size_t frames = 0;
@@ -54,6 +57,7 @@ class HybridReverb {
   private:
     void partition(const HybridImpulse *) noexcept;
     std::array<double, Count> p_{};
+    RealFft fft_;
     LiveReverb algorithm_;
     std::array<std::vector<HybridImpulse::Spectrum>, 2> history_;
     std::array<std::array<double, 256>, 2> input_{}, output_{}, overlap_{}, dry_{}, aligned_{};

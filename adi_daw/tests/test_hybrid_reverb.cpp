@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <new>
 #include <stdexcept>
 using namespace adi::dsp;
@@ -58,6 +59,98 @@ bool matchesConvolution(const std::vector<float> &actual, const std::vector<floa
             return false;
     }
     return true;
+}
+
+std::vector<double> directConvolution(const std::vector<float> &source,
+                                      const std::vector<float> &impulse) {
+    std::vector<double> expected(source.size());
+    for (std::size_t i = 256; i < expected.size(); ++i)
+        for (std::size_t k = 0; k < impulse.size() && k <= i - 256; ++k)
+            expected[i] += static_cast<double>(impulse[k]) * source[i - 256 - k];
+    return expected;
+}
+
+double maximumError(const std::vector<float> &actual, const std::vector<double> &expected) {
+    if (actual.size() != expected.size())
+        return std::numeric_limits<double>::infinity();
+    double worst = 0;
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        if (!std::isfinite(actual[i]))
+            return std::numeric_limits<double>::infinity();
+        worst = std::max(worst, std::abs(static_cast<double>(actual[i]) - expected[i]));
+    }
+    return worst;
+}
+
+void testDenseConvolution() {
+    // Exercise both sides of a partition edge, its exact length, and a final
+    // partial partition. Zero padding after the input keeps the full IR tail
+    // inside the checked output rather than silently discarding its last tap.
+    for (std::size_t length : std::array<std::size_t, 7>{255, 256, 257, 511, 512, 513, 1025}) {
+        std::vector<float> impulse(length);
+        for (std::size_t i = 0; i < length; ++i) {
+            const int code = static_cast<int>((i * 73 + 19) % 251) - 125;
+            impulse[i] = static_cast<float>(code) / (500.f * static_cast<float>(length));
+        }
+        for (std::size_t boundary : std::array<std::size_t, 7>{0, 255, 256, 257, 511, 512, 768})
+            if (boundary < length)
+                impulse[boundary] += boundary % 2 ? -.1f : .125f;
+        impulse.back() = .2f;
+
+        constexpr std::size_t activeFrames = 769;
+        std::vector<float> source(activeFrames + length + 256 + 64);
+        for (std::size_t i = 0; i < activeFrames; ++i) {
+            const int code = static_cast<int>((i * 47 + 31) % 257) - 128;
+            source[i] = static_cast<float>(code) / 512.f;
+        }
+        for (std::size_t boundary : std::array<std::size_t, 7>{0, 255, 256, 257, 511, 512, 768})
+            source[boundary] = boundary % 2 ? -.5f : .75f;
+
+        const auto expected = directConvolution(source, impulse);
+        double sumAbsoluteImpulse = 0, peakSource = 0;
+        for (float value : impulse)
+            sumAbsoluteImpulse += std::abs(static_cast<double>(value));
+        for (float value : source)
+            peakSource = std::max(peakSource, std::abs(static_cast<double>(value)));
+        // Two forward transforms and one inverse use float arithmetic.
+        // Products and partition accumulation use double, followed by a float
+        // cast into the inverse. Budget 64 float epsilons relative to the
+        // convolution's amplitude bound ||input||inf * ||IR||1 for these cases
+        // of at most five partitions. It scales with the test data and is not
+        // a Live tolerance.
+        // The sparse legacy case above retains its tighter 1e-7 limit.
+        const double tolerance = 64.0 * static_cast<double>(std::numeric_limits<float>::epsilon()) *
+                                 peakSource * sumAbsoluteImpulse;
+        HybridReverb device;
+        device.set(HybridReverb::Mix, 100);
+        device.set(HybridReverb::Route, 3);
+        const auto ir = prepareHybridImpulse(impulse, 1, 48000);
+        const auto actual = render(device, &ir, 64, source);
+        const double error = maximumError(actual, expected);
+        std::printf("METRIC dense IR %zu max_abs %.9g tolerance %.9g\n", length, error, tolerance);
+        check(error <= tolerance, "dense convolution matches independent full-tail oracle");
+        bool identical = true;
+        for (int block : {1, 63, 127, 255, 256, 257, 511, 1024, 4096})
+            identical &= render(device, &ir, block, source) == actual;
+        check(identical, "dense convolution remains bit-identical across callback boundaries");
+
+        auto missingTail = actual;
+        missingTail[256 + activeFrames + length - 2] = 0;
+        check(maximumError(missingTail, expected) > tolerance,
+              "plant: full-tail oracle rejects a missing last IR tap");
+        auto wrongBoundary = actual;
+        wrongBoundary[512] += static_cast<float>(16 * tolerance);
+        check(maximumError(wrongBoundary, expected) > tolerance,
+              "plant: dense oracle rejects corruption at a partition boundary");
+
+        if (length > 256) {
+            // A source-level behavior plant: prepare and execute a truncated
+            // IR through the real core, not just a mutated expected vector.
+            const auto truncated = prepareHybridImpulse(std::span(impulse).first(256), 1, 48000);
+            check(maximumError(render(device, &truncated, 64, source), expected) > tolerance,
+                  "plant: independent oracle rejects an omitted convolution partition");
+        }
+    }
 }
 int main() {
     HybridReverb d;
@@ -145,6 +238,7 @@ int main() {
         refused = true;
     }
     check(refused, "invalid impulse refused before audio");
+    testDenseConvolution();
     check(allocations == 0, "zero allocations in convolution plus Surge processing");
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
