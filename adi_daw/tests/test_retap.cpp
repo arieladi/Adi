@@ -1080,6 +1080,538 @@ void testAdoptionRefusesWhatItCannotDoHonestly() {
     check(oz[0] == 7.0f, "a zero-delay ring passes the current sample, untouched by adoption");
 }
 
+// --- a grow on a live graph: one snapshot per edge --------------------------
+//
+// `Graph::accumulate` drives a stereo edge as below: one `beginEdge`, every
+// channel, one `endEdge`. The message thread offers rings and asks for glides
+// WHILE it does, so an offer can land between the left channel and the right.
+// These run that interleaving on one thread, at the exact point a second
+// thread could put it, which a stress run under a race detector can only hope
+// to hit.
+
+/// A stereo edge fed a stream whose every sample says where it came from:
+/// left k+1, right -(k+1) at stream position k, so any output names the
+/// delay it was read at, and a zero is a sample nobody stored.
+struct LiveEdge {
+    explicit LiveEdge(DelayLine& line) : d(line) {}
+    DelayLine& d;
+    std::int64_t n = 0;
+    std::vector<float> l, r;
+
+    template <typename Between>
+    void block(std::int32_t frames, Between between) {
+        const auto f = static_cast<std::size_t>(frames);
+        std::vector<float> inL(f), inR(f);
+        for (std::size_t i = 0; i < f; ++i) {
+            inL[i] = static_cast<float>(n + static_cast<std::int64_t>(i) + 1);
+            inR[i] = -inL[i];
+        }
+        l.assign(f, -9.0f);
+        r.assign(f, -9.0f);
+        const DelayLine::Edge e = d.beginEdge();
+        d.process(e, 0, inL.data(), l.data(), frames);
+        between();
+        d.process(e, 1, inR.data(), r.data(), frames);
+        d.endEdge(e);
+        n += frames;
+    }
+    void block(std::int32_t frames) { block(frames, [] {}); }
+
+    /// Every sample of the last block, both channels, lies between the
+    /// stream read `nearer` and `further` back: a crossfade between taps.
+    [[nodiscard]] bool between(std::int32_t nearer, std::int32_t further) const {
+        const std::int64_t first = n - static_cast<std::int64_t>(l.size());
+        for (std::size_t i = 0; i < l.size(); ++i) {
+            const std::int64_t p = first + static_cast<std::int64_t>(i);
+            const auto hi = static_cast<float>(p - nearer + 1);
+            const auto lo = static_cast<float>(p - further + 1);
+            if (l[i] > hi + 0.001f || l[i] < lo - 0.001f || r[i] != -l[i]) return false;
+        }
+        return true;
+    }
+    /// The last block is the crossfade from the tap `from` back to the tap
+    /// `to` back, to the sample: the same arithmetic `DelayLine` does (a step
+    /// of 1/frames, summed), so a tap reading a slot nobody stored shows even
+    /// where the fade gives it little weight.
+    [[nodiscard]] bool faded(std::int32_t from, std::int32_t to) const {
+        const std::int64_t first = n - static_cast<std::int64_t>(l.size());
+        const float step = 1.0f / static_cast<float>(l.size());
+        float t = 0.0f;
+        for (std::size_t i = 0; i < l.size(); ++i) {
+            const std::int64_t p = first + static_cast<std::int64_t>(i);
+            t += step;
+            const auto a = static_cast<float>(p - from + 1);
+            const auto b = static_cast<float>(p - to + 1);
+            const float want = a + (b - a) * t;
+            if (std::fabs(l[i] - want) > 0.001f || std::fabs(r[i] + want) > 0.001f) return false;
+        }
+        return true;
+    }
+    /// No sample of the last block is one nobody stored. The stream is never
+    /// zero, so a zero is a slot of a ring that was never written.
+    [[nodiscard]] bool noHoles() const {
+        for (std::size_t i = 0; i < l.size(); ++i)
+            if (l[i] == 0.0f || r[i] == 0.0f) return false;
+        return true;
+    }
+
+    /// Both channels of the last block read exactly `delay` samples back.
+    [[nodiscard]] bool delayedBy(std::int32_t delay) const {
+        const std::int64_t first = n - static_cast<std::int64_t>(l.size());
+        for (std::size_t i = 0; i < l.size(); ++i) {
+            const std::int64_t at = first + static_cast<std::int64_t>(i) - delay;
+            const float want = at >= 0 ? static_cast<float>(at + 1) : 0.0f;
+            if (l[i] != want || r[i] != -want) return false;
+        }
+        return true;
+    }
+};
+
+void testAnOfferBetweenTwoChannelsKeepsItsPrime() {
+    section("ADR-0085 -- an offer that lands mid-edge keeps its prime count");
+
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+
+    bool taken = false;
+    e.block(8, [&] { taken = d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40); });
+    check(taken, "a ring for a delay of 40 is offered between the left channel and the right");
+    check(e.delayedBy(4), "that edge plays the old delay on both channels");
+    // THE DEFECT. The edge's own cursors, written back after its right
+    // channel, used to include the incoming ring's prime count as it stood
+    // when the edge began: zero. The grow then swapped after one block, to a
+    // ring that held one block of history, and played its zeros.
+    eqi(d.primeRemaining(), 40, "and the offer's prime count survives the edge it landed in");
+
+    int blocks = 0;
+    bool stale = true, fade = false;
+    while (d.growing() && d.delay() != 40 && blocks < 20) {
+        e.block(8);
+        ++blocks;
+        if (d.delay() != 40 && !e.delayedBy(4)) stale = false;
+        if (d.delay() == 40) fade = e.faded(4, 40);   // the block that swapped
+    }
+    check(stale, "priming keeps the old delay exactly, block after block");
+    // Where a grow begun by the right channel alone would show: its left
+    // channel never wrote the offer's block into the new ring, so its new tap
+    // would read slots nobody stored there and its right channel's would not.
+    check(fade, "the fade block crossfades 4 to 40 to the sample, on both channels: the "
+                "edge's channels began the grow together");
+    eqi(blocks, 6, "five blocks to prime forty samples, then the one that fades");
+    eqi(d.delay(), 40, "and the new delay is in effect");
+
+    e.block(8);
+    check(e.delayedBy(40), "the block after the swap reads forty back on both channels, "
+                           "every sample one that was stored, not a zero");
+    e.block(8);
+    check(e.delayedBy(40), "and the next one too");
+    check(d.reclaim(), "the old ring is collected");
+}
+
+void testAnOfferAfterACollectionMidEdgeKeepsItsPrime() {
+    section("ADR-0085 -- a collection and a second offer mid-edge keep the prime count");
+
+    // The other half of the rule: after a swap the line is Spent, and the
+    // message thread's next poll collects the old ring (back to Idle) and may
+    // offer the next one at once. An edge that began in Spent must not write
+    // back the incoming cursors either, or the second grow is the first
+    // defect again.
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+    check(d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40), "a ring for 40 is offered");
+    int blocks = 0;
+    while (d.capacity() != 64 && blocks < 20) { e.block(8); ++blocks; }
+    e.block(8);
+    check(d.growing(), "the swap is done and the old ring waits to be collected");
+
+    bool again = false;
+    e.block(8, [&] {
+        again = d.reclaim() &&
+                d.offerRing(std::vector<float>(2 * 201, 0.0f), 200, 100);
+    });
+    check(again, "between that edge's channels it is collected and a ring for 100 offered");
+    eqi(d.primeRemaining(), 100, "and the second offer's prime count survives the edge it landed in");
+
+    bool sound = true;
+    blocks = 0;
+    while (d.delay() != 100 && blocks < 30) {
+        e.block(8);
+        ++blocks;
+        if (!e.noHoles()) sound = false;
+    }
+    check(sound, "no sample on the way to 100 is one nobody stored");
+    e.block(8);
+    check(e.delayedBy(100), "and the edge reads a hundred back exactly");
+}
+
+void testAGlideAskedForMidEdgeIsNotLost() {
+    section("ADR-0079 -- a glide asked for while an edge glides is the next one");
+
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(2);
+    LiveEdge e(d);
+    e.block(8);
+    e.block(8);
+
+    check(d.beginGlide(6), "a glide from 2 to 6");
+    bool asked = false;
+    e.block(8, [&] { asked = d.beginGlide(10); });
+    check(asked, "and, between that edge's channels, another to 10");
+    eqi(d.delay(), 6, "the edge ends at the delay it glided to");
+    check(d.gliding(), "with the newer request still pending: ending a glide used to "
+                       "clear the flag whatever had been asked for meanwhile");
+    eqi(d.target(), 10, "for 10");
+
+    e.block(8);
+    eqi(d.delay(), 10, "the next edge glides on to it");
+    check(!d.gliding(), "and settles");
+    e.block(8);
+    check(e.delayedBy(10), "both channels then read ten back exactly");
+}
+
+void testAGlidePendingAtAnOfferIsSuperseded() {
+    section("ADR-0085 -- an offer supersedes a glide still pending");
+
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+
+    // The latency service retaps (6 fits), the plug-in reports again before
+    // a block has run, and this time the delay does not fit: a ring is offered.
+    check(d.beginGlide(6), "a glide to 6 is pending");
+    check(d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40), "when a ring for 40 is offered");
+    eqi(d.target(), 40, "the delay asked for is now the offer's");
+
+    bool held = true;
+    int blocks = 0;
+    while (d.delay() != 40 && blocks < 20) {
+        e.block(8);
+        ++blocks;
+        if (d.delay() != 40 && !e.delayedBy(4)) held = false;
+    }
+    check(held, "the old ring keeps its delay of 4 while the new one primes: the stale "
+                "glide is not played as a jump on a ring that is on its way out");
+    check(!d.gliding(), "and at the swap the glide is gone, not resumed");
+    e.block(8);
+    e.block(8);
+    eqi(d.delay(), 40, "so the edge stays at the offer's delay");
+    check(e.delayedBy(40), "reading forty back exactly");
+}
+
+void testAGlideDuringAGrowWaitsForTheNewRing() {
+    section("ADR-0085 -- a glide asked for during a grow fits the ring that is coming");
+
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+    check(d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40), "a ring for 40 is offered");
+    e.block(8);
+    e.block(8);
+
+    // 8 fits both rings. It still waits: played now it would be a jump on the
+    // old ring and then another at the swap, two moves for one request.
+    check(d.beginGlide(8), "a glide to 8, mid-grow");
+    e.block(8);
+    check(e.delayedBy(4), "waits: the old ring still plays its delay of 4");
+
+    // 50 does not fit the old ring of 16 and does fit the new one of 64, so
+    // this is a tap move after the swap, not a second grow and not a rebuild.
+    check(d.beginGlide(50), "a glide to 50, mid-grow, is accepted against the new ring");
+    check(!d.beginGlide(65), "one past the new ring is still refused");
+    check(d.beginGlide(50), "(50 again: the last request is the one that holds)");
+
+    bool held = true;
+    int blocks = 0;
+    while (d.capacity() != 64 && blocks < 20) {
+        e.block(8);
+        ++blocks;
+        if (d.capacity() != 64 && !e.delayedBy(4)) held = false;
+    }
+    check(held, "the old ring plays its delay of 4 until the swap, every sample");
+    eqi(d.delay(), 40, "the swap lands on the offer's delay");
+    check(d.gliding(), "with the glide to 50 still to come");
+
+    // The new ring holds what was written since the offer: 48 samples at the
+    // swap. A tap at 50 waits a block for them rather than reading two that
+    // were never stored.
+    bool sound = true;
+    blocks = 0;
+    while (d.delay() != 50 && blocks < 20) {
+        e.block(8);
+        ++blocks;
+        if (!e.noHoles() || !(e.delayedBy(40) || e.faded(40, 50))) sound = false;
+    }
+    check(sound, "every block until it lands is the delay of 40 or the fade from it to 50, "
+                 "and no sample of either is one nobody stored");
+    eqi(blocks, 2, "one block held, then the fade");
+    check(!d.gliding(), "and settles");
+    e.block(8);
+    check(e.delayedBy(50), "reading fifty back exactly: the new ring held them");
+}
+
+void testAGlideWaitsForTheHistoryItReads() {
+    section("ADR-0085 -- a glide past what a fresh ring holds waits for it, held");
+
+    // A plug-in that steps its latency twice inside one prime window: the
+    // first step grows the ring for 40, the second asks for 64, which fits
+    // the new ring of 64 and is far more than the 48 samples it will hold at
+    // the swap. Played then, the tap would read 16 slots nobody wrote: a
+    // fade into silence, then a hole. It waits until the ring holds them.
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+    check(d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40), "a ring for 40 is offered");
+    e.block(8);
+    check(d.beginGlide(64), "and, a block into priming, a glide to 64 is accepted");
+
+    bool sound = true;
+    int blocks = 0;
+    while (d.delay() != 64 && blocks < 30) {
+        e.block(8);
+        ++blocks;
+        if (!e.noHoles() || !(e.delayedBy(4) || e.faded(4, 40) || e.delayedBy(40) ||
+                              e.faded(40, 64)))
+            sound = false;
+    }
+    check(sound, "not one sample on the way is one nobody stored: the old delay, the fade "
+                 "to 40, 40 held, the fade to 64");
+    eqi(d.delay(), 64, "and it lands");
+    e.block(8);
+    check(e.delayedBy(64), "reading sixty-four back exactly");
+}
+
+void testAGlideBackDuringAnOfferIsNotLost() {
+    section("ADR-0085 -- a glide back to the old delay, asked for as a grow is offered");
+
+    // Two polls inside one edge. The first asks for 40, which does not fit,
+    // so a ring is offered for it. The second, the plug-in having gone back,
+    // asks for 6 -- and that edge, which began gliding to 6, ends at 6. The
+    // swap then lands on the offer's 40, and the request for 6 must still
+    // stand: it is the last thing asked for.
+    DelayLine d;
+    d.prepare(2, 16);
+    d.setDelay(4);
+    LiveEdge e(d);
+    for (int b = 0; b < 3; ++b) e.block(8);
+    check(d.beginGlide(6), "a glide to 6 is pending");
+    bool refused = false, offered = false, back = false;
+    e.block(8, [&] {
+        refused = !d.beginGlide(40);
+        offered = d.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40);
+        back = d.beginGlide(6);
+    });
+    check(refused && offered && back, "between that edge's channels: 40 refused, a ring "
+                                      "offered for it, and 6 asked for again");
+    eqi(d.delay(), 6, "the edge ends at 6");
+
+    int blocks = 0;
+    while (d.capacity() != 64 && blocks < 20) { e.block(8); ++blocks; }
+    eqi(d.delay(), 40, "the swap lands on the offer's delay");
+    check(d.gliding(), "with the glide back to 6 still standing: the swap used to see the "
+                       "flag down and lose it");
+    e.block(8);
+    eqi(d.delay(), 6, "the next edge makes it");
+    e.block(8);
+    check(e.delayedBy(6), "reading six back exactly");
+    eqi(d.target(), 6, "and the line says so");
+}
+
+void testALineWithNoRingIsNotOfferedOne() {
+    section("ADR-0088 -- a line with no ring is rebuilt, not grown");
+
+    // Headroom 0 gives an edge at zero no ring at all. A grow offered to it
+    // would prime forever: the line is never run, so nothing counts down.
+    DelayLine bare;
+    bare.prepare(2, 0);
+    check(!bare.offerRing(std::vector<float>(2 * 129, 0.0f), 128, 128),
+          "an offer to a line with no ring is refused");
+    check(!bare.growing(), "and nothing is left in flight");
+
+    RampNode src;
+    SwitchableNode plugin(0, 512);
+    SumNode direct, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), np = g.addNode(plugin);
+    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+    g.connect(ns, np);
+    g.connect(ns, nd);
+    g.connect(np, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(0);
+    g.prepare(48000.0, 256);
+    plugin.setLatency(128);
+    check(!g.retapLatency(), "with no headroom, the move does not fit");
+    eqi(static_cast<long long>(g.escalateLatency()), 0,
+        "and no ring is grown for the edge that has none: the caller rebuilds instead");
+    eqi(static_cast<long long>(g.growingEdges()), 0, "nothing stuck in flight");
+}
+
+void testAnAdoptedLineHoldsOnlyWhatItWasHanded() {
+    section("ADR-0092 -- after a handover a glide past the carried history waits for it");
+
+    // The next graph's line, compensating the same edge by 40 after a
+    // rebuild, adopts the old line's history (GraphHost::handover): forty
+    // samples, in a ring of 64. A glide to 60 asked for soon after must wait
+    // until the ring holds sixty real samples, not read twenty slots that
+    // were zeroed when the line was prepared.
+    DelayLine full;
+    full.prepare(2, 64);
+    full.setDelay(40);
+    LiveEdge f(full);
+    for (int b = 0; b < 8; ++b) f.block(8);
+    DelayLine after;
+    after.prepare(2, 64);
+    after.setDelay(40);
+    after.adoptHistory(full);
+    LiveEdge g(after);
+    g.n = f.n;                         // the same stream, carried on
+    g.block(8);
+    check(g.delayedBy(40), "the next graph's line continues the stream, forty back exactly");
+
+    check(after.beginGlide(60), "it is asked for 60");
+    bool sound = true;
+    int blocks = 0;
+    while (after.delay() != 60 && blocks < 20) {
+        g.block(8);
+        ++blocks;
+        if (!g.noHoles() || !(g.delayedBy(40) || g.faded(40, 60))) sound = false;
+    }
+    check(sound, "every block until it lands is forty back or the fade to sixty, and no "
+                 "sample of either is one nobody stored");
+    eqi(blocks, 3, "two blocks held until the ring holds sixty, then the fade");
+    g.block(8);
+    check(g.delayedBy(60), "then sixty back exactly");
+}
+
+void testAHandoverMidGrowTakesTheRingBeingGrown() {
+    section("ADR-0092 -- a handover in the middle of a grow takes the ring that holds the past");
+
+    // The old line is growing from 16 to a ring for 40, primed and fading,
+    // when a rebuild lands with the edge at 40. Its small ring holds 16
+    // samples of the edge's past; the one it is growing into holds 40.
+    DelayLine old;
+    old.prepare(2, 16);
+    old.setDelay(4);
+    LiveEdge e(old);
+    for (int b = 0; b < 3; ++b) e.block(8);
+    check(old.offerRing(std::vector<float>(2 * 65, 0.0f), 64, 40), "a ring for 40 is offered");
+    int blocks = 0;
+    while (old.primeRemaining() > 0 && blocks < 20) { e.block(8); ++blocks; }
+    check(old.growing() && old.capacity() == 16, "primed, not yet swapped: the old ring still plays");
+
+    DelayLine next;
+    next.prepare(2, 64);
+    next.setDelay(40);
+    next.adoptHistory(old);
+    LiveEdge g(next);
+    g.n = e.n;
+    g.block(8);
+    check(g.noHoles() && g.delayedBy(40),
+          "the next graph's line reads forty back at once, every sample stored: it took the "
+          "ring being grown, where the small one would have left twenty-four holes");
+}
+
+void testARinglessEdgeBesideAGrownOneIsRebuilt() {
+    section("ADR-0088 -- an edge with no ring is rebuilt even when another edge grows");
+
+    // Headroom 0: an edge at zero has no ring. P1 has 64 of latency, so its
+    // edge into the mix is at zero and ringless; P2's and the direct path's
+    // carry 64. P2 goes to 128: the direct edge is grown, and P1's needs 64
+    // and has nothing to grow. The coalescer used to see "something grew"
+    // and stop there, leaving P1's path 64 samples early for good.
+    RampNode src;
+    SwitchableNode p1(64, 512), p2(0, 512);
+    SumNode direct, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), n1 = g.addNode(p1), n2 = g.addNode(p2);
+    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+    g.connect(ns, n1);
+    g.connect(ns, n2);
+    g.connect(ns, nd);
+    g.connect(n1, nm);
+    g.connect(n2, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(0);
+    g.prepare(48000.0, 256);
+
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(g);
+    c.addSource("p2", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(0);
+
+    p2.setLatency(128);
+    epoch.fetch_add(1, std::memory_order_release);
+    check(c.poll(0), "the retap ran");
+    eqi(c.stats().escalations, 1, "the direct edge was grown");
+    check(c.rebuildNeeded(), "and a rebuild is demanded for the edge that had nothing to grow");
+}
+
+void testAGrowTooSmallIsGrownAgain() {
+    section("ADR-0085 -- a grow in flight for less than the edge now needs is grown again");
+
+    // The plug-in goes to 1000 and the direct edge is grown for it. While that
+    // ring is still priming, it goes to 3000. The edge cannot be offered a
+    // second ring until the first is collected, so the coalescer waits for
+    // that and grows it again -- rather than giving up and asking for a
+    // rebuild, which costs every edge in the graph its history.
+    RampNode src;
+    SwitchableNode plugin(0, 4096);
+    SumNode direct, mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), np = g.addNode(plugin);
+    const NodeId nd = g.addNode(direct), nm = g.addNode(mix);
+    g.connect(ns, np);
+    g.connect(ns, nd);
+    g.connect(np, nm);
+    g.connect(nd, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(64);
+    g.prepare(48000.0, 256);
+
+    std::atomic<std::uint64_t> epoch{0};
+    LatencyCoalescer c;
+    c.attach(g);
+    c.addSource("plugin", [&] { return epoch.load(std::memory_order_acquire); });
+    c.setQuietPeriodMs(0);
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    std::int64_t now = 0;
+    auto step = [&] { g.process(io); src.advance(); now += 5; c.poll(now); };
+
+    plugin.setLatency(1000);
+    epoch.fetch_add(1, std::memory_order_release);
+    c.poll(now);
+    eqi(c.stats().escalations, 1, "the direct edge is grown for 1000");
+    step();
+    plugin.setLatency(3000);
+    epoch.fetch_add(1, std::memory_order_release);
+    c.poll(now);
+    check(!c.rebuildNeeded(), "the second step asks for no rebuild");
+    check(c.stats().regrowsDeferred >= 1, "it waits for the first ring instead");
+
+    int blocks = 0;
+    while (g.compensationFor(nd, nm) != 3000 && blocks < 60) { step(); ++blocks; }
+    eqi(g.compensationFor(nd, nm), 3000, "the edge reaches 3000");
+    eqi(c.stats().escalations, 2, "grown twice, once per step");
+    check(!c.rebuildNeeded(), "and nothing was rebuilt");
+}
+
 }  // namespace
 
 int main() {
@@ -1107,6 +1639,18 @@ int main() {
     testAdoptedHistoryContinuesTheStream();
     testAdoptionCopiesOnlyWhatTheTapReaches();
     testAdoptionRefusesWhatItCannotDoHonestly();
+    testAnOfferBetweenTwoChannelsKeepsItsPrime();
+    testAnOfferAfterACollectionMidEdgeKeepsItsPrime();
+    testAGlideAskedForMidEdgeIsNotLost();
+    testAGlidePendingAtAnOfferIsSuperseded();
+    testAGlideDuringAGrowWaitsForTheNewRing();
+    testAGlideWaitsForTheHistoryItReads();
+    testAGlideBackDuringAnOfferIsNotLost();
+    testALineWithNoRingIsNotOfferedOne();
+    testAnAdoptedLineHoldsOnlyWhatItWasHanded();
+    testAHandoverMidGrowTakesTheRingBeingGrown();
+    testARinglessEdgeBesideAGrownOneIsRebuilt();
+    testAGrowTooSmallIsGrownAgain();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
