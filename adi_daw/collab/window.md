@@ -43,7 +43,50 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
-## 2026-10-27, latest — the Mixer View [#263](https://github.com/arieladi/Adi/pull/263) `window/mixer-view`
+## 2026-10-27, latest — Live's look [#265](https://github.com/arieladi/Adi/pull/265) `window/live-look`; held for the director's approval
+
+**The director's ruling (27 October):** the window "looks very far from Ableton". It must look
+like Live, plus what the Master Reference adds. He approves from pictures, and no new window is
+built until he does. Item 3 and the rest of item 2 are held until then.
+
+**What was done:**
+- Measured Live 11.2.7 on his Mac (1440 × 900, default theme) region by region: colours by
+  histogram, edges pixel by pixel.
+- Restyled the window to those measures, now #265, stacked on #264.
+- The numbers and the gaps that remain are in `collab/window/look-live11.md`.
+- `liveParity` renders Live's default set as ADI at the same size. It is the golden
+  `live-parity.png`. `ADI_UI_PARITY=<folder>` writes a 2x render to lay beside a capture.
+- Sent the director side-by-side pictures: the whole window, the track headers, the detail row,
+  and the control bar with the browser.
+
+**What the measures changed:**
+- The device strip's floor is 196, the whole Device View panel; its body is about 170. The
+  director's 169 is the body. Both docs now say so.
+- The frame is 8 units between panels, with 4-unit panel edges. The Status Bar is 38.
+- A track is 88 tall. New tracks are named "# Audio" and "# MIDI", as Live's.
+- The default panel widths are 316 for the browser and 221 for the track controls.
+
+**What is not like Live, and what it waits on:**
+- The browser's list: its content model.
+- Returns and Main shown last, and MIDI tracks drawn as MIDI: N6 and N11.
+- The loop brace: the transport's loop.
+- Live's own device displays: ADR-0150.
+- The typeface.
+
+**Checks:**
+- 259 shell checks; all goldens re-recorded, with masks over every new place that shows words.
+- `test_all.sh`: 8265 checks across 97 suites, PASS; window state 48, document 38.
+- The Clang `-Wshadow-all` sweep is clean.
+- Found on the way: a negative-size fill in the mixer panel when the tracks run past it. It is
+  fixed, and the JUCE assertion it raised is gone.
+
+**Where to resume:** `~/adi-window` on `window/live-look`, the tip of the stack. Once the
+director rules on the pictures, apply his corrections here first, then carry on with §3b item 2
+and item 3.
+
+---
+
+## 2026-10-27, later still — the Mixer View [#263](https://github.com/arieladi/Adi/pull/263) `window/mixer-view`
 
 **The Mixer View, now #263, stacked on #262.** Live 12's Mixer in the Arrangement: vertical
 strips at the arrangement's foot, from Ctrl/Cmd+Alt+M, the View menu's Mixer, or the Status Bar's
