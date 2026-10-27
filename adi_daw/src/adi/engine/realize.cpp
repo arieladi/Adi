@@ -236,6 +236,34 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 }
             }
             if (!placeOnce(send, ref, "a send's node")) continue;
+            // A return's send into itself, Live's feedback loop: the send
+            // ends in the loop's writer, and the loop's reader feeds the
+            // return's junction a block later. Neither edge closes a cycle --
+            // the writer is a sink, the reader a source -- and neither delays,
+            // so their keys only keep them apart.
+            if (e.feedback) {
+                const FeedbackNodes loop = opts.feedbackFor ? opts.feedbackFor(e.routingId) : FeedbackNodes{};
+                if (loop.writer == nullptr || loop.reader == nullptr) {
+                    r->problems_.push_back(ref + ": no loop to close the return's send into itself, so it was not made");
+                    continue;
+                }
+                if (!placeOnce(loop.writer, ref, "a loop's writer") || !placeOnce(loop.reader, ref, "a loop's reader"))
+                    continue;
+                const NodeId sid = r->graph_.addNode(*send);
+                const NodeId wid = r->graph_.addNode(*loop.writer);
+                const NodeId rid = r->graph_.addNode(*loop.reader);
+                if (!r->graph_.connect(at, sid) || !r->graph_.connect(sid, wid) || !r->graph_.connect(rid, to)) {
+                    r->problems_.push_back(ref + ": the graph refused the loop");
+                    continue;
+                }
+                r->chainEdges_.push_back({{srcId, RealizedGraph::ChainKey::Leg::Send, tapNode,
+                                           static_cast<std::uint64_t>(e.routingId)},
+                                          at, sid, Bus::Main});
+                r->chainEdges_.push_back({{srcId, RealizedGraph::ChainKey::Leg::Next, send, 0}, sid, wid, Bus::Main});
+                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, loop.reader, 0}, rid, to, Bus::Main});
+                r->loopReaders_.push_back(loop.reader);
+                continue;
+            }
             // ADR-0174: a send into a summing group enters it through a
             // channel half of its own, as a child does, so the group's buss
             // half decodes what a channel half encoded and the send's level
@@ -298,6 +326,7 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
               [](const RealizedGraph::ChainRecord& a, const RealizedGraph::ChainRecord& b) {
                   return a.key < b.key;
               });
+    std::sort(r->loopReaders_.begin(), r->loopReaders_.end(), std::less<Node*>());
 
     // --- the output ---------------------------------------------------------
     const std::int64_t masterId = plan.nodes[*plan.output].trackId;

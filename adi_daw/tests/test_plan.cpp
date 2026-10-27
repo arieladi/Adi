@@ -209,8 +209,13 @@ void testASendThatCannotPlayIsRefusedByRow() {
           "a Pre send is planned, leaving after the effects and before the fader");
     check(sendEdge(p, 24) != nullptr, "a send switched off is planned, so Enable Send never retimes");
     check(sendEdge(p, 25) == nullptr && mentions(p, "routing#25", "master"), "a send into the master is refused");
-    check(sendEdge(p, 26) == nullptr && mentions(p, "routing#26", "itself"),
-          "a return into itself, Live's feedback loop, is named, not played yet");
+    const PlannedEdge* loop = sendEdge(p, 26);
+    check(loop != nullptr && loop->feedback && loop->from == loop->to && loop->tap == Tap::PostFader &&
+              !mentions(p, "routing#26"),
+          "a return into itself, Live's feedback loop, is planned: a feedback edge, after the fader" + problems(p));
+    bool otherFeedback = false;
+    for (const PlannedEdge& e : p.edges) otherFeedback = otherFeedback || (e.feedback && e.routingId != 26);
+    check(!otherFeedback, "and it is the only feedback edge: every other edge is the topology's");
     check(sendEdge(p, 27) == nullptr && mentions(p, "routing#27", "would close a loop"),
           "a return's own send back into a track that feeds it is a loop, refused");
     check(sendEdge(p, 28) == nullptr && mentions(p, "routing#28", "VCA"), "a VCA takes no send");
@@ -250,6 +255,27 @@ void testASendThatCannotPlayIsRefusedByRow() {
               "two returns feeding each other: the later row is refused, named, and nothing loops");
         check(sendEdge(pr, 33) != nullptr, "a return's own send switched off is planned, so Enable Send never retimes");
         check(hasEdge(pr, 4, 1) && hasEdge(pr, 5, 1), "and both returns still go to the master");
+    }
+
+    // A return's loop Pre, and a loop beside a return's other sends: the loop
+    // is outside the topology, so it closes no cycle and refuses no row.
+    {
+        rows::Model r;
+        r.tracks = {track(1, "master", "Master"), track(2, "audio", "X"), track(4, "return", "R1"),
+                    track(5, "return", "R2")};
+        rows::Routing pre = route(41, 4, 4, "send", "user");
+        pre.preFader = true;
+        r.routing = {route(40, 2, 4, "send", "user"),   // X -> R1
+                     pre,                               // R1 into itself, Pre
+                     route(42, 4, 5, "send", "user"),   // R1 -> R2
+                     route(43, 5, 5, "send", "user")};  // R2 into itself
+        const GraphPlan pr = planGraph(r);
+        const PlannedEdge* l1 = sendEdge(pr, 41);
+        const PlannedEdge* l2 = sendEdge(pr, 43);
+        check(l1 != nullptr && l1->feedback && l1->tap == Tap::PostFx && l2 != nullptr && l2->feedback &&
+                  sendEdge(pr, 42) != nullptr && !pr.cycle && pr.problems.empty(),
+              "a Pre loop leaves after the effects; two returns each with a loop, one feeding the other, "
+              "is no cycle and refuses nothing" + problems(pr));
     }
 
     // A loop through a sidechain is a loop: the return keys a device on X,

@@ -334,6 +334,150 @@ private:
     StripNode gain_;     ///< the send's own level, pan and switch
 };
 
+/// Live's feedback loop (ADR-0203 d3): a return's send into itself. What the
+/// return sends itself, after the send's own node, is written to a ring and
+/// played back into the return's junction `D` samples later, beside whatever
+/// else feeds it. D is the graph's largest block, so a block is always
+/// written before it is read, whatever size the callbacks are; Live's figure
+/// is AWAITING 7(f). The session owns one per routing row, as it owns a send.
+///
+/// Two nodes and the ring between them, outside the graph's order. The writer
+/// ends the send: a sink, no edge leaves it. The reader starts the return: a
+/// source, no edge enters it, so it is at level 0 and runs, every segment of
+/// it, before the writer in every block -- one audio thread runs the levels in
+/// order (Graph::process). The reader keeps the loop's clock: at the start of
+/// a block it marks where the block starts, and both nodes address the ring
+/// from there, so they agree however a block is split.
+///
+/// NOTHING STALE OR UNWRITTEN IS EVER PLAYED. The reader plays a position only
+/// if it has been written and not played already (a restart counts all it
+/// held as played); anything else is silence. The ring holds two of the
+/// largest block, so nothing it may play has been overwritten. So a D that grows leaves a gap
+/// rather than a repeat, and one that shrinks skips rather than plays garbage.
+/// A loop starts empty when it comes back into play after time out of it --
+/// told at the swap, against the graph that really played last
+/// (`Node::enterPlay`) -- when the sample rate changes, since what it holds
+/// would play at the wrong pitch, and when the device stops (`release`). A writer that missed blocks zeroes
+/// what it missed before it writes again.
+///
+/// Every position and the ring itself are the audio thread's. A graph's
+/// `prepare` runs while the previous graph may still be playing the same
+/// nodes, so preparing writes only atomics: the D and rate the next block
+/// takes up.
+///
+/// The ring is double at both precisions, so a precision change keeps the
+/// echoes in flight exactly. Its shape -- channels, and capacity for two of
+/// the largest block -- is fixed when it is made, on the message thread, and
+/// never reallocated: a session-owned node is prepared while the previous
+/// graph may still be playing it. A block larger than the shape holds needs a
+/// new loop (`fits`).
+class FeedbackLoop {
+public:
+    /// The smallest largest-block a loop is made for, so that every buffer
+    /// size an audio device offers changes D without making a new loop.
+    static constexpr std::int32_t kMinBlock = 8192;
+
+    /// Message thread: allocates the ring, for `channels` and blocks up to
+    /// max(maxFrames, kMinBlock).
+    FeedbackLoop(std::int32_t channels, std::int32_t maxFrames);
+
+    /// Whether this loop's ring can play a graph of this shape.
+    [[nodiscard]] bool fits(std::int32_t channels, std::int32_t maxFrames) const noexcept;
+
+    /// The node that ends the send: the ring's writer.
+    [[nodiscard]] Node& writer() noexcept { return writer_; }
+    /// The node that starts the return: the ring's reader, a feedback source.
+    [[nodiscard]] Node& reader() noexcept { return reader_; }
+
+    /// D, in samples, as the last graph to prepare the reader set it.
+    [[nodiscard]] std::int32_t delay() const noexcept { return pendingDelay_.load(std::memory_order_relaxed); }
+    /// Samples the writer could not write as they came: not finite, written
+    /// as silence, or past the ceiling, written at it.
+    [[nodiscard]] std::uint64_t guarded() const noexcept { return guarded_.load(std::memory_order_relaxed); }
+
+    /// Below this a sample is written as silence: -600 dB, far under any
+    /// converter. Without it a loop that decays never reaches silence, at
+    /// either width: any gain between -6 dB and unity rounds a subnormal back
+    /// to itself, so the loop would settle there for good, its return never
+    /// asleep and its chain doing subnormal arithmetic.
+    static constexpr double kFloor = 1e-30;
+
+    /// A loop that runs away is held here, 2^20 (about +120 dBFS): far past
+    /// any converter, and far enough under a float's top that no gain stage
+    /// after it reaches infinity at either width. An infinity into a device
+    /// would turn its state, and the master after it, to NaN for good; the
+    /// writer's flush cannot reach that. ADI's guard: Live's is not measured
+    /// (AWAITING 7(f)).
+    static constexpr double kCeiling = 1048576.0;
+
+private:
+    class Writer final : public Node {
+    public:
+        explicit Writer(FeedbackLoop& loop) : loop_(loop) {}
+        void process(const NodeIo& io) noexcept override { loop_.write(io); }
+        /// Never asleep: it writes silence when the send is silent, so the
+        /// ring has no gaps while the loop is in the graph.
+        [[nodiscard]] std::int64_t tailSamples() const noexcept override { return kInfiniteTail; }
+        /// Its input is never compensated: the send's own latency, the
+        /// return's track delay, does not lengthen the loop.
+        [[nodiscard]] bool closesFeedback() const noexcept override { return true; }
+        [[nodiscard]] bool processesDouble() const noexcept override { return true; }
+        [[nodiscard]] EventFlow eventFlow() const noexcept override { return EventFlow::Stop; }
+        [[nodiscard]] const char* name() const noexcept override { return "feedback.write"; }
+
+    private:
+        FeedbackLoop& loop_;
+    };
+    class Reader final : public Node {
+    public:
+        explicit Reader(FeedbackLoop& loop) : loop_(loop) {}
+        void prepare(double sampleRate, std::int32_t maxFrames) override { loop_.prepareFormat(sampleRate, maxFrames); }
+        /// The device stopped: the loop starts empty when it plays again, as a
+        /// plug-in's delay starts empty when it is activated again.
+        void release() override { loop_.restart_.store(true, std::memory_order_release); }
+        void process(const NodeIo& io) noexcept override { loop_.read(io); }
+        void enterPlay() noexcept override { loop_.empty(); }
+        /// Never asleep: it keeps the loop's clock. Its silence is measured
+        /// silent, so the return it feeds still sleeps when the loop is empty.
+        [[nodiscard]] std::int64_t tailSamples() const noexcept override { return kInfiniteTail; }
+        [[nodiscard]] bool closesFeedback() const noexcept override { return true; }
+        [[nodiscard]] bool processesDouble() const noexcept override { return true; }
+        [[nodiscard]] EventFlow eventFlow() const noexcept override { return EventFlow::Stop; }
+        [[nodiscard]] const char* name() const noexcept override { return "feedback.read"; }
+
+    private:
+        FeedbackLoop& loop_;
+    };
+
+    void prepareFormat(double sampleRate, std::int32_t maxFrames) noexcept;
+    void empty() noexcept { writtenEnd_ = readEnd_ = clock_; }   // audio thread
+    void read(const NodeIo& io) noexcept;    // audio thread
+    void write(const NodeIo& io) noexcept;   // audio thread
+    [[nodiscard]] double* lane(std::int32_t c) noexcept {
+        return ring_.data() + static_cast<std::size_t>(c) * static_cast<std::size_t>(capacity_);
+    }
+    /// Where position `q` (never negative) lives in a lane.
+    [[nodiscard]] std::size_t slot(std::int64_t q) const noexcept {
+        return static_cast<std::size_t>(q % capacity_);
+    }
+
+    std::int32_t channels_;
+    std::int32_t capacity_;
+    std::vector<double> ring_;   ///< channels_ lanes of capacity_ frames
+    Writer writer_{*this};
+    Reader reader_{*this};
+    std::atomic<std::int32_t> pendingDelay_;
+    std::atomic<double> rate_{0.0};          ///< the rate last prepared at
+    std::atomic<bool> restart_{false};       ///< a new rate, a stop: empty at the next block
+    std::atomic<std::uint64_t> guarded_{0};
+    // The audio thread's alone. Positions count frames from the loop's start.
+    std::int32_t delay_ = 0;            ///< D for the block being played
+    std::int64_t clock_ = 0;            ///< where the next block starts
+    std::int64_t blockStart_ = 0;       ///< where this block started
+    std::int64_t writtenEnd_ = 0;       ///< one past the last position written
+    std::int64_t readEnd_ = 0;          ///< one past the last position played, or emptied
+};
+
 /// How solo reaches across sends (ADR-0203 d3). Fixed until the format has a
 /// home for them (win's question 7); a test may change them.
 struct HearingFlags {
@@ -409,6 +553,22 @@ public:
     /// level move ramps and the send's edges keep their history.
     [[nodiscard]] SendNode* sendFor(std::int64_t routingId) noexcept;
 
+    /// The loop a return's send into itself closes (ADR-0203 d3), by its
+    /// routing row, or null. Kept for the session, so its echoes cross every
+    /// rebuild.
+    [[nodiscard]] FeedbackLoop* loopFor(std::int64_t routingId) noexcept;
+    [[nodiscard]] const FeedbackLoop* loopFor(std::int64_t routingId) const noexcept {
+        return const_cast<MixerStrips*>(this)->loopFor(routingId);
+    }
+
+    /// The shape of the graphs the next sync's loops play in: the session's
+    /// channels and largest block. A loop that cannot hold it is replaced, at
+    /// that sync, by one that can.
+    void setFormat(std::int32_t channels, std::int32_t maxFrames) noexcept {
+        channels_ = channels;
+        maxFrames_ = maxFrames;
+    }
+
     /// Rows the strip could not honour, named: an unknown pan law, a volume or
     /// pan that is not finite.
     [[nodiscard]] const std::vector<std::string>& problems() const noexcept { return problems_; }
@@ -417,6 +577,12 @@ private:
     std::map<std::int64_t, std::unique_ptr<StripNode>> strips_;
     std::map<std::int64_t, std::unique_ptr<SendNode>> sends_;
     std::set<std::int64_t> liveSends_;   ///< the rows planned at the last sync
+    std::map<std::int64_t, std::unique_ptr<FeedbackLoop>> loops_;
+    /// Loops replaced by a larger shape, kept until the session ends: a
+    /// retired graph may still name their nodes (ADR-0122's rule).
+    std::vector<std::unique_ptr<FeedbackLoop>> retiredLoops_;
+    std::int32_t channels_ = 2;
+    std::int32_t maxFrames_ = 512;
     std::vector<std::string> problems_;
 };
 

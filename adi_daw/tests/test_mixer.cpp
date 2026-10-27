@@ -30,6 +30,7 @@
 #include <numbers>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -113,6 +114,58 @@ public:
     [[nodiscard]] const char* name() const noexcept override { return "late"; }
 };
 
+/// `v` for `n` frames from frame `at` of its own count, silence otherwise: a
+/// click, or a burst (ADR-0203 d3's loop).
+class ClickNode final : public Node {
+public:
+    explicit ClickNode(std::int64_t at, float v = 1.0f, std::int64_t n = 1) : at_(at), n_(n), v_(v) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            const std::int64_t t = count_ + i;
+            const float x = (t >= at_ && t < at_ + n_) ? v_ : 0.0f;
+            for (std::int32_t c = 0; c < io.channels; ++c) io.out[c][io.blockOffset + i] = x;
+        }
+        count_ += io.frames;
+    }
+    [[nodiscard]] const char* name() const noexcept override { return "click"; }
+
+private:
+    std::int64_t at_, n_;
+    float v_;
+    std::int64_t count_ = 0;
+};
+
+/// A device that delays by `latency` and says so: a slow plug-in in a chain.
+class LateDevice final : public device::DeviceInstance {
+public:
+    LateDevice(device::DeviceIdentity id, std::int32_t latency) : id_(std::move(id)), latency_(latency) {}
+    [[nodiscard]] const device::DeviceIdentity& identity() const noexcept override { return id_; }
+    [[nodiscard]] bool loaded() const noexcept override { return true; }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return latency_; }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return latency_; }
+    void prepare(double, std::int32_t) override {
+        ring_.assign(2 * static_cast<std::size_t>(latency_), 0.0f);
+        at_ = 0;
+    }
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            for (std::int32_t c = 0; c < io.channels && c < 2; ++c) {
+                const auto k = static_cast<std::size_t>(c) * static_cast<std::size_t>(latency_) + at_;
+                const float x = io.in != nullptr ? io.in[c][io.blockOffset + i] : 0.0f;
+                io.out[c][io.blockOffset + i] = ring_[k];
+                ring_[k] = x;
+            }
+            at_ = (at_ + 1) % static_cast<std::size_t>(latency_);
+        }
+    }
+
+private:
+    device::DeviceIdentity id_;
+    std::int32_t latency_;
+    std::vector<float> ring_;
+    std::size_t at_ = 0;
+};
+
 /// A project of named tracks, each track id optionally a tone, and a session on it.
 struct Mix {
     adi::test::TempDirectory temp;
@@ -145,6 +198,35 @@ struct Mix {
     }
     /// Sources other than tones: a track id's own node (ADR-0172's steps).
     std::map<std::int64_t, Node*> extra;
+    /// A slow plug-in on a track's chain, `latency` samples late: a device
+    /// row, made by the loader below.
+    std::map<std::int64_t, std::int32_t> lateDevices;   // device id -> latency
+    void lateDevice(std::int64_t trackId, std::int64_t deviceId, std::int32_t latency) {
+        store->db().exec("INSERT OR IGNORE INTO plugin_refs(id, format, uid, vendor, name, version, subtype) "
+                         "VALUES (7, 'vst3', 'adi.test.late', 'ADI', 'Late', '1.0', 'effect')");
+        OpRequest q;
+        q.opType = "chain.create";
+        q.payload = {{"id", deviceId}, {"track", trackId}};
+        op(q);
+        q.opType = "device.insert";
+        q.payload = {{"id", deviceId}, {"chain", deviceId}, {"ord", 0}, {"ref", 7}, {"name", "Late"}};
+        op(q);
+        lateDevices[deviceId] = latency;
+    }
+    DeviceLoader loader() {
+        return [this](const DeviceRequest& rq, std::string& err) -> std::unique_ptr<device::DeviceInstance> {
+            const auto it = rq.device != nullptr ? lateDevices.find(rq.device->id) : lateDevices.end();
+            if (rq.ref == nullptr || rq.ref->uid != "adi.test.late" || it == lateDevices.end()) {
+                err = "not a test device";
+                return nullptr;
+            }
+            device::DeviceIdentity id;
+            id.format = rq.ref->format;
+            id.uid = rq.ref->uid;
+            id.name = rq.ref->name;
+            return std::make_unique<LateDevice>(id, it->second);
+        };
+    }
     void load(double sampleRate = 48000.0, Precision precision = Precision::Float32) {
         session.setSourcesFor([this](std::int64_t id) {
             if (const auto e = extra.find(id); e != extra.end()) return std::vector<Node*>{e->second};
@@ -155,7 +237,8 @@ struct Mix {
         spec.sampleRate = sampleRate;
         spec.maxFrames = 512;
         spec.precision = precision;
-        if (!session.load(*store, {}, spec)) throw std::runtime_error(session.error());
+        if (!session.load(*store, lateDevices.empty() ? DeviceLoader{} : loader(), spec))
+            throw std::runtime_error(session.error());
     }
     void refresh() {
         if (!session.refresh(*store)) throw std::runtime_error(session.error());
@@ -929,6 +1012,425 @@ void testAReturnsOwnSends() {
         check(m.l[511] == 1.5f && m.mentions("routing#13"), "R2 back into R1 is refused, named; the rest plays: " +
                                                                 std::to_string(m.l[511]));
     }
+}
+
+/// `total` frames rendered in callbacks of `block`, the left channel.
+std::vector<float> renderRun(Mix& m, std::int64_t total, std::int32_t block) {
+    std::vector<float> out;
+    while (static_cast<std::int64_t>(out.size()) < total) {
+        m.render(block);
+        out.insert(out.end(), m.l.begin(), m.l.end());
+    }
+    out.resize(static_cast<std::size_t>(total));
+    return out;
+}
+
+/// Empty when `o` is `want` (frame -> value, to 1e-6) and silence everywhere
+/// else; otherwise the first frame that is not.
+std::string pattern(const std::vector<float>& o, const std::map<std::int64_t, double>& want) {
+    for (std::size_t i = 0; i < o.size(); ++i) {
+        const auto it = want.find(static_cast<std::int64_t>(i));
+        const double w = it == want.end() ? 0.0 : it->second;
+        if (!(std::fabs(static_cast<double>(o[i]) - w) <= 1e-6))
+            return ": frame " + std::to_string(i) + " is " + std::to_string(o[i]) + ", not " + std::to_string(w);
+    }
+    return {};
+}
+
+/// The loop's project: X (1) clicks and sends it at 0 dB to the return R (4),
+/// which sends itself at -6.02 dB (row 12); Y (2) is silent; the master (9).
+void loopProject(Mix& m, ClickNode& click) {
+    m.track(1, "audio", "X");
+    m.track(2, "audio", "Y");
+    m.track(4, "return", "R");
+    m.track(9, "master", "Master");
+    m.extra[1] = &click;
+    sendRow(m, 11, 1, 4);
+    sendRow(m, 12, 4, 4, -6.0206);
+}
+
+void testTheFeedbackLoop() {
+    section("ADR-0203 d3 -- Live's feedback loop: a return's send into itself, a block a trip");
+
+    // A click into R comes back every T = D + R's chain latency, at the send's
+    // gain each time, D the largest block (512 here).
+    const double g = std::pow(10.0, -6.0206 / 20.0);
+    const std::map<std::int64_t, double> echoes{{100, 2.0}, {612, g}, {1124, g * g}, {1636, g * g * g},
+                                                {2148, g * g * g * g}};
+    for (const Precision width : {Precision::Float32, Precision::Float64}) {
+        for (const std::int32_t block : {512, 64, 100}) {
+            if (width == Precision::Float64 && block != 100) continue;
+            const std::string at = std::string(width == Precision::Float64 ? " (at 64" : " (at 32") +
+                                   ", blocks of " + std::to_string(block) + ")";
+            ClickNode click(100);
+            Mix m(width == Precision::Float64 ? "loop64" : "loop32");
+            loopProject(m, click);
+            m.load(48000.0, width);
+            const std::vector<float> o = renderRun(m, 2560, block);
+            check(pattern(o, echoes).empty(),
+                  "the click, X's dry and R's wet, then R's echoes at 512, 1024, 1536, 2048 later, halving" + at +
+                      pattern(o, echoes));
+            check(m.session.feedbackTrip(12) == 512 && m.session.feedbackTrip(11) == -1 && !m.mentions("routing#12"),
+                  "the trip is reported, 512, for the loop's row alone" + at + ": " +
+                      std::to_string(m.session.feedbackTrip(12)));
+        }
+    }
+    {
+        // A slow plug-in on R, before the tap, lengthens the loop by its
+        // latency: the loop is not compensated, so the trip is D + 100.
+        ClickNode click(100);
+        Mix m("loop-late-r");
+        loopProject(m, click);
+        m.lateDevice(4, 70, 100);
+        m.load();
+        const std::vector<float> o = renderRun(m, 2560, 512);
+        const std::map<std::int64_t, double> want{{200, 2.0}, {812, g}, {1424, g * g}, {2036, g * g * g}};
+        check(pattern(o, want).empty() && m.session.feedbackTrip(12) == 612,
+              "a 100-sample plug-in on R: the dry waits for R's wet, and the echoes come 612 apart, as "
+              "reported" + pattern(o, want) + " (trip " + std::to_string(m.session.feedbackTrip(12)) + ")");
+    }
+    {
+        // A slow plug-in on X, the sender, moves R's junction; the loop's
+        // trip does not move with it.
+        ClickNode click(100);
+        Mix m("loop-late-x");
+        loopProject(m, click);
+        m.lateDevice(1, 71, 300);
+        m.load();
+        const std::vector<float> o = renderRun(m, 2560, 512);
+        const std::map<std::int64_t, double> want{{400, 2.0}, {912, g}, {1424, g * g}, {1936, g * g * g},
+                                                  {2448, g * g * g * g}};
+        check(pattern(o, want).empty() && m.session.feedbackTrip(12) == 512,
+              "a 300-sample plug-in on X: everything 300 later, the echoes still 512 apart" + pattern(o, want) +
+                  " (trip " + std::to_string(m.session.feedbackTrip(12)) + ")");
+    }
+    {
+        // R's track delay is reported latency, played by compensation at the
+        // master: R is heard 200 later, and its loop is not lengthened.
+        ClickNode click(100);
+        Mix m("loop-delay");
+        loopProject(m, click);
+        m.set("mixer.setDelay", 4, "samples", 200);
+        m.load();
+        const std::vector<float> o = renderRun(m, 2560, 512);
+        const std::map<std::int64_t, double> want{{100, 1.0},           {300, 1.0},  {812, g},
+                                                  {1324, g * g},        {1836, g * g * g},
+                                                  {2348, g * g * g * g}};
+        check(pattern(o, want).empty() && m.session.feedbackTrip(12) == 512,
+              "R delayed by 200: its wet and echoes 200 later, the echoes 512 apart" + pattern(o, want));
+    }
+    {
+        // The echoes in flight cross a rebuild, a precision change and a new
+        // largest block. The block grows mid-loop: what was played is not
+        // played again, and what was not plays at the new trip.
+        ClickNode click(100);
+        Mix m("loop-cross");
+        loopProject(m, click);
+        m.load();
+        std::vector<float> o = renderRun(m, 512, 512);
+        m.set("mixer.setVolume", 2, "db", -3.0);   // Y: a rebuild, nothing heard
+        m.refresh();
+        const std::vector<float> a = renderRun(m, 512, 512);
+        o.insert(o.end(), a.begin(), a.end());
+        check(pattern(o, {{100, 2.0}, {612, g}}).empty(), "the first echo crosses a rebuild" +
+                                                              pattern(o, {{100, 2.0}, {612, g}}));
+        check(m.session.setPrecision(Precision::Float64), "to 64 mid-loop");
+        const std::vector<float> b = renderRun(m, 512, 512);
+        check(pattern(b, {{100, g * g}}).empty(), "and the second crosses a precision change" +
+                                                      pattern(b, {{100, g * g}}));
+        m.session.prepare(48000.0, 1024);
+        const std::vector<float> c = renderRun(m, 2048, 1024);
+        // The third echo, written at 1124, was due at 1636; with the block
+        // grown at 1536 it plays 1024 after it was written, at 2148, and the
+        // fourth 1024 after that.
+        const std::map<std::int64_t, double> later{{612, g * g * g}, {1636, g * g * g * g}};
+        check(pattern(c, later).empty() && m.session.feedbackTrip(12) == 1024,
+              "and the third a largest block of 1024: 1024 later, nothing repeated" + pattern(c, later) +
+                  " (trip " + std::to_string(m.session.feedbackTrip(12)) + ")");
+    }
+    {
+        // Enable Send off: no loop. Out of the plan and back: an empty loop,
+        // never what it held when it left.
+        ClickNode click(100);
+        Mix m("loop-away");
+        m.track(1, "audio", "X");
+        m.track(4, "return", "R");
+        m.track(9, "master", "Master");
+        m.extra[1] = &click;
+        sendRow(m, 11, 1, 4);
+        sendRow(m, 12, 4, 4, -6.0206, false);
+        m.load();
+        std::vector<float> o = renderRun(m, 1024, 512);
+        check(pattern(o, {{100, 2.0}}).empty(), "Enable Send off: the click and no echo" + pattern(o, {{100, 2.0}}));
+        m.store->db().exec("UPDATE routing SET enabled=1 WHERE id=12");
+        m.refresh();
+        ClickNode again(100);
+        m.extra[1] = &again;
+        m.refresh();
+        o = renderRun(m, 300, 100);   // the click is in the loop
+        m.store->db().exec("DELETE FROM routing WHERE id=12");
+        m.refresh();
+        const std::vector<float> away = renderRun(m, 200, 100);
+        sendRow(m, 12, 4, 4, -6.0206);
+        m.refresh();
+        const std::vector<float> back = renderRun(m, 2048, 100);
+        check(pattern(o, {{100, 2.0}}).empty() && pattern(away, {}).empty() && pattern(back, {}).empty(),
+              "on, then out of the plan with a click in it, then back: nothing comes back" + pattern(back, {}));
+    }
+    {
+        // The same row, its destination moved to another return and back:
+        // the loop is out of play meanwhile, and back in play it is empty.
+        ClickNode click(100);
+        Mix m("loop-moved");
+        loopProject(m, click);
+        m.track(5, "return", "R2");
+        m.load();
+        const std::vector<float> o = renderRun(m, 300, 100);
+        m.store->db().exec("UPDATE routing SET dst_id=5 WHERE id=12");
+        m.refresh();
+        const std::vector<float> away = renderRun(m, 200, 100);
+        m.store->db().exec("UPDATE routing SET dst_id=4 WHERE id=12");
+        m.refresh();
+        const std::vector<float> back = renderRun(m, 2048, 100);
+        check(pattern(o, {{100, 2.0}}).empty() && pattern(back, {}).empty(),
+              "a loop sent elsewhere under its own row and back plays nothing it held" + pattern(back, {}));
+    }
+    {
+        // A new sample rate: what the loop holds would play at the wrong
+        // pitch, so it starts empty.
+        ClickNode click(100);
+        Mix m("loop-rate");
+        loopProject(m, click);
+        m.load();
+        const std::vector<float> o = renderRun(m, 512, 512);
+        m.session.prepare(96000.0, 512);
+        const std::vector<float> after = renderRun(m, 2048, 512);
+        check(pattern(o, {{100, 2.0}}).empty() && pattern(after, {}).empty(),
+              "the click in the loop, then 96 kHz: no echo" + pattern(after, {}));
+    }
+    {
+        // The device stops with the click in the loop, and starts again at the
+        // same format: the loop starts empty, as a plug-in's delay does.
+        ClickNode click(100);
+        Mix m("loop-stop");
+        loopProject(m, click);
+        m.load();
+        const std::vector<float> o = renderRun(m, 512, 512);
+        m.session.release();
+        m.session.prepare(48000.0, 512);
+        const std::vector<float> after = renderRun(m, 2048, 512);
+        check(pattern(o, {{100, 2.0}}).empty() && pattern(after, {}).empty(),
+              "the click in the loop, a stop and a start: no echo" + pattern(after, {}));
+    }
+    {
+        // A graph's prepare touches nothing the previous graph plays: the old
+        // graph, played one more block after the new one was prepared, goes
+        // on with the loop as if nothing had happened, and so does the new.
+        ClickNode click(100);
+        Mix m("loop-old");
+        loopProject(m, click);
+        m.load();
+        std::vector<float> o = renderRun(m, 512, 512);
+        Graph* old = m.session.graph().currentGraph();
+        m.set("mixer.setVolume", 2, "db", -3.0);   // Y: a new graph, prepared
+        m.refresh();
+        std::vector<float> l(512), r(512);
+        float* out[2] = {l.data(), r.data()};
+        AudioIo io;
+        io.out = out;
+        io.numOut = 2;
+        io.frames = 512;
+        if (old != nullptr) old->process(io);
+        o.insert(o.end(), l.begin(), l.end());
+        const std::vector<float> rest = renderRun(m, 1536, 512);
+        o.insert(o.end(), rest.begin(), rest.end());
+        check(old != nullptr && pattern(o, echoes).empty(),
+              "the old graph's last block, then the new graph's: the echoes run on" + pattern(o, echoes));
+    }
+    {
+        // Solo: a soloed R plays its loop, and nothing of X's dry.
+        ClickNode click(100);
+        Mix m("loop-solo");
+        loopProject(m, click);
+        m.set("track.setSolo", 4, "soloed", true);
+        m.load();
+        const std::vector<float> o = renderRun(m, 1536, 512);
+        check(pattern(o, {{100, 1.0}, {612, g}, {1124, g * g}}).empty(),
+              "R soloed: its wet and its echoes" + pattern(o, {{100, 1.0}, {612, g}, {1124, g * g}}));
+    }
+    {
+        // A burst of NaN into R: heard once, then flushed from the loop.
+        ClickNode burst(100, std::numeric_limits<float>::quiet_NaN(), 4);
+        Mix m("loop-nan");
+        loopProject(m, burst);
+        m.load();
+        const std::vector<float> o = renderRun(m, 4096, 512);
+        bool clean = true;
+        for (std::size_t i = 110; i < o.size(); ++i) clean = clean && o[i] == 0.0f;
+        const FeedbackLoop* loop = m.session.strips().loopFor(12);
+        check(std::isnan(o[100]) && clean && loop != nullptr && loop->guarded() == 8,
+              "a NaN burst is heard where it is, then never again: the loop wrote its 8 samples as silence (" +
+                  std::to_string(loop != nullptr ? loop->guarded() : 0) + ")");
+    }
+    {
+        // A loop that runs away -- +24 dB a trip -- is held at the ceiling:
+        // the master stays finite at both widths and across a precision
+        // change in the middle of it, where a float would have overflowed
+        // after some thirty trips.
+        ClickNode click(100);
+        Mix m("loop-runaway");
+        loopProject(m, click);
+        m.store->db().exec("UPDATE routing SET gain_db=24 WHERE id=12");
+        m.load(48000.0, Precision::Float64);
+        bool finite = true;
+        for (int b = 0; b < 300; ++b) {
+            if (b == 150) m.session.setPrecision(Precision::Float32);
+            m.render(512);
+            for (const float v : m.l) finite = finite && std::isfinite(v);
+        }
+        const FeedbackLoop* loop = m.session.strips().loopFor(12);
+        check(finite && loop != nullptr && loop->guarded() > 0,
+              "a loop at +24 dB a trip, 300 trips, 64 then 32: the master never infinite, the loop held (" +
+                  std::to_string(loop != nullptr ? loop->guarded() : 0) + " samples)");
+    }
+    // A loop that decays reaches true silence, and its return sleeps. Without
+    // the floor it would settle on a subnormal for good, at either width: a
+    // -6 dB loop at 64 (its gain a float's, a hair over a half), a -1 dB loop
+    // at 32.
+    for (const auto& [width, db, blocks] :
+         {std::tuple<Precision, double, int>{Precision::Float64, -6.0206, 160}, {Precision::Float32, -1.0, 700}}) {
+        const std::string at = width == Precision::Float64 ? " (at 64, -6 dB)" : " (at 32, -1 dB)";
+        ClickNode click(100);
+        Mix m("loop-decay");
+        loopProject(m, click);
+        m.store->db().exec("UPDATE routing SET gain_db=" + std::to_string(db) + " WHERE id=12");
+        m.load(48000.0, width);
+        std::vector<double> l64(512), r64(512);
+        auto render64 = [&] {
+            float* out[2] = {m.l.data(), m.r.data()};
+            double* out64[2] = {l64.data(), r64.data()};
+            m.l.assign(512, 0.0f);
+            m.r.assign(512, 0.0f);
+            AudioIo io;
+            io.out = out;
+            io.out64 = out64;
+            io.numOut = 2;
+            io.frames = 512;
+            m.session.process(io);
+        };
+        for (int b = 0; b < blocks; ++b) render64();
+        const Graph* graph = m.session.graph().currentGraph();
+        const std::int64_t before = graph != nullptr ? graph->stats().nodesSuspended : 0;
+        render64();
+        const std::int64_t slept = graph != nullptr ? graph->stats().nodesSuspended - before : 0;
+        bool silent = true;
+        for (const double v : l64) silent = silent && v == 0.0;
+        // Awake every block: the click, the loop's reader and its writer.
+        const auto asleep = static_cast<std::int64_t>(graph != nullptr ? graph->nodeCount() : 0) - 3;
+        check(silent && slept == asleep,
+              std::to_string(blocks) + " trips on, the loop is exactly silent and everything but its two ends and "
+              "the click sleeps" + at + ": " + std::to_string(slept) + " of " + std::to_string(asleep));
+    }
+}
+
+void testTheLoopsRing() {
+    section("ADR-0203 d3 -- a feedback loop's ring: its shape, and what it never plays");
+
+    FeedbackLoop loop(1, 8);
+    check(loop.fits(1, 8) && loop.fits(1, FeedbackLoop::kMinBlock) && !loop.fits(1, FeedbackLoop::kMinBlock + 1) &&
+              !loop.fits(2, 8),
+          "made for blocks up to 8192 at least, and for its channels alone");
+    loop.reader().prepare(48000.0, 8);
+    check(loop.delay() == 8, "D is the largest block");
+
+    // Driven by hand, in blocks of 4 split in two segments, as a graph would:
+    // the reader's segments first, then the writer's.
+    std::vector<float> in(4), out(4), spare(4);
+    const float* inp[1] = {in.data()};
+    float* outp[1] = {out.data()};
+    float* sparep[1] = {spare.data()};
+    auto block = [&](bool write, float v) {
+        for (const std::int32_t at : {0, 2}) {
+            NodeIo r;
+            r.frames = 2;
+            r.channels = 1;
+            r.blockOffset = at;
+            r.out = outp;
+            loop.reader().process(r);
+        }
+        if (write) {
+            std::fill(in.begin(), in.end(), v);
+            for (const std::int32_t at : {0, 2}) {
+                NodeIo w;
+                w.frames = 2;
+                w.channels = 1;
+                w.blockOffset = at;
+                w.in = inp;
+                w.out = sparep;
+                loop.writer().process(w);
+            }
+        }
+        return out;
+    };
+    auto silent = [](const std::vector<float>& v) {
+        return std::all_of(v.begin(), v.end(), [](float x) { return x == 0.0f; });
+    };
+    // Every slot of the ring written, 1.0; then three blocks the writer
+    // misses, and blocks it writes silence in. A block it missed plays as
+    // silence -- unwritten while it is due, or zeroed once the writer is
+    // back -- and never what its slots held a ring ago.
+    in = {0.5f, 0.25f, 0.125f, 1.0f};
+    for (int b = 0; b < 2 * FeedbackLoop::kMinBlock / 4 + 4; ++b) {
+        block(false, 0.0f);
+        for (const std::int32_t at : {0, 2}) {
+            NodeIo w;
+            w.frames = 2;
+            w.channels = 1;
+            w.blockOffset = at;
+            w.in = inp;
+            w.out = sparep;
+            loop.writer().process(w);
+        }
+    }
+    const std::vector<float> played = block(false, 0.0f);
+    check(played == std::vector<float>({0.5f, 0.25f, 0.125f, 1.0f}),
+          "D = 8: the reader plays, segment by segment, what was written two blocks ago");
+    block(false, 0.0f);
+    const std::vector<float> unwritten = block(false, 0.0f);   // the first missed block is due
+    block(true, 0.0f);
+    const std::vector<float> zeroed = block(true, 0.0f);       // the third, written over since
+    check(silent(unwritten) && silent(zeroed),
+          "blocks the writer missed play as silence, never the ring's old contents");
+
+    // A larger block than a loop holds replaces it, the old one kept. A
+    // session's blocks stop at 4096 (its clip player's), so the strips are
+    // driven alone here.
+    rows::Model model;
+    for (const auto& [id, kind] : {std::pair<std::int64_t, const char*>{4, "return"}, {9, "master"}}) {
+        rows::Track t;
+        t.id = id;
+        t.kind = kind;
+        t.name = kind;
+        model.tracks.push_back(t);
+    }
+    rows::Routing self;
+    self.id = 12;
+    self.srcKind = self.dstKind = "track";
+    self.srcId = self.dstId = 4;
+    self.kind = "send";
+    self.origin = "user";
+    model.routing.push_back(self);
+    MixerStrips strips;
+    strips.setFormat(2, 512);
+    strips.sync(model, nullptr, nullptr);
+    const FeedbackLoop* before = strips.loopFor(12);
+    strips.sync(model, nullptr, nullptr);
+    const bool kept = strips.loopFor(12) == before;
+    strips.setFormat(2, 2 * FeedbackLoop::kMinBlock);
+    strips.sync(model, nullptr, nullptr);
+    const FeedbackLoop* after = strips.loopFor(12);
+    check(before != nullptr && kept && after != nullptr && after != before && after->fits(2, 2 * FeedbackLoop::kMinBlock),
+          "a loop is kept from sync to sync, and replaced when the largest block outgrows its ring");
 }
 
 void testSoloAcrossSends() {
@@ -2346,6 +2848,8 @@ int main() {
         testHearing();
         testSoloAcrossSends();
         testAReturnsOwnSends();
+        testTheFeedbackLoop();
+        testTheLoopsRing();
         testSendsPlay();
         testSendsHoldTheirLevel();
         testPreSendsAndTheSendsPan();
