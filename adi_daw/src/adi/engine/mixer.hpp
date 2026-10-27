@@ -35,7 +35,9 @@
 #include "adi/store_rows.hpp"
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <memory>
 #include <set>
@@ -208,6 +210,34 @@ private:
     Ramp<double> ramp64_;
     std::int8_t lastWidth_ = 0;   ///< audio thread: 32 or 64 once a ramp has run, 0 before
     std::int32_t rampFrames_ = 240;
+};
+
+/// A send (ADR-0203 d3): its level, its pan and its switch, between the tap on
+/// its source track and the junction it feeds. The session owns one per
+/// routing row and keeps it across rebuilds, as it keeps a strip, so a level
+/// move ramps rather than jumps and both edges around it keep their history
+/// (ADR-0092). The gain stage IS a strip's -- the same law, the same five
+/// milliseconds, the same width handover -- so a send at 0 dB, centred and on,
+/// is bit for bit its input at either precision.
+class SendNode final : public Node {
+public:
+    /// Message thread. A level at or below kSilenceDb is silent, and so is
+    /// one that is not a number (the caller names it). `on` is Enable Send.
+    void set(double levelDb, double pan, PanLaw law, bool on) noexcept {
+        gain_.setStatic(std::isnan(levelDb) ? -std::numeric_limits<double>::infinity() : levelDb, pan, law, on);
+    }
+
+    void prepare(double sampleRate, std::int32_t maxFrames) override { gain_.prepare(sampleRate, maxFrames); }
+    void process(const NodeIo& io) noexcept override { gain_.process(io); }
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
+    /// Zero, like a strip's: a send holds nothing back.
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
+    /// A track's notes do not travel down its sends.
+    [[nodiscard]] EventFlow eventFlow() const noexcept override { return EventFlow::Stop; }
+    [[nodiscard]] const char* name() const noexcept override { return "send"; }
+
+private:
+    StripNode gain_;
 };
 
 /// Which tracks are heard (ADR-0163 d4). A muted track is silent. When any

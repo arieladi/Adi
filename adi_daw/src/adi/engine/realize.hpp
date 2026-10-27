@@ -40,6 +40,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace adi::engine {
@@ -86,6 +87,16 @@ using DeviceChainFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 /// sourceLifetime() token retained by the realised graph (ADR-0151).
 using SourceFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 
+/// Where a send leaves its source (ADR-0203 d3): the node whose output IS
+/// `tap` on `trackId`'s chain -- one of the nodes `devicesFor` gave that
+/// track -- or null for its junction.
+using TapFn = std::function<Node*(std::int64_t trackId, Tap tap)>;
+
+/// The node a send plays through, by its routing row (ADR-0203 d3): its
+/// level, pan and switch. Caller-owned and kept across rebuilds, as a strip
+/// is; null refuses the send, named.
+using SendFn = std::function<Node*(std::int64_t routingId)>;
+
 struct RealizeOptions {
     std::int32_t channels = 2;
 
@@ -98,6 +109,12 @@ struct RealizeOptions {
     /// junction, so `inputFor` is unchanged by its presence: everything
     /// that feeds a track, from inside or upstream, meets at one node.
     SourceFn sourcesFor;
+
+    /// Unset means every tap is the chain's tail.
+    TapFn tapFor;
+
+    /// Unset means no send can be made, and each is named.
+    SendFn sendFor;
 };
 
 /// A live graph and everything it owns.
@@ -182,7 +199,10 @@ public:
     /// when something else into the junction arrives later. Its ends are the
     /// caller's nodes, the same objects in every graph realised from them and
     /// alive while any graph holding them runs, or the junction, which is new
-    /// each time and so is named by its track.
+    /// each time and so is named by its track. A send's two edges are keyed
+    /// the same way (ADR-0203 d3): its tap into its node is its source
+    /// track's, and its node into the destination's junction is the
+    /// destination's.
     struct ChainKey {
         std::int64_t track = 0;
         const Node* from = nullptr;   ///< null: the track's junction
@@ -213,6 +233,8 @@ private:
     struct Chain {
         NodeId head = kInvalidNode;
         NodeId tail = kInvalidNode;
+        /// The caller's nodes after the junction, in order: where a tap is.
+        std::vector<std::pair<const Node*, NodeId>> nodes;
     };
 
     std::vector<std::shared_ptr<void>> sourceOwners_; // destroyed after graph_

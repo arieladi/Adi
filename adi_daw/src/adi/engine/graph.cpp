@@ -1250,7 +1250,7 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             if (u.node == nullptr || u.events.empty()) continue;
-            if (u.node->eventFlow() == EventFlow::Consume) continue;
+            if (u.node->eventFlow() != EventFlow::Through) continue;   // Consume or Stop
 
             // THE SAME DELAY AS THE AUDIO BESIDE IT. The node's own latency,
             // because its output audio emerges that much later than its input;

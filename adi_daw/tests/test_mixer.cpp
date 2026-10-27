@@ -249,6 +249,87 @@ void testPanLaws() {
     check(faderGain(-150.0) == 0.0 && faderGain(-INFINITY) == 0.0, "-150 dB and -inf are silence");
 }
 
+void testASendNode() {
+    section("ADR-0203 d3 -- a send's node: a strip's gain stage, which plays no note");
+
+    // A stereo sine whose samples a float cannot hold, one block of it.
+    constexpr int n = 512;
+    std::vector<double> inL(n), inR(n);
+    for (int i = 0; i < n; ++i) {
+        const double ph = 2.0 * std::numbers::pi * 220.0 * i / 48000.0;
+        inL[static_cast<std::size_t>(i)] = 0.3 * std::sin(ph);
+        inR[static_cast<std::size_t>(i)] = -0.2 * std::sin(1.5 * ph);
+    }
+    // Left then right, as doubles, from one block at either width.
+    auto run = [&](SendNode& s, bool wide) {
+        std::vector<double> l(n, 7.0), r(n, 7.0);
+        std::vector<float> lf(n, 7.0f), rf(n, 7.0f), il(n), ir(n);
+        for (std::size_t i = 0; i < il.size(); ++i) {
+            il[i] = static_cast<float>(inL[i]);
+            ir[i] = static_cast<float>(inR[i]);
+        }
+        const double* in64[2] = {inL.data(), inR.data()};
+        double* out64[2] = {l.data(), r.data()};
+        const float* in32[2] = {il.data(), ir.data()};
+        float* out32[2] = {lf.data(), rf.data()};
+        NodeIo io;
+        io.channels = 2;
+        io.frames = n;
+        io.sampleRate = 48000.0;
+        if (wide) { io.in64 = in64; io.out64 = out64; }
+        else      { io.in = in32; io.out = out32; }
+        s.process(io);
+        std::vector<double> out;
+        for (std::size_t i = 0; i < l.size(); ++i) out.push_back(wide ? l[i] : static_cast<double>(lf[i]));
+        for (std::size_t i = 0; i < r.size(); ++i) out.push_back(wide ? r[i] : static_cast<double>(rf[i]));
+        return out;
+    };
+    std::vector<double> in64(inL), in32;
+    in64.insert(in64.end(), inR.begin(), inR.end());
+    for (double x : in64) in32.push_back(static_cast<double>(static_cast<float>(x)));
+    auto silent = [](const std::vector<double>& v) {
+        for (double x : v) if (x != 0.0) return false;
+        return true;
+    };
+    auto made = [](double db, double pan, bool on) {
+        auto s = std::make_unique<SendNode>();
+        s->set(db, pan, PanLaw::Live, on);
+        s->prepare(48000.0, n);
+        return s;
+    };
+
+    check(run(*made(0.0, 0.0, true), true) == in64, "0 dB, centred and on, at 64: its input bit for bit");
+    check(run(*made(0.0, 0.0, true), false) == in32, "and at 32");
+    check(silent(run(*made(kSilenceDb, 0.0, true), true)) && silent(run(*made(kSilenceDb, 0.0, true), false)),
+          "-150 dB is silence, from the first sample: a send starts at its level, not ramping to it");
+    check(silent(run(*made(std::nan(""), 0.0, true), true)), "a level that is not a number is silent");
+    check(silent(run(*made(0.0, 0.0, false), true)), "a send switched off is silent");
+    {
+        const std::vector<double> half = run(*made(-6.0206, 0.0, true), true);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < half.size(); ++i) worst = std::max(worst, std::fabs(half[i] - 0.5 * in64[i]));
+        check(worst < 1e-5, "-6.02 dB halves it: worst " + std::to_string(worst));
+    }
+    {
+        const std::vector<double> right = run(*made(0.0, 1.0, true), true);
+        bool leftSilent = true;
+        for (int i = 0; i < n; ++i) leftSilent = leftSilent && right[static_cast<std::size_t>(i)] == 0.0;
+        check(leftSilent, "a send's pan, hard right under Live's law: the left is silent");
+    }
+    {
+        // A move ramps over five milliseconds rather than jumping.
+        auto s = made(0.0, 0.0, true);
+        run(*s, true);
+        s->set(-INFINITY, 0.0, PanLaw::Live, true);
+        const std::vector<double> moved = run(*s, true);
+        check(std::fabs(moved[1] - in64[1]) < 1e-3 && moved[300] == 0.0 && moved[100] != 0.0,
+              "a level move ramps: still near the old level at once, gone after 240 samples");
+    }
+    SendNode s;
+    check(s.eventFlow() == EventFlow::Stop && s.tailSamples() == 0 && s.processesDouble() && s.latencySamples() == 0,
+          "it stops notes, holds nothing back, takes double, and adds no latency");
+}
+
 void testVolumePanMute() {
     section("ADR-0163 d1, d3 -- a fader, a pan and a mute reach the output, ramped");
     Mix m("vpm");
@@ -921,6 +1002,7 @@ int main() {
     std::printf("adi_mixer_tests -- the mixer strip (ADR-0163)\n\n");
     try {
         testPanLaws();
+        testASendNode();
         testVolumePanMute();
         testSolo();
         testStripsOutliveGraphs();

@@ -132,6 +132,11 @@ enum class EventFlow : std::uint8_t {
     /// They stop here: an instrument turns notes into audio, and the effects
     /// after it have no use for them.
     Consume,
+    /// They stop here and nothing plays them: a send (ADR-0203 d3) carries a
+    /// track's audio into a return and never its notes. Unlike Consume, the
+    /// node holds no note awake and acknowledges no note-off, because the
+    /// track's notes are still on their way to whatever does play them.
+    Stop,
 };
 
 /// Addressed events generated FOR a node, once per block (ADR-0165): the

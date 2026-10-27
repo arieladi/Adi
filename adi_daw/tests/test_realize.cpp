@@ -16,6 +16,7 @@
 
 #include "adi/engine/realize.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -249,6 +250,178 @@ void testADeviceChainRunsInOrder() {
               std::to_string(o.l[0]));
     eqi(d1.calls, 1, "the first device ran once");
     eqi(d2.calls, 1, "and so did the second");
+}
+
+// --- sends (ADR-0203 d3) ----------------------------------------------------
+
+/// Track 1 (a tone through +1 then +10), a return 3, the master. `tap` is
+/// where track 1's send to the return leaves; the send's own node adds 100,
+/// so each path's share of the master is visible.
+struct SendRig {
+    rows::Model m;
+    ToneNode tone{0.25f};
+    AddNode fx{1.0f}, fader{10.0f}, send{100.0f};
+    RealizeOptions opts;
+    SendRig() {
+        m.tracks.push_back(track(1, "audio", "A"));
+        m.tracks.push_back(track(3, "return", "R"));
+        m.tracks.push_back(track(9, "master", "Master"));
+        opts.devicesFor = [this](std::int64_t id) -> std::vector<Node*> {
+            if (id == 1) return {&fx, &fader};
+            return {};
+        };
+        opts.tapFor = [this](std::int64_t id, Tap tap) -> Node* {
+            if (id != 1) return nullptr;
+            if (tap == Tap::PreFx) return nullptr;       // the junction: no instrument here
+            if (tap == Tap::PostFx) return &fx;
+            return &fader;
+        };
+        opts.sendFor = [this](std::int64_t id) -> Node* { return id == 11 ? &send : nullptr; };
+    }
+    [[nodiscard]] GraphPlan plan(Tap tap, std::int64_t routingId = 11) const {
+        GraphPlan p = planGraph(m);
+        PlannedEdge e;
+        e.from = *p.indexOf(1);
+        e.to = *p.indexOf(3);
+        e.kind = "send";
+        e.routingId = routingId;
+        e.tap = tap;
+        p.edges.push_back(e);
+        return p;
+    }
+    /// The master's first sample, the tone pushed into track 1.
+    float play(RealizedGraph& r) {
+        const NodeId nt = r.graph().addNode(tone);
+        r.graph().connect(nt, r.inputFor(1));
+        r.graph().prepare(48000.0, 256);
+        Out o(256);
+        AudioIo io = makeIo(o, 256);
+        r.graph().process(io);
+        return r.graph().ok() ? o.l[255] : -1.0f;
+    }
+};
+
+void testASendLeavesAtItsTap() {
+    section("ADR-0203 d3 -- a send leaves its track at its tap, through its own node, into the return");
+
+    // The main path is 0.25 + 1 + 10 = 11.25 whatever the tap. The send adds
+    // 100 to what it is handed and the return passes it on.
+    struct Case { Tap tap; float want; const char* what; };
+    for (const Case& c : {Case{Tap::PostFader, 11.25f + 111.25f, "Post: after the fader node"},
+                          Case{Tap::PostFx, 11.25f + 101.25f, "Pre: after the effects, before the fader"},
+                          Case{Tap::PreFx, 11.25f + 100.25f, "Pre FX here is the junction: the tone alone"},
+                          Case{Tap::Tail, 11.25f + 111.25f, "the tail is the chain's end"}}) {
+        SendRig rig;
+        auto r = realize(rig.plan(c.tap), rig.opts);
+        check(r->ok() && r->problems().empty(), std::string(c.what) + ": realised, no problems" + problems(*r));
+        const float got = rig.play(*r);
+        check(got == c.want, std::string(c.what) + ": the master is " + std::to_string(c.want) +
+                                 ", got " + std::to_string(got));
+        eqi(rig.send.calls, 1, std::string(c.what) + ": the send's node ran once");
+    }
+    {
+        // No tap function: every tap is the tail.
+        SendRig rig;
+        rig.opts.tapFor = nullptr;
+        auto r = realize(rig.plan(Tap::PostFx), rig.opts);
+        check(rig.play(*r) == 11.25f + 111.25f, "unset, a tap is the chain's tail");
+    }
+}
+
+void testASendIsCompensated() {
+    section("ADR-0203 d3 -- a send's path is compensated like any other");
+
+    // A Pre send leaves before a 64-sample plugin, so through the return it
+    // reaches the master 64 samples ahead of the track's own path.
+    SendRig rig;
+    AddNode latent(10.0f, 64);
+    rig.opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&rig.fx, &latent};
+        return {};
+    };
+    auto r = realize(rig.plan(Tap::PostFx), rig.opts);
+    check(r->ok(), "realised: " + r->error());
+    const float got = rig.play(*r);
+    eqi(r->graph().compensationFor(r->outputFor(3), r->inputFor(9)), 64,
+        "the return's way into the master is held back the plugin's 64 samples");
+    eqi(r->graph().compensationFor(r->outputFor(1), r->inputFor(9)), 0, "the track's own is not");
+    eqi(r->graph().latencySamples(), 64, "and the graph is 64 late, not 128");
+    check(got == 11.25f + 101.25f, "both paths meet in the master: " + std::to_string(got));
+}
+
+void testASendIsRefusedByName() {
+    section("ADR-0203 d3 -- a send that cannot be made is named, and the rest plays");
+
+    {
+        SendRig rig;
+        rig.opts.sendFor = nullptr;
+        auto r = realize(rig.plan(Tap::PostFader), rig.opts);
+        check(r->ok(), "still realised");
+        check(problems(*r).find("routing#11: no node to play the send through") != std::string::npos,
+              "no node for it: named" + problems(*r));
+        check(rig.play(*r) == 11.25f, "and the track plays without it");
+    }
+    {
+        SendRig rig;
+        AddNode stranger(0.0f);
+        rig.opts.tapFor = [&](std::int64_t, Tap) -> Node* { return &stranger; };
+        auto r = realize(rig.plan(Tap::PostFader), rig.opts);
+        check(problems(*r).find("routing#11: its tap is not a node of tracks#1's chain") != std::string::npos,
+              "a tap that is not in the chain: named" + problems(*r));
+        check(rig.play(*r) == 11.25f, "and not made");
+    }
+    {
+        // Two sends handed one node: it would run twice a block.
+        SendRig rig;
+        rig.opts.sendFor = [&](std::int64_t) -> Node* { return &rig.send; };
+        GraphPlan p = rig.plan(Tap::PostFader, 11);
+        PlannedEdge twin = p.edges.back();
+        twin.routingId = 12;
+        p.edges.push_back(twin);
+        auto r = realize(p, rig.opts);
+        check(problems(*r).find("routing#12: a send's node given twice; the second was dropped") != std::string::npos,
+              "the second send on one node: named" + problems(*r));
+        check(rig.play(*r) == 11.25f + 111.25f && rig.send.calls == 1, "and the first plays, once");
+    }
+    {
+        // The same rule for any node: a device in two chains.
+        SendRig rig;
+        rig.opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+            if (id == 1 || id == 3) return {&rig.fx};
+            return {};
+        };
+        auto r = realize(planGraph(rig.m), rig.opts);
+        check(problems(*r).find("tracks#3: a chain node given twice; the second was dropped") != std::string::npos,
+              "a device in two chains: named" + problems(*r));
+    }
+}
+
+void testASendsEdgesAreKeyedForTheNextGraph() {
+    section("ADR-0092 -- both of a send's edges are keyed so the next graph finds them");
+
+    // The return has a device of its own, so its chain's edges are made
+    // before track 1's send: the list is in order only if it is sorted last.
+    SendRig rig;
+    AddNode returnFx(0.0f);
+    rig.opts.devicesFor = [&](std::int64_t id) -> std::vector<Node*> {
+        if (id == 1) return {&rig.fx, &rig.fader};
+        if (id == 3) return {&returnFx};
+        return {};
+    };
+    auto a = realize(rig.plan(Tap::PostFx), rig.opts);
+    auto b = realize(rig.plan(Tap::PostFx), rig.opts);
+    auto find = [](const RealizedGraph& r, std::int64_t track, const Node* from, const Node* to) {
+        for (const auto& rec : r.chainEdges())
+            if (rec.key.track == track && rec.key.from == from && rec.key.to == to) return true;
+        return false;
+    };
+    check(find(*a, 1, &rig.fx, &rig.send) && find(*b, 1, &rig.fx, &rig.send),
+          "the tap into the send: track 1's, from its effect to the send, in both graphs");
+    check(find(*a, 3, &rig.send, nullptr) && find(*b, 3, &rig.send, nullptr),
+          "the send into the return: the return's, from the send to its junction, in both");
+    check(std::is_sorted(a->chainEdges().begin(), a->chainEdges().end(),
+                         [](const auto& x, const auto& y) { return x.key < y.key; }),
+          "and the list the swap walks is sorted with them in it");
 }
 
 void testCompensationIsReachedFromAPlan() {
@@ -560,6 +733,10 @@ int main() {
     testAGroupSumsItsChildren();
     testADeviceChainRunsInOrder();
     testCompensationIsReachedFromAPlan();
+    testASendLeavesAtItsTap();
+    testASendIsCompensated();
+    testASendIsRefusedByName();
+    testASendsEdgesAreKeyedForTheNextGraph();
     testBypassChangesLatencyButNotTopology();
     testAVcaIsNotAnAudioNode();
     testARoutingRowNamingAVcaIsReported();
