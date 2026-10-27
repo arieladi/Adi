@@ -335,6 +335,10 @@ int main(int argc, char **argv) {
     readRoot.arrangement.geometry.selection.track = 2;
     readRoot.publishSelection();
     check(roSession.selection().track == 2, "a read-only project still selects, in memory");
+    // The first frame after a selection changes does work (the device strip follows the
+    // selected track); the frames after it, with nothing changed, do none.
+    a.frame();
+    b.frame();
     allocations = 0;
     audit = true;
     a.frame();
