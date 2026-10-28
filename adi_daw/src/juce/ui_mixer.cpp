@@ -8,35 +8,65 @@ namespace adi::ui {
 namespace {
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf.
 constexpr double kFloorDb = -70, kTopDb = 6;
-// A knob drawn to the edge of its bounds: JUCE's own insets ten pixels, which leaves
-// nothing of a row-sized pan control.
-struct SmallKnob final : juce::LookAndFeel_V4 {
-    void drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, float position,
-                          float start, float end, juce::Slider &s) override {
-        const auto b = juce::Rectangle<int>(x, y, w, h).toFloat().reduced(2);
-        const float r = std::min(b.getWidth(), b.getHeight()) / 2;
-        const float cx = b.getCentreX(), cy = b.getCentreY();
-        g.setColour(s.findColour(juce::Slider::rotarySliderOutlineColourId));
-        g.fillEllipse(cx - r, cy - r, 2 * r, 2 * r);
-        const float a = start + position * (end - start);
-        g.setColour(s.findColour(juce::Slider::rotarySliderFillColourId));
-        g.drawLine(cx, cy, cx + r * std::sin(a), cy - r * std::cos(a), 2.f);
-    }
-};
-juce::LookAndFeel &smallKnob() {
-    static SmallKnob knob;
-    return knob;
-}
+// Live 11's meter, measured: +6 dB at the top, then 0, -12, -24, -36, -48 and -60 dB
+// at these depths; the scale is wider near 0 dB, as Live's.
+constexpr std::array<std::pair<double, double>, 7> kScale{
+    {{6, 0}, {0, .06}, {-12, .28}, {-24, .5}, {-36, .71}, {-48, .87}, {-60, 1}}};
 } // namespace
+double meterDepth(double db) noexcept {
+    if (db >= kScale.front().first)
+        return 0;
+    for (std::size_t i = 1; i < kScale.size(); ++i)
+        if (db >= kScale[i].first) {
+            const auto [db0, d0] = kScale[i - 1];
+            const auto [db1, d1] = kScale[i];
+            return d0 + (db - db0) / (db1 - db0) * (d1 - d0);
+        }
+    return 1;
+}
+double meterLevel(double depth) noexcept {
+    if (depth <= 0)
+        return kScale.front().first;
+    for (std::size_t i = 1; i < kScale.size(); ++i)
+        if (depth <= kScale[i].second) {
+            const auto [db0, d0] = kScale[i - 1];
+            const auto [db1, d1] = kScale[i];
+            return db0 + (depth - d0) / (d1 - d0) * (db1 - db0);
+        }
+    return kFloorDb;
+}
+PeakHold::PeakHold() : juce::Button("Peak Level") {
+    setTitle("Peak Level");
+    setTooltip("The highest peak since you last clicked here. Click to reset it.");
+    onClick = [this] {
+        held = 0;
+        repaint();
+    };
+}
+void PeakHold::paintButton(juce::Graphics &g, bool over, bool) {
+    // Live's pill: light, red once the track has clipped.
+    const auto r = getLocalBounds().toFloat().reduced(0.5f);
+    g.setColour(held >= 1 ? juce::Colour(0xffff3a34) : over ? look::chooser.brighter(0.1f) : look::chooser);
+    g.fillRoundedRectangle(r, r.getHeight() / 2);
+    g.setColour(look::outline);
+    g.drawRoundedRectangle(r, r.getHeight() / 2, 1.f);
+    g.setColour(look::text);
+    g.setFont(look::font(11.5f));
+    g.drawText(held <= 1.e-6f ? juce::String("-Inf") : juce::String(20 * std::log10(held), 1), r,
+               juce::Justification::centred);
+}
 MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     if (panel.vertical()) {
+        // Live's Mixer View: the fader is the ◁ beside the meter, on the meter's scale.
         volume.setSliderStyle(juce::Slider::LinearVertical);
         volume.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        volume.getProperties().set("live.meterFader", true);
+        volume.getProperties().set("live.faderX", 15);
+        volume.setColour(juce::Slider::textBoxTextColourId, look::text);
         pan.setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
         pan.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-        pan.setLookAndFeel(&smallKnob());
-        pan.setColour(juce::Slider::rotarySliderOutlineColourId, juce::Colour(0xff4a5463));
-        pan.setColour(juce::Slider::rotarySliderFillColourId, juce::Colour(0xff8fb4c8));
+        addAndMakeVisible(peakHold);
+        active.getProperties().set("live.font", 15.0); // Live's big number in its mixer
     } else {
         // Live's value boxes: the number in the box, the volume's filled in blue.
         for (auto *s : {&volume, &pan}) {
@@ -45,11 +75,18 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             s->setSliderSnapsToMousePosition(false);
             s->setColour(juce::Slider::textBoxTextColourId, look::text);
         }
-        pan.getProperties().set("live.bipolar", true);
     }
-    volume.setRange(kFloorDb, kTopDb, .01);
-    // Live's 0 dB sits at 83 % of the box, not at the linear 92 %.
-    volume.setSkewFactor(2.27);
+    pan.getProperties().set("live.bipolar", true);
+    if (panel.vertical())
+        volume.setNormalisableRange(juce::NormalisableRange<double>(
+            kFloorDb, kTopDb,
+            [](double, double, double proportion) { return meterLevel(1 - proportion); },
+            [](double, double, double db) { return 1 - meterDepth(db); }));
+    else {
+        volume.setRange(kFloorDb, kTopDb, .01);
+        // Live's 0 dB sits at 83 % of the box, not at the linear 92 %.
+        volume.setSkewFactor(2.27);
+    }
     volume.textFromValueFunction = [](double v) {
         if (v <= kFloorDb)
             return juce::String("-inf");
@@ -189,28 +226,38 @@ void MixerStrip::frame(bool changed) noexcept {
         }
         r = static_cast<float>(std::sqrt(energy / static_cast<double>(2 * left_.size())));
     }
+    if (panel_.vertical() && p > peakHold.held) {
+        peakHold.held = p;
+        peakHold.repaint();
+    }
     if (p != peak_ || r != rms_) {
         peak_ = p;
         rms_ = r;
-        repaint(panel_.vertical() ? getWidth() - 18 : (showsInOut() ? MixerPanel::kInOutWidth : 0) + 105,
-                0, 10, getHeight());
+        repaint(panel_.vertical() ? meterArea().expanded(1)
+                                  : juce::Rectangle<int>((showsInOut() ? MixerPanel::kInOutWidth : 0) + 105, 0,
+                                                         10, getHeight()));
     }
 }
 void MixerStrip::resized() {
     if (panel_.vertical()) {
-        // Live's channel strip, top to bottom: the slots, pan, the activator and Solo,
-        // then the fader beside its meter.
-        const int w = getWidth();
-        eq.setBounds(4, 20, w / 2 - 6, 18);
-        limiter.setBounds(w / 2 + 2, 20, w / 2 - 6, 18);
-        pan.setBounds(w / 2 - 14, 41, 28, 28);
-        active.setBounds(4, 72, w / 2 - 6, 18);
-        solo.setBounds(w / 2 + 2, 72, w / 2 - 6, 18);
+        // Live 11's strip, measured: the name, ADI's slots where Live has the sends, then
+        // the mixer: the peak level at its head; pan, the activator, Solo and Arm down
+        // to its foot; the meter with the fader beside them.
+        const int top = kMixerTop, bottom = getHeight();
+        eq.setBounds(4, 22, 29, 13);
+        limiter.setBounds(37, 22, 29, 13);
+        peakHold.setBounds(11, top + 5, 35, 12);
+        pan.setBounds(15, bottom - 91, 27, 27);
+        active.setBounds(18, bottom - 59, 21, 21);
+        solo.setBounds(17, bottom - 33, 23, 12);
+        arm.setBounds(17, bottom - 16, 23, 12);
         const bool tall = getHeight() >= MixerPanel::kTallHeight;
         if (tall != (volume.getTextBoxPosition() == juce::Slider::TextBoxBelow))
             volume.setTextBoxStyle(tall ? juce::Slider::TextBoxBelow : juce::Slider::NoTextBox,
-                                   false, tall ? w - 26 : 0, tall ? 18 : 0);
-        volume.setBounds(2, 94, std::max(0, w - 24), std::max(0, getHeight() - 98));
+                                   false, tall ? 40 : 0, tall ? 15 : 0);
+        const auto meter = meterArea();
+        volume.setBounds(meter.getX() - 2, meter.getY(), tall ? 40 : 26,
+                         meter.getHeight() + (tall ? 15 : 0));
         return;
     }
     // Live's rows: 13 pt boxes on a 17 pt pitch, 3 pt from the track's top. A row
@@ -229,24 +276,37 @@ void MixerStrip::resized() {
     place(eq, 2, {x + 4, 37, 29, 13});
     place(limiter, 2, {x + 37, 37, 29, 13});
 }
+juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
+    // Under a tall strip's numeric field, the meter stops short of the foot.
+    const bool tall = getHeight() >= MixerPanel::kTallHeight;
+    return {53, kMixerTop + 6, 11, std::max(0, getHeight() - kMixerTop - 10 - (tall ? 15 : 0))};
+}
 bool MixerStrip::showsInOut() const noexcept {
     return !panel_.vertical() && getWidth() >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth;
 }
 void MixerStrip::paint(juce::Graphics &g) {
     if (panel_.vertical()) {
-        g.fillAll(juce::Colour(0xff242b35));
-        g.setColour(juce::Colour(0xff313b47));
-        g.drawVerticalLine(getWidth() - 1, 0, static_cast<float>(getHeight()));
-        const auto &tracks = panel_.root.reader().tracks();
-        for (std::size_t i = 0; i < tracks.size(); ++i)
-            if (tracks[i]->id == track_) {
-                g.setColour(juce::Colour(0xffe0e5ed));
-                g.setFont(juce::FontOptions(12.f));
-                g.drawText(juce::String::fromUTF8(displayName(tracks[i]->name, i + 1).c_str()),
-                           4, 2, getWidth() - 8, 16, juce::Justification::centredLeft);
-                break;
+        // Live's strip: grey, lighter when its track is selected; the name in the track's
+        // colour; dark rules between the parts and down the right-hand edge.
+        const int w = getWidth() - 2;
+        g.fillAll(selected_ ? look::laneSelectedAlt : look::panel);
+        g.setColour(look::separator);
+        g.fillRect(w, 0, 2, getHeight());
+        g.fillRect(0, 17, w, 2);
+        g.fillRect(0, kMixerTop - 2, w, 2);
+        if (position_ > 0) {
+            g.setColour(panel_.root.arrangement.colourFor(position_ - 1));
+            g.fillRect(0, 0, w, 17);
+            const auto &tracks = panel_.root.reader().tracks();
+            if (position_ <= tracks.size()) {
+                g.setColour(look::text);
+                g.setFont(look::font(11.5f, true));
+                g.drawText(juce::String::fromUTF8(
+                               displayName(tracks[position_ - 1]->name, position_).c_str()),
+                           4, 0, w - 8, 17, juce::Justification::centredLeft);
             }
-        paintMeter(g, {getWidth() - 18, 94, 10, std::max(0, getHeight() - 98)});
+        }
+        paintMeter(g, meterArea());
         return;
     }
     // Live's columns: grey, lighter for the selected track, a dark rule between them
@@ -299,32 +359,37 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(4, "", false);
 }
 void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
+    // Live's meter: two dark channels on Live's scale, the level in green, the peak a
+    // line, red once it clips.
     const int height = area.getHeight();
-    g.setColour(look::display);
-    if (panel_.vertical())
-        g.fillRect(area);
-    else {
-        // Live's two channels, side by side.
-        g.fillRect(area.withWidth(area.getWidth() / 2 - 1));
-        g.fillRect(area.withTrimmedLeft(area.getWidth() / 2 + 1));
-    }
-    auto level = [height](float v) {
-        return static_cast<int>(
-            static_cast<float>(height) *
-            std::clamp((20 * std::log10(std::max(v, 1.e-6f)) + 60) / 66, 0.f, 1.f));
+    auto depth = [height](float v) {
+        return static_cast<int>(static_cast<double>(height) *
+                                meterDepth(20 * std::log10(std::max(v, 1.e-6f))));
     };
-    const int rmsH = level(rms_);
-    g.setColour(juce::Colour(0xff65cf91));
-    g.fillRect(area.getX(), area.getBottom() - rmsH, area.getWidth(), rmsH);
-    g.setColour(peak_ >= 1 ? juce::Colours::red : juce::Colours::white);
-    g.fillRect(area.getX(), area.getBottom() - level(peak_), area.getWidth(), 1);
-    // A tall strip gets tick marks every 6 dB beside the meter.
-    if (panel_.vertical() && getHeight() >= MixerPanel::kTallHeight) {
-        g.setColour(juce::Colour(0xff8b95a3));
-        for (int db = 6; db >= -60; db -= 6) {
-            const int y = area.getBottom() - level(std::pow(10.f, static_cast<float>(db) / 20));
-            g.fillRect(area.getRight() + 1, y, 3, 1);
-        }
+    const auto left = area.withWidth(area.getWidth() / 2 - 1);
+    const auto right = area.withTrimmedLeft(area.getWidth() / 2 + 1);
+    const int rmsTop = depth(rms_), peakTop = depth(peak_);
+    for (const auto &channel : {left, right}) {
+        g.setColour(look::display);
+        g.fillRect(channel);
+        g.setColour(juce::Colour(0xff4fd84f));
+        g.fillRect(channel.withTrimmedTop(rmsTop));
+        g.setColour(peak_ >= 1 ? juce::Colour(0xffff3a34) : juce::Colour(0xffdcdcdc));
+        if (peak_ > 1.e-6f)
+            g.fillRect(channel.getX(), channel.getY() + peakTop, channel.getWidth(), 1);
+    }
+    if (!panel_.vertical())
+        return;
+    // Live's scale beside the fader: 0 to 60 dB every 12, every 6 on a tall strip.
+    const bool tall = getHeight() >= MixerPanel::kTallHeight;
+    g.setFont(look::font(11.5f));
+    for (int db = 0; db >= -60; db -= tall ? 6 : 12) {
+        const int y = area.getY() + static_cast<int>(height * meterDepth(db));
+        g.setColour(look::text);
+        g.fillRect(area.getRight() + 5, y, 3, 1);
+        if (db % 12 == 0)
+            g.drawText(juce::String(-db), area.getRight() + 11, y - 7, 24, 14,
+                       juce::Justification::centredLeft);
     }
 }
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
@@ -433,7 +498,8 @@ void MixerPanel::frame(bool changed) noexcept {
 }
 void MixerPanel::paint(juce::Graphics &g) {
     if (vertical_) {
-        g.fillAll(juce::Colour(0xff21262e));
+        // Live's mixer: grey right of the last strip.
+        g.fillAll(look::panel);
         return;
     }
     // Live's arrangement frame above the rows and down the right-hand edge; the
