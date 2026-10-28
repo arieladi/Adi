@@ -24,7 +24,7 @@ MR § is the Master Reference's section.
 | Item | MR § | Window today |
 |---|---|---|
 | Live's single window: browser left, arrangement centre, track controls right, devices along the bottom, Info View bottom left, Status Bar, control bar on top | 1.1, 3 | Built |
-| Swap the browser and the track controls to the other side, instantly, for Bitwig and Cubase users | 1.1, 3.2 (ADR-0080) | Built (window/swap-panels): a Swap button in the band above the track controls, level with the ruler, travelling with them and lit while they are on the left (the director's green box, 28 October), and View › "Swap side panels"; each panel keeps its own width. Swapped, the director's layout C (28 October): names, track controls, strip, lanes; the browser right |
+| Swap the browser and the track controls to the other side, instantly, for Bitwig and Cubase users | 1.1, 3.2 (ADR-0080) | Built (window/swap-panels): small arrows under the strip's two view switches, "Flip sides" on hovering, lit while flipped (the director's yellow mark, 28 October), and View › Flip Sides; flipped, the strip moves to the window's left edge so the track controls meet the lanes (his green mark); each panel keeps its own width. Swapped, the director's layout C (28 October): names, track controls, strip, lanes; the browser right |
 | Hide one or both side panels to give the arrangement the whole width | 3.2 | Built (View › Hide/Show Browser, the track controls' toggle) |
 | The narrow-window rule: each panel keeps its minimum, a swap that cannot fit is refused with a message | 3.2 (ADR-0180 d4) | Built |
 | The mixer and the editors undock into their own windows, the same components reparented | 1.1, 3.2 (ADR-0063) | Partial: device panels and the analyser float in the floating host; the mixer and the editors do not undock |
@@ -32,6 +32,7 @@ MR § is the Master Reference's section.
 | The device strip: Live's height at least, dragged taller, never shorter | 3.4 (ADR-0184) | Built |
 | Interface zoom per window, Ctrl/Cmd and + or − | 1.1, 10 | Built for the session; remembered across launches waits (N4) |
 | The space bar reaches the transport from every window | 1.1, 3.7 | Built |
+| Bitwig's smaller track height (Figure 33), one click for every track | 10 | Built (window/track-height): Use Large Track Height, a button in Live's strip and the View menu; half height off, per window |
 | Three view states in one value, Global / Group focus / Detailed zoom (Macro / Main / Micro); the mixer and the timeline always show the same tracks | 1.1, 3.2, 10 (ADR-0112) | Missing. Global is the window's alone; Group focus needs the snapshot's groups (N6: a track's parent and kind); Detailed zoom needs the detail editor (section 5) |
 | Named view filters, Bitwig's project filter (figure 32: a menu at the top of the track-header column listing the project's group tree; choose one to see only it), a manual filter tab and an un-filter toggle, applied to the timeline and the mixer | 1.1, 3.2, 10 (ADR-0112 d2) | Missing. Explicit membership and name patterns are the window's alone; filters by group, kind or colour wait for N6. A new control: its picture, `pictures/2026-10-28-view-filter.png` (window/view-filter), went to the director on 28 October; built once approved |
 | The AI builds a view from a sentence ("put all percussion in a view group") | 3.2, 10 | Later (the agent, steps 8 and 9) |
@@ -178,7 +179,7 @@ MR § is the Master Reference's section.
 ## Questions for the director
 
 Ruled on 28 October 2026: 1, layout C (names, track controls, strip, lanes); 2, the Status Bar, then
-moved the same day to the empty band above the track controls, which the director marked;
+moved the same day to small arrows at the head of Live's strip, which the director marked;
 3, yes, its picture first; 4, yes, the clip view and the note editor next.
 
 1. **The swap's track names.** After View › Swap side panels the track controls go left but the

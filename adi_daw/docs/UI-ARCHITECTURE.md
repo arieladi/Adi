@@ -98,10 +98,12 @@ controls, the strip, then the lanes, as Bitwig and Cubase have them, so a
 track's name stays beside its controls. The arrangement leaves a gap between its
 names and its lanes and the root puts the track controls in it
 (`ArrangementView::setNamesFirst`). The swap is shown, not hidden (ADR-0203 d2):
-a Swap button in the empty band above the track controls, level with the
-ruler, where the director marked the room for such buttons; it travels with
-the controls and is lit while they are on the left. It is also in the View menu.
-It takes no keyboard focus: the View menu is its keyboard path.
+small arrows under the two view switches at the head of Live's strip down the
+arrangement's outer edge, "Flip sides" on hovering, lit while flipped; the View
+menu's Flip Sides does the same and is its keyboard path (the arrows take no
+focus). Flipped, the strip moves to the window's left edge so the track controls
+meet the lanes: the strip is its own component, `SideStrip`, beside the track
+controls on Live's sides (the director, 28 October 2026).
 
 ### The device strip's height (ADR-0184)
 

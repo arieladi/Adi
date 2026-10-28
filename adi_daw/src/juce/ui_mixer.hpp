@@ -112,10 +112,6 @@ class MixerPanel final : public juce::Component {
     // Auto Gain Stage, the one offline command (ADR-0195 d4, ADR-0203 d14): LUFS or RMS.
     std::function<bool(bool lufs)> autoGain;
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }
-    // ADI's addition (ADR-0080; the director, 28 October 2026): the side swap, in the band
-    // above the rows, so it travels with the track controls. Lit while they are on the left.
-    // The Mixer View has none.
-    juce::TextButton swapToggle{"Swap"};
 
   private:
     void place();
@@ -123,6 +119,33 @@ class MixerPanel final : public juce::Component {
     bool vertical_;
     int scrollX_ = 0;
     std::vector<std::unique_ptr<MixerStrip>> strips_;
+};
+// ADI's addition (ADR-0080; the director, 28 October 2026): small arrows that flip the
+// browser and the track controls between the window's sides; "Flip sides" on hovering. Lit
+// while the track controls are on the left.
+class FlipButton final : public juce::Button {
+  public:
+    FlipButton();
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
+// Bitwig's Use Large Track Height (Master Reference 10, Figure 33; the director, 28 October
+// 2026): its icon of two columns of bars, lit while every track shows at its own height.
+class TrackHeightButton final : public juce::Button {
+  public:
+    TrackHeightButton();
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
+// Live's strip down the arrangement's outer edge (Live 11, measured 2026-10-27): its switches
+// between Arrangement and Session View at its head, the flip arrows and the track height
+// under them, the In/Out, Returns, Mixer and Delay switches at its foot. Flipped, it moves to
+// the window's left edge, so the track controls meet the lanes (the director, 28 October 2026).
+class SideStrip final : public juce::Component {
+  public:
+    SideStrip();
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    FlipButton flip;
+    TrackHeightButton tracks;
 };
 // The Mixer View's top edge: drag it up for taller strips.
 class MixerViewResizer final : public juce::Component {

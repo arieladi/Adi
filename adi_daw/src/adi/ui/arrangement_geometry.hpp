@@ -44,12 +44,21 @@ struct ArrangementGeometry {
     double left = 0, scale = 48; // quarter notes at the left edge; pixels per quarter
     int height = 88, scrollY = 0;
     std::map<std::int64_t, int> heights;
+    // Bitwig's Use Large Track Height (Master Reference 10, Figure 33): off, every track shows
+    // at half its height, never below the smallest. The heights kept are the large ones.
+    bool largeTracks = true;
+    static constexpr int kMinTrackHeight = 24, kMaxTrackHeight = 512;
     int heightFor(std::int64_t id) const noexcept {
         const auto i = heights.find(id);
-        return i == heights.end() ? height : i->second;
+        const int h = i == heights.end() ? height : i->second;
+        return largeTracks ? h : std::max(kMinTrackHeight, h / 2);
     }
+    // `next` is a height as shown; while the tracks are small it is kept at twice that, so
+    // the track comes back at the size it was given.
     void resizeTrack(std::int64_t id, int next, bool all = false) {
-        next = std::clamp(next, 24, 512);
+        next = std::clamp(next, kMinTrackHeight, kMaxTrackHeight);
+        if (!largeTracks)
+            next = std::min(kMaxTrackHeight, next * 2);
         if (all) {
             height = next;
             heights.clear();
