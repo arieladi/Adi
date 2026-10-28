@@ -24,7 +24,7 @@ MR § is the Master Reference's section.
 | Item | MR § | Window today |
 |---|---|---|
 | Live's single window: browser left, arrangement centre, track controls right, devices along the bottom, Info View bottom left, Status Bar, control bar on top | 1.1, 3 | Built |
-| Swap the browser and the track controls to the other side, instantly, for Bitwig and Cubase users | 1.1, 3.2 (ADR-0080) | Built (window/swap-panels): a Swap button in the Status Bar beside Mixer, lit while swapped, and View › "Swap side panels"; each panel keeps its own width. Swapped, the director's layout C (28 October): names, track controls, strip, lanes; the browser right |
+| Swap the browser and the track controls to the other side, instantly, for Bitwig and Cubase users | 1.1, 3.2 (ADR-0080) | Built (window/swap-panels): a Swap button in the band above the track controls, level with the ruler, travelling with them and lit while they are on the left (the director's green box, 28 October), and View › "Swap side panels"; each panel keeps its own width. Swapped, the director's layout C (28 October): names, track controls, strip, lanes; the browser right |
 | Hide one or both side panels to give the arrangement the whole width | 3.2 | Built (View › Hide/Show Browser, the track controls' toggle) |
 | The narrow-window rule: each panel keeps its minimum, a swap that cannot fit is refused with a message | 3.2 (ADR-0180 d4) | Built |
 | The mixer and the editors undock into their own windows, the same components reparented | 1.1, 3.2 (ADR-0063) | Partial: device panels and the analyser float in the floating host; the mixer and the editors do not undock |
@@ -177,7 +177,8 @@ MR § is the Master Reference's section.
 
 ## Questions for the director
 
-Ruled on 28 October 2026: 1, layout C (names, track controls, strip, lanes); 2, the Status Bar;
+Ruled on 28 October 2026: 1, layout C (names, track controls, strip, lanes); 2, the Status Bar, then
+moved the same day to the empty band above the track controls, which the director marked;
 3, yes, its picture first; 4, yes, the clip view and the note editor next.
 
 1. **The swap's track names.** After View › Swap side panels the track controls go left but the

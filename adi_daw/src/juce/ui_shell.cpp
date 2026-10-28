@@ -359,12 +359,6 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
     mixerToggle.setClickingTogglesState(false);
     mixerToggle.onClick = [this] { root_.command(AppCommands::ToggleMixerView); };
-    addAndMakeVisible(swapToggle);
-    swapToggle.setTitle("Swap Side Panels");
-    swapToggle.setTooltip("Swaps the browser and the track controls between the window's sides, for "
-                          "Bitwig and Cubase hands. Also in the View menu.");
-    swapToggle.setClickingTogglesState(false);
-    swapToggle.onClick = [this] { root_.command(AppCommands::SwapPanels); };
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -373,8 +367,6 @@ void StatusBar::resized() {
     infoToggle.setBounds(8, 9, 19, 19);
     detailToggle.setBounds(w - 27, 9, 19, 19);
     mixerToggle.setBounds(w - 86, 11, 44, 16);
-    // At the right of the second field, before the selected track's box.
-    swapToggle.setBounds(w - 220, 11, 44, 16);
 }
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -683,7 +675,7 @@ void AdiRootComponent::resized() {
     mixerViewResizer.setBounds(mixerViewArea_.getX(), mixerViewArea_.getY() - 3,
                                mixerViewArea_.getWidth(), 6);
     status.mixerToggle.setToggleState(state_.mixerView, juce::dontSendNotification);
-    status.swapToggle.setToggleState(!browserLeft, juce::dontSendNotification);
+    mixer.swapToggle.setToggleState(!browserLeft, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
     // The Overview runs from the lanes' left edge to Live's H and W buttons.
     const int overviewX = lanesX + ArrangementView::kLeftMargin;

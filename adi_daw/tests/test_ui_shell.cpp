@@ -416,24 +416,34 @@ int main(int argc, char **argv) {
         const auto at = a.arrangement.getPosition();
         const auto namesC = a.arrangement.headers.getBounds() + at;
         const auto lanesC = a.arrangement.canvas.getBounds() + at;
-        check(a.arrangement.namesFirst() && a.status.swapToggle.getToggleState() &&
+        check(a.arrangement.namesFirst() && a.mixer.swapToggle.getToggleState() &&
                   namesC.getRight() <= a.mixerArea().getX() &&
                   a.mixerArea().getRight() <= lanesC.getX() &&
                   lanesC.getRight() <= a.browserArea().getX() &&
                   a.arrangement.ruler.getX() + at.x == lanesC.getX(),
               "swapped: the names lead, then the track controls, then the lanes");
-        a.status.swapToggle.onClick();
+        // The director's place for it (2026-10-28): the empty band above the track controls,
+        // level with the ruler, travelling with them.
+        auto inBand = [&a] {
+            const auto r = a.mixer.swapToggle.getBounds() + a.mixer.getPosition();
+            return a.mixer.isVisible() && a.mixer.swapToggle.isVisible() && a.mixerArea().contains(r) &&
+                   r.getY() >= a.mixerArea().getY() + a.arrangement.overviewHeight() &&
+                   r.getBottom() <= a.mixerArea().getY() + a.arrangement.topHeight();
+        };
+        check(inBand() && a.mixerView.swapToggle.getParentComponent() == nullptr,
+              "Swap sits above the track controls, level with the ruler; the Mixer View has none");
+        a.mixer.swapToggle.onClick();
         a.frame();
         const auto atL = a.arrangement.getPosition();
         const auto namesL = a.arrangement.headers.getBounds() + atL;
         const auto lanesL = a.arrangement.canvas.getBounds() + atL;
-        check(!a.arrangement.namesFirst() && !a.status.swapToggle.getToggleState() &&
+        check(!a.arrangement.namesFirst() && !a.mixer.swapToggle.getToggleState() &&
                   a.state().panels.slots()[0].panel == Panel::Browser &&
                   a.browserArea().getRight() <= lanesL.getX() &&
                   lanesL.getRight() <= namesL.getX() &&
-                  namesL.getRight() <= a.mixerArea().getX(),
-              "the Status Bar's Swap puts Live's sides back: lanes, names, track controls");
-        a.status.swapToggle.onClick();
+                  namesL.getRight() <= a.mixerArea().getX() && inBand(),
+              "Swap puts Live's sides back: lanes, names, track controls; it moved with them");
+        a.mixer.swapToggle.onClick();
         a.frame();
         check(a.arrangement.namesFirst() && a.state().panels.slots()[0].panel == Panel::Mixer,
               "and swaps them again");

@@ -98,8 +98,10 @@ controls, the strip, then the lanes, as Bitwig and Cubase have them, so a
 track's name stays beside its controls. The arrangement leaves a gap between its
 names and its lanes and the root puts the track controls in it
 (`ArrangementView::setNamesFirst`). The swap is shown, not hidden (ADR-0203 d2):
-a Swap button in the Status Bar beside Mixer, lit while swapped, as well as
-View › Swap side panels.
+a Swap button in the empty band above the track controls, level with the
+ruler, where the director marked the room for such buttons; it travels with
+the controls and is lit while they are on the left. It is also in the View menu.
+It takes no keyboard focus: the View menu is its keyboard path.
 
 ### The device strip's height (ADR-0184)
 
