@@ -63,7 +63,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         InsertMarkerToPlayhead,
         GrowTracks,
         ShrinkTracks,
-        LastId = ShrinkTracks
+        FocusMixer,
+        NextNeighbor,
+        PreviousNeighbor,
+        LastId = PreviousNeighbor
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

@@ -645,8 +645,9 @@ int main(int argc, char **argv) {
               "the Create menu inserts tracks");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
+                                                    C::NextNeighbor, C::PreviousNeighbor, 0,
                                                     C::TabMovesFocus},
-              "the Navigate menu moves the focus to the views ADI has, then Tab's switch (§41.4.1)");
+              "the Navigate menu: the views ADI has, the neighbours, then Tab's switch (§41.4.1)");
         check(!names.contains("Help"), "a menu with no command yet is left out");
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
@@ -1323,6 +1324,52 @@ int main(int argc, char **argv) {
                   "switched on from the Navigate menu, it is the setting, and Tab moves the focus on");
             check(integrated.command(AppCommands::TabMovesFocus) && !commands.tabMovesFocus(),
                   "and off again");
+            // The Mixer's keyboard: Move Focus to Mixer (§42.16), then Next and Previous
+            // Neighbor (§41.4.1.2) to the same switch on the track after or before. The selection
+            // stays as it is: the device strip, and `controls` below, follow it.
+            {
+                const auto &rows = integrated.reader().tracks();
+                const auto selected = integrated.arrangement.geometry.selection.track;
+                std::size_t at = 0;
+                for (std::size_t i = 0; i < rows.size(); ++i)
+                    if (rows[i]->id == selected)
+                        at = i;
+                const bool forward = at + 1 < rows.size();
+                const std::size_t there = forward ? at + 1 : (at > 0 ? at - 1 : at);
+                auto focusedRow = [&]() -> MixerStrip * {
+                    for (const auto &s : integrated.mixer.strips())
+                        for (auto *control : s->switches())
+                            if (control->hasKeyboardFocus(false))
+                                return s.get();
+                    return nullptr;
+                };
+#if JUCE_MAC
+                const auto neighbourMods = juce::ModifierKeys::altModifier;
+#else
+                const auto neighbourMods = juce::ModifierKeys::commandModifier;
+#endif
+                const juce::KeyPress nextKey(juce::KeyPress::tabKey, neighbourMods, 0),
+                    previousKey(juce::KeyPress::tabKey, neighbourMods | juce::ModifierKeys::shiftModifier, 0);
+                const juce::KeyPress mixerKey('m', alt | juce::ModifierKeys::shiftModifier, 0);
+                check(integrated.keyPressed(mixerKey) && focusedRow() != nullptr &&
+                          focusedRow()->track() == rows[at]->id && focusedRow()->active.hasKeyboardFocus(false),
+                      "Alt/Option+Shift+M moves the focus to the selected track's Track Activator");
+                check(rows.size() >= 2 && integrated.keyPressed(forward ? nextKey : previousKey) &&
+                          focusedRow() != nullptr && focusedRow()->track() == rows[there]->id &&
+                          focusedRow()->active.hasKeyboardFocus(false),
+                      "a Neighbor key: the same switch on the next or previous track");
+                if (auto *row = focusedRow())
+                    row->solo.grabKeyboardFocus();
+                check(integrated.keyPressed(forward ? previousKey : nextKey) && focusedRow() != nullptr &&
+                          focusedRow()->track() == rows[at]->id && focusedRow()->solo.hasKeyboardFocus(false),
+                      "and the other one back, on the switch that had the focus");
+                check(focusedRow() != nullptr && !focusedRow()->solo.getMouseClickGrabsKeyboardFocus(),
+                      "a click on a mixer switch leaves the focus where it was");
+                integrated.command(AppCommands::ToggleMixer);
+                check(!integrated.mixer.isVisible() && integrated.keyPressed(mixerKey) &&
+                          integrated.mixer.isVisible() && focusedRow() != nullptr,
+                      "hidden track controls are shown, then focused");
+            }
             deviceHost.removeChildComponent(&integrated);
             deviceHost.removeFromDesktop();
             integrated.devices.submit = nullptr;

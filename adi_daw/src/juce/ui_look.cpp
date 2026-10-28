@@ -75,6 +75,11 @@ void LiveLook::drawButtonBackground(juce::Graphics &g, juce::Button &b, const ju
     else if (highlighted)
         fill = fill.brighter(0.08f);
     box(g, b.getLocalBounds().toFloat().reduced(0.5f), fill);
+    // Live 12's focus ring, on a switch that only the keyboard can focus.
+    if (b.getProperties()["live.focusRing"] && b.hasKeyboardFocus(false)) {
+        g.setColour(accent);
+        g.drawRect(b.getLocalBounds(), 1);
+    }
 }
 void LiveLook::drawButtonText(juce::Graphics &g, juce::TextButton &b, bool, bool) {
     g.setFont(getTextButtonFont(b, b.getHeight()));
