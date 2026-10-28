@@ -280,6 +280,101 @@ per-window clock decision of §2.1 holds with two real windows rather than one.
 `MixerPanel` / `MixerStrip[]` in `TrackOrderModel` order. Then the parity
 sessions of §5.
 
+### Step 7.7 — the Clip View and the MIDI Note Editor (the director, 2026-10-28)
+
+The Master Reference puts the clip view (4.1) and the note editor (5.1) at P0. Neither
+was in 7.2 to 7.6. The director ruled on 28 October 2026 that they come next, after the
+view filter's picture. The design is Live 12's (manual ch. 8 "Clip View" and ch. 10
+"Editing MIDI", the online edition of 28 October 2026) in ADI's look. Its picture,
+`collab/window/pictures/2026-10-28-clip-view.png`, goes to the director before any of it
+is built. Rows to check against Live: `collab/window/parity-7.7-clip-view.md`.
+
+**The shape.** This is UI-ARCHITECTURE's `DetailEditor`:
+- **Where it sits:** the detail row beside the Info View. With the Device View open, it
+  stacks above it, as in Live 12.
+- **Opening and closing:** Ctrl/Cmd+Alt+3, a double-click on a clip, or the Status Bar's
+  triangle. It shows the selected clip. Dragging its top edge grows it, and dragging that
+  edge to the bottom closes it.
+- **Undocking:** it can be torn out into its own window by reparenting (ADR-0063, §7.5's
+  host).
+- **Layout:** a title bar with the clip's activator, name and colour; panels on the left;
+  an editor on the right.
+  - The panels: Main for every clip; Pitch and Time, Transform and Generate for MIDI;
+    Audio Utilities and Transform for audio.
+  - The editor's tabs: Notes, Envelopes and MPE for MIDI; Sample and Envelopes for audio.
+- **The Status Bar** gains Live 12's Clip View toggle and its selector (the clip in
+  miniature; drag in it to scroll and zoom) in its second field. The Swap button
+  (`window/swap-panels`) moves left of that field.
+
+**The build order.** Each step is a `window/<topic>` branch.
+
+1. **The view's frame.**
+   - What it has: the detail row's stacking, the toggle and its keys, the title bar, and
+     the panels' layout.
+   - What it shows: the Main panel's start and length from the snapshot's `ClipNode`,
+     read-only until the clip ops exist (N33).
+   - The rest of this step: the Status Bar's selector, and Swap moved.
+   - Goldens: an empty MIDI clip and an audio clip.
+2. **The note editor's geometry, headless** (`src/adi/ui`, as `ArrangementGeometry`).
+   - The note ruler: C-2 to C8, middle C as C3, English names. These are the director's
+     defaults; C4 and the other spellings are options.
+   - Key track height, scroll and zoom.
+   - The time ruler, which shares the arrangement's zoom and grid code: the editor's own
+     grid chooser, Ctrl/Cmd+4, Alt/Cmd to bypass, and snapping to an offset.
+   - Fold to Notes (F), Z and X, + and -, Page Up and Page Down.
+   - Tested without a window.
+3. **Drawing and editing notes.** This is the first step that needs to read notes (N32).
+   - Mouse: a double-click adds or deletes a note; dragging moves it; its edges change
+     its length; Draw Mode is B.
+   - Keys: the arrows with their modifiers; Ctrl/Cmd+A; Esc; Enter toggles between a
+     time selection and its notes.
+   - The Velocity lane: dragging, typed values, and Ctrl/Cmd+arrow by 10.
+   - Every gesture is one undo step made from the five note ops that exist:
+     `note.insert`, `note.delete`, `note.move`, `note.resize` and `note.setVelocity`.
+   - Preview plays the key through the track when the engine's preview path exists.
+     Until then the switch is drawn and says it waits.
+4. **The Pitch and Time Utilities.** They are compositions of the same five ops, so they
+   need no new op:
+   - Transpose, Invert, Reverse, Humanize and Quantize (Ctrl/Cmd+U) are moves;
+   - Set Length, Legato and Fit to Time Range (Ctrl/Cmd+Alt+J) are resizes;
+   - Stretch, x2 and /2 scale positions and lengths together, so they are moves and
+     resizes in one step;
+   - Add Interval is inserts.
+
+   Three of them wait on Needs:
+   - Fit to Scale waits for a clip's scale (N33, P1);
+   - Split, Chop and Join (Ctrl/Cmd+E, Ctrl/Cmd+J) need a note's identity to survive the
+     split, so they wait until N32 shows what a note's id is;
+   - 0 to deactivate a note needs an op for the note's active flag (N34).
+5. **What comes later, as the document places it:**
+   - the Chance lane and probability groups (P2, 5.1);
+   - the MPE tab (5.2);
+   - the Envelopes tab, which needs clip envelopes to play (6.1, P1);
+   - multi-clip editing and Focus Mode (P2);
+   - the Transform and Generate panels' MIDI Tools (P2);
+   - Scale Mode, Fold to Scale and Highlight Scale (P1, with the tuning tables' ops);
+   - the Sample Editor's waveform and warping: N5 and 4.2.
+
+**What the window cannot do alone.** The snapshot gives a clip only its id, position,
+length, mute and gain. The notes and the clip's own properties are in the store:
+`rows::Model` has them, and the engine's `MidiClips` reads them through `readModel`. But
+the UI's read path is the snapshot (§2.2), and raw SQL from the UI is ruled out (§3.0).
+So the editor needs, from the engine lane:
+- **N32:** a clip's notes (with each note's identity, as the note ops address it) and its
+  own properties where the window can read them: its kind, name, colour, start and end
+  markers, loop window, signature and scale. This means either the snapshot, or a read
+  the UI may call on the message thread when the journal moves. The choice is the engine
+  lane's.
+- **N33:** ops for a clip's start and end markers, its loop window and loop switch, its
+  signature and its scale: Live's Main Clip Properties.
+- **N34:** an op for a note's active flag (the `flags` column exists).
+
+**Tests** follow §5:
+- the geometry headless;
+- goldens for the view with a MIDI clip and with an audio clip, once each is drawn;
+- every note gesture driven by synthesised events, with a check that it is one undo step
+  and that a refused op leaves the notes as they were.
+
 ---
 
 ## 4. The analyser's three seams, and what happens on delete

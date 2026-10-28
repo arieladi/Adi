@@ -111,8 +111,8 @@ MR § is the Master Reference's section.
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
 | Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Waits: the sample slot has no op the window can call (new Need) |
 | The missing-file mark on a device whose sample is gone | 9.3 | Waits (new Need: the mark in the snapshot) |
-| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing, and not in step 7's plan; the window's next item after the view filter's picture (the director, 28 October), plan and pictures first |
-| The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing, as above; the note ops exist |
+| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing. Planned as STEP-7-PLAN §7.7 (window/clip-view), Live 12's layout; its picture `pictures/2026-10-28-clip-view.png` went to the director on 28 October. The frame can be built alone; the clip's properties wait on N32 and N33 |
+| The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing. Planned in §7.7 with `parity-7.7-clip-view.md`. The note ruler and the geometry can be built alone; drawing and editing notes wait on reading them (N32); the five note ops exist and the Pitch and Time tools compose them |
 | Layered editing; the editors torn out | 3.4, 4.1 | Later, with the editors |
 | The Pd patch editor | 9.3 | Later (P1, its own step) |
 
