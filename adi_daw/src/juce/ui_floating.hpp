@@ -58,6 +58,10 @@ class FloatingHost {
     std::size_t count() const noexcept { return entries_.size(); }
     bool hasTooltips(const std::string &key) const;
     juce::Component *content(const std::string &) const;
+    // Ctrl/Cmd + and - in an ADI view's window zoom that window alone (ADR-0129 d3), held
+    // for the session (window log, N4). A plug-in's own window is never scaled by ADI.
+    bool zoom(const std::string &key, bool in);
+    float zoomOf(const std::string &key) const;
     std::uint64_t drains(const std::string &) const;
 
   private:
