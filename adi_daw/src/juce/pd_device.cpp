@@ -178,17 +178,36 @@ PdDevice::~PdDevice() {
 
 void PdDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     if (!loaded_) return;
+    // ALREADY RUNNING AND NOTHING CHANGED: DO NOTHING, as `ClapDevice` and
+    // `Vst3Device` do (ADR-0090). `Graph::prepare` prepares every node on
+    // every rebuild, and the engine's prepare re-runs libpd_init_audio and
+    // `dsp 1`, empties the adapter's FIFOs and resets the MIDI router. Every
+    // rebuild -- a device added on another track -- cost each Pd device the
+    // audio in its FIFOs (up to a Pd block) and forgot its sounding notes, so
+    // their note-offs never reached the patch.
+    if (prepared_ && sampleRate == sampleRate_ && maxFrames == maxFrames_) return;
+    // From here the engine's buffers and router are rebuilt while a live
+    // rebuild's last graph may still render this device (ADR-0089 d4):
+    // `process` passes the audio through until it is done.
+    const ReactivationGate::Hold hold(gate_);
     latency_.setMaxSamples(static_cast<std::int32_t>(sampleRate * 10.0));
     engine_->prepare(sampleRate, maxFrames);
     // AFTER the engine knows the real rate. A report from [loadbang] was made
     // at Pd's default 44.1 kHz; this is the one that is true.
     engine_->requestLatencyReport();
+    sampleRate_ = sampleRate;
+    maxFrames_ = maxFrames;
+    prepared_ = true;
 }
 
 void PdDevice::process(const engine::NodeIo& io) noexcept {
     // A patch that did not open is still a device (ADR-0011): it passes audio
     // through and holds its place in the chain.
     if (!loaded_) { passThrough(io); return; }
+    // A re-initialisation in progress on the message thread owns the engine:
+    // this call passes the audio through (`ReactivationGate`).
+    const ReactivationGate::Pass pass(gate_);
+    if (!pass) { passThrough(io); return; }
     engine_->process(io);
 }
 

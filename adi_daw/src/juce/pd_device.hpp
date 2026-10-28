@@ -251,9 +251,14 @@ public:
     [[nodiscard]] bool loaded() const noexcept override { return loaded_; }
 
     /// Prepares the engine at the real rate, THEN asks the patch its latency
-    /// -- the order is the fix for decision 2 above.
+    /// -- the order is the fix for decision 2 above. Returns at once when
+    /// the rate and block are what they were (ADR-0090), and otherwise holds
+    /// the audio thread off the engine while it is re-initialised (ADR-0089
+    /// d4: a rebuild's last graph may still be rendering this device).
     void prepare(double sampleRate, std::int32_t maxFrames) override;
-    void release() override {}
+    /// The next `prepare` re-initialises the engine: what its FIFOs held when
+    /// the audio stopped is not the start of what plays when it resumes.
+    void release() override { prepared_ = false; }
     void process(const engine::NodeIo& io) noexcept override;
 
     /// Zero until loaded: a patch that failed to open passes audio straight
@@ -266,6 +271,8 @@ public:
 
     [[nodiscard]] PdLatencyReceiver& latency() noexcept { return latency_; }
     [[nodiscard]] const std::string& openError() const noexcept { return openError_; }
+    /// A re-initialisation holds the engine now (`ReactivationGate`). Any thread.
+    [[nodiscard]] bool reactivating() const noexcept { return gate_.closed(); }
 
 private:
     std::unique_ptr<PdPatchEngine> engine_;
@@ -273,6 +280,12 @@ private:
     PdLatencyReceiver latency_;
     std::string openError_;
     bool loaded_ = false;
+    bool prepared_ = false;        ///< message thread: the engine is set up at these
+    double sampleRate_ = 0.0;
+    std::int32_t maxFrames_ = 0;
+    /// Holds the audio thread off the engine while `prepare` rebuilds its
+    /// adapter and router and re-initialises libpd's audio.
+    ReactivationGate gate_;
 };
 
 }  // namespace adi::device
