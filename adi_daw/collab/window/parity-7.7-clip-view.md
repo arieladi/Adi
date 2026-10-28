@@ -19,7 +19,7 @@ Status: **built**, **partial**, **open** (planned, not built), **waits** (a Need
 | 7 | The editor's tabs: Notes, Envelopes, MPE for MIDI; Sample, Envelopes for audio; Alt/Option+Tab switches | §8.1.3 | The tabs drawn; Notes and Sample first | open; Envelopes, MPE later |
 | 8 | Main panel: Start and End with Set buttons; Loop; Position and Length with Set; Signature; Groove; Scale | §8.2 | Shown from the snapshot's position and length, read-only until the clip ops exist | waits (N33) |
 | 9 | Duplicate (MIDI): doubles the loop and its notes, Ctrl/Cmd+D on the loop brace | §8.9, §10.7.3 | Through `note.insert` and the loop op | waits (N32, N33) |
-| 10 | The Clip View Selector in the Status Bar: the whole clip in miniature; drag in it to scroll and zoom | §8.7, §10.2 | In the Status Bar's second field; the Swap button moves left of it | open |
+| 10 | The Clip View Selector in the Status Bar: the whole clip in miniature; drag in it to scroll and zoom | §8.7, §10.2 | In the Status Bar's second field, which is free (Swap is above the track controls, #293) | open |
 | 11 | Zoom and scroll as in the arrangement: drag the time ruler; Ctrl/Cmd+wheel zooms; Z zooms to the selection, X back step by step | §8.7, §10.2 | Shares the arrangement's zoom code | open |
 | 12 | The note ruler: C-2 to C8 with a piano keyboard; scroll it for octaves, drag sideways to zoom key tracks; Alt/Option+wheel zooms them | §10.1, §10.2 | Middle C is C3, English names (the director's defaults; Master Reference 5.1) | open |
 | 13 | Page Up/Down scroll an octave; with Shift, one key track | §10.2 | The same | open |

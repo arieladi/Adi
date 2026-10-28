@@ -303,8 +303,8 @@ is built. Rows to check against Live: `collab/window/parity-7.7-clip-view.md`.
     Audio Utilities and Transform for audio.
   - The editor's tabs: Notes, Envelopes and MPE for MIDI; Sample and Envelopes for audio.
 - **The Status Bar** gains Live 12's Clip View toggle and its selector (the clip in
-  miniature; drag in it to scroll and zoom) in its second field. The Swap button
-  (`window/swap-panels`) moves left of that field.
+  miniature; drag in it to scroll and zoom) in its second field. That field is free: the
+  Swap button sits above the track controls (#293, the director's choice of place).
 
 **The build order.** Each step is a `window/<topic>` branch.
 
@@ -313,7 +313,7 @@ is built. Rows to check against Live: `collab/window/parity-7.7-clip-view.md`.
      the panels' layout.
    - What it shows: the Main panel's start and length from the snapshot's `ClipNode`,
      read-only until the clip ops exist (N33).
-   - The rest of this step: the Status Bar's selector, and Swap moved.
+   - The rest of this step: the Status Bar's toggle and selector.
    - Goldens: an empty MIDI clip and an audio clip.
 2. **The note editor's geometry, headless** (`src/adi/ui`, as `ArrangementGeometry`).
    - The note ruler: C-2 to C8, middle C as C3, English names. These are the director's
