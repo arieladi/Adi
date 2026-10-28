@@ -155,6 +155,13 @@ class ArrangementView final : public juce::Component {
     void locate();
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);
+    // Live's Follow (§6.2): brings the playhead at `tick` on screen, by page (it jumps to the
+    // left edge once it leaves the lanes) or by scrolling (it stays in the middle). True when
+    // the view moved.
+    bool follow(std::int64_t tick, bool page) noexcept;
+    // Paused by an edit, a sideways scroll or a click on the ruler; a click in the lanes or
+    // the scrub area, or playback starting or stopping, starts it again.
+    bool followPaused = false;
     const SnapshotReader &reader() const;
     // Live 11's measures at 100 % (2026-10-27): the Overview with its margin, the beat
     // ruler with its numbers along its foot, the locator band, a dark gap, then the

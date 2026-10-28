@@ -30,6 +30,7 @@ void AppCommands::reload() {
     tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
     zoomOnSelection_ = flag(settings_, "lookfeel.zoomOnSelection", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
+    followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
@@ -76,7 +77,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Quit",                "Control Bar",
                                   "Arrangement View",    "Device View",
                                   "Browser",             "Search in Browser",
-                                  "Use Tab Key to Move Focus"};
+                                  "Use Tab Key to Move Focus", "Follow"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -219,6 +220,18 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case TabMovesFocus: // §41.1.1: the Navigate menu's switch, also in the Settings
         info.setTicked(tabMovesFocus_);
+        break;
+    case Follow:
+        // §6.2: the control bar's switch and the Options menu's command. The manual gives
+        // Windows two keys, Ctrl+Shift+F (§42.11, §42.12, §42.16) and Alt+Shift+F (§42.9);
+        // both are bound until win measures Live. The Mac's is Option+Shift+F throughout.
+#if JUCE_MAC
+        info.addDefaultKeypress('f', alt | shift);
+#else
+        info.addDefaultKeypress('f', cmd | shift);
+        info.addDefaultKeypress('f', alt | shift);
+#endif
+        info.setTicked(active_ != nullptr && active_->state().follow);
         break;
     default:
         break;
@@ -365,6 +378,9 @@ void AdiRootComponent::frame() noexcept {
     const auto position = mailbox_.position();
     const double rate = mailbox_.sampleRate();
     if (playing != playing_ || position != position_ || rate != sampleRate_) {
+        // Follow starts again whenever playback starts or stops (§6.2).
+        if (playing != playing_)
+            arrangement.followPaused = false;
         sampleRate_ = rate;
         playing_ = playing;
         position_ = position;
@@ -384,6 +400,11 @@ void AdiRootComponent::frame() noexcept {
     }
     if (infoShown_)
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
+    // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays,
+    // unless an edit, a sideways scroll or a click on the ruler paused it.
+    if (state_.follow && playing_ && !arrangement.followPaused &&
+        arrangement.follow(timelineTick(), commands_.followByPage()))
+        dirty_.mark(DirtySet::Content);
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     devices.frame(arrangement.geometry.selection.track);
@@ -633,6 +654,7 @@ bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const 
     const auto result = submitter_.submit(std::move(request));
     if (!result)
         return fail(result.error);
+    arrangement.followPaused = true; // an edit pauses Follow (§6.2)
     if (afterEdit)
         afterEdit();
     error_.clear();
@@ -711,6 +733,7 @@ bool AdiRootComponent::insertTrack(bool midi) {
     const auto result = submitter_.submit(std::move(request));
     if (!result)
         return fail(result.error);
+    arrangement.followPaused = true;
     arrangement.geometry.selection.track = id;
     publishSelection();
     return true;
@@ -727,6 +750,7 @@ bool AdiRootComponent::deleteTrack() {
     const auto result = submitter_.submit(std::move(request));
     if (!result)
         return fail(result.error);
+    arrangement.followPaused = true;
     arrangement.geometry.selection.track = 0;
     arrangement.geometry.selection.clip = 0;
     publishSelection();
@@ -799,6 +823,7 @@ bool AdiRootComponent::command(int id) {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
         if (!result.ok)
             return fail(result.error);
+        arrangement.followPaused = true;
         // Undo puts back what was selected before the undone step (ADR-0021).
         if (id == AppCommands::Undo && result.selBefore)
             session_.restore(*result.selBefore);
@@ -832,6 +857,14 @@ bool AdiRootComponent::command(int id) {
             state_.docked = !state_.docked;
             return fail(error_);
         }
+        break;
+    case AppCommands::Follow:
+        state_.follow = !state_.follow;
+        if (!persist()) {
+            state_.follow = !state_.follow;
+            return fail(error_);
+        }
+        arrangement.followPaused = false;
         break;
     case AppCommands::ToggleInfoView: {
         std::string why;
@@ -890,9 +923,9 @@ bool AdiRootComponent::command(int id) {
 }
 namespace {
 // Live 12's menu bar (manual §42.28), in Live's order, each menu listing only the commands
-// ADI has; 0 is a separator. A menu with none is left out: Options on the Mac, where
-// Settings is the application menu's (§2.3); Help until there is a Learn View (§2.2.1).
-// Transport has no menu in Live; Space is its key.
+// ADI has; 0 is a separator. A menu with none is left out: Help, until there is a Learn
+// View (§2.2.1). On the Mac, Settings is the application menu's (§2.3). Transport has no
+// menu in Live; Space is its key.
 struct MenuEntries {
     const char *name;
     std::vector<int> items;
@@ -914,11 +947,11 @@ const std::vector<MenuEntries> &menuBar() {
           C::ToggleDeviceView, C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, 0,
           C::SwapPanels}},
+        // Follow is the Options menu's (§6.2); so is Settings on Windows (§2.3).
 #if JUCE_MAC
-        {"Options", {}},
+        {"Options", {C::Follow}},
 #else
-        // Settings is the Options menu's on Windows (§2.3).
-        {"Options", {C::Settings}},
+        {"Options", {C::Follow, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, Clip View, the Groove
         // Pool and the Learn View come with those views; the Mixer with its keyboard.
