@@ -50,6 +50,48 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, continued — #288's Windows golden; the grid's named widths [#289](https://github.com/arieladi/Adi/pull/289) `window/grid-widths`
+
+**CI.** On #274 to #288: one failure, on #288, `GUI shell / windows-latest`, which failed
+`live-parity` by 310 differing pixels. Every other finished run passed, and none of these PRs has
+a comment or review. The only pending runs are macOS legs, queued since about 07:00Z.
+- **Cause.** #288 lengthened the canvas's description. The parity scene hovers the canvas, so the
+  Info View shows it. With Windows' fonts the body wraps one line more, and `TextLayout::draw`
+  does not clip, so the text spilled past the masked area.
+- **Fix, on #288 (`e386a6e`).** The Info View's body is clipped to its panel. A new check hovers
+  a description far longer than the panel and finds no pixel changed outside it; it fails
+  without the clip. The Linux golden is unchanged. #288 is the tip, so nothing above it needed
+  the fix.
+
+**#289, stacked on #288** (parity-7.3-arrangement row 26, now built with measures). The lanes'
+menu names the grid's widths (online §6.10):
+- **Adaptive Grid ▸** Widest, Wide, Medium, Narrow, Narrowest.
+- **Fixed Grid ▸** 8 Bars to 1/32.
+- The width in use is ticked, followed by Triplet Grid and Snap to Grid. The Options menu keeps
+  its five commands.
+- Ctrl/Cmd+1 and 2 stay within those names: adaptive ±2 steps (was ±3), fixed down to 1/32 (was
+  1/128). A saved width beyond them loads as the nearest.
+- **For the director:** the online manual names neither list. The names are as the window
+  recalls Live, and which adaptive name is Live's default (Medium, ADI's default) is to be
+  measured.
+
+Checks: shell 380, window state 52, document 38, seams 96; `test_all.sh` 8269 across 97 suites
+PASS; zero warnings; the shadow sweep is clean. Under Xvfb, Fixed Grid ▸ 1/8 sets the ruler's
+spacing to "1/8" and the lanes draw eighths.
+
+**Where to resume:** `window/grid-widths` (#289) is the tip. Next the window can do alone: Live's
+Arrangement keys (online §41.4.1.3, §42.16), replacing ADI's clip-to-clip arrows, which were the
+window lane's own choice:
+- left/right move the insert marker by the grid;
+- Ctrl/Option + left/right go to the previous or next clip edge;
+- Shift + left/right select;
+- left/right nudge a selected clip;
+- Enter at a clip's edge, then left/right, resize it.
+
+Then read CI on #288 and #289.
+
+---
+
 ## 2026-10-28, cloud, continued — a clip's right edge [#288](https://github.com/arieladi/Adi/pull/288) `window/clip-resize`
 
 **#288, stacked on #287** (parity-7.3-arrangement row 27). §6.7's edge drag, its right half:
@@ -69,8 +111,7 @@ pending, plus #286's and #287's runs in progress.
 
 **The session hit a usage limit and a worker restart after #288 went up; nothing was lost.**
 
-**Where to resume:** `window/clip-resize` (#288) is the tip. Next the window can do alone: the
-lanes' menu with Live's named grid widths. Then read CI on #274 to #288.
+**Where to resume** (superseded by the entry above): `window/clip-resize` (#288) was the tip.
 
 ---
 
