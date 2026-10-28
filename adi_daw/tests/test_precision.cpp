@@ -622,6 +622,60 @@ struct Project {
     }
 };
 
+void testAClipSourceCrossesARebuild() {
+    section("ADR-0092 -- a track's clips cross a rebuild where their edge is compensated: "
+            "a new reader each time, the same signal");
+
+    // The session builds every track's clip reader afresh at each rebuild.
+    // Where something else into the same junction arrives later, the clips'
+    // edge into it is a delay line, and its history has to cross the swap.
+    const std::vector<float> a = noise24(19000u, 4096), b = noise24(19001u, 4096);
+    struct Case { const char* what; bool sidechain; };
+    for (const Precision width : {Precision::Float32, Precision::Float64})
+    for (const Case& c : {Case{"a group with clips, its child 300 samples early", false},
+                          Case{"a sidechain from a track 300 samples early", true}}) {
+        auto build = [&](Project& p) {
+            if (c.sidechain) {
+                p.track(1, "audio");
+                p.track(2, "audio");
+                p.strip(2, 0.0, 0.0);
+                p.store->db().exec("UPDATE mixer_strip SET delay_samples=-300 WHERE track_id=2");
+                p.store->db().exec("INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,origin) "
+                                   "VALUES(77,'track',2,'track',1,'sidechain','user')");
+                p.clip(1, p.file(a), 4096);
+                p.clip(2, p.file(b), 4096);
+                return;
+            }
+            p.track(5, "group");
+            p.track(1, "audio", 5);
+            p.strip(1, 0.0, 0.0);
+            p.store->db().exec("UPDATE mixer_strip SET delay_samples=-300 WHERE track_id=1");
+            p.clip(1, p.file(a), 4096);
+            p.clip(5, p.file(b), 4096);
+        };
+        const bool wide = width == Precision::Float64;
+        const std::string tag = std::string(c.what) + (wide ? ", at 64" : ", at 32");
+        Project ref;
+        build(ref);
+        const Render whole = ref.play(512, 4096, width);
+        Project p;
+        build(p);
+        const Render first = p.play(512, 2048, width);
+        const Node* before = p.session.clips()->sourcesFor(c.sidechain ? 1 : 5).front();
+        p.store->db().exec("UPDATE tracks SET name='renamed' WHERE id=1");
+        check(p.session.refresh(*p.store), tag + ": refreshed");
+        check(p.session.clips()->sourcesFor(c.sidechain ? 1 : 5).front() != before,
+              tag + ": the refresh built a new clip reader");
+        const Render second = p.render(512, 2048, false);
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < 2048; ++i) {
+            if (wide ? first.l64[i] != whole.l64[i] : first.l[i] != whole.l[i]) ++differ;
+            if (wide ? second.l64[i] != whole.l64[2048 + i] : second.l[i] != whole.l[2048 + i]) ++differ;
+        }
+        check(differ == 0, tag + ": a rename moves no sample of the master (" + std::to_string(differ) + " do)");
+    }
+}
+
 void testProjectMasterCancels() {
     section("ADR-0207 d2 -- the Fact Sheet case through a project: 24-bit WAV "
             "files on clip tracks, their inverted copies on others, at the master");
@@ -1427,6 +1481,7 @@ int main() {
         testCompensatedPathsCancel();
         testSidechainCancels();
         testProjectMasterCancels();
+        testAClipSourceCrossesARebuild();
         testProjectStripsAndGroupCancel();
         testClipsOnOneTrackCancel();
         testAFoldIsASum();

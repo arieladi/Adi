@@ -102,6 +102,17 @@ private:
     float v_;
 };
 
+/// Silence, 1000 samples late: a sibling the others are compensated against.
+class LateSilence final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][io.blockOffset + i] = 0.0f;
+    }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return 1000; }
+    [[nodiscard]] const char* name() const noexcept override { return "late"; }
+};
+
 /// A project of named tracks, each track id optionally a tone, and a session on it.
 struct Mix {
     adi::test::TempDirectory temp;
@@ -134,7 +145,7 @@ struct Mix {
     }
     /// Sources other than tones: a track id's own node (ADR-0172's steps).
     std::map<std::int64_t, Node*> extra;
-    void load(double sampleRate = 48000.0) {
+    void load(double sampleRate = 48000.0, Precision precision = Precision::Float32) {
         session.setSourcesFor([this](std::int64_t id) {
             if (const auto e = extra.find(id); e != extra.end()) return std::vector<Node*>{e->second};
             const auto it = tones.find(id);
@@ -143,6 +154,7 @@ struct Mix {
         SessionSpec spec;
         spec.sampleRate = sampleRate;
         spec.maxFrames = 512;
+        spec.precision = precision;
         if (!session.load(*store, {}, spec)) throw std::runtime_error(session.error());
     }
     void refresh() {
@@ -246,6 +258,138 @@ void testPanLaws() {
     check(faderGain(0.0) == 1.0, "0 dB is exactly unity");
     check(near(faderGain(-6.0206), 0.5, 1e-4), "-6.02 dB halves");
     check(faderGain(-150.0) == 0.0 && faderGain(-INFINITY) == 0.0, "-150 dB and -inf are silence");
+}
+
+void testASendNode() {
+    section("ADR-0203 d3 -- a send's node: a strip's gain stage, which plays no note");
+
+    // A stereo sine whose samples a float cannot hold, one block of it.
+    constexpr int n = 512;
+    std::vector<double> inL(n), inR(n);
+    for (int i = 0; i < n; ++i) {
+        const double ph = 2.0 * std::numbers::pi * 220.0 * i / 48000.0;
+        inL[static_cast<std::size_t>(i)] = 0.3 * std::sin(ph);
+        inR[static_cast<std::size_t>(i)] = -0.2 * std::sin(1.5 * ph);
+    }
+    // Left then right, as doubles, from one block at either width.
+    auto run = [&](SendNode& s, bool wide) {
+        std::vector<double> l(n, 7.0), r(n, 7.0);
+        std::vector<float> lf(n, 7.0f), rf(n, 7.0f), il(n), ir(n);
+        for (std::size_t i = 0; i < il.size(); ++i) {
+            il[i] = static_cast<float>(inL[i]);
+            ir[i] = static_cast<float>(inR[i]);
+        }
+        const double* in64[2] = {inL.data(), inR.data()};
+        double* out64[2] = {l.data(), r.data()};
+        const float* in32[2] = {il.data(), ir.data()};
+        float* out32[2] = {lf.data(), rf.data()};
+        NodeIo io;
+        io.channels = 2;
+        io.frames = n;
+        io.sampleRate = 48000.0;
+        if (wide) { io.in64 = in64; io.out64 = out64; }
+        else      { io.in = in32; io.out = out32; }
+        s.process(io);
+        std::vector<double> out;
+        for (std::size_t i = 0; i < l.size(); ++i) out.push_back(wide ? l[i] : static_cast<double>(lf[i]));
+        for (std::size_t i = 0; i < r.size(); ++i) out.push_back(wide ? r[i] : static_cast<double>(rf[i]));
+        return out;
+    };
+    std::vector<double> in64(inL), in32;
+    in64.insert(in64.end(), inR.begin(), inR.end());
+    for (double x : in64) in32.push_back(static_cast<double>(static_cast<float>(x)));
+    auto silent = [](const std::vector<double>& v) {
+        for (double x : v) if (x != 0.0) return false;
+        return true;
+    };
+    auto made = [](double db, double pan, bool on) {
+        auto s = std::make_unique<SendNode>();
+        s->set(db, pan, PanLaw::Live, on);
+        s->prepare(48000.0, n);
+        return s;
+    };
+
+    check(run(*made(0.0, 0.0, true), true) == in64, "0 dB, centred and on, at 64: its input bit for bit");
+    check(run(*made(0.0, 0.0, true), false) == in32, "and at 32");
+    check(silent(run(*made(kSilenceDb, 0.0, true), true)) && silent(run(*made(kSilenceDb, 0.0, true), false)),
+          "-150 dB is silence, from the first sample: a send starts at its level, not ramping to it");
+    check(silent(run(*made(std::nan(""), 0.0, true), true)), "a level that is not a number is silent");
+    check(silent(run(*made(0.0, 0.0, false), true)), "a send switched off is silent");
+    {
+        const std::vector<double> half = run(*made(-6.0206, 0.0, true), true);
+        double worst = 0.0;
+        for (std::size_t i = 0; i < half.size(); ++i) worst = std::max(worst, std::fabs(half[i] - 0.5 * in64[i]));
+        check(worst < 1e-5, "-6.02 dB halves it: worst " + std::to_string(worst));
+    }
+    {
+        const std::vector<double> right = run(*made(0.0, 1.0, true), true);
+        bool leftSilent = true;
+        for (int i = 0; i < n; ++i) leftSilent = leftSilent && right[static_cast<std::size_t>(i)] == 0.0;
+        check(leftSilent, "a send's pan, hard right under Live's law: the left is silent");
+    }
+    {
+        // A move ramps over five milliseconds rather than jumping.
+        auto s = made(0.0, 0.0, true);
+        run(*s, true);
+        s->set(-INFINITY, 0.0, PanLaw::Live, true);
+        const std::vector<double> moved = run(*s, true);
+        check(std::fabs(moved[1] - in64[1]) < 1e-3 && moved[300] == 0.0 && moved[100] != 0.0,
+              "a level move ramps: still near the old level at once, gone after 240 samples");
+    }
+    {
+        // A send pulled down while it sleeps -- its source silent, so the
+        // graph skips it and only tells it so -- lands the level there and
+        // then: woken, it does not play its old level's first 5 ms.
+        NodeIo asleep;
+        asleep.channels = 2;
+        asleep.frames = n;
+        for (const bool wide : {true, false}) {
+            auto s = made(0.0, 0.0, true);
+            run(*s, wide);
+            s->set(kSilenceDb, 0.0, PanLaw::Live, true);
+            s->silenceTaps(asleep);
+            check(silent(run(*s, wide)), std::string("a send pulled down while asleep wakes silent, at ") +
+                                             (wide ? "64" : "32"));
+        }
+        // A strip the same: a track muted in a gap between its clips.
+        StripNode strip;
+        strip.setStatic(0.0, 0.0, PanLaw::Live, true);
+        strip.prepare(48000.0, n);
+        std::vector<float> ol(n, 7.0f), orr(n, 7.0f), il(n, 0.5f), ir(n, 0.5f);
+        const float* lin[2] = {il.data(), ir.data()};
+        float* out[2] = {ol.data(), orr.data()};
+        NodeIo io;
+        io.channels = 2;
+        io.frames = n;
+        io.in = lin;
+        io.out = out;
+        strip.process(io);
+        strip.setStatic(0.0, 0.0, PanLaw::Live, false);
+        strip.silenceTaps(asleep);
+        strip.process(io);
+        float loudest = 0.0f;
+        for (float x : ol) loudest = std::max(loudest, std::fabs(x));
+        check(loudest == 0.0f, "a strip muted while asleep wakes silent: loudest " + std::to_string(loudest));
+    }
+    {
+        // A level past the top -- +inf, a number whose gain a float cannot
+        // hold, one no host offers -- plays at kSendTopDb, never as infinity.
+        for (const double db : {std::numeric_limits<double>::infinity(), 1e39, 800.0}) {
+            const std::vector<double> loud = run(*made(db, 0.0, true), true);
+            const double g = faderGain(kSendTopDb);
+            double worst = 0.0;
+            bool finite = true;
+            for (std::size_t i = 0; i < loud.size(); ++i) {
+                finite = finite && std::isfinite(loud[i]);
+                worst = std::max(worst, std::fabs(loud[i] - in64[i] * g));
+            }
+            check(finite && worst < 1e-12, "a send at " + std::to_string(db) + " dB plays at the top, " +
+                                               std::to_string(kSendTopDb) + " dB: worst " + std::to_string(worst));
+        }
+    }
+    SendNode s;
+    check(s.eventFlow() == EventFlow::Stop && s.tailSamples() == 0 && s.processesDouble() && s.latencySamples() == 0,
+          "it stops notes, holds nothing back, takes double, and adds no latency");
 }
 
 void testVolumePanMute() {
@@ -375,6 +519,131 @@ void testTrackDelay() {
     check(named.mentions("tracks#9: the master's delay is not played"), "a delay on the master is named");
     check(named.mentions("tracks#1: a delay of 240000 samples is past one second"),
           "a delay past one second is named, and played at one second");
+}
+
+void testATrackDelayCrossesARebuild() {
+    section("ADR-0092, ADR-0172 -- a track delay crosses a rebuild, wherever in the chain it is played");
+
+    // A delay is a negative latency, played by the edge AFTER the strip. When
+    // the strip ends the chain that edge is the plan's, and its history has
+    // always been carried. A summed child's strip is followed by its channel
+    // half, so the edge is inside the chain -- and every refresh, a fader move
+    // included, rebuilds the graph.
+    auto run = [](const std::string& name, bool summing, int edits, bool fader, Precision width) {
+        Mix m(name.c_str());
+        SineNode a(220.0, 0.1f);
+        m.track(1, "audio", "A");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.extra[1] = &a;
+        if (summing) m.set("group.setSumming", 5, "enabled", true);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load(48000.0, width);
+        const std::int64_t built = m.session.graph().stats().published;
+        std::vector<float> out;
+        for (int k = 0; k < 12; ++k) {
+            if (k >= 6 && k < 6 + edits) {
+                // Nothing audible: a rename, or the group's fader set to where it is.
+                if (fader) m.set("mixer.setVolume", 5, "db", 0.0);
+                else m.set("track.rename", 1, "name", "A" + std::to_string(k));
+                m.refresh();
+            }
+            m.render(512);
+            out.insert(out.end(), m.l.begin(), m.l.end());
+        }
+        return std::make_pair(out, m.session.graph().stats().published - built);
+    };
+    // Not bit for bit: a console half dithers, from its own random seed, so
+    // two summed sessions differ at about 1e-8 from their first sample. A
+    // hole in a 0.1 sine is up to 0.1.
+    auto sameAs = [](const std::vector<float>& x, const std::vector<float>& ref) {
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < x.size() && i < ref.size(); ++i)
+            if (std::fabs(static_cast<double>(x[i]) - static_cast<double>(ref[i])) > 1e-6) ++differ;
+        return differ;
+    };
+    for (const Precision width : {Precision::Float32, Precision::Float64})
+    for (const bool summing : {false, true}) {
+        const std::string tag = std::string(summing ? "summed" : "plain") +
+                                (width == Precision::Float64 ? " at 64" : "");
+        const std::string file = (summing ? "s" : "p") + std::string(width == Precision::Float64 ? "64" : "32");
+        const auto ref = run("delay-ref-" + file, summing, 0, false, width);
+        const auto once = run("delay-once-" + file, summing, 1, false, width);
+        const auto three = run("delay-three-" + file, summing, 3, true, width);
+        check(once.second == 1 && three.second == 3, tag + ": the edits rebuilt the graph, once and three times");
+        const std::size_t d1 = sameAs(once.first, ref.first), d3 = sameAs(three.first, ref.first);
+        check(d1 == 0, tag + ": a child 300 samples late, and a rebuild moves no sample of the master past 1e-6 (" +
+                           std::to_string(d1) + " do)");
+        check(d3 == 0, tag + ": nor do three fader moves in a row (" + std::to_string(d3) + " do)");
+    }
+
+    // A NEW FLAVOUR is a new channel half after the same strip. The delayed
+    // edge leaves the strip, and the ring holds what the strip sent, so it is
+    // carried: the sound changes, and nothing drops out.
+    {
+        Mix m("delay-flavour");
+        SineNode a(220.0, 0.1f);
+        m.track(1, "audio", "A");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.extra[1] = &a;
+        m.set("group.setSumming", 5, "enabled", true);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        for (int k = 0; k < 6; ++k) m.render(512);
+        const ConsoleNode* before = m.session.summing().channelOf(1);
+        m.set("group.setSummingFlavor", 5, "flavor", "console.md");
+        m.refresh();
+        m.render(512);
+        std::size_t run = 0, longest = 0;
+        for (float x : m.l) {
+            run = std::fabs(x) < 1e-5f ? run + 1 : 0;
+            longest = std::max(longest, run);
+        }
+        check(m.session.summing().channelOf(1) != before, "a new flavour is a new half");
+        check(longest < 8, "and the block after it has no hole: its longest near-silent run is " +
+                               std::to_string(longest) + " samples, not the delay's 300");
+    }
+
+    // SUMMING TURNED ON OR OFF changes what the child's output into its group
+    // IS: with drive, a channel half's output is hotter than the track by the
+    // drive, and the group's buss takes it back. The old line's history is
+    // not handed to the new one (`wireKind`), so the swap never plays one as
+    // the other -- with +18 dB of drive that was a +12 dB burst.
+    for (const bool startOn : {true, false}) {
+        Mix m(startOn ? "toggle-off" : "toggle-on");
+        SineNode a(220.0, 0.1f);
+        LateSilence lag;
+        m.track(1, "audio", "A");
+        m.track(2, "audio", "B");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.set("track.setParent", 2, "parent", 5);
+        m.extra[1] = &a;
+        m.extra[2] = &lag;
+        m.set("group.setSumming", 5, "enabled", startOn);
+        m.set("group.setSummingDrive", 5, "db", 18.0);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        for (int k = 0; k < 8; ++k) m.render(512);
+        m.set("group.setSumming", 5, "enabled", !startOn);
+        m.refresh();
+        double swap = 0.0, settled = 0.0;
+        for (int k = 0; k < 10; ++k) {
+            m.render(512);
+            for (std::size_t i = 0; i < m.l.size(); ++i) {
+                const double v = std::fabs(static_cast<double>(m.l[i]));
+                if (k * 512 + static_cast<int>(i) < 1300) swap = std::max(swap, v);
+                else if (k >= 4) settled = std::max(settled, v);
+            }
+        }
+        check(swap <= settled * 1.05,
+              std::string("summing ") + (startOn ? "on to off" : "off to on") + ": no burst at the swap -- peak " +
+                  std::to_string(swap) + " against " + std::to_string(settled) + " settled");
+    }
 }
 
 void testGroupSumming() {
@@ -862,12 +1131,14 @@ int main() {
     std::printf("adi_mixer_tests -- the mixer strip (ADR-0163)\n\n");
     try {
         testPanLaws();
+        testASendNode();
         testVolumePanMute();
         testSolo();
         testStripsOutliveGraphs();
         testAutomationPlays();
         testOverride();
         testTrackDelay();
+        testATrackDelayCrossesARebuild();
         testGroupSumming();
         testScopeTaps();
     } catch (const std::exception& e) {
