@@ -1150,6 +1150,31 @@ int main(int argc, char **argv) {
                 const bool restored = integrated.command(AppCommands::Undo);
                 integrated.frame();
                 check(restored && clipAt() != nullptr && clipAt()->posTicks == pos0, "and Undo brings it back");
+                // The right edge changes the clip's length, its start and its audio staying put.
+                const auto length0 = clipAt() != nullptr ? clipAt()->lengthTicks : 0;
+                const auto rightEdge =
+                    peerRoot
+                        .getLocalPoint(&arrangement.canvas,
+                                       juce::Point<int>{static_cast<int>(geo.x(pos0 + length0)) - 2, barTop + 5})
+                        .toFloat();
+                when += 1000;
+                mouse(rightEdge, 0);
+                const bool bracket = arrangement.canvas.getMouseCursor() == juce::MouseCursor::LeftRightResizeCursor;
+                mouse(rightEdge, juce::ModifierKeys::leftButtonModifier);
+                mouse(rightEdge.translated(100, 0), juce::ModifierKeys::leftButtonModifier);
+                const bool stretching =
+                    arrangement.canvas.resizingClip() == 1 && arrangement.canvas.resizedLength() > length0;
+                mouse(rightEdge.translated(100, 0), 0);
+                integrated.frame();
+                const auto *longer = clipAt();
+                check(bracket && stretching && longer != nullptr && longer->posTicks == pos0 &&
+                          longer->lengthTicks > length0 && (pos0 + longer->lengthTicks) % gridTicks == 0 &&
+                          geo.selection.end == pos0 + longer->lengthTicks &&
+                          integrated.undoTitle(false) == "Undo Resize Clip",
+                      "dragging a clip's right edge lengthens it to the grid, its start where it was");
+                const bool shortened = integrated.command(AppCommands::Undo);
+                integrated.frame();
+                check(shortened && clipAt() != nullptr && clipAt()->lengthTicks == length0, "and Undo restores its length");
             }
             when += 1000;
             mouse(origin, 0);
