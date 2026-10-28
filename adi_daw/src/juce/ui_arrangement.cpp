@@ -70,6 +70,7 @@ void ArrangementOverview::mouseDown(const juce::MouseEvent &e) { last = e.positi
 void ArrangementOverview::mouseDrag(const juce::MouseEvent &e) {
     const auto d = e.position - last;
     last = e.position;
+    view.followPaused = true; // a sideways scroll
     // Sideways moves the outline: the overview's pixels are the whole span's.
     const double quarters = d.x * static_cast<double>(span()) / textproj::kPPQ /
                             std::max(1, getWidth());
@@ -92,6 +93,7 @@ void ScrubArea::paint(juce::Graphics &g) {
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
         return;
+    view.followPaused = false;
     // From the point clicked; Live's global launch quantization arrives with Session
     // View's launch settings (ADR-0203 d10), so nothing is quantized yet.
     view.root.playFrom(view.geometry.tick(e.position.x));
@@ -352,6 +354,21 @@ void ArrangementView::frame(bool modelChanged) noexcept {
         ruler.repaint();
     }
 }
+bool ArrangementView::follow(std::int64_t tick, bool page) noexcept {
+    const double width = canvas.getWidth();
+    if (width <= 0)
+        return false;
+    const double at = static_cast<double>(tick) / textproj::kPPQ;
+    double left = geometry.left;
+    if (!page)
+        left = std::max(0., at - width / 2 / geometry.scale);
+    else if (const double x = geometry.x(tick); x < 0 || x >= width)
+        left = at;
+    if (left == geometry.left)
+        return false;
+    geometry.left = left;
+    return true;
+}
 void ArrangementView::changed() {
     auto &state = root.state();
     state.timelineLeft = geometry.left;
@@ -461,10 +478,13 @@ void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDet
     } else if (e.mods.isAltDown()) {
         if (const auto *track = geometry.trackAt(reader(), e.y))
             geometry.wheelHeight(reader(), track->id, static_cast<int>(w.deltaY * 100));
-    } else if (e.mods.isShiftDown())
+    } else if (e.mods.isShiftDown()) {
         geometry.pan(-w.deltaY * 300);
-    else {
+        followPaused = true; // a sideways scroll pauses Follow (§6.2)
+    } else {
         geometry.pan(-w.deltaX * 300);
+        if (w.deltaX != 0)
+            followPaused = true;
         geometry.scrollY = std::clamp(geometry.scrollY - static_cast<int>(w.deltaY * 300), 0,
                                       std::max(0, geometry.contentHeight(reader()) - 24));
     }
@@ -500,7 +520,10 @@ void TimelineRuler::paint(juce::Graphics &g) {
             g.fillRect(static_cast<int>((q - geo.left) * geo.scale), foot - 2, 1, 1);
     }
 }
-void TimelineRuler::mouseDown(const juce::MouseEvent &e) { last = e.position; }
+void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
+    last = e.position;
+    view.followPaused = true; // a click on the beat-time ruler pauses Follow (§6.2)
+}
 void TimelineRuler::mouseDrag(const juce::MouseEvent &e) {
     auto d = e.position - last;
     view.geometry.pan(-d.x);
@@ -679,6 +702,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
+    view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     if (e.mods.isPopupMenu()) {

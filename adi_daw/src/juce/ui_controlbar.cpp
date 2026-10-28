@@ -160,7 +160,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&signature, "Time Signature", "The project's time signature."},
         {&metronome, "Metronome", "Switches the metronome on and off; it plays to Cue Out."},
         {&quantize, "Quantization Menu", "The global launch quantization (with Session View)."},
-        {&follow, "Follow", "The arrangement follows the playhead."},
+        {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
+                            "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
+                            "(Option+Shift+F on the Mac)."},
         {&position, "Arrangement Position", "Where the playhead is, in bars, beats and sixteenths."},
         {&play, "Play", "Starts playback from the insert marker, or stops it. Space."},
         {&stop, "Stop", "Stops playback."},
@@ -190,8 +192,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     }
     play.onClick = [this] { root_.command(AppCommands::PlayStop); };
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
+    follow.onClick = [this] { root_.command(AppCommands::Follow); };
     for (auto *item : items())
-        if (item != &play && item != &stop)
+        if (item != &play && item != &stop && item != &follow)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -261,6 +264,7 @@ void TransportBar::refresh() {
                          juce::String(sixteenths % 4 + 1));
     }
     play.setToggleState(root_.playing(), juce::dontSendNotification);
+    follow.setToggleState(root_.state().follow, juce::dontSendNotification);
 }
 void TransportBar::paint(juce::Graphics &g) { g.fillAll(look::frame); }
 void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }
