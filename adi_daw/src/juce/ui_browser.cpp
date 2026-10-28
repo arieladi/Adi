@@ -115,7 +115,11 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     setTitle("Browser");
     setTooltip("Live's browser: your sounds, devices, plug-ins and files.");
     setWantsKeyboardFocus(true);
+#if JUCE_MAC
     search.setTextToShowWhenEmpty("Search (Cmd + F)", juce::Colour(0xff5a5a5a));
+#else
+    search.setTextToShowWhenEmpty("Search (Ctrl + F)", juce::Colour(0xff5a5a5a));
+#endif
     search.setTitle("Search");
     search.setFont(look::font(12.5f));
     search.setIndents(8, 4);
