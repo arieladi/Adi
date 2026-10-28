@@ -40,6 +40,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace adi::engine {
@@ -86,6 +87,18 @@ using DeviceChainFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 /// sourceLifetime() token retained by the realised graph (ADR-0151).
 using SourceFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 
+/// Where a send leaves its source (ADR-0203 d3): the node on `trackId`'s
+/// chain -- one of the nodes `devicesFor` gave that track -- that a send at
+/// `tap` reads from, or null for its junction. That is the node whose output
+/// is `tap`, unless the send's own node plays what comes after it: the
+/// session's Post send plays its source's strip, so it reads before the strip.
+using TapFn = std::function<Node*(std::int64_t trackId, Tap tap)>;
+
+/// The node a send plays through, by its routing row (ADR-0203 d3): its
+/// level, pan and switch. Caller-owned and kept across rebuilds, as a strip
+/// is; null refuses the send, named.
+using SendFn = std::function<Node*(std::int64_t routingId)>;
+
 struct RealizeOptions {
     std::int32_t channels = 2;
 
@@ -98,6 +111,17 @@ struct RealizeOptions {
     /// junction, so `inputFor` is unchanged by its presence: everything
     /// that feeds a track, from inside or upstream, meets at one node.
     SourceFn sourcesFor;
+
+    /// Unset means every tap is the chain's tail.
+    TapFn tapFor;
+
+    /// Unset means no send can be made, and each is named.
+    SendFn sendFor;
+
+    /// What a send passes through after its own node, by its routing row:
+    /// a channel half of its own when it enters a summing group (ADR-0174),
+    /// else null. Unset, nothing.
+    SendFn sendTailFor;
 };
 
 /// A live graph and everything it owns.
@@ -149,15 +173,19 @@ public:
     /// on which bus. Node ids are not it -- a new track shifts every id after
     /// it, and every junction is a fresh object per realisation. What the
     /// history on an edge means is "what track A has been sending to track B",
-    /// and that is exactly this key.
+    /// and that is exactly this key -- with what the wire carries (the tail's
+    /// `Node::wireKind`), because a summed child's output into its group is a
+    /// console's, not the track's own, and one must not play as the other.
     struct EdgeKey {
         std::int64_t fromTrack = 0;
         std::int64_t toTrack = 0;
         std::uint8_t bus = 0;
+        std::uint32_t wire = 0;
         friend bool operator<(const EdgeKey& a, const EdgeKey& b) noexcept {
             if (a.fromTrack != b.fromTrack) return a.fromTrack < b.fromTrack;
             if (a.toTrack != b.toTrack) return a.toTrack < b.toTrack;
-            return a.bus < b.bus;
+            if (a.bus != b.bus) return a.bus < b.bus;
+            return a.wire < b.wire;
         }
     };
     struct EdgeRecord {
@@ -174,6 +202,63 @@ public:
         return planEdges_;
     }
 
+    /// An edge INSIDE a track, across rebuilds (ADR-0092 too): a source into
+    /// the junction, the junction into the chain's first node, one chain node
+    /// into the next. Such an edge delays when the node before it reports a
+    /// negative latency -- a strip playing a track delay (ADR-0172) with a
+    /// node after it, as a summed child's channel half is, or a send's node
+    /// playing its source's strip -- or, for a source, when something else
+    /// into the junction arrives later.
+    ///
+    /// Keyed by where the edge LEAVES, because a ring holds what that end
+    /// sent. A chain node has one next node, so its edge onward is `Next` from
+    /// it, whatever takes it now: a summed child's channel half replaced by
+    /// another flavour, a device swapped after it. A source is keyed as an
+    /// edge INTO its track's junction from it. Its end is the caller's node --
+    /// the same object in every graph realised from it, alive while any graph
+    /// holding it runs -- or the junction (null), new each time and so named
+    /// by its track; or, for a node that is new each time too, the name it
+    /// gives itself (`Node::historyName`).
+    ///
+    /// A send's edges (ADR-0203 d3): its tap into its node is a `Send` from
+    /// the tap, named by the routing row, since a tap may feed several sends
+    /// as well as its next node; and its node into the destination's junction
+    /// is an `Into` from the send's node. Into a summing group the send goes
+    /// through a channel half of its own (ADR-0174): `Next` from the send's
+    /// node into the half, and the half into the junction is an `Into` from
+    /// the send's node named by the half's wire (`Node::wireKind`).
+    struct ChainKey {
+        enum class Leg : std::uint8_t {
+            Into,   ///< from a source into the track's junction
+            Next,   ///< from the junction or a chain node to the next node
+            Send,   ///< from a tap into a send's node, named by its routing row
+        };
+        std::int64_t track = 0;
+        Leg leg = Leg::Next;
+        const Node* from = nullptr;   ///< null: the junction, or a named node
+        /// A node's `historyName`, when it has one; for a send's last edge, the
+        /// wire it carries.
+        std::uint64_t name = 0;
+        friend bool operator<(const ChainKey& a, const ChainKey& b) noexcept {
+            if (a.track != b.track) return a.track < b.track;
+            if (a.leg != b.leg) return a.leg < b.leg;
+            if (a.from != b.from) return std::less<const Node*>{}(a.from, b.from);
+            return a.name < b.name;
+        }
+    };
+    struct ChainRecord {
+        ChainKey key;
+        NodeId from = kInvalidNode;
+        NodeId to = kInvalidNode;
+        Bus bus = Bus::Main;
+    };
+
+    /// Every edge realisation made inside a track, SORTED by key, matched
+    /// across a swap the same way as `planEdges`.
+    [[nodiscard]] const std::vector<ChainRecord>& chainEdges() const noexcept {
+        return chainEdges_;
+    }
+
 private:
     friend std::unique_ptr<RealizedGraph> realize(const GraphPlan&,
                                                   const RealizeOptions&);
@@ -181,6 +266,9 @@ private:
     struct Chain {
         NodeId head = kInvalidNode;
         NodeId tail = kInvalidNode;
+        const Node* tailNode = nullptr;   ///< null: the junction is the tail
+        /// The caller's nodes after the junction, in order: where a tap is.
+        std::vector<std::pair<const Node*, NodeId>> nodes;
     };
 
     std::vector<std::shared_ptr<void>> sourceOwners_; // destroyed after graph_
@@ -189,6 +277,7 @@ private:
     std::vector<std::unique_ptr<Node>> owned_;
     std::unordered_map<std::int64_t, Chain> chains_;
     std::vector<EdgeRecord> planEdges_;
+    std::vector<ChainRecord> chainEdges_;
     std::vector<std::string> problems_;
     std::string error_;
     bool ok_ = false;

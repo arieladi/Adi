@@ -703,6 +703,58 @@ void testAHeldNoteIsNotSilence() {
     eqi(eq.calls, passed, "a node that passes notes on does not hold them");
 }
 
+/// Counts the note events it is handed and the note-offs acknowledged to it.
+class NoteProbe final : public Node {
+public:
+    explicit NoteProbe(EventFlow f) : flow_(f) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][io.blockOffset + i] = 0.0f;
+        for (const Event& e : io.events) heard += (e.type == EventType::NoteOn || e.type == EventType::NoteOff) ? 1 : 0;
+    }
+    void noteOffDelivered(const Event&) noexcept override { ++acknowledged; }
+    [[nodiscard]] EventFlow eventFlow() const noexcept override { return flow_; }
+    int heard = 0;
+    int acknowledged = 0;
+private:
+    EventFlow flow_;
+};
+
+void testAStopNodePassesNoNote() {
+    section("ADR-0203 d3 -- EventFlow::Stop: a send carries audio and no note, and plays none");
+
+    // source -> middle -> instrument (the output). The middle is a send's
+    // node when it says Stop.
+    struct Run { int heard, acknowledged; bool held; };
+    auto run = [](EventFlow middle) {
+        NoteProbe source(EventFlow::Through), mid(middle), instrument(EventFlow::Consume);
+        Graph g;
+        const NodeId a = g.addNode(source), b = g.addNode(mid), c = g.addNode(instrument);
+        g.connect(a, b);
+        g.connect(b, c);
+        g.setOutput(c);
+        g.prepare(48000.0, 256);
+        Out o(256);
+        AudioIo io = makeIo(o, 256);
+        Event off = heldNote(EventType::NoteOff, 1, 60);
+        off.frame = 10;
+        g.pushInputEvent(a, heldNote(EventType::NoteOn, 1, 60));
+        g.pushInputEvent(a, off);
+        g.process(io);
+        g.pushInputEvent(a, heldNote(EventType::NoteOn, 2, 64));
+        g.process(io);
+        return Run{instrument.heard, source.acknowledged, mid.heldNotes().any()};
+    };
+    const Run through = run(EventFlow::Through), consume = run(EventFlow::Consume), stop = run(EventFlow::Stop);
+    check(through.heard == 3 && through.acknowledged == 1 && !through.held,
+          "the control, Through: the instrument hears all three, acknowledges the off, the middle holds none");
+    check(consume.heard == 0 && consume.acknowledged == 1 && consume.held,
+          "Consume: the middle plays them -- it holds the open note and acknowledges the off");
+    check(stop.heard == 0, "Stop: nothing after it hears a note");
+    check(!stop.held, "it holds no note awake");
+    eqi(stop.acknowledged, 0, "and acknowledges no note-off: nothing it feeds played the note");
+}
+
 void testHeldNotesTable() {
     section("ADR-0158 -- the held-notes table: bypass, capacity");
 
@@ -2389,6 +2441,7 @@ int main() {
         testATailIsAskedOnceABlock();
         testEventsAreNotSilence();
         testAHeldNoteIsNotSilence();
+        testAStopNodePassesNoNote();
         testHeldNotesTable();
         testTailKeepsRunning();
         testAlwaysProcess();

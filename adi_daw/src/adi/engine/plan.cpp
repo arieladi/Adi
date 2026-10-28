@@ -89,9 +89,13 @@ GraphPlan planGraph(const rows::Model& m) {
 
     // Which tracks have their main output decided explicitly, and how.
     std::map<std::int64_t, PlannedNode::Route> mainDecided;
+    // ADR-0203 d3: the sends, planned after every main and default edge.
+    std::vector<const rows::Routing*> sends;
 
     for (const rows::Routing* r : routes) {
-        if (!r->enabled) continue;
+        // A send switched off is still planned, at its node's gate, so Enable
+        // Send never moves the timing (ADR-0203 d4: nothing toggled retimes).
+        if (!r->enabled && r->kind != "send") continue;
 
         if (r->kind == "vca") {
             // A VCA is a control relationship, not audio. It belongs to the
@@ -105,22 +109,12 @@ GraphPlan planGraph(const rows::Model& m) {
             continue;
         }
         if (r->kind == "send") {
-            // ADR-0072 supersedes ADR-0067. An aux send makes the top-level
-            // graph an arbitrary DAG, and every path through it is somewhere
-            // the compensation can be got wrong. Parallelism now lives inside
-            // a rack or a group, which declares ONE latency upward, so the
-            // graph above it is a linear progression.
-            //
-            // Refused, and SURFACED. Dropping it quietly would rewire
-            // somebody's signal path without telling them -- the failure
-            // ADR-0011 exists to prevent, which does not become acceptable
-            // because the row is a routing row rather than a device. The row
-            // itself is untouched and survives the save (ADR-0072: the format
-            // keeps admitting 'send' so that older files and converter output
-            // still open).
-            plan.problems.push_back("routing#" + std::to_string(r->id) +
-                                    ": aux sends are not planned (ADR-0072); "
-                                    "use a device rack or a group folder");
+            // ADR-0203 d3 reverses ADR-0072: sends and returns play, as Live,
+            // compensated like every other path. Planned in a second pass,
+            // below, so they never come before a main edge into the same
+            // junction (ADR-0056's summation order) and never decide anyone's
+            // main output.
+            sends.push_back(r);
             continue;
         }
 
@@ -196,6 +190,95 @@ GraphPlan planGraph(const rows::Model& m) {
         e.kind = "default";
         plan.edges.push_back(e);
         plan.nodes[byId[t->id]].route = PlannedNode::Route::Default;
+    }
+
+    // --- the sends (ADR-0203 d3) --------------------------------------------
+    //
+    // In row-id order, after everything else. A send leaves its source after
+    // the fader (Post) or before it (Pre); it plays through a node of its own -- level, pan,
+    // switch -- into the destination's junction. Each one that cannot play is
+    // refused AS ITS ROW, named, and the row is kept: a send that would close
+    // a loop loses to the routing already there, the later row losing.
+    for (const rows::Routing* r : sends) {
+        const std::string ref = "routing#" + std::to_string(r->id);
+        // A planned edge's routing id 0 means "not a send", everywhere after
+        // this, so a send row with id 0 would play as a plain route at 0 dB.
+        if (r->id == 0) {
+            plan.problems.push_back(ref + ": a send needs a routing id other than 0, which the engine "
+                                          "keeps for a route that is not a send; it is not planned");
+            continue;
+        }
+        if (r->srcKind != "track" || r->dstKind != "track") {
+            plan.problems.push_back(ref + ": a send's ends are tracks, not '" + r->srcKind + "'/'" +
+                                    r->dstKind + "'");
+            continue;
+        }
+        const auto from = byId.find(r->srcId);
+        const auto to = byId.find(r->dstId);
+        if (from == byId.end() || to == byId.end()) {
+            plan.problems.push_back(ref + ": names a track that is not there");
+            continue;
+        }
+        const PlannedKind src = plan.nodes[from->second].kind, dst = plan.nodes[to->second].kind;
+        if (src == PlannedKind::Vca || dst == PlannedKind::Vca) {
+            plan.problems.push_back(ref + ": a VCA carries no audio, so it neither sends nor takes one");
+            continue;
+        }
+        if (dst == PlannedKind::Master) {
+            plan.problems.push_back(ref + ": a send into the master is refused; the track's own output is there");
+            continue;
+        }
+        if (src == PlannedKind::Master) {
+            plan.problems.push_back(ref + ": the master has no sends");
+            continue;
+        }
+        if (r->srcId == r->dstId) {
+            // Only a return may feed itself (ADR-0203 d3); the loop check
+            // below cannot see a loop of one, so it is refused here.
+            if (src == PlannedKind::Return)
+                plan.problems.push_back(ref + ": a return sending to itself (Live's feedback loop) is not played yet");
+            else
+                plan.problems.push_back(ref + ": this send would close a loop, a track into itself; only a "
+                                              "return may feed itself, so it is not planned");
+            continue;
+        }
+        if (src == PlannedKind::Return) {
+            plan.problems.push_back(ref + ": a return's own sends (Enable Send) are not played yet");
+            continue;
+        }
+        // Would it close a loop? Only if its destination already reaches its
+        // source, over everything planned so far.
+        {
+            std::vector<bool> seen(plan.nodes.size(), false);
+            std::vector<std::size_t> todo{to->second};
+            seen[to->second] = true;
+            bool loops = false;
+            while (!todo.empty() && !loops) {
+                const std::size_t i = todo.back();
+                todo.pop_back();
+                for (const PlannedEdge& e : plan.edges)
+                    if (e.from == i && e.to < seen.size() && !seen[e.to]) {
+                        if (e.to == from->second) loops = true;
+                        seen[e.to] = true;
+                        todo.push_back(e.to);
+                    }
+            }
+            if (loops) {
+                plan.problems.push_back(ref + ": this send would close a loop with the routing already "
+                                              "there, so it is not planned");
+                continue;
+            }
+        }
+        PlannedEdge e;
+        e.from = from->second;
+        e.to = to->second;
+        e.bus = Bus::Main;
+        e.kind = "send";
+        e.routingId = r->id;
+        // Pre leaves after the effects and before the strip: the source's
+        // fader, pan and track delay do not reach it (ADR-0203 d3).
+        e.tap = r->preFader ? Tap::PostFx : Tap::PostFader;
+        plan.edges.push_back(e);
     }
 
     // --- cycles -------------------------------------------------------------
