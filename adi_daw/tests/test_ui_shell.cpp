@@ -285,7 +285,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
     };
     render("adi-parity.png");
-    if (folder != nullptr) {
+    if (folder.isNotEmpty()) {
         ChannelEqView eqView(root);
         SnapshotReader eqReader(view.current());
         eqView.frame(eqReader);
