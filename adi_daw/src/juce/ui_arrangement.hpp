@@ -149,7 +149,10 @@ class ArrangementView final : public juce::Component {
     bool command(int);
     void fit(bool selection);
     void wheel(const juce::MouseEvent &, const juce::MouseWheelDetails &);
-    void select(int x, int y);
+    // Selects at a point: the clip there, or the insert marker on the grid (§6.10).
+    void select(int x, int y, bool snapToGrid = true);
+    // Whether a gesture with these keys snaps to the grid.
+    bool snaps(const juce::ModifierKeys &) const noexcept;
     // Select one clip by identity: the accessible children's press action.
     void selectClip(std::int64_t track, std::int64_t clip);
     void locate();
