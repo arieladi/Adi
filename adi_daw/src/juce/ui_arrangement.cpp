@@ -405,6 +405,7 @@ void ArrangementView::changed() {
     state.pixelsPerQuarter = geometry.scale;
     state.laneHeight = geometry.height;
     state.laneHeights = geometry.heights;
+    state.largeTracks = geometry.largeTracks;
     state.gridSnap = geometry.grid.snap;
     state.gridFixed = geometry.grid.fixed;
     state.gridTriplet = geometry.grid.triplet;
@@ -442,9 +443,8 @@ bool ArrangementView::command(int id) {
         return true;
     case AppCommands::OptimizeHeight: {
         const int count = static_cast<int>(reader().tracks().size());
-        geometry.height = std::clamp(canvas.getHeight() / std::max(1, count), 24, 512);
+        geometry.resizeTrack(0, canvas.getHeight() / std::max(1, count), true);
         geometry.scrollY = 0;
-        geometry.heights.clear();
         break;
     }
     case AppCommands::GoStart:
@@ -485,6 +485,10 @@ bool ArrangementView::command(int id) {
         if (!geometry.grid.fixed)
             geometry.grid.fixedQuarters = geometry.plainGridQuarters();
         geometry.grid.fixed = !geometry.grid.fixed;
+        break;
+    case AppCommands::LargeTracks:
+        // Bitwig's Use Large Track Height: every track at its own height, or at half of it.
+        geometry.largeTracks = !geometry.largeTracks;
         break;
     case AppCommands::GrowTracks:
     case AppCommands::ShrinkTracks:
