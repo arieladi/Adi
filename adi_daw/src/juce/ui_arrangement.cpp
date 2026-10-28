@@ -417,6 +417,23 @@ bool ArrangementView::command(int id) {
         geometry.selection.marked = true;
         locate();
         break;
+    case AppCommands::InsertMarkerToPlayhead: {
+        // Ctrl/Cmd+Shift+Space (§42.16): the insert marker, a point, where the playhead is;
+        // Space then plays from there.
+        const auto at = root.timelineTick();
+        geometry.selection.insert = geometry.selection.start = geometry.selection.end = at;
+        geometry.selection.clip = 0;
+        geometry.selection.marked = true;
+        break;
+    }
+    case AppCommands::GrowTracks:
+    case AppCommands::ShrinkTracks:
+        // Alt/Option + and - (§42.16): the selected track, or, with a time selection, every
+        // track with selected content, as Alt+wheel. The step is provisional: Live's is to
+        // be measured.
+        geometry.wheelHeight(reader(), geometry.selection.track,
+                             id == AppCommands::GrowTracks ? kHeightStep : -kHeightStep);
+        break;
     default:
         return false;
     }

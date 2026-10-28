@@ -1113,6 +1113,27 @@ int main(int argc, char **argv) {
             document->process(io);
             integrated.frame();
             check(!arrangement.followPaused, "stopping playback starts Follow again, for when it is on");
+            // §42.16's keys that need no op: the insert marker to the playhead, and Alt/Option
+            // + and - on the selected track's height.
+            check(integrated.timelineTick() > 0 &&
+                      integrated.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey, cmd | juce::ModifierKeys::shiftModifier, 0)) &&
+                      arrangement.geometry.selection.insert == integrated.timelineTick() &&
+                      arrangement.geometry.selection.marked && arrangement.geometry.selection.clip == 0 &&
+                      arrangement.geometry.selection.start == arrangement.geometry.selection.end,
+                  "Ctrl/Cmd+Shift+Space puts the insert marker where the playhead is");
+            const auto heightTrack = integrated.reader().tracks().front()->id;
+            arrangement.geometry.selection.track = heightTrack;
+            const int heightBefore = arrangement.geometry.heightFor(heightTrack);
+            check(integrated.keyPressed(juce::KeyPress('=', alt, 0)) &&
+                      arrangement.geometry.heightFor(heightTrack) == heightBefore + ArrangementView::kHeightStep &&
+                      document->views().load("main").laneHeights.at(heightTrack) ==
+                          heightBefore + ArrangementView::kHeightStep,
+                  "Alt/Option + makes the selected track taller, kept with the window");
+            check(integrated.keyPressed(juce::KeyPress('-', alt, 0)) &&
+                      arrangement.geometry.heightFor(heightTrack) == heightBefore,
+                  "and Alt/Option - shorter again");
+            arrangement.geometry.selection = selectionBefore;
+            integrated.publishSelection();
             arrangement.geometry.left = viewBefore.left;
             arrangement.geometry.scale = viewBefore.scale;
             arrangement.changed();
