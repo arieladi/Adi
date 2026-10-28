@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <new>
 #include <thread>
+#include <vector>
 namespace {
 thread_local bool audit = false;
 std::atomic<unsigned> allocations{0};
@@ -594,6 +595,45 @@ int main(int argc, char **argv) {
                                                        persistence, session, "quiet"),
                     commands, false);
     check(quiet.tooltips() == nullptr, "the setting turns them off for new windows");
+    // Live's menu bar in Live's order, each menu listing only the commands ADI has (§42.28).
+    {
+        auto *bar = window.menu();
+        const auto names = bar->getMenuBarNames();
+        auto items = [&](const char *name) {
+            std::vector<int> ids;
+            const auto menu = bar->getMenuForIndex(names.indexOf(name), name);
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                ids.push_back(it.getItem().isSeparator ? 0 : it.getItem().itemID);
+            return ids;
+        };
+        using C = AppCommands;
+#if JUCE_MAC
+        check(names == juce::StringArray{"File", "Edit", "Create", "View"},
+              "the Mac's menu bar: File, Edit, Create, View");
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
+                                                C::TakeSnapshot, C::SaveAs},
+              "the File menu; Quit is the application menu's on the Mac");
+#else
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options"},
+              "the menu bar: File, Edit, Create, View, Options");
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
+                                                C::TakeSnapshot, C::SaveAs, 0, C::Quit},
+              "the File menu ends with Quit and no longer holds Settings");
+        check(items("Options") == std::vector<int>{C::Settings},
+              "Settings is the Options menu's off the Mac (§2.3)");
+#endif
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
+                                                C::RenameTrack},
+              "the Edit menu deletes the selected track, before Rename (§18.2)");
+        check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack},
+              "the Create menu inserts tracks");
+        check(!names.contains("Navigate") && !names.contains("Help"),
+              "a menu with no command yet is left out");
+        const auto appMenu = applicationMenu(commands);
+        juce::PopupMenu::MenuItemIterator first(appMenu);
+        check(first.next() && first.getItem().itemID == C::Settings && !first.next(),
+              "the Mac's application menu holds Settings, as Live's (§2.3)");
+    }
     // Step 7.2's application half (#198): a real document, its engine and its keys.
     std::string documentError;
     auto document = ProjectDocument::open(temp.path() / "integrated.adi", true, {}, documentError);
