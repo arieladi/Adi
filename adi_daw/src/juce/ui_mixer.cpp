@@ -417,7 +417,20 @@ void MixerStrip::panMenu() {
     m.addItem(2, "Split Stereo Pan", false, false);
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&pan));
 }
-MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {}
+MixerPanel::MixerPanel(AdiRootComponent &r, bool vertical) : root(r), vertical_(vertical) {
+    if (vertical_)
+        return;
+    addAndMakeVisible(swapToggle);
+    swapToggle.setTitle("Swap Side Panels");
+    swapToggle.setTooltip("Swaps the browser and the track controls between the window's sides, for "
+                          "Bitwig and Cubase hands. Also in the View menu.");
+    swapToggle.setClickingTogglesState(false);
+    // A view command, reached from the keyboard through the View menu; it takes no focus, so a
+    // row hidden while it has the focus hands it to another row, never to this.
+    swapToggle.setWantsKeyboardFocus(false);
+    swapToggle.setMouseClickGrabsKeyboardFocus(false);
+    swapToggle.onClick = [this] { root.command(AppCommands::SwapPanels); };
+}
 bool MixerPanel::submit(const std::string &op, Payload payload, const char *label) {
     return root.submitEdit(op, std::move(payload), label);
 }
@@ -569,6 +582,10 @@ void MixerPanel::place() {
     for (std::size_t i = used; i < strips_.size(); ++i)
         if (!strips_[i]->dragging())
             strips_[i]->setVisible(false);
+    // In the ruler's band, below H and W; above any row scrolled partly into the band.
+    swapToggle.setBounds(6, root.arrangement.overviewHeight() + 6, 44, 16);
+    if (getIndexOfChildComponent(&swapToggle) != getNumChildComponents() - 1)
+        swapToggle.toFront(false);
 }
 void MixerPanel::frame(bool changed) noexcept {
     if (changed)
