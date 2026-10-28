@@ -6,11 +6,13 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     : device(d), parameter(r.id), strip(s) {
     addAndMakeVisible(name);
     addAndMakeVisible(value);
-    name.setFont(juce::FontOptions(11.f));
-    value.setFont(juce::FontOptions(10.f));
+    name.setFont(look::font(12.5f));
+    value.setFont(look::font(12.5f));
+    name.setJustificationType(juce::Justification::centred);
+    value.setJustificationType(juce::Justification::centred);
     name.setInterceptsMouseClicks(false, false);
     value.setInterceptsMouseClicks(false, false);
-    slider.setSliderStyle(juce::Slider::LinearHorizontal);
+    slider.setSliderStyle(juce::Slider::RotaryVerticalDrag);
     slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
     slider.setRange(0, 1, 0);
     slider.onDragStart = [this] { gesture(engine::ParamEventKind::Begin, slider.getValue()); };
@@ -65,27 +67,40 @@ void ParameterControl::present(const panel::Record &r) {
                        juce::dontSendNotification);
 }
 void ParameterControl::resized() {
-    name.setBounds(2, 0, getWidth() - 12, 14);
-    slider.setBounds(2, 14, getWidth() - 4, 18);
-    toggle.setBounds(2, 14, getWidth() - 4, 18);
-    menu.setBounds(2, 14, getWidth() - 4, 18);
-    value.setBounds(2, 32, getWidth() - 4, 14);
+    // Live's knob column: the name, the knob, the value under it.
+    name.setBounds(0, 0, getWidth(), 14);
+    slider.setBounds(getWidth() / 2 - 14, 13, 28, 28);
+    toggle.setBounds(getWidth() / 2 - 14, 19, 28, 14);
+    menu.setBounds(2, 19, getWidth() - 4, 14);
+    value.setBounds(0, 39, getWidth(), 14);
 }
 void ParameterControl::paint(juce::Graphics &g) {
     if (!record)
         return;
     // Automation's state, as Live marks it: red when automated, orange when overridden.
-    g.setColour(record->overridden  ? juce::Colours::orange
-                : record->automated ? juce::Colours::red
-                                    : juce::Colour(0xff59616e));
-    g.fillEllipse(static_cast<float>(getWidth() - 8), 4.f, 5.f, 5.f);
+    if (record->overridden || record->automated) {
+        g.setColour(record->overridden ? juce::Colours::orange : juce::Colours::red);
+        g.fillEllipse(static_cast<float>(getWidth() - 7), 4.f, 5.f, 5.f);
+    }
     if (record->driven) {
-        g.setColour(juce::Colours::cyan);
+        g.setColour(look::value);
         g.fillRect(2, getHeight() - 2, static_cast<int>((getWidth() - 4) * record->playing), 2);
     }
 }
+void ActivatorButton::paintButton(juce::Graphics &g, bool over, bool) {
+    const auto r = getLocalBounds().toFloat().withSizeKeepingCentre(10, 10);
+    g.setColour(getToggleState() ? look::accent : look::button);
+    g.fillEllipse(r);
+    g.setColour(over ? look::text : look::outline);
+    g.drawEllipse(r.reduced(0.5f), 1.f);
+}
 DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     : id(d.id), strip(s) {
+    // The title is the bar's text, not a box (Live's device title).
+    title.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    title.getProperties().set("live.left", true);
+    configureButton.setColour(juce::TextButton::buttonColourId, look::button);
+    configureButton.getProperties().set("live.small", true);
     setWantsKeyboardFocus(true);
     addAndMakeVisible(title);
     addAndMakeVisible(enabled);
@@ -140,41 +155,52 @@ void DevicePanelView::present(const DevicePanelData &d) {
 int DevicePanelView::widthFor(int height) const noexcept {
     if (strip.folded(id))
         return kFoldedWidth;
-    const int top = kTitleHeight + (configuring ? 26 : 4);
-    const int rows = std::max(1, (height - top - 4) / ParameterControl::kHeight);
+    const int top = kTitleHeight + (configuring ? 26 : 2);
+    const int rows = std::max(1, (height - top - 2) / ParameterControl::kHeight);
     const int columns = static_cast<int>((controls.size() + static_cast<std::size_t>(rows) - 1) /
                                          static_cast<std::size_t>(rows));
-    return std::max(168, columns * ParameterControl::kWidth + 8);
+    // Wide enough for the title bar's switches, a name and Configure.
+    return std::max(150, columns * ParameterControl::kWidth + 12);
 }
 void DevicePanelView::resized() {
     const bool isFolded = strip.folded(id);
-    enabled.setBounds(2, 2, 20, 18);
+    enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
     configureButton.setVisible(!isFolded);
-    title.setBounds(24, 2, std::max(0, getWidth() - 24 - 70), 18);
-    configureButton.setBounds(getWidth() - 68, 2, 66, 18);
+    title.setBounds(32, 1, std::max(0, getWidth() - 32 - 58), 15);
+    configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     search.setVisible(!isFolded && configuring);
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
-    const int top = kTitleHeight + (configuring ? 26 : 4);
-    const int rows = std::max(1, (getHeight() - top - 4) / ParameterControl::kHeight);
+    const int top = kTitleHeight + (configuring ? 26 : 2);
+    const int rows = std::max(1, (getHeight() - top - 2) / ParameterControl::kHeight);
     for (std::size_t i = 0; i < controls.size(); ++i) {
         const int column = static_cast<int>(i) / rows, row = static_cast<int>(i) % rows;
         controls[i]->setVisible(!isFolded);
-        controls[i]->setBounds(4 + column * ParameterControl::kWidth,
+        controls[i]->setBounds(6 + column * ParameterControl::kWidth,
                                top + row * ParameterControl::kHeight, ParameterControl::kWidth - 4,
                                ParameterControl::kHeight);
     }
 }
 void DevicePanelView::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff2a303a));
-    g.setColour(juce::Colour(0xff353d49));
+    // Live's device: grey, its title bar and a 2 pt edge lighter; blue-grey when the
+    // device has the focus, as Live marks the selected device.
+    const auto edge = hasKeyboardFocus(true) ? juce::Colour(0xffa9b8c5) : look::field;
+    g.fillAll(look::panel);
+    g.setColour(edge);
     g.fillRect(0, 0, getWidth(), kTitleHeight);
-    g.setColour(juce::Colour(0xff7e8c9f));
-    g.drawRect(getLocalBounds());
+    g.drawRect(getLocalBounds(), 2);
+    // Live's fold switch beside the activator.
+    const auto fold = foldSwitch().toFloat();
+    g.setColour(look::button);
+    g.fillEllipse(fold);
+    g.setColour(look::text);
+    g.drawEllipse(fold.reduced(0.5f), 1.f);
+    look::triangle(g, fold.reduced(3.f).translated(0.5f, 0),
+                   strip.folded(id) ? 0.f : juce::MathConstants<float>::halfPi, look::text);
     if (strip.folded(id) && data) {
         // A folded device is a narrow bar with its name running up it, as Live's.
-        g.setColour(juce::Colour(0xffe0e5ed));
-        g.setFont(juce::FontOptions(12.f));
+        g.setColour(look::text);
+        g.setFont(look::font(11.5f));
         juce::Graphics::ScopedSaveState saved(g);
         g.addTransform(juce::AffineTransform::rotation(-juce::MathConstants<float>::halfPi, 0,
                                                        static_cast<float>(getHeight())));
@@ -182,7 +208,7 @@ void DevicePanelView::paint(juce::Graphics &g) {
                    std::max(0, getHeight() - kTitleHeight - 4), kFoldedWidth - 8,
                    juce::Justification::centredLeft);
     } else if (data && data->resolved.showsConfigureHint) {
-        g.setColour(juce::Colours::white);
+        g.setColour(look::text);
         g.drawFittedText("Choose parameters with Configure", 8, kTitleHeight + 6, getWidth() - 16,
                          36, juce::Justification::centred, 2);
     }
@@ -195,7 +221,10 @@ bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu() && (e.eventComponent == &title || e.eventComponent == this))
         contextMenu(e.getScreenPosition());
+    else if (e.eventComponent == this && foldSwitch().contains(e.getPosition()))
+        strip.fold(id);
 }
+juce::Rectangle<int> DevicePanelView::foldSwitch() const noexcept { return {19, 3, 11, 11}; }
 void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
     if (e.eventComponent == &title || e.y < kTitleHeight)
         strip.fold(id);
@@ -277,8 +306,9 @@ void DevicePanelView::configure() {
 DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     addAndMakeVisible(scroll);
     scroll.setViewedComponent(&content, false);
-    // Devices run left to right; the strip scrolls sideways, never down (Live's Device View).
-    scroll.setScrollBarsShown(false, true);
+    // Devices run left to right; the strip scrolls sideways, never down, and shows no
+    // scroll bar (Live's Device View).
+    scroll.setScrollBarsShown(false, false, false, true);
 }
 void DeviceChainStrip::frame(std::int64_t track) {
     auto next = publication ? publication() : nullptr;
@@ -314,23 +344,32 @@ void DeviceChainStrip::frame(std::int64_t track) {
 }
 void DeviceChainStrip::resized() {
     scroll.setBounds(getLocalBounds());
-    const int h = std::max(0, getHeight() - scroll.getScrollBarThickness());
-    int x = 0;
+    const int h = getHeight();
+    // Live's chain: devices 11 pt apart, a margin before the first.
+    int x = 10;
     for (auto &p : panels) {
         const int width = p->widthFor(h);
         p->setBounds(x, 0, width, h);
-        x += width + 4;
+        x += width + 11;
     }
+    end_ = x;
     content.setSize(std::max(x, getWidth()), h);
 }
 void DeviceChainStrip::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff20232b));
-    if (panels.empty()) {
-        g.setColour(juce::Colour(0xff8b95a3));
-        g.setFont(juce::FontOptions(13.f));
-        g.drawText("Drop an instrument or effect here", 12, 12, 280, 22,
-                   juce::Justification::centredLeft);
+    g.fillAll(look::panel);
+    // Between devices, Live's two dark marks; after the last, where the next one goes.
+    g.setColour(look::display);
+    for (std::size_t i = 1; i < panels.size(); ++i) {
+        const int x = panels[i]->getX() - scroll.getViewPositionX() - 8;
+        const int y = getHeight() / 2 - 12;
+        g.fillRect(x, y, 2, 24);
+        g.fillRect(x + 3, y, 2, 24);
     }
+    const int from = std::max(0, end_ - scroll.getViewPositionX());
+    g.setColour(look::text);
+    g.setFont(look::font(11.5f));
+    g.drawText("Drop Audio Effects Here", from, 0, std::max(0, getWidth() - from), getHeight(),
+               juce::Justification::centred);
 }
 void DeviceChainStrip::fold(std::int64_t id) {
     auto &set = root.state().foldedDevices;

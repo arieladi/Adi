@@ -21,7 +21,8 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     void present(const panel::Record &);
     void resized() override;
     void paint(juce::Graphics &) override;
-    static constexpr int kWidth = 112, kHeight = 46;
+    // Live's device column at 100 %: the name, a knob, the value under it.
+    static constexpr int kWidth = 58, kHeight = 54;
     std::int64_t device;
     std::string parameter;
     juce::Slider slider;
@@ -33,6 +34,12 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     DeviceChainStrip &strip;
     const panel::Record *record = nullptr;
     juce::Label name, value;
+};
+// The Device Activator: Live's round switch at the left of a device's title bar,
+// orange when the device is on.
+class ActivatorButton final : public juce::ToggleButton {
+  public:
+    void paintButton(juce::Graphics &, bool over, bool down) override;
 };
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
@@ -47,12 +54,14 @@ class DevicePanelView final : public juce::Component {
     void mouseDoubleClick(const juce::MouseEvent &) override;
     // The width this device takes at a given strip height.
     int widthFor(int height) const noexcept;
+    // Live's round fold switch in the title bar, beside the activator.
+    juce::Rectangle<int> foldSwitch() const noexcept;
     void configure();
     void contextMenu(juce::Point<int>);
-    static constexpr int kTitleHeight = 22, kFoldedWidth = 26;
+    static constexpr int kTitleHeight = 17, kFoldedWidth = 22;
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
-    juce::ToggleButton enabled;
+    ActivatorButton enabled;
     juce::TextEditor search;
     std::vector<std::unique_ptr<ParameterControl>> controls;
     bool configuring = false;
@@ -79,6 +88,7 @@ class DeviceChainStrip final : public juce::Component {
 
   private:
     std::int64_t selectedTrack = -1;
+    int end_ = 0; // where the chain ends, in the content's pixels
     juce::Viewport scroll;
     juce::Component content;
     std::shared_ptr<const ParameterPublication> presented;

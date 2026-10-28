@@ -6,6 +6,9 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_browser.hpp"
+#include "ui_controlbar.hpp"
+#include "ui_look.hpp"
 #include "ui_devices.hpp"
 #include "ui_mixer.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -77,16 +80,6 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
 };
-class TransportBar final : public juce::Component {
-  public:
-    explicit TransportBar(AdiRootComponent &);
-    void paint(juce::Graphics &) override;
-    void resized() override;
-    juce::TextButton play{"Play / stop"}, stop{"Stop"};
-
-  private:
-    AdiRootComponent &root_;
-};
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
 class StatusBar final : public juce::Component {
@@ -94,7 +87,7 @@ class StatusBar final : public juce::Component {
     explicit StatusBar(AdiRootComponent &);
     void paint(juce::Graphics &) override;
     void resized() override;
-    juce::TextButton infoToggle{"?"}, mixerToggle{"Mixer"};
+    juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
 
   private:
     AdiRootComponent &root_;
@@ -121,6 +114,9 @@ class AdiRootComponent final : public juce::Component {
     bool persist();
     // A message for the Status Bar from outside the root (the application's commands).
     void say(std::string message);
+    // What the Status Bar says when there is no message: Live's line for the insert
+    // marker or the time selection.
+    juce::String selectionText() const;
     bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
     // What Live's Edit menu shows: "Undo" and the step's own label.
     std::string undoTitle(bool redo) const;
@@ -151,6 +147,7 @@ class AdiRootComponent final : public juce::Component {
     TransportBar transport;
     StatusBar status;
     juce::TextButton aiTab{"AI"};
+    BrowserPanel browser{*this};
     ArrangementView arrangement;
     DeviceChainStrip devices;
     DockResizer dockResizer;

@@ -134,10 +134,16 @@ class ArrangementPlayhead final : public juce::Component {
     ArrangementPlayhead() { setInterceptsMouseClicks(false, false); }
     void paint(juce::Graphics &g) override { g.fillAll(juce::Colour(0xffffd66b)); }
 };
+// The Overview is the root's child, not the view's: Live draws it across the track
+// headers as well, up to the H and W buttons.
 class ArrangementView final : public juce::Component {
   public:
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
+    void paint(juce::Graphics &) override;
+    // A track's colour by its place, as Live's auto-assigned colours (the snapshot does
+    // not carry a track's own colour yet: window log, N6).
+    juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
     void changed();
     bool command(int);
@@ -150,10 +156,14 @@ class ArrangementView final : public juce::Component {
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);
     const SnapshotReader &reader() const;
-    static constexpr int kOverviewHeight = 16, kRulerHeight = 28, kScrubHeight = 14;
-    static constexpr int kHeaderWidth = 128;
+    // Live 11's measures at 100 % (2026-10-27): the Overview with its margin, the beat
+    // ruler with its numbers along its foot, the locator band, a dark gap, then the
+    // lanes; the time ruler under them; a margin left of the time; the track header's
+    // name column with the dark rule before it.
+    static constexpr int kOverviewHeight = 20, kRulerHeight = 29, kScrubHeight = 24;
+    static constexpr int kHeaderWidth = 95, kTimeRulerHeight = 18, kLaneGap = 7, kLeftMargin = 4;
     // Where the lanes begin: below the Overview, the ruler and the scrub area.
-    static constexpr int kTopHeight = kOverviewHeight + kRulerHeight + kScrubHeight;
+    static constexpr int kTopHeight = kOverviewHeight + kRulerHeight + kScrubHeight + kLaneGap;
     ArrangementGeometry geometry;
     AdiRootComponent &root;
     ArrangementOverview overview;
