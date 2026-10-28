@@ -48,6 +48,41 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, later still — Alt and a menu's letter [#276](https://github.com/arieladi/Adi/pull/276) `window/menu-keys`
+
+**#276, stacked on #275** (parity-7.2-application row 13, new). Online §42.28: on Windows, Alt and
+a menu's first letter opens that menu.
+- Off the Mac, the window's key listener asks `menuForKey` which menu the key names, and opens
+  it in the menu bar. JUCE's menus already take the arrows (through a menu and on to its
+  neighbours) and Enter.
+- Only Alt alone counts. Navigate's Alt+digit keys are untouched.
+- On the Mac, Live's equivalent is Cmd+? menu search. macOS puts it in an application's Help
+  menu, which ADI does not have yet, so row 13 is open there.
+
+**Seen in the app itself**, the first time this lane has driven the app on Linux. ADI ran under
+`Xvfb` with keys sent by `xdotool` and captures by ImageMagick's `import`, with `HOME` in the
+scratchpad and the project from `adi_ui_document_tests --fixture`:
+- Alt+E opens Edit (Undo, Redo, Delete Track, Rename); then Right opens Create.
+- Alt+N shows Navigate's four entries with their keys.
+- Alt+0 rings Link; Alt+5 then Down twice rings the sidebar and selects Sounds.
+
+This is a cheap way to check, without the Mac, what a peerless test cannot (popups, real
+focus). The captures stay in the session's scratchpad; nothing is committed.
+
+Checks: shell 316, document 38, window state 48; `test_all.sh` 8265 across 97 suites PASS; zero
+warnings; the shadow sweep is clean.
+
+**CI:** #274 is green on Linux, Windows' GUI shell and all three GUI-shell legs, the Mac's
+included, so the Mac-only menu expectations hold; its MSVC and macOS core legs were still
+running. #275 had just started.
+
+**Where to resume:** `window/menu-keys` (#276) is the tip. The next piece the window can finish
+alone: Ctrl/Cmd+F to the browser's search (§42.22, whose field already says so), then the
+Mixer's keyboard (Alt+Shift+M, §42.16; Tab and Ctrl/Option+Tab between a track's controls,
+§41.4.1.2).
+
+---
+
 ## 2026-10-28, cloud, later — Live's Navigate menu [#275](https://github.com/arieladi/Adi/pull/275) `window/navigate-menu`
 
 **#275, stacked on #274** (parity-7.2-shell rows 18 and 19, parity-7.4-devices row 15). Live 12's
@@ -75,8 +110,7 @@ zero warnings; the shadow sweep is clean (it caught a shadowed `alt` in the new 
 leaves a parent, not when it moves between the parent's children. So the control bar learns
 which control had the focus from each item, not from its own callback.
 
-**Where to resume:** `window/navigate-menu` (#275) is the tip. Next is Live's Alt+letter that
-opens a menu on Windows (§42.28).
+**Where to resume** (superseded by the entry above): `window/navigate-menu` (#275) was the tip.
 
 ---
 
