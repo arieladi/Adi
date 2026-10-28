@@ -49,6 +49,47 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, last — the Mixer from the keyboard [#283](https://github.com/arieladi/Adi/pull/283) `window/mixer-keys`
+
+**#283, stacked on #282** (parity-7.6-mixer row 16, new; parity-7.2-shell row 21).
+- **Move Focus to Mixer, Alt/Option+Shift+M (§42.16):** the selected track's Track Activator. It
+  uses the Mixer View when that is open, else the track controls, shown first if hidden.
+- **Next and Previous Neighbor (§41.4.1.2):** in the Navigate menu, on Ctrl+Tab and
+  Ctrl+Shift+Tab (Option on the Mac). They move to the same switch on the next or previous
+  track: Activator, Solo, Arm, ADI-Q or ADI-L.
+- A click on a mixer switch no longer takes the keyboard focus. So a focused switch is always
+  the keyboard's, and the Live look rings it (`live.focusRing`).
+- **Open:** volume and pan take no keyboard focus. Value keys wait for win's ruling on how a
+  non-parameter edit coalesces (parity-7.6 row 3). A neighbour scrolled out of the track
+  controls is not brought into view.
+
+Checks: shell 345, document 38, window state 49; `test_all.sh` 8266 across 97 suites PASS; zero
+warnings.
+
+**Caught before push:**
+- The shadow sweep found a lambda's `b` hiding the test's second root `b`.
+- A segfault in the test itself: changing the selected track rebuilt the device strip under a
+  later check's reference to `panels[0]->controls`. The mixer checks now leave the selection
+  alone. **Lesson:** in `test_ui_shell.cpp`, the integrated root's selection is load-bearing for
+  the device checks after it.
+
+**Where to resume:** `window/mixer-keys` (#283) is the tip of the stack, which runs #246 → #283.
+First read CI on #274 to #283; at 07:29Z there were no failures and the macOS legs were queued.
+What the window can still do alone:
+1. **The Audio page's Channel Configuration** (parity-settings row 7). Its Input and Output
+   Config dialogs are a new window, so their pictures go to the director, rendered through
+   `ADI_UI_PARITY`, before more is built on them.
+2. **A mixer neighbour scrolled out of view** brought into view, as Live's.
+
+Everything else open waits on other lanes (N1 to N19) or on win:
+- parity-7.6 row 3, the coalescing ruling;
+- N14, the registry's pages;
+- Wrap Tab Navigation's setting.
+
+Phase C's window parts wait for N17.
+
+---
+
 ## 2026-10-28, cloud, night, later — Live's arrangement keys [#282](https://github.com/arieladi/Adi/pull/282) `window/arrangement-keys`
 
 **#282, stacked on #281** (parity-7.3-arrangement rows 24 and 25, new). Two rows of §42.16 that
@@ -77,16 +118,9 @@ macOS core legs wait 30 to 50 minutes for runners; #281 and #282 had just starte
 | #280 | `window/tab-focus` | Use Tab Key to Move Focus, off by default |
 | #281 | `window/follow` | Live's Follow |
 | #282 | `window/arrangement-keys` | insert marker to playhead; Alt +/- track heights |
+| #283 | `window/mixer-keys` | Move Focus to Mixer; Next and Previous Neighbor (added after this entry) |
 
-**Where to resume:** `window/arrangement-keys` (#282) is the tip. What the window can still do
-alone:
-- **The Mixer's keyboard:** Alt/Option+Shift+M to the selected track's row; Next and Previous
-  Neighbor (Ctrl/Option+Tab) in the Navigate menu; a ring on its switches. Keys that change a
-  value wait for win's ruling on how a non-parameter edit coalesces (parity-7.6 row 3).
-- **The Audio page's Channel Configuration** (parity-settings row 7). Its Input and Output Config
-  dialogs are a new window, so their pictures go to the director before more is built on them.
-
-Phase C's window parts still wait for N17.
+**Where to resume** (superseded by the entry above): `window/arrangement-keys` (#282) was the tip.
 
 ---
 
