@@ -114,6 +114,7 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
                 {"Add Folder...", AddFolder}};
     setTitle("Browser");
     setTooltip("Live's browser: your sounds, devices, plug-ins and files.");
+    setWantsKeyboardFocus(true);
     search.setTextToShowWhenEmpty("Search (Cmd + F)", juce::Colour(0xff5a5a5a));
     search.setTitle("Search");
     search.setFont(look::font(12.5f));
@@ -180,6 +181,10 @@ void BrowserPanel::paint(juce::Graphics &g) {
             y += kRowHeight;
         }
     }
+    if (ring_) {
+        g.setColour(look::accent);
+        g.drawRect(sidebarArea_, 1);
+    }
     // The content pane's header, as Live's list.
     const juce::Rectangle<int> header(contentArea_.getX(), contentArea_.getY(), contentArea_.getWidth(), 19);
     g.setColour(look::columnHead);
@@ -200,14 +205,35 @@ void BrowserPanel::paint(juce::Graphics &g) {
                   2.f);
 }
 void BrowserPanel::mouseDown(const juce::MouseEvent &e) {
-    if (!sidebarArea_.contains(e.getPosition()))
-        return;
-    const int i = (e.y - sidebarArea_.getY() - 1) / kRowHeight;
+    if (sidebarArea_.contains(e.getPosition()))
+        choose((e.y - sidebarArea_.getY() - 1) / kRowHeight);
+}
+void BrowserPanel::choose(int i) {
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
         repaint();
         // The content pane is the browser's next piece (LANES §3b item 2).
         root_.say((sidebar_[static_cast<std::size_t>(i)].name + " is not listed yet.").toStdString());
     }
+}
+bool BrowserPanel::keyPressed(const juce::KeyPress &k) {
+    if (k != juce::KeyPress::upKey && k != juce::KeyPress::downKey)
+        return false;
+    // The next label up or down, past the headings; at either end the selection stays.
+    const int step = k == juce::KeyPress::downKey ? 1 : -1;
+    for (int i = selected_ + step; i >= 0 && i < static_cast<int>(sidebar_.size()); i += step)
+        if (!sidebar_[static_cast<std::size_t>(i)].heading) {
+            choose(i);
+            break;
+        }
+    return true;
+}
+void BrowserPanel::focusGained(FocusChangeType cause) {
+    ring_ = cause != focusChangedByMouseClick;
+    repaint();
+}
+void BrowserPanel::focusLost(FocusChangeType) {
+    ring_ = false;
+    repaint();
 }
 } // namespace adi::ui

@@ -608,14 +608,14 @@ int main(int argc, char **argv) {
         };
         using C = AppCommands;
 #if JUCE_MAC
-        check(names == juce::StringArray{"File", "Edit", "Create", "View"},
-              "the Mac's menu bar: File, Edit, Create, View");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Navigate"},
+              "the Mac's menu bar: File, Edit, Create, View, Navigate");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
                                                 C::TakeSnapshot, C::SaveAs},
               "the File menu; Quit is the application menu's on the Mac");
 #else
-        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options"},
-              "the menu bar: File, Edit, Create, View, Options");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
+              "the menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
                                                 C::TakeSnapshot, C::SaveAs, 0, C::Quit},
               "the File menu ends with Quit and no longer holds Settings");
@@ -627,8 +627,10 @@ int main(int argc, char **argv) {
               "the Edit menu deletes the selected track, before Rename (§18.2)");
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack},
               "the Create menu inserts tracks");
-        check(!names.contains("Navigate") && !names.contains("Help"),
-              "a menu with no command yet is left out");
+        check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
+                                                    C::FocusDeviceView, C::FocusBrowser},
+              "the Navigate menu moves the focus to the views ADI has (§41.4.1)");
+        check(!names.contains("Help"), "a menu with no command yet is left out");
         const auto appMenu = applicationMenu(commands);
         juce::PopupMenu::MenuItemIterator first(appMenu);
         check(first.next() && first.getItem().itemID == C::Settings && !first.next(),
@@ -1135,6 +1137,54 @@ int main(int argc, char **argv) {
                       first.rename.hasKeyboardFocus(false) && !integrated.arrangement.headers.editor.isVisible(),
                   "the Edit menu's Rename renames the device with the focus, not the track");
             editor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+            // Live's Navigate menu (§41.4.1): Alt, or Option, and a view's number moves the focus.
+            check(integrated.keyPressed(juce::KeyPress('4', alt, 0)) && panels[0]->hasKeyboardFocus(false),
+                  "Alt/Option+4 moves the focus to the Device View's first device");
+            juce::Component &device = *panels[0];
+            check(device.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) &&
+                      panels[1]->hasKeyboardFocus(false),
+                  "the right arrow moves to the next device (§41.4.1.5)");
+            juce::Component &second = *panels[1];
+            check(second.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)) &&
+                      device.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)) &&
+                      panels[0]->hasKeyboardFocus(false),
+                  "the left arrow moves back, and stays at the first device");
+            check(integrated.keyPressed(juce::KeyPress('2', alt, 0)) &&
+                      integrated.arrangement.canvas.hasKeyboardFocus(false),
+                  "Alt/Option+2 moves the focus to the Arrangement View");
+            auto &bar = integrated.transport;
+            check(integrated.keyPressed(juce::KeyPress('0', alt, 0)) && bar.link.hasKeyboardFocus(false) &&
+                      bar.link.focusRing(),
+                  "Alt/Option+0 moves the focus to the Control Bar's first control, ringed");
+            bar.stop.grabKeyboardFocus();
+            integrated.command(AppCommands::FocusArrangement);
+            check(!bar.stop.focusRing() && integrated.command(AppCommands::FocusControlBar) &&
+                      bar.stop.hasKeyboardFocus(false) && !bar.link.focusRing(),
+                  "the Control Bar's focus returns to the control that last had it");
+            auto &browserPanel = integrated.browser;
+            check(integrated.keyPressed(juce::KeyPress('5', alt, 0)) &&
+                      browserPanel.hasKeyboardFocus(false) && browserPanel.focusRing(),
+                  "Alt/Option+5 moves the focus to the browser, ringed");
+            juce::Component &browserKeys = browserPanel;
+            const juce::KeyPress down(juce::KeyPress::downKey), up(juce::KeyPress::upKey);
+            browserKeys.keyPressed(down);
+            const int favorites = browserPanel.selected();
+            browserKeys.keyPressed(down);
+            const int sounds = browserPanel.selected();
+            browserKeys.keyPressed(up);
+            const int back = browserPanel.selected();
+            browserKeys.keyPressed(up);
+            check(favorites == 1 && sounds == 4 && back == 1 && browserPanel.selected() == 1 &&
+                      integrated.error() == "Favorites is not listed yet.",
+                  "the arrows move between the sidebar's labels, past the headings");
+            integrated.command(AppCommands::ToggleDeviceView);
+            check(!integrated.state().docked && integrated.command(AppCommands::FocusDeviceView) &&
+                      integrated.state().docked && panels[0]->hasKeyboardFocus(false),
+                  "a hidden Device View is shown, then focused");
+            integrated.command(AppCommands::ToggleBrowser);
+            check(!integrated.browser.isVisible() && integrated.command(AppCommands::FocusBrowser) &&
+                      integrated.browser.isVisible() && browserPanel.hasKeyboardFocus(false),
+                  "a hidden browser is shown, then focused");
             deviceHost.removeChildComponent(&integrated);
             deviceHost.removeFromDesktop();
             integrated.devices.submit = nullptr;
