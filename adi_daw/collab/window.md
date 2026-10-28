@@ -48,6 +48,27 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, night — a floating window's own zoom [#273](https://github.com/arieladi/Adi/pull/273) `window/floating-zoom`
+
+**#273, stacked on #272** (ADR-0129 d3, parity-7.5 row 10). Ctrl/Cmd + and - pressed in the
+Channel EQ window zoomed the main window, because a floating window passed every key to the main
+one.
+- Now an ADI view's window zooms itself, on the main window's steps (50 % to 200 %). Every other
+  key there is still the main window's.
+- The view lays out in logical units under a scale, as `ZoomHost` holds the main root. The steps
+  are one function, `nextZoom`, which both use.
+- The zoom is held for the session, as the main window's is (N4).
+
+Checks: 295 shell checks; `test_all.sh` 8265 across 97 suites PASS; the shadow sweep is clean (it
+caught a `window` shadow in the new test before push).
+
+**Where to resume:** `~/adi-window` on `window/floating-zoom`, the tip of the stack. Item 3's phase
+C parts still wait for N17. The next piece the window can finish alone is the menu bar's other
+menus (7.2 row 11), as far as there are commands to list. Also: the native Settings smoke in
+`ui.yml` (win's file) once win agrees.
+
+---
+
 ## 2026-10-28, evening — the keyboard and the device menu [#269](https://github.com/arieladi/Adi/pull/269) [#270](https://github.com/arieladi/Adi/pull/270) [#271](https://github.com/arieladi/Adi/pull/271) [#272](https://github.com/arieladi/Adi/pull/272)
 
 **The director approved the Settings and Channel EQ windows (#267, #268):** "The Settings and
@@ -71,11 +92,7 @@ The three pieces the last entry named, each its own branch and PR, stacked in th
 Checks on #271, the tip: 291 shell checks; `test_all.sh` 8265 across 97 suites PASS; the shadow
 sweep is clean. It caught a `host` shadow in #269's new test before push (MSVC C4456).
 
-**Where to resume:** `~/adi-window` on `window/parity-shell-space`, the tip of the stack. Item 3's
-phase C parts still wait for N17. The next pieces the window can finish alone:
-- a floating window's interface zoom (7.5 row 10), as the main window's Ctrl/Cmd + and -;
-- the menu bar's other menus (7.2 row 11), as far as there are commands to list.
-Also: the native Settings smoke in `ui.yml` (win's file) once win agrees.
+Resumed the same evening with a floating window's zoom (#273, above).
 
 ---
 
