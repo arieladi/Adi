@@ -102,6 +102,17 @@ private:
     float v_;
 };
 
+/// Silence, 1000 samples late: a sibling the others are compensated against.
+class LateSilence final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][io.blockOffset + i] = 0.0f;
+    }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override { return 1000; }
+    [[nodiscard]] const char* name() const noexcept override { return "late"; }
+};
+
 /// A project of named tracks, each track id optionally a tone, and a session on it.
 struct Mix {
     adi::test::TempDirectory temp;
@@ -134,7 +145,7 @@ struct Mix {
     }
     /// Sources other than tones: a track id's own node (ADR-0172's steps).
     std::map<std::int64_t, Node*> extra;
-    void load(double sampleRate = 48000.0) {
+    void load(double sampleRate = 48000.0, Precision precision = Precision::Float32) {
         session.setSourcesFor([this](std::int64_t id) {
             if (const auto e = extra.find(id); e != extra.end()) return std::vector<Node*>{e->second};
             const auto it = tones.find(id);
@@ -143,6 +154,7 @@ struct Mix {
         SessionSpec spec;
         spec.sampleRate = sampleRate;
         spec.maxFrames = 512;
+        spec.precision = precision;
         if (!session.load(*store, {}, spec)) throw std::runtime_error(session.error());
     }
     void refresh() {
@@ -375,6 +387,131 @@ void testTrackDelay() {
     check(named.mentions("tracks#9: the master's delay is not played"), "a delay on the master is named");
     check(named.mentions("tracks#1: a delay of 240000 samples is past one second"),
           "a delay past one second is named, and played at one second");
+}
+
+void testATrackDelayCrossesARebuild() {
+    section("ADR-0092, ADR-0172 -- a track delay crosses a rebuild, wherever in the chain it is played");
+
+    // A delay is a negative latency, played by the edge AFTER the strip. When
+    // the strip ends the chain that edge is the plan's, and its history has
+    // always been carried. A summed child's strip is followed by its channel
+    // half, so the edge is inside the chain -- and every refresh, a fader move
+    // included, rebuilds the graph.
+    auto run = [](const std::string& name, bool summing, int edits, bool fader, Precision width) {
+        Mix m(name.c_str());
+        SineNode a(220.0, 0.1f);
+        m.track(1, "audio", "A");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.extra[1] = &a;
+        if (summing) m.set("group.setSumming", 5, "enabled", true);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load(48000.0, width);
+        const std::int64_t built = m.session.graph().stats().published;
+        std::vector<float> out;
+        for (int k = 0; k < 12; ++k) {
+            if (k >= 6 && k < 6 + edits) {
+                // Nothing audible: a rename, or the group's fader set to where it is.
+                if (fader) m.set("mixer.setVolume", 5, "db", 0.0);
+                else m.set("track.rename", 1, "name", "A" + std::to_string(k));
+                m.refresh();
+            }
+            m.render(512);
+            out.insert(out.end(), m.l.begin(), m.l.end());
+        }
+        return std::make_pair(out, m.session.graph().stats().published - built);
+    };
+    // Not bit for bit: a console half dithers, from its own random seed, so
+    // two summed sessions differ at about 1e-8 from their first sample. A
+    // hole in a 0.1 sine is up to 0.1.
+    auto sameAs = [](const std::vector<float>& x, const std::vector<float>& ref) {
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < x.size() && i < ref.size(); ++i)
+            if (std::fabs(static_cast<double>(x[i]) - static_cast<double>(ref[i])) > 1e-6) ++differ;
+        return differ;
+    };
+    for (const Precision width : {Precision::Float32, Precision::Float64})
+    for (const bool summing : {false, true}) {
+        const std::string tag = std::string(summing ? "summed" : "plain") +
+                                (width == Precision::Float64 ? " at 64" : "");
+        const std::string file = (summing ? "s" : "p") + std::string(width == Precision::Float64 ? "64" : "32");
+        const auto ref = run("delay-ref-" + file, summing, 0, false, width);
+        const auto once = run("delay-once-" + file, summing, 1, false, width);
+        const auto three = run("delay-three-" + file, summing, 3, true, width);
+        check(once.second == 1 && three.second == 3, tag + ": the edits rebuilt the graph, once and three times");
+        const std::size_t d1 = sameAs(once.first, ref.first), d3 = sameAs(three.first, ref.first);
+        check(d1 == 0, tag + ": a child 300 samples late, and a rebuild moves no sample of the master past 1e-6 (" +
+                           std::to_string(d1) + " do)");
+        check(d3 == 0, tag + ": nor do three fader moves in a row (" + std::to_string(d3) + " do)");
+    }
+
+    // A NEW FLAVOUR is a new channel half after the same strip. The delayed
+    // edge leaves the strip, and the ring holds what the strip sent, so it is
+    // carried: the sound changes, and nothing drops out.
+    {
+        Mix m("delay-flavour");
+        SineNode a(220.0, 0.1f);
+        m.track(1, "audio", "A");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.extra[1] = &a;
+        m.set("group.setSumming", 5, "enabled", true);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        for (int k = 0; k < 6; ++k) m.render(512);
+        const ConsoleNode* before = m.session.summing().channelOf(1);
+        m.set("group.setSummingFlavor", 5, "flavor", "console.md");
+        m.refresh();
+        m.render(512);
+        std::size_t run = 0, longest = 0;
+        for (float x : m.l) {
+            run = std::fabs(x) < 1e-5f ? run + 1 : 0;
+            longest = std::max(longest, run);
+        }
+        check(m.session.summing().channelOf(1) != before, "a new flavour is a new half");
+        check(longest < 8, "and the block after it has no hole: its longest near-silent run is " +
+                               std::to_string(longest) + " samples, not the delay's 300");
+    }
+
+    // SUMMING TURNED ON OR OFF changes what the child's output into its group
+    // IS: with drive, a channel half's output is hotter than the track by the
+    // drive, and the group's buss takes it back. The old line's history is
+    // not handed to the new one (`wireKind`), so the swap never plays one as
+    // the other -- with +18 dB of drive that was a +12 dB burst.
+    for (const bool startOn : {true, false}) {
+        Mix m(startOn ? "toggle-off" : "toggle-on");
+        SineNode a(220.0, 0.1f);
+        LateSilence lag;
+        m.track(1, "audio", "A");
+        m.track(2, "audio", "B");
+        m.track(5, "group", "G");
+        m.track(9, "master", "Master");
+        m.set("track.setParent", 1, "parent", 5);
+        m.set("track.setParent", 2, "parent", 5);
+        m.extra[1] = &a;
+        m.extra[2] = &lag;
+        m.set("group.setSumming", 5, "enabled", startOn);
+        m.set("group.setSummingDrive", 5, "db", 18.0);
+        m.set("mixer.setDelay", 1, "samples", 300);
+        m.load();
+        for (int k = 0; k < 8; ++k) m.render(512);
+        m.set("group.setSumming", 5, "enabled", !startOn);
+        m.refresh();
+        double swap = 0.0, settled = 0.0;
+        for (int k = 0; k < 10; ++k) {
+            m.render(512);
+            for (std::size_t i = 0; i < m.l.size(); ++i) {
+                const double v = std::fabs(static_cast<double>(m.l[i]));
+                if (k * 512 + static_cast<int>(i) < 1300) swap = std::max(swap, v);
+                else if (k >= 4) settled = std::max(settled, v);
+            }
+        }
+        check(swap <= settled * 1.05,
+              std::string("summing ") + (startOn ? "on to off" : "off to on") + ": no burst at the swap -- peak " +
+                  std::to_string(swap) + " against " + std::to_string(settled) + " settled");
+    }
 }
 
 void testGroupSumming() {
@@ -868,6 +1005,7 @@ int main() {
         testAutomationPlays();
         testOverride();
         testTrackDelay();
+        testATrackDelayCrossesARebuild();
         testGroupSumming();
         testScopeTaps();
     } catch (const std::exception& e) {

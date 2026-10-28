@@ -127,9 +127,16 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 if (auto owner = s->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
                 if (const auto& owner = s->eventSourceLifetime()) r->sourceOwners_.push_back(owner);
                 const NodeId id = r->graph_.addNode(*s);
-                r->graph_.connect(id, head);
+                // A source the session builds afresh at every rebuild names
+                // itself; any other is keyed by the object it is.
+                const std::uint64_t name = s->historyName();
+                if (r->graph_.connect(id, head))
+                    r->chainEdges_.push_back({{pn.trackId, RealizedGraph::ChainKey::Leg::Into,
+                                               name != 0 ? nullptr : s, name},
+                                              id, head, Bus::Main});
             }
         }
+        const Node* prev = nullptr;   // the junction
         if (opts.devicesFor) {
             const std::vector<Node*> chain = opts.devicesFor(pn.trackId);
             for (Node* d : chain) {
@@ -147,12 +154,19 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                 if (auto owner = d->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
                 if (const auto& owner = d->eventSourceLifetime()) r->sourceOwners_.push_back(owner);   // ADR-0165
                 const NodeId id = r->graph_.addNode(*d);
-                r->graph_.connect(tail, id);
+                if (r->graph_.connect(tail, id))
+                    r->chainEdges_.push_back({{pn.trackId, RealizedGraph::ChainKey::Leg::Next, prev, 0},
+                                              tail, id, Bus::Main});
                 tail = id;
+                prev = d;
             }
         }
-        r->chains_[pn.trackId] = RealizedGraph::Chain{head, tail};
+        r->chains_[pn.trackId] = RealizedGraph::Chain{head, tail, prev};
     }
+    std::sort(r->chainEdges_.begin(), r->chainEdges_.end(),
+              [](const RealizedGraph::ChainRecord& a, const RealizedGraph::ChainRecord& b) {
+                  return a.key < b.key;
+              });
 
     // --- the plan's edges, between chains ----------------------------------
     //
@@ -189,6 +203,8 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         rec.key.fromTrack = srcId;
         rec.key.toTrack = dstId;
         rec.key.bus = static_cast<std::uint8_t>(e.bus);
+        const Node* tailNode = r->chains_.at(srcId).tailNode;
+        rec.key.wire = tailNode != nullptr ? tailNode->wireKind() : 0;
         rec.from = from;
         rec.to = to;
         rec.bus = e.bus;
