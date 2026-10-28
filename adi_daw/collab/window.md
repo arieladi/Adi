@@ -44,7 +44,52 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N16 | The channel slots for ADI-Q and ADI-L on every channel and group (ADR-0204 d1, LANES §3 item 7): present but off, their on/off and ADI-L's mode in the snapshot, an op to switch each, and the engaged EQ's curve for the window to draw | engine (slots), clones (the plug-ins) | the Channel EQ window's switches and its display; the track rows' Q and L | every slot is shown off; a switch says what it waits for |
 | N17 | The ops of phase C's window parts: clip fades (handles, Create Fades on Clip Edges off, d7), Insert Silence, and the import and bounce prompts' actions (import needs N5; bounce needs the render path) | engine | range selection's commands, fade handles, the two prompts (LANES §3b item 3) | nothing drawn that cannot act; the parts wait for their ops |
 | N18 | A device's copy the window can read: what `device.remove`'s inverse captures (the plug-in reference, the stored params, the state's hashes, the panel and the route), from the snapshot or a read the UI may call, so a paste is a `device.insert` with a new id in front of the selected device (Live manual §23, p. 443) | engine | Cut, Copy, Paste and Duplicate in a device's menu and the Edit menu (§23.2.1) | the menu lists Delete and Rename; the four wait |
+| N19 | The transport's metronome and loop: `transport.setMetronome` and `transport.setLoop` are in the catalogue but apply nothing (`transportNoop`); the snapshot carries neither the metronome's state nor the loop region, and nothing clicks or loops | engine | the control bar's Metronome and Loop switches, Live's O key and Ctrl/Cmd+L, the loop brace (§6.4, §42.16) | the switches are drawn and say they are not built; nothing is journaled for them |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, cloud, night — Tab's switch [#280](https://github.com/arieladi/Adi/pull/280); Follow [#281](https://github.com/arieladi/Adi/pull/281)
+
+**#280 `window/tab-focus`, stacked on #279** (parity-7.2-shell rows 13 and 21).
+- Live 12's Use Tab Key to Move Focus (online §41.1.1) closes the Navigate menu, ticked from
+  `lookfeel.tabMovesFocus` and writing it.
+- Off, Live's default, the root takes plain Tab and Shift+Tab and moves nothing. Live uses the
+  key for Session View, which is P2. On, JUCE's focus order moves on, as before.
+- The Settings window's own Tab keys work either way.
+- Wrap Tab Navigation has no setting yet (win's registry). Next and Previous Neighbor come with
+  the Mixer's keyboard.
+
+**#281 `window/follow`, stacked on #280** (parity-7.3-arrangement row 23, new). Live's Follow
+(§6.2), which the control bar drew but answered "not built yet".
+- The switch is lit when on. It is also a command in the Options menu, so the Mac has an
+  Options menu now. It is kept per window in `ui_view`, off by default as the bar was drawn.
+- While playing, the arrangement follows by `lookfeel.followMode`. By page, it jumps to put the
+  playhead at the left once it leaves the lanes; by scroll, the playhead stays in the middle.
+- **Pauses:** an edit through the window (arrangement, mixer, track commands, Undo and Redo), a
+  sideways wheel scroll, an Overview drag, a click on the ruler.
+- **Resumes:** playback starting or stopping, a click in the lanes or the scrub area.
+- **Keys:** Option+Shift+F on the Mac. Off the Mac both Ctrl+Shift+F and Alt+Shift+F, since the
+  manual gives Windows both.
+- A device's edit does not pause it yet.
+- **For win to measure:** Live's default for Follow in a new Set, which Windows key Live 12
+  answers, and how Live shows Follow paused.
+
+Checks: shell 325 (#280) and 337 (#281), window state 49 on #281, document 38; `test_all.sh`
+8265 and then 8266 across 97 suites PASS; zero warnings; the shadow sweep is clean. Follow's
+checks run with a real engine playing, with real clicks through the fake peer on the ruler and
+the scrub area.
+
+**CI** at 07:14Z: no failure on #274 to #280; macOS legs queued.
+
+**N19 (new):** the transport's metronome and loop. `transport.setMetronome` and
+`transport.setLoop` are in the catalogue but apply nothing, and the snapshot carries neither. So
+the Metronome and Loop switches, the O key, Ctrl/Cmd+L and the loop brace wait for the engine.
+
+**Where to resume:** `window/follow` (#281) is the tip. Next: Live's Arrangement View keys that
+need no op (§42.16):
+- Move Insert Marker to Playhead Position (Ctrl/Cmd+Shift+Space);
+- Adjust Height of Selected Tracks (Alt/Option + and -).
 
 ---
 
@@ -85,12 +130,7 @@ builds on what is there.**
 - **A conflict in the manual itself:** Follow's key on Windows is Alt+Shift+F in §42.9 but
   Ctrl+Shift+F in §42.11, §42.12 and §42.16. Option+Shift+F on the Mac in all four.
 
-**Where to resume:** `window/settings-apply` (#279) is the tip. Next:
-1. The Navigate menu's Use Tab Key to Move Focus, from `lookfeel.tabMovesFocus`; with it off,
-   Tab moves nothing in the main window.
-2. Live's Follow: the control bar's switch, the Options menu's command and its key, and the
-   arrangement following the playhead by `lookfeel.followMode`, pausing on an edit, a sideways
-   scroll or a ruler click.
+**Where to resume** (superseded by the entry above): `window/settings-apply` (#279) was the tip.
 
 ---
 
