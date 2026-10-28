@@ -199,6 +199,9 @@ class AdiRootComponent final : public juce::Component {
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
 };
+// The interface zoom's steps, 50 % to 200 % (ADR-0129 d3): the next one in or out of
+// `now`, or nothing at either end.
+std::optional<float> nextZoom(float now, bool in) noexcept;
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {
