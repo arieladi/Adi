@@ -45,7 +45,59 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N17 | The ops of phase C's window parts: clip fades (handles, Create Fades on Clip Edges off, d7), Insert Silence, and the import and bounce prompts' actions (import needs N5; bounce needs the render path) | engine | range selection's commands, fade handles, the two prompts (LANES §3b item 3) | nothing drawn that cannot act; the parts wait for their ops |
 | N18 | A device's copy the window can read: what `device.remove`'s inverse captures (the plug-in reference, the stored params, the state's hashes, the panel and the route), from the snapshot or a read the UI may call, so a paste is a `device.insert` with a new id in front of the selected device (Live manual §23, p. 443) | engine | Cut, Copy, Paste and Duplicate in a device's menu and the Edit menu (§23.2.1) | the menu lists Delete and Rename; the four wait |
 | N19 | The transport's metronome and loop: `transport.setMetronome` and `transport.setLoop` are in the catalogue but apply nothing (`transportNoop`); the snapshot carries neither the metronome's state nor the loop region, and nothing clicks or loops | engine | the control bar's Metronome and Loop switches, Live's O key (§42.20) and Ctrl/Cmd+L, the loop brace (§6.6, §42.16) | the switches are drawn and say they are not built; nothing is journaled for them |
+| N20 | A home for the channel configuration: `audio.channelConfig` is Device scope, which `AppSettings::set` refuses ("belongs to a device"), and its text has no format; the app also opens the device with no inputs (`initialise(0, 2, ...)`) | win (the store and the registry); engine for recording | Live's Input and Output Config dialogs on the Audio page: which channels are used, mono or stereo pairs, their names per device (§20 Routing and I/O; parity-settings row 7) | nothing built; the dialogs are a new window, so their pictures would go to the director first |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, cloud, continued — a mixer neighbour in view [#284](https://github.com/arieladi/Adi/pull/284); the View menu's toggles [#285](https://github.com/arieladi/Adi/pull/285)
+
+**Resumed on "continue".** CI on #265 to #283 had no failure, no comment and no review. Only
+macOS legs, and two Windows legs on #283, were still queued or running.
+
+**#284 `window/mixer-scroll`, stacked on #283** (parity-7.6 row 16). The Neighbor keys now go on
+to a track out of view and bring it into view first (`MixerPanel::reveal`):
+- the Mixer View scrolls sideways;
+- the track controls scroll the arrangement, keeping a tall row's top in view.
+Move Focus to Mixer does the same. Checks: shell 346.
+
+**#285 `window/view-toggles`, stacked on #284** (parity-7.2-shell rows 22 to 24, new). §42.1:
+- **Full Screen** (F11; Ctrl+Cmd+F on the Mac).
+- **Hide/Show Overview** (Ctrl/Cmd+Alt+O): the arrangement's top is now `topHeight()`, used by
+  the mixer, the root and the playhead.
+- **Hide/Show In/Out** (Ctrl/Cmd+Alt+I): the track controls narrow by the column and the
+  arrangement widens.
+- Both kept per window in `ui_view`.
+- The View menu lists Full Screen, then §42.1's toggles in order.
+- Seen in the app under Xvfb: F11 fills the screen; the toggles move and narrow; both are kept
+  in the project, so a second run on the same file brought them back.
+- **For win to measure:** where Live puts H and W when the Overview is hidden.
+
+Checks: shell 352, window state 50, document 38; `test_all.sh` 8267 across 97 suites PASS;
+zero warnings; the shadow sweep is clean.
+
+**Caught before push:**
+- `ResizableWindow::setFullScreen` on a window that is not on the desktop reads the monitor's
+  area, which a peerless test has not, and crashed. The command now refuses off the screen and
+  says why.
+- The first app run left the In/Out column's space empty; Live narrows the panel instead, and so
+  does ADI now.
+
+**N20 (new): the Audio page's Channel Configuration is blocked.**
+- `audio.channelConfig` is Device scope, which the store refuses to write, and its text has no
+  format.
+- The app opens the device with no inputs, and recording is not built.
+- The Input and Output Config dialogs wait for a home for their values. Once they have one, they
+  are a new window: pictures to the director first.
+
+**Where to resume:** `window/view-toggles` (#285) is the tip. What the window can still do
+alone is thinning:
+- the View menu's remaining Live entries need views ADI lacks (Clip View, Groove Pool, Learn
+  View, Video), or sends (N11);
+- the Options menu's remaining entries are engine matters (Chase MIDI Notes, Solo in Place,
+  grid snapping) or settings without keys.
+Read CI on #274 to #285 first. Then look at the parity rows marked "measure" with win, and at
+phase C once N17 lands.
 
 ---
 
@@ -73,20 +125,7 @@ warnings.
   alone. **Lesson:** in `test_ui_shell.cpp`, the integrated root's selection is load-bearing for
   the device checks after it.
 
-**Where to resume:** `window/mixer-keys` (#283) is the tip of the stack, which runs #246 → #283.
-First read CI on #274 to #283; at 07:29Z there were no failures and the macOS legs were queued.
-What the window can still do alone:
-1. **The Audio page's Channel Configuration** (parity-settings row 7). Its Input and Output
-   Config dialogs are a new window, so their pictures go to the director, rendered through
-   `ADI_UI_PARITY`, before more is built on them.
-2. **A mixer neighbour scrolled out of view** brought into view, as Live's.
-
-Everything else open waits on other lanes (N1 to N19) or on win:
-- parity-7.6 row 3, the coalescing ruling;
-- N14, the registry's pages;
-- Wrap Tab Navigation's setting.
-
-Phase C's window parts wait for N17.
+**Where to resume** (superseded by the entry above): `window/mixer-keys` (#283) was the tip.
 
 ---
 
