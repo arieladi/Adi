@@ -551,6 +551,31 @@ int main(int argc, char **argv) {
           "the Info View describes the element under the mouse");
     a.hover(nullptr);
     check(a.infoText().isEmpty(), "and clears when nothing is under it");
+    {
+        // Each platform's fonts wrap a description differently: one longer than the panel is
+        // cut at the panel's foot, never drawn over its edge or the Status Bar below.
+        auto render = [&a] {
+            juce::Image image(juce::Image::ARGB, a.getWidth(), a.getHeight(), true,
+                              juce::SoftwareImageType{});
+            juce::Graphics g(image);
+            a.paintEntireComponent(g, true);
+            return image;
+        };
+        const auto quiet = render();
+        const auto saved = a.arrangement.canvas.getTooltip();
+        a.arrangement.canvas.setTooltip(juce::String::repeatedString("A description that goes on. ", 80));
+        a.hover(&a.arrangement.canvas);
+        const auto busy = render();
+        a.arrangement.canvas.setTooltip(saved);
+        a.hover(nullptr);
+        const auto inner = a.infoArea().reduced(look::border);
+        int outside = 0;
+        for (int y = 0; y < busy.getHeight(); ++y)
+            for (int x = 0; x < busy.getWidth(); ++x)
+                if (!inner.contains(x, y) && busy.getPixelAt(x, y) != quiet.getPixelAt(x, y))
+                    ++outside;
+        check(outside == 0, "a long description stays inside the Info View");
+    }
     check(a.keyPressed(juce::KeyPress('?', juce::ModifierKeys::shiftModifier, 0)) &&
               !commands.infoView() && a.infoArea().isEmpty() && a.deviceArea().getX() == look::gap,
           "Shift+? hides the Info View");
@@ -1150,6 +1175,31 @@ int main(int argc, char **argv) {
                 const bool restored = integrated.command(AppCommands::Undo);
                 integrated.frame();
                 check(restored && clipAt() != nullptr && clipAt()->posTicks == pos0, "and Undo brings it back");
+                // The right edge changes the clip's length, its start and its audio staying put.
+                const auto length0 = clipAt() != nullptr ? clipAt()->lengthTicks : 0;
+                const auto rightEdge =
+                    peerRoot
+                        .getLocalPoint(&arrangement.canvas,
+                                       juce::Point<int>{static_cast<int>(geo.x(pos0 + length0)) - 2, barTop + 5})
+                        .toFloat();
+                when += 1000;
+                mouse(rightEdge, 0);
+                const bool bracket = arrangement.canvas.getMouseCursor() == juce::MouseCursor::LeftRightResizeCursor;
+                mouse(rightEdge, juce::ModifierKeys::leftButtonModifier);
+                mouse(rightEdge.translated(100, 0), juce::ModifierKeys::leftButtonModifier);
+                const bool stretching =
+                    arrangement.canvas.resizingClip() == 1 && arrangement.canvas.resizedLength() > length0;
+                mouse(rightEdge.translated(100, 0), 0);
+                integrated.frame();
+                const auto *longer = clipAt();
+                check(bracket && stretching && longer != nullptr && longer->posTicks == pos0 &&
+                          longer->lengthTicks > length0 && (pos0 + longer->lengthTicks) % gridTicks == 0 &&
+                          geo.selection.end == pos0 + longer->lengthTicks &&
+                          integrated.undoTitle(false) == "Undo Resize Clip",
+                      "dragging a clip's right edge lengthens it to the grid, its start where it was");
+                const bool shortened = integrated.command(AppCommands::Undo);
+                integrated.frame();
+                check(shortened && clipAt() != nullptr && clipAt()->lengthTicks == length0, "and Undo restores its length");
             }
             when += 1000;
             mouse(origin, 0);
