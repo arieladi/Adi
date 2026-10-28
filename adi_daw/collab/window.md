@@ -48,6 +48,27 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, night — the stack's CI on Linux and Windows (#265 to #273)
+
+CI showed what the Mac cannot:
+- **Windows, #265 and #267 to #272.** MSVC's C4996 refused `std::getenv` in the parity render's
+  hook, with `/WX`. It now reads `ADI_UI_PARITY` through `juce::SystemStats`.
+- **Linux, #265 only.** The browser's last sidebar row ("Add Folder") was drawn under the AI tab,
+  outside the text masks, so the fonts differed by 32 to 217 pixels in seven goldens. #266 already
+  clips the rows to the sidebar; #265 now does too, and its goldens are re-recorded.
+
+**How it went up the stack.** One fix commit on `window/live-look`. Each branch above got the same
+`getenv` replacement, then a merge of the branch below with `-s ours`: each already carries the
+clip and its own goldens, so its tree is kept. Nothing was force-pushed. Each branch's change
+against what was pushed is only the `getenv` lines; each passes its shell checks (#266 265, #267
+277, #268 281, #269 284, #270 285, #271 291, #272 291, #273 295). The tip passes `test_all.sh` and
+the shadow sweep. #246 to #264 were green already.
+
+**The lesson:** the Mac's Clang does not warn on `getenv`. In window tests, read the environment
+through `juce::SystemStats`.
+
+---
+
 ## 2026-10-28, night — a floating window's own zoom [#273](https://github.com/arieladi/Adi/pull/273) `window/floating-zoom`
 
 **#273, stacked on #272** (ADR-0129 d3, parity-7.5 row 10). Ctrl/Cmd + and - pressed in the
