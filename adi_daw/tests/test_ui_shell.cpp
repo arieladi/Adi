@@ -1047,10 +1047,26 @@ int main(int argc, char **argv) {
                   document->sessionState().selection().clip == 1,
               "its press action selects the clip, in the session");
         handler.reset();
-        arrangement.geometry.selection.clip = 0;
-        check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) &&
+#if JUCE_MAC
+        const int clipEdgeKey = juce::ModifierKeys::altModifier;
+#else
+        const int clipEdgeKey = juce::ModifierKeys::ctrlModifier;
+#endif
+        {
+            auto &sel = arrangement.geometry.selection;
+            sel.clip = 0;
+            sel.insert = sel.start = sel.end = 0;
+            sel.marked = true;
+        }
+        check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, clipEdgeKey, 0)) &&
+                  arrangement.geometry.selection.insert == 4 * textproj::kPPQ &&
+                  arrangement.canvas.lastAnnouncement.contains("Insert Mark 2.1.1"),
+              "Ctrl/Option+Right takes the insert marker to the clip's end, and says where (§41.4.1.3)");
+        check(arrangement.canvas.keyPressed(juce::KeyPress(
+                  juce::KeyPress::leftKey, juce::ModifierKeys::shiftModifier | clipEdgeKey, 0)) &&
+                  arrangement.geometry.selection.clip == 1 &&
                   arrangement.canvas.lastAnnouncement.contains("clip at bar 1 beat 1"),
-              "moving the selection by key announces where it landed");
+              "with Shift it selects back to the clip's start, which selects the clip, and says which");
         arrangement.geometry.left = 100;
         arrangement.changed();
         shown = 0;
@@ -1264,6 +1280,79 @@ int main(int argc, char **argv) {
                 const bool shortened = integrated.command(AppCommands::Undo);
                 integrated.frame();
                 check(shortened && clipAt() != nullptr && clipAt()->lengthTicks == length0, "and Undo restores its length");
+                // Live's Arrangement keys (online §41.4.1.3, §42.16), each edit one undo step.
+                {
+                    auto press = [&clipKeys](int code, int mods = 0) {
+                        return clipKeys.keyPressed(juce::KeyPress(code, juce::ModifierKeys(mods), 0));
+                    };
+                    auto &sel = geo.selection;
+                    auto point = [&sel](std::int64_t tick) {
+                        sel.clip = 0;
+                        sel.insert = sel.start = sel.end = tick;
+                        sel.marked = true;
+                    };
+                    const auto step = static_cast<std::int64_t>(geo.gridQuarters() * textproj::kPPQ);
+                    const auto end0 = pos0 + length0;
+                    arrangement.selectClip(clipTrack, 1);
+                    const bool nudged = press(juce::KeyPress::rightKey);
+                    integrated.frame();
+                    check(nudged && clipAt() != nullptr && clipAt()->posTicks == pos0 + step &&
+                              sel.start == pos0 + step && sel.clip == 1 &&
+                              integrated.undoTitle(false) == "Undo Move Clip",
+                          "Right moves the selected clip to the next grid line, one undo step");
+                    const bool unNudged = integrated.command(AppCommands::Undo);
+                    integrated.frame();
+                    check(unNudged && clipAt() != nullptr && clipAt()->posTicks == pos0, "and Undo puts it back");
+                    point(end0);
+                    check(press(juce::KeyPress::rightKey) && sel.insert == end0 + step && sel.start == sel.end &&
+                              sel.clip == 0,
+                          "with no selection, Right moves the insert marker by the grid");
+                    check(press(juce::KeyPress::leftKey) && sel.insert == end0,
+                          "and Left moves it back");
+                    check(press(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier) &&
+                              press(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier) &&
+                              std::min(sel.start, sel.end) == end0 && std::max(sel.start, sel.end) == end0 + 2 * step &&
+                              sel.clip == 0,
+                          "Shift+Right selects two grid steps from the insert marker");
+                    check(press(juce::KeyPress::rightKey) && std::min(sel.start, sel.end) == end0 + step &&
+                              std::max(sel.start, sel.end) == end0 + 3 * step,
+                          "and Right moves a selection that holds no clip by the grid");
+                    sel.start = pos0;
+                    sel.end = pos0 + step;
+                    integrated.say({});
+                    check(step < length0 && press(juce::KeyPress::rightKey) && sel.start == pos0 &&
+                              sel.end == pos0 + step && clipAt() != nullptr && clipAt()->posTicks == pos0 &&
+                              integrated.error().find("split") != std::string::npos,
+                          "a selection holding part of a clip stays, and the Status Bar says it waits for split");
+                    point(pos0);
+                    integrated.say({});
+                    check(press(juce::KeyPress::returnKey) && !arrangement.canvas.keyResizing() &&
+                              integrated.error().find("content offset") != std::string::npos,
+                          "Enter at a clip's start says moving its start waits for a content offset");
+                    point(end0);
+                    const auto undoBefore = integrated.undoTitle(false);
+                    check(press(juce::KeyPress::returnKey) && arrangement.canvas.keyResizing() &&
+                              press(juce::KeyPress::rightKey) && press(juce::KeyPress::rightKey) &&
+                              arrangement.canvas.resizedLength() == length0 + 2 * step,
+                          "Enter at a clip's end, then Right, lengthens it by the grid");
+                    const bool cancelled = press(juce::KeyPress::escapeKey);
+                    integrated.frame();
+                    check(cancelled && !arrangement.canvas.keyResizing() && clipAt() != nullptr &&
+                              clipAt()->lengthTicks == length0 && integrated.undoTitle(false) == undoBefore,
+                          "Esc puts it back and makes no undo step");
+                    point(end0);
+                    const bool kept = press(juce::KeyPress::returnKey) && press(juce::KeyPress::rightKey) &&
+                                      press(juce::KeyPress::returnKey);
+                    integrated.frame();
+                    check(kept && !arrangement.canvas.keyResizing() && clipAt() != nullptr &&
+                              clipAt()->posTicks == pos0 && clipAt()->lengthTicks == length0 + step &&
+                              sel.insert == end0 + step && integrated.undoTitle(false) == "Undo Resize Clip",
+                          "Enter again keeps the new length, one undo step named Resize Clip");
+                    const bool unResized = integrated.command(AppCommands::Undo);
+                    integrated.frame();
+                    check(unResized && clipAt() != nullptr && clipAt()->lengthTicks == length0,
+                          "and Undo restores it");
+                }
             }
             when += 1000;
             mouse(origin, 0);
