@@ -60,7 +60,50 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N32 | A clip's notes, with each note's identity as the note ops address it, and the clip's own properties (kind, name, colour, start and end markers, loop window, signature, scale) where the window can read them: in the snapshot, or a read the UI may call on the message thread when the journal moves, as `MidiClips` reads `rows::Model`; the engine lane's choice | engine | the Clip View's title bar and Main panel, and every note the Note Editor draws or edits (STEP-7-PLAN §7.7) | the view's frame and the note geometry are built without it; the editor draws no notes |
 | N33 | Ops for a clip's start and end markers, its loop window and loop switch, its signature and its scale (Live's Main Clip Properties) | engine | the Main panel's fields and Set buttons, the loop brace, Fit to Scale (§7.7) | the fields show the snapshot's position and length, read-only |
 | N34 | An op for a note's active flag (the `flags` column exists) | engine | 0 deactivates a note (Live manual §10.5.7) | nothing |
+| N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`) | a clean tree after the gate the window runs before each push | the window deletes them after each run |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, cloud, continued — Swap moved above the track controls [#293](https://github.com/arieladi/Adi/pull/293)
+
+**The director, on a screenshot of the Clip View picture.** He marked in green two empty areas as
+room for buttons like the swap:
+- the band above the track controls, level with the ruler;
+- the strip down the right-hand edge.
+
+He also answered the view filter's questions:
+- Main is always shown in every view: yes.
+- The funnel as the un-filter toggle: not sure; he asked for more explanation. The answer went to
+  him with the options and a recommendation; his ruling is awaited.
+
+**#293's second commit.** Swap leaves the Status Bar and becomes the track controls' own button:
+- it sits in the band, travelling with the controls, and is lit while they are on the left;
+- the Mixer View has none;
+- it takes no keyboard focus, and the View menu is its keyboard path.
+
+Why no focus: as a focusable child at the panel's top, it took the focus whenever a row holding it
+was hidden on a scroll, and Next/Previous Neighbor stopped there. The existing check caught that.
+
+New check: the button's bounds in the band, on either side. No golden moves, because the band's
+buttons and the Status Bar are masked as typography. The PR body and the swap picture are updated.
+- Checks: shell 401, window state 52, document 38, seams 96; `test_all.sh` 8269 PASS; zero warnings;
+  the shadow sweep is clean.
+
+Merged into the stacked picture branches:
+- `window/swap-panels` into `window/view-filter`. Its merge commit was pushed with git's default
+  message and so lacks the trailers; it stays as pushed (no force-push).
+- `window/view-filter` into `window/clip-view`.
+
+`window/clip-view`'s plan, parity row 10 and picture now say the Status Bar's second field is free for
+the Clip View's toggle and selector.
+
+New Need N35: the device tests leave 16 render files in `adi_daw/` on every full run.
+
+**Where to resume:**
+- the director's ruling on the funnel;
+- his approval of the filter and Clip View pictures;
+- then build the view filter (Main always shown) and the Clip View's frame.
 
 ---
 
