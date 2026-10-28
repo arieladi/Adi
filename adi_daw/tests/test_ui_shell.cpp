@@ -151,9 +151,10 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(canvas.withTrimmedTop(std::max(0, laneY - canvas.getY())));
         if (root.mixer.isVisible() && !root.mixer.vertical()) {
             const auto m = root.mixer.getBounds();
-            g.fillRect(m.getRight() - MixerPanel::kRightStrip - 44, m.getY() + 3, 42, 17);
-            g.fillRect(m.withTrimmedLeft(m.getWidth() - MixerPanel::kRightStrip));
+            g.fillRect(m.getRight() - 44, m.getY() + 3, 42, 17);
         }
+        if (root.strip.isVisible())
+            g.fillRect(root.stripArea());
         int chainEnd = root.devices.getX();
         for (const auto &device : root.devices.panels) {
             const auto b = root.getLocalArea(device.get(), device->getLocalBounds());
@@ -266,7 +267,8 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     // The capture's mouse rests on the lanes: the Info View describes them.
     root.hover(&root.arrangement.canvas);
     check(root.arrangement.headers.getWidth() == ArrangementView::kHeaderWidth &&
-              root.mixer.getWidth() == MixerPanel::kFullWidth && root.devices.panels.size() == 2,
+              root.mixer.getWidth() + root.strip.getWidth() == MixerPanel::kFullWidth &&
+              root.devices.panels.size() == 2,
           "the parity scene has Live's columns and the fourth track's two devices");
     reference(root, "live-parity", write);
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
@@ -410,6 +412,54 @@ int main(int argc, char **argv) {
           "panel widths follow identity");
     a.frame();
     reference(a, "root-swapped", write);
+    {
+        // The director's layout C (2026-10-28): names, track controls, lanes; the browser on the
+        // right; Live's strip at the window's left edge, so the track controls meet the lanes.
+        // Live's sides: lanes, names, track controls, the strip at the right edge.
+        const auto at = a.arrangement.getPosition();
+        const auto namesC = a.arrangement.headers.getBounds() + at;
+        const auto lanesC = a.arrangement.canvas.getBounds() + at;
+        check(a.arrangement.namesFirst() && a.strip.flip.getToggleState() &&
+                  a.stripArea().getX() == look::gap && a.stripArea().getRight() <= namesC.getX() &&
+                  namesC.getRight() <= a.mixerArea().getX() &&
+                  lanesC.getX() - a.mixerArea().getRight() <= ArrangementView::kLeftMargin &&
+                  lanesC.getRight() <= a.browserArea().getX() &&
+                  a.arrangement.ruler.getX() + at.x == lanesC.getX(),
+              "flipped: the strip at the left edge, the names, the track controls against the lanes");
+        // The director's place for the arrows (2026-10-28): under the strip's two view switches.
+        auto underSwitches = [&a] {
+            const auto r = a.strip.flip.getBounds() + a.strip.getPosition();
+            return a.strip.isVisible() && a.stripArea().contains(r) && r.getY() >= a.stripArea().getY() + 44 &&
+                   r.getBottom() <= a.stripArea().getY() + a.arrangement.topHeight() &&
+                   a.strip.flip.getTooltip() == "Flip sides";
+        };
+        check(underSwitches(), "the flip arrows sit under the strip's view switches and say Flip sides");
+        a.strip.flip.onClick();
+        a.frame();
+        const auto atL = a.arrangement.getPosition();
+        const auto namesL = a.arrangement.headers.getBounds() + atL;
+        const auto lanesL = a.arrangement.canvas.getBounds() + atL;
+        check(!a.arrangement.namesFirst() && !a.strip.flip.getToggleState() &&
+                  a.state().panels.slots()[0].panel == Panel::Browser &&
+                  a.browserArea().getRight() <= lanesL.getX() &&
+                  lanesL.getRight() <= namesL.getX() &&
+                  namesL.getRight() <= a.mixerArea().getX() &&
+                  a.mixerArea().getRight() == a.stripArea().getX() && underSwitches(),
+              "the arrows put Live's sides back: lanes, names, track controls, the strip at the edge");
+        // With the track controls hidden, the strip goes with them and the arrangement takes
+        // their place, up to the window's edge.
+        a.command(AppCommands::ToggleMixer);
+        a.frame();
+        check(!a.mixer.isVisible() && !a.strip.isVisible() &&
+                  a.arrangement.getRight() == a.getWidth() - look::gap,
+              "hidden track controls take the strip with them; the arrangement reaches the edge");
+        a.command(AppCommands::ToggleMixer);
+        a.frame();
+        a.strip.flip.onClick();
+        a.frame();
+        check(a.arrangement.namesFirst() && a.state().panels.slots()[0].panel == Panel::Mixer,
+              "and swaps them again");
+    }
     a.setSize(400, 540);
     const auto order = a.state().panels.slots()[0].panel;
     check(!a.command(AppCommands::SwapPanels) && a.state().panels.slots()[0].panel == order,

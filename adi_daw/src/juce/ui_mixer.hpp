@@ -120,6 +120,25 @@ class MixerPanel final : public juce::Component {
     int scrollX_ = 0;
     std::vector<std::unique_ptr<MixerStrip>> strips_;
 };
+// ADI's addition (ADR-0080; the director, 28 October 2026): small arrows that flip the
+// browser and the track controls between the window's sides; "Flip sides" on hovering. Lit
+// while the track controls are on the left.
+class FlipButton final : public juce::Button {
+  public:
+    FlipButton();
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
+// Live's strip down the arrangement's outer edge (Live 11, measured 2026-10-27): its switches
+// between Arrangement and Session View at its head, the flip arrows under them, the In/Out,
+// Returns, Mixer and Delay switches at its foot. Flipped, it moves to the window's left edge,
+// so the track controls meet the lanes (the director, 28 October 2026).
+class SideStrip final : public juce::Component {
+  public:
+    SideStrip();
+    void paint(juce::Graphics &) override;
+    void resized() override;
+    FlipButton flip;
+};
 // The Mixer View's top edge: drag it up for taller strips.
 class MixerViewResizer final : public juce::Component {
   public:
