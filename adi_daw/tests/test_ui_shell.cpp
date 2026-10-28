@@ -1369,6 +1369,29 @@ int main(int argc, char **argv) {
                 check(!integrated.mixer.isVisible() && integrated.keyPressed(mixerKey) &&
                           integrated.mixer.isVisible() && focusedRow() != nullptr,
                       "hidden track controls are shown, then focused");
+                // Rows taller than the view: a neighbour out of view is scrolled into view, as
+                // Live's, from the first track to the last and back.
+                auto &lanes = integrated.arrangement.geometry;
+                const auto heightsWas = lanes.heights;
+                const int scrollWas = lanes.scrollY;
+                for (const auto &row : rows)
+                    lanes.resizeTrack(row->id, 400);
+                integrated.arrangement.changed();
+                integrated.frame();
+                for (std::size_t k = 0; k < rows.size(); ++k)
+                    integrated.keyPressed(previousKey);
+                const bool reachedFirst = focusedRow() != nullptr && focusedRow()->track() == rows.front()->id &&
+                                          lanes.scrollY == 0;
+                for (std::size_t k = 0; k < rows.size(); ++k)
+                    integrated.keyPressed(nextKey);
+                check(rows.size() >= 2 && reachedFirst && focusedRow() != nullptr &&
+                          focusedRow()->track() == rows.back()->id && lanes.scrollY > 0 &&
+                          focusedRow()->getY() >= ArrangementView::kTopHeight,
+                      "a neighbour out of view is scrolled into view, its row's top showing");
+                lanes.heights = heightsWas;
+                lanes.scrollY = scrollWas;
+                integrated.arrangement.changed();
+                integrated.frame();
             }
             deviceHost.removeChildComponent(&integrated);
             deviceHost.removeFromDesktop();
