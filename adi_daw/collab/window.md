@@ -50,6 +50,33 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, continued — Live's clip editing [#287](https://github.com/arieladi/Adi/pull/287) `window/clip-edits`
+
+**#287, stacked on #286** (parity-7.3-arrangement rows 27 to 29, new). The catalogue has had
+`clip.move`, `clip.delete` and `clip.setMute` all along; the window had wired none of them.
+- **Move (§6.7).** A drag on a clip's bar moves it. While dragging it is drawn where it would
+  land, on the nearest grid line (Alt, Cmd on the Mac, bypasses). On release it is one
+  `clip.move`, "Move Clip", and the selection follows. A drag on the body still selects time.
+- **Delete (§6.9).** Delete or Backspace with a clip selected: one `clip.delete`, "Delete Clip".
+- **0 (§6.9).** It deactivates the selected clip, and again activates it (`clip.setMute`). A
+  deactivated clip is drawn grey.
+- **Open:**
+  - moves across tracks wait for the clip's and the track's kind in the snapshot (N6);
+    `clip.move` does not check them either;
+  - snapping to clip edges and locators;
+  - edge drags: `clip.resize` takes no content offset, so a left-edge drag would slide the audio.
+
+Checks: shell 368, document 38, window state 51; `test_all.sh` 8268 across 97 suites PASS; zero
+warnings; the shadow sweep is clean. The tests drag clip 1's bar through the fake peer with a
+real engine behind it, and undo each step.
+
+**Where to resume:** `window/clip-edits` (#287) is the tip. Next the window can do alone:
+- the right-edge drag, a length change that keeps the start (`clip.resize` with the same `pos`);
+- the lanes' menu with Live's named grid widths.
+Everything else waits as the previous entries say.
+
+---
+
 ## 2026-10-28, cloud, continued — Live's editing grid [#286](https://github.com/arieladi/Adi/pull/286) `window/grid`
 
 **#286, stacked on #285** (parity-7.3-arrangement row 26, new). Live's grid (online §6.10,
@@ -79,13 +106,7 @@ zero warnings; the shadow sweep is clean.
 keyboard's state), not from the modifiers handed to the peer's `handleMouseEvent`. A test of a
 modified gesture sets that state and clears it after.
 
-**Where to resume:** `window/grid` (#286) is the tip. Next:
-- Read CI on #274 to #286.
-- The lanes' menu with Live's named grid widths (row 26) is the next piece the window can finish
-  alone.
-- After that, the window-only list is nearly empty. What remains waits on the Needs table
-  (N1 to N20), on win's rulings (parity-7.6 row 3; N14), or on the director's Mac for the
-  "measure" rows.
+**Where to resume** (superseded by the entry above): `window/grid` (#286) was the tip.
 
 ---
 
