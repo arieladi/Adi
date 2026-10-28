@@ -48,6 +48,38 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, later — Live's Navigate menu [#275](https://github.com/arieladi/Adi/pull/275) `window/navigate-menu`
+
+**#275, stacked on #274** (parity-7.2-shell rows 18 and 19, parity-7.4-devices row 15). Live 12's
+Navigate menu (online §41.4.1, §42.2), with the four views ADI has. Option replaces Alt on the
+Mac.
+- **Control Bar (Alt+0).** The focus returns to the control that last had it, Link until one
+  has (§41.4.1.1).
+- **Arrangement View (Alt+2).** The canvas, whose arrows already move.
+- **Device View (Alt+4).** The first device. The left and right arrows then move between
+  devices (§41.4.1.5).
+- **Browser (Alt+5).** The browser now takes the keyboard. Up and down move between the
+  sidebar's labels, as a click selects (§41.4.1.6).
+- A hidden Device View or browser is shown first.
+- Where the keyboard put the focus, a control bar item or the browser's sidebar is ringed in
+  the accent, as the Settings window's controls; a click leaves none.
+- Session View, Clip View, the Groove Pool and the Learn View come with those views. The Mixer
+  (Alt+Shift+M) comes when its controls take the keyboard.
+- **For win to measure:** does Live show a hidden view on Alt+4 or Alt+5, and what colour is
+  its focus ring?
+
+Checks: shell 314, document 38, window state 48; `test_all.sh` 8265 across 97 suites PASS;
+zero warnings; the shadow sweep is clean (it caught a shadowed `alt` in the new test).
+
+**Found on the way:** JUCE calls `focusOfChildComponentChanged` only when the focus enters or
+leaves a parent, not when it moves between the parent's children. So the control bar learns
+which control had the focus from each item, not from its own callback.
+
+**Where to resume:** `window/navigate-menu` (#275) is the tip. Next is Live's Alt+letter that
+opens a menu on Windows (§42.28).
+
+---
+
 ## 2026-10-28, cloud — Live's menu bar [#274](https://github.com/arieladi/Adi/pull/274) `window/menu-bar`
 
 **CI on #265 to #273, read first.** Nothing is red. Every Linux, Windows, s390x, i386, fuzz,
@@ -92,7 +124,7 @@ four targets fail inside JUCE's own sources: `adi_audio_probe`, `adi_vst3_probe`
 chapter 42, the PDF's 41; rows written here cite "online §". The text is read locally with curl,
 never committed.
 
-**Where to resume:** `window/menu-bar` (#274) is the tip of the stack.
+**Where to resume** (superseded by the entry above): `window/menu-bar` (#274) was the tip.
 - Next: Navigate's focus moves for the views ADI has, Live's Alt/Option+0 (Control Bar), +2
   (Arrangement), +4 (Device View), +5 (Browser) and Alt/Option+Shift+M (Mixer). Then Live's
   Alt+letter that opens a menu on Windows (§42.28).
