@@ -48,6 +48,26 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, late — the lane moves to a cloud session
+
+The director is moving the window lane off the Mac to a Claude Code cloud session (environment
+"Adi", this repository). Everything is pushed: the stack #246 to #273 and this log. Nothing was left
+uncommitted in `~/adi-window` or `~/adi-window-log`.
+
+**What the cloud does not have, and what follows from it:**
+- **Live 11 on the director's Mac.** No new captures of Live, so a new window's pictures beside
+  Live wait for the Mac. Pictures of ADI alone render headless through `ADI_UI_PARITY`.
+- **The Live 12 manual's PDF.** It is in the director's main checkout, not in the repository, and
+  the repository is public, so it stays out. Use Ableton's online manual
+  (ableton.com/en/live-manual/12/); the checklists cite the PDF's page numbers.
+- **The native macOS app.** `--smoke-settings` and the Mac's own menu run on the Mac. Everything
+  else builds and tests on Linux as `ui.yml`'s Linux leg does, and CI runs all three platforms.
+
+**Where to resume:** unchanged from the floating-zoom entry. First read CI on #265 to #273, where
+the fix for the Linux and Windows failures was pushed. Then the menu bar's other menus (7.2 row 11).
+
+---
+
 ## 2026-10-28, night — the stack's CI on Linux and Windows (#265 to #273)
 
 CI showed what the Mac cannot:
