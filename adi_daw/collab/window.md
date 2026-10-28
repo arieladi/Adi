@@ -50,6 +50,45 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, continued — Live's editing grid [#286](https://github.com/arieladi/Adi/pull/286) `window/grid`
+
+**#286, stacked on #285** (parity-7.3-arrangement row 26, new). Live's grid (online §6.10,
+§42.13): the lanes drew a zoom-adaptive grid, but nothing snapped and no command existed.
+- **The model.** `ArrangementGeometry::Grid` (snap, fixed, triplet, narrow, the fixed step),
+  with `gridQuarters()`, `snap()` and `gridLabel()`. Kept per window in `ui_view`. The default
+  step is the one always drawn, so default pixels are unchanged.
+- **Snapping.** A click snaps the insert marker to the line at or before it; a drag covers
+  whole cells. Alt (Cmd on the Mac) bypasses snapping, or snaps while the grid is off.
+- **The commands.** Narrow, Widen, Triplet, Snap and Fixed on Ctrl/Cmd+1 to 5, in the Options
+  menu and the lanes' menu, with ticks.
+- **Drawing.** The spacing shows at the time ruler's right end. Triplets keep the lanes'
+  shading on the bars.
+- **Goldens.** "arrangement" and "devices" are re-recorded on purpose. Their test drag now ends
+  on a grid line (11 pixels on two rows); the region was compared old beside new first.
+- **Seen in the app under Xvfb:** Ctrl+1, Ctrl+3 give the denser triplet grid and "1/8T". The
+  first capture showed the label clipping the last time stamp, which is fixed.
+- **Open:** Live's named widths in the lanes' menu (Widest to Narrowest; 8 Bars to 1/32), and
+  clip moves, which do not exist yet.
+- **For win to measure:** Live's adaptive steps per zoom, and nearest versus previous line on a
+  click.
+
+Checks: shell 362, window state 51, document 38; `test_all.sh` 8268 across 97 suites PASS;
+zero warnings; the shadow sweep is clean.
+
+**Learned:** JUCE builds a mouse event's keys from `ModifierKeys::currentModifiers` (the
+keyboard's state), not from the modifiers handed to the peer's `handleMouseEvent`. A test of a
+modified gesture sets that state and clears it after.
+
+**Where to resume:** `window/grid` (#286) is the tip. Next:
+- Read CI on #274 to #286.
+- The lanes' menu with Live's named grid widths (row 26) is the next piece the window can finish
+  alone.
+- After that, the window-only list is nearly empty. What remains waits on the Needs table
+  (N1 to N20), on win's rulings (parity-7.6 row 3; N14), or on the director's Mac for the
+  "measure" rows.
+
+---
+
 ## 2026-10-28, cloud, continued — a mixer neighbour in view [#284](https://github.com/arieladi/Adi/pull/284); the View menu's toggles [#285](https://github.com/arieladi/Adi/pull/285)
 
 **Resumed on "continue".** CI on #265 to #283 had no failure, no comment and no review. Only
@@ -90,14 +129,7 @@ zero warnings; the shadow sweep is clean.
 - The Input and Output Config dialogs wait for a home for their values. Once they have one, they
   are a new window: pictures to the director first.
 
-**Where to resume:** `window/view-toggles` (#285) is the tip. What the window can still do
-alone is thinning:
-- the View menu's remaining Live entries need views ADI lacks (Clip View, Groove Pool, Learn
-  View, Video), or sends (N11);
-- the Options menu's remaining entries are engine matters (Chase MIDI Notes, Solo in Place,
-  grid snapping) or settings without keys.
-Read CI on #274 to #285 first. Then look at the parity rows marked "measure" with win, and at
-phase C once N17 lands.
+**Where to resume** (superseded by the entry above): `window/view-toggles` (#285) was the tip.
 
 ---
 
