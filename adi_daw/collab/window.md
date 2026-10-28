@@ -61,6 +61,61 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, continued — the side swap shown; swapped, the names lead [#293](https://github.com/arieladi/Adi/pull/293) `window/swap-panels`
+
+**The director's rulings on the audit's four questions (28 October).**
+1. The swapped layout is C: the track names, the track controls, the strip, then the lanes; the
+   browser on the right.
+2. The swap's control sits in the Status Bar.
+3. Yes to the view filter, Figure 32 style, its picture first.
+4. The clip view and the note editor come next.
+
+He also clarified drops, as in Ableton:
+- files, synths and plug-ins drop on an audio, MIDI or synth track, or on the empty area;
+- a device or plug-in dropped on a track goes to its device chain below, never into the lanes.
+
+This waits on N5 and N15 and is recorded on the audit's drop row.
+
+He asked where the switch-sides button was in the earlier pictures. I answered that there was none:
+- picture A came from View › Swap side panels;
+- B and C were mock-ups.
+
+**#293, stacked on #292**; the audit's item 1.
+- A Swap button in the Status Bar beside Mixer, lit while swapped. It calls the same command as View
+  › Swap side panels.
+- When swapped, `ArrangementView::setNamesFirst` leaves a gap between the names and the lanes, and the
+  root puts the track controls in it. The ruler, the scrub area, the Overview and the Mixer View start
+  at the lanes.
+- Live's sides are unchanged.
+- The `root-swapped` golden is re-recorded on purpose; no other golden changed.
+- A real-app picture, before and after a click on Swap, is
+  `collab/window/pictures/2026-10-28-swap-button.png`. It was sent to the director.
+
+Rows updated:
+- parity-7.2-shell row 25 (new, built);
+- the audit's swap row, its questions (marked ruled), its queue (renumbered) and its drop row;
+- UI-ARCHITECTURE's layout section.
+
+Checks:
+- shell 400, window state 52, document 38, seams 96;
+- `test_all.sh` 8269 across 97 suites PASS;
+- zero warnings for `adi_app` and the UI tests; the shadow sweep is clean;
+- the new order checks fail with names-first disabled.
+
+Not caused by this branch: in a local `-Werror` build of everything, GCC rejects `adi_audio_probe` and
+`adi_vst3_probe` on JUCE's own `juce_UMPUtils.h`. CI builds the probes only on macOS and Windows, and
+without `-Werror`.
+
+**Where to resume:** `window/swap-panels` (#293) is the tip. Next, as ruled:
+1. the view filter's picture for the director: a menu at the top of the track-header column with the
+   group tree, "Only these tracks", and an un-filter toggle;
+2. then the clip view and the note editor: plan and pictures first, from Live 12 manual chapters 8 and
+   10 and Master Reference 4.1 and 5.1.
+
+The audit's later items follow.
+
+---
+
 ## 2026-10-28, cloud, continued — Wrap Tab Navigation, Move Clips with Arrow Keys [#292](https://github.com/arieladi/Adi/pull/292) `window/settings-nav`
 
 **#292, stacked on #291**; the audit's item 2. Both settings were already in the registry, so N21 is
