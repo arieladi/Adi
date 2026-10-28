@@ -43,7 +43,39 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N15 | ADR-0104's library index (the app-scoped store of samples, presets and devices) and a catalogue of ADI's own devices by category, with a way to insert one (`device.insert` needs a plug-in reference row and the track's chain, neither of which the UI can make) | engine, devices | the browser's list (Live's folders under each category, double-click or drag to load) | the browser shows its sidebar and the list's header; a click on a category says it is not listed yet |
 | N16 | The channel slots for ADI-Q and ADI-L on every channel and group (ADR-0204 d1, LANES §3 item 7): present but off, their on/off and ADI-L's mode in the snapshot, an op to switch each, and the engaged EQ's curve for the window to draw | engine (slots), clones (the plug-ins) | the Channel EQ window's switches and its display; the track rows' Q and L | every slot is shown off; a switch says what it waits for |
 | N17 | The ops of phase C's window parts: clip fades (handles, Create Fades on Clip Edges off, d7), Insert Silence, and the import and bounce prompts' actions (import needs N5; bounce needs the render path) | engine | range selection's commands, fade handles, the two prompts (LANES §3b item 3) | nothing drawn that cannot act; the parts wait for their ops |
+| N18 | A device's copy the window can read: what `device.remove`'s inverse captures (the plug-in reference, the stored params, the state's hashes, the panel and the route), from the snapshot or a read the UI may call, so a paste is a `device.insert` with a new id in front of the selected device (Live manual §23, p. 443) | engine | Cut, Copy, Paste and Duplicate in a device's menu and the Edit menu (§23.2.1) | the menu lists Delete and Rename; the four wait |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, evening — the keyboard and the device menu [#269](https://github.com/arieladi/Adi/pull/269) [#270](https://github.com/arieladi/Adi/pull/270) [#271](https://github.com/arieladi/Adi/pull/271) [#272](https://github.com/arieladi/Adi/pull/272)
+
+**The director approved the Settings and Channel EQ windows (#267, #268):** "The Settings and
+Channel EQ windows look right. Continue with the next window items."
+
+The three pieces the last entry named, each its own branch and PR, stacked in this order on #268:
+- **#269 `window/settings-arrows`** (manual §40.1.2). With a control focused, the arrows switch a
+  switch or step a value box, and Enter switches a switch; each change is applied and written at
+  once. A value box now takes the focus, so Tab reaches it. The keyboard's focus is outlined in the
+  accent; a click's is not. Settings row 9 is built.
+- **#270 `window/quit-key`** (§41.3). A Quit command: Ctrl+Q and the foot of the File menu off the
+  Mac; on the Mac Cmd+Q stays the application menu's. Both reach `systemRequestedQuit`, which asks
+  nothing. Application row 10 is built.
+- **#271 `window/device-rename`** (§23.2.1). The device menu in Live's order (Delete; Rename; Fold,
+  Configure). Rename, from the menu or Ctrl/Cmd+R with the device focused, is typed in the title
+  bar and commits one `device.rename`. The Edit menu's Rename acts on the focused device, else the
+  selected track. Cut, Copy, Paste and Duplicate wait for a device's copy (N18, new).
+- **#272 `window/parity-shell-space`**, a checklist correction: 7.2-shell rows 10 and 11 (Space,
+  Shift+Space) were built with the arrangement but still read open.
+
+Checks on #271, the tip: 291 shell checks; `test_all.sh` 8265 across 97 suites PASS; the shadow
+sweep is clean. It caught a `host` shadow in #269's new test before push (MSVC C4456).
+
+**Where to resume:** `~/adi-window` on `window/parity-shell-space`, the tip of the stack. Item 3's
+phase C parts still wait for N17. The next pieces the window can finish alone:
+- a floating window's interface zoom (7.5 row 10), as the main window's Ctrl/Cmd + and -;
+- the menu bar's other menus (7.2 row 11), as far as there are commands to list.
+Also: the native Settings smoke in `ui.yml` (win's file) once win agrees.
 
 ---
 
