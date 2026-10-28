@@ -46,7 +46,43 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N18 | A device's copy the window can read: what `device.remove`'s inverse captures (the plug-in reference, the stored params, the state's hashes, the panel and the route), from the snapshot or a read the UI may call, so a paste is a `device.insert` with a new id in front of the selected device (Live manual §23, p. 443) | engine | Cut, Copy, Paste and Duplicate in a device's menu and the Edit menu (§23.2.1) | the menu lists Delete and Rename; the four wait |
 | N19 | The transport's metronome and loop: `transport.setMetronome` and `transport.setLoop` are in the catalogue but apply nothing (`transportNoop`); the snapshot carries neither the metronome's state nor the loop region, and nothing clicks or loops | engine | the control bar's Metronome and Loop switches, Live's O key (§42.20) and Ctrl/Cmd+L, the loop brace (§6.6, §42.16) | the switches are drawn and say they are not built; nothing is journaled for them |
 | N20 | A home for the channel configuration: `audio.channelConfig` is Device scope, which `AppSettings::set` refuses ("belongs to a device"), and its text has no format; the app also opens the device with no inputs (`initialise(0, 2, ...)`) | win (the store and the registry); engine for recording | Live's Input and Output Config dialogs on the Audio page: which channels are used, mono or stereo pairs, their names per device (online §17.2, Routing and I/O; parity-settings row 7) | nothing built; the dialogs are a new window, so their pictures would go to the director first |
+| N21 | Two Display & Input settings Live has (online §41.1.1): Wrap Tab Navigation, and Move Clips with Arrow Keys (on by default; when off, left and right collapse a time selection to its start or end) | win (the settings registry) | the Navigate menu's Wrap Tab Navigation and the Arrangement's arrows (parity-7.2-shell row 21, parity-7.3-arrangement row 30) | Tab stops at either end; the arrows always move clips, Live's default |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, cloud, continued — Live's Arrangement keys [#290](https://github.com/arieladi/Adi/pull/290) `window/arrangement-nav`
+
+**#290, stacked on #289** (parity-7.3-arrangement row 30, new). ADI's left and right arrows
+stepped from clip to clip; that was this lane's own choice (2026-10-27). Live 12 spells out its
+keys in online §41.4.1.3, and those are now built:
+- **Left and right** move the insert marker by the grid in use.
+- **Ctrl (Option on the Mac) with them** go to the previous or next clip edge on the track.
+- **Shift with them** selects. A selection that is exactly a clip selects the clip.
+- **With a clip selected** they move it a grid line: one `clip.move` per press, "Move Clip".
+  This is Live's Move Clips with Arrow Keys, on by default (§41.1.1).
+- **With a time selection** it moves by the grid when it holds no clip. When it holds part of a
+  clip it stays, and the Status Bar says that waits for split (N17).
+- **Enter at a clip's end**, then left and right, changes its length. Enter keeps it as one
+  `clip.resize`, "Resize Clip"; Esc, a click or any other key cancels.
+- **Enter at a clip's start** says moving the start waits for a content offset.
+- A screen reader hears where each key landed.
+
+New need **N21** (win's registry): Display & Input's Wrap Tab Navigation and Move Clips with Arrow
+Keys. Until then the arrows always move clips, as Live's default does.
+
+**For the director:**
+- Shift with Ctrl (Option) selects to the next clip edge, by analogy with the MIDI editor's note
+  boundaries (online §10.5.2). On Windows that editor takes Alt for it, so this is marked
+  "measure".
+- What Live says to a screen reader is also to be measured.
+
+Checks: shell 393, window state 52, document 38, seams 96; `test_all.sh` 8269 across 97 suites
+PASS; zero warnings; the shadow sweep is clean (it caught one shadowed `sel`, now fixed). Under
+Xvfb, a click and Shift+Right twice select 1.4.1 to 2.2.1 on the quarter grid.
+
+**Where to resume:** `window/arrangement-nav` (#290) is the tip. Read CI on #288 (after its fix),
+#289 and #290. Then take the next partial row the window can finish alone.
 
 ---
 
@@ -79,16 +115,7 @@ Checks: shell 380, window state 52, document 38, seams 96; `test_all.sh` 8269 ac
 PASS; zero warnings; the shadow sweep is clean. Under Xvfb, Fixed Grid ▸ 1/8 sets the ruler's
 spacing to "1/8" and the lanes draw eighths.
 
-**Where to resume:** `window/grid-widths` (#289) is the tip. Next the window can do alone: Live's
-Arrangement keys (online §41.4.1.3, §42.16), replacing ADI's clip-to-clip arrows, which were the
-window lane's own choice:
-- left/right move the insert marker by the grid;
-- Ctrl/Option + left/right go to the previous or next clip edge;
-- Shift + left/right select;
-- left/right nudge a selected clip;
-- Enter at a clip's edge, then left/right, resize it.
-
-Then read CI on #288 and #289.
+**Where to resume** (superseded by the entry above): `window/grid-widths` (#289) was the tip.
 
 ---
 
