@@ -2,6 +2,7 @@
 #include "ui_shell.hpp"
 #include <algorithm>
 #include <array>
+#include <vector>
 namespace adi::ui {
 namespace {
 // Live's measures, in points at 100 % (ui_look.hpp): the control bar, the Status Bar,
@@ -804,54 +805,65 @@ bool AdiRootComponent::command(int id) {
     resized();
     return true;
 }
-// Live's menu bar, as far as step 7 has commands for it: File, Edit, Create, View.
-// Transport has no menu in Live; Space is its key.
+namespace {
+// Live 12's menu bar (manual §42.28), in Live's order, each menu listing only the commands
+// ADI has; 0 is a separator. A menu with none is left out: Options on the Mac, where
+// Settings is the application menu's (§2.3); Navigate until its focus moves exist
+// (§41.4.1); Help until there is a Learn View (§2.2.1). Transport has no menu in Live;
+// Space is its key.
+struct MenuEntries {
+    const char *name;
+    std::vector<int> items;
+};
+const std::vector<MenuEntries> &menuBar() {
+    using C = AppCommands;
+    static const std::vector<MenuEntries> bar{
+#if JUCE_MAC
+        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs}},
+#else
+        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, 0, C::Quit}},
+#endif
+        // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
+        // Paste and Duplicate; those wait for their ops.
+        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack}},
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack}},
+        {"View",
+         {C::ToggleBrowser, C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixer,
+          C::ToggleDeviceView, C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
+          C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, 0,
+          C::SwapPanels}},
+#if JUCE_MAC
+        {"Options", {}},
+#else
+        // Settings is the Options menu's on Windows (§2.3).
+        {"Options", {C::Settings}},
+#endif
+        {"Navigate", {}},
+        {"Help", {}}};
+    return bar;
+}
+} // namespace
 class ShellMenu final : public juce::MenuBarModel {
   public:
     ShellMenu(AdiRootComponent &r, AppCommands &c) : root(r), commands(c) {}
-    juce::StringArray getMenuBarNames() override { return {"File", "Edit", "Create", "View"}; }
-    juce::PopupMenu getMenuForIndex(int index, const juce::String &) override {
+    juce::StringArray getMenuBarNames() override {
+        juce::StringArray names;
+        for (const auto &m : menuBar())
+            if (!m.items.empty())
+                names.add(m.name);
+        return names;
+    }
+    juce::PopupMenu getMenuForIndex(int, const juce::String &name) override {
         commands.activate(root);
         juce::PopupMenu menu;
-        auto add = [&](int id) { menu.addCommandItem(&commands.manager, id); };
-        if (index == 0) {
-            add(AppCommands::NewProject);
-            add(AppCommands::OpenProject);
-            menu.addSeparator();
-            add(AppCommands::TakeSnapshot);
-            add(AppCommands::SaveAs);
-#if !JUCE_MAC
-            menu.addSeparator();
-            add(AppCommands::Settings);
-            menu.addSeparator();
-            add(AppCommands::Quit);
-#endif
-        } else if (index == 1) {
-            add(AppCommands::Undo);
-            add(AppCommands::Redo);
-            menu.addSeparator();
-            add(AppCommands::RenameTrack);
-        } else if (index == 2) {
-            add(AppCommands::InsertAudioTrack);
-            add(AppCommands::InsertMidiTrack);
-        } else if (index == 3) {
-            add(AppCommands::ToggleBrowser);
-            add(AppCommands::ToggleMixerView);
-            add(AppCommands::ShowChannelEq);
-            add(AppCommands::ToggleMixer);
-            add(AppCommands::ToggleDeviceView);
-            add(AppCommands::ToggleInfoView);
-            menu.addSeparator();
-            add(AppCommands::ZoomIn);
-            add(AppCommands::ZoomOut);
-            menu.addSeparator();
-            add(AppCommands::ZoomToSelection);
-            add(AppCommands::ZoomBack);
-            add(AppCommands::OptimizeWidth);
-            add(AppCommands::OptimizeHeight);
-            menu.addSeparator();
-            add(AppCommands::SwapPanels);
-        }
+        for (const auto &m : menuBar())
+            if (name == m.name)
+                for (const int id : m.items) {
+                    if (id == 0)
+                        menu.addSeparator();
+                    else
+                        menu.addCommandItem(&commands.manager, id);
+                }
         return menu;
     }
     void menuItemSelected(int, int) override {}
@@ -860,6 +872,11 @@ class ShellMenu final : public juce::MenuBarModel {
     AdiRootComponent &root;
     AppCommands &commands;
 };
+juce::PopupMenu applicationMenu(AppCommands &commands) {
+    juce::PopupMenu menu;
+    menu.addCommandItem(&commands.manager, AppCommands::Settings);
+    return menu;
+}
 std::optional<float> nextZoom(float now, bool in) noexcept {
     const auto at = std::find(kZoomSteps.begin(), kZoomSteps.end(), now);
     const auto i = at == kZoomSteps.end() ? 2 : at - kZoomSteps.begin();
@@ -895,10 +912,13 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
     }
     commands_.activate(*root_);
     menu_ = std::make_unique<ShellMenu>(*root_, commands_);
-    // On the Mac the menu is the application's, at the top of the screen, as Live's.
+    // On the Mac the menu is the application's, at the top of the screen, as Live's,
+    // with Settings in the application menu.
 #if JUCE_MAC
-    if (onDesktop)
-        juce::MenuBarModel::setMacMainMenu(menu_.get());
+    if (onDesktop) {
+        const auto appMenu = applicationMenu(commands_);
+        juce::MenuBarModel::setMacMainMenu(menu_.get(), &appMenu);
+    }
 #else
     setMenuBar(menu_.get());
 #endif
