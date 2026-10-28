@@ -1195,6 +1195,15 @@ int main(int argc, char **argv) {
             check(!integrated.browser.isVisible() && integrated.command(AppCommands::FocusBrowser) &&
                       integrated.browser.isVisible() && browserPanel.hasKeyboardFocus(false),
                   "a hidden browser is shown, then focused");
+            // Ctrl/Cmd+F, from anywhere (§41.4.1.6): the browser's search, ready to type over.
+            integrated.arrangement.canvas.grabKeyboardFocus();
+            integrated.command(AppCommands::ToggleBrowser);
+            browserPanel.search.setText("drums", false);
+            check(integrated.keyPressed(juce::KeyPress('f', cmd, 0)) && integrated.browser.isVisible() &&
+                      browserPanel.search.hasKeyboardFocus(false) &&
+                      browserPanel.search.getHighlightedText() == "drums",
+                  "Ctrl/Cmd+F shows the browser and puts the focus in its search, its words selected");
+            browserPanel.search.clear();
             deviceHost.removeChildComponent(&integrated);
             deviceHost.removeFromDesktop();
             integrated.devices.submit = nullptr;
