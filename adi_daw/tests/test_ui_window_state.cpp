@@ -36,11 +36,19 @@ int main() {
     state.follow = true;
     state.overview = false;
     state.inOut = false;
+    state.gridSnap = false;
+    state.gridFixed = true;
+    state.gridTriplet = true;
+    state.gridNarrow = 2;
+    state.gridFixedQuarters = .125;
     check(views.save("main", state, error), "save view");
     const auto restored = views.load("main");
     check(restored.follow && !views.load("other").follow, "Follow is kept per window, off until switched on");
     check(!restored.overview && !restored.inOut && views.load("other").overview && views.load("other").inOut,
           "the Overview and In/Out are kept per window, shown until hidden");
+    check(!restored.gridSnap && restored.gridFixed && restored.gridTriplet && restored.gridNarrow == 2 &&
+              restored.gridFixedQuarters == .125 && views.load("other").gridSnap && !views.load("other").gridFixed,
+          "the editing grid is kept per window, snapping and adaptive until changed");
     check(restored.panels.slots()[0].panel == Panel::Mixer, "restore order");
     check(restored.panels.find(Panel::Browser)->width == 333, "width follows panel");
     check(restored.zoom == 2 && restored.deviceHeight == 245 && !restored.docked,

@@ -83,7 +83,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Decrease Height of Selected Tracks",
                                   "Move Focus to Mixer", "Next Neighbor",
                                   "Previous Neighbor", "Full Screen",
-                                  "Overview", "In/Out"};
+                                  "Overview", "In/Out", "Narrow Grid", "Widen Grid",
+                                  "Triplet Grid", "Snap to Grid", "Fixed Grid"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -286,6 +287,25 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('i', cmd | alt);
         info.setTicked(active_ != nullptr && active_->state().inOut);
         break;
+    // The editing grid (§6.10, §42.13), the Options menu's and the lanes' menu's.
+    case NarrowGrid:
+        info.addDefaultKeypress('1', cmd);
+        break;
+    case WidenGrid:
+        info.addDefaultKeypress('2', cmd);
+        break;
+    case TripletGrid:
+        info.addDefaultKeypress('3', cmd);
+        info.setTicked(active_ != nullptr && active_->arrangement.geometry.grid.triplet);
+        break;
+    case SnapToGrid:
+        info.addDefaultKeypress('4', cmd);
+        info.setTicked(active_ != nullptr && active_->arrangement.geometry.grid.snap);
+        break;
+    case FixedGrid:
+        info.addDefaultKeypress('5', cmd);
+        info.setTicked(active_ != nullptr && active_->arrangement.geometry.grid.fixed);
+        break;
     default:
         break;
     }
@@ -398,6 +418,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
     arrangement.geometry.heights = state_.laneHeights;
+    arrangement.geometry.grid = {state_.gridSnap, state_.gridFixed, state_.gridTriplet, state_.gridNarrow,
+                                 state_.gridFixedQuarters};
     aiTab.setColour(juce::TextButton::buttonColourId, look::columnHead);
     aiTab.setTitle("AI");
     aiTab.setTooltip("The AI chat. Opens at the foot of the browser.");
@@ -871,7 +893,8 @@ bool AdiRootComponent::command(int id) {
         id == AppCommands::Quit)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
-        (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks))
+        (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
+        (id >= AppCommands::NarrowGrid && id <= AppCommands::FixedGrid))
         return arrangement.command(id);
     // No action carries the presented frame into an edit: OpSubmitter resolves
     // current store/history state on arrival, even when this window is a frame behind.
@@ -1057,11 +1080,14 @@ const std::vector<MenuEntries> &menuBar() {
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, 0,
           C::SwapPanels}},
-        // Follow is the Options menu's (§6.2); so is Settings on Windows (§2.3).
+        // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Settings
+        // on Windows (§2.3).
 #if JUCE_MAC
-        {"Options", {C::Follow}},
+        {"Options", {C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid}},
 #else
-        {"Options", {C::Follow, 0, C::Settings}},
+        {"Options",
+         {C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+          C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, Clip View, the Groove
         // Pool and the Learn View come with those views; the Mixer with its keyboard.
