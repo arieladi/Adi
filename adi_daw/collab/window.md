@@ -61,6 +61,51 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, continued — the view filter's picture, for approval `window/view-filter`
+
+Branch `window/view-filter`, cut from `window/swap-panels` (#293). It holds only the picture so far
+(`collab/window/pictures/2026-10-28-view-filter.png`), which was sent to the director. No PR until
+it is built.
+
+The picture is drawn over the real app, with a project of three groups made through `adi_tool
+propose --apply`. It has four panels:
+1. A chooser at the top of the track names, level with the beat ruler, opens the filter. Its Project
+   tab lists, in order:
+   - the groups, as Figure 32;
+   - the saved views;
+   - Show Only Selected Tracks, Name Contains and Save View As.
+2. The Manual tab: tick the tracks to show. Main is always shown.
+3. "Body" chosen: only the group and its tracks, in the lanes and the track controls alike.
+4. The funnel beside the chooser is the un-filter toggle:
+   - grey when there is no view;
+   - lit while a view applies;
+   - unlit with every track shown and the view kept.
+
+Bitwig's online user guide does not describe this menu, so Figure 32 and ADR-0112 d2 are the spec.
+
+Wait on N6:
+- the Groups list;
+- the tracks' own colours.
+
+Built once approved:
+- the chooser;
+- the Manual tab;
+- Show Only Selected Tracks;
+- Name Contains;
+- saved views (per project, as view state);
+- the funnel.
+
+Seen while making the picture, for later:
+- With the Device View hidden and the Info View shown, the detail row stays the device floor's height
+  and the arrangement does not grow beside the Info View (parity-7.2 row 3 has it as "measure").
+- The H and W buttons don't fit the arrangement yet.
+- Shift+click doesn't select several tracks (the audit's queue item 7).
+
+**Where to resume:** the director's answer on the filter picture. Meanwhile, the clip view and the note
+editor: plan and pictures first.
+
+---
+
 ## 2026-10-28, cloud, continued — the side swap shown; swapped, the names lead [#293](https://github.com/arieladi/Adi/pull/293) `window/swap-panels`
 
 **The director's rulings on the audit's four questions (28 October).**
