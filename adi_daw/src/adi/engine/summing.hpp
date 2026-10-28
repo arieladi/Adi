@@ -61,6 +61,10 @@ public:
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override;
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "console"; }
+    /// ADR-0092: a child's output through its channel half is a console's,
+    /// driven, so a rebuild never hands it to the plain track's line.
+    [[nodiscard]] std::uint32_t wireKind() const noexcept override { return kConsoleWire; }
+    static constexpr std::uint32_t kConsoleWire = 1;
 
     /// What this half is, for a test or a problem: "Console9Channel".
     [[nodiscard]] const std::string& what() const noexcept { return what_; }
@@ -84,11 +88,20 @@ public:
     /// The channel half, last in a child's chain; null for none.
     [[nodiscard]] Node* tailFor(std::int64_t trackId) noexcept;
 
+    /// The channel half a send into a summing group passes through, after
+    /// its own node and before the group's sum (ADR-0203 d3, ADR-0174): a
+    /// send is not a child, but what reaches the buss half must have been
+    /// through a channel half, or the buss decodes what nothing encoded and
+    /// the level moves when summing is turned on. By routing row; null for
+    /// a send into anything else.
+    [[nodiscard]] Node* sendTailFor(std::int64_t routingId) noexcept;
+
     [[nodiscard]] const std::vector<std::string>& problems() const noexcept { return problems_; }
 
-    /// For tests: the half on a track, or null.
+    /// For tests: the half on a track, or on a send, or null.
     [[nodiscard]] const ConsoleNode* bussOf(std::int64_t groupId) const noexcept;
     [[nodiscard]] const ConsoleNode* channelOf(std::int64_t childId) const noexcept;
+    [[nodiscard]] const ConsoleNode* sendChannelOf(std::int64_t routingId) const noexcept;
 
 private:
     struct Half {
@@ -98,6 +111,7 @@ private:
     };
     std::map<std::int64_t, Half> busses_;     ///< by group
     std::map<std::int64_t, Half> channels_;   ///< by child
+    std::map<std::int64_t, Half> sends_;      ///< by routing row
     std::vector<std::string> problems_;
 };
 
