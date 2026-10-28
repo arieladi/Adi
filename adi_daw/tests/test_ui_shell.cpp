@@ -825,8 +825,8 @@ int main(int argc, char **argv) {
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
-                                                    C::TabMovesFocus},
-              "the Navigate menu: the views ADI has, the neighbours, then Tab's switch (§41.4.1)");
+                                                    C::TabMovesFocus, C::WrapTabNavigation},
+              "the Navigate menu: the views ADI has, the neighbours, then Tab's two switches (§41.1.1)");
         check(!names.contains("Help"), "a menu with no command yet is left out");
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
@@ -1303,6 +1303,26 @@ int main(int argc, char **argv) {
                     const bool unNudged = integrated.command(AppCommands::Undo);
                     integrated.frame();
                     check(unNudged && clipAt() != nullptr && clipAt()->posTicks == pos0, "and Undo puts it back");
+                    {
+                        // Move Clips with Arrow Keys off (§41.1.1): Right collapses the selection to
+                        // its end, Left to its start, and nothing moves.
+                        std::string refusal;
+                        const bool set = settings.set("editing.arrowKeysMoveClips", false, {}, refusal);
+                        commands.reload();
+                        arrangement.selectClip(clipTrack, 1);
+                        const auto undoBefore = integrated.undoTitle(false);
+                        const bool collapsed = press(juce::KeyPress::rightKey) && sel.start == sel.end &&
+                                               sel.insert == pos0 + length0 && sel.clip == 0;
+                        arrangement.selectClip(clipTrack, 1);
+                        const bool collapsedLeft = press(juce::KeyPress::leftKey) && sel.insert == pos0 && sel.clip == 0;
+                        integrated.frame();
+                        check(set && !commands.arrowKeysMoveClips() && collapsed && collapsedLeft &&
+                                  clipAt() != nullptr && clipAt()->posTicks == pos0 &&
+                                  integrated.undoTitle(false) == undoBefore,
+                              "with Move Clips with Arrow Keys off, Right and Left collapse the selection and move nothing");
+                        settings.set("editing.arrowKeysMoveClips", true, {}, refusal);
+                        commands.reload();
+                    }
                     point(end0);
                     check(press(juce::KeyPress::rightKey) && sel.insert == end0 + step && sel.start == sel.end &&
                               sel.clip == 0,
@@ -1704,6 +1724,34 @@ int main(int argc, char **argv) {
                       settings.get("lookfeel.tabMovesFocus") == true && peer != nullptr &&
                       peer->handleKeyPress(tab) && !canvas.hasKeyboardFocus(false),
                   "switched on from the Navigate menu, it is the setting, and Tab moves the focus on");
+            // Wrap Tab Navigation (§41.1.1), on by default: Tab from the last control goes round
+            // to the first; off, it stops there, and Shift+Tab stops at the first.
+            {
+                auto *container = canvas.findKeyboardFocusContainer();
+                auto traverser = canvas.createKeyboardFocusTraverser();
+                std::vector<juce::Component *> all;
+                if (container != nullptr && traverser != nullptr)
+                    all = traverser->getAllComponents(container);
+                const juce::KeyPress backTab(juce::KeyPress::tabKey, juce::ModifierKeys::shiftModifier, 0);
+                bool wrapped = false, stays = false, staysBack = false, off = false;
+                if (all.size() > 1 && peer != nullptr && integrated.isParentOf(all.back()) &&
+                    integrated.isParentOf(all.front())) {
+                    all.back()->grabKeyboardFocus();
+                    wrapped = commands.wrapTabNavigation() && peer->handleKeyPress(tab) &&
+                              all.front()->hasKeyboardFocus(false);
+                    off = integrated.command(AppCommands::WrapTabNavigation) && !commands.wrapTabNavigation() &&
+                          settings.get("lookfeel.wrapTabNavigation") == false;
+                    all.back()->grabKeyboardFocus();
+                    stays = peer->handleKeyPress(tab) && all.back()->hasKeyboardFocus(false);
+                    all.front()->grabKeyboardFocus();
+                    staysBack = peer->handleKeyPress(backTab) && all.front()->hasKeyboardFocus(false);
+                    integrated.command(AppCommands::WrapTabNavigation);
+                }
+                check(wrapped, "with Wrap Tab Navigation on, Live's default, Tab from the last control goes to the first");
+                check(off && stays && staysBack,
+                      "switched off from the Navigate menu, Tab stops at the last control, Shift+Tab at the first");
+                check(commands.wrapTabNavigation(), "and on again");
+            }
             check(integrated.command(AppCommands::TabMovesFocus) && !commands.tabMovesFocus(),
                   "and off again");
             // The Mixer's keyboard: Move Focus to Mixer (§42.16), then Next and Previous

@@ -74,7 +74,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         TripletGrid,
         SnapToGrid,
         FixedGrid,
-        LastId = FixedGrid
+        WrapTabNavigation,
+        LastId = WrapTabNavigation
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -95,6 +96,13 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // How Follow keeps the playhead on screen: by page (Live's default), or by scrolling.
     bool followByPage() const noexcept { return followByPage_; }
     bool setTabMovesFocus(bool on, std::string &why);
+    // Live's Wrap Tab Navigation (§41.1.1), on by default: Tab from an area's last control
+    // returns to its first; off, it stops there.
+    bool wrapTabNavigation() const noexcept { return wrapTab_; }
+    bool setWrapTabNavigation(bool on, std::string &why);
+    // Live's Move Clips with Arrow Keys (§41.1.1), on by default; off, left and right
+    // collapse a selection to its start or its end.
+    bool arrowKeysMoveClips() const noexcept { return arrowKeysMoveClips_; }
     // Ctrl/Cmd+wheel zooms around the selection, as Live; off, around the cursor.
     bool zoomOnSelection() const noexcept { return zoomOnSelection_; }
     juce::ApplicationCommandManager manager;
@@ -108,6 +116,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
+    bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
