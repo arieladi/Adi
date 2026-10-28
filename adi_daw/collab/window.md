@@ -48,6 +48,58 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud — Live's menu bar [#274](https://github.com/arieladi/Adi/pull/274) `window/menu-bar`
+
+**CI on #265 to #273, read first.** Nothing is red. Every Linux, Windows, s390x, i386, fuzz,
+validator and GUI-shell leg passed on all nine. At 06:20Z only macOS legs were still queued or
+running, waiting on macOS runners. No fix was needed, so nothing was pushed to the stack.
+
+**#274, stacked on #273** (parity-7.2-application row 11). Live 12's menus in Live's order, each
+listing only the commands ADI has. They are one table in `ui_shell.cpp` (`menuBar`).
+- **Settings moves to Options off the Mac.** The online manual §2.3 says "Settings can be found
+  in the Options menu on Windows and in the Live menu on macOS". ADI had it in the File menu.
+- **Settings on the Mac.** The Mac listed Settings in no menu; only Cmd+, reached it. It is now
+  the application menu's (`applicationMenu`, through `setMacMainMenu`).
+- **The Edit menu gains Delete Track before Rename** (§18.2: "Tracks are deleted using the Edit
+  menu's Delete command"). It has no Delete key: Live's Delete acts on whatever is selected,
+  clips included.
+- **Menus with nothing to list are left out:** Options on the Mac; Navigate until its focus moves
+  exist (§41.4.1, Alt+0 to Alt+8); Help until there is a Learn View (§2.2.1).
+
+Checks: shell 303 (296 on #273 here), document 38, window state 48; `test_all.sh` 8265 across 97
+suites PASS; zero warnings; the clang `-Wshadow-all` sweep is clean. The Mac-only lines compile
+only in CI's macOS legs.
+
+**How the cloud builds.**
+- Ubuntu 24.04, GCC 13.3, 4 cores, Ninja, with the apt packages `ui.yml` installs.
+- `fetch_external.sh --with-juce`, then one tree, `adi_daw/build-juce`, configured
+  `-DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_WERROR=ON`.
+- The UI tests run with `DISPLAY` unset, as `ui.yml` does. JUCE asserts in
+  `juce_Messaging_linux.cpp:87` about 2000 times there, a full message queue in a peerless run;
+  the checks pass.
+- The tip's numbers match the Mac's: 8265 checks across 97 suites.
+
+**Found, for the engine lane (not the window's to fix).** With `-DADI_WERROR=ON` and GCC 13,
+four targets fail inside JUCE's own sources: `adi_audio_probe`, `adi_vst3_probe`, `adi_play` and
+`adi_play_render_tests`.
+- They compile JUCE's module sources with the project's warning flags, and GCC's `-Wconversion`
+  fires in JUCE's headers (`juce_UMPUtils.h:78` and others).
+- No CI leg builds them that way: the JUCE legs run on macOS and Windows without `-Werror`.
+- The UI targets are unaffected. `test_all.sh` counts the same 97 suites: it globs the build
+  directory, and the four would land in their own `*_artefacts` folders.
+
+**The Live 12 manual here.** Ableton's online edition (2026-10-01). Its keyboard shortcuts are
+chapter 42, the PDF's 41; rows written here cite "online §". The text is read locally with curl,
+never committed.
+
+**Where to resume:** `window/menu-bar` (#274) is the tip of the stack.
+- Next: Navigate's focus moves for the views ADI has, Live's Alt/Option+0 (Control Bar), +2
+  (Arrangement), +4 (Device View), +5 (Browser) and Alt/Option+Shift+M (Mixer). Then Live's
+  Alt+letter that opens a menu on Windows (§42.28).
+- Phase C's window parts still wait for N17.
+
+---
+
 ## 2026-10-28, late — the lane moves to a cloud session
 
 The director is moving the window lane off the Mac to a Claude Code cloud session (environment
