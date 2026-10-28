@@ -50,6 +50,30 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, continued — a clip's right edge [#288](https://github.com/arieladi/Adi/pull/288) `window/clip-resize`
+
+**#288, stacked on #287** (parity-7.3-arrangement row 27). §6.7's edge drag, its right half:
+- over the last 4 units of a clip's bar the cursor is a bracket;
+- a drag lengthens or shortens the clip, its end on the nearest grid line (the bypass key as
+  for moves), never shorter than one grid step, drawn as it goes;
+- on release it is one `clip.resize` with the same `pos`, "Resize Clip".
+- One hit test, `barAt`, serves the move and the edge.
+- The left edge waits for a content offset in `clip.resize`; without one it would slide the
+  audio.
+
+Checks: shell 370, document 38, window state 51; `test_all.sh` 8268 across 97 suites PASS; zero
+warnings; the shadow sweep is clean.
+
+**CI** at 08:41Z on #274 to #287: no failure, no comment, no review; only macOS legs were
+pending, plus #286's and #287's runs in progress.
+
+**The session hit a usage limit and a worker restart after #288 went up; nothing was lost.**
+
+**Where to resume:** `window/clip-resize` (#288) is the tip. Next the window can do alone: the
+lanes' menu with Live's named grid widths. Then read CI on #274 to #288.
+
+---
+
 ## 2026-10-28, cloud, continued — Live's clip editing [#287](https://github.com/arieladi/Adi/pull/287) `window/clip-edits`
 
 **#287, stacked on #286** (parity-7.3-arrangement rows 27 to 29, new). The catalogue has had
@@ -70,10 +94,7 @@ Checks: shell 368, document 38, window state 51; `test_all.sh` 8268 across 97 su
 warnings; the shadow sweep is clean. The tests drag clip 1's bar through the fake peer with a
 real engine behind it, and undo each step.
 
-**Where to resume:** `window/clip-edits` (#287) is the tip. Next the window can do alone:
-- the right-edge drag, a length change that keeps the start (`clip.resize` with the same `pos`);
-- the lanes' menu with Live's named grid widths.
-Everything else waits as the previous entries say.
+**Where to resume** (superseded by the entry above): `window/clip-edits` (#287) was the tip.
 
 ---
 
