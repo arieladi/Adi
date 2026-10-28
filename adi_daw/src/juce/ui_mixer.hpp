@@ -112,6 +112,10 @@ class MixerPanel final : public juce::Component {
     // Auto Gain Stage, the one offline command (ADR-0195 d4, ADR-0203 d14): LUFS or RMS.
     std::function<bool(bool lufs)> autoGain;
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }
+    // ADI's addition (ADR-0080; the director, 28 October 2026): the side swap, in the band
+    // above the rows, so it travels with the track controls. Lit while they are on the left.
+    // The Mixer View has none.
+    juce::TextButton swapToggle{"Swap"};
 
   private:
     void place();
