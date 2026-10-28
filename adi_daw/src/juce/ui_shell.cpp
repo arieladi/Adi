@@ -778,7 +778,11 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::RenameTrack:
+        // Rename acts on the selection: the device with the focus, else the selected track.
         // The edit itself is its own op when the name is committed.
+        for (auto &panel : devices.panels)
+            if (panel->hasKeyboardFocus(true))
+                return panel->beginRename() || fail("Unfold the device to rename it.");
         return arrangement.headers.beginRename(arrangement.geometry.selection.track) ||
                fail("Select a track to rename.");
     case AppCommands::ZoomIn:
