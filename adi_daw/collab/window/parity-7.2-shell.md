@@ -19,8 +19,8 @@ Status: **built** (in this PR, with a check in `tests/test_ui_shell.cpp`), **par
 | 7 | Hide/Show Device View: Ctrl+Alt+4 | §41.1, p. 985 | Hides and shows the device strip; its height is kept | built |
 | 8 | Undo Ctrl+Z / Cmd+Z; Redo Ctrl+Y on Windows, Cmd+Shift+Z on the Mac | §41.5, p. 988 | As Live under the `live` preset; the Cubase and Bitwig presets redo on Ctrl/Cmd+Shift+Z | built |
 | 9 | Zoom In / Zoom Out Window: Ctrl/Cmd + and - | §41.9, p. 990 | Each window has its own interface zoom (ADR-0203 d6); the root lays out in logical units under it | built; measure Live's zoom steps (ADI uses 50 % to 200 % in 25 % steps, provisional) |
-| 10 | Space plays from the start marker, or stops | §41.20, p. 1001 | Space toggles play and stop through the driver's queue | partial: the start marker arrives with the arrangement (7.3) |
-| 11 | Shift+Space continues from the stop point | §41.20, p. 1001 | — | open: needs the transport's seek, with the arrangement |
+| 10 | Space plays from the start marker, or stops | §41.20, p. 1001 | Space toggles play and stop through the driver's queue, playing from the arrangement's insert marker (`parity-7.3-arrangement.md` row 12) | built |
+| 11 | Shift+Space continues from the stop point | §41.20, p. 1001 | Continue Play from Stop Point plays on from where the transport stopped (`parity-7.3-arrangement.md` row 14) | built |
 | 12 | Esc closes a window or a dialog | §41.1, p. 985 | Esc no longer stops the transport (win_codex's original did) | built (no dialog exists yet) |
 | 13 | Tab toggles Session and Arrangement | §41.1, p. 984 | — | open: Session View is P2 (ADR-0203 d10) |
 | 14 | Ctrl/Cmd+, opens the Settings | §41.1, p. 985 | Opens the Settings window in Live's shape (`window/settings`, `parity-settings.md`) | built |
