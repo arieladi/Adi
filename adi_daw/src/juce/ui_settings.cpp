@@ -319,6 +319,8 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
     defaults.setColour(juce::TextButton::buttonColourId, look::button);
     defaults.onClick = [this] {
         store.resetPage(page_, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000});
+        if (onChange)
+            onChange();
         std::string why;
         if (!store.save(why))
             setHelp("Not saved: " + juce::String::fromUTF8(why.c_str()));
@@ -433,6 +435,9 @@ bool SettingsPanel::change(const settings::Setting &s, const settings::Value &v)
         setHelp(juce::String::fromUTF8(why.c_str()));
         return false;
     }
+    // The value is in force from here, written or not.
+    if (onChange)
+        onChange();
     if (!store.save(why)) {
         setHelp("Not saved: " + juce::String::fromUTF8(why.c_str()));
         return false;
