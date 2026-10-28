@@ -225,6 +225,11 @@ juce::PopupMenu applicationMenu(AppCommands &);
 // Live on Windows (§42.28): Alt and a menu's first letter opens that menu. The menu's index
 // in the bar, or -1 when the key opens none.
 int menuForKey(juce::MenuBarModel &, const juce::KeyPress &);
+// A native window's tooltips, kept to the App settings: made or removed as tooltips are
+// switched on or off, and given a new delay, so a change in the Settings window reaches an
+// open window at its next frame. `delayMs` is the delay last given.
+void followTooltips(juce::Component &window, const AppCommands &,
+                    std::unique_ptr<juce::TooltipWindow> &, int &delayMs);
 // One attachment, key binding and tooltip window per native window, sharing
 // the app command manager.
 class ShellMenu;
@@ -242,6 +247,8 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
             setVisible(false);
     }
     juce::MenuBarModel *menu() noexcept;
+    // What the window keeps of the App settings, brought up to date: each frame does it.
+    void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }
     const juce::TooltipWindow *tooltips() const noexcept { return tips_.get(); }
     int tooltipDelayMs() const noexcept { return tipDelayMs_; }

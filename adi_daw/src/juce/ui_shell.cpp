@@ -968,17 +968,17 @@ void ZoomHost::resized() {
 AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &commands,
                      bool onDesktop)
     : DocumentWindow("ADI", juce::Colour(0xff171a20), DocumentWindow::allButtons, onDesktop),
-      root_(root.get()), commands_(commands), clock_(this, [this](double) { root_->frame(); }) {
+      root_(root.get()), commands_(commands), clock_(this, [this](double) {
+          followSettings();
+          root_->frame();
+      }) {
     setContentOwned(new ZoomHost(std::move(root)), true);
     setResizable(true, false);
     setResizeLimits(520, 180, 10000, 10000);
     addKeyListener(this);
     // Floating tooltips are on by default after 600 ms, a deliberate deviation
     // the director confirmed by name (ADR-0203 d12, ADR-0131); one per window.
-    if (commands_.tooltips()) {
-        tipDelayMs_ = commands_.tooltipDelayMs();
-        tips_ = std::make_unique<juce::TooltipWindow>(this, tipDelayMs_);
-    }
+    followSettings();
     commands_.activate(*root_);
     menu_ = std::make_unique<ShellMenu>(*root_, commands_);
     // On the Mac the menu is the application's, at the top of the screen, as Live's,
@@ -1002,6 +1002,21 @@ AdiWindow::~AdiWindow() {
     removeKeyListener(this);
 }
 juce::MenuBarModel *AdiWindow::menu() noexcept { return menu_.get(); }
+void AdiWindow::followSettings() { followTooltips(*this, commands_, tips_, tipDelayMs_); }
+void followTooltips(juce::Component &window, const AppCommands &commands,
+                    std::unique_ptr<juce::TooltipWindow> &tips, int &delayMs) {
+    if (!commands.tooltips()) {
+        tips.reset();
+        return;
+    }
+    if (tips == nullptr) {
+        delayMs = commands.tooltipDelayMs();
+        tips = std::make_unique<juce::TooltipWindow>(&window, delayMs);
+    } else if (delayMs != commands.tooltipDelayMs()) {
+        delayMs = commands.tooltipDelayMs();
+        tips->setMillisecondsBeforeTipAppears(delayMs);
+    }
+}
 bool AdiWindow::keyPressed(const juce::KeyPress &key, juce::Component *) {
 #if !JUCE_MAC
     // Alt and a menu's first letter opens it (§42.28); JUCE's menus then take the arrows,

@@ -595,6 +595,21 @@ int main(int argc, char **argv) {
                                                        persistence, session, "quiet"),
                     commands, false);
     check(quiet.tooltips() == nullptr, "the setting turns them off for new windows");
+    // An open window follows at its next frame (a change in Settings applies at once).
+    window.followSettings();
+    check(window.tooltips() == nullptr, "and off in an open window at its next frame");
+    check(settings.set("lookfeel.showTooltips", true, {}, why) &&
+              settings.set("lookfeel.tooltipDelayMs", 750, {}, why),
+          "switch tooltips on again, slower");
+    commands.reload();
+    quiet.followSettings();
+    window.followSettings();
+    check(quiet.tooltips() != nullptr && quiet.tooltipDelayMs() == 750 && window.tooltipDelayMs() == 750,
+          "on again in an open window, with the new delay");
+    check(settings.set("lookfeel.showTooltips", false, {}, why) &&
+              settings.set("lookfeel.tooltipDelayMs", 600, {}, why),
+          "tooltips off and back to 600 ms for the checks after");
+    commands.reload();
     // Live's menu bar in Live's order, each menu listing only the commands ADI has (§42.28).
     {
         auto *bar = window.menu();
@@ -1612,6 +1627,33 @@ int main(int argc, char **argv) {
                   "Restore Defaults puts the page back");
         } else
             check(false, "a switch to try");
+        // What the application keeps of the settings follows a change at once: the Info View
+        // from its switch, through the commands every window reads.
+        {
+            int changes = 0;
+            panel.onChange = [&] {
+                ++changes;
+                commands.reload();
+            };
+            const settings::Setting *infoSetting = nullptr;
+            for (const auto &s : settings::registry())
+                if (s.key == "lookfeel.showInfoView")
+                    infoSetting = &s;
+            const bool infoWas = commands.infoView();
+            auto *infoRow = rowFor(infoSetting);
+            auto *infoSwitch = infoRow ? dynamic_cast<juce::TextButton *>(infoRow->control.get()) : nullptr;
+            if (infoSwitch) {
+                infoSwitch->setToggleState(!infoWas, juce::dontSendNotification);
+                infoSwitch->onClick();
+            }
+            check(infoSwitch && changes == 1 && commands.infoView() == !infoWas,
+                  "a change in the Settings window reaches the commands at once, and every window with them");
+            if (infoSwitch) {
+                infoSwitch->setToggleState(infoWas, juce::dontSendNotification);
+                infoSwitch->onClick();
+            }
+            panel.onChange = nullptr;
+        }
         if (auto *row = rowFor(choice)) {
             auto *chooser = dynamic_cast<juce::ComboBox *>(row->control.get());
             if (chooser)
