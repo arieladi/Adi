@@ -46,8 +46,64 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N18 | A device's copy the window can read: what `device.remove`'s inverse captures (the plug-in reference, the stored params, the state's hashes, the panel and the route), from the snapshot or a read the UI may call, so a paste is a `device.insert` with a new id in front of the selected device (Live manual §23, p. 443) | engine | Cut, Copy, Paste and Duplicate in a device's menu and the Edit menu (§23.2.1) | the menu lists Delete and Rename; the four wait |
 | N19 | The transport's metronome and loop: `transport.setMetronome` and `transport.setLoop` are in the catalogue but apply nothing (`transportNoop`); the snapshot carries neither the metronome's state nor the loop region, and nothing clicks or loops | engine | the control bar's Metronome and Loop switches, Live's O key (§42.20) and Ctrl/Cmd+L, the loop brace (§6.6, §42.16) | the switches are drawn and say they are not built; nothing is journaled for them |
 | N20 | A home for the channel configuration: `audio.channelConfig` is Device scope, which `AppSettings::set` refuses ("belongs to a device"), and its text has no format; the app also opens the device with no inputs (`initialise(0, 2, ...)`) | win (the store and the registry); engine for recording | Live's Input and Output Config dialogs on the Audio page: which channels are used, mono or stereo pairs, their names per device (online §17.2, Routing and I/O; parity-settings row 7) | nothing built; the dialogs are a new window, so their pictures would go to the director first |
-| N21 | Two Display & Input settings Live has (online §41.1.1): Wrap Tab Navigation, and Move Clips with Arrow Keys (on by default; when off, left and right collapse a time selection to its start or end) | win (the settings registry) | the Navigate menu's Wrap Tab Navigation and the Arrangement's arrows (parity-7.2-shell row 21, parity-7.3-arrangement row 30) | Tab stops at either end; the arrows always move clips, Live's default |
+| N21 | WITHDRAWN 2026-10-28: both settings exist in the registry (`lookfeel.wrapTabNavigation`, `editing.arrowKeysMoveClips`); the window follows them itself (master-reference-audit.md) | — | — | — |
+| N22 | A track's delay in the snapshot (`mixer.setDelay` exists) | engine | Track Delay in ms on every strip (MR 7, 8.1) | nothing shown |
+| N23 | Solo in Place (a setting or a project field, and the engine following it) and the cue path: Solo/Cue, Cue Out, Cue Volume | engine; win for the registry row | the Solo button's menu and the Options menu (MR 8.1) | Solo is plain solo |
+| N24 | Live's Delay Compensation switch: a setting and the engine following it, Track Delay off while it is off | engine; win for the row | the Options menu (MR 7, 8.4) | nothing shown |
+| N25 | Markers and locators: ops, and the snapshot carrying them, a marker holding a note and a prompt | engine | locators, the Set button, markers with prompts (MR 3.3) | the Set button is drawn and says it is not built |
+| N26 | Automation data in the snapshot (lanes, points, the overridden state) | engine | automation lanes, Re-Enable Automation lit (MR 6.1) | the two buttons are drawn |
+| N27 | Remarks in the snapshot | engine | the remark pip and the Info View's split (MR 3.5) | nothing shown |
+| N28 | A device's sample slot the window can fill (an op), and the missing-file mark in the snapshot | engine, devices | Color Cab's drop tile "with step 7" (MR 9.8, 9.3) | nothing shown |
+| N29 | History's list of undo steps (labels, newest first, with branches and snapshots) | engine (`src/adi/history`) | Live's Undo History window, View menu, Ctrl+Alt+Z (MR V.4 §4) | Undo and Redo only |
+| N30 | Save a Copy, Collect All and Save, and Collect and Export (the ZIP) in the store | engine (N3's family) | the File menu (MR 1.6, 11.3) | not listed yet |
+| N31 | Per-track ops for Rec-Q / Play-Q and Keep Monitoring Latency | engine | the MIDI track header and the monitor button's right-click (MR V.2 §9) | nothing shown |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, cloud, continued — the Master Reference against the window [#291](https://github.com/arieladi/Adi/pull/291) `window/mref-audit`
+
+**The director's message.** The swap of browser and channels is not to be seen, nor a Bitwig-style
+filter that shows one group or folder; "go over my document and make sure all we describe is there".
+He uploaded the Master Reference v1.2 to main (`adi_daw/5_Adi-Daw Master Reference (claude draft
+v1.2) preview.pdf`, 190 pages).
+
+**Read in full** (text and figures), and every interface item checked against the code:
+`collab/window/master-reference-audit.md`, one row per item, built / partial / hidden / missing / waits /
+later.
+- **The swap is built but hidden.** It is View › "Swap side panels" only: no key, nothing on screen.
+  After a swap the track names stay right of the clips while their controls go left.
+- **The filters and views are missing:** the named view filters (MR 10, figure 32, Bitwig's group
+  menu), the three view states, the current view state in the control bar, and project tabs.
+  Groups wait for N6.
+- **Other gaps:**
+  - the palette;
+  - the strip's scope and the Scope window;
+  - the Parameter List and the parameter context menu;
+  - a scrolling browser sidebar (Places is cut off on a short window);
+  - the Options-menu items whose settings exist;
+  - Settings presets and profiles, related-word search, and Restore "Don't Show Again";
+  - Safe Mode and the sample-rate bar;
+  - the clip view and the note editor (P0, and not in step 7's plan).
+- **N21 was wrong and is withdrawn:** both settings exist. New Needs N22 to N31, from the audit.
+- **Pictures for the director:** `collab/window/pictures/2026-10-28-swap-track-names.png`.
+  A is today; B is Live mirrored; C is names first, as Bitwig and Cubase.
+
+**For the director:** four questions, at the audit's end:
+1. Which side the track names go on after a swap (B or C).
+2. The visible swap control, proposed in the Status Bar beside Mixer.
+3. The view filter's control.
+4. Where the clip view and the note editor go in the queue.
+
+**Parked:** `window/track-move` (dragging tracks by their title bars, Insert Track renumbering) is
+stashed locally, unfinished, and resumes after the audit's first items.
+
+**Where to resume:** `window/mref-audit` (#291) is the tip. The window's queue from the audit, items
+2 and 3 first:
+- Navigate's Wrap Tab Navigation and Move Clips with Arrow Keys from the existing settings;
+- the Options-menu items from the existing settings.
+
+Then the rest of the audit's queue, the swap and the filters as the director rules.
 
 ---
 
@@ -81,8 +137,7 @@ Checks: shell 393, window state 52, document 38, seams 96; `test_all.sh` 8269 ac
 PASS; zero warnings; the shadow sweep is clean (it caught one shadowed `sel`, now fixed). Under
 Xvfb, a click and Shift+Right twice select 1.4.1 to 2.2.1 on the quarter grid.
 
-**Where to resume:** `window/arrangement-nav` (#290) is the tip. Read CI on #288 (after its fix),
-#289 and #290. Then take the next partial row the window can finish alone.
+**Where to resume** (superseded by the entry above): `window/arrangement-nav` (#290) was the tip.
 
 ---
 
