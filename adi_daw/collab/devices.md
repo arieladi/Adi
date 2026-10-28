@@ -5,6 +5,86 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-10-28 — Live access working; Compressor calibration measured on Live 11.2.7
+
+Live is available and working. The earlier “access unresolved” note described
+an automation targeting problem, not a missing Live installation or a request
+for Adi to configure it. Binding the app by bundle identifier resolved control.
+Preserved the current Set as `untitled_preserved_2026-10-28.als` in its own
+Project, then loaded the isolated `compressor_calibration` Set. About Live
+confirmed **11.2.7, build 2022-12-08_2509d781e7**. No input from Adi is pending.
+
+Captured all nine tracks through the local parameter bridge and verified every
+Compressor control, mixer unity, centered pan, stopped transport, and restored
+focus. Exported All Individual Tracks, Return/Master effects off, start 1.1.1,
+length 4.0.1 (8.125 s), stereo WAV, 48 kHz, 32 bit, no dither, normalization or
+loop rendering. The WAV parser confirms actual IEEE float32 and 390,000 frames.
+**61 calibration checks pass**: both no-device references match their inputs
+exactly at zero offset; bypass, three unity-ratio lookaheads, dry-only and fixed
++6 dB controls meet their declared tolerances. The active Compressor step has
+finite positive output and measured attenuation. This validates the measurement
+path, not full Compressor parity or internal lookahead latency (offline PDC).
+
+Local evidence is under `work/local.nosync/live11-probe/`: actual WAVs in
+`out/compressor_calibration/`, parameter capture, validation and export/version
+provenance in `evidence/calibration-{parameters,validation,export-settings}.json`.
+Source/Set/manifest/output hashes are retained. Seven synthetic validator
+failure plants were rejected before accepting the actual renders. The earlier
+preparation README and manifests intentionally retain their preparation-time
+status; these dated evidence records supersede their no-render checkpoint.
+Static and dynamics response batches are next. Live 12 manual evidence remains
+separate from these Live 11 measurements.
+
+## 2026-10-28 — Reconciled CI and later work; OneShot recovery resumes
+
+Verified the exact current heads through GitHub: **all 19 checks pass** for
+[#250](https://github.com/arieladi/Adi/pull/250) (`d730ad5`), draft
+[#253](https://github.com/arieladi/Adi/pull/253) (`234a816`), and
+[#259](https://github.com/arieladi/Adi/pull/259) (`1f47b21`). This includes
+GCC, Clang, MSVC, strict warning/hardening jobs and both JUCE jobs. Main remains
+`a57d47a`; none of these changes has been merged.
+
+The preceding checkpoint omitted two later completed changes:
+
+- Hybrid Reverb now uses PFFFT through `RealFft` in `spectrum.*`, with packed
+  DC/Nyquist handling, normalized inverse and preallocated aligned scratch.
+  Full strict local validation: **8,304 checks / 97 suites**. Affected suites:
+  103 FFT, 50 native Hybrid and 11 Pd checks. Four compiled source plants
+  (DC/Nyquist, inverse scale, phase, omitted partition) fail 13/7/13/10 checks;
+  restoration passes. The sparse `1e-7` oracle remains; dense full-tail tests
+  have an explicit amplitude-scaled float-roundoff budget. The Live parity
+  gaps remain; the handwritten FFT debt is resolved.
+- The existing ADI limiter retained the previous rate's release coefficient
+  across prepare. #259 retains seconds and recomputes the coefficient,
+  including values set before first prepare. Strict local validation:
+  **8,189 checks / 95 suites**; the original behavior and compiled plant fail
+  eight new checks. This is not a Live Limiter implementation or parity claim.
+
+Recovery re-audit: #206–#208 production integration prerequisites remain.
+However, OneShot's native DSP plus the independent ParamMod additions can be
+recovered within this lane; an explicit test loader can prove playback without
+editing Session. Work starts on `devices/oneshot` in a fresh
+`work/active.nosync/oneshot` worktree. A Pd sample bridge must publish immutable
+prepared data, not call allocating sample analysis from perform. Pd instrument
+Consume/event-flow metadata and production discovery remain integration gates.
+
+Additional local measurement preparation was also reconciled: Live **11.2.7**
+API controls for Compressor, Glue and Gate are in `work/live11-evidence/`,
+explicitly not fresh defaults or audio renders. Three Compressor probe Sets
+(calibration/static/dynamics), 46 tracks and seven synthetic input WAVs exist
+under `work/local.nosync/live11-probe`. The prior MBD Set was saved in that
+folder before calibration was opened; the old preparation README predates
+those actions. No rendered outputs exist yet. Capture/validation scripts are
+being completed, and current Live/export state must be verified before accepting
+any measurement. Current Preferences observation: 48 kHz, 512 samples, no input,
+MacBook Air Speakers output; no preferences changed in this resumed turn.
+
+Filesystem correction: iCloud has replaced the earlier `work/pd-zero-delay`
+and `work/hybrid-reverb` symlinks with duplicate directories. Do not assume
+those aliases still identify the validated checkout; current Git heads and
+remote CI are authoritative. Preserve duplicates until their state is audited;
+new worktrees are created directly inside `work/active.nosync/`.
+
 ## 2026-10-27 — Checkpoint: two device PRs open; no merges
 
 - **[#250](https://github.com/arieladi/Adi/pull/250)** — `devices/pd-zero-delay`,
