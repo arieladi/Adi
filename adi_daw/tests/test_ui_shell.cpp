@@ -1086,6 +1086,71 @@ int main(int argc, char **argv) {
             juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
             check(arrangement.geometry.selection.end == arrangement.geometry.tick(58),
                   "Alt (Cmd on the Mac) bypasses the grid while dragging");
+            // Live's clip editing (§6.7, §6.9): a clip moves by its bar, to the grid; Delete
+            // deletes it and 0 deactivates it; each is one undo step.
+            {
+                auto &geo = arrangement.geometry;
+                std::int64_t clipTrack = 0, pos0 = 0;
+                int barTop = -geo.scrollY;
+                for (const auto &tr : integrated.reader().tracks()) {
+                    for (const auto &c : tr->clips)
+                        if (c->id == 1) {
+                            clipTrack = tr->id;
+                            pos0 = c->posTicks;
+                        }
+                    if (clipTrack != 0)
+                        break;
+                    barTop += geo.heightFor(tr->id);
+                }
+                auto clipAt = [&]() -> const engine::ClipNode * {
+                    if (const auto *tr = integrated.reader().findTrack(clipTrack))
+                        for (const auto &c : tr->clips)
+                            if (c->id == 1)
+                                return c.get();
+                    return nullptr;
+                };
+                const auto bar = peerRoot
+                                     .getLocalPoint(&arrangement.canvas,
+                                                    juce::Point<int>{static_cast<int>(geo.x(pos0)) + 4, barTop + 5})
+                                     .toFloat();
+                const auto gridTicks = static_cast<std::int64_t>(geo.gridQuarters() * textproj::kPPQ);
+                const auto expected = geo.snap(pos0 + geo.tick(100) - geo.tick(0), false);
+                when += 1000;
+                mouse(bar, 0);
+                mouse(bar, juce::ModifierKeys::leftButtonModifier);
+                mouse(bar.translated(100, 0), juce::ModifierKeys::leftButtonModifier);
+                const bool previewed = arrangement.canvas.movingClip() == 1 && arrangement.canvas.movingTo() != pos0;
+                mouse(bar.translated(100, 0), 0);
+                integrated.frame();
+                const auto *moved = clipAt();
+                check(clipTrack != 0 && previewed && moved != nullptr && moved->posTicks % gridTicks == 0 &&
+                          std::llabs(moved->posTicks - expected) <= gridTicks &&
+                          geo.selection.start == moved->posTicks && integrated.undoTitle(false) == "Undo Move Clip",
+                      "dragging a clip's bar moves it, to the grid, as one undo step named Move Clip");
+                const bool movedBack = integrated.command(AppCommands::Undo);
+                integrated.frame();
+                check(movedBack && clipAt() != nullptr && clipAt()->posTicks == pos0, "and Undo puts it back");
+                when += 1000;
+                mouse(bar, 0);
+                mouse(bar, juce::ModifierKeys::leftButtonModifier);
+                mouse(bar, 0);
+                juce::Component &clipKeys = arrangement.canvas;
+                const bool picked = geo.selection.clip == 1;
+                const bool deactivated = clipKeys.keyPressed(juce::KeyPress('0'));
+                integrated.frame();
+                check(picked && deactivated && clipAt() != nullptr && clipAt()->muted &&
+                          integrated.undoTitle(false) == "Undo Deactivate Clip",
+                      "0 deactivates the selected clip");
+                const bool activated = clipKeys.keyPressed(juce::KeyPress('0'));
+                integrated.frame();
+                check(activated && clipAt() != nullptr && !clipAt()->muted, "and 0 again activates it");
+                const bool deleted = clipKeys.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+                integrated.frame();
+                check(deleted && clipAt() == nullptr && geo.selection.clip == 0, "Delete deletes the selected clip");
+                const bool restored = integrated.command(AppCommands::Undo);
+                integrated.frame();
+                check(restored && clipAt() != nullptr && clipAt()->posTicks == pos0, "and Undo brings it back");
+            }
             when += 1000;
             mouse(origin, 0);
             mouse(origin, juce::ModifierKeys::leftButtonModifier);
