@@ -61,6 +61,30 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, continued — Wrap Tab Navigation, Move Clips with Arrow Keys [#292](https://github.com/arieladi/Adi/pull/292) `window/settings-nav`
+
+**#292, stacked on #291**; the audit's item 2. Both settings were already in the registry, so N21 is
+withdrawn (#291's entry).
+- **Wrap Tab Navigation** is the Navigate menu's second ticked switch (`lookfeel.wrapTabNavigation`,
+  on, as Live's). On, Tab from the window's last control goes to its first; off, Tab stops at the last
+  and Shift+Tab at the first. The window's content is now a keyboard focus container.
+- **Move Clips with Arrow Keys** off (`editing.arrowKeysMoveClips`): left and right collapse a
+  selection to its start or end and move nothing.
+
+Rows updated: parity-7.2-shell row 21 (built; measure what Live counts as an area) and
+parity-7.3-arrangement row 30.
+
+Checks: shell 397, window state 52, document 38, seams 96; `test_all.sh` 8269 across 97 suites PASS;
+zero warnings; the shadow sweep is clean (one shadowed `why` in the test, renamed). The Wrap check was
+shown to fail with the stop disabled.
+
+**Where to resume:** `window/settings-nav` (#292) is the tip. Next, the audit's item 3: the Options
+menu's Chase MIDI Notes, MIDI Envelope Auto-Reset and Reduced Latency When Monitoring, from their
+settings; then Edit MIDI Map and Edit Key Map; then Exclusive Solo followed. The swap and the filters
+wait for the director's answers to the audit's questions 1 to 3.
+
+---
+
 ## 2026-10-28, cloud, continued — the Master Reference against the window [#291](https://github.com/arieladi/Adi/pull/291) `window/mref-audit`
 
 **The director's message.** The swap of browser and channels is not to be seen, nor a Bitwig-style
@@ -98,12 +122,7 @@ later.
 **Parked:** `window/track-move` (dragging tracks by their title bars, Insert Track renumbering) is
 stashed locally, unfinished, and resumes after the audit's first items.
 
-**Where to resume:** `window/mref-audit` (#291) is the tip. The window's queue from the audit, items
-2 and 3 first:
-- Navigate's Wrap Tab Navigation and Move Clips with Arrow Keys from the existing settings;
-- the Options-menu items from the existing settings.
-
-Then the rest of the audit's queue, the swap and the filters as the director rules.
+**Where to resume** (superseded by the entry above): `window/mref-audit` (#291) was the tip.
 
 ---
 
