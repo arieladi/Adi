@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_floating.hpp"
+#include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -1292,6 +1293,111 @@ int main(int argc, char **argv) {
         check(!mixerView.isVisible() && !document->views().load("main").mixerView,
               "the Status Bar's corner toggle hides it again");
         document->release();
+    }
+    // The Settings window in Live's shape (ADR-0203 d11, Master Reference V.1).
+    {
+        SettingsPanel panel(settings);
+        panel.setSize(560, 680);
+        const auto pages = settings::pages();
+        check(!pages.empty() && panel.pageNames() == pages && panel.page() == pages.front(),
+              "the Settings window lists the registry's pages in its order and opens on the first");
+        std::size_t onAudio = 0;
+        for (const auto &s : settings::registry())
+            if (s.page == "Audio")
+                ++onAudio;
+        panel.showPage("Audio");
+        check(panel.page() == "Audio" && panel.rows().size() == onAudio && panel.audioDevices() == nullptr,
+              "one page at a time, every setting on it in the registry's order");
+        auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
+            if (s == nullptr)
+                return nullptr;
+            panel.showPage(s->page);
+            for (const auto &row : panel.rows())
+                if (&row->setting == s)
+                    return row.get();
+            return nullptr;
+        };
+        const settings::Setting *flag = nullptr, *choice = nullptr, *projectSetting = nullptr;
+        for (const auto &s : settings::registry()) {
+            if (!flag && s.type == settings::Type::Bool && s.scope == settings::Scope::App)
+                flag = &s;
+            if (!choice && s.type == settings::Type::Choice && s.scope == settings::Scope::App &&
+                s.choices.size() >= 2)
+                choice = &s;
+            if (!projectSetting && s.scope == settings::Scope::Project)
+                projectSetting = &s;
+        }
+        if (auto *row = rowFor(flag)) {
+            auto *button = dynamic_cast<juce::TextButton *>(row->control.get());
+            const bool wasOn = settings.get(flag->key).get<bool>();
+            if (button) {
+                button->setToggleState(!wasOn, juce::dontSendNotification);
+                button->onClick();
+            }
+            settings::AppSettings reread(appdata::App::Daw, settings.file());
+            check(button && settings.get(flag->key) == !wasOn && reread.get(flag->key) == !wasOn &&
+                      button->getButtonText() == (wasOn ? "Off" : "On"),
+                  "a switch applies at once and is written at once, with no OK button");
+            panel.defaults.onClick();
+            check(settings.get(flag->key) == flag->defaultValue && button &&
+                      button->getToggleState() == flag->defaultValue.get<bool>(),
+                  "Restore Defaults puts the page back");
+        } else
+            check(false, "a switch to try");
+        if (auto *row = rowFor(choice)) {
+            auto *chooser = dynamic_cast<juce::ComboBox *>(row->control.get());
+            if (chooser)
+                chooser->setSelectedItemIndex(1, juce::sendNotificationSync);
+            check(chooser && settings.get(choice->key) == choice->choices[1], "a chooser applies at once");
+            if (chooser)
+                chooser->setSelectedItemIndex(0, juce::sendNotificationSync);
+        } else
+            check(false, "a chooser to try");
+        if (auto *row = rowFor(projectSetting))
+            check(!row->control->isEnabled(), "a project's setting is shown with its mark, changed by its op");
+        const auto pageBefore = panel.page();
+        panel.search.setText("buffer", true);
+        check(panel.finding() && !panel.rows().empty() &&
+                  panel.rows().size() == settings::search("buffer").size(),
+              "the Find box lists every matching setting, from every page");
+        panel.search.setText({}, true);
+        check(!panel.finding() && panel.page() == pageBefore, "clearing it goes back to the page");
+        panel.showPage(pages.front());
+        const auto ctrl = juce::ModifierKeys::ctrlModifier;
+        check(pages.size() < 2 ||
+                  (panel.keyPressed(juce::KeyPress(juce::KeyPress::tabKey, ctrl, 0)) && panel.page() == pages[1] &&
+                   panel.keyPressed(
+                       juce::KeyPress(juce::KeyPress::tabKey, ctrl | juce::ModifierKeys::shiftModifier, 0)) &&
+                   panel.page() == pages.front()),
+              "Ctrl+Tab and Ctrl+Shift+Tab move between the pages");
+        check(pages.size() < 2 || (panel.pageList.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) &&
+                                   panel.page() == pages[1]),
+              "with the chooser focused, the arrows do");
+        bool closed = false;
+        panel.onClose = [&closed] { closed = true; };
+        check(panel.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && closed, "Esc closes the window");
+        const settings::Setting *ranged = nullptr;
+        for (const auto &s : settings::registry())
+            if (!ranged && s.type == settings::Type::Int && s.scope == settings::Scope::App && s.max > s.min)
+                ranged = &s;
+        check(ranged && !panel.change(*ranged, static_cast<std::int64_t>(ranged->max) + 1) &&
+                  panel.help().isNotEmpty(),
+              "a value the registry refuses is not written, and the help line says why");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+            folder.isNotEmpty()) {
+            panel.showPage("Audio");
+            juce::Image image(juce::Image::ARGB, 2 * panel.getWidth(), 2 * panel.getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                panel.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-settings.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        }
     }
     liveParity(commands, temp.path(), write);
     std::printf("%d checks, %d failures\n", checks, failures);
