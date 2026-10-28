@@ -174,6 +174,9 @@ class ArrangementView final : public juce::Component {
     void locate();
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);
+    // The lanes' menu's grid (§6.10): the adaptive and fixed widths by name, the one in use
+    // ticked, then Triplet Grid and Snap to Grid.
+    void addGridItems(juce::PopupMenu &);
     // Live's Follow (§6.2): brings the playhead at `tick` on screen, by page (it jumps to the
     // left edge once it leaves the lanes) or by scrolling (it stays in the middle). True when
     // the view moved.

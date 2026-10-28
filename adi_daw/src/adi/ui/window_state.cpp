@@ -74,9 +74,10 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.gridSnap = j.value("gridSnap", true);
         state.gridFixed = j.value("gridFixed", false);
         state.gridTriplet = j.value("gridTriplet", false);
-        state.gridNarrow = std::clamp(j.value("gridNarrow", 0), -3, 3);
+        // Within the widths the lanes' menu names: Widest to Narrowest, 8 Bars to 1/32.
+        state.gridNarrow = std::clamp(j.value("gridNarrow", 0), -2, 2);
         const double fixedStep = j.value("gridFixedQuarters", .25);
-        state.gridFixedQuarters = std::isfinite(fixedStep) ? std::clamp(fixedStep, 1. / 32, 32.) : .25;
+        state.gridFixedQuarters = std::isfinite(fixedStep) ? std::clamp(fixedStep, 1. / 8, 32.) : .25;
         if (j.contains("folded"))
             for (const auto &id : j.at("folded"))
                 state.foldedDevices.insert(id.get<std::int64_t>());

@@ -697,6 +697,70 @@ int main(int argc, char **argv) {
             check(lanesView.snaps(bypass), "with snapping off, Alt (Cmd on the Mac) snaps while held");
             check(gridLabel(4, false) == "1 Bar" && gridLabel(8, false) == "2 Bars" && gridLabel(.25, false) == "1/16",
                   "the spacing reads as Live's: bars, then fractions");
+            // The lanes' menu names the widths (§6.10); the keys stay within them.
+            lanes.grid = {};
+            lanes.scale = 48;
+            auto gridMenu = [&lanesView] {
+                juce::PopupMenu menu;
+                lanesView.addGridItems(menu);
+                return menu;
+            };
+            auto sub = [](const juce::PopupMenu &menu, const char *name) -> const juce::PopupMenu * {
+                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                    if (it.getItem().text == name)
+                        return it.getItem().subMenu.get();
+                return nullptr;
+            };
+            // Each item's name, with " *" when it is ticked.
+            auto names = [](const juce::PopupMenu *menu) {
+                juce::StringArray out;
+                if (menu != nullptr)
+                    for (juce::PopupMenu::MenuItemIterator it(*menu); it.next();)
+                        out.add(it.getItem().text + (it.getItem().isTicked ? " *" : ""));
+                return out;
+            };
+            auto pick = [](const juce::PopupMenu *menu, const char *name) {
+                if (menu != nullptr)
+                    for (juce::PopupMenu::MenuItemIterator it(*menu); it.next();)
+                        if (it.getItem().text == name && it.getItem().action) {
+                            it.getItem().action();
+                            return true;
+                        }
+                return false;
+            };
+            {
+                const auto menu = gridMenu();
+                std::vector<int> ids;
+                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                    ids.push_back(it.getItem().itemID);
+                check(names(sub(menu, "Adaptive Grid")) ==
+                          juce::StringArray{"Widest", "Wide", "Medium *", "Narrow", "Narrowest"},
+                      "the lanes' menu names the adaptive widths, Medium ticked by default");
+                check(names(sub(menu, "Fixed Grid")) == juce::StringArray{"8 Bars", "4 Bars", "2 Bars", "1 Bar", "1/2",
+                                                                          "1/4", "1/8", "1/16", "1/32"},
+                      "and the fixed widths, 8 Bars to 1/32, none ticked");
+                check(ids == std::vector<int>{0, 0, AppCommands::TripletGrid, AppCommands::SnapToGrid},
+                      "then Triplet Grid and Snap to Grid");
+                check(pick(sub(menu, "Fixed Grid"), "1/8") && lanes.grid.fixed && lanes.gridQuarters() == .5 &&
+                          persistence.load("view-toggles").gridFixed &&
+                          persistence.load("view-toggles").gridFixedQuarters == .5,
+                      "choosing 1/8 fixes the grid at an eighth, kept with the window");
+            }
+            check(names(sub(gridMenu(), "Fixed Grid"))[6] == "1/8 *" &&
+                      !names(sub(gridMenu(), "Adaptive Grid")).joinIntoString(",").contains("*"),
+                  "the menu ticks the width in use, and only it");
+            check(viewRoot.keyPressed(juce::KeyPress('1', cmd, 0)) && viewRoot.keyPressed(juce::KeyPress('1', cmd, 0)) &&
+                      viewRoot.keyPressed(juce::KeyPress('1', cmd, 0)) && lanes.grid.fixedQuarters == .125,
+                  "Ctrl/Cmd+1 narrows a fixed grid no further than 1/32");
+            check(pick(sub(gridMenu(), "Adaptive Grid"), "Narrowest") && !lanes.grid.fixed && lanes.grid.narrow == 2 &&
+                      lanes.gridQuarters() == .25 && persistence.load("view-toggles").gridNarrow == 2,
+                  "choosing Narrowest makes it adaptive again, two steps narrower");
+            check(viewRoot.keyPressed(juce::KeyPress('1', cmd, 0)) && lanes.grid.narrow == 2,
+                  "and Ctrl/Cmd+1 narrows it no further");
+            for (int i = 0; i < 5; ++i)
+                viewRoot.keyPressed(juce::KeyPress('2', cmd, 0));
+            check(lanes.grid.narrow == -2 && names(sub(gridMenu(), "Adaptive Grid"))[0] == "Widest *",
+                  "Ctrl/Cmd+2 widens it as far as Widest");
             lanes.grid = {};
             lanes.scale = 48;
             lanesView.changed();
