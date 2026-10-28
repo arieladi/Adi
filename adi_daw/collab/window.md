@@ -45,7 +45,32 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
-## 2026-10-27, latest — the Mixer View in Live's shape and its peak levels [#266](https://github.com/arieladi/Adi/pull/266) `window/peak-indicators`
+## 2026-10-28 — the Settings window in Live's shape [#267](https://github.com/arieladi/Adi/pull/267) `window/settings`
+
+**#267, stacked on #266. LANES §3b item 3 begins.** Measured against Live 11.2.7's Preferences
+window, captured on the director's Mac once the macOS prompt that covered Live was answered.
+- Live's tabs beside a rounded page panel. Rows are typed from the registry at Live's measures
+  (names at 17, controls at 191, 197 and 97 wide, a 21-unit pitch).
+- Every change is applied and written at once, with no OK button.
+- REAPER's Find box, a help line at the foot, Restore Defaults per page, and the Project and
+  Device marks.
+- Live's keys: Ctrl+Tab and Option+Tab, the arrows on the tab list, and Esc.
+- The Audio page leads with Live's Audio Device, Sample Rate and Latency sections over the
+  device manager (`app_audio_page`). This replaces the JUCE selector dialog Cmd+, opened.
+- `--smoke-settings` renders that page natively.
+- The director has the side-by-side pictures of the Settings window and the Mixer View.
+
+Checks: 277 shell checks; `test_all.sh` 8265 across 97 suites PASS; the shadow sweep is clean
+(it caught an MSVC C4456 in the new test before push). `parity-settings.md` lists what waits:
+the registry's tab names and sections (N14).
+
+**Next in item 3:** the EQ/limiter window (ADR-0204 d1). Then the phase C window parts: their
+ops (fades, Insert Silence, the import and bounce prompts) are not in the catalogue yet, so they
+will be logged as needs where they block.
+
+---
+
+## 2026-10-27, night — the Mixer View in Live's shape and its peak levels [#266](https://github.com/arieladi/Adi/pull/266) `window/peak-indicators`
 
 **#266, stacked on #265.**
 - The Mixer View is measured on Live 11's Session mixer (Live 11's Mixer View): 93-unit
