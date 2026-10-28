@@ -1020,6 +1020,271 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
     }
 }
 
+/// ADR-0207 d2: the fixture at 64, driven as the graph drives a device -- told
+/// its width, prepared, then handed a block at that width in segments.
+///
+/// The proof that kSample64 went all the way is in the samples: the fixture
+/// computes a voice in double and writes it at the width it was set up at,
+/// so a 64-bit render holds values no float can hold, and its 32-bit twin is
+/// the same render rounded to float. A host that narrowed anywhere -- set the
+/// plugin up at 32, or handed it float buffers -- makes every sample float.
+void fixturePrecision(adi::device::Vst3Host& host) {
+    using adi::engine::Event;
+    using adi::engine::EventType;
+    using adi::engine::Precision;
+    using adi::device::Vst3Device;
+
+    std::printf("\n[ADR-0207] the fixture at 64: kSample64 from setupProcessing to the graph's buffers\n");
+    juce::OwnedArray<juce::PluginDescription> types;
+    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    auto find = [&](const char* name) -> const juce::PluginDescription* {
+        for (auto* t : types) if (t->name == name) return t;
+        return nullptr;
+    };
+
+    constexpr double sr = 48000.0;
+    constexpr int kBlock = 512, kBlocks = 8;
+    constexpr double kStale = 7.0;   // what a buffer holds before a block: never a sample
+    auto make = [&](const juce::PluginDescription& d, Precision width) {
+        std::string err;
+        auto dev = host.makeDevice(d, sr, kBlock, err);
+        auto* v3 = dynamic_cast<Vst3Device*>(dev.get());
+        if (v3 == nullptr || !v3->loaded()) {
+            check(false, "the fixture loads: " + err);
+            return std::unique_ptr<adi::device::DeviceInstance>{};
+        }
+        v3->willBeHanded(width);
+        v3->prepare(sr, kBlock);
+        return dev;
+    };
+    // kBlocks blocks of the left channel, then the same of the right, every
+    // block in segments of `segment` frames and a note at the very start.
+    // `extra` are block-relative events in block `extraBlock`, each handed to
+    // the segment it falls in. A device is played once per activation, so one
+    // voice sounds: two at one pitch and different phases can cancel.
+    constexpr auto kLen = static_cast<std::size_t>(kBlock * kBlocks);   // one channel's samples
+    auto record = [&](std::vector<double>& to, const double* wide, const float* narrow) {
+        for (std::size_t i = 0; i < static_cast<std::size_t>(kBlock); ++i)
+            to.push_back(wide != nullptr ? wide[i] : static_cast<double>(narrow[i]));
+    };
+    auto play = [&](Vst3Device& v3, bool wide, int segment, const std::vector<Event>& extra = {},
+                    int extraBlock = 0) {
+        Event on;
+        on.type = EventType::NoteOn; on.noteId = 1; on.dim = 60; on.channel = 1; on.value = 0.8;
+        std::vector<double> l(kBlock), r(kBlock), all, right;
+        std::vector<float> lf(kBlock), rf(kBlock);
+        double* out64[2] = {l.data(), r.data()};
+        float* out[2] = {lf.data(), rf.data()};
+        for (int b = 0; b < kBlocks; ++b) {
+            for (auto* ch : {&l, &r}) std::fill(ch->begin(), ch->end(), kStale);
+            for (auto* ch : {&lf, &rf}) std::fill(ch->begin(), ch->end(), static_cast<float>(kStale));
+            for (int at = 0; at < kBlock; at += segment) {
+                std::vector<Event> ev;
+                if (b == 0 && at == 0) ev.push_back(on);
+                if (b == extraBlock)
+                    for (const Event& e : extra) if (e.frame >= at && e.frame < at + segment) ev.push_back(e);
+                adi::engine::NodeIo io;
+                if (wide) io.out64 = out64; else io.out = out;
+                io.channels = 2;
+                io.frames = segment;
+                io.blockOffset = at;
+                io.sampleRate = sr;
+                io.inputSilent = true;
+                io.events = adi::engine::EventSpan{ev.data(), static_cast<std::int32_t>(ev.size())};
+                v3.process(io);
+            }
+            record(all, wide ? l.data() : nullptr, lf.data());
+            record(right, wide ? r.data() : nullptr, rf.data());
+        }
+        all.insert(all.end(), right.begin(), right.end());
+        return all;
+    };
+    auto peak = [](const std::vector<double>& a) {
+        double p = 0.0;
+        for (double x : a) p = std::max(p, std::fabs(x));
+        return p;
+    };
+    // Sounding samples a float could hold exactly, out of all sounding ones.
+    auto floatSamples = [](const std::vector<double>& a) {
+        std::size_t exact = 0, sounding = 0;
+        for (double x : a) {
+            if (x == 0.0) continue;
+            ++sounding;
+            if (static_cast<double>(static_cast<float>(x)) == x) ++exact;
+        }
+        return std::make_pair(exact, sounding);
+    };
+    auto rounded = [](const std::vector<double>& a, const std::vector<double>& b) {
+        if (a.size() != b.size() || a.empty()) return false;
+        for (std::size_t i = 0; i < a.size(); ++i)
+            if (static_cast<double>(static_cast<float>(a[i])) != b[i]) return false;
+        return true;
+    };
+
+    for (const char* name : {"ADI Test MPE", "ADI Test NoteExpr"}) {
+        const juce::PluginDescription* d = find(name);
+        const std::string who = name;
+        check(d != nullptr, who + ": found");
+        if (d == nullptr) continue;
+
+        auto dev64 = make(*d, Precision::Float64);
+        auto dev32 = make(*d, Precision::Float32);
+        auto* v64 = dynamic_cast<Vst3Device*>(dev64.get());
+        auto* v32 = dynamic_cast<Vst3Device*>(dev32.get());
+        if (v64 == nullptr || v32 == nullptr) continue;
+        check(v64->processesDouble(), who + ": says it takes kSample64, so a graph at 64 hands it double");
+        check(v64->processingDouble(), who + ": told 64, it is set up at kSample64");
+        check(!v32->processingDouble(), who + ": told 32, it is set up at 32 -- the width is the graph's, "
+                                               "whatever the plugin supports");
+
+        const std::vector<double> a = play(*v64, true, kBlock);
+        const auto [exact, sounding] = floatSamples(a);
+        check(peak(a) > 0.05, who + ": it sounds at 64, peak " + std::to_string(peak(a)));
+        check(sounding > 1000 && exact == 0,
+              who + ": and no sample of it is a float -- " + std::to_string(exact) + " of " +
+                  std::to_string(sounding) + ": the plugin wrote double, and nothing narrowed it");
+        const std::vector<double> b = play(*v32, false, kBlock);
+        check(rounded(a, b), who + ": the render at 32 is the render at 64 rounded to float, sample for sample");
+
+        {
+            auto seg = make(*d, Precision::Float64);
+            auto* vs = dynamic_cast<Vst3Device*>(seg.get());
+            check(vs != nullptr && play(*vs, true, 128) == a,
+                  who + ": in segments of 128 it is the same render, bit for bit: the offset is applied at 64");
+        }
+        {
+            // ADR-0089 d4: a rebuild prepares the next graph while the last
+            // one still plays, and both hold this device. Whichever width the
+            // device is set up at, the other graph's buffers still work.
+            auto x64 = make(*d, Precision::Float64);
+            auto x32 = make(*d, Precision::Float32);
+            auto* w64 = dynamic_cast<Vst3Device*>(x64.get());
+            auto* w32 = dynamic_cast<Vst3Device*>(x32.get());
+            check(w64 != nullptr && rounded(a, play(*w64, false, kBlock)),
+                  who + ": set up at 64 and handed float, it plays the same render, rounded once at its seam");
+            check(w32 != nullptr && rounded(a, play(*w32, true, kBlock)),
+                  who + ": set up at 32 and handed double, the same, rounded once and widened");
+        }
+
+        // The switch: a new width is a reactivation, and only a new width.
+        const std::int64_t before = v32->activations();
+        v32->willBeHanded(Precision::Float64);
+        v32->prepare(sr, kBlock);
+        check(v32->processingDouble() && v32->activations() == before + 1,
+              who + ": told 64 on the same rate and block, it reactivates once, at kSample64");
+        check(play(*v32, true, kBlock) == a,
+              who + ": and plays what a device set up at 64 from the start plays, bit for bit");
+        v32->willBeHanded(Precision::Float64);
+        v32->prepare(sr, kBlock);
+        check(v32->activations() == before + 1, who + ": the same width again reactivates nothing (ADR-0090)");
+        v32->willBeHanded(Precision::Float32);
+        v32->prepare(sr, kBlock);
+        check(!v32->processingDouble() && v32->activations() == before + 2,
+              who + ": told 32 again, it reactivates at 32");
+        check(rounded(a, play(*v32, false, kBlock)), who + ": and plays the render at 32 again");
+    }
+
+    // The input: the fixture passes it through, so what comes out is what the
+    // host handed the plugin. Doubles no float can hold, in segments of 128,
+    // and a different stream on each channel, so a channel handed another's
+    // samples shows.
+    if (const auto* d = find("ADI Test NoteExpr")) {
+        std::vector<double> noise(2 * kLen);   // the left channel's, then the right's
+        std::uint64_t seed = 0x9E3779B97F4A7C15ull;
+        for (double& x : noise) {
+            seed = seed * 6364136223846793005ull + 1442695040888963407ull;
+            x = (static_cast<double>(seed >> 11) / 9007199254740992.0 - 0.5) * 0.5;   // 53 bits
+        }
+        auto feed = [&](Vst3Device& v3, bool wide) {
+            std::vector<double> in(2 * static_cast<std::size_t>(kBlock)), l(kBlock), r(kBlock), all, right;
+            std::vector<float> inf(2 * static_cast<std::size_t>(kBlock)), lf(kBlock), rf(kBlock);
+            const double* in64[2] = {in.data(), in.data() + kBlock};
+            const float* in32[2] = {inf.data(), inf.data() + kBlock};
+            double* out64[2] = {l.data(), r.data()};
+            float* out[2] = {lf.data(), rf.data()};
+            for (int b = 0; b < kBlocks; ++b) {
+                for (std::size_t c = 0; c < 2; ++c)
+                    for (std::size_t i = 0; i < static_cast<std::size_t>(kBlock); ++i) {
+                        const double x = noise[c * kLen + static_cast<std::size_t>(b * kBlock) + i];
+                        in[c * static_cast<std::size_t>(kBlock) + i] = x;
+                        inf[c * static_cast<std::size_t>(kBlock) + i] = static_cast<float>(x);
+                    }
+                for (auto* ch : {&l, &r}) std::fill(ch->begin(), ch->end(), kStale);
+                for (auto* ch : {&lf, &rf}) std::fill(ch->begin(), ch->end(), static_cast<float>(kStale));
+                for (int off = 0; off < kBlock; off += 128) {
+                    adi::engine::NodeIo io;
+                    if (wide) { io.in64 = in64; io.out64 = out64; }
+                    else      { io.in = in32; io.out = out; }
+                    io.channels = 2;
+                    io.frames = 128;
+                    io.blockOffset = off;
+                    io.sampleRate = sr;
+                    v3.process(io);
+                }
+                record(all, wide ? l.data() : nullptr, lf.data());
+                record(right, wide ? r.data() : nullptr, rf.data());
+            }
+            all.insert(all.end(), right.begin(), right.end());
+            return all;
+        };
+        auto at64 = make(*d, Precision::Float64);
+        auto at32 = make(*d, Precision::Float32);
+        auto* v64 = dynamic_cast<Vst3Device*>(at64.get());
+        auto* v32 = dynamic_cast<Vst3Device*>(at32.get());
+        if (v64 != nullptr && v32 != nullptr) {
+            check(feed(*v64, true) == noise,
+                  "the input at 64, in segments: the plugin is handed it bit for bit, at its offset");
+            check(rounded(noise, feed(*v32, true)),
+                  "set up at 32 and handed double input: it is rounded once, on the way in");
+            check(rounded(noise, feed(*v64, false)),
+                  "set up at 64 and handed float input: it is the float input, widened exactly");
+        }
+    }
+
+    // A block the plugin refuses is silent where it is, and only there. The
+    // switch arrives in the second block's second segment.
+    if (const auto* d = find("ADI Test NoteExpr")) {
+        for (const bool wide : {true, false}) {
+            const std::string at = wide ? "at 64" : "at 32";
+            auto ref = make(*d, wide ? Precision::Float64 : Precision::Float32);
+            auto bad = make(*d, wide ? Precision::Float64 : Precision::Float32);
+            auto* vr = dynamic_cast<Vst3Device*>(ref.get());
+            auto* vb = dynamic_cast<Vst3Device*>(bad.get());
+            if (vr == nullptr || vb == nullptr) continue;
+            Event refuse;
+            refuse.type = EventType::ParamValue; refuse.paramId = 4007; refuse.value = 1.0; refuse.frame = 128;
+            const std::vector<double> good = play(*vr, wide, 128);
+            const std::vector<double> got = play(*vb, wide, 128, {refuse}, 1);
+            const auto s = static_cast<std::size_t>(kBlock);
+            bool before = true, silent = true, after = true;
+            for (std::size_t c0 : {std::size_t{0}, kLen}) {   // each channel
+                for (std::size_t i = s; i < s + 128; ++i) before = before && got[c0 + i] == good[c0 + i];
+                for (std::size_t i = s + 128; i < s + 256; ++i) silent = silent && got[c0 + i] == 0.0;
+                const auto from = got.begin() + static_cast<std::ptrdiff_t>(c0 + s + 256);
+                after = after && peak(std::vector<double>(from, from + static_cast<std::ptrdiff_t>(kLen - s - 256))) > 0.05;
+            }
+            check(before, "a refused segment " + at + ": the segment before it keeps its audio");
+            check(silent, "and the refused one is silent, at its offset -- not left holding the last block");
+            check(after, "and the plugin plays on after it");
+        }
+    }
+
+    // Plain refuses kSample64: the host never sets it up at a width it refused.
+    if (const auto* d = find("ADI Test Plain")) {
+        auto dev = make(*d, Precision::Float64);
+        auto* v3 = dynamic_cast<Vst3Device*>(dev.get());
+        if (v3 != nullptr) {
+            check(!v3->processesDouble(), "ADI Test Plain refuses kSample64, and the device says so: "
+                                          "a graph at 64 converts at its seam");
+            check(!v3->processingDouble(), "told 64 regardless, it is set up at 32");
+            const std::vector<double> a = play(*v3, true, kBlock);
+            const auto [exact, sounding] = floatSamples(a);
+            check(peak(a) > 0.05 && sounding > 1000 && exact == sounding,
+                  "handed double, it plays at 32, widened at its seam: every sample is a float");
+        }
+    }
+}
+
 void fixtureAcceptance(adi::device::Vst3Host& host) {
     using adi::engine::Event;
     using adi::engine::EventType;
@@ -1174,6 +1439,7 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
     fixtureGesture(host);
     fixtureState(host);
     fixtureReactivation(host);
+    fixturePrecision(host);
 }
 #endif
 

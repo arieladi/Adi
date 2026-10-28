@@ -30,6 +30,7 @@
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
 #include "juce/play_edits.hpp"
+#include "juce/vst3_host.hpp"
 
 #include <juce_audio_devices/juce_audio_devices.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -138,6 +139,11 @@ struct Options {
     std::string deviceName;
     std::vector<std::string> searchDirs;
     bool expectNoEdits = false;   // 27a: exit 4 if a plug-in sent a parameter change back (ADR-0162)
+    /// ADR-0207 d2: the Processing Precision the session runs at.
+    adi::engine::Precision precision = adi::engine::Precision::Float32;
+    /// Exit 2 unless the graph hands every loaded device double, and every
+    /// VST3 among them is set up at kSample64. Needs --precision 64.
+    bool requireDouble = false;
 };
 
 int usage() {
@@ -145,7 +151,7 @@ int usage() {
         "adi_play <project.adi> [--block N] [--rate HZ] [--seconds S] [--resize M]\n"
         "                       [--tone [TRACK]] [--type DEVICE-TYPE] [--device NAME]\n"
         "                       [--search DIR]... [--fixture] [--require-devices]\n"
-        "                       [--require-peak DBFS]\n"
+        "                       [--require-peak DBFS] [--precision 32|64] [--require-double]\n"
         "                       [--dry] [--save-state]\n"
         "                       [--from SECONDS] [--no-play] [--render SECONDS]\n"
         "                       [--render-output WAV] (requires --render; 32-bit float)\n"
@@ -165,7 +171,10 @@ int usage() {
         "  While it plays, the parameter-op glue watches every device and reports what" "\n"
         "  plug-ins sent back (ADR-0124); --expect-no-edits fails the run with exit code 4" "\n"
         "  if anything did: an automation value that returns as an edit overrides its" "\n"
-        "  own lane (ADR-0162)." "\n");
+        "  own lane (ADR-0162)." "\n"
+        "  --precision 64 runs the graph at 64-bit (ADR-0207 d2): every buffer, sum and" "\n"
+        "  delay line in double, and double handed to each plug-in that takes it." "\n"
+        "  --require-double exits 2 unless every loaded device is handed double." "\n");
     return 2;
 }
 
@@ -181,6 +190,14 @@ bool parse(int argc, char** argv, Options& o) {
         else if (a == "--type")    { const char* v = next(i); if (!v) return false; o.deviceType = v; }
         else if (a == "--device")  { const char* v = next(i); if (!v) return false; o.deviceName = v; }
         else if (a == "--expect-no-edits") o.expectNoEdits = true;
+        else if (a == "--precision") {
+            const char* v = next(i); if (!v) return false;
+            const std::string w = v;
+            if (w == "64") o.precision = adi::engine::Precision::Float64;
+            else if (w == "32") o.precision = adi::engine::Precision::Float32;
+            else return false;
+        }
+        else if (a == "--require-double") o.requireDouble = true;
         else if (a == "--tone") {
             o.tone = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.toneTrack = std::atoll(argv[++i]);
@@ -203,6 +220,7 @@ bool parse(int argc, char** argv, Options& o) {
         else o.file = a;
     }
     if (o.block <= 0 || o.seconds <= 0) return false;
+    if (o.requireDouble && o.precision != adi::engine::Precision::Float64) return false;
     if (!o.renderOutput.empty() && (!(o.render > 0.0) || !std::isfinite(o.render) || o.list)) return false;
     return o.list || !o.file.empty();
 }
@@ -245,6 +263,34 @@ void report(const adi::engine::Session& s, const adi::device::JuceDeviceLoader& 
         std::printf("  problems (%s):\n", n(static_cast<std::int64_t>(s.problems().size())).c_str());
         for (const std::string& p : s.problems()) std::printf("    - %s\n", p.c_str());
     }
+}
+
+/// ADR-0207 d2: which devices a graph at 64 hands double. A device that does
+/// not take it is handed float, converted at its seam; a VST3 that does is
+/// set up at kSample64 when it is activated, and says whether it was. True
+/// when every loaded device is handed double and every such VST3 is set up
+/// at 64, and there is at least one.
+bool reportPrecision(adi::engine::Session& s) {
+    const bool wide = s.spec().precision == adi::engine::Precision::Float64;
+    std::int64_t loaded = 0, doubles = 0, vst3 = 0, vst3At64 = 0;
+    for (std::size_t i = 0; i < s.entryCount(); ++i) {
+        const adi::engine::Session::Entry& e = s.entryAt(i);
+        if (e.placeholder || e.retired) continue;
+        ++loaded;
+        adi::device::DeviceNode& node = s.devices().nodeAt(e.hostIndex);
+        // What the graph decided when it was built, and only while the device
+        // still takes it: a CLAP's answer can move at an activation, and the
+        // graph keeps the old width until its next rebuild.
+        const bool handed = wide && node.handed() == adi::engine::Precision::Float64 && node.processesDouble();
+        if (handed) ++doubles;
+        if (const auto* v3 = dynamic_cast<const adi::device::Vst3Device*>(&node.instance())) {
+            ++vst3;
+            if (v3->processingDouble()) ++vst3At64;
+        }
+    }
+    std::printf("  precision %s-bit: %s of %s loaded device(s) handed double; %s of %s VST3 set up at kSample64\n",
+                wide ? "64" : "32", n(doubles).c_str(), n(loaded).c_str(), n(vst3At64).c_str(), n(vst3).c_str());
+    return loaded > 0 && doubles == loaded && vst3At64 == vst3;
 }
 
 }  // namespace
@@ -450,12 +496,14 @@ int main(int argc, char** argv) {
     adi::engine::SessionSpec spec;
     spec.sampleRate = rate;
     spec.maxFrames = o.block;
+    spec.precision = o.precision;
     const bool loaded = session.load(*store, loader.fn(), spec);
     report(session, loader, peek);
     if (!loaded) {
         std::printf("\nFAILED -- %s\n", session.error().c_str());
         return 1;
     }
+    const bool allDouble = reportPrecision(session);
 
     // --require-devices: a stand-in is a FAILURE, not a note in the log.
     //
@@ -478,6 +526,13 @@ int main(int argc, char** argv) {
             std::printf("\nFAILED -- --require-devices: no devices in this project at all\n");
             return 2;
         }
+    }
+    // --require-double: the same as a fact. A device the graph converts at
+    // its seam still plays, and a render at 64 through it passes every other
+    // gate, so "it played at 64" says nothing about whether the plug-in did.
+    if (o.requireDouble && !allDouble) {
+        std::printf("\nFAILED -- --require-double: a loaded device is not handed double\n");
+        return 2;
     }
     // ADR-0151: a player plays. The transport belongs to the driver, and its
     // commands go in between callbacks -- here, before any device is open.

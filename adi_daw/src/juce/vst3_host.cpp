@@ -213,6 +213,9 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
         // note-expression interfaces belong to the controller, which is not
         // called from the audio thread.
         caps_ = probeExpressionCaps(*inst_);
+        // ADR-0207 d2: what the graph asks, before it prepares. Here, because
+        // it asks the processor, and that is a message-thread question.
+        canDouble_ = inst_->supportsDoublePrecisionProcessing();
     }
     // The graph asks before it prepares this device, so the tail is read now,
     // at the rate the instance was created at (0 with no instance, as before).
@@ -363,8 +366,11 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // `prepareToPlay` is not a cheap no-op on a JUCE VST3 wrapper: it runs
     // `setupProcessing` and reactivates the component, which is exactly the
     // state loss this is here to avoid.
+    // ADR-0207 d2: the sample size is fixed at activation, so a graph that
+    // now hands this device the other width is a reactivation too.
+    const bool wantDouble = handed64_ && canDouble_;
     if (prepared_ && sampleRate == sampleRate_ && maxFrames == maxFrames_ &&
-        (chans < 1 ? 2 : chans) == channels_) {
+        (chans < 1 ? 2 : chans) == channels_ && wantDouble == double_) {
         return;
     }
     // From here JUCE stops and reactivates the component and the buffers are
@@ -397,9 +403,16 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     // below hands it them before it asks. So a format change to a device
     // still active (a block size changed on an open stream, a retired device
     // reused at a new size) resized our buffers and never reached the
-    // plug-in, which was then handed blocks larger than it was set up for.
-    // Releasing an instance that is not active does nothing.
+    // plug-in, which was then handed blocks larger than it was set up for;
+    // and a change of width alone (ADR-0207 d2) would have left it set up at
+    // the old sample size. Releasing an instance that is not active does
+    // nothing.
     inst_->releaseResources();
+    // The width, before `prepareToPlay`: it hands `setupProcessing`
+    // `kSample64` when the processor is set to double.
+    inst_->setProcessingPrecision(wantDouble ? juce::AudioProcessor::doublePrecision
+                                             : juce::AudioProcessor::singlePrecision);
+    double_ = wantDouble;
     inst_->setRateAndBufferSizeDetails(sampleRate, maxFrames);
     inst_->prepareToPlay(sampleRate, maxFrames);
     ++activations_;
@@ -445,9 +458,13 @@ void Vst3Device::prepare(double sampleRate, std::int32_t maxFrames) {
     injectedUsed_ = 0;
     rawIn_.resize(static_cast<std::size_t>(channels_));
     rawOut_.resize(static_cast<std::size_t>(channels_));
+    rawIn64_.resize(static_cast<std::size_t>(channels_));
+    rawOut64_.resize(static_cast<std::size_t>(channels_));
 
-    // Allocated at prepare, never in process (ADR-0010).
+    // Allocated at prepare, never in process (ADR-0010). One width in use.
     scratch_.setSize(channels_, maxFrames, false, true, true);
+    if (double_) scratch64_.setSize(channels_, maxFrames, false, true, true);
+    else         scratch64_.setSize(0, 0);
     midi_.ensureSize(4096);
 
     // HERE, and it was not. Since ADR-0073 this line sat after the `return`
@@ -475,7 +492,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     // the buffers: this call passes the audio through (`ReactivationGate`).
     const ReactivationGate::Pass pass(gate_);
     if (!pass) { passThrough(io); return; }
-    if (inst_ == nullptr || io.out == nullptr) return;
+    if (inst_ == nullptr || (!io.wide() && io.out == nullptr)) return;
 
     const std::int32_t n = std::min(io.frames, maxFrames_);
     const std::int32_t ch = std::min(io.channels, channels_);
@@ -489,12 +506,7 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     // length and `io.blockOffset` is where it starts (ADR-0042). `scratch_` is
     // segment-sized and starts at 0, so the offset applies on the graph's side.
     const std::int32_t off = io.blockOffset;
-    for (std::int32_t c = 0; c < ch; ++c) {
-        float* dst = scratch_.getWritePointer(c);
-        const float* src = (io.in != nullptr) ? io.in[c] + off : nullptr;
-        if (src != nullptr) std::copy(src, src + n, dst);
-        else                std::fill(dst, dst + n, 0.0f);
-    }
+    copyIn(io, n, ch);
 
     // --- ADR-0073: the raw path, where note expression actually works ----
     if (processor_ != nullptr) {
@@ -567,21 +579,32 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         // would silently drop every parameter a caller pushed by hand.
         for (std::size_t i = 0; i < injectedThisSegment; ++i) queueParamValue(injected_[i]);
 
-        for (std::int32_t c = 0; c < ch; ++c) {
-            rawIn_[static_cast<std::size_t>(c)]  = scratch_.getWritePointer(c);
-            rawOut_[static_cast<std::size_t>(c)] = scratch_.getWritePointer(c);
-        }
-
+        // ADR-0207 d2: the width the plug-in was set up at. `channelBuffers32`
+        // and `channelBuffers64` share their storage, and `symbolicSampleSize`
+        // says which one is meant; it must match `setupProcessing`.
         Steinberg::Vst::AudioBusBuffers inBus{};
         inBus.numChannels = ch;
         inBus.silenceFlags = 0;
-        inBus.channelBuffers32 = rawIn_.data();
         Steinberg::Vst::AudioBusBuffers outBus = inBus;
-        outBus.channelBuffers32 = rawOut_.data();
+        if (double_) {
+            for (std::int32_t c = 0; c < ch; ++c) {
+                rawIn64_[static_cast<std::size_t>(c)]  = scratch64_.getWritePointer(c);
+                rawOut64_[static_cast<std::size_t>(c)] = scratch64_.getWritePointer(c);
+            }
+            inBus.channelBuffers64 = rawIn64_.data();
+            outBus.channelBuffers64 = rawOut64_.data();
+        } else {
+            for (std::int32_t c = 0; c < ch; ++c) {
+                rawIn_[static_cast<std::size_t>(c)]  = scratch_.getWritePointer(c);
+                rawOut_[static_cast<std::size_t>(c)] = scratch_.getWritePointer(c);
+            }
+            inBus.channelBuffers32 = rawIn_.data();
+            outBus.channelBuffers32 = rawOut_.data();
+        }
 
         Steinberg::Vst::ProcessData pd{};
         pd.processMode = Steinberg::Vst::kRealtime;
-        pd.symbolicSampleSize = Steinberg::Vst::kSample32;
+        pd.symbolicSampleSize = double_ ? Steinberg::Vst::kSample64 : Steinberg::Vst::kSample32;
         pd.numSamples = n;
         pd.numInputs = 1;
         pd.numOutputs = 1;
@@ -596,22 +619,15 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
         const Steinberg::tresult r = processor_->process(pd);
         if (r != Steinberg::kResultOk) {
             // The plugin did not write the output, so copying it out hands
-            // the graph last block's audio. Silence for this segment only.
-            for (std::int32_t c = 0; c < io.channels; ++c)
-                if (io.out[c] != nullptr)
-                    for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][i] = 0.0f;
+            // the graph last block's audio. Silence for this segment only --
+            // at its offset, which this wrote from the block's start before
+            // ADR-0207 d2 rewrote it: an error in a later segment wiped the
+            // segments before it and left its own stale.
+            silence(io);
             return;
         }
 
-        for (std::int32_t c = 0; c < io.channels; ++c) {
-            float* out = io.out[c];
-            if (out == nullptr) continue;
-            out += off;
-            if (c < ch) std::copy(rawOut_[static_cast<std::size_t>(c)],
-                                  rawOut_[static_cast<std::size_t>(c)] + n, out);
-            else        std::fill(out, out + n, 0.0f);
-            for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;
-        }
+        copyOut(io, n, ch);
         continuousTime_ += n;
         return;
     }
@@ -628,18 +644,69 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
     // which is a bug report; a 7-bit buffer is a plugin that sounds nearly
     // right, which is not. ADR-0057 has the route.
 
-    juce::AudioBuffer<float> view(scratch_.getArrayOfWritePointers(), ch, n);
-    inst_->processBlock(view, midi_);
+    if (double_) {
+        juce::AudioBuffer<double> view(scratch64_.getArrayOfWritePointers(), ch, n);
+        inst_->processBlock(view, midi_);
+    } else {
+        juce::AudioBuffer<float> view(scratch_.getArrayOfWritePointers(), ch, n);
+        inst_->processBlock(view, midi_);
+    }
+    copyOut(io, n, ch);
+}
 
+void Vst3Device::copyIn(const engine::NodeIo& io, std::int32_t n, std::int32_t ch) noexcept {
+    const std::int32_t off = io.blockOffset;
+    for (std::int32_t c = 0; c < ch; ++c) {
+        if (double_) {
+            double* dst = scratch64_.getWritePointer(c);
+            if (io.wide() && io.in64 != nullptr) std::copy(io.in64[c] + off, io.in64[c] + off + n, dst);
+            else if (!io.wide() && io.in != nullptr)
+                for (std::int32_t i = 0; i < n; ++i) dst[i] = io.in[c][off + i];   // widened, exactly
+            else std::fill(dst, dst + n, 0.0);
+        } else {
+            float* dst = scratch_.getWritePointer(c);
+            if (!io.wide() && io.in != nullptr) std::copy(io.in[c] + off, io.in[c] + off + n, dst);
+            else if (io.wide() && io.in64 != nullptr)
+                for (std::int32_t i = 0; i < n; ++i) dst[i] = static_cast<float>(io.in64[c][off + i]);
+            else std::fill(dst, dst + n, 0.0f);
+        }
+    }
+}
+
+void Vst3Device::copyOut(const engine::NodeIo& io, std::int32_t n, std::int32_t ch) noexcept {
+    const std::int32_t off = io.blockOffset;
+    // A segment shorter than the buffer leaves the tail untouched, and the
+    // tail is last block's audio: the rest of the segment is silenced.
     for (std::int32_t c = 0; c < io.channels; ++c) {
-        float* out = io.out[c];
-        if (out == nullptr) continue;
-        out += off;
-        if (c < ch) std::copy(view.getReadPointer(c), view.getReadPointer(c) + n, out);
-        else        std::fill(out, out + n, 0.0f);
-        // A segment shorter than the buffer leaves the tail untouched, and the
-        // tail is last block's audio.
-        for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;
+        if (io.wide()) {
+            double* out = io.out64[c];
+            if (out == nullptr) continue;
+            out += off;
+            if (c < ch && double_) std::copy(scratch64_.getReadPointer(c), scratch64_.getReadPointer(c) + n, out);
+            else if (c < ch)       for (std::int32_t i = 0; i < n; ++i) out[i] = scratch_.getReadPointer(c)[i];
+            else                   std::fill(out, out + n, 0.0);
+            for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0;
+        } else {
+            float* out = io.out[c];
+            if (out == nullptr) continue;
+            out += off;
+            if (c < ch && !double_) std::copy(scratch_.getReadPointer(c), scratch_.getReadPointer(c) + n, out);
+            else if (c < ch)
+                for (std::int32_t i = 0; i < n; ++i) out[i] = static_cast<float>(scratch64_.getReadPointer(c)[i]);
+            else std::fill(out, out + n, 0.0f);
+            for (std::int32_t i = n; i < io.frames; ++i) out[i] = 0.0f;
+        }
+    }
+}
+
+void Vst3Device::silence(const engine::NodeIo& io) noexcept {
+    const std::int32_t off = io.blockOffset;
+    for (std::int32_t c = 0; c < io.channels; ++c) {
+        if (io.wide()) {
+            if (io.out64[c] != nullptr) std::fill(io.out64[c] + off, io.out64[c] + off + io.frames, 0.0);
+        } else if (io.out[c] != nullptr) {
+            std::fill(io.out[c] + off, io.out[c] + off + io.frames, 0.0f);
+        }
     }
 }
 
