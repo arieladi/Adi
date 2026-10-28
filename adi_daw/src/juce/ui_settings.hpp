@@ -17,6 +17,8 @@ class SettingRow final : public juce::Component, public juce::SettableTooltipCli
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseEnter(const juce::MouseEvent &) override;
+    void focusOfChildComponentChanged(FocusChangeType) override;
+    bool keyFocused() const noexcept { return keyFocus_; }
     // Shows the value in force, from the store.
     void refresh();
     const settings::Setting &setting;
@@ -28,6 +30,7 @@ class SettingRow final : public juce::Component, public juce::SettableTooltipCli
   private:
     void commit(const settings::Value &);
     SettingsPanel &panel_;
+    bool keyFocus_ = false;
 };
 // A page's heading, as Live's: the words in bold, a rule to the page's edge.
 class SettingsHeading final : public juce::Component {

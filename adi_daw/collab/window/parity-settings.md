@@ -15,7 +15,7 @@ Status as in `parity-7.2-shell.md`.
 | 6 | A change applies at once; no OK button | V.1 §1 | Every change is set and written at once; a refused value is not written and the help line says why | built |
 | 7 | The Audio page: driver type, input and output devices, sample rate, buffer size, the latencies | §40.2; Live 11 measured | `AudioDevicePage` over the application's device manager; the manager's listener writes `audio.*` | built; Channel Configuration and Driver Error Compensation beside the latencies are open |
 | 8 | Tab / Shift+Tab move between controls | §40.1.2 | JUCE's focus order | built |
-| 9 | Up/Down toggle, adjust or cycle a focused value; Enter toggles | §40.1.2 | Choosers cycle with the arrows (JUCE) | partial: arrows on a focused switch and value box are open |
+| 9 | Up/Down toggle, adjust or cycle a focused value; Enter toggles | §40.1.2 | A switch takes either arrow or Enter; a value box steps by one (a real number by a hundredth of its range); a chooser cycles (JUCE). Each change is applied and written at once. The keyboard's focus is outlined in the accent; a click's is not | built |
 | 10 | Ctrl+Tab / Ctrl+Shift+Tab (Option+Tab on the Mac), or the arrows when the chooser is focused, move between pages | §40.1.2 | All three | built |
 | 11 | Esc closes | §40.1.2 | Esc closes, from the page or the Find box | built |
 | 12 | REAPER's Find box; typing jumps to the hits | R-02; V.1 §1 | Every match from every page, under its page's heading; clearing it goes back to the page | built; related words ("beat" finds "tempo") are the registry's search (win) |
