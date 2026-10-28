@@ -57,7 +57,47 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N29 | History's list of undo steps (labels, newest first, with branches and snapshots) | engine (`src/adi/history`) | Live's Undo History window, View menu, Ctrl+Alt+Z (MR V.4 §4) | Undo and Redo only |
 | N30 | Save a Copy, Collect All and Save, and Collect and Export (the ZIP) in the store | engine (N3's family) | the File menu (MR 1.6, 11.3) | not listed yet |
 | N31 | Per-track ops for Rec-Q / Play-Q and Keep Monitoring Latency | engine | the MIDI track header and the monitor button's right-click (MR V.2 §9) | nothing shown |
+| N32 | A clip's notes, with each note's identity as the note ops address it, and the clip's own properties (kind, name, colour, start and end markers, loop window, signature, scale) where the window can read them: in the snapshot, or a read the UI may call on the message thread when the journal moves, as `MidiClips` reads `rows::Model`; the engine lane's choice | engine | the Clip View's title bar and Main panel, and every note the Note Editor draws or edits (STEP-7-PLAN §7.7) | the view's frame and the note geometry are built without it; the editor draws no notes |
+| N33 | Ops for a clip's start and end markers, its loop window and loop switch, its signature and its scale (Live's Main Clip Properties) | engine | the Main panel's fields and Set buttons, the loop brace, Fit to Scale (§7.7) | the fields show the snapshot's position and length, read-only |
+| N34 | An op for a note's active flag (the `flags` column exists) | engine | 0 deactivates a note (Live manual §10.5.7) | nothing |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, cloud, continued — the Clip View and the Note Editor: plan and picture `window/clip-view`
+
+Branch `window/clip-view`, cut from `window/view-filter`. It holds no code. No PR until the build
+starts.
+
+**Read for it:** Live 12 manual ch. 8 "Clip View" and ch. 10 "Editing MIDI" (the online edition,
+fetched 28 October), with the manual's own figures of the MIDI and audio Clip View; Master Reference
+4.1 and 5.1.
+
+**What the branch holds:**
+- **The plan:** STEP-7-PLAN §7.7.
+  - The view is Live 12's: a title bar; panels on the left (Main, then Pitch and Time, Transform and
+    Generate for MIDI); the editor on the right with its tabs.
+  - It sits in the detail row beside the Info View, stacked above the Device View.
+  - The build order: the frame; the note geometry, headless; notes; the Pitch and Time tools,
+    composed from the five note ops that exist; what comes later.
+- **The checklist:** `parity-7.7-clip-view.md`, 37 rows.
+- **The picture,** sent to the director: `pictures/2026-10-28-clip-view.png`.
+  - Drawn over the real window: a MIDI clip with the Note Editor and the Velocity lane; an audio clip
+    with the Sample Editor.
+
+**What the window cannot read.** The snapshot gives a clip only its id, position, length, mute and
+gain. The notes and the clip's properties are in the store (`rows::Model`), which the UI may not read
+by raw SQL. New Needs:
+- N32: a clip's notes and its own properties where the window can read them;
+- N33: ops for the Main panel's properties;
+- N34: an op for a note's active flag.
+
+**The Status Bar.** Its second field is where Live 12 puts the Clip View toggle and selector. When the
+view is built, the Swap button (#293) moves just left of that field. This is in the plan and in the
+picture.
+
+**Where to resume:** the director's answers on the two pictures (the view filter; the Clip View). If
+the Clip View is approved, its first step (the frame) and the note geometry can be built before N32.
 
 ---
 
