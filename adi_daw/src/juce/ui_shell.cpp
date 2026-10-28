@@ -30,6 +30,8 @@ void AppCommands::reload() {
     tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
     zoomOnSelection_ = flag(settings_, "lookfeel.zoomOnSelection", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
+    wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
+    arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
@@ -46,6 +48,12 @@ bool AppCommands::setTabMovesFocus(bool on, std::string &why) {
     if (!settings_.set("lookfeel.tabMovesFocus", on, {}, why) || !settings_.save(why))
         return false;
     tabMovesFocus_ = on;
+    return true;
+}
+bool AppCommands::setWrapTabNavigation(bool on, std::string &why) {
+    if (!settings_.set("lookfeel.wrapTabNavigation", on, {}, why) || !settings_.save(why))
+        return false;
+    wrapTab_ = on;
     return true;
 }
 void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
@@ -84,7 +92,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Move Focus to Mixer", "Next Neighbor",
                                   "Previous Neighbor", "Full Screen",
                                   "Overview", "In/Out", "Narrow Grid", "Widen Grid",
-                                  "Triplet Grid", "Snap to Grid", "Fixed Grid"};
+                                  "Triplet Grid", "Snap to Grid", "Fixed Grid",
+                                  "Wrap Tab Navigation"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -227,6 +236,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case TabMovesFocus: // §41.1.1: the Navigate menu's switch, also in the Settings
         info.setTicked(tabMovesFocus_);
+        break;
+    case WrapTabNavigation: // §41.1.1: the Navigate menu's too, and Display & Input's
+        info.setTicked(wrapTab_);
         break;
     case Follow:
         // §6.2: the control bar's switch and the Options menu's command. The manual gives
@@ -402,6 +414,9 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     setLookAndFeel(&look::liveLook());
     setOpaque(true);
     setWantsKeyboardFocus(true);
+    // Tab moves within the window's own controls, and Wrap Tab Navigation wraps or stops at
+    // their ends (§41.1.1), whatever else shares the native window.
+    setFocusContainerType(FocusContainerType::keyboardFocusContainer);
     addAndMakeVisible(transport);
     addAndMakeVisible(status);
     addAndMakeVisible(browser);
@@ -708,9 +723,19 @@ bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
     // With Use Tab Key to Move Focus off, Live's default (§41.1.1), Tab and Shift+Tab move
     // nothing. In Live they switch to Session View, which ADI does not have yet.
     const auto mods = key.getModifiers();
-    if (key.getKeyCode() == juce::KeyPress::tabKey && !commands_.tabMovesFocus() &&
-        !mods.isCommandDown() && !mods.isCtrlDown() && !mods.isAltDown())
+    const bool plainTab = key.getKeyCode() == juce::KeyPress::tabKey && !mods.isCommandDown() &&
+                          !mods.isCtrlDown() && !mods.isAltDown();
+    if (plainTab && !commands_.tabMovesFocus())
         return true;
+    // With Wrap Tab Navigation off, Tab stops at the area's last control (Shift+Tab at its
+    // first) instead of going round to the other end.
+    if (plainTab && !commands_.wrapTabNavigation())
+        if (auto *focused = juce::Component::getCurrentlyFocusedComponent();
+            focused != nullptr && isParentOf(focused))
+            if (auto traverser = focused->createKeyboardFocusTraverser())
+                if ((mods.isShiftDown() ? traverser->getPreviousComponent(focused)
+                                        : traverser->getNextComponent(focused)) == nullptr)
+                    return true;
     return commands_.key(key, *this);
 }
 void AdiRootComponent::resizeMixerView(int height) {
@@ -1008,6 +1033,12 @@ bool AdiRootComponent::command(int id) {
             return fail(why);
         break;
     }
+    case AppCommands::WrapTabNavigation: {
+        std::string why;
+        if (!commands_.setWrapTabNavigation(!commands_.wrapTabNavigation(), why))
+            return fail(why);
+        break;
+    }
     case AppCommands::InsertAudioTrack:
     case AppCommands::InsertMidiTrack:
         if (!insertTrack(id == AppCommands::InsertMidiTrack))
@@ -1097,7 +1128,8 @@ const std::vector<MenuEntries> &menuBar() {
         // Pool and the Learn View come with those views; the Mixer with its keyboard.
         {"Navigate",
          {C::FocusControlBar, C::FocusArrangement, C::FocusDeviceView, C::FocusBrowser, 0,
-          C::NextNeighbor, C::PreviousNeighbor, 0, C::TabMovesFocus}},
+          C::NextNeighbor, C::PreviousNeighbor, 0, C::TabMovesFocus,
+          C::WrapTabNavigation}},
         {"Help", {}}};
     return bar;
 }
