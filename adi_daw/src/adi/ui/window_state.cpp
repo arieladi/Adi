@@ -69,6 +69,8 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.mixerView = j.value("mixerView", false);
         state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
         state.follow = j.value("follow", false);
+        state.overview = j.value("overview", true);
+        state.inOut = j.value("inOut", true);
         if (j.contains("folded"))
             for (const auto &id : j.at("folded"))
                 state.foldedDevices.insert(id.get<std::int64_t>());
@@ -119,6 +121,8 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"mixerView", state.mixerView},
                             {"mixerViewHeight", state.mixerViewHeight},
                             {"follow", state.follow},
+                            {"overview", state.overview},
+                            {"inOut", state.inOut},
                             {"panels", nlohmann::json::array()}};
         for (const auto &p : state.panels.slots())
             j["panels"].push_back({{"id", static_cast<int>(p.panel)},

@@ -66,7 +66,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FocusMixer,
         NextNeighbor,
         PreviousNeighbor,
-        LastId = PreviousNeighbor
+        FullScreen,
+        ToggleOverview,
+        ToggleInOut,
+        LastId = ToggleInOut
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -149,6 +152,8 @@ class AdiRootComponent final : public juce::Component {
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
     // own, and the ZoomHost around the root applies it as a transform.
     float interfaceZoom() const noexcept { return interfaceZoom_; }
+    // Whether this view's own window fills the screen (Live's Full Screen, §42.1).
+    bool fullScreen() const;
     // What the Info View shows: the element under the mouse, read in the frame.
     const juce::String &infoText() const noexcept { return infoText_; }
     void hover(juce::Component *);

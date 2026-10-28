@@ -82,7 +82,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Increase Height of Selected Tracks",
                                   "Decrease Height of Selected Tracks",
                                   "Move Focus to Mixer", "Next Neighbor",
-                                  "Previous Neighbor"};
+                                  "Previous Neighbor", "Full Screen",
+                                  "Overview", "In/Out"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -267,6 +268,23 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 #else
         info.addDefaultKeypress(juce::KeyPress::tabKey, cmd | shift);
 #endif
+        break;
+    // The View menu's toggles (§42.1).
+    case FullScreen:
+#if JUCE_MAC
+        info.addDefaultKeypress('f', juce::ModifierKeys::ctrlModifier | cmd);
+#else
+        info.addDefaultKeypress(juce::KeyPress::F11Key, 0);
+#endif
+        info.setTicked(active_ != nullptr && active_->fullScreen());
+        break;
+    case ToggleOverview:
+        info.addDefaultKeypress('o', cmd | alt);
+        info.setTicked(active_ != nullptr && active_->state().overview);
+        break;
+    case ToggleInOut:
+        info.addDefaultKeypress('i', cmd | alt);
+        info.setTicked(active_ != nullptr && active_->state().inOut);
         break;
     default:
         break;
@@ -536,8 +554,16 @@ void AdiRootComponent::resized() {
     // lost space proportionally above each panel's own minimum; the centre
     // keeps its minimum. Stored preferences survive a temporary resize.
     const auto &slots = state_.panels.slots();
-    int left = state_.panels.occupied(slots[0]);
-    int right = state_.panels.occupied(slots[1]);
+    // Without In/Out, the track controls are narrower by its column, as Live's (§42.1); the
+    // stored width is kept for when it comes back.
+    auto shownWidth = [this](const PanelGeometry &slot, int width) {
+        const bool roomForInOut =
+            width >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth + MixerPanel::kRightStrip;
+        return slot.panel == Panel::Mixer && !state_.inOut && roomForInOut ? width - MixerPanel::kInOutWidth
+                                                                           : width;
+    };
+    int left = shownWidth(slots[0], state_.panels.occupied(slots[0]));
+    int right = shownWidth(slots[1], state_.panels.occupied(slots[1]));
     const int leftMin = slots[0].collapsed ? 0 : slots[0].minWidth;
     const int rightMin = slots[1].collapsed ? 0 : slots[1].minWidth;
     const int available = std::max(0, w - state_.panels.arrangementMinWidth());
@@ -588,7 +614,7 @@ void AdiRootComponent::resized() {
     // Live's Mixer View sits at the foot of the arrangement, its full width (§18.1).
     const int mvh = state_.mixerView
                         ? std::clamp(state_.mixerViewHeight, 120,
-                                     std::max(120, mid - ArrangementView::kTopHeight - 64))
+                                     std::max(120, mid - arrangement.topHeight() - 64))
                         : 0;
     mixerViewArea_ = mvh > 0 && mid > mvh
                          ? juce::Rectangle<int>(centreX, top + mid - mvh, centreW, mvh)
@@ -606,6 +632,7 @@ void AdiRootComponent::resized() {
                                   : centreX + centreW - 4;
     arrangement.overview.setBounds(overviewX, top + 4, std::max(0, overviewRight - overviewX),
                                    ArrangementView::kOverviewHeight - 4);
+    arrangement.overview.setVisible(state_.overview);
     devices.setVisible(!deviceArea_.isEmpty());
     dockResizer.setVisible(!deviceArea_.isEmpty());
     devices.setBounds(deviceArea_.reduced(look::border));
@@ -664,12 +691,12 @@ void AdiRootComponent::resizeMixerView(int height) {
     const int body = getHeight() - kTransportHeight - kStatusHeight - deviceArea_.getHeight();
     state_.mixerViewHeight =
         std::clamp(height, 120,
-                   std::max(120, body - ArrangementView::kTopHeight - state_.laneHeight));
+                   std::max(120, body - arrangement.topHeight() - state_.laneHeight));
     resized();
 }
 void AdiRootComponent::resizeDevices(int height) {
     const int ceiling = getHeight() - kTransportHeight - kStatusHeight - look::gap -
-                        ArrangementView::kTopHeight - state_.laneHeight;
+                        arrangement.topHeight() - state_.laneHeight;
     state_.setDeviceHeight(std::min(height, ceiling));
     resized();
 }
@@ -790,6 +817,10 @@ bool AdiRootComponent::deleteTrack() {
     arrangement.geometry.selection.clip = 0;
     publishSelection();
     return true;
+}
+bool AdiRootComponent::fullScreen() const {
+    const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
+    return window != nullptr && window->isFullScreen();
 }
 bool AdiRootComponent::focusView(int id) {
     // Live's Navigate menu (§41.4.1): the keyboard focus moves to a view, shown first if it
@@ -912,6 +943,31 @@ bool AdiRootComponent::command(int id) {
         }
         arrangement.followPaused = false;
         break;
+    case AppCommands::ToggleOverview:
+    case AppCommands::ToggleInOut: {
+        auto &shown = id == AppCommands::ToggleOverview ? state_.overview : state_.inOut;
+        shown = !shown;
+        if (!persist()) {
+            shown = !shown;
+            return fail(error_);
+        }
+        // The lanes, and the track controls' rows level with them, move with the Overview;
+        // each row lays its controls out again with or without In/Out.
+        arrangement.resized();
+        for (const auto &row : mixer.strips()) {
+            row->resized();
+            row->repaint();
+        }
+        break;
+    }
+    case AppCommands::FullScreen: {
+        // Only a window on the screen can fill it: JUCE reads the monitor's area to do so.
+        auto *window = dynamic_cast<juce::ResizableWindow *>(getTopLevelComponent());
+        if (window == nullptr || !window->isOnDesktop())
+            return fail("This view has no window on the screen to fill it with.");
+        window->setFullScreen(!window->isFullScreen());
+        break;
+    }
     case AppCommands::ToggleInfoView: {
         std::string why;
         if (!commands_.setInfoView(!commands_.infoView(), why))
@@ -994,9 +1050,11 @@ const std::vector<MenuEntries> &menuBar() {
         // Paste and Duplicate; those wait for their ops.
         {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack}},
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack}},
+        // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
-         {C::ToggleBrowser, C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixer,
-          C::ToggleDeviceView, C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
+         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut,
+          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixer, C::ToggleDeviceView,
+          C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, 0,
           C::SwapPanels}},
         // Follow is the Options menu's (§6.2); so is Settings on Windows (§2.3).
