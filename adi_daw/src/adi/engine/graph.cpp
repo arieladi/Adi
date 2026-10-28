@@ -309,8 +309,8 @@ void DelayLine::adopt(std::vector<T>& buf, const std::vector<U>& from, std::int3
     }
 }
 
-void DelayLine::adoptHistory(const DelayLine& old) noexcept {
-    if (ring_ <= 0 || old.ring_ <= 0 || channels_ != old.channels_) return;
+bool DelayLine::adoptHistory(const DelayLine& old) noexcept {
+    if (ring_ <= 0 || old.ring_ <= 0 || channels_ != old.channels_) return false;
 
     // `buf_` and `write_` are the live history in every state: while an old
     // ring is growing both rings are written and `buf_` is the one read, and
@@ -338,7 +338,7 @@ void DelayLine::adoptHistory(const DelayLine& old) noexcept {
     // grow take the same writes, so the old count holds for either.
     filled_ = k;
     quiet_ = (std::min)(old.quiet_, k);
-    if (k == 0) return;
+    if (k == 0) return false;
     const std::int32_t fromRing = fromIncoming ? old.inRing_ : old.ring_;
     const std::int32_t fromWrite = fromIncoming ? old.inWrite_ : old.write_;
     const std::vector<float>& f32 = fromIncoming ? old.incoming_ : old.buf_;
@@ -357,6 +357,7 @@ void DelayLine::adoptHistory(const DelayLine& old) noexcept {
     // The next write lands right after the newest carried sample, so a tap at
     // `delay_` reads exactly what the old line's tap would have read next.
     write_ = k % ring_;
+    return true;
 }
 
 DelayLine::Edge DelayLine::beginEdge() const noexcept {
@@ -1250,7 +1251,7 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             if (u.node == nullptr || u.events.empty()) continue;
-            if (u.node->eventFlow() == EventFlow::Consume) continue;
+            if (u.node->eventFlow() != EventFlow::Through) continue;   // Consume or Stop
 
             // THE SAME DELAY AS THE AUDIO BESIDE IT. The node's own latency,
             // because its output audio emerges that much later than its input;

@@ -75,16 +75,19 @@ std::int32_t StripNode::latencySamples() const noexcept {
     // 48 kHz opened at 96 kHz delays the same TIME, twice the samples.
     const double seconds = static_cast<double>(delayProject_.load(std::memory_order_relaxed)) /
                            static_cast<double>(delayRate_.load(std::memory_order_relaxed));
-    const double limit = kMaxDelaySeconds * sampleRate_;
-    const double samples = std::clamp(std::round(seconds * sampleRate_), -limit, limit);
+    const double rate = sampleRate_.load(std::memory_order_relaxed);
+    const double limit = kMaxDelaySeconds * rate;
+    const double samples = std::clamp(std::round(seconds * rate), -limit, limit);
     return static_cast<std::int32_t>(-samples);
 }
 
 void StripNode::prepare(double sampleRate, std::int32_t) {
-    sampleRate_ = sampleRate > 0.0 ? sampleRate : 48000.0;
+    // Every graph that places this strip prepares it, while the graph before
+    // may still be playing it: both values are atomics for that reason.
+    sampleRate_.store(sampleRate > 0.0 ? sampleRate : 48000.0, std::memory_order_relaxed);
     // A time, not a count: five milliseconds at every rate ADR-0157 allows.
     const auto frames = std::lround(kRampSeconds * sampleRate);
-    rampFrames_ = static_cast<std::int32_t>(std::max<long>(1, frames));
+    rampFrames_.store(static_cast<std::int32_t>(std::max<long>(1, frames)), std::memory_order_relaxed);
 }
 
 StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame) noexcept {
@@ -142,6 +145,13 @@ void StripNode::Ramp<T>::retarget(const T (&t)[3], std::int32_t frames) noexcept
 }
 
 template <typename T>
+void StripNode::Ramp<T>::land(const T (&t)[3]) noexcept {
+    for (int k = 0; k < 3; ++k) cur[k] = to[k] = t[k];
+    remaining = 0;
+    started = true;
+}
+
+template <typename T>
 StripNode::Ramp<T>& StripNode::ramp() noexcept {
     if constexpr (std::is_same_v<T, float>) return ramp32_;
     else return ramp64_;
@@ -191,6 +201,13 @@ void StripNode::process(const NodeIo& io) noexcept {
 void StripNode::silenceTaps(const NodeIo& io) noexcept {
     writeTap<float>(preFaderTap_, io, nullptr);
     writeTap<float>(tap_, io, nullptr);
+    // Asleep (ADR-0043): the input is silent, so a gain set meanwhile -- a
+    // fader or a send pulled down, a mute -- is landed now, where nobody can
+    // hear it. Woken, the strip starts at it, rather than ramping away from
+    // the gain it fell asleep at and playing that gain's first 5 ms.
+    const Gains d = desired(lanes_.load(std::memory_order_acquire), io.blockOffset);
+    if (lastWidth_ == 32) ramp32_.land(d.g);
+    else if (lastWidth_ == 64) ramp64_.land(d.w);
 }
 
 template <typename T>
@@ -216,11 +233,16 @@ void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out
     const std::int32_t off = io.blockOffset;
     auto gainIndex = [](std::int32_t c) { return c < 2 ? c : 2; };
     handover<T>();
+    if (restart_.load(std::memory_order_relaxed) && restart_.exchange(false, std::memory_order_acq_rel)) {
+        ramp32_.started = false;
+        ramp64_.started = false;
+    }
     Ramp<T>& r = ramp<T>();
+    const std::int32_t frames = rampFrames_.load(std::memory_order_relaxed);
     auto retargetAt = [&](std::int32_t frame) {
         const Gains d = desired(lanes, frame);
-        if constexpr (std::is_same_v<T, float>) r.retarget(d.g, rampFrames_);
-        else r.retarget(d.w, rampFrames_);
+        if constexpr (std::is_same_v<T, float>) r.retarget(d.g, frames);
+        else r.retarget(d.w, frames);
     };
 
     retargetAt(off);
@@ -232,7 +254,7 @@ void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out
             const T* x = (in != nullptr && in[c] != nullptr) ? in[c] + off : nullptr;
             const T g = r.cur[gainIndex(c)];
             if (x == nullptr || g == T{0}) std::fill_n(o, io.frames, T{0});
-            else if (g == T{1}) std::copy_n(x, io.frames, o);
+            else if (g == T{1}) { if (x != o) std::copy_n(x, io.frames, o); }   // in place: a send's second stage
             else for (std::int32_t i = 0; i < io.frames; ++i) o[i] = x[i] * g;
         }
         return;
@@ -257,9 +279,32 @@ void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out
 // ---------------------------------------------------------------------------
 
 std::map<std::int64_t, bool> audibleTracks(const rows::Model& model, const GraphPlan& plan) {
+    return hearing(model, plan).track;
+}
+
+Hearing hearing(const rows::Model& model, const GraphPlan& plan, const HearingFlags& flags) {
     std::map<std::int64_t, const rows::Track*> track;
     for (const rows::Track& t : model.tracks) track[t.id] = &t;
+    std::map<std::int64_t, const rows::Routing*> sendRow;
+    for (const rows::Routing& r : model.routing)
+        if (r.kind == "send") sendRow[r.id] = &r;
     const std::size_t n = plan.nodes.size();
+
+    // Every planned send: its row, its ends, whether it leaves before the
+    // fader (Pre), and whether it carries anything -- on, and above silence.
+    struct PlannedSend {
+        std::int64_t id = 0;
+        std::size_t from = 0, to = 0;
+        bool pre = false, carries = false;
+    };
+    std::vector<PlannedSend> sends;
+    for (const PlannedEdge& e : plan.edges) {
+        if (e.routingId == 0 || e.from >= n || e.to >= n) continue;
+        const auto row = sendRow.find(e.routingId);
+        const bool carries = row != sendRow.end() && row->second->enabled &&
+                             row->second->gainDb > kSilenceDb;   // false for NaN too
+        sends.push_back({e.routingId, e.from, e.to, e.tap == Tap::PostFx, carries});
+    }
 
     std::vector<bool> muted(n, false), soloed(n, false), defeat(n, false);
     bool anySolo = false;
@@ -269,25 +314,39 @@ std::map<std::int64_t, bool> audibleTracks(const rows::Model& model, const Graph
         muted[i] = it->second->muted;
         defeat[i] = it->second->soloDefeat;
         // Soloing the master would solo everything it hears, which is nothing
-        // a user means; it is ignored rather than refused.
-        soloed[i] = it->second->soloed && plan.nodes[i].kind != PlannedKind::Master;
+        // a user means; a VCA carries no audio (ADR-0072), so soloing it
+        // would solo nothing and silence the rest. Both are ignored rather
+        // than refused.
+        const PlannedKind kind = plan.nodes[i].kind;
+        soloed[i] = it->second->soloed && kind != PlannedKind::Master && kind != PlannedKind::Vca;
         anySolo = anySolo || soloed[i];
     }
 
-    std::map<std::int64_t, bool> audible;
+    // A send's gate is solo's alone: a muted track is silent in its sends at
+    // their own first stage, as it is at its strip (SendNode).
+    Hearing out;
     if (!anySolo) {
-        for (std::size_t i = 0; i < n; ++i) audible[plan.nodes[i].trackId] = !muted[i];
-        return audible;
+        for (std::size_t i = 0; i < n; ++i) out.track[plan.nodes[i].trackId] = !muted[i];
+        for (const PlannedSend& s : sends) out.send[s.id] = true;
+        return out;
     }
 
     // Main routes only. A sidechain key is not listening, so a soloed track's
-    // key source is not kept audible by it (ADR-0163 d4).
-    std::vector<std::vector<std::size_t>> down(n), up(n);
+    // key source is not kept audible by it (ADR-0163 d4). A send is not a
+    // main route either: a return is not a soloed track's group.
+    std::vector<std::vector<std::size_t>> down(n), up(n), sentTo(n);
     for (const PlannedEdge& e : plan.edges) {
-        if (e.bus != Bus::Main || e.from >= n || e.to >= n) continue;
+        if (e.bus != Bus::Main || e.from >= n || e.to >= n || e.routingId != 0) continue;
         down[e.from].push_back(e.to);
         up[e.to].push_back(e.from);
     }
+    // What Solo in Place keeps open through a send: a return it reaches, as
+    // Live keeps a soloed track's returns; any other track (ADI's addition)
+    // only through a send that carries something, so a send switched off or
+    // fully down never opens that track's own audio.
+    for (const PlannedSend& s : sends)
+        if (s.carries || plan.nodes[s.to].kind == PlannedKind::Return) sentTo[s.from].push_back(s.to);
+
     auto reach = [&](const std::vector<std::vector<std::size_t>>& adj) {
         std::vector<bool> seen(n, false);
         std::queue<std::size_t> q;
@@ -301,13 +360,75 @@ std::map<std::int64_t, bool> audibleTracks(const rows::Model& model, const Graph
         }
         return seen;
     };
-    const std::vector<bool> fed = reach(down);      // what a soloed track feeds: its group, the master
+    std::vector<bool> fed = reach(down);            // what a soloed track feeds: its group, the master
     const std::vector<bool> feeding = reach(up);    // what feeds it: a soloed group's children
-    for (std::size_t i = 0; i < n; ++i) {
-        const bool kept = fed[i] || feeding[i] || defeat[i] || plan.nodes[i].kind == PlannedKind::Master;
-        audible[plan.nodes[i].trackId] = !muted[i] && kept;
+    auto openDown = [&](std::size_t from) {         // `from` and everything it feeds, opened
+        bool grew = false;
+        std::vector<std::size_t> todo{from};
+        while (!todo.empty()) {
+            const std::size_t k = todo.back();
+            todo.pop_back();
+            if (fed[k]) continue;
+            fed[k] = true;
+            grew = true;
+            for (const std::size_t next : down[k]) todo.push_back(next);
+        }
+        return grew;
+    };
+    if (flags.soloInPlace) {
+        // ADR-0203 d3, Live's Solo in Place: a soloed track's returns stay
+        // heard, and whatever they feed. Over sends from anything kept so
+        // far, to a fixed point, so a return a soloed group's child sends to
+        // is kept -- or, kept all, every return.
+        if (flags.keepAllReturns)
+            for (std::size_t i = 0; i < n; ++i)
+                if (plan.nodes[i].kind == PlannedKind::Return) openDown(i);
+        for (bool grew = true; grew;) {
+            grew = false;
+            for (std::size_t i = 0; i < n; ++i) {
+                if (!fed[i] && !feeding[i]) continue;
+                for (const std::size_t j : sentTo[i]) grew = openDown(j) || grew;
+            }
+        }
     }
-    return audible;
+    // Heard because of the solo, before any mute: the soloed, what feeds
+    // them and what they feed, the master, the solo-defeated.
+    std::vector<bool> heard(n, false);
+    for (std::size_t i = 0; i < n; ++i)
+        heard[i] = fed[i] || feeding[i] || defeat[i] || plan.nodes[i].kind == PlannedKind::Master;
+
+    // What a soloed track hears, whoever sends it: the soloed and what feeds
+    // them over main routes, then, back over every send that carries into
+    // anything already in it, the sender -- and, when the sender's own
+    // output is not heard, what feeds the sender over main routes (a group's
+    // children), whose outputs open into it alone, its own staying closed.
+    // So a soloed return hears a group's send, and a send's send.
+    std::vector<bool> feed = feeding, intoSender(n, false);
+    for (bool grew = true; grew;) {
+        grew = false;
+        for (const PlannedSend& s : sends) {
+            if (!s.carries || !feed[s.to] || feed[s.from]) continue;
+            feed[s.from] = true;
+            grew = true;
+            if (heard[s.from]) continue;
+            std::vector<std::size_t> todo(up[s.from]);
+            while (!todo.empty()) {
+                const std::size_t k = todo.back();
+                todo.pop_back();
+                if (intoSender[k]) continue;
+                intoSender[k] = feed[k] = true;
+                for (const std::size_t prev : up[k]) todo.push_back(prev);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        out.track[plan.nodes[i].trackId] = !muted[i] && (heard[i] || intoSender[i]);
+    // A send is heard when what it reaches is heard by a soloed track, when
+    // both its ends are heard, or when it is Pre and Pre sends do not
+    // follow solo.
+    for (const PlannedSend& s : sends)
+        out.send[s.id] = feed[s.to] || (heard[s.from] && heard[s.to]) || (s.pre && !flags.preFollowsSolo);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -358,9 +479,28 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
                        const std::shared_ptr<StripAutomation>& automation) {
     problems_.clear();
     const GraphPlan plan = planGraph(model);
-    const std::map<std::int64_t, bool> audible = audibleTracks(model, plan);
+    const Hearing hears = hearing(model, plan);
+    const std::map<std::int64_t, bool>& audible = hears.track;
     std::map<std::int64_t, const rows::MixerStrip*> row;
     for (const rows::MixerStrip& s : model.strips) row[s.trackId] = &s;
+    std::map<std::int64_t, bool> unmuted;
+    for (const rows::Track& t : model.tracks) unmuted[t.id] = !t.muted;
+
+    // ADR-0203 d3: a node for every send the plan made, kept per routing row.
+    // Back in the plan after time out of it, in no graph and so never
+    // ramped, a send starts at its level, as a new send does, rather than
+    // ramping away from the one it last played.
+    std::map<std::int64_t, Tap> tapOf;
+    for (const PlannedEdge& e : plan.edges)
+        if (e.routingId != 0) tapOf[e.routingId] = e.tap;
+    std::map<std::int64_t, std::vector<SendNode*>> postSendsOf;   // by source track
+    for (const rows::Routing& r : model.routing) {
+        if (r.kind != "send" || !tapOf.count(r.id)) continue;
+        auto& send = sends_[r.id];
+        if (!send) send = std::make_unique<SendNode>();
+        else if (!liveSends_.count(r.id)) send->restart();
+        if (tapOf[r.id] == Tap::PostFader) postSendsOf[r.srcId].push_back(send.get());
+    }
 
     std::map<std::int64_t, bool> present;
     for (const PlannedNode& node : plan.nodes) {
@@ -368,29 +508,26 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         present[node.trackId] = true;
         auto& strip = strips_[node.trackId];
         if (!strip) strip = std::make_unique<StripNode>();
-        strip->setTransport(transport);
 
-        double volume = 0.0, pan = 0.0;
-        PanLaw law = PanLaw::Live;
+        StripConfig config;
+        config.unmuted = unmuted[node.trackId];
         const std::string who = "tracks#" + std::to_string(node.trackId);
         if (const auto it = row.find(node.trackId); it != row.end()) {
             const rows::MixerStrip& r = *it->second;
-            volume = r.volumeDb;
-            pan = r.pan;
-            if (r.panLaw >= 0 && r.panLaw <= 3) law = static_cast<PanLaw>(r.panLaw);
+            config.volumeDb = r.volumeDb;
+            config.pan = r.pan;
+            if (r.panLaw >= 0 && r.panLaw <= 3) config.law = static_cast<PanLaw>(r.panLaw);
             else problems_.push_back(who + ": pan law " + std::to_string(r.panLaw) +
                                      " is not one of SPEC 6.9's; Live's is used");
-            if (std::isnan(volume)) {
+            if (std::isnan(config.volumeDb)) {
                 problems_.push_back(who + ": volume is not a number; 0 dB is used");
-                volume = 0.0;
+                config.volumeDb = 0.0;
             }
-            if (!std::isfinite(pan)) {
+            if (!std::isfinite(config.pan)) {
                 problems_.push_back(who + ": pan is not finite; centre is used");
-                pan = 0.0;
+                config.pan = 0.0;
             }
         }
-        const auto heard = audible.find(node.trackId);
-        strip->setStatic(volume, pan, law, heard != audible.end() && heard->second);
 
         // ADR-0172: the track delay, played as latency. The master is the
         // output: there is nothing after it to delay against, and a negative
@@ -409,14 +546,22 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
                                 " samples is past one second; it is played at one second");
             delay = delay > 0 ? limit : -limit;
         }
-        strip->setDelay(delay, rate);
+        config.delaySamples = delay;
+        config.delayRate = rate;
 
-        const StripLanes* lanes = nullptr;
         if (automation) {
             const auto it = automation->byTrack.find(node.trackId);
-            if (it != automation->byTrack.end()) lanes = &it->second;
+            if (it != automation->byTrack.end()) {
+                config.lanes = &it->second;
+                config.keepAlive = automation;
+            }
         }
-        strip->setLanes(lanes, lanes != nullptr ? std::shared_ptr<void>(automation) : std::shared_ptr<void>{});
+        // The strip plays it at its solo, its Post sends at their first
+        // stage without -- set together, so they move as one.
+        const auto heard = audible.find(node.trackId);
+        strip->configure(config, heard != audible.end() && heard->second, transport);
+        if (const auto it = postSendsOf.find(node.trackId); it != postSendsOf.end())
+            for (SendNode* send : it->second) send->setSource(config, transport);
     }
     // A departed track's strip stays, silent, until the session ends.
     for (auto& [id, strip] : strips_) {
@@ -424,6 +569,74 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         strip->setStatic(0.0, 0.0, PanLaw::Live, false);
         strip->setLanes(nullptr, {});
     }
+
+    // Each send's level, pan and switch, its row's. Both kinds leave after
+    // the effects. A Post send plays its source's strip there -- fader, pan,
+    // mute, lanes, track delay, set above -- and a Pre send only the
+    // source's mute and mute lane (the sends plan's preMute, on until Live
+    // is measured). Solo is each send's own switch, from `hearing`: a track
+    // soloed away is silent in its sends, except those that reach a soloed
+    // track, which hears what is sent to it. A departed send stays, off.
+    std::set<std::int64_t> live;
+    for (const rows::Routing& r : model.routing) {
+        if (r.kind != "send" || !tapOf.count(r.id)) continue;
+        SendNode& send = *sends_[r.id];
+        const std::string who = "routing#" + std::to_string(r.id);
+        if (std::isnan(r.gainDb)) problems_.push_back(who + ": the send's level is not a number; it is silent");
+        else if (r.gainDb > kSendTopDb)
+            problems_.push_back(who + ": a send level of " + std::to_string(r.gainDb) + " dB is past the top, " +
+                                std::to_string(kSendTopDb) + " dB, and is played there");
+        double pan = r.pan;
+        if (!std::isfinite(pan)) {
+            problems_.push_back(who + ": the send's pan is not finite; centre is used");
+            pan = 0.0;
+        }
+        if (tapOf[r.id] == Tap::PostFx) {
+            StripConfig pre;
+            pre.unmuted = unmuted[r.srcId];
+            const AutomationLaneProgram* lane = nullptr;
+            if (automation) {
+                const auto it = automation->byTrack.find(r.srcId);
+                if (it != automation->byTrack.end()) lane = it->second.mute;
+            }
+            if (lane != nullptr) {
+                // A new holder each time, never the old one rewritten: the
+                // audio thread may be reading the lanes the last graph was given.
+                struct Held {
+                    StripLanes lanes;
+                    std::shared_ptr<void> program;
+                };
+                auto held = std::make_shared<Held>();
+                held->lanes.mute = lane;
+                held->program = automation;
+                pre.lanes = &held->lanes;
+                pre.keepAlive = std::move(held);
+            }
+            send.setSource(pre, transport);
+        }
+        const auto gate = hears.send.find(r.id);
+        send.set(r.gainDb, pan, PanLaw::Live, r.enabled && gate != hears.send.end() && gate->second);
+        live.insert(r.id);
+    }
+    for (auto& [id, send] : sends_)
+        if (!live.count(id)) send->set(kSilenceDb, 0.0, PanLaw::Live, false);
+    liveSends_ = std::move(live);
+}
+
+void SendNode::process(const NodeIo& io) noexcept {
+    // The source's stage into the output, then the send's own on it in place.
+    source_.process(io);
+    NodeIo own = io;
+    own.in = io.out;
+    own.in64 = io.out64;
+    own.sidechain = nullptr;
+    own.sidechain64 = nullptr;
+    gain_.process(own);
+}
+
+SendNode* MixerStrips::sendFor(std::int64_t routingId) noexcept {
+    const auto it = sends_.find(routingId);
+    return it == sends_.end() ? nullptr : it->second.get();
 }
 
 StripNode* MixerStrips::stripFor(std::int64_t trackId) noexcept {

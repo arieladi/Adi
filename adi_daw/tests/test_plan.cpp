@@ -119,40 +119,42 @@ void testGroupsAutoRoute() {
     check(g && p.nodes[*g].kind == PlannedKind::Group, "the group is planned as one");
 }
 
-void testAuxSendsAreRefusedAndSurfaced() {
-    section("ADR-0072 -- an aux send is refused, and SAID so rather than dropped");
+/// The send edge a routing row became, or null.
+const PlannedEdge* sendEdge(const GraphPlan& p, std::int64_t routingId) {
+    for (const auto& e : p.edges)
+        if (e.routingId == routingId) return &e;
+    return nullptr;
+}
+
+bool mentions(const GraphPlan& p, const std::string& a, const std::string& b = "") {
+    for (const auto& q : p.problems)
+        if (q.find(a) != std::string::npos && q.find(b) != std::string::npos) return true;
+    return false;
+}
+
+void testASendIsPlanned() {
+    section("ADR-0203 d3 -- a send is planned, as Live: it reverses ADR-0072's refusal");
 
     rows::Model m;
     m.tracks = {track(1, "master", "Master"),
-                track(2, "audio", "Reverb Bus"),
+                track(2, "return", "Reverb"),
                 track(3, "audio", "Snare")};
-    // The snare's main output, plus a send into the reverb bus. The main edge
-    // must survive; only the send is refused.
+    // The snare's main output, plus a send into the reverb return.
     m.routing = {route(10, 3, 1, "main", "user"),
                  route(11, 3, 2, "send", "user")};
 
     const GraphPlan p = planGraph(m);
-
-    // The NEGATIVE half, and it is the half that matters. Before ADR-0072 a
-    // send fell through to a Bus::Main edge -- a parallel path making the
-    // top-level graph an arbitrary DAG, which is what the ruling abolishes. A
-    // refactor that re-adds the fall-through has to fail here.
-    check(!hasEdge(p, 3, 2), "no edge is planned for the send");
+    const PlannedEdge* send = sendEdge(p, 11);
+    check(send != nullptr && hasEdge(p, 3, 2), "the send is an edge from the snare into the return");
+    check(send != nullptr && send->kind == "send" && send->bus == Bus::Main && send->tap == Tap::PostFader,
+          "a send, on the main bus, leaving after the fader (Post)");
     check(hasEdge(p, 3, 1), "and the track's own main output is untouched");
-
-    // Refused is not the same as dropped. Quietly rewiring a signal path is
-    // the failure ADR-0011 exists to prevent, and a routing row is not exempt.
-    bool named = false;
-    for (const auto& q : p.problems)
-        if (q.find("routing#11") != std::string::npos &&
-            q.find("ADR-0072") != std::string::npos) named = true;
-    check(named, "the refusal names the row and the ADR:" + problems(p));
-
-    bool suggests = false;
-    for (const auto& q : p.problems)
-        if (q.find("rack") != std::string::npos || q.find("group") != std::string::npos)
-            suggests = true;
-    check(suggests, "and says what to use instead");
+    check(!mentions(p, "routing#11"), "and no problem names the row:" + problems(p));
+    check(hasEdge(p, 2, 1), "the return goes to the master by the default");
+    check(!p.cycle, "and nothing loops");
+    // The main edge comes first: a send never decides a main output, and
+    // the summation order into a junction stays the main edges' (ADR-0056).
+    check(!p.edges.empty() && p.edges.back().routingId == 11, "the send is planned after every main edge");
 
     // A sidechain is NOT a send and must keep working: ADR-0043 requires a
     // live sidechain to prevent suspension, and ADR-0056 added Bus::Sidechain
@@ -167,7 +169,100 @@ void testAuxSendsAreRefusedAndSurfaced() {
     bool sidechainRefused = false;
     for (const auto& q : p2.problems)
         if (q.find("routing#20") != std::string::npos) sidechainRefused = true;
-    check(!sidechainRefused, "and is not caught by the send refusal:" + problems(p2));
+    check(!sidechainRefused, "and is not mistaken for a send:" + problems(p2));
+}
+
+void testASendThatCannotPlayIsRefusedByRow() {
+    section("ADR-0203 d3 -- a send that cannot play is refused as its row, named, and the rest plans");
+
+    rows::Model m;
+    m.tracks = {track(1, "master", "Master"),
+                track(2, "audio", "X"),
+                track(3, "audio", "Y", 5),
+                track(4, "return", "R"),
+                track(5, "group", "G"),
+                track(6, "vca", "V")};
+    rows::Routing pre = route(23, 2, 4, "send", "user");
+    pre.preFader = true;
+    rows::Routing off = route(24, 2, 4, "send", "user");
+    off.enabled = false;
+    m.routing = {route(20, 2, 3, "send", "user"),   // X -> Y: plays
+                 route(21, 3, 2, "send", "user"),   // Y -> X: would close the loop
+                 route(22, 5, 3, "send", "user"),   // a group into its own child: a loop
+                 pre,                               // a Pre send: before the fader
+                 off,                               // switched off: planned all the same
+                 route(25, 2, 1, "send", "user"),   // into the master
+                 route(26, 4, 4, "send", "user"),   // a return into itself
+                 route(27, 4, 2, "send", "user"),   // a return's own send, back into X, which feeds it
+                 route(28, 2, 6, "send", "user"),   // into a VCA
+                 route(29, 2, 99, "send", "user"),  // a track that is not there
+                 route(30, 2, 2, "send", "user"),   // an audio track into itself: a loop
+                 route(0, 2, 4, "send", "user")};   // id 0, which planned edges keep for "not a send"
+    const GraphPlan p = planGraph(m);
+    check(sendEdge(p, 20) != nullptr, "X -> Y plays");
+    check(sendEdge(p, 21) == nullptr && mentions(p, "routing#21", "would close a loop"),
+          "Y -> X would close the loop with it: the later row is refused, named" + problems(p));
+    check(sendEdge(p, 22) == nullptr && mentions(p, "routing#22", "would close a loop"),
+          "a group into its own child is a loop too");
+    check(!p.cycle, "and the plan has no cycle: the loops were refused, not planned");
+    check(sendEdge(p, 23) != nullptr && sendEdge(p, 23)->tap == Tap::PostFx && !mentions(p, "routing#23"),
+          "a Pre send is planned, leaving after the effects and before the fader");
+    check(sendEdge(p, 24) != nullptr, "a send switched off is planned, so Enable Send never retimes");
+    check(sendEdge(p, 25) == nullptr && mentions(p, "routing#25", "master"), "a send into the master is refused");
+    check(sendEdge(p, 26) == nullptr && mentions(p, "routing#26", "itself"),
+          "a return into itself, Live's feedback loop, is named, not played yet");
+    check(sendEdge(p, 27) == nullptr && mentions(p, "routing#27", "would close a loop"),
+          "a return's own send back into a track that feeds it is a loop, refused");
+    check(sendEdge(p, 28) == nullptr && mentions(p, "routing#28", "VCA"), "a VCA takes no send");
+    check(sendEdge(p, 29) == nullptr && mentions(p, "routing#29", "not there"), "nor does a track that is not there");
+    check(sendEdge(p, 30) == nullptr && mentions(p, "routing#30", "would close a loop") &&
+              !mentions(p, "routing#30", "feedback loop"),
+          "an audio track into itself is a loop refused, not Live's return loop to come");
+    // X -> R with routing id 0 would be an edge the rest of the engine takes
+    // for a plain route: no send node, no level, no switch.
+    const auto ix = p.indexOf(2), ir = p.indexOf(4);
+    bool idZeroPlanned = false;
+    for (const PlannedEdge& e : p.edges)
+        idZeroPlanned = idZeroPlanned || (ix && ir && e.from == *ix && e.to == *ir && e.routingId == 0);
+    check(!idZeroPlanned && mentions(p, "routing#0", "other than 0"),
+          "a send row with id 0 is refused, named: it would play as a plain route" + problems(p));
+    check(hasEdge(p, 2, 1) && hasEdge(p, 3, 5) && hasEdge(p, 5, 1) && hasEdge(p, 4, 1),
+          "and every track's own output is planned as before");
+
+    // A return's own sends (ADR-0203 d3): into another return, and into a
+    // track that does not feed it, they play; two returns feeding each other
+    // wait on Live's being measured (AWAITING 7(f)), the later row losing.
+    {
+        rows::Model r;
+        r.tracks = {track(1, "master", "Master"), track(2, "audio", "X"), track(4, "return", "R1"),
+                    track(5, "return", "R2"), track(6, "audio", "Y")};
+        rows::Routing off = route(33, 4, 6, "send", "user");
+        off.enabled = false;   // Enable Send off: planned all the same
+        r.routing = {route(30, 2, 4, "send", "user"),    // X -> R1
+                     route(31, 4, 5, "send", "user"),    // R1 -> R2: plays
+                     route(32, 5, 4, "send", "user"),    // R2 -> R1: a ring between returns
+                     off};                               // R1 -> Y, switched off
+        const GraphPlan pr = planGraph(r);
+        const PlannedEdge* r12 = sendEdge(pr, 31);
+        check(r12 != nullptr && r12->tap == Tap::PostFader && !mentions(pr, "routing#31"),
+              "a return's own send into another return plays, after its fader" + problems(pr));
+        check(sendEdge(pr, 32) == nullptr && mentions(pr, "routing#32", "ring between returns") && !pr.cycle,
+              "two returns feeding each other: the later row is refused, named, and nothing loops");
+        check(sendEdge(pr, 33) != nullptr, "a return's own send switched off is planned, so Enable Send never retimes");
+        check(hasEdge(pr, 4, 1) && hasEdge(pr, 5, 1), "and both returns still go to the master");
+    }
+
+    // A loop through a sidechain is a loop: the return keys a device on X,
+    // so a send from X into it would close R -> X -> R, and the whole
+    // project, not just the row, would be refused if the check missed it.
+    rows::Model k;
+    k.tracks = {track(1, "master", "Master"), track(2, "audio", "X"), track(4, "return", "R")};
+    k.routing = {route(10, 4, 2, "sidechain", "user"),   // R keys X
+                 route(11, 2, 4, "send", "user")};       // X -> R
+    const GraphPlan pk = planGraph(k);
+    check(sendEdge(pk, 11) == nullptr && mentions(pk, "routing#11", "would close a loop") && !pk.cycle,
+          "a send closing a loop through a sidechain is refused as its row, and the plan has no cycle" +
+              problems(pk));
 }
 
 void testUserRoutingWins() {
@@ -226,11 +321,9 @@ void testSidechainAndSends() {
     check(hasEdge(p, 2, 3, Bus::Sidechain),
           "a sidechain row becomes a sidechain edge (ADR-0056)");
 
-    // CHANGED BY ADR-0072. This asserted "a send sums into its destination",
-    // which was correct under ADR-0067 and is the behaviour the ruling
-    // abolishes: a send makes the top-level graph an arbitrary DAG, and the
-    // compensation can be got wrong on every path through it.
-    check(!hasEdge(p, 3, 4, Bus::Main), "a send no longer sums into its destination");
+    // CHANGED BACK BY ADR-0203 d3. ADR-0072 had abolished this; the
+    // director's ruling restores it, compensated like every other path.
+    check(hasEdge(p, 3, 4, Bus::Main), "a send sums into its destination, on the main bus");
 
     // Neither is a main output, so both tracks still take the default. This
     // half is unchanged and is the reason the refusal has to be narrow: it
@@ -339,12 +432,16 @@ void testDeterministicOrder() {
     rows::Model a;
     a.tracks = {track(1, "master", "M"), track(2, "audio", "X"),
                 track(3, "audio", "Y")};
-    a.routing = {route(10, 2, 1, "main", "user"), route(11, 3, 1, "main", "user")};
+    a.tracks.push_back(track(4, "return", "R"));
+    a.routing = {route(10, 2, 1, "main", "user"), route(11, 3, 1, "main", "user"),
+                 route(12, 2, 4, "send", "user"), route(13, 3, 4, "send", "user")};
 
     rows::Model b;
     b.tracks = {track(3, "audio", "Y"), track(1, "master", "M"),
                 track(2, "audio", "X")};
-    b.routing = {route(11, 3, 1, "main", "user"), route(10, 2, 1, "main", "user")};
+    b.tracks.push_back(track(4, "return", "R"));
+    b.routing = {route(13, 3, 4, "send", "user"), route(11, 3, 1, "main", "user"),
+                 route(12, 2, 4, "send", "user"), route(10, 2, 1, "main", "user")};
 
     const GraphPlan pa = planGraph(a), pb = planGraph(b);
 
@@ -354,7 +451,8 @@ void testDeterministicOrder() {
     for (std::size_t i = 0; same && i < pa.nodes.size(); ++i)
         if (pa.nodes[i].trackId != pb.nodes[i].trackId) same = false;
     for (std::size_t i = 0; same && i < pa.edges.size(); ++i)
-        if (pa.edges[i].from != pb.edges[i].from || pa.edges[i].to != pb.edges[i].to)
+        if (pa.edges[i].from != pb.edges[i].from || pa.edges[i].to != pb.edges[i].to ||
+            pa.edges[i].routingId != pb.edges[i].routingId)
             same = false;
 
     check(same,
@@ -390,7 +488,8 @@ int main() {
         testDefaultRouting();
         testGroupsAutoRoute();
         testUserRoutingWins();
-        testAuxSendsAreRefusedAndSurfaced();
+        testASendIsPlanned();
+        testASendThatCannotPlayIsRefusedByRow();
         testAutoRowIsTheDefaultMaterialised();
         testSidechainAndSends();
         testVcaIsNotAudio();
