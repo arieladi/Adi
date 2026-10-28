@@ -273,15 +273,25 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
 int ArrangementView::overviewHeight() const noexcept { return root.state().overview ? kOverviewHeight : 0; }
+void ArrangementView::setNamesFirst(bool first, int controls) {
+    if (first == namesFirst_ && controls == controlsGap_)
+        return;
+    namesFirst_ = first;
+    controlsGap_ = first ? controls : 0;
+    resized();
+}
 void ArrangementView::resized() {
-    const int headerW = std::min(kHeaderWidth, getWidth() / 3);
-    const int clipsW = std::max(0, getWidth() - headerW - kLeftMargin);
+    const int headerW = headerWidth(std::max(0, getWidth() - controlsGap_));
+    const int clipsW = std::max(0, getWidth() - headerW - controlsGap_ - kLeftMargin);
     const int top = topHeight(), above = overviewHeight();
     const int body = std::max(0, getHeight() - top - kTimeRulerHeight);
-    ruler.setBounds(kLeftMargin, above, clipsW, kRulerHeight);
-    scrub.setBounds(kLeftMargin, above + kRulerHeight, clipsW, kScrubHeight);
-    canvas.setBounds(kLeftMargin, top, clipsW, body);
-    headers.setBounds(kLeftMargin + clipsW, top, headerW, body);
+    // Live's order: the lanes, then the names. Swapped: the names, the track controls' gap,
+    // then the lanes.
+    const int lanesX = namesFirst_ ? headerW + controlsGap_ + kLeftMargin : kLeftMargin;
+    ruler.setBounds(lanesX, above, clipsW, kRulerHeight);
+    scrub.setBounds(lanesX, above + kRulerHeight, clipsW, kScrubHeight);
+    canvas.setBounds(lanesX, top, clipsW, body);
+    headers.setBounds(namesFirst_ ? 0 : kLeftMargin + clipsW, top, headerW, body);
     frame(true);
 }
 juce::Colour ArrangementView::colourFor(std::size_t position) const {

@@ -410,6 +410,34 @@ int main(int argc, char **argv) {
           "panel widths follow identity");
     a.frame();
     reference(a, "root-swapped", write);
+    {
+        // The director's layout C (2026-10-28): names, track controls, strip, lanes; the
+        // browser on the right. Live's sides: lanes, names, then the track controls.
+        const auto at = a.arrangement.getPosition();
+        const auto namesC = a.arrangement.headers.getBounds() + at;
+        const auto lanesC = a.arrangement.canvas.getBounds() + at;
+        check(a.arrangement.namesFirst() && a.status.swapToggle.getToggleState() &&
+                  namesC.getRight() <= a.mixerArea().getX() &&
+                  a.mixerArea().getRight() <= lanesC.getX() &&
+                  lanesC.getRight() <= a.browserArea().getX() &&
+                  a.arrangement.ruler.getX() + at.x == lanesC.getX(),
+              "swapped: the names lead, then the track controls, then the lanes");
+        a.status.swapToggle.onClick();
+        a.frame();
+        const auto atL = a.arrangement.getPosition();
+        const auto namesL = a.arrangement.headers.getBounds() + atL;
+        const auto lanesL = a.arrangement.canvas.getBounds() + atL;
+        check(!a.arrangement.namesFirst() && !a.status.swapToggle.getToggleState() &&
+                  a.state().panels.slots()[0].panel == Panel::Browser &&
+                  a.browserArea().getRight() <= lanesL.getX() &&
+                  lanesL.getRight() <= namesL.getX() &&
+                  namesL.getRight() <= a.mixerArea().getX(),
+              "the Status Bar's Swap puts Live's sides back: lanes, names, track controls");
+        a.status.swapToggle.onClick();
+        a.frame();
+        check(a.arrangement.namesFirst() && a.state().panels.slots()[0].panel == Panel::Mixer,
+              "and swaps them again");
+    }
     a.setSize(400, 540);
     const auto order = a.state().panels.slots()[0].panel;
     check(!a.command(AppCommands::SwapPanels) && a.state().panels.slots()[0].panel == order,

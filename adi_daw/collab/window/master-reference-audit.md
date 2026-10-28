@@ -24,7 +24,7 @@ MR § is the Master Reference's section.
 | Item | MR § | Window today |
 |---|---|---|
 | Live's single window: browser left, arrangement centre, track controls right, devices along the bottom, Info View bottom left, Status Bar, control bar on top | 1.1, 3 | Built |
-| Swap the browser and the track controls to the other side, instantly, for Bitwig and Cubase users | 1.1, 3.2 (ADR-0080) | **Hidden.** Built as View › "Swap side panels", each panel keeping its own width; but no key and nothing on screen, so it is not found. **Ruling:** after the swap the track names stay right of the clips while their controls go left (see the end of this file) |
+| Swap the browser and the track controls to the other side, instantly, for Bitwig and Cubase users | 1.1, 3.2 (ADR-0080) | Built (window/swap-panels): a Swap button in the Status Bar beside Mixer, lit while swapped, and View › "Swap side panels"; each panel keeps its own width. Swapped, the director's layout C (28 October): names, track controls, strip, lanes; the browser right |
 | Hide one or both side panels to give the arrangement the whole width | 3.2 | Built (View › Hide/Show Browser, the track controls' toggle) |
 | The narrow-window rule: each panel keeps its minimum, a swap that cannot fit is refused with a message | 3.2 (ADR-0180 d4) | Built |
 | The mixer and the editors undock into their own windows, the same components reparented | 1.1, 3.2 (ADR-0063) | Partial: device panels and the analyser float in the floating host; the mixer and the editors do not undock |
@@ -97,7 +97,7 @@ MR § is the Master Reference's section.
 | MIDI Learn on every lane header | 6.1 | Later (P2) |
 | Clip names; the Main track last | 3.3 | Waits (N6) |
 | Take lanes and comping | 4.6 | Later (P1, engine first) |
-| Dropping an audio file on a track | 3.3 | Waits (N5) |
+| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15) |
 
 ## 5. Devices and the editors (MR 3.4, 4, 5, 9)
 
@@ -111,7 +111,7 @@ MR § is the Master Reference's section.
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
 | Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Waits: the sample slot has no op the window can call (new Need) |
 | The missing-file mark on a device whose sample is gone | 9.3 | Waits (new Need: the mark in the snapshot) |
-| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing, and not in step 7's plan: needs a place in the queue (see the end) |
+| The clip view, Live's layout (properties, loop, warp, gain, transposition, envelopes) | 4.1 | Missing, and not in step 7's plan; the window's next item after the view filter's picture (the director, 28 October), plan and pictures first |
 | The MIDI note editor: piano roll, velocity and CC lanes, Fold and Scale (P0, Scale Mode P1) | 5.1 | Missing, as above; the note ops exist |
 | Layered editing; the editors torn out | 3.4, 4.1 | Later, with the editors |
 | The Pd patch editor | 9.3 | Later (P1, its own step) |
@@ -177,6 +177,9 @@ MR § is the Master Reference's section.
 
 ## Questions for the director
 
+Ruled on 28 October 2026: 1, layout C (names, track controls, strip, lanes); 2, the Status Bar;
+3, yes, its picture first; 4, yes, the clip view and the note editor next.
+
 1. **The swap's track names.** After View › Swap side panels the track controls go left but the
    track names stay right of the clips, so a track's name and its controls are on opposite sides.
    Two shapes are possible:
@@ -194,21 +197,23 @@ MR § is the Master Reference's section.
 
 ## The window's queue from this audit (window alone, in order)
 
-1. The swap made visible, and the track names' side once ruled (questions 1 and 2).
-2. Navigate's Wrap Tab Navigation and Move Clips with Arrow Keys off, from the existing settings;
-   N21 withdrawn.
-3. The Options menu: Chase MIDI Notes, MIDI Envelope Auto-Reset, Reduced Latency When Monitoring,
+1. Done (window/swap-panels): the swap made visible, layout C.
+2. Done (#292): Navigate's Wrap Tab Navigation and Move Clips with Arrow Keys off, from the
+   existing settings; N21 withdrawn.
+3. Next, as ruled: the view filter's picture, then the clip view and the note editor (plan and
+   pictures first). The items below follow.
+4. The Options menu: Chase MIDI Notes, MIDI Envelope Auto-Reset, Reduced Latency When Monitoring,
    Edit MIDI Map and Edit Key Map, from the existing settings and modes; Exclusive Solo followed.
-4. A scrolling browser sidebar, so Places shows on every window height.
-5. Moving tracks by their title bars (in progress).
-6. A time range across several tracks.
-7. The device parameter's context menu, and the searchable Parameter List.
-8. The Settings window's presets, profiles, bundle, related words and Restore "Don't Show Again";
+5. A scrolling browser sidebar, so Places shows on every window height.
+6. Moving tracks by their title bars (in progress).
+7. A time range across several tracks.
+8. The device parameter's context menu, and the searchable Parameter List.
+9. The Settings window's presets, profiles, bundle, related words and Restore "Don't Show Again";
    Safe Mode.
-9. The palette (Ctrl+P / Cmd+P), commands first.
-10. The scope view in every strip and the Scope window (P1).
-11. The view states and the named view filters, after their pictures are approved (question 3).
-12. Project tabs.
+10. The palette (Ctrl+P / Cmd+P), commands first.
+11. The scope view in every strip and the Scope window (P1).
+12. The view states and the named view filters, after their pictures are approved (question 3).
+13. Project tabs.
 
 New Needs for the log, from this audit:
 - a track's delay in the snapshot;

@@ -127,6 +127,9 @@ class StatusBar final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    // ADI's addition (ADR-0080; the director, 28 October 2026): the side swap, shown where the
+    // view toggles are, lit while the browser is on the right.
+    juce::TextButton swapToggle{"Swap"};
 
   private:
     AdiRootComponent &root_;

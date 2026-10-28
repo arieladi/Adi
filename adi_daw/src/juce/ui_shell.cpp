@@ -359,6 +359,12 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
     mixerToggle.setClickingTogglesState(false);
     mixerToggle.onClick = [this] { root_.command(AppCommands::ToggleMixerView); };
+    addAndMakeVisible(swapToggle);
+    swapToggle.setTitle("Swap Side Panels");
+    swapToggle.setTooltip("Swaps the browser and the track controls between the window's sides, for "
+                          "Bitwig and Cubase hands. Also in the View menu.");
+    swapToggle.setClickingTogglesState(false);
+    swapToggle.onClick = [this] { root_.command(AppCommands::SwapPanels); };
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -367,6 +373,8 @@ void StatusBar::resized() {
     infoToggle.setBounds(8, 9, 19, 19);
     detailToggle.setBounds(w - 27, 9, 19, 19);
     mixerToggle.setBounds(w - 86, 11, 44, 16);
+    // At the right of the second field, before the selected track's box.
+    swapToggle.setBounds(w - 220, 11, 44, 16);
 }
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -616,10 +624,16 @@ void AdiRootComponent::resized() {
     const int mid = std::max(0, rowY - gap - top);
     const bool browserLeft = slots[0].panel == Panel::Browser;
     // The mixer's columns sit against the arrangement, inside its frame, as Live's
-    // track headers do; the browser stands apart, a gap away.
+    // track headers do; the browser stands apart, a gap away. Swapped, the track names lead,
+    // then the track controls, then the clips, as Bitwig and Cubase have them (the
+    // director's ruling of 28 October 2026 on ADR-0080): the controls sit in a gap the
+    // arrangement leaves between its names and its lanes.
     const int mw = browserLeft ? right : left;
-    mixerArea_ = mw > 0 ? juce::Rectangle<int>(browserLeft ? w - right - gap : gap, top, mw, mid)
-                        : juce::Rectangle<int>();
+    const int namesW =
+        browserLeft ? 0 : ArrangementView::headerWidth(std::max(0, w - right - gap - gap - mw));
+    mixerArea_ = mw > 0
+                     ? juce::Rectangle<int>(browserLeft ? w - right - gap : gap + namesW, top, mw, mid)
+                     : juce::Rectangle<int>();
     mixer.setVisible(!mixerArea_.isEmpty());
     mixer.setBounds(mixerArea_);
     const int bw = browserLeft ? left : right;
@@ -646,24 +660,33 @@ void AdiRootComponent::resized() {
     rightWidth_ = right;
     // The arrangement fills what the side panels leave, between the browser's gap and
     // the mixer's columns.
-    const int centreX = browserLeft ? left + gap : mixerArea_.getRight();
+    const int centreX = browserLeft ? left + gap : gap;
     const int centreW = std::max(0, (browserLeft ? mixerArea_.getX() : w - right - gap) - centreX);
-    // Live's Mixer View sits at the foot of the arrangement, its full width (§18.1).
+    // Where the lanes' column starts: the arrangement's left edge, or past the names and the
+    // track controls when swapped.
+    const int lanesX = browserLeft ? centreX : centreX + namesW + mw;
+    const int lanesW = std::max(0, centreX + centreW - lanesX);
+    arrangement.setNamesFirst(!browserLeft, mw);
+    // Live's Mixer View sits at the foot of the arrangement, its full width (§18.1); swapped,
+    // under the lanes.
     const int mvh = state_.mixerView
                         ? std::clamp(state_.mixerViewHeight, 120,
                                      std::max(120, mid - arrangement.topHeight() - 64))
                         : 0;
     mixerViewArea_ = mvh > 0 && mid > mvh
-                         ? juce::Rectangle<int>(centreX, top + mid - mvh, centreW, mvh)
+                         ? juce::Rectangle<int>(browserLeft ? centreX : lanesX, top + mid - mvh,
+                                                browserLeft ? centreW : lanesW, mvh)
                          : juce::Rectangle<int>();
     mixerView.setVisible(!mixerViewArea_.isEmpty());
     mixerViewResizer.setVisible(!mixerViewArea_.isEmpty());
     mixerView.setBounds(mixerViewArea_.withTrimmedTop(1));
-    mixerViewResizer.setBounds(mixerViewArea_.getX(), mixerViewArea_.getY() - 3, centreW, 6);
+    mixerViewResizer.setBounds(mixerViewArea_.getX(), mixerViewArea_.getY() - 3,
+                               mixerViewArea_.getWidth(), 6);
     status.mixerToggle.setToggleState(state_.mixerView, juce::dontSendNotification);
+    status.swapToggle.setToggleState(!browserLeft, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
     // The Overview runs from the lanes' left edge to Live's H and W buttons.
-    const int overviewX = centreX + ArrangementView::kLeftMargin;
+    const int overviewX = lanesX + ArrangementView::kLeftMargin;
     const int overviewRight = browserLeft && !mixerArea_.isEmpty()
                                   ? mixerArea_.getRight() - MixerPanel::kRightStrip - 48
                                   : centreX + centreW - 4;
