@@ -540,12 +540,42 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     if (!header) {
         // The lanes' menu sets the grid as well (§6.10).
         menu.addSeparator();
-        for (const int id : {AppCommands::NarrowGrid, AppCommands::WidenGrid, AppCommands::TripletGrid,
-                             AppCommands::SnapToGrid, AppCommands::FixedGrid})
-            menu.addCommandItem(&commands.manager, id);
+        addGridItems(menu);
     }
     menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
         juce::Rectangle<int>(where.x, where.y, 1, 1)));
+}
+void ArrangementView::addGridItems(juce::PopupMenu &menu) {
+    using Geometry = ArrangementGeometry;
+    const auto &grid = geometry.grid;
+    // The menu answers after this returns: a choice made once the window has gone does nothing.
+    juce::Component::SafePointer<ArrangementView> safe(this);
+    auto choose = [safe](bool fixed, int narrow, double quarters) {
+        return [safe, fixed, narrow, quarters] {
+            if (safe == nullptr)
+                return;
+            auto &chosen = safe->geometry.grid;
+            chosen.fixed = fixed;
+            if (fixed)
+                chosen.fixedQuarters = quarters;
+            else
+                chosen.narrow = narrow;
+            safe->changed();
+        };
+    };
+    juce::PopupMenu adaptive, fixed;
+    for (std::size_t i = 0; i < Geometry::kAdaptiveNames.size(); ++i) {
+        const int narrow = static_cast<int>(i) - Geometry::kGridNarrowest;
+        adaptive.addItem(Geometry::kAdaptiveNames[i], true, !grid.fixed && grid.narrow == narrow,
+                         choose(false, narrow, 0));
+    }
+    for (double quarters = Geometry::kWidestGrid; quarters >= Geometry::kFinestGrid; quarters /= 2)
+        fixed.addItem(gridLabel(quarters, false), true, grid.fixed && grid.fixedQuarters == quarters,
+                      choose(true, 0, quarters));
+    menu.addSubMenu("Adaptive Grid", adaptive);
+    menu.addSubMenu("Fixed Grid", fixed);
+    menu.addCommandItem(&root.commands().manager, AppCommands::TripletGrid);
+    menu.addCommandItem(&root.commands().manager, AppCommands::SnapToGrid);
 }
 void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (e.mods.isCommandDown()) {
