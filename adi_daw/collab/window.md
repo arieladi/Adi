@@ -61,7 +61,56 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N33 | Ops for a clip's start and end markers, its loop window and loop switch, its signature and its scale (Live's Main Clip Properties) | engine | the Main panel's fields and Set buttons, the loop brace, Fit to Scale (§7.7) | the fields show the snapshot's position and length, read-only |
 | N34 | An op for a note's active flag (the `flags` column exists) | engine | 0 deactivates a note (Live manual §10.5.7) | nothing |
 | N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`) | a clean tree after the gate the window runs before each push | the window deletes them after each run |
-| N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+| N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a track's `parent` and `color` (WIDENED 2026-10-28: the director's Bitwig project view lists the groups as a tree with their colours, and a group's tracks show beneath it), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, cloud, continued — the flip arrows, Live's strip, Use Large Track Height [#293](https://github.com/arieladi/Adi/pull/293) [#294](https://github.com/arieladi/Adi/pull/294)
+
+**The director, on screenshots (28 October).**
+- Yellow mark: small arrows that say "Flip sides" on hovering, under the strip's two round switches.
+- Green mark: in flip mode, the column the strip took between the track controls and the lanes
+  belongs to the track controls.
+- He still doesn't see Bitwig's project view: the button where he decides to see the whole project
+  or a group, with the groups' layers shown as a tree (his Bitwig screenshot).
+- He wants Bitwig's Use Large Track Height button.
+
+**#293's third commit:**
+- Live's strip becomes its own component, `SideStrip`.
+- `FlipButton` sits under the switches. It shows "Flip sides" in the tooltip and the Info View, is lit
+  while flipped, and takes no keyboard focus.
+- Flipped, the strip is at the window's left edge: strip, names, track controls, lanes.
+- The band's Swap button is gone. The View menu item is now Flip Sides.
+- The arrangement now ends where the right-hand panel begins. With the browser on the left and the
+  track controls hidden, the old formula gave it zero width. That bug predated #293; a new check fails
+  on it.
+- `root-swapped` is re-recorded on purpose.
+
+**#294, `window/track-height`, on #293:**
+- `ArrangementGeometry::largeTracks`: off, every track shows at half its height. Heights are kept large;
+  a resize while small is stored at twice the size shown, and Optimize Height uses the same path.
+- A Bitwig-icon button under the flip arrows, and the View menu's ticked Use Large Track Height.
+- Kept per window in `WindowState::largeTracks`.
+- Checks: shell 405, window state 53; `test_all.sh` 8270 PASS. The halving check fails without the
+  halving.
+
+**The project view: what blocks it.** The snapshot still carries no track parent, kind or colour.
+N6 is widened to say so. The design follows his Bitwig screenshot, replacing the funnel picture:
+- a tree icon with ▾ at the top of the track names;
+- its menu: Project, then the nested groups with folder icons in their colours;
+- the button lit while a group is chosen. It is the warning light, so no separate funnel is needed.
+
+He is asked to choose:
+- the engine lane fills N6 (recommended);
+- or the window reads the track rows from the store on the message thread after each edit, as the
+  engine's `MidiClips` does. This changes STEP-7-PLAN §2.2's single read path, so it needs his ruling.
+
+Picture branches merged forward, with trailers, and `window/clip-view`'s plan corrected for the arrows.
+
+**Where to resume:**
+- his ruling on the project view's data;
+- then build the button, the menu and the filter (Main always shown);
+- the Clip View's approval.
 
 ---
 
