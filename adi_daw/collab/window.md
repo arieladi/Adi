@@ -41,7 +41,36 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N13 | A loudness meter's DSP: momentary, short-term and integrated LUFS and true peak, cheap enough for the Main track at all times (ADR-0203 d14) | engine or devices | the Main track's loudness meter | none yet |
 | N14 | The registry's pages in Live's ten tab names and order, then ADI's own (ADR-0203 d11, Master Reference V.2): the Display & Input / Theme & Colors split of "Look & Feel", Link, Tempo & MIDI, Record, Warp & Launch, Licenses & Updates | win (`src/adi/settings/registry.cpp`) | the Settings window lists `settings::pages()` as they are, by design: one source for the left-hand list | the window shows the registry's pages in the registry's order |
 | N15 | ADR-0104's library index (the app-scoped store of samples, presets and devices) and a catalogue of ADI's own devices by category, with a way to insert one (`device.insert` needs a plug-in reference row and the track's chain, neither of which the UI can make) | engine, devices | the browser's list (Live's folders under each category, double-click or drag to load) | the browser shows its sidebar and the list's header; a click on a category says it is not listed yet |
+| N16 | The channel slots for ADI-Q and ADI-L on every channel and group (ADR-0204 d1, LANES §3 item 7): present but off, their on/off and ADI-L's mode in the snapshot, an op to switch each, and the engaged EQ's curve for the window to draw | engine (slots), clones (the plug-ins) | the Channel EQ window's switches and its display; the track rows' Q and L | every slot is shown off; a switch says what it waits for |
+| N17 | The ops of phase C's window parts: clip fades (handles, Create Fades on Clip Edges off, d7), Insert Silence, and the import and bounce prompts' actions (import needs N5; bounce needs the render path) | engine | range selection's commands, fade handles, the two prompts (LANES §3b item 3) | nothing drawn that cannot act; the parts wait for their ops |
 | N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-28, later — the Channel EQ window [#268](https://github.com/arieladi/Adi/pull/268) `window/channel-eq`
+
+**#268, stacked on #267.** ADR-0204 d1's one EQ window: every channel's ADI-Q and ADI-L in one
+view, FabFilter's "show all instances" made native.
+- EQ Eight's display, where each engaged EQ's curve will be drawn in its track's colour.
+- One row per channel with its two switches and ADI-L's mode.
+- It opens from the View menu's Channel EQ and from a track row's Q or L, in the floating host,
+  one per project.
+- Its slots are present and off until the engine's channel slots and the clones' plug-ins
+  arrive (N16, new).
+
+Checks: 281 shell checks; `test_all.sh` 8265 across 97 suites PASS; the shadow sweep is clean.
+
+**Item 3's state:**
+- The Settings window (#267) and the EQ/limiter window (#268) are done.
+- Phase C's window parts wait for their ops: fades, Insert Silence, and the import and bounce
+  actions (N17, new). They are not drawn before they can act.
+
+**Where to resume:** `~/adi-window` on `window/channel-eq`, the tip of the stack. With item 3
+blocked, the next pieces are the parity rows marked partial that the window alone can finish:
+- arrows on a focused Settings switch and value box;
+- Ctrl+Q on Windows;
+- Cut, Copy and Rename in a device's menu, where ops exist.
+Also: the native Settings smoke in `ui.yml` (win's file) once win agrees.
 
 ---
 
