@@ -5,6 +5,81 @@ Device branches start at `origin/main`; win reviews and merges. This log has
 its own `devices/log` branch, following `collab/engine.md`, so independent
 device PRs do not conflict on one shared log file.
 
+## 2026-10-28 — OneShot device recovery open as draft #278
+
+**[PR #278](https://github.com/arieladi/Adi/pull/278)**, `devices/oneshot`,
+commit `0161d33`, is based directly on main `a57d47a`. Ten owned files recover
+#206's native sampler and #207's independent ParamMod behavior, then add a
+compiled-in Pd external, forty-control canvas and immutable prepared-sample
+bridge. No engine, host, UI, plugin, workflow or global CMake files changed.
+No merge performed.
+
+Sample copying/analysis happens off-thread. Processing borrows prepared data
+under the existing sample-slot read scope, with no reference ownership changes;
+replacement/clear generations reset voices. The Pd MIDI fallback has a fixed
+512-event queue, counted overflow with voice reset, and a repeated-key policy
+that releases the previous channel/key identity before replacing it. This
+prevents an orphaned loop with Retrigger disabled. Its timing and MIDI 1.0
+precision limits remain explicit; the native core uses exact original events.
+
+Validation: dependency pins verified with `fetch_external.sh --build-only`;
+strict Debug Ninja/Clang build, `ADI_WERROR=ON`, libc++ Debug hardening.
+**8,414 checks / 97 suites**, all four validators and spec layout pass.
+Affected suites: native **197**, real Pd **38**. Four compiled source plants
+(ignored ParamMod, ignored generation change, omitted repeated-key release,
+missing prepared sample) fail **8/2/2/6** checks; sources restored before the
+final full build and suite. New OneShot targets have no warnings. The unchanged
+`adi_tool` target emits the inherited Apple linker duplicate `libadi_core.a`
+warning; this is not suppressed or claimed fixed. GCC/MSVC CI is pending.
+
+Remaining draft gates: measured Live parity and inherited feature/default
+gaps; production discovery/import and preparation hook; Pd instrument Consume
+metadata; native direct dispatch after the adapter base/instrument integration.
+The fallback reports its current 64-sample adapter tick plus zero intrinsic
+sampler delay. Generic same-rate host prepare does not reset an already running
+Pd graph: explicit `$0-oneshot-reset` or a published empty sample is required
+until the owner adds lifecycle notification. Native prepare resets voices.
+All these limitations are documented in `pd/devices/OneShot.md`.
+
+Worktree: `work/active.nosync/oneshot`. Evidence in `adi_daw/build-strict/`:
+`fetch-pins-final.log`, `build-oneshot.log`, `build-final.log`,
+`test-all-final.log`, `oneshot-source-plants.json` and per-plant logs.
+Generated synthetic test WAVs are retained under `build-strict/test-renders/`.
+Queue continues with the Sampler recovery feasibility audit and Compressor
+measurements; no action from Adi is pending.
+
+## 2026-10-28 — Compressor static and dynamics batches measured; longer probes next
+
+The original three isolated Sets have now produced **46 measured tracks** on
+Live **11.2.7 (2022-12-08_2509d781e7)**. Calibration passes 61 checks, static
+passes 97 integrity checks across 15 tracks, and dynamics passes 139 across
+22 tracks. Each batch has captured controls and export settings; every raw
+reference matches the original stereo float32 input at zero offset. Static
+renders are 918,000 frames; calibration/dynamics are 390,000, all at 48 kHz.
+
+The dynamics parameter verifier initially treated Live's `1.00 s` display as
+milliseconds. Corrected unit conversion and display precision, rejected 1 ms
+and 1.01 s failure plants, and recomputed all 630 checks from the unchanged
+original API records into `dynamics-parameters-v2.json`. The failed original
+capture is retained with its hash; this was a verifier bug, not a Live access
+or settings problem. Both earlier captures still validate.
+
+Independent calibration review confirms the 4:1 hard-knee operating point:
+-6 dBFS input becomes -16.5000039 dBFS at threshold -20 dB, about 3.8e-6 dB
+from the documented relationship. A candidate Peak/Lin amplitude detector
+using the displayed attack/release times matches held-out timing, sine and
+stereo probes within 4.70e-7 absolute audio amplitude. This is evidence for a
+model candidate, not a shipped Compressor or full parity claim. RMS transients
+are not explained by the same detector; transferring it would be incorrect.
+
+Longer probes are required by the actual curves: RMS/Lin 100/1000 ms has not
+settled after a one-second high hold, and Log 100/1000 ms has not recovered
+after two seconds. A separate extended Set is being prepared with six-second
+holds, ten-second nonzero release tails, two high levels and short/long Auto
+Release excitation. The existing Sets, manifests, inputs and renders remain
+unchanged. Local analysis and provenance: `work/local.nosync/live11-probe/evidence/`.
+No action from Adi is pending.
+
 ## 2026-10-28 — Live access working; Compressor calibration measured on Live 11.2.7
 
 Live is available and working. The earlier “access unresolved” note described
