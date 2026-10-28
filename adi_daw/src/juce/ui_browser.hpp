@@ -13,6 +13,12 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    // With the focus, the up and down arrows move between the sidebar's labels (§41.4.1.6).
+    bool keyPressed(const juce::KeyPress &) override;
+    void focusGained(FocusChangeType) override;
+    void focusLost(FocusChangeType) override;
+    // Live 12's focus ring round the sidebar, where the keyboard put the focus.
+    bool focusRing() const noexcept { return ring_; }
     struct Entry {
         juce::String name;
         int glyph; // which small icon
@@ -28,9 +34,12 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     juce::TextEditor search;
 
   private:
+    // Selects a label, as a click on it does.
+    void choose(int);
     AdiRootComponent &root_;
     std::vector<Entry> sidebar_;
     int selected_ = -1;
+    bool ring_ = false;
     juce::Rectangle<int> sidebarArea_, contentArea_;
 };
 } // namespace adi::ui

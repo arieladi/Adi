@@ -53,7 +53,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleMixerView,
         ShowChannelEq,
         Quit,
-        LastId = Quit
+        FocusControlBar,
+        FocusArrangement,
+        FocusDeviceView,
+        FocusBrowser,
+        LastId = FocusBrowser
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -172,6 +176,7 @@ class AdiRootComponent final : public juce::Component {
   private:
     bool insertTrack(bool midi);
     bool deleteTrack();
+    bool focusView(int);
     bool fail(std::string message);
     bool toggle(Panel);
     engine::ProjectView &view_;

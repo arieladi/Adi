@@ -7,6 +7,8 @@ rows exist they replace these. Rows describe the behaviour in our words, never t
 
 Status: **built** (in this PR, with a check in `tests/test_ui_shell.cpp`), **partial**, **open**
 (a later item), **measure** (win checks Live and reports the figure or the difference).
+"Online §" cites Ableton's online Live 12 manual (ableton.com/en/live-manual/12/, the
+2026-10-01 edition); see `parity-7.2-application.md`.
 
 | # | Live's behaviour | Manual | ADI in this PR | Status |
 |---|---|---|---|---|
@@ -27,3 +29,5 @@ Status: **built** (in this PR, with a check in `tests/test_ui_shell.cpp`), **par
 | 15 | The Device View has one height | ADR-0203 d7, ADR-0184 | Floor 169 zoom-independent units, a desktop default; the strip grows upward only and keeps its height when hidden | measure: 169 is the director's figure, UNVERIFIED (AWAITING) |
 | 16 | — (ADI deviation) floating tooltips on after 600 ms | ADR-0203 d12, ADR-0131 | One tooltip window per native window, delay from `lookfeel.tooltipDelayMs`, off with `lookfeel.showTooltips` | built |
 | 17 | — (ADI addition) the AI chat is a tab at the browser's foot, collapsed | ADR-0203 d6 | A 24-unit tab at the browser's bottom; open, it takes the lower two fifths; remembered per window | built |
+| 18 | The Navigate menu, and Alt+0, 2, 4 and 5 (Option on the Mac), move the keyboard focus to the Control Bar, the Arrangement View, the Device View and the Browser; the Control Bar returns to the control that last had it | online §41.4.1, §42.2 | The four commands and the Navigate menu (`window/navigate-menu`). A hidden Device View or browser is shown first. Where the keyboard put the focus, a control bar item or the browser's sidebar has a ring in the accent, as the Settings window's controls; a click leaves none | built; measure: does Live show a hidden view on Alt+4 or Alt+5, and its focus ring's colour. Session View, Clip View, the Groove Pool, the Learn View and the Mixer come with those views and the Mixer's keyboard |
+| 19 | With the browser focused, the up and down arrows move between the sidebar's labels | online §41.4.1.6 | Past the headings, selecting as a click does; at either end the selection stays | partial: the content pane, and the left and right arrows between it and the sidebar, wait for the browser's list (N15) |

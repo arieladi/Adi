@@ -66,7 +66,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Insert Audio Track",  "Insert MIDI Track",
                                   "Delete Track",        "Rename",
                                   "Mixer",               "Channel EQ",
-                                  "Quit"};
+                                  "Quit",                "Control Bar",
+                                  "Arrangement View",    "Device View",
+                                  "Browser"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -189,6 +191,20 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case RenameTrack: // §41.5
         info.addDefaultKeypress('r', cmd);
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        break;
+    // Live 12's Navigate menu (online manual §41.4.1, §42.2): Alt, or Option, and the view's
+    // number moves the keyboard focus there.
+    case FocusControlBar:
+        info.addDefaultKeypress('0', alt);
+        break;
+    case FocusArrangement:
+        info.addDefaultKeypress('2', alt);
+        break;
+    case FocusDeviceView:
+        info.addDefaultKeypress('4', alt);
+        break;
+    case FocusBrowser:
+        info.addDefaultKeypress('5', alt);
         break;
     default:
         break;
@@ -694,6 +710,32 @@ bool AdiRootComponent::deleteTrack() {
     publishSelection();
     return true;
 }
+bool AdiRootComponent::focusView(int id) {
+    // Live's Navigate menu (§41.4.1): the keyboard focus moves to a view, shown first if it
+    // was hidden.
+    switch (id) {
+    case AppCommands::FocusControlBar:
+        transport.focus();
+        return true;
+    case AppCommands::FocusArrangement:
+        arrangement.canvas.grabKeyboardFocus();
+        return true;
+    case AppCommands::FocusDeviceView:
+        if (!state_.docked && !command(AppCommands::ToggleDeviceView))
+            return false;
+        if (devices.panels.empty())
+            return fail("The selected track has no devices.");
+        devices.panels.front()->grabKeyboardFocus();
+        return true;
+    case AppCommands::FocusBrowser:
+        if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
+            return false;
+        browser.grabKeyboardFocus();
+        return true;
+    default:
+        return false;
+    }
+}
 bool AdiRootComponent::command(int id) {
     // The application's own: files, Settings, and the floating Channel EQ window.
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::ShowChannelEq ||
@@ -786,6 +828,11 @@ bool AdiRootComponent::command(int id) {
                 return panel->beginRename() || fail("Unfold the device to rename it.");
         return arrangement.headers.beginRename(arrangement.geometry.selection.track) ||
                fail("Select a track to rename.");
+    case AppCommands::FocusControlBar:
+    case AppCommands::FocusArrangement:
+    case AppCommands::FocusDeviceView:
+    case AppCommands::FocusBrowser:
+        return focusView(id);
     case AppCommands::ZoomIn:
     case AppCommands::ZoomOut: {
         const auto next = nextZoom(interfaceZoom_, id == AppCommands::ZoomIn);
@@ -808,9 +855,8 @@ bool AdiRootComponent::command(int id) {
 namespace {
 // Live 12's menu bar (manual §42.28), in Live's order, each menu listing only the commands
 // ADI has; 0 is a separator. A menu with none is left out: Options on the Mac, where
-// Settings is the application menu's (§2.3); Navigate until its focus moves exist
-// (§41.4.1); Help until there is a Learn View (§2.2.1). Transport has no menu in Live;
-// Space is its key.
+// Settings is the application menu's (§2.3); Help until there is a Learn View (§2.2.1).
+// Transport has no menu in Live; Space is its key.
 struct MenuEntries {
     const char *name;
     std::vector<int> items;
@@ -838,7 +884,9 @@ const std::vector<MenuEntries> &menuBar() {
         // Settings is the Options menu's on Windows (§2.3).
         {"Options", {C::Settings}},
 #endif
-        {"Navigate", {}},
+        // The views ADI has, in Live's order (§41.4.1): Session View, Clip View, the Groove
+        // Pool and the Learn View come with those views; the Mixer with its keyboard.
+        {"Navigate", {C::FocusControlBar, C::FocusArrangement, C::FocusDeviceView, C::FocusBrowser}},
         {"Help", {}}};
     return bar;
 }
