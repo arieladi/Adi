@@ -49,6 +49,47 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, night, later — Live's arrangement keys [#282](https://github.com/arieladi/Adi/pull/282) `window/arrangement-keys`
+
+**#282, stacked on #281** (parity-7.3-arrangement rows 24 and 25, new). Two rows of §42.16 that
+need no op:
+- **Move Insert Marker to Playhead Position, Ctrl/Cmd+Shift+Space.** The insert marker becomes a
+  point at the playhead, with no clip selected, so Space plays from there.
+- **Adjust Height of Selected Tracks, Alt/Option + and -.** As Alt+wheel: the selected track, or
+  every track with selected content. A 16-unit step, provisional; win to measure Live's.
+
+Checks: shell 340, document 38, window state 49; `test_all.sh` 8266 across 97 suites PASS;
+zero warnings; the shadow sweep is clean.
+
+**CI at 07:29Z on #274 to #282:** no failure, no cancellation. Every finished leg passed: all
+the Linux legs, Windows (MSVC and its GUI shell), and the macOS GUI shell on #274 to #277. The
+macOS core legs wait 30 to 50 minutes for runners; #281 and #282 had just started.
+
+**The stack from this session**, each on the one before and on #273:
+
+| PR | Branch | What |
+|---|---|---|
+| #274 | `window/menu-bar` | Live's menus in Live's order, only commands that exist; Settings in Options off the Mac and in the Mac's application menu; Delete Track in Edit |
+| #275 | `window/navigate-menu` | Navigate's focus moves: Control Bar, Arrangement, Device View, Browser; arrows between devices and sidebar labels |
+| #276 | `window/menu-keys` | Alt and a menu's letter opens it, off the Mac |
+| #277 | `window/browser-search` | Ctrl/Cmd+F to the browser's search |
+| #279 | `window/settings-apply` | a fix: Settings changes reach the open windows at once |
+| #280 | `window/tab-focus` | Use Tab Key to Move Focus, off by default |
+| #281 | `window/follow` | Live's Follow |
+| #282 | `window/arrangement-keys` | insert marker to playhead; Alt +/- track heights |
+
+**Where to resume:** `window/arrangement-keys` (#282) is the tip. What the window can still do
+alone:
+- **The Mixer's keyboard:** Alt/Option+Shift+M to the selected track's row; Next and Previous
+  Neighbor (Ctrl/Option+Tab) in the Navigate menu; a ring on its switches. Keys that change a
+  value wait for win's ruling on how a non-parameter edit coalesces (parity-7.6 row 3).
+- **The Audio page's Channel Configuration** (parity-settings row 7). Its Input and Output Config
+  dialogs are a new window, so their pictures go to the director before more is built on them.
+
+Phase C's window parts still wait for N17.
+
+---
+
 ## 2026-10-28, cloud, night — Tab's switch [#280](https://github.com/arieladi/Adi/pull/280); Follow [#281](https://github.com/arieladi/Adi/pull/281)
 
 **#280 `window/tab-focus`, stacked on #279** (parity-7.2-shell rows 13 and 21).
@@ -86,10 +127,7 @@ the scrub area.
 `transport.setLoop` are in the catalogue but apply nothing, and the snapshot carries neither. So
 the Metronome and Loop switches, the O key, Ctrl/Cmd+L and the loop brace wait for the engine.
 
-**Where to resume:** `window/follow` (#281) is the tip. Next: Live's Arrangement View keys that
-need no op (§42.16):
-- Move Insert Marker to Playhead Position (Ctrl/Cmd+Shift+Space);
-- Adjust Height of Selected Tracks (Alt/Option + and -).
+**Where to resume** (superseded by the entry above): `window/follow` (#281) was the tip.
 
 ---
 
