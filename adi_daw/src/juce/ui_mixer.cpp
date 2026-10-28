@@ -426,6 +426,10 @@ void MixerPanel::retap() {
             s->bind(s->track());
 }
 bool MixerPanel::focusTrack(std::int64_t track) {
+    const auto &tracks = root.reader().tracks();
+    for (std::size_t i = 0; i < tracks.size(); ++i)
+        if (tracks[i]->id == track)
+            reveal(i);
     MixerStrip *target = nullptr;
     for (auto &s : strips_)
         if (s->isVisible() && (target == nullptr || s->track() == track))
@@ -435,29 +439,63 @@ bool MixerPanel::focusTrack(std::int64_t track) {
     target->active.grabKeyboardFocus();
     return true;
 }
+void MixerPanel::reveal(std::size_t index) {
+    const auto &tracks = root.reader().tracks();
+    if (index >= tracks.size())
+        return;
+    if (vertical_) {
+        const int left = static_cast<int>(index) * kStripWidth;
+        if (left < scrollX_)
+            scrollX_ = left;
+        else if (left + kStripWidth > scrollX_ + getWidth())
+            scrollX_ = left + kStripWidth - getWidth();
+        placeColumns();
+        return;
+    }
+    auto &geometry = root.arrangement.geometry;
+    int top = 0;
+    for (std::size_t i = 0; i < index; ++i)
+        top += geometry.heightFor(tracks[i]->id);
+    const int bottom = top + geometry.heightFor(tracks[index]->id);
+    const int view = std::max(0, getHeight() - ArrangementView::kTopHeight);
+    if (top >= geometry.scrollY && bottom <= geometry.scrollY + view)
+        return;
+    geometry.scrollY = top < geometry.scrollY ? top : std::min(top, bottom - view);
+    root.arrangement.changed();
+    place();
+}
 bool MixerPanel::focusNeighbour(bool next) {
+    // Which strip and which of its switches has the focus.
     const auto *focused = getCurrentlyFocusedComponent();
-    for (auto &s : strips_) {
+    const MixerStrip *from = nullptr;
+    std::size_t slot = 0;
+    for (const auto &s : strips_) {
         const auto switches = s->switches();
-        const auto at = std::find(switches.begin(), switches.end(), focused);
-        if (!s->isVisible() || at == switches.end())
-            continue;
-        // The same switch on the track before or after, among the strips shown.
-        const auto &tracks = root.reader().tracks();
-        for (std::size_t i = 0; i < tracks.size(); ++i) {
-            if (tracks[i]->id != s->track())
-                continue;
-            if (next ? i + 1 >= tracks.size() : i == 0)
-                return true;
-            const auto neighbour = tracks[next ? i + 1 : i - 1]->id;
-            for (auto &other : strips_)
-                if (other->isVisible() && other->track() == neighbour)
-                    other->switches()[static_cast<std::size_t>(at - switches.begin())]->grabKeyboardFocus();
-            return true;
+        if (const auto at = std::find(switches.begin(), switches.end(), focused);
+            s->isVisible() && at != switches.end()) {
+            from = s.get();
+            slot = static_cast<std::size_t>(at - switches.begin());
+            break;
         }
+    }
+    if (from == nullptr)
+        return false;
+    // The same switch on the track before or after; out of view, it is brought into view
+    // first, as Live's.
+    const auto &tracks = root.reader().tracks();
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (tracks[i]->id != from->track())
+            continue;
+        if (next ? i + 1 >= tracks.size() : i == 0)
+            return true;
+        const std::size_t to = next ? i + 1 : i - 1;
+        reveal(to);
+        for (const auto &other : strips_)
+            if (other->isVisible() && other->track() == tracks[to]->id)
+                other->switches()[slot]->grabKeyboardFocus();
         return true;
     }
-    return false;
+    return true;
 }
 void MixerPanel::placeColumns() {
     // Strips left to right, realising only the columns on screen (UI-ARCHITECTURE §10).
