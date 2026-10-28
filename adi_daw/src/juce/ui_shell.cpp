@@ -1,0 +1,452 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#include "ui_shell.hpp"
+#include <algorithm>
+#include <array>
+namespace adi::ui {
+namespace {
+constexpr int kTransportHeight = 44, kStatusHeight = 22, kTabHeight = 24;
+// Interface zoom steps per window. PROVISIONAL: Live's own list is to be
+// measured (ADR-0203 d26); 100 % is the start and the steps are symmetric.
+constexpr std::array<float, 7> kZoomSteps{.5f, .75f, 1.f, 1.25f, 1.5f, 1.75f, 2.f};
+bool flag(const settings::AppSettings &s, const char *key, bool fallback) {
+    const auto v = s.get(key);
+    return v.is_boolean() ? v.get<bool>() : fallback;
+}
+} // namespace
+AppCommands::AppCommands(settings::AppSettings &settings) : settings_(settings) {
+    manager.setFirstCommandTarget(this);
+    reload();
+}
+void AppCommands::reload() {
+    live_ = settings_.get("shortcuts.preset") == "live";
+    infoView_ = flag(settings_, "lookfeel.showInfoView", true);
+    tooltips_ = flag(settings_, "lookfeel.showTooltips", true);
+    const auto delay = settings_.get("lookfeel.tooltipDelayMs");
+    tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
+    manager.registerAllCommandsForTarget(this);
+    manager.getKeyMappings()->resetToDefaultMappings();
+}
+bool AppCommands::setInfoView(bool on, std::string &why) {
+    if (!settings_.set("lookfeel.showInfoView", on, {}, why) || !settings_.save(why))
+        return false;
+    infoView_ = on;
+    return true;
+}
+void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
+    for (int id = PlayStop; id <= LastId; ++id)
+        ids.add(id);
+}
+void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo &info) {
+    static const char *names[] = {"Play / stop",         "Stop",
+                                  "Undo",                "Redo",
+                                  "Swap side panels",    "Hide/Show Browser",
+                                  "Hide/Show Mixer",     "Hide/Show Device View",
+                                  "Hide/Show Info View", "Zoom In Window",
+                                  "Zoom Out Window"};
+    info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
+    const auto cmd = juce::ModifierKeys::commandModifier;
+    const auto alt = juce::ModifierKeys::altModifier;
+    const auto shift = juce::ModifierKeys::shiftModifier;
+    // Live 12 manual §41.1, §41.5, §41.9 and §41.20. Esc stops nothing: in Live
+    // it closes a window or a dialog, and the window lane builds Live's keys.
+    switch (id) {
+    case PlayStop:
+        info.addDefaultKeypress(juce::KeyPress::spaceKey, 0);
+        break;
+    case Undo:
+        info.addDefaultKeypress('z', cmd);
+        break;
+    case Redo:
+#if JUCE_MAC
+        info.addDefaultKeypress('z', cmd | shift);
+#else
+        if (live_)
+            info.addDefaultKeypress('y', cmd);
+        else
+            info.addDefaultKeypress('z', cmd | shift);
+#endif
+        break;
+    case ToggleBrowser:
+        info.addDefaultKeypress('b', cmd | alt);
+        info.addDefaultKeypress('5', cmd | alt);
+        break;
+    case ToggleMixer:
+        info.addDefaultKeypress('m', cmd | alt);
+        break;
+    case ToggleDeviceView:
+        info.addDefaultKeypress('4', cmd | alt);
+        break;
+    case ToggleInfoView:
+        // Shift+? : one platform reports the shifted character, the other the key.
+        info.addDefaultKeypress('?', shift);
+        info.addDefaultKeypress('/', shift);
+        break;
+    case ZoomIn:
+        info.addDefaultKeypress('+', cmd);
+        info.addDefaultKeypress('=', cmd);
+        break;
+    case ZoomOut:
+        info.addDefaultKeypress('-', cmd);
+        break;
+    default:
+        break;
+    }
+}
+bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
+    active_ = &root;
+    return manager.getKeyMappings()->keyPressed(key, &root);
+}
+void AppCommands::detach(AdiRootComponent &root) {
+    if (active_ == &root)
+        active_ = nullptr;
+}
+bool AppCommands::perform(const InvocationInfo &info) {
+    return active_ && active_->command(info.commandID);
+}
+TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
+    addAndMakeVisible(play);
+    addAndMakeVisible(stop);
+    play.setTitle("Play");
+    play.setTooltip("Starts playback from the start marker, or stops it. Space.");
+    stop.setTitle("Stop");
+    stop.setTooltip("Stops playback.");
+    play.onClick = [this] { root_.command(AppCommands::PlayStop); };
+    stop.onClick = [this] { root_.command(AppCommands::Stop); };
+}
+void TransportBar::resized() {
+    play.setBounds(12, 8, 108, 28);
+    stop.setBounds(128, 8, 64, 28);
+}
+void TransportBar::paint(juce::Graphics &g) {
+    g.fillAll(juce::Colour(0xff282c34));
+    g.setColour(root_.playing() ? juce::Colour(0xff65cf91) : juce::Colour(0xff6a7280));
+    g.fillRect(205, 16, 12, 12);
+    g.setColour(juce::Colour(0xffe0e5ed));
+    g.setFont(juce::FontOptions(14.f));
+    g.drawText(juce::String(root_.bpm(), 2) + " BPM", 232, 8, 120, 28,
+               juce::Justification::centredLeft);
+    g.drawText("ADI", getWidth() - 80, 8, 64, 28, juce::Justification::centredRight);
+}
+StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
+    addAndMakeVisible(infoToggle);
+    infoToggle.setTitle("Info View");
+    infoToggle.setTooltip("Shows or hides the Info View. Shift+?.");
+    infoToggle.onClick = [this] { root_.command(AppCommands::ToggleInfoView); };
+}
+void StatusBar::resized() { infoToggle.setBounds(2, 2, 22, getHeight() - 4); }
+void StatusBar::paint(juce::Graphics &g) {
+    g.fillAll(juce::Colour(0xff1d2128));
+    g.setColour(juce::Colour(0xff343b47));
+    g.fillRect(0, 0, getWidth(), 1);
+    if (root_.error().empty())
+        return;
+    g.setColour(juce::Colour(0xffe6b45c));
+    g.setFont(juce::FontOptions(13.f));
+    g.drawText(juce::String(root_.error()), 32, 0, std::max(0, getWidth() - 40), getHeight(),
+               juce::Justification::centredLeft);
+}
+AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submitter,
+                                   TransportMailbox &mailbox, AppCommands &commands,
+                                   ViewStateStore &persistence, std::string window,
+                                   DesktopDefaults defaults)
+    : transport(*this), status(*this), view_(view), submitter_(submitter), mailbox_(mailbox),
+      commands_(commands), persistence_(persistence), window_(std::move(window)),
+      state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
+    setOpaque(true);
+    setWantsKeyboardFocus(true);
+    addAndMakeVisible(transport);
+    addAndMakeVisible(status);
+    addAndMakeVisible(aiTab);
+    aiTab.setTitle("AI");
+    aiTab.setTooltip("The AI chat. Opens at the foot of the browser.");
+    aiTab.onClick = [this] {
+        state_.aiChatOpen = !state_.aiChatOpen;
+        if (!persist()) {
+            state_.aiChatOpen = !state_.aiChatOpen;
+            fail(error_);
+            return;
+        }
+        resized();
+    };
+    reader_.emplace(view_.current());
+    setSize(1200, 720);
+    frame();
+}
+AdiRootComponent::~AdiRootComponent() { commands_.detach(*this); }
+void AdiRootComponent::frame() noexcept {
+    // Root owns exactly one reader for the presented frame; descendants borrow it.
+    // JUCE may paint after this callback, so it remains alive until the next frame.
+    reader_.emplace(view_.current());
+    const auto generation = view_.generation();
+    if (generation_ != generation) {
+        generation_ = generation;
+        dirty_.mark(DirtySet::All);
+    }
+    const bool playing = mailbox_.playing();
+    const auto position = mailbox_.position();
+    if (playing != playing_ || position != position_) {
+        playing_ = playing;
+        position_ = position;
+        dirty_.mark(DirtySet::Transport);
+    }
+    // The Info View is app-scoped: a toggle in another window shows here too.
+    if (infoShown_ != commands_.infoView()) {
+        infoShown_ = commands_.infoView();
+        resized();
+    }
+    if (infoShown_)
+        hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
+    lastDrain_ = dirty_.drain();
+    if (lastDrain_ & DirtySet::Transport)
+        transport.repaint();
+    if (lastDrain_ & DirtySet::Status)
+        status.repaint();
+    if (lastDrain_ & (DirtySet::Layout | DirtySet::Content))
+        repaint();
+}
+void AdiRootComponent::hover(juce::Component *c) {
+    if (c != nullptr && c != this && !isParentOf(c))
+        c = nullptr;
+    // The nearest element that can describe itself, as Live's Info View does.
+    juce::TooltipClient *client = nullptr;
+    for (auto *p = c; p != nullptr && p != this; p = p->getParentComponent())
+        if ((client = dynamic_cast<juce::TooltipClient *>(p)) != nullptr) {
+            c = p;
+            break;
+        }
+    if (c == hovered_)
+        return;
+    hovered_ = c;
+    infoText_ = client ? c->getTitle() + "\n" + client->getTooltip() : juce::String();
+    dirty_.mark(DirtySet::Content);
+}
+double AdiRootComponent::bpm() const noexcept {
+    const auto *tempo = reader_->tempo();
+    const auto rate = reader_->sampleRate();
+    return tempo ? tempo->bpmAt(
+                       tempo->secondsToTicks(rate > 0 ? static_cast<double>(position_) / rate : 0))
+                 : 120.;
+}
+void AdiRootComponent::resized() {
+    const int w = getWidth(), h = getHeight();
+    transport.setBounds(0, 0, w, kTransportHeight);
+    status.setBounds(0, h - kStatusHeight, w, kStatusHeight);
+    const int body = std::max(0, h - kTransportHeight - kStatusHeight);
+    // The device strip never goes below its floor and grows upward only
+    // (ADR-0203 d7); it leaves the transport, the ruler and a row when it can.
+    const int dock =
+        state_.docked
+            ? std::min(body, std::max(state_.deviceFloor, std::min(state_.deviceHeight, body - 100)))
+            : 0;
+    // Live's Info View sits in the bottom-left corner beside the Device View.
+    const int row = dock > 0 ? dock : (infoShown_ ? std::min(body, state_.deviceFloor) : 0);
+    const int rowY = h - kStatusHeight - row;
+    const int infoW = infoShown_ ? std::min(state_.panels.find(Panel::Browser)->width, w / 2) : 0;
+    infoArea_ = infoShown_ ? juce::Rectangle<int>(0, rowY, infoW, row) : juce::Rectangle<int>();
+    deviceArea_ = dock > 0 ? juce::Rectangle<int>(infoW, rowY, w - infoW, dock)
+                           : juce::Rectangle<int>();
+    // Widths belong to panels (ADR-0080 d2). If the window shrinks, share the
+    // lost space proportionally above each panel's own minimum; the centre
+    // keeps its minimum. Stored preferences survive a temporary resize.
+    const auto &slots = state_.panels.slots();
+    int left = state_.panels.occupied(slots[0]);
+    int right = state_.panels.occupied(slots[1]);
+    const int leftMin = slots[0].collapsed ? 0 : slots[0].minWidth;
+    const int rightMin = slots[1].collapsed ? 0 : slots[1].minWidth;
+    const int available = std::max(0, w - state_.panels.arrangementMinWidth());
+    if (left + right > available) {
+        const int extra = std::max(0, available - leftMin - rightMin);
+        const int wanted = left + right - leftMin - rightMin;
+        const int leftExtra =
+            wanted > 0 ? static_cast<int>(static_cast<double>(extra) * (left - leftMin) / wanted)
+                       : 0;
+        left = leftMin + leftExtra;
+        right = rightMin + extra - leftExtra;
+    }
+    const int top = kTransportHeight, mid = std::max(0, rowY - top);
+    const bool browserLeft = slots[0].panel == Panel::Browser;
+    const int bw = browserLeft ? left : right;
+    browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? 0 : w - right, top, bw, mid)
+                          : juce::Rectangle<int>();
+    // The AI chat is a tab at the browser's foot, collapsed by default, so the
+    // column looks as Live's (ADR-0203 d6). Open, it takes the lower part.
+    if (browserArea_.isEmpty()) {
+        chatArea_ = {};
+        aiTab.setVisible(false);
+    } else {
+        const int chatH = state_.aiChatOpen ? std::max(kTabHeight, mid * 2 / 5) : kTabHeight;
+        chatArea_ = browserArea_.withTop(browserArea_.getBottom() - chatH);
+        aiTab.setVisible(true);
+        aiTab.setBounds(chatArea_.withHeight(kTabHeight));
+    }
+    leftWidth_ = left;
+    rightWidth_ = right;
+    dirty_.mark(DirtySet::All);
+}
+void AdiRootComponent::paint(juce::Graphics &g) {
+    g.fillAll(juce::Colour(0xff171a20));
+    const auto &slots = state_.panels.slots();
+    const int w = getWidth();
+    const int top = kTransportHeight;
+    const int bottom = (infoArea_.isEmpty() && deviceArea_.isEmpty())
+                           ? getHeight() - kStatusHeight
+                           : std::max(infoArea_.getY(), deviceArea_.getY());
+    const int h = std::max(0, bottom - top);
+    const int left = leftWidth_, right = rightWidth_;
+    g.setColour(juce::Colour(0xff21262e));
+    g.fillRect(0, top, left, h);
+    g.fillRect(w - right, top, right, h);
+    g.setColour(juce::Colour(0xff20232b));
+    g.fillRect(deviceArea_);
+    g.setColour(juce::Colour(0xff1b1f26));
+    g.fillRect(infoArea_);
+    g.fillRect(chatArea_);
+    g.setColour(juce::Colour(0xff343b47));
+    g.fillRect(left, top, 1, h);
+    g.fillRect(w - right, top, 1, h);
+    if (!deviceArea_.isEmpty())
+        g.fillRect(deviceArea_.getX(), deviceArea_.getY(), deviceArea_.getWidth(), 1);
+    if (!infoArea_.isEmpty()) {
+        g.fillRect(0, infoArea_.getY(), infoArea_.getWidth(), 1);
+        g.fillRect(infoArea_.getRight(), infoArea_.getY(), 1, infoArea_.getHeight());
+    }
+    if (!chatArea_.isEmpty())
+        g.fillRect(chatArea_.getX(), chatArea_.getY(), chatArea_.getWidth(), 1);
+    g.setColour(juce::Colour(0xffa5b0c0));
+    g.setFont(juce::FontOptions(14.f));
+    auto name = [](Panel p) { return p == Panel::Browser ? "Browser" : "Mixer"; };
+    if (left > 0)
+        g.drawText(name(slots[0].panel), 12, top + 12, std::max(0, left - 24), 24,
+                   juce::Justification::centredLeft);
+    if (right > 0)
+        g.drawText(name(slots[1].panel), w - right + 12, top + 12, std::max(0, right - 24), 24,
+                   juce::Justification::centredLeft);
+    g.drawText("Arrangement", left + 16, top + 12, 200, 24, juce::Justification::centredLeft);
+    if (!deviceArea_.isEmpty())
+        g.drawText("Devices", deviceArea_.getX() + 12, deviceArea_.getY() + 12, 160, 24,
+                   juce::Justification::centredLeft);
+    if (!infoArea_.isEmpty())
+        g.drawFittedText(infoText_, infoArea_.reduced(10), juce::Justification::topLeft, 8);
+}
+bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
+bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+bool AdiRootComponent::fail(std::string message) {
+    error_ = std::move(message);
+    dirty_.mark(DirtySet::Status);
+    return false;
+}
+bool AdiRootComponent::toggle(Panel p) {
+    const auto previous = state_.panels;
+    const auto *g = state_.panels.find(p);
+    if (auto refusal = state_.panels.setCollapsed(p, !g->collapsed, getWidth()))
+        return fail(refusal.message);
+    if (!persist()) {
+        state_.panels = previous;
+        return fail(error_);
+    }
+    return true;
+}
+bool AdiRootComponent::command(int id) {
+    // No action carries the presented frame into an edit: OpSubmitter resolves
+    // current store/history state on arrival, even when this window is a frame behind.
+    switch (id) {
+    case AppCommands::PlayStop:
+    case AppCommands::Stop: {
+        if (!mailbox_.hasRoom())
+            return fail("Transport command queue is full");
+        const bool play = id == AppCommands::PlayStop && !mailbox_.desiredPlaying();
+        OpRequest request;
+        request.opType = play ? "transport.play" : "transport.stop";
+        request.payload = Payload::object();
+        const auto result = submitter_.submit(std::move(request));
+        if (!result)
+            return fail(result.error);
+        mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
+        break;
+    }
+    case AppCommands::Undo:
+    case AppCommands::Redo: {
+        const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
+        if (!result.ok)
+            return fail(result.error);
+        break;
+    }
+    case AppCommands::SwapPanels: {
+        const auto previous = state_.panels;
+        if (auto refusal = state_.panels.swapSides(getWidth()))
+            return fail(refusal.message);
+        if (!persist()) {
+            state_.panels = previous;
+            return fail(error_);
+        }
+        break;
+    }
+    case AppCommands::ToggleBrowser:
+    case AppCommands::ToggleMixer:
+        if (!toggle(id == AppCommands::ToggleBrowser ? Panel::Browser : Panel::Mixer))
+            return false;
+        break;
+    case AppCommands::ToggleDeviceView:
+        state_.docked = !state_.docked;
+        if (!persist()) {
+            state_.docked = !state_.docked;
+            return fail(error_);
+        }
+        break;
+    case AppCommands::ToggleInfoView: {
+        std::string why;
+        if (!commands_.setInfoView(!commands_.infoView(), why))
+            return fail(why);
+        infoShown_ = commands_.infoView();
+        break;
+    }
+    case AppCommands::ZoomIn:
+    case AppCommands::ZoomOut: {
+        const auto at = std::find(kZoomSteps.begin(), kZoomSteps.end(), interfaceZoom_);
+        const auto i = at == kZoomSteps.end() ? 2 : at - kZoomSteps.begin();
+        const auto next = id == AppCommands::ZoomIn ? i + 1 : i - 1;
+        if (next < 0 || next >= static_cast<std::ptrdiff_t>(kZoomSteps.size()))
+            return false;
+        interfaceZoom_ = kZoomSteps[static_cast<std::size_t>(next)];
+        if (auto *host = getParentComponent())
+            host->resized();
+        break;
+    }
+    default:
+        return false;
+    }
+    error_.clear();
+    resized();
+    return true;
+}
+ZoomHost::ZoomHost(std::unique_ptr<AdiRootComponent> root) : root_(std::move(root)) {
+    setOpaque(true);
+    addAndMakeVisible(*root_);
+    setSize(root_->getWidth(), root_->getHeight());
+}
+void ZoomHost::resized() {
+    const float z = root_->interfaceZoom();
+    root_->setTransform(juce::AffineTransform::scale(z));
+    root_->setBounds(0, 0, juce::roundToInt(static_cast<float>(getWidth()) / z),
+                     juce::roundToInt(static_cast<float>(getHeight()) / z));
+}
+AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &commands,
+                     bool onDesktop)
+    : DocumentWindow("ADI", juce::Colour(0xff171a20), DocumentWindow::allButtons, onDesktop),
+      root_(root.get()), commands_(commands), clock_(this, [this](double) { root_->frame(); }) {
+    setContentOwned(new ZoomHost(std::move(root)), true);
+    setResizable(true, false);
+    setResizeLimits(520, 180, 10000, 10000);
+    addKeyListener(this);
+    // Floating tooltips are on by default after 600 ms, a deliberate deviation
+    // the director confirmed by name (ADR-0203 d12, ADR-0131); one per window.
+    if (commands_.tooltips()) {
+        tipDelayMs_ = commands_.tooltipDelayMs();
+        tips_ = std::make_unique<juce::TooltipWindow>(this, tipDelayMs_);
+    }
+}
+AdiWindow::~AdiWindow() { removeKeyListener(this); }
+bool AdiWindow::keyPressed(const juce::KeyPress &key, juce::Component *) {
+    return commands_.key(key, *root_);
+}
+} // namespace adi::ui
