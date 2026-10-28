@@ -304,7 +304,7 @@ is built. Rows to check against Live: `collab/window/parity-7.7-clip-view.md`.
   - The editor's tabs: Notes, Envelopes and MPE for MIDI; Sample and Envelopes for audio.
 - **The Status Bar** gains Live 12's Clip View toggle and its selector (the clip in
   miniature; drag in it to scroll and zoom) in its second field. That field is free: the
-  Swap button sits above the track controls (#293, the director's choice of place).
+  flip arrows sit in Live's strip down the arrangement's edge (#293, the director's place).
 
 **The build order.** Each step is a `window/<topic>` branch.
 
