@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/engine/param_edits.hpp"
 #include "adi/ui/parameter_feed.hpp"
+#include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 namespace adi::ui {
@@ -57,7 +58,12 @@ class DevicePanelView final : public juce::Component {
     // Live's round fold switch in the title bar, beside the activator.
     juce::Rectangle<int> foldSwitch() const noexcept;
     void configure();
+    // The title bar's menu, in Live's order: the editing commands, then the device's own.
+    juce::PopupMenu commands();
     void contextMenu(juce::Point<int>);
+    // Rename (Ctrl/Cmd+R, the menu): edit the name in the title bar, as Live does.
+    bool beginRename();
+    RenameEditor rename;
     static constexpr int kTitleHeight = 17, kFoldedWidth = 22;
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
@@ -67,6 +73,7 @@ class DevicePanelView final : public juce::Component {
     bool configuring = false;
 
   private:
+    void endRename(bool commit);
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
 };
