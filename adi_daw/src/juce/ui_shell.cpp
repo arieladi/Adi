@@ -64,7 +64,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Continue Play from Stop Point",
                                   "Insert Audio Track",  "Insert MIDI Track",
                                   "Delete Track",        "Rename",
-                                  "Mixer"};
+                                  "Mixer",               "Channel EQ"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -686,7 +686,8 @@ bool AdiRootComponent::deleteTrack() {
     return true;
 }
 bool AdiRootComponent::command(int id) {
-    if (id >= AppCommands::NewProject && id <= AppCommands::Settings)
+    // The application's own: files, Settings, and the floating Channel EQ window.
+    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::ShowChannelEq)
         return applicationCommand && applicationCommand(id);
     if (id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart)
         return arrangement.command(id);
@@ -823,6 +824,7 @@ class ShellMenu final : public juce::MenuBarModel {
         } else if (index == 3) {
             add(AppCommands::ToggleBrowser);
             add(AppCommands::ToggleMixerView);
+            add(AppCommands::ShowChannelEq);
             add(AppCommands::ToggleMixer);
             add(AppCommands::ToggleDeviceView);
             add(AppCommands::ToggleInfoView);

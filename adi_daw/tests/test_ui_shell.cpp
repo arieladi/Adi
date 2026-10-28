@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "../src/juce/ui_channel_eq.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
@@ -284,6 +285,23 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
     };
     render("adi-parity.png");
+    if (folder != nullptr) {
+        ChannelEqView eqView(root);
+        SnapshotReader eqReader(view.current());
+        eqView.frame(eqReader);
+        eqView.focus(4);
+        juce::Image image(juce::Image::ARGB, 2 * eqView.getWidth(), 2 * eqView.getHeight(), true,
+                          juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            eqView.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-channel-eq.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    }
     // The same set with Live's mixer open, to lay beside Live 11's Session mixer.
     check(root.command(AppCommands::ToggleMixerView), "the parity scene's Mixer View opens");
     root.resizeMixerView(220);
@@ -1211,6 +1229,42 @@ int main(int argc, char **argv) {
         audit = false;
         check(allocations == 0, "a steady mixer frame, meters included, allocates zero");
         // Live's Mixer View (manual 6.1 p. 162, 18.1; §41.1): vertical strips, left to right.
+        // ADI's Channel EQ window (ADR-0204 d1): every channel's ADI-Q and ADI-L in one view.
+        {
+            ChannelEqView eqView(integrated);
+            SnapshotReader eqReader(document->view().current());
+            eqView.frame(eqReader);
+            const auto &all = integrated.reader().tracks();
+            bool ordered = !all.empty() && eqView.rows().size() == all.size();
+            for (std::size_t i = 0; ordered && i < all.size(); ++i)
+                ordered = eqView.rows()[i]->track() == all[i]->id;
+            check(ordered, "the Channel EQ window lists every channel, in the snapshot's order");
+            allocations = 0;
+            audit = true;
+            eqView.frame(eqReader);
+            audit = false;
+            check(allocations == 0, "a frame that changes no channel builds nothing");
+            if (eqView.rows().size() >= 2) {
+                auto &second = *eqView.rows()[1];
+                second.eq.onClick();
+                check(eqView.focused() == second.track() && !integrated.error().empty() &&
+                          !second.eq.getToggleState(),
+                      "a slot's switch focuses its channel, says what it waits for and stays off");
+            }
+            MixerStrip *strip = nullptr;
+            for (const auto &s : mixer.strips())
+                if (s->isVisible() && s->track() != integrated.arrangement.geometry.selection.track)
+                    strip = s.get();
+            if (strip) {
+                const auto selectedBefore = integrated.arrangement.geometry.selection.track;
+                strip->eq.onClick();
+                check(integrated.arrangement.geometry.selection.track == strip->track() &&
+                          !integrated.error().empty(),
+                      "a channel row's Q selects its track and opens the window, or says why it cannot");
+                integrated.arrangement.geometry.selection.track = selectedBefore;
+                integrated.publishSelection();
+            }
+        }
         auto &mixerView = integrated.mixerView;
         mixerView.tap = mixer.tap;
         const int arrangementBefore = integrated.arrangement.getHeight();

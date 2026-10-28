@@ -167,12 +167,16 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
     // Present but off: the slots exist on every strip; what fills them is ADI-Q and
     // ADI-L from the clones lane, in the engine's channel slots (LANES §3 item 7).
-    eq.onClick = [this] {
-        panel_.root.say("The channel EQ slot is off until ADI-Q is handed over.");
+    // A slot opens the Channel EQ window on its track, where every channel's EQ and
+    // limiter are seen together (ADR-0204 d1).
+    auto open = [this](const char *why) {
+        panel_.root.arrangement.geometry.selection.track = track_;
+        panel_.root.publishSelection();
+        if (!panel_.root.command(AppCommands::ShowChannelEq))
+            panel_.root.say(why);
     };
-    limiter.onClick = [this] {
-        panel_.root.say("The channel limiter slot is off until ADI-L is handed over.");
-    };
+    eq.onClick = [open] { open("The channel EQ slot is off until ADI-Q is handed over."); };
+    limiter.onClick = [open] { open("The channel limiter slot is off until ADI-L is handed over."); };
 }
 void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
     getLookAndFeel().drawButtonBackground(g, *this, findColour(buttonColourId), over, down);
