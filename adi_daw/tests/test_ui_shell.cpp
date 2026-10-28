@@ -261,7 +261,8 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
               root.mixer.getWidth() == MixerPanel::kFullWidth && root.devices.panels.size() == 2,
           "the parity scene has Live's columns and the fourth track's two devices");
     reference(root, "live-parity", write);
-    if (const char *folder = std::getenv("ADI_UI_PARITY")) {
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+        folder.isNotEmpty()) {
         juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
                           juce::SoftwareImageType{});
         {
