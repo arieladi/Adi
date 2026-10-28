@@ -48,6 +48,52 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-28, cloud, evening — Ctrl/Cmd+F [#277](https://github.com/arieladi/Adi/pull/277); Settings that apply at once [#279](https://github.com/arieladi/Adi/pull/279)
+
+**#277 `window/browser-search`, stacked on #276** (parity-7.2-shell row 20, new). Online §41.4.1.6
+and §42.22: Ctrl/Cmd+F brings the focus to the browser's search from anywhere.
+- It shows a hidden browser, then focuses the field with its words selected to type over.
+- The field's hint now names the platform's key (Ctrl off the Mac).
+- Partial: Live also selects the sidebar's All label, which ADI's Live 11 sidebar has not. The
+  results wait for N15.
+
+**#279 `window/settings-apply`, stacked on #277: a fix to #267.** The Settings window set and
+wrote each change at once, but `AppCommands` read its five settings only at launch. So the Info
+View, tooltips and their delay, Zoom on Selection and the shortcut preset did nothing until a
+relaunch.
+- `SettingsPanel::onChange` now runs after each value set and after Restore Defaults. The
+  application answers it with `AppCommands::reload`.
+- Every native window keeps its tooltips to the commands at each frame (`followTooltips`).
+- Parity-settings row 6 now says so.
+- #278 is not this lane's; the number was taken between the two.
+
+Checks: shell 317 (#277) and 322 (#279), document 38, window state 48; `test_all.sh` 8265 across
+97 suites PASS on each; zero warnings; the shadow sweep is clean.
+
+**CI:** #274 to #277 had no failure at 07:01Z; macOS legs were still queued behind macOS runners.
+
+**Findings in the settings registry (win's), for the record. No ruling is asked; the window
+builds on what is there.**
+- `lookfeel.tabMovesFocus` (default off) is Live 12's "Use Tab Key to Move Focus", an entry of
+  Live's Navigate menu (§41.1.1). Today the main window moves the focus on Tab whatever it says,
+  because JUCE moves it on any unused Tab. That is the next item.
+- `lookfeel.focusOutline` (default on) says "Outline the view that has keyboard focus, with the
+  view indicator of ADR-0112". ADR-0112 does not describe that indicator. The rings of #275 and
+  of the Settings window are per control and do not read it.
+- `lookfeel.followMode` (page or scroll) is Live 12's Follow Behavior. Whether Follow is on is
+  not a setting.
+- **A conflict in the manual itself:** Follow's key on Windows is Alt+Shift+F in §42.9 but
+  Ctrl+Shift+F in §42.11, §42.12 and §42.16. Option+Shift+F on the Mac in all four.
+
+**Where to resume:** `window/settings-apply` (#279) is the tip. Next:
+1. The Navigate menu's Use Tab Key to Move Focus, from `lookfeel.tabMovesFocus`; with it off,
+   Tab moves nothing in the main window.
+2. Live's Follow: the control bar's switch, the Options menu's command and its key, and the
+   arrangement following the playhead by `lookfeel.followMode`, pausing on an edit, a sideways
+   scroll or a ruler click.
+
+---
+
 ## 2026-10-28, cloud, later still — Alt and a menu's letter [#276](https://github.com/arieladi/Adi/pull/276) `window/menu-keys`
 
 **#276, stacked on #275** (parity-7.2-application row 13, new). Online §42.28: on Windows, Alt and
@@ -72,14 +118,11 @@ focus). The captures stay in the session's scratchpad; nothing is committed.
 Checks: shell 316, document 38, window state 48; `test_all.sh` 8265 across 97 suites PASS; zero
 warnings; the shadow sweep is clean.
 
-**CI:** #274 is green on Linux, Windows' GUI shell and all three GUI-shell legs, the Mac's
-included, so the Mac-only menu expectations hold; its MSVC and macOS core legs were still
-running. #275 had just started.
+**CI:** on #274 every Linux leg and all three GUI-shell legs passed, the Mac's included, so the
+Mac-only menu expectations hold. Its MSVC and macOS core legs were still running, and #275's
+had just started.
 
-**Where to resume:** `window/menu-keys` (#276) is the tip. The next piece the window can finish
-alone: Ctrl/Cmd+F to the browser's search (§42.22, whose field already says so), then the
-Mixer's keyboard (Alt+Shift+M, §42.16; Tab and Ctrl/Option+Tab between a track's controls,
-§41.4.1.2).
+**Where to resume** (superseded by the entries above): `window/menu-keys` (#276) was the tip.
 
 ---
 
