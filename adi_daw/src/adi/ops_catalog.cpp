@@ -239,8 +239,9 @@ bool summingOnGroup(OpContext& c, std::int64_t id, std::string& err) {
     SQLite::Statement st(c.db, "SELECT kind FROM tracks WHERE id = ?");
     st.bind(1, id);
     if (!st.executeStep()) { err = "no such track"; return false; }
-    if (st.getColumn(0).getString() != "group") {
-        err = "summing is only on a group track";
+    const std::string kind = st.getColumn(0).getString();
+    if (kind != "group" && kind != "master") {
+        err = "summing is only on a group or master track";
         return false;
     }
     return true;
