@@ -469,6 +469,8 @@ void AdiRootComponent::frame() noexcept {
     const auto generation = view_.generation();
     if (generation_ != generation) {
         generation_ = generation;
+        // The project view's tree follows the project: tracks come and go, groups with them.
+        arrangement.applyView();
         dirty_.mark(DirtySet::All);
     }
     const bool playing = mailbox_.playing();
