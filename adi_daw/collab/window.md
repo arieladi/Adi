@@ -61,7 +61,48 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N33 | Ops for a clip's start and end markers, its loop window and loop switch, its signature and its scale (Live's Main Clip Properties) | engine | the Main panel's fields and Set buttons, the loop brace, Fit to Scale (§7.7) | the fields show the snapshot's position and length, read-only |
 | N34 | An op for a note's active flag (the `flags` column exists) | engine | 0 deactivates a note (Live manual §10.5.7) | nothing |
 | N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`) | a clean tree after the gate the window runs before each push | the window deletes them after each run |
-| N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a track's `parent` and `color` (WIDENED 2026-10-28: the director's Bitwig project view lists the groups as a tree with their colours, and a group's tracks show beneath it; since 2026-10-29 the window reads parent and kind from the project file meanwhile, the director's choice, and he noted the engine's way may replace it if better), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+| N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a track's `parent` and `color` (WIDENED 2026-10-28: the director's Bitwig project view lists the groups as a tree with their colours, and a group's tracks show beneath it; since 2026-10-29 the window reads parent, place in the parent and kind from the project file meanwhile, the director's choice, and he noted the engine's way may replace it if better; WIDENED again 2026-10-29: Live's group tracks are drawn from that tree, and STEP-7-PLAN §2.2 lists the six fixes for the day the snapshot carries it, as the director asked), a track's `index_in_parent` with them, a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler, the clip labels, the groups without reading the project file on every edit | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; the groups and Main's place come from the project file (`adi::ui::refreshTrackRows`), read on each edit while the project has groups |
+
+---
+
+## 2026-10-29, cloud, continued — Live's group tracks, from the project file [#296](https://github.com/arieladi/Adi/pull/296) `window/groups`
+
+**The director, on #295's picture:** "i don't see any groups at all on the aragment yet on view it
+looks like there are 3 groups with in the project". He was right: the menu came before the
+arrangement could draw a group.
+
+He was asked whether to build the drawing now, from the project file, or wait for the engine. He
+answered: "why we do all this before engine is it even make sense ? if we must wait then build from
+file and note on the repo the fixes we will need to make after engine part is finally arrived".
+
+The answer given: the drawing, the order and the folds do not depend on where the tree comes from,
+so none of them is thrown away when the engine supplies it. Only the read is.
+
+**What was built (`window/groups`, stacked on #295):**
+- `adi::ui::TrackOrder`: the one order every panel reads (UI-ARCHITECTURE §4). Each group comes
+  first, then what it holds, at any depth; Main is last. The snapshot's own order mixes one group's
+  tracks with another's: it sorts by `index_in_parent` alone.
+- Live 12's look (manual 18.3, its two figures):
+  - the group switch;
+  - a band in the group's colour for each group a track is in;
+  - a group's lane shows the clips of what it holds.
+- Folding: the switch, U and Alt+U. The Mixer View keeps what a folded group holds (§4).
+- The tree is read from the project file on each new snapshot, while the project has groups or its
+  tracks changed. A project without groups reads nothing.
+- A bug found on the way: the app set the file hook after the window's first frame, so a project
+  opened flat until its first edit. `setTrackRows` now applies at once.
+- STEP-7-PLAN §2.2 lists the six fixes for the day the snapshot carries the tree; N6 below points
+  there.
+- In the real app, on his Drums / Body / Fx And Hits project: the groups show, they fold, and the
+  menu lists the same three. The picture: `collab/window/pictures/2026-10-29-group-tracks.png`, with
+  Live 12's figure on top.
+- Checks: shell 438, seams 117, window state 55; goldens unchanged; `test_all.sh build-juce` PASS, 8293 checks across 97 suites.
+
+**Where to resume:**
+- his verdict on the groups and on the menu;
+- the Clip View's approval;
+- CI on #295 and #296;
+- `window/clip-view` to be merged forward onto the new tip.
 
 ---
 
