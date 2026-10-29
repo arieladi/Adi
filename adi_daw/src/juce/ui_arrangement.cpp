@@ -295,43 +295,45 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
     };
 }
 namespace {
-// One entry of the project view's menu, as Bitwig draws it: indented by how deep it sits, a
-// folder in its group's colour, its name, a tick on the view in use.
+// Bitwig's project view menu, as the director's screenshot shows it (28 October 2026): a dark
+// menu with a thin light edge, large rows, the view in use on a light grey row.
+constexpr juce::uint32 kMenuBack = 0xff2b2b2b, kMenuEdge = 0xff5a5a5a, kRowCurrent = 0xffc8c8c8,
+                       kTextCurrent = 0xff2b2b2b, kRowHover = 0xff484848, kText = 0xffe2e2e2;
+class ProjectViewMenuLook final : public juce::LookAndFeel_V4 {
+  public:
+    void drawPopupMenuBackground(juce::Graphics &g, int width, int height) override {
+        g.fillAll(juce::Colour(kMenuBack));
+        g.setColour(juce::Colour(kMenuEdge));
+        g.drawRect(0, 0, width, height, 1);
+    }
+    int getPopupMenuBorderSize() override { return 3; }
+};
+// One entry: indented by how deep it sits, a folder in its group's colour, its name.
 class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
   public:
-    static constexpr int kIndent = 16;
-    ViewMenuItem(juce::String name, int depth, juce::Colour colour, bool ticked)
-        : name_(std::move(name)), depth_(depth), colour_(colour), ticked_(ticked) {}
+    static constexpr int kIndent = 14, kRow = 26;
+    ViewMenuItem(juce::String name, int depth, juce::Colour colour, bool current)
+        : name_(std::move(name)), depth_(depth), colour_(colour), current_(current) {}
     void getIdealSize(int &width, int &height) override {
-        width = 52 + depth_ * kIndent + juce::roundToInt(juce::GlyphArrangement::getStringWidth(look::font(14.f), name_));
-        height = 24;
+        width = 56 + depth_ * kIndent + juce::roundToInt(juce::GlyphArrangement::getStringWidth(look::font(15.f), name_));
+        height = kRow;
     }
     void paint(juce::Graphics &g) override {
-        auto &lf = getLookAndFeel();
-        if (isItemHighlighted()) {
-            g.setColour(lf.findColour(juce::PopupMenu::highlightedBackgroundColourId));
+        if (current_ || isItemHighlighted()) {
+            g.setColour(juce::Colour(current_ ? kRowCurrent : kRowHover));
             g.fillRect(getLocalBounds());
         }
-        const auto text = lf.findColour(isItemHighlighted() ? juce::PopupMenu::highlightedTextColourId
-                                                            : juce::PopupMenu::textColourId);
-        if (ticked_) {
-            juce::Path tick;
-            tick.startNewSubPath(7.f, 12.f);
-            tick.lineTo(10.f, 16.f);
-            tick.lineTo(16.f, 8.f);
-            g.setColour(text);
-            g.strokePath(tick, juce::PathStrokeType(2.f));
-        }
         // A folder: its body and the tab on its top left.
-        const float x = 22.f + static_cast<float>(depth_ * kIndent);
+        const float x = 10.f + static_cast<float>(depth_ * kIndent);
         juce::Path folder;
-        folder.addRoundedRectangle(x, 8.f, 16.f, 11.f, 1.5f);
+        folder.addRoundedRectangle(x, 8.f, 16.f, 12.f, 1.5f);
         folder.addRoundedRectangle(x, 6.f, 7.f, 4.f, 1.f);
         g.setColour(colour_);
         g.fillPath(folder);
-        g.setColour(text);
-        g.setFont(look::font(14.f));
-        g.drawText(name_, juce::roundToInt(x) + 24, 0, std::max(0, getWidth() - juce::roundToInt(x) - 28), getHeight(),
+        g.setColour(juce::Colour(current_ ? kTextCurrent : kText));
+        g.setFont(look::font(15.f));
+        const int textX = juce::roundToInt(x) + 25;
+        g.drawText(name_, textX, 0, std::max(0, getWidth() - textX - 8), getHeight(),
                    juce::Justification::centredLeft);
     }
 
@@ -339,7 +341,7 @@ class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
     juce::String name_;
     int depth_;
     juce::Colour colour_;
-    bool ticked_;
+    bool current_;
 };
 } // namespace
 ProjectViewButton::ProjectViewButton() : juce::Button("Project View") {
@@ -400,6 +402,9 @@ void ArrangementView::chooseView(std::int64_t group) {
 juce::PopupMenu ArrangementView::projectViewMenu() {
     refreshTree();
     juce::PopupMenu menu;
+    if (menuLook_ == nullptr)
+        menuLook_ = std::make_unique<ProjectViewMenuLook>();
+    menu.setLookAndFeel(menuLook_.get());
     const auto chosen = root.state().viewGroup;
     int itemId = 0;
     auto add = [&](std::int64_t group, int depth, const juce::String &name, juce::Colour colour) {
@@ -413,13 +418,15 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
         };
         menu.addItem(std::move(item));
     };
-    add(0, 0, "Project", look::button);
-    const auto groups = tree_.groups();
-    for (const auto &g : groups)
+    // Project's folder is grey, as Bitwig's; a group's is its track's colour as the window draws
+    // it, unless the project gives one.
+    add(0, 0, "Project", juce::Colour(0xff8a8a8a));
+    const auto &rows = tree_.rows();
+    for (const auto &g : tree_.groups()) {
+        const auto position = static_cast<std::size_t>(g.row - rows.data());
         add(g.id, g.depth + 1, juce::String::fromUTF8(g.row->name.c_str()),
-            g.row->colour != 0 ? juce::Colour(0xff000000 | g.row->colour) : look::button);
-    if (groups.empty())
-        menu.addItem(juce::PopupMenu::Item("Groups show here once the engine reports them").setEnabled(false));
+            g.row->colour != 0 ? juce::Colour(0xff000000 | g.row->colour) : colourFor(position));
+    }
     return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
