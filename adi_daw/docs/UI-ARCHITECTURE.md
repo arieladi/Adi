@@ -200,6 +200,19 @@ The state is one value in `ui_view`, and every panel derives visibility from it
 rather than holding its own flag — otherwise the mixer and the timeline end up
 showing different subsets and the user cannot tell which is lying.
 
+*Built (window lane, 2026-10-29): Bitwig's project view, the director's choice.* A
+button at the top of the track names opens a menu of the whole project and its
+groups as a tree, each in its folder colour; choosing a group shows it, everything
+inside it and Main. The view is one value per window in `ui_view`
+(`WindowState::viewGroup`). `adi::ui::TrackTree` (headless) answers what a view
+shows; `ArrangementGeometry::hidden` holds what it leaves out, and a hidden track's
+height is 0, so every walk down the rows (lanes, names, track controls, the Mixer
+View's columns, hit tests, the keys) passes over it from the one list. The tree is
+built only while a group is chosen or the menu is open, in buffers kept between
+frames, so a new generation with the same rows allocates nothing (§8). Until the
+snapshot carries a track's parent, kind and colour (window log, N6), the menu lists
+the whole project alone.
+
 **Open, and it is not a UI question:** where a *keyboard* map lives.
 `controller_maps` is project-scoped and right for MIDI and OSC. A keymap is
 app-scoped: a user's shortcuts should not change because they opened someone

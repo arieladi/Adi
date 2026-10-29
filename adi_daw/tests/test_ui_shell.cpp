@@ -311,6 +311,83 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     root.mark(DirtySet::All);
     root.frame();
     render("adi-parity-mixer.png");
+    // Bitwig's project view (the director, 2026-10-28), given a tree as the snapshot will give
+    // it once it carries groups (N6): track 2 is a group holding 3, a group holding 4; 1 is Main.
+    root.arrangement.trackRows = [](const SnapshotReader &, std::vector<TrackRow> &rows) {
+        rows = {{1, 0, false, true, 0, "Main"},
+                {2, 0, true, false, 0xe080c0, "Body"},
+                {3, 2, true, false, 0x4080ff, "Fx"},
+                {4, 3, false, false, 0, "Hits"}};
+    };
+    root.arrangement.applyView();
+    auto items = [&root] {
+        std::vector<std::pair<juce::String, bool>> out;
+        const auto menu = root.arrangement.projectViewMenu();
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            out.emplace_back(it.getItem().text, it.getItem().isTicked);
+        return out;
+    };
+    auto choose = [&root](const juce::String &name) {
+        const auto menu = root.arrangement.projectViewMenu();
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == name && it.getItem().action)
+                it.getItem().action();
+        root.mark(DirtySet::All);
+        root.frame();
+        root.frame();
+    };
+    auto shownRows = [](const MixerPanel &panel) {
+        std::vector<std::int64_t> out;
+        for (const auto &s : panel.strips())
+            if (s->isVisible())
+                out.push_back(s->track());
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    const auto before = items();
+    check(before.size() == 3 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
+              before[2].first == "Fx" && !before[2].second && !root.arrangement.projectView.getToggleState(),
+          "the project view's menu: the whole project, ticked, then its groups as a tree");
+    auto &lanes = root.arrangement.geometry;
+    lanes.selection.track = 2;
+    choose("Fx");
+    bool passesOver = true;
+    for (int y = 0; y < root.arrangement.canvas.getHeight(); ++y)
+        if (const auto *t = lanes.trackAt(root.reader(), y); t != nullptr && t->id == 2)
+            passesOver = false;
+    check(root.state().viewGroup == 3 && root.arrangement.projectView.getToggleState() &&
+              lanes.hidden == std::vector<std::int64_t>{2} && lanes.heightFor(2) == 0 && passesOver &&
+              lanes.selection.track == 1 && items()[2].second,
+          "Fx chosen: Body is left out of the lanes, Main kept, the button lit, the selection moved");
+    render("adi-parity-project-view.png");
+    check(shownRows(root.mixer) == std::vector<std::int64_t>{1, 3, 4} &&
+              shownRows(root.mixerView) == std::vector<std::int64_t>{1, 3, 4},
+          "the track controls and the Mixer View show the same tracks as the lanes");
+    bool contiguous = true;
+    for (const auto &s : root.mixerView.strips())
+        if (s->isVisible() && s->getX() % MixerPanel::kStripWidth != 0)
+            contiguous = false;
+    check(contiguous, "the Mixer View closes up the gap a hidden track leaves");
+    lanes.selection.track = 3;
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+              lanes.selection.track == 1,
+          "up from Fx passes over Body to Main");
+    // The tree changes under the view: Fx is no longer a group, so the whole project shows.
+    root.arrangement.trackRows = [](const SnapshotReader &, std::vector<TrackRow> &rows) {
+        rows = {{1, 0, false, true, 0, "Main"},
+                {2, 0, true, false, 0xe080c0, "Body"},
+                {3, 2, false, false, 0, "Fx"},
+                {4, 2, false, false, 0, "Hits"}};
+    };
+    root.arrangement.applyView();
+    check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.arrangement.projectView.getToggleState(),
+          "a chosen group that is gone gives way to the whole project");
+    choose("Body");
+    check(root.state().viewGroup == 2 && lanes.hidden.empty(), "a group at the top shows everything inside it");
+    choose("Project");
+    check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.arrangement.projectView.getToggleState() &&
+              shownRows(root.mixer) == std::vector<std::int64_t>{1, 2, 3, 4},
+          "Project shows every track again, the button unlit");
 }
 } // namespace
 int main(int argc, char **argv) {
