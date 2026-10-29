@@ -108,12 +108,43 @@ via ADR-0195's Auto Gain Stage). So step 7.1 is not wiring an established
 mechanism — it is the **first** user of the publish side, and the first place
 its epoch discipline is exercised at all.
 
-*One dated exception, the director's (2026-10-29):* the project view (Bitwig's,
-Master Reference 10) reads each track's parent and kind from the project file
-through `rows::readModel`, as the engine's `MidiClips` does, on the message thread,
-only when its menu opens or while a group is chosen. It stands until the snapshot
-carries those fields (window log, N6); the director noted the engine's way may
+*One dated exception, the director's (2026-10-29):* Live's group tracks and the
+project view (Bitwig's, Master Reference 10) read each track's parent, place in its
+parent and kind from the project file through `rows::readModel`, as the engine's
+`MidiClips` does, on the message thread (`adi::ui::refreshTrackRows`,
+`src/adi/ui/track_rows.hpp`): when the project view's menu opens, and on each new
+snapshot whose tracks are not the last read's or whose project has a group. A
+project without groups reads nothing. It stands until the snapshot carries those
+fields (window log, N6); the director asked for it to be built now rather than wait,
+with the fixes for that day written down here, and noted the engine's way may
 replace it if it proves better. Nothing else in the window reads past the snapshot.
+
+*What changes when the snapshot carries the tree (N6).* The drawing, the order
+(`adi::ui::TrackOrder`), the folds and the project view do not change; only where
+the rows come from does.
+
+1. Engine lane (N6): `engine::TrackNode` carries `parent`, `indexInParent`, `kind`
+   and `color`, filled by `SnapshotBuilder`. The snapshot's own order stays
+   `index_in_parent, id` (`engine/snapshot.cpp`), which mixes what one group holds
+   with what another does; the window orders by the tree itself and needs no
+   change there, but no other reader may take the snapshot's order for the
+   arrangement's.
+2. Window: the default `TrackRows` in `ArrangementView`'s constructor
+   (`src/juce/ui_arrangement.cpp`) fills `parent`, `index`, `group`, `main` and
+   `colour` from the snapshot instead of leaving each track alone.
+3. Window: `src/adi/ui/track_rows.hpp` goes, with the `setTrackRows` call in
+   `src/juce/ui_main.cpp`; this exception ends, and so does UI-ARCHITECTURE §5's
+   note on it.
+4. Window: a track's own colour where the project gives one, for the lanes, the
+   names, the track controls, the Mixer View and the project view's folders
+   (`TrackRow::colour` already carries it); `colourFor(position)` stays for the
+   rest.
+5. Window: the allocation audit's "generation-change frame allocates zero" gains a
+   project with groups. Today such a project reads the whole project file on every
+   edit, which allocates and costs a read that grows with the project.
+6. Tests: `projectViewRowsFromTheFile` (`tests/test_ui_seams.cpp`) reads the rows
+   from the snapshot; `groupTracks` (`tests/test_ui_shell.cpp`) uses the default
+   `TrackRows` instead of the file.
 
 ### 2.3 `MainSplit` is a panel→slot map, not a `StretchableLayoutManager` — APPROVED
 

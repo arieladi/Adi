@@ -66,6 +66,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Where a Mixer View strip's mixer begins, under the name and the slots.
     static constexpr int kMixerTop = 40;
     std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
+    std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
     float peak_ = 0, rms_ = 0;
     std::shared_ptr<const engine::ScopeTap> tap_;
@@ -100,7 +101,7 @@ class MixerPanel final : public juce::Component {
     // switch on the next or previous track; at either end it stays. False when the focus is
     // not on one of this panel's switches.
     bool focusNeighbour(bool next);
-    // Brings the track at `index`, in the snapshot's order, into view, as Live does when the
+    // Brings the track at `index`, in the arrangement's order, into view, as Live does when the
     // focus moves to it: the Mixer View scrolls sideways; the track controls' rows are the
     // arrangement's lanes, so the arrangement scrolls, its top kept when a row is taller than
     // the view.

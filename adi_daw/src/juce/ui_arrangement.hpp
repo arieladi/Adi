@@ -76,6 +76,12 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
 
+    // Where a row's colour and name begin, past its groups' bands; and its fold switch.
+    int nameLeft(std::uint32_t depth) const noexcept;
+    juce::Rectangle<float> foldSwitch(std::uint32_t depth, int top) const noexcept;
+    // The bands drawn at most: deeper groups share the last one's place.
+    static constexpr std::uint32_t kMaxBands = 16;
+
   private:
     bool commitRename();
     void endRename();
@@ -150,6 +156,8 @@ class ArrangementCanvas final : public juce::Component,
     bool keyResize_ = false;
     // The clip's bar under a point, and whether the point is on its right edge.
     const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
+    // A group's lane, row `at`: Live's overview of the clips of what it holds.
+    void paintGroupLane(juce::Graphics &, std::size_t at, int y, int h, juce::Colour) const;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
@@ -238,15 +246,27 @@ class ArrangementView final : public juce::Component {
     // Bitwig's project view: the button, its menu of the whole project and its groups, and the
     // view chosen there, which the lanes, the track controls and the Mixer View all follow.
     ProjectViewButton projectView;
-    // Fills in the project's tracks as the view sees them, in place. The snapshot gives each
-    // track its place and name only; until it carries their groups, kinds and colours
-    // (collab/window.md, N6), every track stands alone. Tests give it a tree.
-    std::function<void(const SnapshotReader &, std::vector<TrackRow> &)> trackRows;
+    // What fills in the project's tracks as the view sees them, in place, for each new snapshot
+    // and when the menu opens; applied at once. The snapshot gives each track its place and name
+    // only; until it carries their groups, kinds and colours (collab/window.md, N6), the
+    // application reads them from the project file (track_rows.hpp), and without that every track
+    // stands alone. Tests give it a tree.
+    using TrackRows = std::function<void(const SnapshotReader &, std::vector<TrackRow> &)>;
+    void setTrackRows(TrackRows);
     const TrackTree &tree() const noexcept { return tree_; }
-    // Leaves out what the chosen view does not show, building the tree again only while a group
-    // is chosen; a group that is gone gives way to the whole project. A new generation with the
-    // same rows allocates nothing.
+    // For a new snapshot: the tree and the rows' order again, then what the chosen view and the
+    // folded groups leave out; a group that is gone gives way to the whole project. A new
+    // generation with the same rows allocates nothing.
     void applyView();
+    // Live's group tracks (manual 18.3): folds or unfolds a group in this window. What it holds
+    // leaves the lanes, the names and the track controls; a selected track inside it gives the
+    // selection to the group.
+    void toggleFold(std::int64_t group);
+    // Alt+U (§42.16): every group unfolded.
+    void unfoldAll();
+    // Where a row's name column begins: past a band in its group's colour for each group it
+    // sits in (Live's).
+    static constexpr int kGroupBand = 6;
     // Shows `group`, everything inside it and Main; 0 for the whole project. Kept per window; a
     // selected track left out gives the selection to the first track shown.
     void chooseView(std::int64_t group);
@@ -255,6 +275,11 @@ class ArrangementView final : public juce::Component {
 
   private:
     void refreshTree();
+    TrackRows trackRows_;
+    // What the chosen view and the folded groups leave out, from the tree as it is.
+    void leaveOut();
+    // A selected track left out gives the selection to the first track shown.
+    void firstShownIfHidden();
     TrackTree tree_;
     // The menu's own look, Bitwig's; a menu keeps only a weak reference to it.
     std::unique_ptr<juce::LookAndFeel_V4> menuLook_;

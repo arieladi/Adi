@@ -45,17 +45,16 @@ void ChannelEqRow::paint(juce::Graphics &g) {
     g.fillAll(focused ? look::laneSelectedAlt : look::panel);
     g.setColour(look::separator);
     g.fillRect(0, getHeight() - 1, getWidth(), 1);
-    const auto &tracks = view_.root.reader().tracks();
-    for (std::size_t i = 0; i < tracks.size(); ++i)
-        if (tracks[i]->id == track_) {
-            g.setColour(view_.root.arrangement.colourFor(i));
-            g.fillRect(8, 5, 11, 11);
-            g.setColour(look::text);
-            g.setFont(look::font(12.f, true));
-            g.drawText(juce::String::fromUTF8(displayName(tracks[i]->name, i + 1).c_str()), kNameX, 0,
-                       kEqX - kNameX - 8, kHeight, juce::Justification::centredLeft, true);
-            break;
-        }
+    // The track's colour and number by its place in the arrangement's order.
+    const auto rows = view_.root.arrangement.geometry.rows(view_.root.reader());
+    if (const auto i = rows.find(track_); i < rows.size()) {
+        g.setColour(view_.root.arrangement.colourFor(i));
+        g.fillRect(8, 5, 11, 11);
+        g.setColour(look::text);
+        g.setFont(look::font(12.f, true));
+        g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, i + 1).c_str()), kNameX, 0,
+                   kEqX - kNameX - 8, kHeight, juce::Justification::centredLeft, true);
+    }
     // ADI-L's mode (ADR-0204 d1): light on a channel, full on the master's, which the
     // snapshot cannot point out yet (N6).
     g.setColour(look::textDim);
@@ -76,11 +75,12 @@ juce::Rectangle<int> ChannelEqView::display() const noexcept {
     return {look::gap, look::gap, std::max(0, getWidth() - 2 * look::gap), kDisplayHeight};
 }
 void ChannelEqView::frame(const SnapshotReader &reader) {
-    // Rows follow the tracks; a frame that changes none of them builds nothing.
-    const auto &tracks = reader.tracks();
+    // Rows follow the tracks, in the arrangement's order; a frame that changes none of them
+    // builds nothing.
+    const auto tracks = root.arrangement.geometry.rows(reader);
     bool same = tracks.size() == rows_.size();
     for (std::size_t i = 0; same && i < tracks.size(); ++i)
-        same = rows_[i]->track() == tracks[i]->id;
+        same = rows_[i]->track() == tracks[i].track->id;
     if (same) {
         if (reader.seq() != shown_) {
             shown_ = reader.seq();
@@ -90,8 +90,8 @@ void ChannelEqView::frame(const SnapshotReader &reader) {
     }
     shown_ = reader.seq();
     rows_.clear();
-    for (const auto &t : tracks) {
-        rows_.push_back(std::make_unique<ChannelEqRow>(*this, t->id));
+    for (const auto t : tracks) {
+        rows_.push_back(std::make_unique<ChannelEqRow>(*this, t.track->id));
         list_.addAndMakeVisible(*rows_.back());
     }
     resized();

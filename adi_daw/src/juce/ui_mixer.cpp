@@ -197,15 +197,21 @@ void MixerStrip::bind(std::int64_t id) {
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
     if (changed) {
-        // The Track Activator shows the track's number, its place in the list, as
-        // Live's (and as a # in its name does); the text changes only when it moves.
-        const auto &tracks = panel_.root.reader().tracks();
-        for (std::size_t i = 0; i < tracks.size(); ++i)
-            if (tracks[i]->id == track_ && position_ != i + 1) {
-                position_ = i + 1;
+        // The Track Activator shows the track's number, its place in the arrangement's order,
+        // as Live's (and as a # in its name does); the text changes only when it moves.
+        const auto rows = panel_.root.arrangement.geometry.rows(panel_.root.reader());
+        if (const auto at = rows.find(track_); at < rows.size()) {
+            if (position_ != at + 1) {
+                position_ = at + 1;
                 active.setButtonText(juce::String(static_cast<int>(position_)));
-                break;
             }
+            const auto parent = rows[at].place.parent;
+            const auto group = parent == 0 ? rows.size() : rows.find(parent);
+            if (const auto place = group < rows.size() ? group + 1 : 0; place != group_) {
+                group_ = place;
+                repaint();
+            }
+        }
     }
     // The selected track's controls are lighter, as Live's.
     const bool selected = track_ != 0 && panel_.root.arrangement.geometry.selection.track == track_;
@@ -306,13 +312,17 @@ void MixerStrip::paint(juce::Graphics &g) {
         if (position_ > 0) {
             g.setColour(panel_.root.arrangement.colourFor(position_ - 1));
             g.fillRect(0, 0, w, 17);
-            const auto &tracks = panel_.root.reader().tracks();
-            if (position_ <= tracks.size()) {
+            // A track in a group: a band in the group's colour along its top, as Live's Session
+            // View draws what a group holds (manual 18.3).
+            if (group_ > 0) {
+                g.setColour(panel_.root.arrangement.colourFor(group_ - 1));
+                g.fillRect(0, 0, w, 3);
+            }
+            if (const auto *track = panel_.root.reader().findTrack(track_)) {
                 g.setColour(look::text);
                 g.setFont(look::font(11.5f, true));
-                g.drawText(juce::String::fromUTF8(
-                               displayName(tracks[position_ - 1]->name, position_).c_str()),
-                           4, 0, w - 8, 17, juce::Justification::centredLeft);
+                g.drawText(juce::String::fromUTF8(displayName(track->name, position_).c_str()), 4, 0, w - 8,
+                           17, juce::Justification::centredLeft);
             }
         }
         paintMeter(g, meterArea());
@@ -428,10 +438,8 @@ void MixerPanel::retap() {
             s->bind(s->track());
 }
 bool MixerPanel::focusTrack(std::int64_t track) {
-    const auto &tracks = root.reader().tracks();
-    for (std::size_t i = 0; i < tracks.size(); ++i)
-        if (tracks[i]->id == track)
-            reveal(i);
+    if (const auto rows = root.arrangement.geometry.rows(root.reader()); rows.find(track) < rows.size())
+        reveal(rows.find(track));
     MixerStrip *target = nullptr;
     for (auto &s : strips_)
         if (s->isVisible() && (target == nullptr || s->track() == track))
@@ -442,11 +450,17 @@ bool MixerPanel::focusTrack(std::int64_t track) {
     return true;
 }
 void MixerPanel::reveal(std::size_t index) {
-    const auto &tracks = root.reader().tracks();
+    auto &geometry = root.arrangement.geometry;
+    const auto tracks = geometry.rows(root.reader());
     if (index >= tracks.size())
         return;
     if (vertical_) {
-        const int left = static_cast<int>(index) * kStripWidth;
+        // Its column: the tracks the project view shows before it.
+        int column = 0;
+        for (std::size_t i = 0; i < index; ++i)
+            if (geometry.inView(tracks[i].track->id))
+                ++column;
+        const int left = column * kStripWidth;
         if (left < scrollX_)
             scrollX_ = left;
         else if (left + kStripWidth > scrollX_ + getWidth())
@@ -454,11 +468,10 @@ void MixerPanel::reveal(std::size_t index) {
         placeColumns();
         return;
     }
-    auto &geometry = root.arrangement.geometry;
     int top = 0;
     for (std::size_t i = 0; i < index; ++i)
-        top += geometry.heightFor(tracks[i]->id);
-    const int bottom = top + geometry.heightFor(tracks[index]->id);
+        top += geometry.heightFor(tracks[i].track->id);
+    const int bottom = top + geometry.heightFor(tracks[index].track->id);
     const int view = std::max(0, getHeight() - root.arrangement.topHeight());
     if (top >= geometry.scrollY && bottom <= geometry.scrollY + view)
         return;
@@ -484,40 +497,41 @@ bool MixerPanel::focusNeighbour(bool next) {
         return false;
     // The same switch on the track before or after; out of view, it is brought into view
     // first, as Live's.
-    const auto &tracks = root.reader().tracks();
     const auto &geometry = root.arrangement.geometry;
-    for (std::size_t i = 0; i < tracks.size(); ++i) {
-        if (tracks[i]->id != from->track())
-            continue;
-        // The next or previous track the project view shows; at either end the focus stays.
-        std::size_t to = tracks.size();
-        if (next) {
-            for (std::size_t j = i + 1; j < tracks.size() && to == tracks.size(); ++j)
-                if (geometry.shown(tracks[j]->id))
-                    to = j;
-        } else {
-            for (std::size_t j = i; j-- > 0 && to == tracks.size();)
-                if (geometry.shown(tracks[j]->id))
-                    to = j;
-        }
-        if (to == tracks.size())
-            return true;
-        reveal(to);
-        for (const auto &other : strips_)
-            if (other->isVisible() && other->track() == tracks[to]->id)
-                other->switches()[slot]->grabKeyboardFocus();
+    const auto tracks = geometry.rows(root.reader());
+    // The next or previous track this panel shows (the Mixer View keeps what a folded group
+    // holds); at either end the focus stays.
+    auto showing = [this, &geometry](std::int64_t id) { return vertical_ ? geometry.inView(id) : geometry.shown(id); };
+    const auto i = tracks.find(from->track());
+    if (i == tracks.size())
         return true;
+    std::size_t to = tracks.size();
+    if (next) {
+        for (std::size_t j = i + 1; j < tracks.size() && to == tracks.size(); ++j)
+            if (showing(tracks[j].track->id))
+                to = j;
+    } else {
+        for (std::size_t j = i; j-- > 0 && to == tracks.size();)
+            if (showing(tracks[j].track->id))
+                to = j;
     }
+    if (to == tracks.size())
+        return true;
+    reveal(to);
+    for (const auto &other : strips_)
+        if (other->isVisible() && other->track() == tracks[to].track->id)
+            other->switches()[slot]->grabKeyboardFocus();
     return true;
 }
 void MixerPanel::placeColumns() {
-    // Strips left to right, realising only the columns on screen (UI-ARCHITECTURE §10).
-    // Only the tracks the project view shows, as the lanes.
-    const auto &tracks = root.reader().tracks();
+    // Strips left to right, realising only the columns on screen (UI-ARCHITECTURE §10), in
+    // the lanes' order. Only the tracks the project view shows; a folded group's stay, as
+    // folding is the timeline's (UI-ARCHITECTURE §4).
     const auto &geometry = root.arrangement.geometry;
+    const auto tracks = geometry.rows(root.reader());
     std::size_t count = 0;
-    for (const auto &t : tracks)
-        if (geometry.shown(t->id))
+    for (const auto t : tracks)
+        if (geometry.inView(t.track->id))
             ++count;
     const int total = static_cast<int>(count) * kStripWidth;
     scrollX_ = std::clamp(scrollX_, 0, std::max(0, total - getWidth()));
@@ -532,11 +546,12 @@ void MixerPanel::placeColumns() {
     // The n-th strip takes the (first + n)-th track shown.
     std::size_t n = 0, column = 0;
     for (std::size_t i = 0; i < tracks.size() && n < wanted; ++i) {
-        if (!geometry.shown(tracks[i]->id) || column++ < first)
+        const auto id = tracks[i].track->id;
+        if (!geometry.inView(id) || column++ < first)
             continue;
         auto &s = *strips_[n++];
-        if (s.track() != tracks[i]->id && !s.dragging())
-            s.bind(tracks[i]->id);
+        if (s.track() != id && !s.dragging())
+            s.bind(id);
         s.setBounds(static_cast<int>(column - 1) * kStripWidth - scrollX_, 0, kStripWidth, getHeight());
         s.setVisible(true);
     }
@@ -552,13 +567,13 @@ void MixerPanel::place() {
     // Realise what is visible and a margin, never a strip per track (UI-ARCHITECTURE
     // §10); rows follow the arrangement's lanes, so the two scroll as one.
     const auto &geometry = root.arrangement.geometry;
-    const auto &tracks = root.reader().tracks();
+    const auto tracks = geometry.rows(root.reader());
     const int bodyTop = root.arrangement.topHeight(); // level with the lanes
     std::size_t wanted = 0;
     int y = bodyTop - geometry.scrollY;
     std::size_t first = tracks.size();
     for (std::size_t i = 0; i < tracks.size(); ++i) {
-        const int h = geometry.heightFor(tracks[i]->id);
+        const int h = geometry.heightFor(tracks[i].track->id);
         if (h > 0 && y + h > bodyTop && y < getHeight()) {
             first = std::min(first, i);
             ++wanted;
@@ -573,11 +588,12 @@ void MixerPanel::place() {
     y = bodyTop - geometry.scrollY;
     std::size_t used = 0;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
-        const int h = geometry.heightFor(tracks[i]->id);
+        const auto id = tracks[i].track->id;
+        const int h = geometry.heightFor(id);
         if (h > 0 && i >= first && used < wanted) {
             auto &s = *strips_[used++];
-            if (s.track() != tracks[i]->id && !s.dragging())
-                s.bind(tracks[i]->id);
+            if (s.track() != id && !s.dragging())
+                s.bind(id);
             s.setBounds(0, y, getWidth(), h);
             s.setVisible(true);
         }

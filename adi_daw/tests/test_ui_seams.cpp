@@ -22,6 +22,7 @@
 #include "adi/store.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include "adi/ui/track_order.hpp"
 #include "adi/ui/track_rows.hpp"
 #include "adi/ui/track_tree.hpp"
 
@@ -411,16 +412,16 @@ void projectViewTree() {
     section("Bitwig's project view: groups in groups, a view keeps Main (Master Reference 10)");
     // Figure 32's project: Drums holds Clap/Snare/Rimshot and Hats; Body holds Bass, Synths and
     // Fx And Hits, which holds Rises and Hits; Main last.
-    const adi::ui::TrackTree tree({{1, 0, true, false, 0x40e0e0, "Drums"},
-                                   {2, 1, false, false, 0, "Clap/Snare/Rimshot"},
-                                   {3, 1, false, false, 0, "Hats & Percs"},
-                                   {4, 0, true, false, 0xe080c0, "Body"},
-                                   {5, 4, false, false, 0, "Bass"},
-                                   {6, 4, false, false, 0, "Synths"},
-                                   {7, 4, true, false, 0x4080ff, "Fx And Hits"},
-                                   {8, 7, false, false, 0, "Rises"},
-                                   {9, 7, false, false, 0, "Hits"},
-                                   {10, 0, false, true, 0, "Main"}});
+    const adi::ui::TrackTree tree({{1, 0, true, false, 0x40e0e0, "Drums", 0},
+                                   {2, 1, false, false, 0, "Clap/Snare/Rimshot", 0},
+                                   {3, 1, false, false, 0, "Hats & Percs", 1},
+                                   {4, 0, true, false, 0xe080c0, "Body", 1},
+                                   {5, 4, false, false, 0, "Bass", 0},
+                                   {6, 4, false, false, 0, "Synths", 1},
+                                   {7, 4, true, false, 0x4080ff, "Fx And Hits", 2},
+                                   {8, 7, false, false, 0, "Rises", 0},
+                                   {9, 7, false, false, 0, "Hits", 1},
+                                   {10, 0, false, true, 0, "Main", 0}});
     const auto groups = tree.groups();
     check(groups.size() == 3 && groups[0].id == 1 && groups[0].depth == 0 && groups[1].id == 4 &&
               groups[1].depth == 0 && groups[2].id == 7 && groups[2].depth == 1 &&
@@ -431,10 +432,10 @@ void projectViewTree() {
     check(tree.shows(0).size() == 10, "0 is the whole project");
     check(tree.isGroup(7) && !tree.isGroup(8) && !tree.isGroup(99), "only a group is a group");
     // A parent that loops back must not hang the window.
-    const adi::ui::TrackTree loop({{1, 2, true, false, 0, "a"}, {2, 1, true, false, 0, "b"}});
+    const adi::ui::TrackTree loop({{1, 2, true, false, 0, "a", 0}, {2, 1, true, false, 0, "b", 0}});
     check(loop.groups().size() == 2 && loop.shows(1).count(2) == 1, "a loop in the parents ends the walk");
     // Until the snapshot carries groups (N6), every track stands alone.
-    const adi::ui::TrackTree alone({{1, 0, false, false, 0, "Main"}, {2, 0, false, false, 0, "Track"}});
+    const adi::ui::TrackTree alone({{1, 0, false, false, 0, "Main", 0}, {2, 0, false, false, 0, "Track", 0}});
     check(alone.groups().empty() && alone.shows(0).size() == 2, "without groups, nothing to choose");
 }
 
@@ -477,6 +478,59 @@ void projectViewRowsFromTheFile() {
     const ui::TrackTree tree(rows);
     check(tree.groups().size() == 2 && tree.shows(3) == std::set<std::int64_t>{1, 3, 4},
           "the tree: Fx And Hits shows itself, Hits and Main");
+
+    // Live's order (UI-ARCHITECTURE §4, manual 18.3): each group, then what it holds; Main last.
+    ui::TrackOrder order;
+    auto places = [&order] {
+        std::vector<std::pair<std::int64_t, std::uint32_t>> out;
+        for (const auto& p : order.places()) out.emplace_back(p.id, p.depth);
+        return out;
+    };
+    order.build(reader, rows);
+    check(order.fits(reader) && places() == std::vector<std::pair<std::int64_t, std::uint32_t>>{
+                                              {2, 0}, {3, 1}, {4, 2}, {5, 0}, {1, 0}},
+          "the order: Body, Fx And Hits inside it, Hits inside that, Lead, then Main");
+    check(order.places()[2].parent == 3 && order.places()[1].group && order.places()[4].main &&
+              reader.tracks()[order.places()[2].at]->id == 4,
+          "each place knows its group, whether it is one or Main, and its track in the snapshot");
+    // Rows a broken project could give: a loop, a group that is gone, a track inside itself.
+    std::vector<ui::TrackRow> broken{{1, 0, false, true, 0, "Main", 0}, {2, 3, true, false, 0, "a", 0},
+                                     {3, 2, true, false, 0, "b", 0},    {4, 99, false, false, 0, "c", 0},
+                                     {5, 5, false, false, 0, "d", 0}};
+    order.build(reader, broken);
+    check(places() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{4, 0}, {5, 0}, {1, 0}, {2, 0}, {3, 0}},
+          "a missing group or a track in itself at the top; a loop after the rest, each once");
+    // Without rows, the snapshot's own order.
+    order.build(reader, {});
+    bool same = order.places().size() == reader.tracks().size();
+    for (std::size_t i = 0; same && i < reader.tracks().size(); ++i)
+        same = order.places()[i].id == reader.tracks()[i]->id;
+    check(same, "without rows, the snapshot's order");
+    const ui::SnapshotReader other(nullptr);
+    check(!order.fits(other), "an order fits only the snapshot it was built for");
+
+    // The file is read again only when the tree may have changed (track_rows.hpp).
+    int reads = 0;
+    auto read = [&reads, &store] {
+        ++reads;
+        return rows::readModel(*store);
+    };
+    std::vector<ui::TrackRow> refreshed;
+    ui::refreshTrackRows(reader, read, refreshed);
+    ui::refreshTrackRows(reader, read, refreshed);
+    check(reads == 2 && refreshed.size() == 5, "with groups, every new snapshot reads the file");
+    auto flat = refreshed;
+    for (auto& r : flat) {
+        r.group = false;
+        r.parent = 0;
+        r.name = "old";
+    }
+    ui::refreshTrackRows(reader, read, flat);
+    check(reads == 2 && flat[1].name == reader.tracks()[1]->name,
+          "without groups and with the same tracks, nothing is read; the names follow");
+    flat.pop_back();
+    ui::refreshTrackRows(reader, read, flat);
+    check(reads == 3 && flat.size() == 5, "a track that came or went reads the file again");
 }
 
 int main() {

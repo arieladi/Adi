@@ -51,6 +51,9 @@ struct WindowState {
     // Bitwig's project view (Master Reference 10, ADR-0112 d2): the group this window shows,
     // with everything inside it and Main; 0 for the whole project.
     std::int64_t viewGroup = 0;
+    // Live's group tracks (manual 18.3): the groups folded in this window's arrangement. Folding
+    // hides what a group holds from the lanes, never from the Mixer View (UI-ARCHITECTURE §4).
+    std::set<std::int64_t> foldedGroups;
     // The arrangement's editing grid (§6.10), as ArrangementGeometry::Grid holds it.
     bool gridSnap = true, gridFixed = false, gridTriplet = false;
     int gridNarrow = 0;

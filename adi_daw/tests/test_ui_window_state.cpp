@@ -38,6 +38,7 @@ int main() {
     state.inOut = false;
     state.largeTracks = false;
     state.viewGroup = 42;
+    state.foldedGroups = {7, 13};
     state.gridSnap = false;
     state.gridFixed = true;
     state.gridTriplet = true;
@@ -52,6 +53,8 @@ int main() {
           "Use Large Track Height is kept per window, on until switched off");
     check(restored.viewGroup == 42 && views.load("other").viewGroup == 0,
           "the project view's group is kept per window, the whole project until one is chosen");
+    check(restored.foldedGroups == std::set<std::int64_t>{7, 13} && views.load("other").foldedGroups.empty(),
+          "the folded groups are kept per window, every group open until folded");
     check(!restored.gridSnap && restored.gridFixed && restored.gridTriplet && restored.gridNarrow == 2 &&
               restored.gridFixedQuarters == .125 && views.load("other").gridSnap && !views.load("other").gridFixed,
           "the editing grid is kept per window, snapping and adaptive until changed");
