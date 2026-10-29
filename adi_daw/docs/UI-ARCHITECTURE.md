@@ -209,9 +209,15 @@ shows; `ArrangementGeometry::hidden` holds what it leaves out, and a hidden trac
 height is 0, so every walk down the rows (lanes, names, track controls, the Mixer
 View's columns, hit tests, the keys) passes over it from the one list. The tree is
 built only while a group is chosen or the menu is open, in buffers kept between
-frames, so a new generation with the same rows allocates nothing (§8). Until the
-snapshot carries a track's parent, kind and colour (window log, N6), the menu lists
-the whole project alone.
+frames, so a new generation with the same rows allocates nothing (§8).
+
+*The director's choice, 2026-10-29:* until the snapshot carries a track's parent,
+kind and colour (window log, N6), the window reads them from the project file
+(`rows::readModel`, as the engine's MIDI player does; `adi::ui::trackRowsFrom`),
+wired by the application in `ui_main.cpp`, and only when the menu opens or while a
+group is chosen. It is the one place the window reads past the snapshot (STEP-7-PLAN
+§2.2). If the engine's way proves better, N6 replaces it: the arrangement's
+`trackRows` is the only thing that changes.
 
 **Open, and it is not a UI question:** where a *keyboard* map lives.
 `controller_maps` is project-scoped and right for MIDI and OSC. A keymap is

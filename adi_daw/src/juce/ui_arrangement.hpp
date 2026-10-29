@@ -256,6 +256,8 @@ class ArrangementView final : public juce::Component {
   private:
     void refreshTree();
     TrackTree tree_;
+    // The menu's own look, Bitwig's; a menu keeps only a weak reference to it.
+    std::unique_ptr<juce::LookAndFeel_V4> menuLook_;
     bool namesFirst_ = false;
     int controlsGap_ = 0;
 };
