@@ -1,7 +1,7 @@
 {
   "as_of_utc": "2026-10-29T13:40:00Z",
   "owner": "split: claude owns Cosmic Rain (16s test and full-track job); codex owns Avastha 4K60 worker and its monitors",
-  "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected).",
+  "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected). Codex deleted both the completed Avastha monitor and obsolete rejected Cosmic120 pilot monitor on 2026-10-29; Claude Cosmic work untouched.",
   "cosmic_rain": {
     "scope": "User approved the 16s test on 2026-10-27 and asked for the ENTIRE track to be rendered with the same method.",
     "remote_root": "D:/AvasthaAI/CosmicRainPilot120-20261026",
@@ -55,11 +55,11 @@
   "avastha": {
     "remote_root": "D:/AvasthaAI/Avastha4K60-20261026",
     "local_root": "D:/AvasthaAI/Projects/Avastha - Quantum Ascent/final-4k60",
-    "status": "DONE and verified by receipt + local probe: 35648 frames 3840x2160 60fps 594.13s, original AAC copied. Local copy D:/AvasthaAI/Projects/Avastha - Quantum Ascent/final-4k60/.",
-    "live_processes": "run.py PID 8952 (worker.lock) -> renderer.py PID 1860/3920 --config effective-config.json -> ffmpeg PID 12256. Recheck command lines before relying on PIDs.",
-    "rate_and_eta": "About 0.55 encoded frames/s, steady. Roughly 10.7 h left, so finish expected around 23:00-24:00 studio-local on 2026-10-27, then audio mux.",
+    "status": "Complete; Codex confirmed local 3840x2160 60fps 35648 frames, source audio duration retained, remote full-decode receipt, sampled joins and black tail on 2026-10-29.",
+    "live_processes": "Completed; historical PIDs must not be used.",
+    "rate_and_eta": "Complete; no remaining ETA.",
     "output": "Avastha - Acid rework and Aleph boom - 4K60 - with music.mp4",
-    "next": "Monitor existing worker; no restart. On completion verify full decode, 35648 frames, 3840x2160 60fps, original AAC copied, then sample detail/motion and copy to local D."
+    "next": "Delivered local 4K60 file for user review; completion monitor deleted. No restart."
   },
   "holds": [
     "Old full-track Cosmic Rain renderer (CosmicRain-20261025) stays held; the new keyframe full-track job replaces it",
