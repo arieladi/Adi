@@ -61,7 +61,34 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N33 | Ops for a clip's start and end markers, its loop window and loop switch, its signature and its scale (Live's Main Clip Properties) | engine | the Main panel's fields and Set buttons, the loop brace, Fit to Scale (§7.7) | the fields show the snapshot's position and length, read-only |
 | N34 | An op for a note's active flag (the `flags` column exists) | engine | 0 deactivates a note (Live manual §10.5.7) | nothing |
 | N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`) | a clean tree after the gate the window runs before each push | the window deletes them after each run |
-| N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a track's `parent` and `color` (WIDENED 2026-10-28: the director's Bitwig project view lists the groups as a tree with their colours, and a group's tracks show beneath it), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+| N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a track's `parent` and `color` (WIDENED 2026-10-28: the director's Bitwig project view lists the groups as a tree with their colours, and a group's tracks show beneath it; since 2026-10-29 the window reads parent and kind from the project file meanwhile, the director's choice, and he noted the engine's way may replace it if better), a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler and the clip labels | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; Main is listed where the snapshot puts it |
+
+---
+
+## 2026-10-29, cloud, continued — the project view reads the groups; Bitwig's menu [#295](https://github.com/arieladi/Adi/pull/295)
+
+**The director, on the first version:** "what the hell is this? is it looks close to you to what i am
+showing with bitwig?" It was not. The menu was small and plain, and it showed no groups.
+
+He was asked (AskUserQuestion) and chose that the window read the groups from the project file. He
+then added: "we might want to change it to the engine if it is better". This is recorded in
+STEP-7-PLAN §2.2, UI-ARCHITECTURE §5, the code comments and N6.
+
+**#295's second commit:**
+- `adi::ui::trackRowsFrom` gives each snapshot track its parent, and marks groups (`group`) and Main
+  (`master`), from `rows::readModel`. `ui_main.cpp` wires it. The window reads only when the menu
+  opens or while a group is chosen.
+- The menu is redrawn as his Bitwig screenshot: its own dark look, large rows, the view in use on a
+  light grey row, folders indented in their tracks' colours, no ticks.
+- In the real app, on a project with Drums, Body, and Fx And Hits inside Body, the menu lists the
+  tree. Choosing Body hides Drums and its tracks and keeps Main.
+- The picture puts ADI's menu beside his Bitwig screenshot.
+- Checks: seams 109 (the mapping from a real store), shell 413; `test_all.sh` 8284 PASS.
+
+**Where to resume:**
+- his verdict on the menu;
+- the Clip View's approval;
+- CI on #295.
 
 ---
 
