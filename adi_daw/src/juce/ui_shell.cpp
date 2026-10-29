@@ -395,14 +395,12 @@ void StatusBar::paint(juce::Graphics &g) {
     g.drawText(error ? juce::String(root_.error()) : root_.selectionText(), message.reduced(8, 0),
                juce::Justification::centredLeft);
     // The selected track's name, as Live shows it at the right.
-    const auto &tracks = root_.reader().tracks();
-    for (std::size_t i = 0; i < tracks.size(); ++i)
-        if (tracks[i]->id == root_.arrangement.geometry.selection.track) {
-            g.setFont(look::font(11.5f));
-            g.drawText(juce::String::fromUTF8(displayName(tracks[i]->name, i + 1).c_str()),
-                       track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
-            break;
-        }
+    const auto rows = root_.arrangement.geometry.rows(root_.reader());
+    if (const auto i = rows.find(root_.arrangement.geometry.selection.track); i < rows.size()) {
+        g.setFont(look::font(11.5f));
+        g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, i + 1).c_str()),
+                   track.reduced(6, 0).withWidth(44), juce::Justification::centredLeft);
+    }
 }
 AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submitter,
                                    TransportMailbox &mailbox, AppCommands &commands,

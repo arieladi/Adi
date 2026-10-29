@@ -6,17 +6,20 @@
 #include <utility>
 #include <vector>
 namespace adi::ui {
-// One track as Bitwig's project view sees it (Master Reference 10, Figure 32; ADR-0112 d2):
-// what it sits in, whether it is a group or Main, its colour.
+// One track as Bitwig's project view and Live's group tracks see it (Master Reference 10,
+// Figure 32; ADR-0112 d2; Live 12 manual 18.3): what it sits in and where, whether it is a group
+// or Main, its colour.
 struct TrackRow {
     std::int64_t id = 0, parent = 0; // parent: the group it sits in; 0 at the top
     bool group = false, main = false;
     std::uint32_t colour = 0; // 0xRRGGBB; 0 when the project gives none
     std::string name;
+    std::int64_t index = 0; // its place among what its parent holds (index_in_parent)
 };
-// The project's tracks as a tree of groups, in the arrangement's order. The window builds it
-// from the snapshot, which does not carry a track's group, kind or colour yet (collab/window.md,
-// N6): until it does, every track stands alone and there is no group to choose.
+// The project's tracks as a tree of groups. The window builds it from the snapshot, which does
+// not carry a track's group, kind or colour yet (collab/window.md, N6): until it does, the
+// application reads them from the project file (track_rows.hpp), and without that every track
+// stands alone and there is no group to choose.
 class TrackTree {
   public:
     TrackTree() = default;
@@ -26,7 +29,8 @@ class TrackTree {
         int depth = 0; // 0 at the top, one more for each group it sits in
         const TrackRow *row = nullptr;
     };
-    // Every group in the arrangement's order, each with how deep it sits: Bitwig's menu.
+    // Every group in the rows' order, each with how deep it sits. Bitwig's menu takes them in
+    // the arrangement's order (TrackOrder).
     std::vector<Group> groups() const {
         std::vector<Group> out;
         for (const auto &r : rows_)
@@ -53,14 +57,14 @@ class TrackTree {
     const std::vector<TrackRow> &rows() const noexcept { return rows_; }
     // Refilled in place by the window on a new generation, so the same rows allocate nothing.
     std::vector<TrackRow> &rows() noexcept { return rows_; }
-
-  private:
     const TrackRow *find(std::int64_t id) const noexcept {
         for (const auto &r : rows_)
             if (r.id == id)
                 return &r;
         return nullptr;
     }
+
+  private:
     // Whether `r` is `group` or sits in it at any depth. A parent that loops back, which the
     // project should never hold, ends the walk rather than the window.
     bool within(const TrackRow &r, std::int64_t group) const noexcept {
