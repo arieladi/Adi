@@ -169,6 +169,15 @@ public:
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
 
+    /// Opt-in device bypass (ADR-0203 d4). The graph keeps a dry delay at
+    /// graph precision, including while the node is active, and owns its
+    /// history across rebuilds. Bypass never removes the declared latency.
+    [[nodiscard]] virtual bool hasBypass() const noexcept { return false; }
+    [[nodiscard]] virtual bool bypassed() const noexcept { return false; }
+    /// Called only after the graph sampled bypass for this block. Do not
+    /// re-read the switch: a concurrent toggle must not select undelayed dry.
+    virtual void processActive(const NodeIo& io) noexcept { process(io); }
+
     /// Scope-only notification when scheduling skips a silent node. No DSP
     /// work; a strip uses it to keep watched rings current through silence.
     virtual void silenceTaps(const NodeIo&) noexcept {}
@@ -935,9 +944,16 @@ public:
     /// Sorting and random-number generation happen here, never in process().
     void permuteLevelsForTest(std::uint32_t seed);
 
+    /// Audio-thread handover, before the old graph is retired. Device nodes
+    /// retain their identity across rebuilds; the matching table is sorted
+    /// during prepare, so this walk allocates nothing.
+    std::int32_t adoptBypassHistory(const Graph& old) noexcept;
+
 private:
     struct Slot {
         Node* node = nullptr;
+        bool hasBypass = false;
+        DelayLine dryDelay;
         std::vector<NodeId> inputs;
         std::vector<NodeId> sidechains;
         std::vector<DelayLine> inDelays;     ///< parallel to `inputs`
@@ -988,6 +1004,8 @@ private:
         std::uint64_t dozeGlides = kLinesUnchecked;
     };
     static constexpr std::uint64_t kLinesUnchecked = ~std::uint64_t{0};
+
+    std::vector<std::pair<Node*, NodeId>> bypassNodes_;
 
     bool topoSort();
 

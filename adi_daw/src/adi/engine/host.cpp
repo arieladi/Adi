@@ -113,7 +113,7 @@ std::int32_t GraphHost::handover(const PublishedGraph& from,
         ++i;
         ++j;
     }
-    return carried;
+    return carried + gb.adoptBypassHistory(ga);
 }
 
 void GraphHost::process(const AudioIo& io) noexcept {

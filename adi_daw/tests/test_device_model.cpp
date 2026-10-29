@@ -180,8 +180,8 @@ void testForwardingAndOverrides() {
           "always_process does NOT change the latency -- they answer different questions");
 }
 
-void testBypassReportsNothing() {
-    section("a bypassed device declares no tail and no latency");
+void testBypassKeepsLatency() {
+    section("ADR-0203 d4 -- bypass keeps latency without a device tail");
     FakeDevice d({});
     d.setTail(9999);
     d.setLatency(512);
@@ -192,11 +192,8 @@ void testBypassReportsNothing() {
           "a bypassed device has nothing to finish -- reporting a tail would hold "
           "a whole chain awake behind a device the user switched off");
 
-    // The half most likely to be got wrong. A bypassed plugin delays nothing,
-    // so continuing to report its latency compensates the rest of the graph
-    // against a delay that is no longer there -- which moves audio that was
-    // aligned, the exact failure ADR-0058's default was chosen to avoid.
-    check(n.latencySamples() == 0, "and delays nothing, so it reports no latency");
+    check(n.latencySamples() == 512, "bypass retains the device's compensation");
+    check(n.hasBypass(), "the graph supplies delayed dry without device DSP");
 
     n.setBypassed(false);
     check(n.latencySamples() == 512, "un-bypassing restores the report");
@@ -500,7 +497,7 @@ int main() {
     std::printf("adi_device_model_tests -- the format-agnostic device contract\n\n");
     testTheDefaultsPointOppositeWays();
     testForwardingAndOverrides();
-    testBypassReportsNothing();
+    testBypassKeepsLatency();
     testBypassPassesAudioThrough();
     testPassThroughHonoursTheSegmentOffset();
     testAnInstrumentConsumesAndBypassDoesNot();
