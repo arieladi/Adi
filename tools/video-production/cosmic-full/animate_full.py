@@ -2,6 +2,9 @@
 
 usage: animate_full.py <root> [comfy url, default http://127.0.0.1:8192] [worker name, default a2000]
                        [comfy data dir holding input/ and output/, default D:/AvasthaAI/VideoEditFour-20261025]
+                       [slot file, default plan.json]
+A slot with "replaces": <old slot id> is a re-render; when free space is low, the old take's PNG frames are
+removed after the new take exists (its latent is kept, so it can be decoded again).
 Settings are the proven pilot/test ones (shift 8, 20 steps, CFG 5, uni_pc/simple, latent saved before the
 full-temporal tiled decode). Keyframe = the picked still of the slot's scene key (picks.json), or for a drop's
 bar B the last generated frame of its bar A (chain_from). Reused test slots are skipped.
@@ -19,7 +22,7 @@ ROOT = Path(sys.argv[1])
 API = sys.argv[2] if len(sys.argv) > 2 else "http://127.0.0.1:8192"
 WORKER = sys.argv[3] if len(sys.argv) > 3 else "a2000"
 C = Path(sys.argv[4] if len(sys.argv) > 4 else "D:/AvasthaAI/VideoEditFour-20261025")
-plan = json.loads((ROOT / "plan.json").read_text(encoding="utf-8"))
+plan = json.loads((ROOT / (sys.argv[5] if len(sys.argv) > 5 else "plan.json")).read_text(encoding="utf-8"))
 picks = json.loads((ROOT / "picks.json").read_text(encoding="utf-8"))
 NEG = ("text, watermark, subtitles, collage, split screen, inset pictures, random duplicates, strobe, flicker, "
        "static image, frozen, slow motion, blurry, muddy detail, deformed geometry, abrupt cuts, photorealistic, "
@@ -66,6 +69,19 @@ def claim(d):
     return not [p for p in d.glob("claim.*") if p.name != f"claim.{WORKER}"]
 
 
+def free_replaced():
+    # Remove PNG frames of old takes that already have a finished replacement (latents stay).
+    for s in plan["slots"]:
+        old = s.get("replaces")
+        if old and done(s["id"]) and (ROOT / "anim" / old / "generated.json").exists():
+            frames = json.loads((ROOT / "anim" / old / "generated.json").read_text())["frames"]
+            for f in frames:
+                Path(f).unlink(missing_ok=True)
+            (ROOT / "anim" / old / "generated.json").rename(ROOT / "anim" / old / "generated.replaced.json")
+        if shutil.disk_usage(ROOT).free >= 12 * 1024 ** 3:
+            return
+
+
 def main():
     slots = [s for s in plan["slots"] if not s.get("reused")]
     for i, s in enumerate(slots):
@@ -81,6 +97,8 @@ def main():
             src = Path(json.loads((ROOT / "anim" / s["chain_from"] / "generated.json").read_text())["frames"][-1])
         else:
             src = ROOT / "raw" / picks[s["key"]]
+        if shutil.disk_usage(ROOT).free < 8 * 1024 ** 3:
+            free_replaced()
         if shutil.disk_usage(ROOT).free < 8 * 1024 ** 3:
             raise RuntimeError("Less than 8 GiB free on D; preserve outputs and inspect")
         tag = f"cosmicfull-anim/{sid}"

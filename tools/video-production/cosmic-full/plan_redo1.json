@@ -1,0 +1,2379 @@
+{
+ "title": "Cosmic Rain - full track, keyframe method",
+ "fps": 24,
+ "bpm": 143,
+ "phase": 0.0215,
+ "opening": {
+  "source": "D:/AvasthaAI/CosmicRain-20261025/inputs/opening.mp4",
+  "frames": [
+   0,
+   192
+  ]
+ },
+ "audio": {
+  "track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav",
+  "start_frame": 0,
+  "end_frame": 11119
+ },
+ "style": "psychedelic psytrance poster illustration, visionary art, bold clean ink outlines, cel shading, vivid saturated silver, cyan, deep ultramarine and gold palette with magenta accents, glowing highlights, high contrast, intricate ornamental detail, centered composition",
+ "scenes": [
+  {
+   "id": "K001",
+   "key": "k7b6ffd3190",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a vast black hole with a blazing golden accretion ring in deep space, silver rain falling into it from above like a waterfall of light",
+   "user_story": false
+  },
+  {
+   "id": "K002",
+   "key": "k86c58caccf",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "silver raindrops falling through deep space past the viewer, each raindrop reflecting a tiny spiral galaxy",
+   "user_story": false
+  },
+  {
+   "id": "K003",
+   "key": "k43834364d0",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks floating asleep in deep space, curled gently, her silver hair spreading out like a nebula, eyes closed",
+   "user_story": false
+  },
+  {
+   "id": "K004",
+   "key": "kbe1c669578",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "towering rain clouds made of stars and crystal, soft lightning of light glowing inside them",
+   "user_story": false
+  },
+  {
+   "id": "K005",
+   "key": "kad5cd6ed13",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "one giant crystal raindrop falling toward a dark blue ocean planet, the planet glowing below",
+   "user_story": false
+  },
+  {
+   "id": "K006",
+   "key": "k68a4f8ffc1",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a crown-shaped splash rising from a dark ocean where a raindrop landed, concentric glowing rings spreading",
+   "user_story": false
+  },
+  {
+   "id": "K007",
+   "key": "ke3bc609c5e",
+   "kind": "calm",
+   "composite": "radial8",
+   "subject": "top-down view of glowing concentric ripples on a dark ocean forming an ornate mandala",
+   "user_story": false
+  },
+  {
+   "id": "K008",
+   "key": "k7a3db1bc61",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "underwater view looking up at rain hitting the ocean surface, golden light rays piercing the deep blue water",
+   "user_story": false
+  },
+  {
+   "id": "K009",
+   "key": "kd9e22cee5f",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "five glowing jellyfish rising slowly side by side in a row in dark deep water, long luminous tentacles",
+   "user_story": false
+  },
+  {
+   "id": "K010",
+   "key": "kbea10037ea",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "an ancient crystal temple on the ocean floor, glowing pillars, a beam of light from above",
+   "user_story": false
+  },
+  {
+   "id": "K011",
+   "key": "k13f73e9dc2",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks face just beneath the water surface, eyes closed, tiny bubbles around her lips",
+   "user_story": false
+  },
+  {
+   "id": "K012",
+   "key": "kece786e052",
+   "kind": "calm",
+   "composite": "radial8",
+   "subject": "a spiral of glowing raindrops forming around a small bright black hole star",
+   "user_story": false
+  },
+  {
+   "id": "K013",
+   "key": "kf9a88876f6",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes, seen from the front around a fire, rain falling, cosmic sky",
+   "user_story": true
+  },
+  {
+   "id": "K014",
+   "key": "kd662f9daae",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "close-up of an elder's weathered hands raised above a glowing frame drum, dust and raindrops in the air",
+   "user_story": true
+  },
+  {
+   "id": "K015",
+   "key": "k4943594cd9",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes joined by women and children with painted faces and glowing beads, everyone drumming together in a big circle, glowing drums, rain and cosmic light",
+   "user_story": true
+  },
+  {
+   "id": "K016",
+   "key": "kab0c729ff2",
+   "kind": "one",
+   "composite": "none",
+   "subject": "a giant ornate golden clock face formed from the circle of drummers seen from above, the drums are the numerals, glowing clock hands",
+   "user_story": true
+  },
+  {
+   "id": "K017",
+   "key": "kf369c11488",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes and women and children with painted faces and glowing beads drumming together in a circle, calm and glowing",
+   "user_story": true
+  },
+  {
+   "id": "K018",
+   "key": "kcda66883de",
+   "kind": "one",
+   "composite": "mirror",
+   "subject": "a glowing human brain made of light with neurons firing, electric cyan and gold synapses, black space",
+   "user_story": true
+  },
+  {
+   "id": "K019",
+   "key": "kaa78c7fdce",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "glowing neurons turning into streams of silver rain falling over a dark ocean",
+   "user_story": true
+  },
+  {
+   "id": "K020",
+   "key": "kbe0857b09a",
+   "kind": "half",
+   "composite": "none",
+   "subject": "a fast spinning golden clock face with glowing hands on black",
+   "user_story": true
+  },
+  {
+   "id": "K021",
+   "key": "ka6dd7beb4d",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a giant whale made of starlight leaping out of a dark glowing ocean, water streaming off it",
+   "user_story": false
+  },
+  {
+   "id": "K022",
+   "key": "k61a4e4ad12",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "seven identical cute glowing raindrop spirits with small faces dancing in a straight row on a dark mirror ocean",
+   "user_story": false
+  },
+  {
+   "id": "K023",
+   "key": "k30a455beaa",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a huge ocean wave curling over into a glowing tunnel of silver light",
+   "user_story": false
+  },
+  {
+   "id": "K024",
+   "key": "kee02dff370",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a giant octopus made of glowing water with golden rings on its tentacles, perfectly symmetrical, facing the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K025",
+   "key": "kf2a18b7533",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of a bioluminescent coral reef forming a glowing mandala",
+   "user_story": false
+  },
+  {
+   "id": "K026",
+   "key": "k355a5587c2",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a silver sea dragon spiraling upward out of the ocean toward the black hole",
+   "user_story": false
+  },
+  {
+   "id": "K027",
+   "key": "k3101f9d1f9",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "thousands of raindrops frozen in mid-air forming a perfect glowing sphere",
+   "user_story": false
+  },
+  {
+   "id": "K028",
+   "key": "k72d8839ad9",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a formation of manta rays made of light gliding toward the viewer over a dark ocean",
+   "user_story": false
+  },
+  {
+   "id": "K029",
+   "key": "kf25cdf2eb7",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "the ocean surface splitting open down the middle to reveal a glowing galaxy beneath",
+   "user_story": false
+  },
+  {
+   "id": "K030",
+   "key": "k1f18b3c20e",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks rising out of the ocean up to her shoulders, water streaming from her silver hair, eyes closed",
+   "user_story": false
+  },
+  {
+   "id": "K031",
+   "key": "kbc408e261b",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a giant golden nautilus shell with crystal chambers glowing, floating above the ocean",
+   "user_story": false
+  },
+  {
+   "id": "K032",
+   "key": "k1f2b677196",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a waterfall falling upward from the ocean into the black hole with a golden ring",
+   "user_story": false
+  },
+  {
+   "id": "K033",
+   "key": "k38274095d7",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming in the rain at night under a glowing cosmic sky",
+   "user_story": true
+  },
+  {
+   "id": "K034",
+   "key": "k4aec8628c0",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "close-up of glowing drums being struck, raindrops bouncing on the drum skins",
+   "user_story": true
+  },
+  {
+   "id": "K035",
+   "key": "k0705b5d4e6",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a glowing alien ship of light descending from a cosmic sky above a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes",
+   "user_story": true
+  },
+  {
+   "id": "K036",
+   "key": "kcf61ad8223",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies standing behind impossible floating crystal synthesizers with hundreds of glowing keys and holographic waveforms",
+   "user_story": true
+  },
+  {
+   "id": "K037",
+   "key": "k3461d49bb5",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming in front while tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies play floating crystal synthesizers behind them, cosmic sky",
+   "user_story": true
+  },
+  {
+   "id": "K038",
+   "key": "kf044de49c6",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "close-up of an alien synthesizer made of light, glowing keys and spinning holographic waveform rings",
+   "user_story": true
+  },
+  {
+   "id": "K039",
+   "key": "k1b936aee98",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "women and children with painted faces and glowing beads dancing joyfully around the drum circle while tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies play glowing synths and a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drum",
+   "user_story": true
+  },
+  {
+   "id": "K040",
+   "key": "k57525d5561",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "rivers of glowing sound waves flowing from alien synthesizers up into the sky",
+   "user_story": true
+  },
+  {
+   "id": "K041",
+   "key": "k32a3ac4e95",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "an endless cathedral corridor of crystal arches with silver rain falling inside",
+   "user_story": false
+  },
+  {
+   "id": "K042",
+   "key": "kffac6a128e",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a stained glass window of a rain goddess glowing in a dark cathedral",
+   "user_story": false
+  },
+  {
+   "id": "K043",
+   "key": "kb33559ae17",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "prisms splitting beams of light into rainbows of cyan, gold and magenta",
+   "user_story": false
+  },
+  {
+   "id": "K044",
+   "key": "kf942ea09f8",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a staircase of water spiraling upward into the stars, impossible geometry",
+   "user_story": false
+  },
+  {
+   "id": "K045",
+   "key": "k4c880e3ae7",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "giant golden temple doors opening onto a blazing starfield",
+   "user_story": false
+  },
+  {
+   "id": "K046",
+   "key": "k3b834202e9",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "an owl made of crystal with golden eyes, wings spread wide, facing the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K047",
+   "key": "k1d73aa72a5",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a diamond eye inside a golden pyramid radiating light beams",
+   "user_story": false
+  },
+  {
+   "id": "K048",
+   "key": "k9cf899c547",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks meditating on a floating rock under soft rain, eyes closed, hands resting in her lap",
+   "user_story": false
+  },
+  {
+   "id": "K049",
+   "key": "k3b7d559b94",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a giant ornate golden clock slowly appearing out of darkness and rain, glowing hands",
+   "user_story": true
+  },
+  {
+   "id": "K050",
+   "key": "k5c8d2404e3",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "flying toward the center of a giant golden clock, the hands spinning around the camera",
+   "user_story": true
+  },
+  {
+   "id": "K051",
+   "key": "ke0b418786e",
+   "kind": "half",
+   "composite": "none",
+   "subject": "looking down through the glass center of a golden clock at a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes far below",
+   "user_story": true
+  },
+  {
+   "id": "K052",
+   "key": "ke11a422dfc",
+   "kind": "half",
+   "composite": "mirror",
+   "subject": "diving down fast toward a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes from above",
+   "user_story": true
+  },
+  {
+   "id": "K053",
+   "key": "k25170e8df6",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies with towering new synthesizers and giant glowing speaker towers, a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming and women and children with painted faces and glowing beads dancing in front",
+   "user_story": true
+  },
+  {
+   "id": "K054",
+   "key": "kbe0857b09a",
+   "kind": "half",
+   "composite": "none",
+   "subject": "a fast spinning golden clock face with glowing hands on black",
+   "user_story": true
+  },
+  {
+   "id": "K055",
+   "key": "k52269ab93b",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a heavenly paradise of golden light and clouds, a beautiful woman and a beautiful man facing each other, turning into gleaming golden statues",
+   "user_story": true
+  },
+  {
+   "id": "K056",
+   "key": "k89ad1aac17",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "two golden statues of a woman and a man dissolving into the elements, fire, water, air and earth swirling from them",
+   "user_story": true
+  },
+  {
+   "id": "K057",
+   "key": "kf80b338b92",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a thunderbird made of lightning and rain bursting out of a storm vortex, wings spread, facing the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K058",
+   "key": "kc868acb553",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "two rain dragons coiling around a column of golden lightning",
+   "user_story": false
+  },
+  {
+   "id": "K059",
+   "key": "k9ad357b476",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a storm cloud shaped like the face of a sky god with a beard of lightning",
+   "user_story": false
+  },
+  {
+   "id": "K060",
+   "key": "k759e44128c",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a tree of golden lightning branching across a dark sky",
+   "user_story": false
+  },
+  {
+   "id": "K061",
+   "key": "kb3ded87239",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "inside a tornado of rain and stars looking up",
+   "user_story": false
+  },
+  {
+   "id": "K062",
+   "key": "kaa34feea83",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "lightning striking a crystal ocean creating a glowing fractal pattern",
+   "user_story": false
+  },
+  {
+   "id": "K063",
+   "key": "k4568912f3c",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "an eagle made of silver rain diving straight toward the viewer, wings spread",
+   "user_story": false
+  },
+  {
+   "id": "K064",
+   "key": "k2217ae2f5a",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of a cyclone eye with a golden ring",
+   "user_story": false
+  },
+  {
+   "id": "K065",
+   "key": "kb0492272df",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a glowing human brain made of light breaking free of chains of light, neurons firing, black space",
+   "user_story": true
+  },
+  {
+   "id": "K066",
+   "key": "k113e7c344a",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a man in a long black coat leaping across the gap between two skyscraper rooftops at night, city lights far below, rain",
+   "user_story": true
+  },
+  {
+   "id": "K067",
+   "key": "k065963e9fb",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a man in a long black coat flying freely up through the clouds above a night city, arms at his sides",
+   "user_story": true
+  },
+  {
+   "id": "K068",
+   "key": "kb5163c7b44",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a man's silhouette dissolving into cascading streams of glowing green and cyan code symbols falling like rain",
+   "user_story": true
+  },
+  {
+   "id": "K069",
+   "key": "k49f2a82a6d",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks standing in the storm with glowing eyes, hands resting over her heart, lightning behind her",
+   "user_story": false
+  },
+  {
+   "id": "K070",
+   "key": "k8d4554474f",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a forest of giant glowing mushrooms of light in the rain",
+   "user_story": false
+  },
+  {
+   "id": "K071",
+   "key": "k4323587022",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a giant fractal flower opening, mandala petals",
+   "user_story": false
+  },
+  {
+   "id": "K072",
+   "key": "kd14eaacd19",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "five crystal frogs sitting in a row on lotus pads in a rainy pond",
+   "user_story": false
+  },
+  {
+   "id": "K073",
+   "key": "k876701585c",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "golden vines growing into a glowing spiral",
+   "user_story": false
+  },
+  {
+   "id": "K074",
+   "key": "kef91272c05",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a butterfly with stained glass wings, perfectly symmetrical, facing the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K075",
+   "key": "k2043d32547",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a meadow of glowing dandelions releasing seeds made of stars",
+   "user_story": false
+  },
+  {
+   "id": "K076",
+   "key": "kb9dff97c24",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a tree of life with glowing rivers as roots",
+   "user_story": false
+  },
+  {
+   "id": "K077",
+   "key": "kff221ed9d6",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a hummingbird made of light drinking from a glowing raindrop",
+   "user_story": false
+  },
+  {
+   "id": "K078",
+   "key": "k4dc48ccec9",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a sunflower with a fibonacci spiral of golden seeds",
+   "user_story": false
+  },
+  {
+   "id": "K079",
+   "key": "k9451d2ea39",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a fern frond unrolling into a fractal spiral of light",
+   "user_story": false
+  },
+  {
+   "id": "K080",
+   "key": "k4a05fdb2d4",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a tunnel of glowing hexagon honeycomb with bees of light",
+   "user_story": false
+  },
+  {
+   "id": "K081",
+   "key": "k62c25ccb41",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a peacock made of rain spreading its glowing tail, facing the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K082",
+   "key": "k7cefa21051",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a flower bud opening to reveal a tiny galaxy inside",
+   "user_story": false
+  },
+  {
+   "id": "K083",
+   "key": "k7bea71849a",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a forest spirit deer with antlers of crystal, facing the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K084",
+   "key": "kfe4b0981d4",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "glowing seeds falling onto dark ground and bursting into flowers",
+   "user_story": false
+  },
+  {
+   "id": "K085",
+   "key": "k2eef55ab04",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of a giant water lily mandala",
+   "user_story": false
+  },
+  {
+   "id": "K086",
+   "key": "kc8a1218ae9",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a galaxy whale swimming through pink and blue nebula clouds",
+   "user_story": false
+  },
+  {
+   "id": "K087",
+   "key": "k93dd378303",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "planets lined up like pearls with glowing rings",
+   "user_story": false
+  },
+  {
+   "id": "K088",
+   "key": "kcf7b7b031b",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a comet made of rain streaking toward the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K089",
+   "key": "k563a0999d1",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "a fleet of cosmic jellyfish floating through space",
+   "user_story": false
+  },
+  {
+   "id": "K090",
+   "key": "ka87bd92508",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "macro of a whale eye with galaxies reflected inside",
+   "user_story": false
+  },
+  {
+   "id": "K091",
+   "key": "kcce3d5c53a",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a crystal astronaut floating among raindrops, facing the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K092",
+   "key": "k05064c6783",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "flying through the rings of a planet made of raindrops",
+   "user_story": false
+  },
+  {
+   "id": "K093",
+   "key": "k2f4ad0479a",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a nebula shaped like a goddess face",
+   "user_story": false
+  },
+  {
+   "id": "K094",
+   "key": "k3d37bd9a1b",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a warp tunnel of stars",
+   "user_story": false
+  },
+  {
+   "id": "K095",
+   "key": "k32d64e9824",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "constellation animals connected by glowing lines",
+   "user_story": false
+  },
+  {
+   "id": "K096",
+   "key": "ka58754e129",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "space rain falling on a silver moon surface making ripples in the dust",
+   "user_story": false
+  },
+  {
+   "id": "K097",
+   "key": "k5bd030a23b",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "top-down view of a spiral galaxy",
+   "user_story": false
+  },
+  {
+   "id": "K098",
+   "key": "k125159a033",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "the galaxy whale diving into a black hole with a golden ring",
+   "user_story": false
+  },
+  {
+   "id": "K099",
+   "key": "kabf2427482",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a black hole swallowing streams of light, the golden ring dimming",
+   "user_story": false
+  },
+  {
+   "id": "K100",
+   "key": "k0f77c0df03",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a single glowing raindrop falling in darkness",
+   "user_story": false
+  },
+  {
+   "id": "K101",
+   "key": "kba79277ed8",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks sleeping inside a floating bubble of water, curled peacefully",
+   "user_story": false
+  },
+  {
+   "id": "K102",
+   "key": "k8d98d8b7b1",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "floating memory bubbles, each containing a tiny glowing scene of a whale, a crystal cathedral and a storm",
+   "user_story": false
+  },
+  {
+   "id": "K103",
+   "key": "k15ecc3b604",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "golden light rays through dark deep water",
+   "user_story": false
+  },
+  {
+   "id": "K104",
+   "key": "k49860058a1",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a silver feather falling slowly through soft rain",
+   "user_story": false
+  },
+  {
+   "id": "K105",
+   "key": "kb98b8930e5",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a calm moonlit ocean reflecting a black hole with a golden ring",
+   "user_story": false
+  },
+  {
+   "id": "K106",
+   "key": "k0592639b1c",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a glowing raindrop resting inside an open lotus flower",
+   "user_story": false
+  },
+  {
+   "id": "K107",
+   "key": "kff19bfe479",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a deer made of light drinking from a still lake reflecting stars",
+   "user_story": false
+  },
+  {
+   "id": "K108",
+   "key": "kef410aced6",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "snow of light falling on a sleeping city of crystal towers",
+   "user_story": false
+  },
+  {
+   "id": "K109",
+   "key": "k04553815ca",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "close-up of the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks face, her eyes slowly opening, glowing cyan",
+   "user_story": false
+  },
+  {
+   "id": "K110",
+   "key": "k411b4209b5",
+   "kind": "half",
+   "composite": "radial8",
+   "subject": "a kaleidoscope ring of glowing cyan eyes",
+   "user_story": false
+  },
+  {
+   "id": "K111",
+   "key": "k6924e00841",
+   "kind": "half",
+   "composite": "none",
+   "subject": "extreme close-up of a glowing cyan pupil, falling into it",
+   "user_story": false
+  },
+  {
+   "id": "K112",
+   "key": "k35ddd75068",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "an explosion of silver rain forming a giant mandala of light",
+   "user_story": false
+  },
+  {
+   "id": "K113",
+   "key": "kcc8674b858",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "two mirrored goddess profiles facing each other with a burst of light between them",
+   "user_story": false
+  },
+  {
+   "id": "K114",
+   "key": "kd23905ff4f",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a kaleidoscope of glowing raindrop spirits multiplying",
+   "user_story": false
+  },
+  {
+   "id": "K115",
+   "key": "kafe6c060b6",
+   "kind": "calm",
+   "composite": "radial8",
+   "subject": "a burst of golden particles on black",
+   "user_story": false
+  },
+  {
+   "id": "K116",
+   "key": "kd228fcc8ff",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "drifting through glowing clouds at night in soft rain",
+   "user_story": false
+  },
+  {
+   "id": "K117",
+   "key": "k1bc2d16d58",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a lighthouse of crystal beaming light through a gentle storm",
+   "user_story": false
+  },
+  {
+   "id": "K118",
+   "key": "k591f9af57a",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "ocean waves rolling slowly under moonlight with silver foam",
+   "user_story": false
+  },
+  {
+   "id": "K119",
+   "key": "k7c015894da",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a black hole with a golden ring rising over the ocean horizon like a sunrise",
+   "user_story": false
+  },
+  {
+   "id": "K120",
+   "key": "k6e8cf086f2",
+   "kind": "half",
+   "composite": "radial8",
+   "subject": "a ring of black holes with golden rings on black",
+   "user_story": false
+  },
+  {
+   "id": "K121",
+   "key": "k4540410213",
+   "kind": "half",
+   "composite": "none",
+   "subject": "rushing straight into a black hole with a blazing golden ring",
+   "user_story": false
+  },
+  {
+   "id": "K122",
+   "key": "k5ca8b2063a",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming at full power in heavy rain, cosmic rays streaking across the sky, wind and snow swirling",
+   "user_story": true
+  },
+  {
+   "id": "K123",
+   "key": "k6c07a26e9c",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "lightning striking all around a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes who keep drumming in the storm, snow and wind",
+   "user_story": true
+  },
+  {
+   "id": "K124",
+   "key": "k7b3555d639",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies raising a glowing dome shield of light over a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes, lightning bolts hitting the shield",
+   "user_story": true
+  },
+  {
+   "id": "K125",
+   "key": "k2c42baadf3",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies holding captured lightning bolts like glowing strings and playing them like a synthesizer, sparks of sound",
+   "user_story": true
+  },
+  {
+   "id": "K126",
+   "key": "k3c6dcb3501",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks as a giant titan in space, a galaxy glowing over her heart, eyes glowing",
+   "user_story": false
+  },
+  {
+   "id": "K127",
+   "key": "kec978bfafe",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "silver rain turning into stars and rising upward",
+   "user_story": false
+  },
+  {
+   "id": "K128",
+   "key": "kfbc547c891",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a golden phoenix made of rain and fire, wings spread, facing the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K129",
+   "key": "ka6c4bb6969",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a mandala made of repeated glowing goddess faces",
+   "user_story": false
+  },
+  {
+   "id": "K130",
+   "key": "k9724efb6bf",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "glowing raindrop spirits riding on the back of a galaxy whale",
+   "user_story": false
+  },
+  {
+   "id": "K131",
+   "key": "k38808357c9",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a silver serpent coiled around a blooming lotus of light",
+   "user_story": false
+  },
+  {
+   "id": "K132",
+   "key": "k73d676d09a",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a giant cosmic eye opening in the sky",
+   "user_story": false
+  },
+  {
+   "id": "K133",
+   "key": "k961848f2cf",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a ladder of golden light rising into a black hole",
+   "user_story": false
+  },
+  {
+   "id": "K134",
+   "key": "kcb2de6de3b",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a fractal spiral of gold and silver",
+   "user_story": false
+  },
+  {
+   "id": "K135",
+   "key": "kaf2c59acdd",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a black hole blooming into a lotus of light",
+   "user_story": false
+  },
+  {
+   "id": "K136",
+   "key": "k62c46bb19e",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "flying fast down a tunnel of falling silver rain and golden rings",
+   "user_story": false
+  },
+  {
+   "id": "K137",
+   "key": "kf2ae3e5200",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "an ocean made of stars with glowing waves",
+   "user_story": false
+  },
+  {
+   "id": "K138",
+   "key": "k77b51cde43",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a cosmic tree of life with glowing planets as fruit",
+   "user_story": false
+  },
+  {
+   "id": "K139",
+   "key": "kfc4ec86949",
+   "kind": "drop",
+   "composite": "none",
+   "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks crowned with orbiting planets, eyes glowing, calm expression",
+   "user_story": false
+  },
+  {
+   "id": "K140",
+   "key": "keaa721d975",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a sun and a black hole orbiting each other like yin and yang",
+   "user_story": false
+  },
+  {
+   "id": "K141",
+   "key": "k2c75b60521",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a giant wave of light crashing toward the viewer",
+   "user_story": false
+  },
+  {
+   "id": "K142",
+   "key": "k14fa7e120c",
+   "kind": "drop",
+   "composite": "mirror",
+   "subject": "a golden crown radiating beams of light, floating in space",
+   "user_story": false
+  },
+  {
+   "id": "K143",
+   "key": "kcc84bcefd7",
+   "kind": "drop",
+   "composite": "radial8",
+   "subject": "a final grand mandala of silver rain and gold",
+   "user_story": false
+  },
+  {
+   "id": "K144",
+   "key": "k2b5ff9a8b4",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "macro of the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks eye with a whole galaxy reflected in it",
+   "user_story": false
+  },
+  {
+   "id": "K145",
+   "key": "k3db66e3de0",
+   "kind": "calm",
+   "composite": "none",
+   "subject": "a spiral galaxy shrinking into a single glowing raindrop",
+   "user_story": false
+  },
+  {
+   "id": "K146",
+   "key": "k9adeec012d",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a glowing raindrop falling into a black hole with a calm golden ring",
+   "user_story": false
+  },
+  {
+   "id": "K147",
+   "key": "kcae7952be6",
+   "kind": "calm",
+   "composite": "mirror",
+   "subject": "a black hole fading into darkness while silver rain keeps falling",
+   "user_story": false
+  }
+ ],
+ "slots": [
+  {
+   "id": "K017r",
+   "scene": "K017",
+   "key": "kf369c11488",
+   "frames": [
+    1390,
+    1410
+   ],
+   "length": 21,
+   "step": 1,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. They keep drumming, relaxed and steady. Everything is in constant energetic motion, nothing stays still.",
+   "dissolve_in": 6,
+   "replaces": "K017",
+   "seed": 143400018
+  },
+  {
+   "id": "K018r",
+   "scene": "K018",
+   "key": "kcda66883de",
+   "frames": [
+    1410,
+    1451
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The camera flies fast through the firing neurons toward a bright light. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K018",
+   "seed": 143400019
+  },
+  {
+   "id": "K019ar",
+   "scene": "K019",
+   "key": "kaa78c7fdce",
+   "frames": [
+    1451,
+    1491
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The neuron lights stretch into rain and pour down toward the ocean. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K019a",
+   "seed": 143400020
+  },
+  {
+   "id": "K023ar",
+   "scene": "K023",
+   "key": "k30a455beaa",
+   "frames": [
+    1692,
+    1733
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The camera surfs fast through the curling wave tunnel toward the light. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K023a",
+   "seed": 143400027
+  },
+  {
+   "id": "K025ar",
+   "scene": "K025",
+   "key": "kf2a18b7533",
+   "frames": [
+    1853,
+    1894
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The coral mandala pulses with light and slowly rotates. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K025a",
+   "seed": 143400031
+  },
+  {
+   "id": "K029ar",
+   "scene": "K029",
+   "key": "kf25cdf2eb7",
+   "frames": [
+    2176,
+    2216
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The ocean parts wider and the galaxy below blazes brighter. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K029a",
+   "seed": 143400039
+  },
+  {
+   "id": "K035ar",
+   "scene": "K035",
+   "key": "k0705b5d4e6",
+   "frames": [
+    2578,
+    2619
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The ship of light descends slowly over the drummers, beams of light sweep the circle. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K035a",
+   "seed": 143400049
+  },
+  {
+   "id": "K036ar",
+   "scene": "K036",
+   "key": "kcf61ad8223",
+   "frames": [
+    2659,
+    2699
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The aliens play the glowing synthesizers, the waveforms pulse in fast steady rhythm. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K036a",
+   "seed": 143400051
+  },
+  {
+   "id": "K040ar",
+   "scene": "K040",
+   "key": "k57525d5561",
+   "frames": [
+    2981,
+    3021
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The sound waves ripple upward in fast rhythmic pulses. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K040a",
+   "seed": 143400059
+  },
+  {
+   "id": "K042ar",
+   "scene": "K042",
+   "key": "kffac6a128e",
+   "frames": [
+    3142,
+    3183
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The stained glass glows brighter and shatters outward into light. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K042a",
+   "seed": 143400063
+  },
+  {
+   "id": "K042br",
+   "scene": "K042",
+   "key": "kffac6a128e",
+   "frames": [
+    3183,
+    3223
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The stained glass glows brighter and shatters outward into light. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K042ar",
+   "replaces": "K042b",
+   "seed": 143400064
+  },
+  {
+   "id": "K046ar",
+   "scene": "K046",
+   "key": "k3b834202e9",
+   "frames": [
+    3465,
+    3505
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The crystal owl beats its wings and its eyes flare. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K046a",
+   "seed": 143400071
+  },
+  {
+   "id": "K047ar",
+   "scene": "K047",
+   "key": "k1d73aa72a5",
+   "frames": [
+    3545,
+    3585
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The eye opens and the light beams pulse outward. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K047a",
+   "seed": 143400073
+  },
+  {
+   "id": "K051r",
+   "scene": "K051",
+   "key": "ke0b418786e",
+   "frames": [
+    3827,
+    3847
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The camera falls through the clock toward the drummers. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K051",
+   "seed": 143400078
+  },
+  {
+   "id": "K053br",
+   "scene": "K053",
+   "key": "k25170e8df6",
+   "frames": [
+    3908,
+    3928
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. Everyone dances, the speaker towers pulse with light on the beat, the aliens play. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K053a",
+   "replaces": "K053b",
+   "seed": 143400081
+  },
+  {
+   "id": "K054r",
+   "scene": "K054",
+   "key": "kbe0857b09a",
+   "frames": [
+    3928,
+    3948
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The clock hands spin very fast. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K054",
+   "seed": 143400082
+  },
+  {
+   "id": "K056ar",
+   "scene": "K056",
+   "key": "k89ad1aac17",
+   "frames": [
+    4028,
+    4069
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The statues break apart into swirling fire, water, wind and earth. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K056a",
+   "seed": 143400085
+  },
+  {
+   "id": "K058ar",
+   "scene": "K058",
+   "key": "kc868acb553",
+   "frames": [
+    4190,
+    4230
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The dragons spiral up the lightning column. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K058a",
+   "seed": 143400089
+  },
+  {
+   "id": "K059ar",
+   "scene": "K059",
+   "key": "k9ad357b476",
+   "frames": [
+    4270,
+    4310
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The storm face's eyes flash and lightning pours from its beard. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K059a",
+   "seed": 143400091
+  },
+  {
+   "id": "K060ar",
+   "scene": "K060",
+   "key": "k759e44128c",
+   "frames": [
+    4351,
+    4391
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The lightning tree branches outward fast across the sky. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K060a",
+   "seed": 143400093
+  },
+  {
+   "id": "K060br",
+   "scene": "K060",
+   "key": "k759e44128c",
+   "frames": [
+    4391,
+    4431
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The lightning tree branches outward fast across the sky. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K060ar",
+   "replaces": "K060b",
+   "seed": 143400094
+  },
+  {
+   "id": "K061ar",
+   "scene": "K061",
+   "key": "kb3ded87239",
+   "frames": [
+    4431,
+    4472
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The tornado spins fast around the camera. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K061a",
+   "seed": 143400095
+  },
+  {
+   "id": "K063ar",
+   "scene": "K063",
+   "key": "k4568912f3c",
+   "frames": [
+    4592,
+    4633
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The rain eagle dives fast toward the camera. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K063a",
+   "seed": 143400099
+  },
+  {
+   "id": "K064ar",
+   "scene": "K064",
+   "key": "k2217ae2f5a",
+   "frames": [
+    4673,
+    4713
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The cyclone spins and the golden ring pulses. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K064a",
+   "seed": 143400101
+  },
+  {
+   "id": "K064br",
+   "scene": "K064",
+   "key": "k2217ae2f5a",
+   "frames": [
+    4713,
+    4754
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The cyclone spins and the golden ring pulses. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K064ar",
+   "replaces": "K064b",
+   "seed": 143400102
+  },
+  {
+   "id": "K065ar",
+   "scene": "K065",
+   "key": "kb0492272df",
+   "frames": [
+    4754,
+    4794
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The chains of light shatter and the brain glows brighter, neurons flashing. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K065a",
+   "seed": 143400103
+  },
+  {
+   "id": "K070ar",
+   "scene": "K070",
+   "key": "k8d4554474f",
+   "frames": [
+    5156,
+    5197
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The mushrooms pulse with light as the camera flies between them. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K070a",
+   "seed": 143400113
+  },
+  {
+   "id": "K074ar",
+   "scene": "K074",
+   "key": "kef91272c05",
+   "frames": [
+    5479,
+    5519
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The butterfly beats its wings and light shines through them. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K074a",
+   "seed": 143400121
+  },
+  {
+   "id": "K075ar",
+   "scene": "K075",
+   "key": "k2043d32547",
+   "frames": [
+    5559,
+    5599
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The dandelions release their star seeds into the air. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K075a",
+   "seed": 143400123
+  },
+  {
+   "id": "K076ar",
+   "scene": "K076",
+   "key": "kb9dff97c24",
+   "frames": [
+    5640,
+    5680
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. Light flows up through the roots and the tree glows. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K076a",
+   "seed": 143400125
+  },
+  {
+   "id": "K076br",
+   "scene": "K076",
+   "key": "kb9dff97c24",
+   "frames": [
+    5680,
+    5720
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. Light flows up through the roots and the tree glows. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K076ar",
+   "replaces": "K076b",
+   "seed": 143400126
+  },
+  {
+   "id": "K079ar",
+   "scene": "K079",
+   "key": "k9451d2ea39",
+   "frames": [
+    5881,
+    5922
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The fern unrolls into its fractal spiral. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K079a",
+   "seed": 143400131
+  },
+  {
+   "id": "K080ar",
+   "scene": "K080",
+   "key": "k4a05fdb2d4",
+   "frames": [
+    5962,
+    6002
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The camera flies through the honeycomb tunnel. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K080a",
+   "seed": 143400133
+  },
+  {
+   "id": "K081ar",
+   "scene": "K081",
+   "key": "k62c25ccb41",
+   "frames": [
+    6042,
+    6083
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The peacock spreads its tail and the eyes on it glow. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K081a",
+   "seed": 143400135
+  },
+  {
+   "id": "K081br",
+   "scene": "K081",
+   "key": "k62c25ccb41",
+   "frames": [
+    6083,
+    6123
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The peacock spreads its tail and the eyes on it glow. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K081ar",
+   "replaces": "K081b",
+   "seed": 143400136
+  },
+  {
+   "id": "K082ar",
+   "scene": "K082",
+   "key": "k7cefa21051",
+   "frames": [
+    6123,
+    6163
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The bud opens and the galaxy spins. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K082a",
+   "seed": 143400137
+  },
+  {
+   "id": "K082br",
+   "scene": "K082",
+   "key": "k7cefa21051",
+   "frames": [
+    6163,
+    6204
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The bud opens and the galaxy spins. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K082ar",
+   "replaces": "K082b",
+   "seed": 143400138
+  },
+  {
+   "id": "K083ar",
+   "scene": "K083",
+   "key": "k7bea71849a",
+   "frames": [
+    6204,
+    6244
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The deer raises its head and its antlers glow. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K083a",
+   "seed": 143400139
+  },
+  {
+   "id": "K084ar",
+   "scene": "K084",
+   "key": "kfe4b0981d4",
+   "frames": [
+    6284,
+    6324
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The seeds land and burst into blooming flowers. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K084a",
+   "seed": 143400141
+  },
+  {
+   "id": "K084br",
+   "scene": "K084",
+   "key": "kfe4b0981d4",
+   "frames": [
+    6324,
+    6365
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The seeds land and burst into blooming flowers. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K084ar",
+   "replaces": "K084b",
+   "seed": 143400142
+  },
+  {
+   "id": "K085ar",
+   "scene": "K085",
+   "key": "k2eef55ab04",
+   "frames": [
+    6365,
+    6405
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The water lily mandala opens and turns. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K085a",
+   "seed": 143400143
+  },
+  {
+   "id": "K087ar",
+   "scene": "K087",
+   "key": "k93dd378303",
+   "frames": [
+    6526,
+    6566
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The planets drift past the camera. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K087a",
+   "seed": 143400147
+  },
+  {
+   "id": "K089ar",
+   "scene": "K089",
+   "key": "k563a0999d1",
+   "frames": [
+    6687,
+    6727
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The jellyfish pulse and drift forward. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K089a",
+   "seed": 143400151
+  },
+  {
+   "id": "K090ar",
+   "scene": "K090",
+   "key": "ka87bd92508",
+   "frames": [
+    6768,
+    6808
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The whale eye blinks and the galaxies swirl. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K090a",
+   "seed": 143400153
+  },
+  {
+   "id": "K093ar",
+   "scene": "K093",
+   "key": "k2f4ad0479a",
+   "frames": [
+    7009,
+    7049
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The nebula face glows and its eyes open. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K093a",
+   "seed": 143400159
+  },
+  {
+   "id": "K093br",
+   "scene": "K093",
+   "key": "k2f4ad0479a",
+   "frames": [
+    7049,
+    7090
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The nebula face glows and its eyes open. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K093ar",
+   "replaces": "K093b",
+   "seed": 143400160
+  },
+  {
+   "id": "K097ar",
+   "scene": "K097",
+   "key": "k5bd030a23b",
+   "frames": [
+    7331,
+    7372
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The galaxy spiral rotates. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K097a",
+   "seed": 143400167
+  },
+  {
+   "id": "K098ar",
+   "scene": "K098",
+   "key": "k125159a033",
+   "frames": [
+    7412,
+    7452
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The whale dives into the black hole and the ring flares. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K098a",
+   "seed": 143400169
+  },
+  {
+   "id": "K100r",
+   "scene": "K100",
+   "key": "k0f77c0df03",
+   "frames": [
+    7573,
+    7613
+   ],
+   "length": 41,
+   "step": 1,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The raindrop falls slowly through darkness. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K100",
+   "seed": 143400172
+  },
+  {
+   "id": "K111r",
+   "scene": "K111",
+   "key": "k6924e00841",
+   "frames": [
+    8359,
+    8379
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The camera zooms fast into the pupil. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K111",
+   "seed": 143400183
+  },
+  {
+   "id": "K114ar",
+   "scene": "K114",
+   "key": "kd23905ff4f",
+   "frames": [
+    8540,
+    8580
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The raindrop spirits multiply and spin. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K114a",
+   "seed": 143400188
+  },
+  {
+   "id": "K114br",
+   "scene": "K114",
+   "key": "kd23905ff4f",
+   "frames": [
+    8580,
+    8620
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The raindrop spirits multiply and spin. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K114ar",
+   "replaces": "K114b",
+   "seed": 143400189
+  },
+  {
+   "id": "K115r",
+   "scene": "K115",
+   "key": "kafe6c060b6",
+   "frames": [
+    8620,
+    8661
+   ],
+   "length": 41,
+   "step": 1,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. Golden particles burst outward. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K115",
+   "seed": 143400190
+  },
+  {
+   "id": "K120r",
+   "scene": "K120",
+   "key": "k6e8cf086f2",
+   "frames": [
+    8983,
+    9003
+   ],
+   "length": 41,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The ring of black holes spins fast. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K120",
+   "seed": 143400195
+  },
+  {
+   "id": "K124ar",
+   "scene": "K124",
+   "key": "k7b3555d639",
+   "frames": [
+    9184,
+    9225
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. Lightning crashes into the shield and the aliens hold it, the drummers keep playing. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K124a",
+   "seed": 143400201
+  },
+  {
+   "id": "K124br",
+   "scene": "K124",
+   "key": "k7b3555d639",
+   "frames": [
+    9225,
+    9265
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. Lightning crashes into the shield and the aliens hold it, the drummers keep playing. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K124ar",
+   "replaces": "K124b",
+   "seed": 143400202
+  },
+  {
+   "id": "K126ar",
+   "scene": "K126",
+   "key": "k3c6dcb3501",
+   "frames": [
+    9345,
+    9386
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The galaxy over her heart blazes and her hair streams outward. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K126a",
+   "seed": 143400205
+  },
+  {
+   "id": "K127ar",
+   "scene": "K127",
+   "key": "kec978bfafe",
+   "frames": [
+    9426,
+    9466
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The rain rises upward, turning into stars. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K127a",
+   "seed": 143400207
+  },
+  {
+   "id": "K127br",
+   "scene": "K127",
+   "key": "kec978bfafe",
+   "frames": [
+    9466,
+    9507
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The rain rises upward, turning into stars. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K127ar",
+   "replaces": "K127b",
+   "seed": 143400208
+  },
+  {
+   "id": "K128ar",
+   "scene": "K128",
+   "key": "kfbc547c891",
+   "frames": [
+    9507,
+    9547
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The phoenix spreads its wings and rises. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K128a",
+   "seed": 143400209
+  },
+  {
+   "id": "K129ar",
+   "scene": "K129",
+   "key": "ka6c4bb6969",
+   "frames": [
+    9587,
+    9627
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The mandala of faces rotates. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K129a",
+   "seed": 143400211
+  },
+  {
+   "id": "K130ar",
+   "scene": "K130",
+   "key": "k9724efb6bf",
+   "frames": [
+    9668,
+    9708
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The whale swims forward and the spirits cheer. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K130a",
+   "seed": 143400213
+  },
+  {
+   "id": "K130br",
+   "scene": "K130",
+   "key": "k9724efb6bf",
+   "frames": [
+    9708,
+    9748
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The whale swims forward and the spirits cheer. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K130ar",
+   "replaces": "K130b",
+   "seed": 143400214
+  },
+  {
+   "id": "K131ar",
+   "scene": "K131",
+   "key": "k38808357c9",
+   "frames": [
+    9748,
+    9788
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The serpent rears and the lotus blooms. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K131a",
+   "seed": 143400215
+  },
+  {
+   "id": "K131br",
+   "scene": "K131",
+   "key": "k38808357c9",
+   "frames": [
+    9788,
+    9829
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The serpent rears and the lotus blooms. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K131ar",
+   "replaces": "K131b",
+   "seed": 143400216
+  },
+  {
+   "id": "K133ar",
+   "scene": "K133",
+   "key": "k961848f2cf",
+   "frames": [
+    9909,
+    9950
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The camera climbs the ladder of light fast. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K133a",
+   "seed": 143400219
+  },
+  {
+   "id": "K135ar",
+   "scene": "K135",
+   "key": "kaf2c59acdd",
+   "frames": [
+    10070,
+    10111
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The black hole opens into a blooming lotus. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K135a",
+   "seed": 143400223
+  },
+  {
+   "id": "K135br",
+   "scene": "K135",
+   "key": "kaf2c59acdd",
+   "frames": [
+    10111,
+    10151
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The black hole opens into a blooming lotus. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K135ar",
+   "replaces": "K135b",
+   "seed": 143400224
+  },
+  {
+   "id": "K136ar",
+   "scene": "K136",
+   "key": "k62c46bb19e",
+   "frames": [
+    10151,
+    10191
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The camera flies very fast through the rain tunnel. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K136a",
+   "seed": 143400225
+  },
+  {
+   "id": "K137ar",
+   "scene": "K137",
+   "key": "kf2ae3e5200",
+   "frames": [
+    10232,
+    10272
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The star waves roll toward the camera. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K137a",
+   "seed": 143400227
+  },
+  {
+   "id": "K137br",
+   "scene": "K137",
+   "key": "kf2ae3e5200",
+   "frames": [
+    10272,
+    10312
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The star waves roll toward the camera. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K137ar",
+   "replaces": "K137b",
+   "seed": 143400228
+  },
+  {
+   "id": "K138ar",
+   "scene": "K138",
+   "key": "k77b51cde43",
+   "frames": [
+    10312,
+    10352
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The planets on the tree glow and orbit. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K138a",
+   "seed": 143400229
+  },
+  {
+   "id": "K138br",
+   "scene": "K138",
+   "key": "k77b51cde43",
+   "frames": [
+    10352,
+    10393
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The planets on the tree glow and orbit. The motion continues and intensifies. Everything is in constant energetic motion, nothing stays still.",
+   "chain_from": "K138ar",
+   "replaces": "K138b",
+   "seed": 143400230
+  },
+  {
+   "id": "K139ar",
+   "scene": "K139",
+   "key": "kfc4ec86949",
+   "frames": [
+    10393,
+    10433
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "none",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The planets orbit around her head. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K139a",
+   "seed": 143400231
+  },
+  {
+   "id": "K141ar",
+   "scene": "K141",
+   "key": "k2c75b60521",
+   "frames": [
+    10554,
+    10594
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The wave of light crashes toward the camera. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K141a",
+   "seed": 143400235
+  },
+  {
+   "id": "K142ar",
+   "scene": "K142",
+   "key": "k14fa7e120c",
+   "frames": [
+    10634,
+    10675
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "mirror",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The crown's beams sweep and pulse. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K142a",
+   "seed": 143400237
+  },
+  {
+   "id": "K143ar",
+   "scene": "K143",
+   "key": "kcc84bcefd7",
+   "frames": [
+    10715,
+    10755
+   ],
+   "length": 81,
+   "step": 2,
+   "composite": "radial8",
+   "prompt": "Fast dynamic motion, the camera moves forward quickly. The mandala expands and rotates. Everything is in constant energetic motion, nothing stays still.",
+   "replaces": "K143a",
+   "seed": 143400239
+  }
+ ],
+ "stats": {
+  "scenes": 147,
+  "user_story_scenes": 32,
+  "slots": 245,
+  "wan_jobs": 244,
+  "wan_frames": 18960
+ }
+}
