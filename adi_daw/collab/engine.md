@@ -12,6 +12,36 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-29 — cloud takeover: LANES §3 item 3 implemented, integration pending
+
+The director asked Codex to take over the engine lane queue while setting up its cloud environment. The latest `engine/log` handoff through #249 was read before selecting work; the sends stack was not recreated. The newer five-lane ownership in `win/lanes-5` was checked: the window and Pd/native device work remain with their lanes.
+
+**Bypass retains delay:** [`engine/bypass-delay`](https://github.com/arieladi/Adi/tree/engine/bypass-delay), commit `e981850e75d581bfa2e3f8559927d8c3832bc538`, based on main `b773bea`.
+- Graph-owned dry lines preserve latency without device DSP, retain active-period history, drain compensated input, and follow latency retaps/growth.
+- History crosses graph rebuilds and precision changes; double bypass stays double even for a float-only device. Zero-delay active devices take the existing forget/fast-path approach.
+- Bypass/always-process flags are atomic. The graph's sampled bypass decision selects DSP once per block.
+- GCC 14.2 `ADI_WERROR=ON`: `test_all.sh` **8287 checks across 96 suites**, all validators pass. New bypass suite: **107 checks**.
+- Clang 19.1.7 `ADI_WERROR=ON`: device-model, bypass, graph, host and precision suites pass (5/5).
+- Five plants caught: zero bypass latency, unprimed dry history, DSP during bypass, narrowed double bypass, omitted handover. Originals restored and the 107 checks rerun green.
+- Standalone `DeviceNode::process` retains its old pass-through helper behavior; graph execution owns the delayed bypass contract.
+
+**Master console summing:** [`engine/master-summing`](https://github.com/arieladi/Adi/tree/engine/master-summing), commit `22b307d8745f1c9677aab989d72b73acf475805a`, independently based on `b773bea`.
+- Existing summing operations and graph admission accept master beside group, per ADR-0203 d14. Other track kinds remain refused.
+- Existing channel/buss halves, undo, drive, flavours and state preservation are reused. Nested summed groups retain both their own buss and the master's channel half.
+- GCC `test_all.sh`: **8296 checks across 95 suites**, validators clean. GCC and Clang mixer suites: **221 checks** each, including all eight flavours at 32/64-bit graph settings and a nested render.
+- Two plants caught: rejecting master operations and omitting master console processing. Restored suite green.
+- The 64-bit mixer checks validate graph compatibility and rendered output, not a new claim about each console core's internal precision.
+
+**Integration state.** Both branches are pushed; neither is merged. No PR was created and no remote CI result is claimed: the cloud egress proxy returns CONNECT 403 for `api.github.com`. Git HTTPS reads and pushes work with existing platform authentication. The required domain was added to the environment draft alongside tested install/start instructions; the user must review/save settings and publish. Windows/MSVC, the seven-ABI CI gate and any director parity acceptance remain unrun here. This log change has its own branch so item branches do not collide in this file.
+
+**Environment.** The isolated checkout is `/workspace/Adi`; no worktree was created. The baseline main build passed 8179 checks across 95 suites before coding. CMake 3.31.10/Ninja 1.13.0 are installed under `/workspace/adi-tools`; Clang 19.1.7 was extracted from packages verified through Debian's signed index into `/workspace/adi-clang`. The headless workflow includes real libpd and CLAP tests. JUCE GUI/VST3 and hardware audio were not installed or validated. Generated WAV test renders were preserved outside the checkout.
+
+**Next, still unimplemented: LANES item 4, the export queue.** Existing decisions authorize the work; lack of an ADR number or UI is not a reason to wait. Start with jobs plus a bounded offline master-WAV runner, strict registry-brace naming, isolated Session/device instances, heard-timeline range alignment, cancellation and no-overwrite publication. Reuse `audio::WavWriter` and `media::publishFile`. Subsequent pieces are full-width track/stem capture, normalization, encoders/dither, and NI Stems import/export. `ScopeTap` is float visualization storage and must not silently become a double/multichannel export sink.
+
+Items 5–7 (freeze/bounce, history caps/save operations, channel slots) also remain. They have independent authorized implementation work: freeze should reuse the offline pre-fader renderer and preserve live mixer controls; history must preserve named snapshots, branch anchors and unuploaded collaborative ops; Q/L slots should be lazy and use an injected factory rather than guessed clone identifiers. Actual clone DSP and UI handoffs are external dependencies. No claim is made that the whole engine queue is finished.
+
+---
+
 ## 2026-10-27, evening — LANES §3 item 2, sends and returns: Live's feedback loop
 
 **[arieladi/Adi#249](https://github.com/arieladi/Adi/pull/249) (`engine/return-loop`), stacked on #247: a return's send into itself plays (ADR-0203 d3).** With it, item 2's planner and loop work is done; what remains of item 2 waits on win's questions (PRs 8 to 11).
