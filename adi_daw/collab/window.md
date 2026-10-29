@@ -65,6 +65,42 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-29, cloud — Bitwig's project view [#295](https://github.com/arieladi/Adi/pull/295) `window/view-filter`
+
+The director said "continue" without choosing how the window gets the groups. So the window built
+everything that does not need them, ready for N6.
+
+**#295, stacked on #294:**
+- `TrackTree` (headless): groups inside groups with their depth, and what a view of a group shows (the
+  group, what is inside it at any depth, and Main). A parent that loops back ends the walk.
+- `ProjectViewButton` at the top of the track names, lit while a group is chosen. Its menu: Project,
+  then the groups indented, each with a folder in its colour.
+- `ArrangementGeometry::hidden`: a hidden track's height is 0. Every walk passes over it: the lanes,
+  the names, the track controls, the Mixer View's columns, the Overview, the hit tests, the screen
+  reader's clips, up and down, and Neighbor.
+- `WindowState::viewGroup` keeps the view per window. A vanished group falls back to the whole
+  project.
+- The frame audit ("generation-change frame allocates zero") caught the first version. The tree is now
+  built only while a group is chosen or the menu is open, in buffers kept between frames.
+- Without N6 the menu shows Project alone and says the groups appear once the engine reports them.
+  The test gives the window a tree.
+
+The picture `pictures/2026-10-29-project-view.png` was sent to the director: the real menu, and the
+test's render with a nested group chosen.
+
+Checks: shell 413, seams 103, window state 54; `test_all.sh` 8278 PASS; zero warnings; the shadow
+sweep is clean. The rows check fails with the mixer's skip removed.
+
+`window/view-filter` is merged into `window/clip-view`.
+
+**Where to resume:**
+- the director's choice on the groups' data: N6 from the engine lane (recommended), or the window
+  reading the store's track rows (STEP-7-PLAN §2.2);
+- the Clip View's approval;
+- CI on #293 to #295.
+
+---
+
 ## 2026-10-28, cloud, continued — the flip arrows, Live's strip, Use Large Track Height [#293](https://github.com/arieladi/Adi/pull/293) [#294](https://github.com/arieladi/Adi/pull/294)
 
 **The director, on screenshots (28 October).**
