@@ -72,6 +72,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
         state.largeTracks = j.value("largeTracks", true);
+        state.viewGroup = j.value("viewGroup", std::int64_t{0});
         state.gridSnap = j.value("gridSnap", true);
         state.gridFixed = j.value("gridFixed", false);
         state.gridTriplet = j.value("gridTriplet", false);
@@ -132,6 +133,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"overview", state.overview},
                             {"inOut", state.inOut},
                             {"largeTracks", state.largeTracks},
+                            {"viewGroup", state.viewGroup},
                             {"gridSnap", state.gridSnap},
                             {"gridFixed", state.gridFixed},
                             {"gridTriplet", state.gridTriplet},
