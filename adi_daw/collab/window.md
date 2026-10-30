@@ -96,8 +96,25 @@ engine lane's, and nothing in it was changed here.
   - merge `engine/return-loop` into both branches;
   - N6 added to its queue, with the fields listed, suggested before item 4.
 
-**N6.** The director agreed that N6 goes into the engine lane's queue. The row above stands until it
-lands.
+**Later the same day.** Codex acted on the note:
+- it merged `engine/return-loop` into both item 3 branches (`bc9ecf3`, `fcfaecb`), finding and
+  fixing a double history adoption on the way;
+- it moved its log onto `engine/log`;
+- it built N6 and a first export runner.
+
+Its environment still cannot reach the API, so the window lane:
+- changed #297's and #298's base to `engine/return-loop` and updated their descriptions;
+- relayed their CI through the director (green so far; Windows on #297 green; macOS still
+  running);
+- opened [#299](https://github.com/arieladi/Adi/pull/299) (`engine/snapshot-n6`, against main);
+- opened [#300](https://github.com/arieladi/Adi/pull/300) (`engine/export-queue`, against #298).
+
+The director was told how to give Codex access: `api.github.com` with write methods in its
+environment, and a narrow token as an environment variable.
+
+**N6 is #299.** It carries `parent`, `indexInParent`, `kind` and an optional `color` on each track,
+the clip's `name`, and the meters. Once it merges, the window does STEP-7-PLAN §2.2 items 2 to 6.
+The row above stands until then.
 
 ---
 
