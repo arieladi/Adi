@@ -1,0 +1,13 @@
+{
+  "visual_review_passed": false,
+  "real_subject_motion": false,
+  "continuity_passed": false,
+  "selected_take": 2,
+  "reviewevidence": [
+    "Twelve samples0-79 show small tentacle changes and slow positional drift, but umbrella bells retain nearly identical shapes. Clear swimming contractions are absent. This does not satisfy the requested substantial readable motion."
+  ],
+  "strategy_change": "Do not repeat identical generation. Shorten prompt to a single coordinated sideways propulsion action relative to fixed coral, with large tentacle trailing and bell compression. Modestly increase CFG5->6 and steps20->28, recorded per take. Keep same source image, length, sampler, temporal decoder and no digital movement.",
+  "limitations": [
+    "Small actual tentacle motion exists; failure is insufficient readable motion, not literal identical frames. Temporal sampling only."
+  ]
+}
