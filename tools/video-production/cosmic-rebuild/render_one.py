@@ -12,6 +12,9 @@ if (d/'generated.json').exists():print('Already generated; review existing take'
 if shot==1:src=ROOT/'anchor.png'
 else:
  a=json.loads((ROOT/f'shot{shot-1:02d}'/'accepted.json').read_text());assert a['visual_review_passed'] and a['real_subject_motion'] and a['continuity_passed'];src=Path(a['continuation_frame'])
+override_source=d/'source_override.json'
+if override_source.exists():
+ v=json.loads(override_source.read_text());assert v.get('reviewed_keyframe') and v.get('reason');src=Path(v['source']);assert src.is_file()
 if not (d/'receipt.json').exists():
  assert not (d/'submitting.json').exists(),'Ambiguous submission; inspect Comfy history'
  q=requests.get(API+'/queue',timeout=30).json();assert not q['queue_running'] and not q['queue_pending'],'Comfy busy; do not interrupt'

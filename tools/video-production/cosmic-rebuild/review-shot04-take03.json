@@ -1,0 +1,14 @@
+{
+  "visual_review_passed": true,
+  "real_subject_motion": true,
+  "continuity_passed": true,
+  "selected_take": 3,
+  "continuation_frame": "D:\\AvasthaAI\\VideoEditFour-20261025\\output\\cosmic-rebuild-20261030\\s04-t03\\f_00080_.png",
+  "reviewevidence": [
+    "12 samples0-79 show substantial continuous head rotation from left-facing through front to right profile, hair flowing independently, earrings moving. No camera zoom used.",
+    "Sameface/crown/jewellery retained and clean; no opaquecloud or malformedtear. Entry matches originalK003 final closedeyes; endpoint gives clear rightward gaze for nextscene."
+  ],
+  "limitations": [
+    "Initial eye opening remains subtle; accepted for continuous real head/hair action, not every prompt detail. Temporal samples reviewed, not claim realtime audio playback."
+  ]
+}
