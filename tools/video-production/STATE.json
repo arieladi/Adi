@@ -55,11 +55,11 @@
   "avastha": {
     "remote_root": "D:/AvasthaAI/Avastha4K60-20261026",
     "local_root": "D:/AvasthaAI/Projects/Avastha - Quantum Ascent/final-4k60",
-    "status": "Complete; Codex confirmed local 3840x2160 60fps 35648 frames, source audio duration retained, remote full-decode receipt, sampled joins and black tail on 2026-10-29.",
+    "status": "User approved 4K60 on 2026-10-30. Final MOV remuxed with new 48kHz 24bit dithered WAV; copied video and audio stream SHA256 match originals exactly. No retiming/reencoding.",
     "live_processes": "Completed; historical PIDs must not be used.",
     "rate_and_eta": "Complete; no remaining ETA.",
-    "output": "Avastha - Acid rework and Aleph boom - 4K60 - with music.mp4",
-    "next": "Delivered local 4K60 file for user review; completion monitor deleted. No restart."
+    "output": "D:/AvasthaAI/Projects/Avastha - Quantum Ascent/FINAL/Avastha - Quantum Ascent - FINAL 4K60 - 48kHz 24bit.mov",
+    "next": "Authorized cleanup supervisor at LOCAL D:/AvasthaAI/cleanup-quantum-20261030 waits SHA256-verified NAS final backup, then archives reusable Quantum material and deletes test/intermediate media using explicit manifests. Shared tools/models and all Cosmic folders excluded. Check supervisor-status and worker logs; do not duplicate."
   },
   "holds": [
     "Old full-track Cosmic Rain renderer (CosmicRain-20261025) stays held; the new keyframe full-track job replaces it",
