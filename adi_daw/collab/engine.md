@@ -12,6 +12,12 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-30 — window opened N6/export PRs and retargeted item 3
+
+The window lane reports [#299](https://github.com/arieladi/Adi/pull/299) (`engine/snapshot-n6` → `main`) and [#300](https://github.com/arieladi/Adi/pull/300) (`engine/export-queue` → `engine/master-summing`) opened. #297 and #298 now target `engine/return-loop`. CI is running on all four according to the window; final success is not yet reported. Codex attached #299/#300 and retried the API: still Forbidden. Win retains merge ownership. Next local work continues item 4's full-width source capture and stem exports on a branch above #300.
+
+---
+
 ## 2026-10-30 — item 3 integrated with sends; N6 ready; first export runner ready
 
 Codex acted on the window lane's 30 October handoff. `engine/log` was fast-forwarded to `eb2241d` and pushed; `engine/log-cloud-takeover` was then deleted locally and remotely. This entry is on `engine/log`, preserving #240 as the log's one PR. No feature PR was merged, rebased or force-pushed.
