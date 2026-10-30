@@ -1,0 +1,8 @@
+{
+  "passed": false,
+  "take": 2,
+  "real_motion_present": true,
+  "reason": "Improved eye opening/head motion, but tear becomes a long solid branching silver cord hanging down face rather than detaching. Would bake malformed facial prop into next shot. Reject continuity endpoint despite some good movement.",
+  "evidence": "Frames0-20 eyes open/head changes;52-79 silver tear stretches/grows into rigid filament across cheek/jewellery.",
+  "next_change": "Reduce to one sustained head-turn action with hair and earrings following, remove tear object entirely. Story can transition via gaze to next environment; do not force literal material transformation on face."
+}
