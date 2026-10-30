@@ -2308,10 +2308,10 @@ void testATrackDelayCrossesARebuild() {
         m.set("group.setSummingFlavor", 5, "flavor", "console.md");
         m.refresh();
         m.render(512);
-        std::size_t run = 0, longest = 0;
+        std::size_t quietRun = 0, longest = 0;
         for (float x : m.l) {
-            run = std::fabs(x) < 1e-5f ? run + 1 : 0;
-            longest = std::max(longest, run);
+            quietRun = std::fabs(x) < 1e-5f ? quietRun + 1 : 0;
+            longest = std::max(longest, quietRun);
         }
         check(m.session.summing().channelOf(1) != before, "a new flavour is a new half");
         check(longest < 8, "and the block after it has no hole: its longest near-silent run is " +
@@ -2898,35 +2898,45 @@ void testOverride() {
 
 }  // namespace
 
-int main() {
+#ifndef ADI_TEST_MASTER_SUMMING
+#define ADI_TEST_MASTER_SUMMING 0
+#endif
+
+int runMixerSuites(bool masterOnly) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::printf("adi_mixer_tests -- the mixer strip (ADR-0163)\n\n");
+    std::printf(masterOnly ? "adi_master_summing_tests -- master console summing (ADR-0203 d14)\n\n" :
+                            "adi_mixer_tests -- the mixer strip (ADR-0163)\n\n");
     try {
-        testPanLaws();
-        testASendNode();
-        testVolumePanMute();
-        testSolo();
-        testStripsOutliveGraphs();
-        testAutomationPlays();
-        testOverride();
-        testTrackDelay();
-        testATrackDelayCrossesARebuild();
-        testHearing();
-        testSoloAcrossSends();
-        testAReturnsOwnSends();
-        testTheFeedbackLoop();
-        testTheLoopsRing();
-        testSendsPlay();
-        testSendsHoldTheirLevel();
-        testPreSendsAndTheSendsPan();
-        testGroupSumming();
-        testGroupSumming(true, Precision::Float32);
-        testGroupSumming(true, Precision::Float64);
-        testNestedMasterSumming();
-        testScopeTaps();
+        if (masterOnly) {
+            testGroupSumming(true, Precision::Float32);
+            testGroupSumming(true, Precision::Float64);
+            testNestedMasterSumming();
+        } else {
+            testPanLaws();
+            testASendNode();
+            testVolumePanMute();
+            testSolo();
+            testStripsOutliveGraphs();
+            testAutomationPlays();
+            testOverride();
+            testTrackDelay();
+            testATrackDelayCrossesARebuild();
+            testHearing();
+            testSoloAcrossSends();
+            testAReturnsOwnSends();
+            testTheFeedbackLoop();
+            testTheLoopsRing();
+            testSendsPlay();
+            testSendsHoldTheirLevel();
+            testPreSendsAndTheSendsPan();
+            testGroupSumming();
+            testScopeTaps();
+        }
     } catch (const std::exception& e) {
         check(false, std::string("exception: ") + e.what());
     }
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
+
+int main() { return runMixerSuites(ADI_TEST_MASTER_SUMMING != 0); }
