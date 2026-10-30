@@ -223,8 +223,9 @@ void GroupSumming::sync(const rows::Model& model) {
     for (const rows::GroupSumming& g : model.summing) {
         const std::string who = "tracks#" + std::to_string(g.trackId);
         const auto at = nodeOf.find(g.trackId);
-        if (at == nodeOf.end() || plan.nodes[at->second].kind != PlannedKind::Group) {
-            if (g.enabled) problems_.push_back(who + ": summing is on a track that is not a group; it is not played");
+        if (at == nodeOf.end() || (plan.nodes[at->second].kind != PlannedKind::Group &&
+                                   plan.nodes[at->second].kind != PlannedKind::Master)) {
+            if (g.enabled) problems_.push_back(who + ": summing is on a track that is not a group or master; it is not played");
             continue;
         }
         if (!g.enabled) continue;
@@ -235,17 +236,17 @@ void GroupSumming::sync(const rows::Model& model) {
         }
         const double drive = std::clamp(g.driveDb, -12.0, 24.0);
 
-        // The buss half, on the group's sum: the drive back off, the flavour's
+        // The buss half, on the group or master's sum: the drive back off, the flavour's
         // own gain staging made up.
         Half& b = busses_[g.trackId];
         if (!b.node || b.flavor != g.flavor) b = Half{g.flavor, g.trackId, makeConsoleHalf(g.flavor, true)};
         b.node->setGains(1.0f, dbToGain(-drive) * static_cast<float>(unityGain(*flavor)));
         liveBusses.insert(g.trackId);
 
-        // A channel half on every track whose main output is this group, and
-        // on every send into it: a send is not a child, and its source keeps
-        // its own output as it was, so the half is the send's, not the
-        // source's (ADR-0203 d3).
+        // A channel half on every track whose main output is this group or
+        // master, and on every send into it: a send is not a child, and its
+        // source keeps its own output as it was, so the half is the send's,
+        // not the source's (ADR-0203 d3, d14).
         for (const PlannedEdge& e : plan.edges) {
             if (e.bus != Bus::Main || e.to != at->second) continue;
             const PlannedNode& child = plan.nodes[e.from];

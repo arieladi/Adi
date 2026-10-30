@@ -1929,8 +1929,10 @@ void testSendsHoldTheirLevel() {
         q.bind(3, to);
         q.exec();
     };
-    // A send into a summing group plays at the level it plays with summing
+    // A send into a summing group, also through a summed master, plays at the level it plays with summing
     // off, at every drive (ADR-0174: summing is a colour, not a level).
+    for (const bool masterSumming : {false, true})
+    for (const Precision precision : {Precision::Float32, Precision::Float64})
     for (const char* flavor : {"console9", "console.md"}) {
         for (const double drive : {0.0, 6.0}) {
             auto viaSend = [&](bool summing) {
@@ -1949,12 +1951,15 @@ void testSendsHoldTheirLevel() {
                     m.set("group.setSummingFlavor", 5, "flavor", flavor);
                     m.set("group.setSummingDrive", 5, "db", drive);
                 }
-                m.load();
+                if (masterSumming) m.set("group.setSumming", 9, "enabled", true);
+                m.load(48000.0, precision);
+                check((m.session.summing().sendChannelOf(21) != nullptr) == summing,
+                      "a send gets its own channel half exactly when 5 summing is on");
                 return rmsOf(m, 40);
             };
             const double off = viaSend(false), on = viaSend(true);
             const double db = 20.0 * std::log10(on / off);
-            check(std::fabs(db) < 0.1, std::string("a send into a group summed by ") + flavor + " at +" +
+            check(std::fabs(db) < 0.1, std::string("a send into ") + std::to_string(5) + " summed by " + flavor + " at +" +
                                            std::to_string(int(drive)) + " dB drive keeps its level: " +
                                            std::to_string(db) + " dB");
         }
@@ -2303,10 +2308,10 @@ void testATrackDelayCrossesARebuild() {
         m.set("group.setSummingFlavor", 5, "flavor", "console.md");
         m.refresh();
         m.render(512);
-        std::size_t run = 0, longest = 0;
+        std::size_t quietRun = 0, longest = 0;
         for (float x : m.l) {
-            run = std::fabs(x) < 1e-5f ? run + 1 : 0;
-            longest = std::max(longest, run);
+            quietRun = std::fabs(x) < 1e-5f ? quietRun + 1 : 0;
+            longest = std::max(longest, quietRun);
         }
         check(m.session.summing().channelOf(1) != before, "a new flavour is a new half");
         check(longest < 8, "and the block after it has no hole: its longest near-silent run is " +
@@ -2352,8 +2357,9 @@ void testATrackDelayCrossesARebuild() {
     }
 }
 
-void testGroupSumming() {
-    section("ADR-0174 -- native analog group summing: a console's channel half on each child, its buss on the sum");
+void testGroupSumming(bool master = false, Precision precision = Precision::Float32) {
+    const std::int64_t summingId = master ? 9 : 5;
+    section(master ? "ADR-0203 d14 -- master console summing" : "ADR-0174 -- group console summing");
 
     // --- the ops -------------------------------------------------------------
     {
@@ -2369,16 +2375,16 @@ void testGroupSumming() {
             return j.commit(q).ok;
         };
         check(!tryOp("group.setSumming", 1, "enabled", true), "an audio track has no summing: refused");
-        check(tryOp("group.setSumming", 5, "enabled", true), "a group does");
-        check(!tryOp("group.setSummingFlavor", 5, "flavor", "console12"), "an unknown flavour is refused");
-        check(!tryOp("group.setSummingFlavor", 5, "flavor", "every.c7"),
+        check(tryOp("group.setSumming", summingId, "enabled", true), "the selected group or master accepts summing");
+        check(!tryOp("group.setSummingFlavor", summingId, "flavor", "console12"), "an unknown flavour is refused");
+        check(!tryOp("group.setSummingFlavor", summingId, "flavor", "every.c7"),
               "EveryConsole's are not flavours: it cannot choose a system at the pinned commit");
-        check(tryOp("group.setSummingFlavor", 5, "flavor", "console.md"), "Console MD is a flavour");
-        check(!tryOp("group.setSummingDrive", 5, "db", 30.0), "a drive past +24 dB is refused");
-        check(tryOp("group.setSummingDrive", 5, "db", 6.0), "+6 dB is not");
+        check(tryOp("group.setSummingFlavor", summingId, "flavor", "console.md"), "Console MD is a flavour");
+        check(!tryOp("group.setSummingDrive", summingId, "db", 30.0), "a drive past +24 dB is refused");
+        check(tryOp("group.setSummingDrive", summingId, "db", 6.0), "+6 dB is not");
         {
             SQLite::Statement row(m.store->db(),
-                                  "SELECT enabled, flavor, drive_db FROM group_summing WHERE track_id = 5");
+                                  "SELECT enabled, flavor, drive_db FROM group_summing WHERE track_id = " + std::to_string(summingId));
             check(row.executeStep() && row.getColumn(0).getInt() == 1 &&
                       row.getColumn(1).getString() == "console.md" && row.getColumn(2).getDouble() == 6.0,
                   "one row: on, console.md, +6 dB");
@@ -2386,7 +2392,7 @@ void testGroupSumming() {
         History h(*m.store);
         const bool undone = h.undo().ok && h.undo().ok && h.undo().ok;
         check(undone, "three undos");
-        SQLite::Statement back(m.store->db(), "SELECT enabled, flavor, drive_db FROM group_summing WHERE track_id = 5");
+        SQLite::Statement back(m.store->db(), "SELECT enabled, flavor, drive_db FROM group_summing WHERE track_id = " + std::to_string(summingId));
         check(back.executeStep() && back.getColumn(0).getInt() == 0 && back.getColumn(1).getString() == "console9" &&
                   back.getColumn(2).getDouble() == 0.0,
               "undone to the defaults: off, console9, 0 dB");
@@ -2399,7 +2405,7 @@ void testGroupSumming() {
         bool placed = false;
         std::string what;
     };
-    auto play = [](const std::string& name, const char* flavor, double drive, double hzA = 220.0,
+    auto play = [master, summingId, precision](const std::string& name, const char* flavor, double drive, double hzA = 220.0,
                    double hzB = 330.0) {
         Mix m(name.c_str());
         SineNode a(hzA, 0.1f), b(hzB, 0.1f);
@@ -2407,26 +2413,28 @@ void testGroupSumming() {
         m.track(2, "audio", "B");
         m.track(5, "group", "G");
         m.track(9, "master", "Master");
-        m.set("track.setParent", 1, "parent", 5);
-        m.set("track.setParent", 2, "parent", 5);
+        if (!master) m.set("track.setParent", 1, "parent", 5);
+        if (!master) m.set("track.setParent", 2, "parent", 5);
         m.extra[1] = &a;
         m.extra[2] = &b;
         if (flavor != nullptr) {
-            m.set("group.setSumming", 5, "enabled", true);
-            m.set("group.setSummingFlavor", 5, "flavor", flavor);
-            if (drive != 0.0) m.set("group.setSummingDrive", 5, "db", drive);
+            m.set("group.setSumming", summingId, "enabled", true);
+            m.set("group.setSummingFlavor", summingId, "flavor", flavor);
+            if (drive != 0.0) m.set("group.setSummingDrive", summingId, "db", drive);
         }
         m.load();
+        check(m.session.setPrecision(precision) && m.session.spec().precision == precision,
+              "summing renders at the requested graph precision");
         Played p;
         for (int k = 0; k < 24; ++k) {
             m.render(512);
             p.out.insert(p.out.end(), m.l.begin(), m.l.end());
         }
         const GroupSumming& s = m.session.summing();
-        p.placed = s.bussOf(5) != nullptr && s.channelOf(1) != nullptr && s.channelOf(2) != nullptr &&
-                   s.channelOf(5) == nullptr && s.channelOf(9) == nullptr && s.bussOf(9) == nullptr;
-        if (s.bussOf(5) != nullptr && s.channelOf(1) != nullptr)
-            p.what = s.channelOf(1)->what() + " / " + s.bussOf(5)->what();
+        p.placed = s.bussOf(summingId) != nullptr && s.channelOf(1) != nullptr && s.channelOf(2) != nullptr &&
+                   s.channelOf(9) == nullptr && (master ? s.bussOf(5) == nullptr : s.channelOf(5) == nullptr && s.bussOf(9) == nullptr);
+        if (s.bussOf(summingId) != nullptr && s.channelOf(1) != nullptr)
+            p.what = s.channelOf(1)->what() + " / " + s.bussOf(summingId)->what();
         return p;
     };
     auto rmsDb = [](const std::vector<float>& v) {
@@ -2496,32 +2504,90 @@ void testGroupSumming() {
         m.track(1, "audio", "A");
         m.track(5, "group", "G");
         m.track(9, "master", "Master");
-        m.set("track.setParent", 1, "parent", 5);
+        if (!master) m.set("track.setParent", 1, "parent", 5);
         m.extra[1] = &a;
-        m.set("group.setSumming", 5, "enabled", true);
+        m.set("group.setSumming", summingId, "enabled", true);
         m.load();
+        check(m.session.setPrecision(precision), "summing renders at the requested graph precision");
         const ConsoleNode* first = m.session.summing().channelOf(1);
         m.set("track.rename", 1, "name", "A2");
         m.refresh();
         check(first != nullptr && m.session.summing().channelOf(1) == first,
               "an unrelated edit keeps the same halves, and their state");
-        m.set("group.setSummingFlavor", 5, "flavor", "console.la");
+        m.set("group.setSummingFlavor", summingId, "flavor", "console.la");
         m.refresh();
         const ConsoleNode* la = m.session.summing().channelOf(1);
         check(la != nullptr && la != first && la->what() == "ConsoleLAChannel", "a new flavour is a new half");
         m.render();
-        m.set("group.setSumming", 5, "enabled", false);
+        m.set("group.setSumming", summingId, "enabled", false);
         m.refresh();
-        check(m.session.summing().channelOf(1) == nullptr && m.session.summing().bussOf(5) == nullptr,
+        check(m.session.summing().channelOf(1) == nullptr && m.session.summing().bussOf(summingId) == nullptr,
               "off: no halves at all");
         m.render();
         m.store->db().exec("INSERT INTO group_summing(track_id, enabled) VALUES (1, 1)");
-        m.store->db().exec("UPDATE group_summing SET enabled = 1, flavor = 'nope' WHERE track_id = 5");
+        m.store->db().exec("UPDATE group_summing SET enabled = 1, flavor = 'nope' WHERE track_id = " + std::to_string(summingId));
         m.refresh();
         check(m.mentions("tracks#1: summing is on a track that is not a group"),
               "a row on a track that is not a group is named, not played");
-        check(m.mentions("tracks#5: summing flavour 'nope' is unknown"), "an unknown flavour is named, not played");
+        check(m.mentions("tracks#" + std::to_string(summingId) + ": summing flavour 'nope' is unknown"), "an unknown flavour is named, not played");
     }
+}
+
+void testNestedMasterSumming() {
+    section("ADR-0203 d14 -- nested group and master retain separate console halves");
+    Mix m("nested-master");
+    SineNode a(220.0, 0.1f), b(330.0, 0.1f);
+    m.track(1, "audio", "A");
+    m.track(2, "return", "Return");
+    m.track(3, "midi", "MIDI");
+    m.track(4, "vca", "VCA");
+    m.track(5, "group", "Group");
+    m.track(9, "master", "Master");
+    m.set("track.setParent", 1, "parent", 5);
+    m.set("group.setSumming", 5, "enabled", true);
+    m.set("group.setSumming", 9, "enabled", true);
+    m.set("group.setSummingFlavor", 9, "flavor", "console.la");
+    sendRow(m, 21, 1, 5);
+    m.extra[1] = &a;
+    m.extra[2] = &b;
+    m.load();
+    const auto& summing = m.session.summing();
+    const auto* groupSend = summing.sendChannelOf(21);
+    const auto* masterChannel = summing.channelOf(5);
+    check(groupSend && masterChannel && groupSend != masterChannel && groupSend->what() != masterChannel->what(),
+          "the group send and its main output into the master have independent halves of their respective flavours");
+    check(summing.bussOf(5) != nullptr && summing.channelOf(1) != nullptr,
+          "nested group's own bus and input channel remain present");
+    check(summing.bussOf(9) != nullptr && summing.channelOf(5) != nullptr,
+          "group output receives the master's channel half before the master bus");
+    check(summing.channelOf(2) != nullptr && summing.channelOf(3) != nullptr,
+          "return and MIDI main outputs also enter the master through channel halves");
+    check(summing.channelOf(4) == nullptr && summing.channelOf(9) == nullptr,
+          "neither a VCA nor the master output receives a channel half");
+    bool finite = true;
+    float peak = 0.0f;
+    for (int block = 0; block < 16; ++block) {
+        m.render();
+        for (float value : m.l) {
+            finite = finite && std::isfinite(value);
+            peak = (std::max)(peak, std::fabs(value));
+        }
+    }
+    check(finite && peak > 0.05f, "nested group and return play through the master console");
+    for (std::int64_t id : {1, 2, 3, 4}) {
+        OpRequest request;
+        request.opType = "group.setSumming";
+        request.payload = {{"id", id}, {"enabled", true}};
+        OpJournal journal(*m.store);
+        check(!journal.commit(request).ok, "summing still refuses audio, return, MIDI and VCA tracks");
+    }
+    m.set("group.setSumming", 9, "enabled", false);
+    m.refresh();
+    check(m.session.summing().channelOf(5) == nullptr && m.session.summing().sendChannelOf(21) == groupSend,
+          "disabling master summing removes its output half, retaining the group's send history");
+    check(summing.bussOf(9) == nullptr && summing.channelOf(5) == nullptr &&
+              summing.bussOf(5) != nullptr && summing.channelOf(1) != nullptr,
+          "disabling master summing removes only its halves, preserving group colour");
 }
 
 void testScopeTaps() {
@@ -2832,32 +2898,45 @@ void testOverride() {
 
 }  // namespace
 
-int main() {
+#ifndef ADI_TEST_MASTER_SUMMING
+#define ADI_TEST_MASTER_SUMMING 0
+#endif
+
+int runMixerSuites(bool masterOnly) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::printf("adi_mixer_tests -- the mixer strip (ADR-0163)\n\n");
+    std::printf(masterOnly ? "adi_master_summing_tests -- master console summing (ADR-0203 d14)\n\n" :
+                            "adi_mixer_tests -- the mixer strip (ADR-0163)\n\n");
     try {
-        testPanLaws();
-        testASendNode();
-        testVolumePanMute();
-        testSolo();
-        testStripsOutliveGraphs();
-        testAutomationPlays();
-        testOverride();
-        testTrackDelay();
-        testATrackDelayCrossesARebuild();
-        testHearing();
-        testSoloAcrossSends();
-        testAReturnsOwnSends();
-        testTheFeedbackLoop();
-        testTheLoopsRing();
-        testSendsPlay();
-        testSendsHoldTheirLevel();
-        testPreSendsAndTheSendsPan();
-        testGroupSumming();
-        testScopeTaps();
+        if (masterOnly) {
+            testGroupSumming(true, Precision::Float32);
+            testGroupSumming(true, Precision::Float64);
+            testNestedMasterSumming();
+        } else {
+            testPanLaws();
+            testASendNode();
+            testVolumePanMute();
+            testSolo();
+            testStripsOutliveGraphs();
+            testAutomationPlays();
+            testOverride();
+            testTrackDelay();
+            testATrackDelayCrossesARebuild();
+            testHearing();
+            testSoloAcrossSends();
+            testAReturnsOwnSends();
+            testTheFeedbackLoop();
+            testTheLoopsRing();
+            testSendsPlay();
+            testSendsHoldTheirLevel();
+            testPreSendsAndTheSendsPan();
+            testGroupSumming();
+            testScopeTaps();
+        }
     } catch (const std::exception& e) {
         check(false, std::string("exception: ") + e.what());
     }
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }
+
+int main() { return runMixerSuites(ADI_TEST_MASTER_SUMMING != 0); }
