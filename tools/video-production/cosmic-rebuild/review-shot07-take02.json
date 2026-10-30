@@ -1,0 +1,15 @@
+{
+  "visual_review_passed": true,
+  "real_subject_motion": true,
+  "continuity_passed": true,
+  "selected_take": 2,
+  "continuation_frame": "D:\\AvasthaAI\\VideoEditFour-20261025\\output\\cosmic-rebuild-20261030\\s07-t02\\f_00041_.png",
+  "reviewevidence": [
+    "Nine samples0-40 show fountain bowl shortening and lowering continuously, clearing petals; drops descend without joining a thick central column. Lotus, sphere, ring and landscape remain recognisable.",
+    "Assembled ending sampled every4frames from25s through30.17s: fountain rises during shot6 then subsides during shot7, no scene reset at the boundary. 726frame assembled preview full decode clean."
+  ],
+  "limitations": [
+    "Gold sphere deforms briefly with passing water; minor local artifact retained, not claimed flawless.",
+    "Review uses sequential temporal samples, not real-time audiovisual playback."
+  ]
+}
