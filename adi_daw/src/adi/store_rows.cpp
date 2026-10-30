@@ -6,6 +6,7 @@
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 namespace adi::rows {
 namespace {
@@ -101,7 +102,11 @@ Model readModel(const Store& store) {
     // is not free if nobody asks for it.
     std::optional<SQLite::Transaction> txn;
     try {
-        txn.emplace(const_cast<SQLite::Database&>(db), SQLite::TransactionBehavior::DEFERRED);
+        // An offline renderer may already hold a read snapshot while it loads
+        // rows, device chunks and filename metadata. Keep that outer snapshot;
+        // neither nest BEGIN nor commit a transaction owned by the caller.
+        if (sqlite3_get_autocommit(db.getHandle()) != 0)
+            txn.emplace(const_cast<SQLite::Database&>(db), SQLite::TransactionBehavior::DEFERRED);
     } catch (const std::exception& e) {
         m.problems.push_back(std::string("read transaction: ") + e.what());
     }
