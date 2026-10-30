@@ -1,0 +1,19 @@
+{
+  "visual_review_passed": true,
+  "real_subject_motion": true,
+  "continuity_passed": true,
+  "selected_take": 1,
+  "continuation_frame": "D:\\AvasthaAI\\VideoEditFour-20261025\\output\\cosmic-rebuild-20261030\\s01-t01\\f_00090_.png",
+  "delivered_frames": 90,
+  "reviewevidence": [
+    "Inspected12 temporal frames spanning0-3.71s against opening frame191: same central dark sphere, gold disk, blue/silver inflows and background. No abrupt replacement at entry.",
+    "Individual streams bend and sweep around the ring; droplets/rocks travel relative to ring and stars. Last row shows different stream curvature and object positions; not just a scaled still.",
+    "Affine-compensated optical flow supports independent motion (screening only); visual sequence is acceptance evidence.",
+    "Accept for early calm opening continuation only; modest generated camera drift remains, but no postproduction zoom. No repeated mirrored ring geometry from original draft."
+  ],
+  "limitations": [
+    "Retains opening near-realistic style; transition toward illustrated chapters must be reviewed deliberately, not an abrupt style swap.",
+    "Temporal samples plus decode inspected; not a full real-time audiovisual viewing. Longer accumulated context still requires review."
+  ],
+  "reused_original": false
+}
