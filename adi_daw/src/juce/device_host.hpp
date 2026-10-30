@@ -76,6 +76,14 @@ public:
         engine::DeviceChainFn devicesFor;
         /// What pushes into a track's junction (ADR-0122). Unset, nothing.
         engine::SourceFn sourcesFor;
+        /// ADR-0203 d3: where a send leaves its track, the node it plays
+        /// through, and what it passes after that (a summing group's channel
+        /// half). Unset, every tap is the tail, and no send is made.
+        engine::TapFn tapFor;
+        engine::SendFn sendFor;
+        engine::SendFn sendTailFor;
+        /// And what closes a return's send into itself. Unset, no loop is made.
+        engine::FeedbackFn feedbackFor;
     };
 
     /// Attach to the HOST that owns the live graph, and take responsibility

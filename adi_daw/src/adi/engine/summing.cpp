@@ -219,7 +219,7 @@ void GroupSumming::sync(const rows::Model& model) {
     std::map<std::int64_t, std::size_t> nodeOf;
     for (std::size_t i = 0; i < plan.nodes.size(); ++i) nodeOf[plan.nodes[i].trackId] = i;
 
-    std::set<std::int64_t> liveBusses, liveChannels;
+    std::set<std::int64_t> liveBusses, liveChannels, liveSends;
     for (const rows::GroupSumming& g : model.summing) {
         const std::string who = "tracks#" + std::to_string(g.trackId);
         const auto at = nodeOf.find(g.trackId);
@@ -243,16 +243,21 @@ void GroupSumming::sync(const rows::Model& model) {
         b.node->setGains(1.0f, dbToGain(-drive) * static_cast<float>(unityGain(*flavor)));
         liveBusses.insert(g.trackId);
 
-        // A channel half on every track whose main output is this group or master.
+        // A channel half on every track whose main output is this group or
+        // master, and on every send into it: a send is not a child, and its
+        // source keeps its own output as it was, so the half is the send's,
+        // not the source's (ADR-0203 d3, d14).
         for (const PlannedEdge& e : plan.edges) {
             if (e.bus != Bus::Main || e.to != at->second) continue;
             const PlannedNode& child = plan.nodes[e.from];
             if (child.kind == PlannedKind::Vca) continue;
-            Half& c = channels_[child.trackId];
+            const bool send = e.routingId != 0;
+            Half& c = send ? sends_[e.routingId] : channels_[child.trackId];
             if (!c.node || c.flavor != g.flavor || c.group != g.trackId)
                 c = Half{g.flavor, g.trackId, makeConsoleHalf(g.flavor, false)};
             c.node->setGains(dbToGain(drive), 1.0f);
-            liveChannels.insert(child.trackId);
+            if (send) liveSends.insert(e.routingId);
+            else liveChannels.insert(child.trackId);
         }
     }
     // Gone from the model: dropped here, kept alive by any graph still playing them.
@@ -260,6 +265,8 @@ void GroupSumming::sync(const rows::Model& model) {
         it = liveBusses.count(it->first) ? std::next(it) : busses_.erase(it);
     for (auto it = channels_.begin(); it != channels_.end();)
         it = liveChannels.count(it->first) ? std::next(it) : channels_.erase(it);
+    for (auto it = sends_.begin(); it != sends_.end();)
+        it = liveSends.count(it->first) ? std::next(it) : sends_.erase(it);
 }
 
 Node* GroupSumming::headFor(std::int64_t trackId) noexcept {
@@ -270,6 +277,16 @@ Node* GroupSumming::headFor(std::int64_t trackId) noexcept {
 Node* GroupSumming::tailFor(std::int64_t trackId) noexcept {
     const auto it = channels_.find(trackId);
     return it == channels_.end() ? nullptr : it->second.node.get();
+}
+
+Node* GroupSumming::sendTailFor(std::int64_t routingId) noexcept {
+    const auto it = sends_.find(routingId);
+    return it == sends_.end() ? nullptr : it->second.node.get();
+}
+
+const ConsoleNode* GroupSumming::sendChannelOf(std::int64_t routingId) const noexcept {
+    const auto it = sends_.find(routingId);
+    return it == sends_.end() ? nullptr : it->second.node.get();
 }
 
 const ConsoleNode* GroupSumming::bussOf(std::int64_t groupId) const noexcept {
