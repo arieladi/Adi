@@ -310,8 +310,8 @@ void DelayLine::adopt(std::vector<T>& buf, const std::vector<U>& from, std::int3
     }
 }
 
-void DelayLine::adoptHistory(const DelayLine& old) noexcept {
-    if (ring_ <= 0 || old.ring_ <= 0 || channels_ != old.channels_) return;
+bool DelayLine::adoptHistory(const DelayLine& old) noexcept {
+    if (ring_ <= 0 || old.ring_ <= 0 || channels_ != old.channels_) return false;
 
     // `buf_` and `write_` are the live history in every state: while an old
     // ring is growing both rings are written and `buf_` is the one read, and
@@ -339,7 +339,7 @@ void DelayLine::adoptHistory(const DelayLine& old) noexcept {
     // grow take the same writes, so the old count holds for either.
     filled_ = k;
     quiet_ = (std::min)(old.quiet_, k);
-    if (k == 0) return;
+    if (k == 0) return false;
     const std::int32_t fromRing = fromIncoming ? old.inRing_ : old.ring_;
     const std::int32_t fromWrite = fromIncoming ? old.inWrite_ : old.write_;
     const std::vector<float>& f32 = fromIncoming ? old.incoming_ : old.buf_;
@@ -358,6 +358,7 @@ void DelayLine::adoptHistory(const DelayLine& old) noexcept {
     // The next write lands right after the newest carried sample, so a tap at
     // `delay_` reads exactly what the old line's tap would have read next.
     write_ = k % ring_;
+    return true;
 }
 
 DelayLine::Edge DelayLine::beginEdge() const noexcept {
@@ -607,6 +608,17 @@ void Graph::prepareLine(DelayLine& line, std::int32_t delaySamples) {
     line.setDelay(d);
 }
 
+namespace {
+
+/// ADR-0203 d3: an edge from a feedback loop's reader or into its writer is
+/// the loop's own, and its line never delays. (The reader's arrival and
+/// latency are 0, so it never sets its junction's arrival either.)
+bool loopEdge(const Node* from, const Node* to) noexcept {
+    return (from != nullptr && from->closesFeedback()) || (to != nullptr && to->closesFeedback());
+}
+
+}  // namespace
+
 void Graph::computeCompensation() {
     // ADR-0058 decision 2. A node's input is whole only once the LATEST of its
     // feeds has arrived, so its arrival is the max over inputs of (that input's
@@ -644,8 +656,14 @@ void Graph::computeCompensation() {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
-            const std::int32_t d = s.arrival - ready;
-            prepareLine(s.inDelays[k], d);
+            if (loopEdge(u.node, s.node)) {
+                // No ring at all, not even the headroom: it never delays,
+                // so a retap that tried to move it would be refused.
+                s.inDelays[k].prepare(channels_, 0, precision_ == Precision::Float64);
+                s.inDelays[k].setDelay(0);
+                continue;
+            }
+            prepareLine(s.inDelays[k], s.arrival - ready);
         }
         s.sideDelays.resize(s.sidechains.size());
         for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
@@ -709,7 +727,7 @@ bool Graph::retapLatency() noexcept {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
-            const std::int32_t d = s.arrival - ready;
+            const std::int32_t d = loopEdge(u.node, s.node) ? 0 : s.arrival - ready;
             // EVERYTHING THAT FITS IS MOVED, even when something else does not.
             // A partial correction is closer to right than none, and the edges
             // that failed are about to be rebuilt anyway.
@@ -745,7 +763,8 @@ namespace {
 
 /// The required delay on one edge, from the arrivals already computed.
 std::int32_t requiredDelay(std::int32_t toArrival, std::int32_t fromArrival,
-                           const Node* fromNode) noexcept {
+                           const Node* fromNode, const Node* toNode) noexcept {
+    if (loopEdge(fromNode, toNode)) return 0;
     const std::int32_t ready =
         fromArrival + (fromNode != nullptr ? fromNode->latencySamples() : 0);
     const std::int32_t d = toArrival - ready;
@@ -798,11 +817,11 @@ std::size_t Graph::escalateLatency(Unresolved* left) {
         if (s.hasBypass) offer(s.dryDelay, (std::max)(0, s.node->latencySamples()));
         for (std::size_t k = 0; k < s.inputs.size() && k < s.inDelays.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
-            offer(s.inDelays[k], requiredDelay(s.arrival, u.arrival, u.node));
+            offer(s.inDelays[k], requiredDelay(s.arrival, u.arrival, u.node, s.node));
         }
         for (std::size_t k = 0; k < s.sidechains.size() && k < s.sideDelays.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
-            offer(s.sideDelays[k], requiredDelay(s.arrival, u.arrival, u.node));
+            offer(s.sideDelays[k], requiredDelay(s.arrival, u.arrival, u.node, s.node));
         }
     }
     if (left != nullptr) *left = unresolved;
@@ -1004,9 +1023,8 @@ std::int32_t Graph::adoptBypassHistory(const Graph& old) noexcept {
         if (std::less<Node*>{}(b.first, a.first)) { ++j; continue; }
         auto& dst = slots_[static_cast<std::size_t>(a.second)];
         const auto& src = old.slots_[static_cast<std::size_t>(b.second)];
-        dst.dryDelay.adoptHistory(src.dryDelay);
+        if (dst.dryDelay.adoptHistory(src.dryDelay)) ++carried;
         dst.dozeGlides = kLinesUnchecked;
-        ++carried;
         ++i;
         ++j;
     }
@@ -1287,7 +1305,7 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             if (u.node == nullptr || u.events.empty()) continue;
-            if (u.node->eventFlow() == EventFlow::Consume) continue;
+            if (u.node->eventFlow() != EventFlow::Through) continue;   // Consume or Stop
 
             // THE SAME DELAY AS THE AUDIO BESIDE IT. The node's own latency,
             // because its output audio emerges that much later than its input;

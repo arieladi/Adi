@@ -257,7 +257,7 @@ void rebuild(bool active, bool changePrecision) {
     host.process(out.io(32));
     countAllocations = false;
     check(out.matches(begin, device.delay, 32, Precision::Float32), "host swap retains active or bypassed dry history");
-    check(host.stats().historyCarried > 0, "handover actually carried device history");
+    check(host.stats().historyCarried == 1, "handover carries the single device history exactly once");
     check(allocations == 0, "graph swap and dry processing allocate nothing");
     check(device.latencyQueries == queries, "audio callback never queries plug-in latency");
     check(device.calls == calls, "rebuilt bypass runs no DSP");

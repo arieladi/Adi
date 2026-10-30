@@ -51,11 +51,33 @@ struct PlannedNode {
     Route route = Route::None;
 };
 
+/// Where on its source track an edge leaves (ADR-0203 d3). A main or default
+/// edge leaves at the Tail, the end of the chain, as every edge did before
+/// sends; a send leaves at PostFader (Post) or PostFx (Pre); Live's three tap
+/// points for routing are PreFx, PostFx and PostMixer.
+enum class Tap : std::uint8_t {
+    Tail,        ///< after everything: the track's output
+    PreFx,       ///< the instrument's output, before the audio effects
+    PostFx,      ///< after the audio effects, before the fader: a Pre send
+    PostFader,   ///< after the fader, pan and mute: a Post send
+    PostMixer,   ///< after the mixer, solo included
+};
+
 struct PlannedEdge {
     std::size_t from = 0;      ///< index into GraphPlan::nodes
     std::size_t to = 0;
     Bus bus = Bus::Main;
     std::string kind;          ///< the `routing.kind` that produced it, or "default"
+    /// The send's routing row (ADR-0203 d3), 0 for every edge that is not a
+    /// send. A send plays through a node of its own, which the realiser asks
+    /// for by this id.
+    std::int64_t routingId = 0;
+    Tap tap = Tap::Tail;
+    /// A return's send into itself, Live's feedback loop (ADR-0203 d3): from
+    /// and to are the same return. It is not an edge of the topology -- the
+    /// realiser closes it through a ring a block long, outside the graph's
+    /// order -- so no cycle check counts it.
+    bool feedback = false;
 };
 
 struct GraphPlan {

@@ -317,6 +317,8 @@ public:
     // session builds this rebuild's graph at, and never resized after.
     std::vector<double> wide;
     std::shared_ptr<void> sourceLifetime() const override { return owner.lock(); }
+    /// ADR-0092: new at every rebuild, the same track's clips all the same.
+    std::uint64_t historyName() const noexcept override { return 1; }
     TrackSource(Transport& t,std::int32_t f,std::int32_t ch,std::int64_t id)
         :transport(t),maxFrames(f),channels(ch),track(id),
          wide(static_cast<std::size_t>(ch)*static_cast<std::size_t>(f),0.0){}

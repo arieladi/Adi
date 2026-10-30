@@ -2100,11 +2100,142 @@ void testAGlideUpWhileAMixDrainsPlaysWhatIsStillDue() {
     }
 }
 
+/// What a return's feedback loop plays back into it (ADR-0203 d3): a source
+/// whose edge is the loop's own, never the project's compensation.
+class LoopSource final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            std::memset(io.out[c] + io.blockOffset, 0, static_cast<std::size_t>(io.frames) * sizeof(float));
+    }
+    [[nodiscard]] bool closesFeedback() const noexcept override { return true; }
+    [[nodiscard]] const char* name() const noexcept override { return "loop"; }
+};
+
+void testAFeedbackSourceIsNeverCompensated() {
+    section("ADR-0203 d3 -- a feedback loop's edge is never delayed, glided or grown");
+
+    RampNode src;
+    SwitchableNode plugin(64, 4096);
+    LoopSource loop;
+    SumNode mix;
+    Graph g;
+    const NodeId ns = g.addNode(src), np = g.addNode(plugin);
+    const NodeId nl = g.addNode(loop), nm = g.addNode(mix);
+    g.connect(ns, np);
+    g.connect(np, nm);
+    g.connect(nl, nm);
+    g.setOutput(nm);
+    g.setLatencyHeadroom(512);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+    eqi(g.arrivalOf(nm), 64, "the return's junction arrives with its latent input");
+    eqi(g.compensationFor(nl, nm), 0, "and the loop's edge is not delayed to meet it");
+    check(g.edgeLine(nl, nm, Bus::Main) != nullptr && g.edgeLine(nl, nm, Bus::Main)->capacity() == 0,
+          "nor given a ring: not even the headroom");
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    g.process(io);
+    src.advance();
+    plugin.setLatency(192);
+    check(g.retapLatency(), "a retap to 192 fits: nothing asks the ringless loop's edge to move");
+    g.process(io);
+    src.advance();
+    g.process(io);
+    eqi(g.compensationFor(nl, nm), 0, "after a retap to 192, the loop's edge is still not delayed");
+
+    // Past the headroom: the latent edge is the only one that moves, and it
+    // takes no delay of its own, so nothing needs a bigger ring.
+    plugin.setLatency(2048);
+    g.retapLatency();
+    Graph::Unresolved left;
+    eqi(static_cast<long long>(g.escalateLatency(&left)), 0, "an escalation offers the loop's edge no ring");
+    eqi(static_cast<long long>(left.ringless), 0, "nor finds it wanting one");
+    eqi(static_cast<long long>(g.growingEdges()), 0, "and nothing is growing");
+}
+
+/// Says it is `latency` late, and delays nothing: a strip's track delay,
+/// played as latency (ADR-0172), negative for a track played late.
+class SaysLatency final : public Node {
+public:
+    explicit SaysLatency(std::int32_t latency) : latency_(latency) {}
+    void set(std::int32_t latency) noexcept { latency_.store(latency, std::memory_order_relaxed); }
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i)
+                io.out[c][io.blockOffset + i] = io.in != nullptr ? io.in[c][io.blockOffset + i] : 0.0f;
+    }
+    [[nodiscard]] std::int32_t latencySamples() const noexcept override {
+        return latency_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] const char* name() const noexcept override { return "says"; }
+
+private:
+    std::atomic<std::int32_t> latency_;
+};
+
+/// Where a return's send into itself ends (ADR-0203 d3): a sink whose input
+/// is the loop's own.
+class LoopSink final : public Node {
+public:
+    void process(const NodeIo&) noexcept override {}
+    [[nodiscard]] bool closesFeedback() const noexcept override { return true; }
+    [[nodiscard]] const char* name() const noexcept override { return "loop.write"; }
+};
+
+void testALoopsWriterIsNeverCompensated() {
+    section("ADR-0203 d3 -- the edge into a feedback loop's writer is never delayed, glided or grown");
+
+    // A send reports its return's track delay as latency, -64: a plain
+    // consumer is delayed 64 to play it; the loop's writer is not.
+    RampNode src;
+    SaysLatency send(-64);
+    SumNode plain, out;
+    LoopSink writer;
+    Graph g;
+    const NodeId ns = g.addNode(src), nd = g.addNode(send);
+    const NodeId np = g.addNode(plain), nw = g.addNode(writer), no = g.addNode(out);
+    g.connect(ns, nd);
+    g.connect(nd, np);
+    g.connect(nd, nw);
+    g.connect(np, no);
+    g.setOutput(no);
+    g.setLatencyHeadroom(512);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+    eqi(g.compensationFor(nd, np), 64, "a plain consumer plays the 64 as a delay");
+    eqi(g.compensationFor(nd, nw), 0, "the loop's writer does not");
+    check(g.edgeLine(nd, nw, Bus::Main) != nullptr && g.edgeLine(nd, nw, Bus::Main)->capacity() == 0, "and its edge has no ring");
+
+    Out o(256);
+    AudioIo io = makeIo(o, 256);
+    g.process(io);
+    src.advance();
+    send.set(-192);
+    check(g.retapLatency(), "a retap to -192 fits: nothing asks the writer's ringless edge to move");
+    for (int b = 0; b < 3; ++b) {
+        g.process(io);
+        src.advance();
+    }
+    eqi(g.compensationFor(nd, np), 192, "after a retap to -192 the plain consumer delays 192");
+    eqi(g.compensationFor(nd, nw), 0, "and the writer still nothing");
+
+    send.set(-2048);
+    g.retapLatency();
+    Graph::Unresolved left;
+    g.escalateLatency(&left);
+    eqi(static_cast<long long>(g.growingEdges()), 1, "past the headroom only the plain consumer's edge grows");
+    eqi(static_cast<long long>(left.ringless), 0, "and the writer's is not found wanting a ring");
+}
+
 }  // namespace
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_retap_tests -- a latency change while the graph runs\n\n");
+    testAFeedbackSourceIsNeverCompensated();
+    testALoopsWriterIsNeverCompensated();
     testTheTapMovesInsideItsRing();
     testTheGlideCrossfadesAndSettles();
     testWithoutHeadroomARetapIsRefused();
