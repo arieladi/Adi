@@ -12,6 +12,49 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-30 — MSVC CI repair, direct stems and PCM export
+
+The window opened #301 (`engine/export-stems` → `engine/export-queue`) at a4e814a. The window reports #297 all green; #299 has 18/19 green with macOS still running. #298's Windows MSVC Debug mixer timed out at the existing 600-second limit; its other 94 tests passed. Those reports describe the pre-repair heads; new CI still needs relaying because `api.github.com/graphql` remains Forbidden here. Win merges.
+
+### #298 CI repair
+
+`f76e36b4cb9bc600b6d7d1e6502a49fa9fce406d` splits master32/master64/nested-console checks into `adi_master_summing_tests`, built from the same fixtures and test source. The remaining mixer has 330 checks; the new master suite 98: all 428 preserved, with identical render lengths and no higher timeout. Both binaries pass GCC and Clang Werror (approximately 3.4s and 1s here; these are Linux timings, not an MSVC claim). `quietRun` replaces the inner `run` that triggered C4456. The ordinary shared runner keeps all functions referenced under strict Clang, without warning suppression. Full GCC validation at this head: **8623 checks / 96 suites**, all validators clean.
+
+The repair was merged (no rebase or force push) into the export stack and all heads were pushed:
+
+| Branch / PR | Current head |
+|---|---|
+| `engine/master-summing`, #298 | `f76e36b4cb9bc600b6d7d1e6502a49fa9fce406d` |
+| `engine/export-queue`, #300 | `f9b86f494dbb7799bf2c6685ffdbc64764d5ee88` |
+| `engine/export-stems`, #301 | `f5fdf47655d05fdfc344f37c824def33bf51b93a` |
+| `engine/export-pcm`, PR requested against `engine/export-stems` | `186ae70ce1265aab141df147ff22df2b2d72ada8` |
+
+### #301: direct wet stems and one cycle-marker range
+
+Feature commit `a4e814a`: graph output capture preserves 64 channels and 32/64 precision without graph mutation, extra processing, allocations or master-output changes. Session resolves direct pre/post-fader source endpoints; post-fader is before the parent's console encoder and pre-fader remains after the source's own effects. The full graph still runs, retaining returns and sidechain dependencies. Cropping uses the selected endpoint's cached signed latency. Jobs can resolve a current cycle marker's name and tick/ns bounds at render start; absolute endpoints round independently. New `{region}` and source-aware `{track}`/`{group}` names are documented.
+
+Before the inherited CI repair: GCC 8814 checks/97 suites, export 158, capture 33, validators clean. Clang export/capture/graph/mixer/session/precision 6/6. Tests decode actual source/group/return/multichannel WAVs, console boundaries, pending region edits, return echoes, signed delay, full-width double/float capture, segmented callbacks, sidechains and stale output. This is not dry/isolated-through-master processing or a continuous gapless region batch.
+
+### PCM WAV and dither
+
+Feature commit `39271d0d037b1288c892d41ea0597d7ff545a488` on `engine/export-pcm`, based on `engine/export-stems`: PCM16/PCM24/Float32 jobs, none/triangular/rectangular dither. **New jobs now default to PCM24/triangular, matching the existing registry; callers wanting the initial runner's Float32 must select it explicitly.** Standalone WavWriter retains its old no-dither default and float bit behavior. No registry/schema changes.
+
+Double audio stays double through final integer quantization. Quantization rounds signed ties away from zero and saturates; seeded noise is applied once in destination LSBs. Generator state continues across channels and writes; a stable enqueue ordinal distinguishes job streams, while retries reproduce samples. Float32 never dithers. Unsupported enum values fail rather than selecting a fallback; Pow-r/noise shaping is not implemented.
+
+Before the inherited CI repair: GCC 8871/97, export 196, WAV 143, validators clean. Clang WAV/export/decode/media/clip-playback 5/5. Three compiled defect plants all fail: premature float narrowing 2 checks, removed dither 8, per-write reseeding 4. Seeds, stereo independence, quantized noise statistics and callback-partition identity are covered.
+
+**Final combined validation at `186ae70`: GCC Debug/Werror, libpd on/JUCE off, 8871 checks across 98 suites, all validators clean.** Export 196, capture 33, WAV 143, mixer 330 and master 98. Clang Werror mixer/master/WAV/export/capture/decode/media/clip-playback: 8/8. These are local results; the new MSVC/seven-ABI CI results remain unverified here.
+
+### Continuing item 4
+
+LUFS normalization remains next, with NI Stems export/import, dry/isolated master routing, persistence and window integration still open. Region batch/matrix/After Export are P2 in ADR-0205 d9; no gapless claim has been made. No later item or the whole engine queue is claimed complete.
+
+Read-only planning found usable K-weighting coefficients (`AutoGain::kShelf/kHighPass`) and private stereo integrated-loudness code in gain_stage.cpp. Export must not call Session::autoGainStage: it commits input-gain operations and alters analysis routing. A post-render pass should measure and normalize a private full-width spool from one Session/snapshot; re-rendering plugins or using a Float32 spool can change the result. Existing TruePeakMeter is float-only/eight-channel and LookaheadLimiter is sample-peak, so neither alone satisfies the required full-width true-peak ceiling. Multichannel LUFS needs explicit channel-role weights.
+
+There is no production AAC/NI container path yet. Platform codec adapters, independently produced NI fixtures, stream identity/priming/padding handling, and atomic project-owned media import are needed. Those are independent engine implementation tasks, not a new director approval gate. Win/window own their UI integration and final merge; the engine continues its queue.
+
+---
+
 ## 2026-10-30 — window opened N6/export PRs and retargeted item 3
 
 The window lane reports [#299](https://github.com/arieladi/Adi/pull/299) (`engine/snapshot-n6` → `main`) and [#300](https://github.com/arieladi/Adi/pull/300) (`engine/export-queue` → `engine/master-summing`) opened. #297 and #298 now target `engine/return-loop`. CI is running on all four according to the window; final success is not yet reported. Codex attached #299/#300 and retried the API: still Forbidden. Win retains merge ownership. Next local work continues item 4's full-width source capture and stem exports on a branch above #300.
