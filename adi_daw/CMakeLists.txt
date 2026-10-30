@@ -1313,6 +1313,10 @@ add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
 target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
 
+add_executable(adi_offline_capture_tests tests/test_offline_capture.cpp)
+target_link_libraries(adi_offline_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_offline_capture_tests COMMAND adi_offline_capture_tests)
+
 
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)

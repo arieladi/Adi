@@ -40,6 +40,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -830,6 +831,15 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
+    /// Offline owner only, between process calls with no concurrent rendering,
+    /// retap or rebuild. Copies a node's last complete block at graph precision;
+    /// out64 retains double samples and extra destination channels are silence.
+    /// False (and clears output) for an invalid node, stale/unprepared graph or
+    /// a frame count different from the last successful process call.
+    [[nodiscard]] bool copyNodeOutput(NodeId, const AudioIo&) const noexcept;
+    /// Cached arrival + node latency, at the same output point. No device call.
+    [[nodiscard]] std::optional<std::int64_t> outputLatencyOf(NodeId) const noexcept;
+
     // --- what happened -----------------------------------------------------
 
     [[nodiscard]] bool ok() const noexcept { return ok_; }
@@ -978,6 +988,7 @@ public:
     void permuteLevelsForTest(std::uint32_t seed);
 
 private:
+    void writeNodeOutput(NodeId, const AudioIo&) const noexcept;
     struct Slot {
         Node* node = nullptr;
         std::vector<NodeId> inputs;
@@ -1154,6 +1165,7 @@ private:
     std::int32_t latencyHeadroom_ = 8192;
     bool ok_ = false;
     bool prepared_ = false;
+    std::int32_t renderedFrames_ = 0;
     bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;

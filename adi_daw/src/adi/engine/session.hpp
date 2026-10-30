@@ -60,6 +60,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <map>
 #include <string>
@@ -98,6 +99,12 @@ struct DeviceRequest {
 /// headless case, and every row then becomes a placeholder.
 using DeviceLoader = std::function<std::unique_ptr<device::DeviceInstance>(
     const DeviceRequest&, std::string& error)>;
+
+enum class OfflineTap { PreFader, PostFader };
+struct OfflineOutput {
+    NodeId node = kInvalidNode;
+    std::int64_t latency = 0;
+};
 
 class Session final : public BlockProcessor {
 public:
@@ -200,6 +207,14 @@ public:
     [[nodiscard]] const SessionSpec& spec() const noexcept { return spec_; }
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
     [[nodiscard]] const std::string& error() const noexcept { return error_; }
+
+    /// Resolve a direct wet stem endpoint on an isolated offline session.
+    /// PostFader is before the parent's console encoder; PreFader is after
+    /// this track's effects (not dry). No graph mutation or extra DSP node.
+    /// Use currentGraph()->copyNodeOutput after each process, with no intervening
+    /// graph mutation. The result is invalidated by a rebuild or latency change.
+    /// Empty for missing/non-audio tracks, unsupported taps or no prepared graph.
+    [[nodiscard]] std::optional<OfflineOutput> offlineOutput(std::int64_t trackId, OfflineTap);
 
     /// Everything the model read, the plan found and the session decided,
     /// in that order. A project with problems still plays where it can.

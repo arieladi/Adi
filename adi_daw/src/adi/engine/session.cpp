@@ -449,6 +449,23 @@ Node* Session::tapFor(std::int64_t trackId, Tap tap) {
     return strip;
 }
 
+std::optional<OfflineOutput> Session::offlineOutput(std::int64_t trackId, OfflineTap point) {
+    if (point != OfflineTap::PreFader && point != OfflineTap::PostFader) return std::nullopt;
+    const auto track = std::find_if(model_.tracks.begin(), model_.tracks.end(),
+        [trackId](const rows::Track& t) { return t.id == trackId; });
+    if (track == model_.tracks.end() ||
+        (track->kind != "audio" && track->kind != "midi" && track->kind != "instrument" &&
+         track->kind != "group" && track->kind != "return" && track->kind != "master")) return std::nullopt;
+    auto* realized = graph_.current();
+    if (!realized) return std::nullopt;
+    auto& graph = realized->graph();
+    Node* node = tapFor(trackId, point == OfflineTap::PreFader ? Tap::PostFx : Tap::PostFader);
+    const NodeId id = node ? graph.find(*node) : realized->inputFor(trackId);
+    const auto latency = graph.outputLatencyOf(id);
+    if (!latency) return std::nullopt;
+    return OfflineOutput{id, *latency};
+}
+
 bool Session::rebuild() {
     error_.clear();
     if (!loaded_) {

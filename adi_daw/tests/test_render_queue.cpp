@@ -309,6 +309,137 @@ void coherentRevision() {
           "a failed job records its error and does not prevent later jobs");
     check(queue.retry(failed) && queue.update(failed,f.job("retry")),"failed jobs can be explicitly retried and corrected");
 }
+void addDevice(Fixture& f,int track,int id) {
+    f.store->db().exec("INSERT INTO device_chains(id,track_id) VALUES("+std::to_string(id)+","+std::to_string(track)+");"
+        "INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES("+std::to_string(id)+","+std::to_string(id)+",0,1,'Effect');");
+}
+void directStems() {
+    Fixture f;f.effect();f.parallel();addDevice(f,2,2);addDevice(f,9,9);
+    auto loader=[](const DeviceRequest& r,std::string&) {
+        auto d=std::make_unique<Delay>();
+        d->delay=r.device->id==1 ? 13 : (r.device->id==2 ? 77 : 29);
+        d->gain=r.device->id==1 ? 2 : (r.device->id==9 ? 4 : 1);
+        return d;
+    };
+    auto job=f.job("{track}-post");job.source.trackId=1;
+    check(matches(read(renderWav(job,loader),866),137,2),
+          "selected track uses its 13-sample latency, excludes the 77-sample sibling and downstream master FX");
+    f.store->db().exec("UPDATE tracks SET muted=1 WHERE id=1;");
+    job.nameTemplate="muted-post";
+    const auto post=read(renderWav(job,loader),866);
+    check(!post.empty() && std::all_of(post.begin(),post.end(),[](float x){return x==0;}),"post-fader stem follows the track mute");
+    job.source.tap=OfflineTap::PreFader;job.nameTemplate="prefader";job.session.precision=Precision::Float64;
+    check(matches(read(renderWav(job,loader),866),137,2),"pre-fader stem is wet but before strip mute/gain, at double graph precision");
+    check(renderMasterWav(job,loader).state==JobState::Failed,"legacy master entry point refuses a selected stem");
+    for(const int delay : {100,-100}) {
+        Fixture shifted;
+        shifted.store->db().exec("INSERT INTO mixer_strip(track_id,delay_samples) VALUES(1,"+std::to_string(delay)+");");
+        auto j=shifted.job("shifted");j.beginSample=31;j.endSample=301;j.source.trackId=1;
+        check(matches(read(renderWav(j,{}),270),31,1,delay),"direct stem preserves positive/negative track delay on the heard timeline");
+        j.nameTemplate="before-fader";j.source.tap=OfflineTap::PreFader;
+        check(matches(read(renderWav(j,{}),270),31),"pre-fader endpoint excludes the strip's track delay");
+    }
+}
+void groupStems() {
+    Fixture f;f.effect();f.parallel();
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(5,'group','Drums',3);"
+        "UPDATE tracks SET parent_id=5 WHERE id IN(1,2);");
+    addDevice(f,5,5);addDevice(f,9,9);
+    auto loader=[](const DeviceRequest& r,std::string&) {
+        auto d=std::make_unique<Delay>();d->delay=13;
+        d->gain=r.device->id==5 ? 2 : (r.device->id==9 ? 4 : 1);return d;
+    };
+    auto j=f.job("{group}-{track}");j.source.trackId=5;
+    const auto group=renderWav(j,loader);
+    check(group.output.filename()=="Drums-Drums.wav" && matches(read(group,866),137,4),
+          "group stem contains both children and group FX but excludes downstream master FX");
+    j.source.trackId=1;
+    const auto child=renderWav(j,loader);
+    check(child.output.filename()=="Drums-Audio.wav" && matches(read(child,866),137),
+          "child stem names its containing group without including that group's processing");
+
+    Fixture analog;
+    analog.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(5,'group','Analog',3);"
+        "UPDATE tracks SET parent_id=5 WHERE id=1;"
+        "INSERT INTO group_summing(track_id,enabled,flavor,drive_db) VALUES(5,1,'console9',18),(9,1,'console.la',12);");
+    auto selected=analog.job("plain-child");selected.source.trackId=1;
+    check(matches(read(renderWav(selected,{}),866),137),
+          "a child of analog-summing groups exports before the parent console encoder");
+    selected.source.trackId=0;selected.nameTemplate="colored-master";
+    const auto master=read(renderWav(selected,{}),866);
+    check(!master.empty() && !matches(master,137),"console coloration really runs elsewhere in the graph");
+}
+void multichannelStem() {
+    Fixture f;
+    std::vector<float> samples(6*4096);
+    for(int i=0;i<4096;++i) for(int c=0;c<6;++c) samples[static_cast<std::size_t>(6*i+c)]=source(i,c);
+    audio::WavWriter wav(f.dir.path()/"audio.wav",48000,6,audio::WavFormat::Float32);
+    wav.write(samples.data(),4096);wav.close();
+    auto j=f.job("six-channels");j.source.trackId=1;j.session.channels=6;j.session.precision=Precision::Float64;
+    const auto result=renderWav(j,{});
+    check(result.state==JobState::Completed,result.error.empty() ? "multichannel stem completes" : result.error.c_str());
+    if(result.state!=JobState::Completed)return;
+    audio::WavReader reader(result.output);
+    check(reader.channels()==6 && reader.frames()==866,"stem WAV retains six channels and exact length");
+    std::vector<float> decoded(6*866);reader.read(decoded.data(),866);
+    bool exact=true;
+    for(int i=0;i<866;++i)for(int c=0;c<6;++c) exact=exact && decoded[static_cast<std::size_t>(6*i+c)]==source(137+i,c);
+    check(exact,"every multichannel stem sample survives planar capture and interleaving");
+}
+void regionStems() {
+    Fixture f;
+    f.store->db().exec("INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(2,480480,60);"
+        "INSERT INTO markers(id,time_base,pos_ticks,length_ticks,name,kind) VALUES(1,0,120120,480480,'Old','cycle');");
+    auto j=f.job("{region}-{track}-{bpm}");j.source.trackId=1;j.regionId=1;j.beginSample=0;j.endSample=0;
+    Queue q;q.add(j);
+    f.store->db().exec("UPDATE markers SET pos_ticks=240240,name='Changed' WHERE id=1;");
+    q.run();const auto result=q.snapshot()[0].result;
+    check(result.output.filename()=="Changed-Audio-120.0.wav" && matches(read(result,3000),1000),
+          "region bounds/names resolve at render time; absolute end integrates the tempo change");
+    f.store->db().exec("INSERT INTO markers(id,time_base,pos_ns,length_ns,name,kind) VALUES(2,1,2000000,7000000,'Clock','cycle');");
+    j.regionId=2;
+    check(matches(read(renderWav(j,{}),336),96),"nanosecond region bounds resolve to exact output samples");
+    f.store->db().exec("UPDATE markers SET pos_ns=10001,length_ns=10001,name='Fraction' WHERE id=2;");
+    check(matches(read(renderWav(j,{}),1),0),"absolute end is rounded independently, not duration rounded then added");
+    j.regionId=900;
+    check(renderWav(j,{}).state==JobState::Failed,"missing region is refused");
+    f.store->db().exec("UPDATE markers SET kind='position' WHERE id=2;");j.regionId=2;
+    check(renderWav(j,{}).state==JobState::Failed,"a position marker is not silently treated as a region");
+    f.store->db().exec("UPDATE markers SET kind='cycle',length_ns=NULL WHERE id=2;");
+    check(renderWav(j,{}).state==JobState::Failed,"a region without length is refused");
+    f.store->db().exec("UPDATE markers SET pos_ns=9223372036854775800,length_ns=20 WHERE id=2;");
+    check(renderWav(j,{}).state==JobState::Failed,"overflowing region end is refused before any render");
+    f.store->db().exec("UPDATE markers SET pos_ns=0,length_ns=1 WHERE id=2;");
+    check(renderWav(j,{}).state==JobState::Failed,"sub-sample region rounded empty is refused");
+}
+void returnStem() {
+    Fixture f;
+    std::vector<float> click(8192,0.0f);click[200]=click[201]=1.0f;
+    audio::WavWriter wave(f.dir.path()/"audio.wav",48000,2,audio::WavFormat::Float32);
+    wave.write(click.data(),4096);wave.close();
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(4,'return','Echoes',4);"
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,gain_db,enabled) VALUES"
+        "(11,'track',1,'track',4,'send',0,1),(12,'track',4,'track',4,'send',-6.0206,1);");
+    auto j=f.job("return");j.source.trackId=4;j.beginSample=0;j.endSample=300;
+    const auto samples=read(renderWav(j,{}),300);
+    bool correct=!samples.empty();
+    for(std::size_t i=0;i<samples.size()/2;++i) {
+        const double expected=i>=100 && (i-100)%64==0 ? std::pow(0.5,static_cast<double>((i-100)/64)) : 0.0;
+        correct=correct && std::abs(samples[2*i]-expected)<1e-7 && std::abs(samples[2*i+1]-expected)<1e-7;
+    }
+    check(correct,"return stem keeps its unexported sender and feedback echoes without including the dry master mix");
+}
+void invalidStemSources() {
+    Fixture f;auto j=f.job();
+    f.store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(5,'vca','VCA',5),(6,'marker','Markers',6);");
+    for(const int track : {5,6,999}) {
+        j.source.trackId=track;
+        check(renderWav(j,{}).state==JobState::Failed && f.noStage(),"missing and non-audio sources fail without files");
+    }
+    j.source.trackId=1;j.source.tap=static_cast<OfflineTap>(77);
+    check(renderWav(j,{}).state==JobState::Failed,"unsupported capture point is rejected");
+}
+
 void namesAndValidation() {
     NameContext c{"../A{track}","B/C","G","90",3};
     check(resolveName("{project}-{track}-{group}-{bpm}-{counter}",c)==".._A{track}-B_C-G-90-3","metadata cannot inject paths or more placeholders");
@@ -330,7 +461,7 @@ void namesAndValidation() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); namesAndValidation();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); namesAndValidation();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

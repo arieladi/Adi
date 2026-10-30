@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -13,8 +14,12 @@ using JobId = std::uint64_t;
 enum class JobState { Pending, Running, Completed, Failed, Cancelled };
 
 // ADR-0071/0205: application job state, never project operations. This first
-// runner exports the heard master as Float32 WAV. Other encodings, dither,
-// normalization and stem sources require their own explicit runner support.
+// runner exports direct wet sources as Float32 WAV. Other encodings, dither,
+// normalization, dry processing and isolated through-master stems need support.
+struct Source {
+    std::int64_t trackId = 0; // zero selects the project's master at render start
+    engine::OfflineTap tap = engine::OfflineTap::PostFader;
+};
 struct Job {
     std::filesystem::path project;
     std::filesystem::path directory;
@@ -22,6 +27,10 @@ struct Job {
     std::int64_t beginSample = 0;
     std::int64_t endSample = 0; // exclusive, at session.sampleRate
     engine::SessionSpec session;
+    Source source;
+    // A single cycle marker overrides begin/end, resolved when the job starts.
+    // Independent jobs are not ADR-0070's continuous gapless region batch.
+    std::optional<std::int64_t> regionId;
 };
 struct Result {
     JobState state = JobState::Pending;
@@ -33,6 +42,7 @@ struct Entry { JobId id = 0; Job job; Result result; };
 struct NameContext {
     std::string project, track, group, bpm;
     std::uint64_t counter = 1;
+    std::string region = "";
 };
 // Strict brace expansion, {{ / }} for literals; returns one portable filename
 // component without an extension. Unknown/malformed tokens and empty names throw.
@@ -48,6 +58,9 @@ struct Control {
 [[nodiscard]] Result renderMasterWav(Job, engine::DeviceLoader,
                                     Control = {}, JobId = 0,
                                     std::uint64_t counter = 1);
+[[nodiscard]] Result renderWav(Job, engine::DeviceLoader,
+                              Control = {}, JobId = 0,
+                              std::uint64_t counter = 1);
 
 // Single-owner synchronous queue. The caller chooses its execution thread;
 // snapshots are independent values for posting to a UI. No callback runs on an
