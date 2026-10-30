@@ -1,0 +1,19 @@
+{
+  "type": "circular_reveal",
+  "frames": 12,
+  "center": [
+    640,
+    315
+  ],
+  "radius_normalizer": 735,
+  "feather_multiplier": 12,
+  "radius_end": 1.1,
+  "outgoing": "shot02take02 deliveredframe80 held only under transition mask",
+  "incoming": "originalK003 raw motion crop8px top/bottom",
+  "digital_zoom": false,
+  "timeline_frames": [
+    363,
+    444
+  ],
+  "note": "Keep moving incoming clip throughout; exact81frames. Whole-sequence assembly must apply this recipe."
+}
