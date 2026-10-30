@@ -1,6 +1,6 @@
 {
-  "as_of_utc": "2026-10-30T10:51:49.542863+00:00",
-  "owner": "Codex owns user-requested Cosmic original-shot audit and targeted repairs; other Claude work and good takes preserved. Quantum complete.",
+  "as_of_utc": "2026-10-30T10:57:29.966496+00:00",
+  "owner": "Codex owns user-authorized sequential Cosmic rebuild from beginning; preserve all original good takes and Claude work. Quantum complete.",
   "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected). Codex deleted both the completed Avastha monitor and obsolete rejected Cosmic120 pilot monitor on 2026-10-29; Claude Cosmic work untouched.",
   "cosmic_rain": {
     "scope": "User approved the 16s test on 2026-10-27 and asked for the ENTIRE track to be rendered with the same method.",
@@ -53,7 +53,7 @@
       "output": "D:/AvasthaAI/Projects/Cosmic Rain/full-track/Cosmic Rain - REWORK 2 - full track keyframe edit - with music.mp4",
       "verified": "11119 frames, 1280x720, 24fps, 463.291667s; remote full -xerror decode clean; local and remote SHA256 b7b1cdd68eb5672aa113e3e40be022dd54ece7f5e4f6b8f23e757aa815548f5e. Original music normal speed, AAC320k; no added 15ms edge fade. All source PNGs checked before assembly.",
       "review": "Inspected temporal samples across opening, story beats and ending. Illustrated subjects are readable; deliberate cuts remain abrupt, opening switches style at 8s, and some local distortions remain (brain at 59s, face at390s). Not a claim that all frozen passages or visual defects are solved. rework2-review.jpg and rework2-motion-samples.json saved locally.",
-      "next": "Latest user correction: original approved method works and many scenes perfect. Audit original draft1 plan_v2 scene-by-scene and adjacent joins; preserve good takes, target only static/weak-motion/incoherent scenes. Strong persistent visual acceptance, not wholesale rerender or another technique demo. Retry failed repairs and review in original context before advancing.",
+      "next": "Superseded by user-authorized sequential rebuild from opening; reuse reviewed good shots, preserve existing drafts. See rebuild.",
       "rework_audit": {
         "original_push_shots": 32,
         "rework_push_shots": 236,
@@ -75,12 +75,23 @@
       ]
     },
     "connected_test": {
-      "status": "Shot1take1 already running; let finish as optional candidate. Automatic continuation to shots2/3 revoked by latest scope correction. Worker naturally stops for review.",
+      "status": "Firstshot allowed to finish; no continuation. Rebuild from beginning now primary task; optional candidate to reuse later.",
       "root": "D:/AvasthaAI/CosmicConnectedTest-20261030",
       "local": "D:/AvasthaAI/Projects/Cosmic Rain/connected-test-20261030",
       "scope": "Optional single-shot candidate only; main task original fulltrack quality audit and targeted repairs with same approved technique.",
       "worker": "render_one.py SHOT TAKE; never duplicate; inspect status, receipts and Comfy8192 first. generated.json is NOT approval. Next scene reads previous shot accepted.json, visual_review_passed, real_subject_motion, continuity_passed, continuation_frame. Use last delivered frame index79 for continuity; output80frames from81 raw.",
       "policy": "Review raw sequential frames/clip and neighbours. Reject static subjects/camera-only change/noise/anatomy drift. Retry with failure-specific prompt/settings adjustments in new take directories, up to20 before reassessing method. Never automatically approve based on frame differences alone. Preserve existing full-track good scenes and both drafts. No paid calls/downloads."
+    },
+    "rebuild": {
+      "status": "User explicitly authorized wholetrack sequential rebuild from opening 2026-10-30. First shot launcher waits existing connected test only; never a blind wholetrack queue.",
+      "root": "D:/AvasthaAI/CosmicRebuild-20261030",
+      "local": "D:/AvasthaAI/Projects/Cosmic Rain/rebuild-20261030",
+      "code": "tools/video-production/cosmic-rebuild",
+      "scope": "Preserve original0-8sec; same illustrated style/story; recurring RainKeeper, elders, silverrain, goldring/clock. More real internal movement; coherent action/identity/environment across psychedelic scenes. Original plan245slots is timing/story scaffold, NOT approved shots.",
+      "next": "Monitor first-launch.lock, launch-status.json, status.json and receipts; firstshot1take1 uses exact openingframe191,93raw to90delivered at24fps. Review raw and openingjoin. Do not launch shot2 until shot1 accepted. Existing drumming test remains optional candidate only.",
+      "acceptance": "Use explicit shotNN/accepted.json visual_review_passed real_subject_motion continuity_passed alltrue plus exact continuation_frame generated.frames[deliver_frames-1], selected take and evidence. Camera-motion measurements screening only. Review real action/anatomy/style/identity/energy and neighbour connection. Original good takes can be reused after contextreview; retain oldfiles. For alternatekeyframe require reviewed continuity design and explicit per-shot source support before launch; no blindrecursive245shotchain.",
+      "retry": "New take on failure with documented specific changed approach; no hard retry ceiling but repeated same failure mandates method reassessment, never endless identical retries. No paidcalls/downloads. Review each30sec accumulated passage/chapters/full final.",
+      "worker": "render_one.py shot take; generates ONE candidate then stops. No digital zoom/speedup/mirror fake motion. start_first_when_free.py is already launched, do not duplicate."
     }
   },
   "avastha": {

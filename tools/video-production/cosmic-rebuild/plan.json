@@ -1,0 +1,4175 @@
+{
+  "track": "D:/AvasthaAI/CosmicRain-20261025/inputs/track.wav",
+  "fps": 24,
+  "start_frame": 192,
+  "total_frames": 11119,
+  "opening_frames": 192,
+  "style": "psychedelic psytrance poster illustration, visionary art, bold clean ink outlines, cel shading, vivid saturated silver, cyan, deep ultramarine and gold palette with magenta accents, glowing highlights, high contrast, intricate ornamental detail, centered composition",
+  "shots": [
+    {
+      "index": 1,
+      "id": "K001",
+      "original_take": "K001",
+      "scene": "K001",
+      "subject": "a vast black hole with a blazing golden accretion ring in deep space, silver rain falling into it from above like a waterfall of light",
+      "frames": [
+        192,
+        282
+      ],
+      "deliver_frames": 90,
+      "length": 93,
+      "prompt": "Continue the same black hole and silver rain from the opening frame. Individual silver streams flow continuously into the gold accretion ring, curl around it, separate and visibly spiral inward. Gold filaments circulate around the dark centre while nearby raindrops fall at different speeds and ripples travel along the streams. Keep the same ring centre, size, orientation and star field so the opening flows into this shot. Camera remains steady; movement comes from flowing matter, not magnification. Rich illustrated silver cyan gold detail, coherent smooth evolution, no sudden replacement.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "opening last displayed frame191"
+    },
+    {
+      "index": 2,
+      "id": "K002",
+      "original_take": "K002",
+      "scene": "K002",
+      "subject": "silver raindrops falling through deep space past the viewer, each raindrop reflecting a tiny spiral galaxy",
+      "frames": [
+        282,
+        363
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "Raindrops fall steadily past the camera, the galaxies inside them glitter and turn.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 3,
+      "id": "K003",
+      "original_take": "K003",
+      "scene": "K003",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks floating asleep in deep space, curled gently, her silver hair spreading out like a nebula, eyes closed",
+      "frames": [
+        363,
+        444
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "She floats and turns slowly, her hair drifts like a nebula, raindrops orbit her.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 4,
+      "id": "K004",
+      "original_take": "K004",
+      "scene": "K004",
+      "subject": "towering rain clouds made of stars and crystal, soft lightning of light glowing inside them",
+      "frames": [
+        444,
+        524
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The star clouds swell and glow, soft lightning flickers inside, rain begins to fall.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 5,
+      "id": "K005",
+      "original_take": "K005",
+      "scene": "K005",
+      "subject": "one giant crystal raindrop falling toward a dark blue ocean planet, the planet glowing below",
+      "frames": [
+        524,
+        605
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The giant raindrop falls toward the ocean planet, the camera follows it down.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 6,
+      "id": "K006",
+      "original_take": "K006",
+      "scene": "K006",
+      "subject": "a crown-shaped splash rising from a dark ocean where a raindrop landed, concentric glowing rings spreading",
+      "frames": [
+        605,
+        685
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The crown splash rises and opens, rings of light spread outward across the water.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 7,
+      "id": "K007",
+      "original_take": "K007",
+      "scene": "K007",
+      "subject": "top-down view of glowing concentric ripples on a dark ocean forming an ornate mandala",
+      "frames": [
+        685,
+        726
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "Ripples expand outward and the mandala slowly turns.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 8,
+      "id": "K008",
+      "original_take": "K008",
+      "scene": "K008",
+      "subject": "underwater view looking up at rain hitting the ocean surface, golden light rays piercing the deep blue water",
+      "frames": [
+        726,
+        806
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "Raindrops hit the surface above, light rays sway, bubbles rise toward the camera.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 9,
+      "id": "K009",
+      "original_take": "K009",
+      "scene": "K009",
+      "subject": "five glowing jellyfish rising slowly side by side in a row in dark deep water, long luminous tentacles",
+      "frames": [
+        806,
+        887
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The jellyfish pulse and rise together, tentacles trailing gracefully.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 10,
+      "id": "K010",
+      "original_take": "K010",
+      "scene": "K010",
+      "subject": "an ancient crystal temple on the ocean floor, glowing pillars, a beam of light from above",
+      "frames": [
+        887,
+        967
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The camera glides toward the temple, the light beam brightens, particles drift.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 11,
+      "id": "K011",
+      "original_take": "K011",
+      "scene": "K011",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks face just beneath the water surface, eyes closed, tiny bubbles around her lips",
+      "frames": [
+        967,
+        1048
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "Water ripples over her face, bubbles rise, her hair waves gently.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 12,
+      "id": "K012",
+      "original_take": "K012",
+      "scene": "K012",
+      "subject": "a spiral of glowing raindrops forming around a small bright black hole star",
+      "frames": [
+        1048,
+        1128
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The spiral of raindrops turns faster and tightens around the star.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 13,
+      "id": "TS01",
+      "original_take": "S01b",
+      "scene": "RainKeeper",
+      "subject": "The serene cosmic goddess with closed eyes, silver raindrops slide down her face and fall around her, her silver hair flows in a cosmic wind, the golden ring behind her slowly glows brighter, the camera slowly pushes in toward her face. Smooth deliberate motion, readable forms.",
+      "frames": [
+        1128,
+        1209
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The serene cosmic goddess with closed eyes, silver raindrops slide down her face and fall around her, her silver hair flows in a cosmic wind, the golden ring behind her slowly glows brighter, the camera slowly pushes in toward her face. Smooth deliberate motion, readable forms.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 14,
+      "id": "K013",
+      "original_take": "K013",
+      "scene": "K013",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes, seen from the front around a fire, rain falling, cosmic sky",
+      "frames": [
+        1209,
+        1249
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The elders strike their drums together in a steady rhythm, firelight flickering, rain falling.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 15,
+      "id": "K014",
+      "original_take": "K014",
+      "scene": "K014",
+      "subject": "close-up of an elder's weathered hands raised above a glowing frame drum, dust and raindrops in the air",
+      "frames": [
+        1249,
+        1289
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The hands strike the glowing drum and sparks of light fly up.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 16,
+      "id": "K015a",
+      "original_take": "K015a",
+      "scene": "K015",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes joined by women and children with painted faces and glowing beads, everyone drumming together in a big circle, glowing drums, rain and cosmic light",
+      "frames": [
+        1289,
+        1330
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "Everyone drums hard together, the women and children join in with joy, light bursts from every drum hit.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 17,
+      "id": "K015b",
+      "original_take": "K015b",
+      "scene": "K015",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes joined by women and children with painted faces and glowing beads, everyone drumming together in a big circle, glowing drums, rain and cosmic light",
+      "frames": [
+        1330,
+        1350
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "Everyone drums hard together, the women and children join in with joy, light bursts from every drum hit. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 18,
+      "id": "K016",
+      "original_take": "K016",
+      "scene": "K016",
+      "subject": "a giant ornate golden clock face formed from the circle of drummers seen from above, the drums are the numerals, glowing clock hands",
+      "frames": [
+        1350,
+        1390
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The clock hands sweep around and everything ticks into place.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 19,
+      "id": "K017",
+      "original_take": "K017",
+      "scene": "K017",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes and women and children with painted faces and glowing beads drumming together in a circle, calm and glowing",
+      "frames": [
+        1390,
+        1410
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "They keep drumming, relaxed and steady.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 20,
+      "id": "K018",
+      "original_take": "K018",
+      "scene": "K018",
+      "subject": "a glowing human brain made of light with neurons firing, electric cyan and gold synapses, black space",
+      "frames": [
+        1410,
+        1451
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The camera flies fast through the firing neurons toward a bright light.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 21,
+      "id": "K019a",
+      "original_take": "K019a",
+      "scene": "K019",
+      "subject": "glowing neurons turning into streams of silver rain falling over a dark ocean",
+      "frames": [
+        1451,
+        1491
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The neuron lights stretch into rain and pour down toward the ocean.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 22,
+      "id": "K019b",
+      "original_take": "K019b",
+      "scene": "K019",
+      "subject": "glowing neurons turning into streams of silver rain falling over a dark ocean",
+      "frames": [
+        1491,
+        1511
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "The neuron lights stretch into rain and pour down toward the ocean. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 23,
+      "id": "K020",
+      "original_take": "K020",
+      "scene": "K020",
+      "subject": "a fast spinning golden clock face with glowing hands on black",
+      "frames": [
+        1511,
+        1531
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "The clock hands spin very fast.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 24,
+      "id": "K021a",
+      "original_take": "K021a",
+      "scene": "K021",
+      "subject": "a giant whale made of starlight leaping out of a dark glowing ocean, water streaming off it",
+      "frames": [
+        1531,
+        1571
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The star whale leaps up out of the ocean, water and stars spray outward.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 25,
+      "id": "K021b",
+      "original_take": "K021b",
+      "scene": "K021",
+      "subject": "a giant whale made of starlight leaping out of a dark glowing ocean, water streaming off it",
+      "frames": [
+        1571,
+        1612
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The star whale leaps up out of the ocean, water and stars spray outward. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 26,
+      "id": "K022a",
+      "original_take": "K022a",
+      "scene": "K022",
+      "subject": "seven identical cute glowing raindrop spirits with small faces dancing in a straight row on a dark mirror ocean",
+      "frames": [
+        1612,
+        1652
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The raindrop spirits bounce and step in sync, arms swinging, ripples under their feet.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 27,
+      "id": "K022b",
+      "original_take": "K022b",
+      "scene": "K022",
+      "subject": "seven identical cute glowing raindrop spirits with small faces dancing in a straight row on a dark mirror ocean",
+      "frames": [
+        1652,
+        1692
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The raindrop spirits bounce and step in sync, arms swinging, ripples under their feet. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 28,
+      "id": "K023a",
+      "original_take": "K023a",
+      "scene": "K023",
+      "subject": "a huge ocean wave curling over into a glowing tunnel of silver light",
+      "frames": [
+        1692,
+        1733
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The camera surfs fast through the curling wave tunnel toward the light.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 29,
+      "id": "K023b",
+      "original_take": "K023b",
+      "scene": "K023",
+      "subject": "a huge ocean wave curling over into a glowing tunnel of silver light",
+      "frames": [
+        1733,
+        1773
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera surfs fast through the curling wave tunnel toward the light. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 30,
+      "id": "K024a",
+      "original_take": "K024a",
+      "scene": "K024",
+      "subject": "a giant octopus made of glowing water with golden rings on its tentacles, perfectly symmetrical, facing the viewer",
+      "frames": [
+        1773,
+        1813
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The octopus spreads its tentacles outward in a powerful pulse.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 31,
+      "id": "K024b",
+      "original_take": "K024b",
+      "scene": "K024",
+      "subject": "a giant octopus made of glowing water with golden rings on its tentacles, perfectly symmetrical, facing the viewer",
+      "frames": [
+        1813,
+        1853
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The octopus spreads its tentacles outward in a powerful pulse. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 32,
+      "id": "K025a",
+      "original_take": "K025a",
+      "scene": "K025",
+      "subject": "top-down view of a bioluminescent coral reef forming a glowing mandala",
+      "frames": [
+        1853,
+        1894
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The coral mandala pulses with light and slowly rotates.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 33,
+      "id": "K025b",
+      "original_take": "K025b",
+      "scene": "K025",
+      "subject": "top-down view of a bioluminescent coral reef forming a glowing mandala",
+      "frames": [
+        1894,
+        1934
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The coral mandala pulses with light and slowly rotates. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 34,
+      "id": "K026a",
+      "original_take": "K026a",
+      "scene": "K026",
+      "subject": "a silver sea dragon spiraling upward out of the ocean toward the black hole",
+      "frames": [
+        1934,
+        1974
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The sea dragon spirals upward fast, water trailing from its scales.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 35,
+      "id": "K026b",
+      "original_take": "K026b",
+      "scene": "K026",
+      "subject": "a silver sea dragon spiraling upward out of the ocean toward the black hole",
+      "frames": [
+        1974,
+        2015
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The sea dragon spirals upward fast, water trailing from its scales. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 36,
+      "id": "K027a",
+      "original_take": "K027a",
+      "scene": "K027",
+      "subject": "thousands of raindrops frozen in mid-air forming a perfect glowing sphere",
+      "frames": [
+        2015,
+        2055
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The sphere of raindrops spins and expands outward.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 37,
+      "id": "K027b",
+      "original_take": "K027b",
+      "scene": "K027",
+      "subject": "thousands of raindrops frozen in mid-air forming a perfect glowing sphere",
+      "frames": [
+        2055,
+        2095
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The sphere of raindrops spins and expands outward. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 38,
+      "id": "K028a",
+      "original_take": "K028a",
+      "scene": "K028",
+      "subject": "a formation of manta rays made of light gliding toward the viewer over a dark ocean",
+      "frames": [
+        2095,
+        2135
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The manta rays glide forward in formation, wings rippling.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 39,
+      "id": "K028b",
+      "original_take": "K028b",
+      "scene": "K028",
+      "subject": "a formation of manta rays made of light gliding toward the viewer over a dark ocean",
+      "frames": [
+        2135,
+        2176
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The manta rays glide forward in formation, wings rippling. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 40,
+      "id": "K029a",
+      "original_take": "K029a",
+      "scene": "K029",
+      "subject": "the ocean surface splitting open down the middle to reveal a glowing galaxy beneath",
+      "frames": [
+        2176,
+        2216
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The ocean parts wider and the galaxy below blazes brighter.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 41,
+      "id": "K029b",
+      "original_take": "K029b",
+      "scene": "K029",
+      "subject": "the ocean surface splitting open down the middle to reveal a glowing galaxy beneath",
+      "frames": [
+        2216,
+        2256
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The ocean parts wider and the galaxy below blazes brighter. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 42,
+      "id": "K030a",
+      "original_take": "K030a",
+      "scene": "K030",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks rising out of the ocean up to her shoulders, water streaming from her silver hair, eyes closed",
+      "frames": [
+        2256,
+        2296
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "She rises from the water, water pours from her hair, light spreads around her.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 43,
+      "id": "K030b",
+      "original_take": "K030b",
+      "scene": "K030",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks rising out of the ocean up to her shoulders, water streaming from her silver hair, eyes closed",
+      "frames": [
+        2296,
+        2337
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "She rises from the water, water pours from her hair, light spreads around her. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 44,
+      "id": "K031a",
+      "original_take": "K031a",
+      "scene": "K031",
+      "subject": "a giant golden nautilus shell with crystal chambers glowing, floating above the ocean",
+      "frames": [
+        2337,
+        2377
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The nautilus rotates and its chambers light up one after another.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 45,
+      "id": "K031b",
+      "original_take": "K031b",
+      "scene": "K031",
+      "subject": "a giant golden nautilus shell with crystal chambers glowing, floating above the ocean",
+      "frames": [
+        2377,
+        2417
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The nautilus rotates and its chambers light up one after another. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 46,
+      "id": "K032a",
+      "original_take": "K032a",
+      "scene": "K032",
+      "subject": "a waterfall falling upward from the ocean into the black hole with a golden ring",
+      "frames": [
+        2417,
+        2458
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The water rushes upward into the black hole, the golden ring flares.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 47,
+      "id": "K032b",
+      "original_take": "K032b",
+      "scene": "K032",
+      "subject": "a waterfall falling upward from the ocean into the black hole with a golden ring",
+      "frames": [
+        2458,
+        2498
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The water rushes upward into the black hole, the golden ring flares. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 48,
+      "id": "K033",
+      "original_take": "K033",
+      "scene": "K033",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming in the rain at night under a glowing cosmic sky",
+      "frames": [
+        2498,
+        2538
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The elders drum steadily, building up, rain falling around them.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 49,
+      "id": "K034",
+      "original_take": "K034",
+      "scene": "K034",
+      "subject": "close-up of glowing drums being struck, raindrops bouncing on the drum skins",
+      "frames": [
+        2538,
+        2578
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Hands strike the drums faster, raindrops jump off the drum skins.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 50,
+      "id": "K035a",
+      "original_take": "K035a",
+      "scene": "K035",
+      "subject": "a glowing alien ship of light descending from a cosmic sky above a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes",
+      "frames": [
+        2578,
+        2619
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The ship of light descends slowly over the drummers, beams of light sweep the circle.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 51,
+      "id": "K035b",
+      "original_take": "K035b",
+      "scene": "K035",
+      "subject": "a glowing alien ship of light descending from a cosmic sky above a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes",
+      "frames": [
+        2619,
+        2659
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The ship of light descends slowly over the drummers, beams of light sweep the circle. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 52,
+      "id": "K036a",
+      "original_take": "K036a",
+      "scene": "K036",
+      "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies standing behind impossible floating crystal synthesizers with hundreds of glowing keys and holographic waveforms",
+      "frames": [
+        2659,
+        2699
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The aliens play the glowing synthesizers, the waveforms pulse in fast steady rhythm.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 53,
+      "id": "K036b",
+      "original_take": "K036b",
+      "scene": "K036",
+      "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies standing behind impossible floating crystal synthesizers with hundreds of glowing keys and holographic waveforms",
+      "frames": [
+        2699,
+        2740
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The aliens play the glowing synthesizers, the waveforms pulse in fast steady rhythm. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 54,
+      "id": "K037a",
+      "original_take": "K037a",
+      "scene": "K037",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming in front while tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies play floating crystal synthesizers behind them, cosmic sky",
+      "frames": [
+        2740,
+        2780
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The elders drum and the aliens play together, light pulses on every beat.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 55,
+      "id": "K037b",
+      "original_take": "K037b",
+      "scene": "K037",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming in front while tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies play floating crystal synthesizers behind them, cosmic sky",
+      "frames": [
+        2780,
+        2820
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The elders drum and the aliens play together, light pulses on every beat. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 56,
+      "id": "K038a",
+      "original_take": "K038a",
+      "scene": "K038",
+      "subject": "close-up of an alien synthesizer made of light, glowing keys and spinning holographic waveform rings",
+      "frames": [
+        2820,
+        2860
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The holographic waveforms spin and pulse in fast sixteenth-note rhythm.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 57,
+      "id": "K038b",
+      "original_take": "K038b",
+      "scene": "K038",
+      "subject": "close-up of an alien synthesizer made of light, glowing keys and spinning holographic waveform rings",
+      "frames": [
+        2860,
+        2901
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The holographic waveforms spin and pulse in fast sixteenth-note rhythm. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 58,
+      "id": "K039a",
+      "original_take": "K039a",
+      "scene": "K039",
+      "subject": "women and children with painted faces and glowing beads dancing joyfully around the drum circle while tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies play glowing synths and a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drum",
+      "frames": [
+        2901,
+        2941
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The children and women dance, the elders drum, the aliens play, light everywhere.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 59,
+      "id": "K039b",
+      "original_take": "K039b",
+      "scene": "K039",
+      "subject": "women and children with painted faces and glowing beads dancing joyfully around the drum circle while tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies play glowing synths and a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drum",
+      "frames": [
+        2941,
+        2981
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The children and women dance, the elders drum, the aliens play, light everywhere. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 60,
+      "id": "K040a",
+      "original_take": "K040a",
+      "scene": "K040",
+      "subject": "rivers of glowing sound waves flowing from alien synthesizers up into the sky",
+      "frames": [
+        2981,
+        3021
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The sound waves ripple upward in fast rhythmic pulses.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 61,
+      "id": "K040b",
+      "original_take": "K040b",
+      "scene": "K040",
+      "subject": "rivers of glowing sound waves flowing from alien synthesizers up into the sky",
+      "frames": [
+        3021,
+        3062
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The sound waves ripple upward in fast rhythmic pulses. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 62,
+      "id": "K041a",
+      "original_take": "K041a",
+      "scene": "K041",
+      "subject": "an endless cathedral corridor of crystal arches with silver rain falling inside",
+      "frames": [
+        3062,
+        3102
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera flies fast down the crystal corridor through the rain.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 63,
+      "id": "K041b",
+      "original_take": "K041b",
+      "scene": "K041",
+      "subject": "an endless cathedral corridor of crystal arches with silver rain falling inside",
+      "frames": [
+        3102,
+        3142
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera flies fast down the crystal corridor through the rain. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 64,
+      "id": "K042a",
+      "original_take": "K042a",
+      "scene": "K042",
+      "subject": "a stained glass window of a rain goddess glowing in a dark cathedral",
+      "frames": [
+        3142,
+        3183
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The stained glass glows brighter and shatters outward into light.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 65,
+      "id": "K042b",
+      "original_take": "K042b",
+      "scene": "K042",
+      "subject": "a stained glass window of a rain goddess glowing in a dark cathedral",
+      "frames": [
+        3183,
+        3223
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The stained glass glows brighter and shatters outward into light. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 66,
+      "id": "K043a",
+      "original_take": "K043a",
+      "scene": "K043",
+      "subject": "prisms splitting beams of light into rainbows of cyan, gold and magenta",
+      "frames": [
+        3223,
+        3263
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The prisms rotate and the light beams sweep around.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 67,
+      "id": "K043b",
+      "original_take": "K043b",
+      "scene": "K043",
+      "subject": "prisms splitting beams of light into rainbows of cyan, gold and magenta",
+      "frames": [
+        3263,
+        3303
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The prisms rotate and the light beams sweep around. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 68,
+      "id": "K044a",
+      "original_take": "K044a",
+      "scene": "K044",
+      "subject": "a staircase of water spiraling upward into the stars, impossible geometry",
+      "frames": [
+        3303,
+        3344
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The camera climbs fast up the spiral staircase of water.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 69,
+      "id": "K044b",
+      "original_take": "K044b",
+      "scene": "K044",
+      "subject": "a staircase of water spiraling upward into the stars, impossible geometry",
+      "frames": [
+        3344,
+        3384
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera climbs fast up the spiral staircase of water. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 70,
+      "id": "K045a",
+      "original_take": "K045a",
+      "scene": "K045",
+      "subject": "giant golden temple doors opening onto a blazing starfield",
+      "frames": [
+        3384,
+        3424
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The temple doors swing open and starlight floods out.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 71,
+      "id": "K045b",
+      "original_take": "K045b",
+      "scene": "K045",
+      "subject": "giant golden temple doors opening onto a blazing starfield",
+      "frames": [
+        3424,
+        3465
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The temple doors swing open and starlight floods out. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 72,
+      "id": "K046a",
+      "original_take": "K046a",
+      "scene": "K046",
+      "subject": "an owl made of crystal with golden eyes, wings spread wide, facing the viewer",
+      "frames": [
+        3465,
+        3505
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The crystal owl beats its wings and its eyes flare.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 73,
+      "id": "K046b",
+      "original_take": "K046b",
+      "scene": "K046",
+      "subject": "an owl made of crystal with golden eyes, wings spread wide, facing the viewer",
+      "frames": [
+        3505,
+        3545
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The crystal owl beats its wings and its eyes flare. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 74,
+      "id": "K047a",
+      "original_take": "K047a",
+      "scene": "K047",
+      "subject": "a diamond eye inside a golden pyramid radiating light beams",
+      "frames": [
+        3545,
+        3585
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The eye opens and the light beams pulse outward.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 75,
+      "id": "K047b",
+      "original_take": "K047b",
+      "scene": "K047",
+      "subject": "a diamond eye inside a golden pyramid radiating light beams",
+      "frames": [
+        3585,
+        3626
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The eye opens and the light beams pulse outward. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 76,
+      "id": "K048",
+      "original_take": "K048",
+      "scene": "K048",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks meditating on a floating rock under soft rain, eyes closed, hands resting in her lap",
+      "frames": [
+        3626,
+        3706
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "Rain falls softly around her, her hair drifts, the rock turns slowly.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 77,
+      "id": "K049",
+      "original_take": "K049",
+      "scene": "K049",
+      "subject": "a giant ornate golden clock slowly appearing out of darkness and rain, glowing hands",
+      "frames": [
+        3706,
+        3787
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The clock slowly emerges and its hands begin to move, pulling the camera toward it.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 78,
+      "id": "K050",
+      "original_take": "K050",
+      "scene": "K050",
+      "subject": "flying toward the center of a giant golden clock, the hands spinning around the camera",
+      "frames": [
+        3787,
+        3827
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The clock hands spin faster as the camera is pulled into the center.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 79,
+      "id": "K051",
+      "original_take": "K051",
+      "scene": "K051",
+      "subject": "looking down through the glass center of a golden clock at a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes far below",
+      "frames": [
+        3827,
+        3847
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "The camera falls through the clock toward the drummers.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 80,
+      "id": "K052",
+      "original_take": "K052",
+      "scene": "K052",
+      "subject": "diving down fast toward a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes from above",
+      "frames": [
+        3847,
+        3867
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "The camera dives fast toward the drum circle.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 81,
+      "id": "K053a",
+      "original_take": "K053a",
+      "scene": "K053",
+      "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies with towering new synthesizers and giant glowing speaker towers, a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming and women and children with painted faces and glowing beads dancing in front",
+      "frames": [
+        3867,
+        3908
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "Everyone dances, the speaker towers pulse with light on the beat, the aliens play.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 82,
+      "id": "K053b",
+      "original_take": "K053b",
+      "scene": "K053",
+      "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies with towering new synthesizers and giant glowing speaker towers, a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming and women and children with painted faces and glowing beads dancing in front",
+      "frames": [
+        3908,
+        3928
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "Everyone dances, the speaker towers pulse with light on the beat, the aliens play. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 83,
+      "id": "K054",
+      "original_take": "K054",
+      "scene": "K054",
+      "subject": "a fast spinning golden clock face with glowing hands on black",
+      "frames": [
+        3928,
+        3948
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "The clock hands spin very fast.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 84,
+      "id": "K055a",
+      "original_take": "K055a",
+      "scene": "K055",
+      "subject": "a heavenly paradise of golden light and clouds, a beautiful woman and a beautiful man facing each other, turning into gleaming golden statues",
+      "frames": [
+        3948,
+        3988
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Gold spreads over their bodies and they become shining golden statues.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 85,
+      "id": "K055b",
+      "original_take": "K055b",
+      "scene": "K055",
+      "subject": "a heavenly paradise of golden light and clouds, a beautiful woman and a beautiful man facing each other, turning into gleaming golden statues",
+      "frames": [
+        3988,
+        4028
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Gold spreads over their bodies and they become shining golden statues. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 86,
+      "id": "K056a",
+      "original_take": "K056a",
+      "scene": "K056",
+      "subject": "two golden statues of a woman and a man dissolving into the elements, fire, water, air and earth swirling from them",
+      "frames": [
+        4028,
+        4069
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The statues break apart into swirling fire, water, wind and earth.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 87,
+      "id": "K056b",
+      "original_take": "K056b",
+      "scene": "K056",
+      "subject": "two golden statues of a woman and a man dissolving into the elements, fire, water, air and earth swirling from them",
+      "frames": [
+        4069,
+        4109
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The statues break apart into swirling fire, water, wind and earth. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 88,
+      "id": "K057a",
+      "original_take": "K057a",
+      "scene": "K057",
+      "subject": "a thunderbird made of lightning and rain bursting out of a storm vortex, wings spread, facing the viewer",
+      "frames": [
+        4109,
+        4149
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The thunderbird bursts forward out of the vortex, lightning crackling.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 89,
+      "id": "K057b",
+      "original_take": "K057b",
+      "scene": "K057",
+      "subject": "a thunderbird made of lightning and rain bursting out of a storm vortex, wings spread, facing the viewer",
+      "frames": [
+        4149,
+        4190
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The thunderbird bursts forward out of the vortex, lightning crackling. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 90,
+      "id": "K058a",
+      "original_take": "K058a",
+      "scene": "K058",
+      "subject": "two rain dragons coiling around a column of golden lightning",
+      "frames": [
+        4190,
+        4230
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The dragons spiral up the lightning column.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 91,
+      "id": "K058b",
+      "original_take": "K058b",
+      "scene": "K058",
+      "subject": "two rain dragons coiling around a column of golden lightning",
+      "frames": [
+        4230,
+        4270
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The dragons spiral up the lightning column. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 92,
+      "id": "K059a",
+      "original_take": "K059a",
+      "scene": "K059",
+      "subject": "a storm cloud shaped like the face of a sky god with a beard of lightning",
+      "frames": [
+        4270,
+        4310
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The storm face's eyes flash and lightning pours from its beard.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 93,
+      "id": "K059b",
+      "original_take": "K059b",
+      "scene": "K059",
+      "subject": "a storm cloud shaped like the face of a sky god with a beard of lightning",
+      "frames": [
+        4310,
+        4351
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The storm face's eyes flash and lightning pours from its beard. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 94,
+      "id": "K060a",
+      "original_take": "K060a",
+      "scene": "K060",
+      "subject": "a tree of golden lightning branching across a dark sky",
+      "frames": [
+        4351,
+        4391
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The lightning tree branches outward fast across the sky.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 95,
+      "id": "K060b",
+      "original_take": "K060b",
+      "scene": "K060",
+      "subject": "a tree of golden lightning branching across a dark sky",
+      "frames": [
+        4391,
+        4431
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The lightning tree branches outward fast across the sky. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 96,
+      "id": "K061a",
+      "original_take": "K061a",
+      "scene": "K061",
+      "subject": "inside a tornado of rain and stars looking up",
+      "frames": [
+        4431,
+        4472
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The tornado spins fast around the camera.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 97,
+      "id": "K061b",
+      "original_take": "K061b",
+      "scene": "K061",
+      "subject": "inside a tornado of rain and stars looking up",
+      "frames": [
+        4472,
+        4512
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The tornado spins fast around the camera. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 98,
+      "id": "K062a",
+      "original_take": "K062a",
+      "scene": "K062",
+      "subject": "lightning striking a crystal ocean creating a glowing fractal pattern",
+      "frames": [
+        4512,
+        4552
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Lightning strikes and the fractal spreads outward.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 99,
+      "id": "K062b",
+      "original_take": "K062b",
+      "scene": "K062",
+      "subject": "lightning striking a crystal ocean creating a glowing fractal pattern",
+      "frames": [
+        4552,
+        4592
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Lightning strikes and the fractal spreads outward. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 100,
+      "id": "K063a",
+      "original_take": "K063a",
+      "scene": "K063",
+      "subject": "an eagle made of silver rain diving straight toward the viewer, wings spread",
+      "frames": [
+        4592,
+        4633
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The rain eagle dives fast toward the camera.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 101,
+      "id": "K063b",
+      "original_take": "K063b",
+      "scene": "K063",
+      "subject": "an eagle made of silver rain diving straight toward the viewer, wings spread",
+      "frames": [
+        4633,
+        4673
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The rain eagle dives fast toward the camera. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 102,
+      "id": "K064a",
+      "original_take": "K064a",
+      "scene": "K064",
+      "subject": "top-down view of a cyclone eye with a golden ring",
+      "frames": [
+        4673,
+        4713
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The cyclone spins and the golden ring pulses.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 103,
+      "id": "K064b",
+      "original_take": "K064b",
+      "scene": "K064",
+      "subject": "top-down view of a cyclone eye with a golden ring",
+      "frames": [
+        4713,
+        4754
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The cyclone spins and the golden ring pulses. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 104,
+      "id": "K065a",
+      "original_take": "K065a",
+      "scene": "K065",
+      "subject": "a glowing human brain made of light breaking free of chains of light, neurons firing, black space",
+      "frames": [
+        4754,
+        4794
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The chains of light shatter and the brain glows brighter, neurons flashing.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 105,
+      "id": "K065b",
+      "original_take": "K065b",
+      "scene": "K065",
+      "subject": "a glowing human brain made of light breaking free of chains of light, neurons firing, black space",
+      "frames": [
+        4794,
+        4834
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The chains of light shatter and the brain glows brighter, neurons flashing. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 106,
+      "id": "K066a",
+      "original_take": "K066a",
+      "scene": "K066",
+      "subject": "a man in a long black coat leaping across the gap between two skyscraper rooftops at night, city lights far below, rain",
+      "frames": [
+        4834,
+        4874
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "He leaps in a huge arc between the rooftops, his coat flying behind him.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 107,
+      "id": "K066b",
+      "original_take": "K066b",
+      "scene": "K066",
+      "subject": "a man in a long black coat leaping across the gap between two skyscraper rooftops at night, city lights far below, rain",
+      "frames": [
+        4874,
+        4915
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "He leaps in a huge arc between the rooftops, his coat flying behind him. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 108,
+      "id": "K067a",
+      "original_take": "K067a",
+      "scene": "K067",
+      "subject": "a man in a long black coat flying freely up through the clouds above a night city, arms at his sides",
+      "frames": [
+        4915,
+        4955
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "He flies upward fast through the clouds, free.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 109,
+      "id": "K067b",
+      "original_take": "K067b",
+      "scene": "K067",
+      "subject": "a man in a long black coat flying freely up through the clouds above a night city, arms at his sides",
+      "frames": [
+        4955,
+        4995
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "He flies upward fast through the clouds, free. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 110,
+      "id": "K068a",
+      "original_take": "K068a",
+      "scene": "K068",
+      "subject": "a man's silhouette dissolving into cascading streams of glowing green and cyan code symbols falling like rain",
+      "frames": [
+        4995,
+        5035
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "His body dissolves into streams of glowing symbols raining down.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 111,
+      "id": "K068b",
+      "original_take": "K068b",
+      "scene": "K068",
+      "subject": "a man's silhouette dissolving into cascading streams of glowing green and cyan code symbols falling like rain",
+      "frames": [
+        5035,
+        5076
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "His body dissolves into streams of glowing symbols raining down. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 112,
+      "id": "K069a",
+      "original_take": "K069a",
+      "scene": "K069",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks standing in the storm with glowing eyes, hands resting over her heart, lightning behind her",
+      "frames": [
+        5076,
+        5116
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Lightning flashes behind her and her hair whips in the wind.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 113,
+      "id": "K069b",
+      "original_take": "K069b",
+      "scene": "K069",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks standing in the storm with glowing eyes, hands resting over her heart, lightning behind her",
+      "frames": [
+        5116,
+        5156
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Lightning flashes behind her and her hair whips in the wind. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 114,
+      "id": "K070a",
+      "original_take": "K070a",
+      "scene": "K070",
+      "subject": "a forest of giant glowing mushrooms of light in the rain",
+      "frames": [
+        5156,
+        5197
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The mushrooms pulse with light as the camera flies between them.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 115,
+      "id": "K070b",
+      "original_take": "K070b",
+      "scene": "K070",
+      "subject": "a forest of giant glowing mushrooms of light in the rain",
+      "frames": [
+        5197,
+        5237
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The mushrooms pulse with light as the camera flies between them. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 116,
+      "id": "K071a",
+      "original_take": "K071a",
+      "scene": "K071",
+      "subject": "a giant fractal flower opening, mandala petals",
+      "frames": [
+        5237,
+        5277
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The fractal petals unfold outward.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 117,
+      "id": "K071b",
+      "original_take": "K071b",
+      "scene": "K071",
+      "subject": "a giant fractal flower opening, mandala petals",
+      "frames": [
+        5277,
+        5317
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The fractal petals unfold outward. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 118,
+      "id": "K072a",
+      "original_take": "K072a",
+      "scene": "K072",
+      "subject": "five crystal frogs sitting in a row on lotus pads in a rainy pond",
+      "frames": [
+        5317,
+        5358
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The frogs hop in sync and ripples spread.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 119,
+      "id": "K072b",
+      "original_take": "K072b",
+      "scene": "K072",
+      "subject": "five crystal frogs sitting in a row on lotus pads in a rainy pond",
+      "frames": [
+        5358,
+        5398
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The frogs hop in sync and ripples spread. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 120,
+      "id": "K073a",
+      "original_take": "K073a",
+      "scene": "K073",
+      "subject": "golden vines growing into a glowing spiral",
+      "frames": [
+        5398,
+        5438
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The golden vines grow and curl into the spiral.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 121,
+      "id": "K073b",
+      "original_take": "K073b",
+      "scene": "K073",
+      "subject": "golden vines growing into a glowing spiral",
+      "frames": [
+        5438,
+        5479
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The golden vines grow and curl into the spiral. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 122,
+      "id": "K074a",
+      "original_take": "K074a",
+      "scene": "K074",
+      "subject": "a butterfly with stained glass wings, perfectly symmetrical, facing the viewer",
+      "frames": [
+        5479,
+        5519
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The butterfly beats its wings and light shines through them.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 123,
+      "id": "K074b",
+      "original_take": "K074b",
+      "scene": "K074",
+      "subject": "a butterfly with stained glass wings, perfectly symmetrical, facing the viewer",
+      "frames": [
+        5519,
+        5559
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The butterfly beats its wings and light shines through them. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 124,
+      "id": "K075a",
+      "original_take": "K075a",
+      "scene": "K075",
+      "subject": "a meadow of glowing dandelions releasing seeds made of stars",
+      "frames": [
+        5559,
+        5599
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The dandelions release their star seeds into the air.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 125,
+      "id": "K075b",
+      "original_take": "K075b",
+      "scene": "K075",
+      "subject": "a meadow of glowing dandelions releasing seeds made of stars",
+      "frames": [
+        5599,
+        5640
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The dandelions release their star seeds into the air. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 126,
+      "id": "K076a",
+      "original_take": "K076a",
+      "scene": "K076",
+      "subject": "a tree of life with glowing rivers as roots",
+      "frames": [
+        5640,
+        5680
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Light flows up through the roots and the tree glows.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 127,
+      "id": "K076b",
+      "original_take": "K076b",
+      "scene": "K076",
+      "subject": "a tree of life with glowing rivers as roots",
+      "frames": [
+        5680,
+        5720
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Light flows up through the roots and the tree glows. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 128,
+      "id": "K077a",
+      "original_take": "K077a",
+      "scene": "K077",
+      "subject": "a hummingbird made of light drinking from a glowing raindrop",
+      "frames": [
+        5720,
+        5761
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The hummingbird hovers, wings blurring, drinking the raindrop.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 129,
+      "id": "K077b",
+      "original_take": "K077b",
+      "scene": "K077",
+      "subject": "a hummingbird made of light drinking from a glowing raindrop",
+      "frames": [
+        5761,
+        5801
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The hummingbird hovers, wings blurring, drinking the raindrop. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 130,
+      "id": "K078a",
+      "original_take": "K078a",
+      "scene": "K078",
+      "subject": "a sunflower with a fibonacci spiral of golden seeds",
+      "frames": [
+        5801,
+        5841
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The sunflower spiral rotates and glows.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 131,
+      "id": "K078b",
+      "original_take": "K078b",
+      "scene": "K078",
+      "subject": "a sunflower with a fibonacci spiral of golden seeds",
+      "frames": [
+        5841,
+        5881
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The sunflower spiral rotates and glows. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 132,
+      "id": "K079a",
+      "original_take": "K079a",
+      "scene": "K079",
+      "subject": "a fern frond unrolling into a fractal spiral of light",
+      "frames": [
+        5881,
+        5922
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The fern unrolls into its fractal spiral.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 133,
+      "id": "K079b",
+      "original_take": "K079b",
+      "scene": "K079",
+      "subject": "a fern frond unrolling into a fractal spiral of light",
+      "frames": [
+        5922,
+        5962
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The fern unrolls into its fractal spiral. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 134,
+      "id": "K080a",
+      "original_take": "K080a",
+      "scene": "K080",
+      "subject": "a tunnel of glowing hexagon honeycomb with bees of light",
+      "frames": [
+        5962,
+        6002
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera flies through the honeycomb tunnel.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 135,
+      "id": "K080b",
+      "original_take": "K080b",
+      "scene": "K080",
+      "subject": "a tunnel of glowing hexagon honeycomb with bees of light",
+      "frames": [
+        6002,
+        6042
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera flies through the honeycomb tunnel. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 136,
+      "id": "K081a",
+      "original_take": "K081a",
+      "scene": "K081",
+      "subject": "a peacock made of rain spreading its glowing tail, facing the viewer",
+      "frames": [
+        6042,
+        6083
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The peacock spreads its tail and the eyes on it glow.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 137,
+      "id": "K081b",
+      "original_take": "K081b",
+      "scene": "K081",
+      "subject": "a peacock made of rain spreading its glowing tail, facing the viewer",
+      "frames": [
+        6083,
+        6123
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The peacock spreads its tail and the eyes on it glow. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 138,
+      "id": "K082a",
+      "original_take": "K082a",
+      "scene": "K082",
+      "subject": "a flower bud opening to reveal a tiny galaxy inside",
+      "frames": [
+        6123,
+        6163
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The bud opens and the galaxy spins.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 139,
+      "id": "K082b",
+      "original_take": "K082b",
+      "scene": "K082",
+      "subject": "a flower bud opening to reveal a tiny galaxy inside",
+      "frames": [
+        6163,
+        6204
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The bud opens and the galaxy spins. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 140,
+      "id": "K083a",
+      "original_take": "K083a",
+      "scene": "K083",
+      "subject": "a forest spirit deer with antlers of crystal, facing the viewer",
+      "frames": [
+        6204,
+        6244
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The deer raises its head and its antlers glow.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 141,
+      "id": "K083b",
+      "original_take": "K083b",
+      "scene": "K083",
+      "subject": "a forest spirit deer with antlers of crystal, facing the viewer",
+      "frames": [
+        6244,
+        6284
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The deer raises its head and its antlers glow. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 142,
+      "id": "K084a",
+      "original_take": "K084a",
+      "scene": "K084",
+      "subject": "glowing seeds falling onto dark ground and bursting into flowers",
+      "frames": [
+        6284,
+        6324
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The seeds land and burst into blooming flowers.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 143,
+      "id": "K084b",
+      "original_take": "K084b",
+      "scene": "K084",
+      "subject": "glowing seeds falling onto dark ground and bursting into flowers",
+      "frames": [
+        6324,
+        6365
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The seeds land and burst into blooming flowers. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 144,
+      "id": "K085a",
+      "original_take": "K085a",
+      "scene": "K085",
+      "subject": "top-down view of a giant water lily mandala",
+      "frames": [
+        6365,
+        6405
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The water lily mandala opens and turns.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 145,
+      "id": "K085b",
+      "original_take": "K085b",
+      "scene": "K085",
+      "subject": "top-down view of a giant water lily mandala",
+      "frames": [
+        6405,
+        6445
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The water lily mandala opens and turns. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 146,
+      "id": "K086a",
+      "original_take": "K086a",
+      "scene": "K086",
+      "subject": "a galaxy whale swimming through pink and blue nebula clouds",
+      "frames": [
+        6445,
+        6486
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The galaxy whale swims forward through the nebula.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 147,
+      "id": "K086b",
+      "original_take": "K086b",
+      "scene": "K086",
+      "subject": "a galaxy whale swimming through pink and blue nebula clouds",
+      "frames": [
+        6486,
+        6526
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The galaxy whale swims forward through the nebula. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 148,
+      "id": "K087a",
+      "original_take": "K087a",
+      "scene": "K087",
+      "subject": "planets lined up like pearls with glowing rings",
+      "frames": [
+        6526,
+        6566
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The planets drift past the camera.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 149,
+      "id": "K087b",
+      "original_take": "K087b",
+      "scene": "K087",
+      "subject": "planets lined up like pearls with glowing rings",
+      "frames": [
+        6566,
+        6606
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The planets drift past the camera. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 150,
+      "id": "K088a",
+      "original_take": "K088a",
+      "scene": "K088",
+      "subject": "a comet made of rain streaking toward the viewer",
+      "frames": [
+        6606,
+        6647
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The comet streaks toward the camera, rain trailing.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 151,
+      "id": "K088b",
+      "original_take": "K088b",
+      "scene": "K088",
+      "subject": "a comet made of rain streaking toward the viewer",
+      "frames": [
+        6647,
+        6687
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The comet streaks toward the camera, rain trailing. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 152,
+      "id": "K089a",
+      "original_take": "K089a",
+      "scene": "K089",
+      "subject": "a fleet of cosmic jellyfish floating through space",
+      "frames": [
+        6687,
+        6727
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The jellyfish pulse and drift forward.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 153,
+      "id": "K089b",
+      "original_take": "K089b",
+      "scene": "K089",
+      "subject": "a fleet of cosmic jellyfish floating through space",
+      "frames": [
+        6727,
+        6768
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The jellyfish pulse and drift forward. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 154,
+      "id": "K090a",
+      "original_take": "K090a",
+      "scene": "K090",
+      "subject": "macro of a whale eye with galaxies reflected inside",
+      "frames": [
+        6768,
+        6808
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The whale eye blinks and the galaxies swirl.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 155,
+      "id": "K090b",
+      "original_take": "K090b",
+      "scene": "K090",
+      "subject": "macro of a whale eye with galaxies reflected inside",
+      "frames": [
+        6808,
+        6848
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The whale eye blinks and the galaxies swirl. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 156,
+      "id": "K091a",
+      "original_take": "K091a",
+      "scene": "K091",
+      "subject": "a crystal astronaut floating among raindrops, facing the viewer",
+      "frames": [
+        6848,
+        6888
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The astronaut drifts and raindrops orbit around.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 157,
+      "id": "K091b",
+      "original_take": "K091b",
+      "scene": "K091",
+      "subject": "a crystal astronaut floating among raindrops, facing the viewer",
+      "frames": [
+        6888,
+        6929
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The astronaut drifts and raindrops orbit around. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 158,
+      "id": "K092a",
+      "original_take": "K092a",
+      "scene": "K092",
+      "subject": "flying through the rings of a planet made of raindrops",
+      "frames": [
+        6929,
+        6969
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera flies fast through the rings.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 159,
+      "id": "K092b",
+      "original_take": "K092b",
+      "scene": "K092",
+      "subject": "flying through the rings of a planet made of raindrops",
+      "frames": [
+        6969,
+        7009
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera flies fast through the rings. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 160,
+      "id": "K093a",
+      "original_take": "K093a",
+      "scene": "K093",
+      "subject": "a nebula shaped like a goddess face",
+      "frames": [
+        7009,
+        7049
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The nebula face glows and its eyes open.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 161,
+      "id": "K093b",
+      "original_take": "K093b",
+      "scene": "K093",
+      "subject": "a nebula shaped like a goddess face",
+      "frames": [
+        7049,
+        7090
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The nebula face glows and its eyes open. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 162,
+      "id": "K094a",
+      "original_take": "K094a",
+      "scene": "K094",
+      "subject": "a warp tunnel of stars",
+      "frames": [
+        7090,
+        7130
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The stars stream past in a warp.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 163,
+      "id": "K094b",
+      "original_take": "K094b",
+      "scene": "K094",
+      "subject": "a warp tunnel of stars",
+      "frames": [
+        7130,
+        7170
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The stars stream past in a warp. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 164,
+      "id": "K095a",
+      "original_take": "K095a",
+      "scene": "K095",
+      "subject": "constellation animals connected by glowing lines",
+      "frames": [
+        7170,
+        7211
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The constellation lines draw themselves and glow.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 165,
+      "id": "K095b",
+      "original_take": "K095b",
+      "scene": "K095",
+      "subject": "constellation animals connected by glowing lines",
+      "frames": [
+        7211,
+        7251
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The constellation lines draw themselves and glow. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 166,
+      "id": "K096a",
+      "original_take": "K096a",
+      "scene": "K096",
+      "subject": "space rain falling on a silver moon surface making ripples in the dust",
+      "frames": [
+        7251,
+        7291
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Rain hits the moon and ripples spread.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 167,
+      "id": "K096b",
+      "original_take": "K096b",
+      "scene": "K096",
+      "subject": "space rain falling on a silver moon surface making ripples in the dust",
+      "frames": [
+        7291,
+        7331
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Rain hits the moon and ripples spread. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 168,
+      "id": "K097a",
+      "original_take": "K097a",
+      "scene": "K097",
+      "subject": "top-down view of a spiral galaxy",
+      "frames": [
+        7331,
+        7372
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The galaxy spiral rotates.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 169,
+      "id": "K097b",
+      "original_take": "K097b",
+      "scene": "K097",
+      "subject": "top-down view of a spiral galaxy",
+      "frames": [
+        7372,
+        7412
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The galaxy spiral rotates. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 170,
+      "id": "K098a",
+      "original_take": "K098a",
+      "scene": "K098",
+      "subject": "the galaxy whale diving into a black hole with a golden ring",
+      "frames": [
+        7412,
+        7452
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The whale dives into the black hole and the ring flares.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 171,
+      "id": "K098b",
+      "original_take": "K098b",
+      "scene": "K098",
+      "subject": "the galaxy whale diving into a black hole with a golden ring",
+      "frames": [
+        7452,
+        7493
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The whale dives into the black hole and the ring flares. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 172,
+      "id": "K099",
+      "original_take": "K099",
+      "scene": "K099",
+      "subject": "a black hole swallowing streams of light, the golden ring dimming",
+      "frames": [
+        7493,
+        7573
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "Light streams into the black hole and the ring slowly dims.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 173,
+      "id": "K100",
+      "original_take": "K100",
+      "scene": "K100",
+      "subject": "a single glowing raindrop falling in darkness",
+      "frames": [
+        7573,
+        7613
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The raindrop falls slowly through darkness.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 174,
+      "id": "K101",
+      "original_take": "K101",
+      "scene": "K101",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks sleeping inside a floating bubble of water, curled peacefully",
+      "frames": [
+        7613,
+        7694
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The bubble drifts and wobbles, her hair floats inside.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 175,
+      "id": "K102",
+      "original_take": "K102",
+      "scene": "K102",
+      "subject": "floating memory bubbles, each containing a tiny glowing scene of a whale, a crystal cathedral and a storm",
+      "frames": [
+        7694,
+        7775
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The memory bubbles float past the camera, scenes glowing inside.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 176,
+      "id": "K103",
+      "original_take": "K103",
+      "scene": "K103",
+      "subject": "golden light rays through dark deep water",
+      "frames": [
+        7775,
+        7855
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The light rays sway slowly and particles drift.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 177,
+      "id": "K104",
+      "original_take": "K104",
+      "scene": "K104",
+      "subject": "a silver feather falling slowly through soft rain",
+      "frames": [
+        7855,
+        7936
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The feather drifts down slowly, turning.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 178,
+      "id": "K105",
+      "original_take": "K105",
+      "scene": "K105",
+      "subject": "a calm moonlit ocean reflecting a black hole with a golden ring",
+      "frames": [
+        7936,
+        8016
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The ocean gently swells, the reflection shimmers.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 179,
+      "id": "K106",
+      "original_take": "K106",
+      "scene": "K106",
+      "subject": "a glowing raindrop resting inside an open lotus flower",
+      "frames": [
+        8016,
+        8097
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The lotus slowly opens wider and the raindrop glows.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 180,
+      "id": "K107",
+      "original_take": "K107",
+      "scene": "K107",
+      "subject": "a deer made of light drinking from a still lake reflecting stars",
+      "frames": [
+        8097,
+        8177
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The deer drinks and ripples spread across the stars.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 181,
+      "id": "K108",
+      "original_take": "K108",
+      "scene": "K108",
+      "subject": "snow of light falling on a sleeping city of crystal towers",
+      "frames": [
+        8177,
+        8258
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "Light snow falls softly over the crystal city.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 182,
+      "id": "K109",
+      "original_take": "K109",
+      "scene": "K109",
+      "subject": "close-up of the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks face, her eyes slowly opening, glowing cyan",
+      "frames": [
+        8258,
+        8338
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "Her eyes slowly open and glow, rain falls around her.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 183,
+      "id": "K110",
+      "original_take": "K110",
+      "scene": "K110",
+      "subject": "a kaleidoscope ring of glowing cyan eyes",
+      "frames": [
+        8338,
+        8359
+      ],
+      "deliver_frames": 21,
+      "length": 21,
+      "prompt": "The ring of eyes spins.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 184,
+      "id": "K111",
+      "original_take": "K111",
+      "scene": "K111",
+      "subject": "extreme close-up of a glowing cyan pupil, falling into it",
+      "frames": [
+        8359,
+        8379
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "The camera zooms fast into the pupil.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 185,
+      "id": "K112a",
+      "original_take": "K112a",
+      "scene": "K112",
+      "subject": "an explosion of silver rain forming a giant mandala of light",
+      "frames": [
+        8379,
+        8419
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The mandala explodes outward in rings of light.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 186,
+      "id": "K112b",
+      "original_take": "K112b",
+      "scene": "K112",
+      "subject": "an explosion of silver rain forming a giant mandala of light",
+      "frames": [
+        8419,
+        8459
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The mandala explodes outward in rings of light. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 187,
+      "id": "K113a",
+      "original_take": "K113a",
+      "scene": "K113",
+      "subject": "two mirrored goddess profiles facing each other with a burst of light between them",
+      "frames": [
+        8459,
+        8500
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "Light bursts between the two faces, particles swirl.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 188,
+      "id": "K113b",
+      "original_take": "K113b",
+      "scene": "K113",
+      "subject": "two mirrored goddess profiles facing each other with a burst of light between them",
+      "frames": [
+        8500,
+        8540
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Light bursts between the two faces, particles swirl. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 189,
+      "id": "K114a",
+      "original_take": "K114a",
+      "scene": "K114",
+      "subject": "a kaleidoscope of glowing raindrop spirits multiplying",
+      "frames": [
+        8540,
+        8580
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The raindrop spirits multiply and spin.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 190,
+      "id": "K114b",
+      "original_take": "K114b",
+      "scene": "K114",
+      "subject": "a kaleidoscope of glowing raindrop spirits multiplying",
+      "frames": [
+        8580,
+        8620
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The raindrop spirits multiply and spin. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 191,
+      "id": "K115",
+      "original_take": "K115",
+      "scene": "K115",
+      "subject": "a burst of golden particles on black",
+      "frames": [
+        8620,
+        8661
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "Golden particles burst outward.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 192,
+      "id": "K116",
+      "original_take": "K116",
+      "scene": "K116",
+      "subject": "drifting through glowing clouds at night in soft rain",
+      "frames": [
+        8661,
+        8741
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The camera drifts slowly through the clouds.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 193,
+      "id": "K117",
+      "original_take": "K117",
+      "scene": "K117",
+      "subject": "a lighthouse of crystal beaming light through a gentle storm",
+      "frames": [
+        8741,
+        8822
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The lighthouse beam sweeps slowly through the rain.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 194,
+      "id": "K118",
+      "original_take": "K118",
+      "scene": "K118",
+      "subject": "ocean waves rolling slowly under moonlight with silver foam",
+      "frames": [
+        8822,
+        8902
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The waves roll slowly toward the camera.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 195,
+      "id": "K119",
+      "original_take": "K119",
+      "scene": "K119",
+      "subject": "a black hole with a golden ring rising over the ocean horizon like a sunrise",
+      "frames": [
+        8902,
+        8983
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The black hole rises slowly over the horizon, light spreading.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 196,
+      "id": "K120",
+      "original_take": "K120",
+      "scene": "K120",
+      "subject": "a ring of black holes with golden rings on black",
+      "frames": [
+        8983,
+        9003
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "The ring of black holes spins fast.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 197,
+      "id": "K121",
+      "original_take": "K121",
+      "scene": "K121",
+      "subject": "rushing straight into a black hole with a blazing golden ring",
+      "frames": [
+        9003,
+        9023
+      ],
+      "deliver_frames": 20,
+      "length": 21,
+      "prompt": "The camera rushes into the black hole.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 198,
+      "id": "K122a",
+      "original_take": "K122a",
+      "scene": "K122",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming at full power in heavy rain, cosmic rays streaking across the sky, wind and snow swirling",
+      "frames": [
+        9023,
+        9063
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The elders drum with full force, rain and snow whip around them, cosmic rays flash.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 199,
+      "id": "K122b",
+      "original_take": "K122b",
+      "scene": "K122",
+      "subject": "a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes drumming at full power in heavy rain, cosmic rays streaking across the sky, wind and snow swirling",
+      "frames": [
+        9063,
+        9104
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The elders drum with full force, rain and snow whip around them, cosmic rays flash. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 200,
+      "id": "K123a",
+      "original_take": "K123a",
+      "scene": "K123",
+      "subject": "lightning striking all around a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes who keep drumming in the storm, snow and wind",
+      "frames": [
+        9104,
+        9144
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Lightning strikes around the circle while the elders keep drumming hard.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 201,
+      "id": "K123b",
+      "original_take": "K123b",
+      "scene": "K123",
+      "subject": "lightning striking all around a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes who keep drumming in the storm, snow and wind",
+      "frames": [
+        9144,
+        9184
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Lightning strikes around the circle while the elders keep drumming hard. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 202,
+      "id": "K124a",
+      "original_take": "K124a",
+      "scene": "K124",
+      "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies raising a glowing dome shield of light over a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes, lightning bolts hitting the shield",
+      "frames": [
+        9184,
+        9225
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "Lightning crashes into the shield and the aliens hold it, the drummers keep playing.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 203,
+      "id": "K124b",
+      "original_take": "K124b",
+      "scene": "K124",
+      "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies raising a glowing dome shield of light over a circle of tribal elders with long white hair, painted faces and feather and bead ornaments, playing large glowing frame drums and djembes, lightning bolts hitting the shield",
+      "frames": [
+        9225,
+        9265
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "Lightning crashes into the shield and the aliens hold it, the drummers keep playing. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 204,
+      "id": "K125a",
+      "original_take": "K125a",
+      "scene": "K125",
+      "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies holding captured lightning bolts like glowing strings and playing them like a synthesizer, sparks of sound",
+      "frames": [
+        9265,
+        9305
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The aliens pluck and play the lightning bolts, waves of light and sound burst out.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 205,
+      "id": "K125b",
+      "original_take": "K125b",
+      "scene": "K125",
+      "subject": "tall slender luminous alien beings with smooth silver-blue skin, large dark almond eyes and glowing cyan markings on their bodies holding captured lightning bolts like glowing strings and playing them like a synthesizer, sparks of sound",
+      "frames": [
+        9305,
+        9345
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The aliens pluck and play the lightning bolts, waves of light and sound burst out. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": true,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 206,
+      "id": "K126a",
+      "original_take": "K126a",
+      "scene": "K126",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks as a giant titan in space, a galaxy glowing over her heart, eyes glowing",
+      "frames": [
+        9345,
+        9386
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The galaxy over her heart blazes and her hair streams outward.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 207,
+      "id": "K126b",
+      "original_take": "K126b",
+      "scene": "K126",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks as a giant titan in space, a galaxy glowing over her heart, eyes glowing",
+      "frames": [
+        9386,
+        9426
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The galaxy over her heart blazes and her hair streams outward. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 208,
+      "id": "K127a",
+      "original_take": "K127a",
+      "scene": "K127",
+      "subject": "silver rain turning into stars and rising upward",
+      "frames": [
+        9426,
+        9466
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The rain rises upward, turning into stars.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 209,
+      "id": "K127b",
+      "original_take": "K127b",
+      "scene": "K127",
+      "subject": "silver rain turning into stars and rising upward",
+      "frames": [
+        9466,
+        9507
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The rain rises upward, turning into stars. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 210,
+      "id": "K128a",
+      "original_take": "K128a",
+      "scene": "K128",
+      "subject": "a golden phoenix made of rain and fire, wings spread, facing the viewer",
+      "frames": [
+        9507,
+        9547
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The phoenix spreads its wings and rises.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 211,
+      "id": "K128b",
+      "original_take": "K128b",
+      "scene": "K128",
+      "subject": "a golden phoenix made of rain and fire, wings spread, facing the viewer",
+      "frames": [
+        9547,
+        9587
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The phoenix spreads its wings and rises. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 212,
+      "id": "K129a",
+      "original_take": "K129a",
+      "scene": "K129",
+      "subject": "a mandala made of repeated glowing goddess faces",
+      "frames": [
+        9587,
+        9627
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The mandala of faces rotates.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 213,
+      "id": "K129b",
+      "original_take": "K129b",
+      "scene": "K129",
+      "subject": "a mandala made of repeated glowing goddess faces",
+      "frames": [
+        9627,
+        9668
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The mandala of faces rotates. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 214,
+      "id": "K130a",
+      "original_take": "K130a",
+      "scene": "K130",
+      "subject": "glowing raindrop spirits riding on the back of a galaxy whale",
+      "frames": [
+        9668,
+        9708
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The whale swims forward and the spirits cheer.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 215,
+      "id": "K130b",
+      "original_take": "K130b",
+      "scene": "K130",
+      "subject": "glowing raindrop spirits riding on the back of a galaxy whale",
+      "frames": [
+        9708,
+        9748
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The whale swims forward and the spirits cheer. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 216,
+      "id": "K131a",
+      "original_take": "K131a",
+      "scene": "K131",
+      "subject": "a silver serpent coiled around a blooming lotus of light",
+      "frames": [
+        9748,
+        9788
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The serpent rears and the lotus blooms.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 217,
+      "id": "K131b",
+      "original_take": "K131b",
+      "scene": "K131",
+      "subject": "a silver serpent coiled around a blooming lotus of light",
+      "frames": [
+        9788,
+        9829
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The serpent rears and the lotus blooms. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 218,
+      "id": "K132a",
+      "original_take": "K132a",
+      "scene": "K132",
+      "subject": "a giant cosmic eye opening in the sky",
+      "frames": [
+        9829,
+        9869
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The cosmic eye opens wide and light pours out.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 219,
+      "id": "K132b",
+      "original_take": "K132b",
+      "scene": "K132",
+      "subject": "a giant cosmic eye opening in the sky",
+      "frames": [
+        9869,
+        9909
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The cosmic eye opens wide and light pours out. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 220,
+      "id": "K133a",
+      "original_take": "K133a",
+      "scene": "K133",
+      "subject": "a ladder of golden light rising into a black hole",
+      "frames": [
+        9909,
+        9950
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The camera climbs the ladder of light fast.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 221,
+      "id": "K133b",
+      "original_take": "K133b",
+      "scene": "K133",
+      "subject": "a ladder of golden light rising into a black hole",
+      "frames": [
+        9950,
+        9990
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera climbs the ladder of light fast. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 222,
+      "id": "K134a",
+      "original_take": "K134a",
+      "scene": "K134",
+      "subject": "a fractal spiral of gold and silver",
+      "frames": [
+        9990,
+        10030
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The fractal spiral rotates and zooms.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 223,
+      "id": "K134b",
+      "original_take": "K134b",
+      "scene": "K134",
+      "subject": "a fractal spiral of gold and silver",
+      "frames": [
+        10030,
+        10070
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The fractal spiral rotates and zooms. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 224,
+      "id": "K135a",
+      "original_take": "K135a",
+      "scene": "K135",
+      "subject": "a black hole blooming into a lotus of light",
+      "frames": [
+        10070,
+        10111
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The black hole opens into a blooming lotus.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 225,
+      "id": "K135b",
+      "original_take": "K135b",
+      "scene": "K135",
+      "subject": "a black hole blooming into a lotus of light",
+      "frames": [
+        10111,
+        10151
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The black hole opens into a blooming lotus. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 226,
+      "id": "K136a",
+      "original_take": "K136a",
+      "scene": "K136",
+      "subject": "flying fast down a tunnel of falling silver rain and golden rings",
+      "frames": [
+        10151,
+        10191
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The camera flies very fast through the rain tunnel.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 227,
+      "id": "K136b",
+      "original_take": "K136b",
+      "scene": "K136",
+      "subject": "flying fast down a tunnel of falling silver rain and golden rings",
+      "frames": [
+        10191,
+        10232
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The camera flies very fast through the rain tunnel. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 228,
+      "id": "K137a",
+      "original_take": "K137a",
+      "scene": "K137",
+      "subject": "an ocean made of stars with glowing waves",
+      "frames": [
+        10232,
+        10272
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The star waves roll toward the camera.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 229,
+      "id": "K137b",
+      "original_take": "K137b",
+      "scene": "K137",
+      "subject": "an ocean made of stars with glowing waves",
+      "frames": [
+        10272,
+        10312
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The star waves roll toward the camera. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 230,
+      "id": "K138a",
+      "original_take": "K138a",
+      "scene": "K138",
+      "subject": "a cosmic tree of life with glowing planets as fruit",
+      "frames": [
+        10312,
+        10352
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The planets on the tree glow and orbit.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 231,
+      "id": "K138b",
+      "original_take": "K138b",
+      "scene": "K138",
+      "subject": "a cosmic tree of life with glowing planets as fruit",
+      "frames": [
+        10352,
+        10393
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The planets on the tree glow and orbit. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 232,
+      "id": "K139a",
+      "original_take": "K139a",
+      "scene": "K139",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks crowned with orbiting planets, eyes glowing, calm expression",
+      "frames": [
+        10393,
+        10433
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The planets orbit around her head.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 233,
+      "id": "K139b",
+      "original_take": "K139b",
+      "scene": "K139",
+      "subject": "the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks crowned with orbiting planets, eyes glowing, calm expression",
+      "frames": [
+        10433,
+        10473
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The planets orbit around her head. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 234,
+      "id": "K140a",
+      "original_take": "K140a",
+      "scene": "K140",
+      "subject": "a sun and a black hole orbiting each other like yin and yang",
+      "frames": [
+        10473,
+        10514
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The sun and the black hole orbit each other.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 235,
+      "id": "K140b",
+      "original_take": "K140b",
+      "scene": "K140",
+      "subject": "a sun and a black hole orbiting each other like yin and yang",
+      "frames": [
+        10514,
+        10554
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The sun and the black hole orbit each other. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 236,
+      "id": "K141a",
+      "original_take": "K141a",
+      "scene": "K141",
+      "subject": "a giant wave of light crashing toward the viewer",
+      "frames": [
+        10554,
+        10594
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The wave of light crashes toward the camera.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 237,
+      "id": "K141b",
+      "original_take": "K141b",
+      "scene": "K141",
+      "subject": "a giant wave of light crashing toward the viewer",
+      "frames": [
+        10594,
+        10634
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The wave of light crashes toward the camera. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 238,
+      "id": "K142a",
+      "original_take": "K142a",
+      "scene": "K142",
+      "subject": "a golden crown radiating beams of light, floating in space",
+      "frames": [
+        10634,
+        10675
+      ],
+      "deliver_frames": 41,
+      "length": 41,
+      "prompt": "The crown's beams sweep and pulse.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 239,
+      "id": "K142b",
+      "original_take": "K142b",
+      "scene": "K142",
+      "subject": "a golden crown radiating beams of light, floating in space",
+      "frames": [
+        10675,
+        10715
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The crown's beams sweep and pulse. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 240,
+      "id": "K143a",
+      "original_take": "K143a",
+      "scene": "K143",
+      "subject": "a final grand mandala of silver rain and gold",
+      "frames": [
+        10715,
+        10755
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The mandala expands and rotates.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 241,
+      "id": "K143b",
+      "original_take": "K143b",
+      "scene": "K143",
+      "subject": "a final grand mandala of silver rain and gold",
+      "frames": [
+        10755,
+        10795
+      ],
+      "deliver_frames": 40,
+      "length": 41,
+      "prompt": "The mandala expands and rotates. The motion continues and intensifies.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 242,
+      "id": "K144",
+      "original_take": "K144",
+      "scene": "K144",
+      "subject": "macro of the Rain Keeper goddess, pale silver-blue skin, long flowing silver hair, a golden headband with three round turquoise gems, gold teardrop earrings, gold filigree necklace, silver raindrop tears on her cheeks eye with a whole galaxy reflected in it",
+      "frames": [
+        10795,
+        10876
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The camera pulls slowly back from the eye.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 243,
+      "id": "K145",
+      "original_take": "K145",
+      "scene": "K145",
+      "subject": "a spiral galaxy shrinking into a single glowing raindrop",
+      "frames": [
+        10876,
+        10957
+      ],
+      "deliver_frames": 81,
+      "length": 81,
+      "prompt": "The galaxy slowly shrinks into a raindrop.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 244,
+      "id": "K146",
+      "original_take": "K146",
+      "scene": "K146",
+      "subject": "a glowing raindrop falling into a black hole with a calm golden ring",
+      "frames": [
+        10957,
+        11037
+      ],
+      "deliver_frames": 80,
+      "length": 81,
+      "prompt": "The raindrop falls gently into the black hole.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    },
+    {
+      "index": 245,
+      "id": "K147",
+      "original_take": "K147",
+      "scene": "K147",
+      "subject": "a black hole fading into darkness while silver rain keeps falling",
+      "frames": [
+        11037,
+        11119
+      ],
+      "deliver_frames": 82,
+      "length": 85,
+      "prompt": "The black hole slowly fades and the rain keeps falling.",
+      "state": "needs_review",
+      "user_story": false,
+      "continuity_source": "REVIEW REQUIRED before launch: choose accepted predecessor or reviewed consistent keyframe. No blind wholetrack chaining."
+    }
+  ]
+}
