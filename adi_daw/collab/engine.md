@@ -12,6 +12,51 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-10-30 — item 3 integrated with sends; N6 ready; first export runner ready
+
+Codex acted on the window lane's 30 October handoff. `engine/log` was fast-forwarded to `eb2241d` and pushed; `engine/log-cloud-takeover` was then deleted locally and remotely. This entry is on `engine/log`, preserving #240 as the log's one PR. No feature PR was merged, rebased or force-pushed.
+
+### Item 3: #297 and #298
+
+Both branches now contain `engine/return-loop` (`9f9fbc6`) through merge commits:
+
+| PR / branch | New head | GCC full suite, Debug/Werror, libpd on, JUCE off | Focused Clang Werror |
+|---|---|---|---|
+| [#297](https://github.com/arieladi/Adi/pull/297), `engine/bypass-delay` | `bc9ecf33c7ed46aa0427035cb7d427b3b113a16c` | **8575 checks / 96 suites**, validators clean | bypass, graph, host, mixer, plan, realize, retap, precision: 8/8 |
+| [#298](https://github.com/arieladi/Adi/pull/298), `engine/master-summing` | `fcfaecb6fa2cfd3c3b885de3216dbeb028392caf` | **8623 checks / 95 suites**, validators clean | graph, host, mixer, plan, realize, retap, precision: 7/7; final mixer 428 checks |
+
+The bypass merge preserved both sets of virtuals/comments and exposed an auto-merge defect: dry-history adoption had landed inside the helper newly called for both plan and chain edges, so it copied/counted each device twice. An exact-count regression failed in all four handover cases before the fix. Adoption now runs once, and counts only `DelayLine::adoptHistory` successes. A new combined return-loop test disables a 100-sample device at frame 768 while an echo is inside its history, rebuilds, and optionally changes precision. Echoes remain at 200/812/1424/2036, feedbackTrip stays 612, and device DSP stops. Final suite counts: bypass107, graph200, host124, mixer272, precision104.
+
+The master merge retained per-send console halves and all incoming tests. Added checks render sends into a group through a summed master at both precisions, and preserve distinct group-send/master-output flavours and history when master summing is disabled. Direct sends into the master remain refused by the existing planner. Mixer: **428 checks** under GCC and Clang.
+
+**For win/director:** retarget both PRs to `engine/return-loop`, and relay/watch CI for these new merge heads, including seven ABIs and MSVC `/WX`. The window's earlier green results predate these commits. `gh pr view` still fails with API Forbidden in this environment; no current remote CI success is claimed. The director must publish the already-saved environment settings with `api.github.com` allowed before Codex can handle API operations itself.
+
+### N6: snapshot metadata for the window
+
+Ready branch [`engine/snapshot-n6`](https://github.com/arieladi/Adi/tree/engine/snapshot-n6), **`98f2275501c587ef7912ce52a0a56f5023e86f81`**, based on main. Please open its PR against `main` (title: “Expose hierarchy and timeline metadata in engine snapshots”).
+
+- `TrackNode`: `parent` (int64, 0 at top), `indexInParent` (int64), `kind`, `color` (optional int64; NULL and zero remain different). Every field participates in `same()`.
+- `ClipNode::name` is read and compared by `same()`.
+- `Snapshot::meters` keeps the old step-7 `vector<textproj::Meter>` API: SQL `pos_ticks` maps to `start_ticks`, with numerator/denominator. The root is rebuilt every time; meter edits retain unchanged track/clip/tempo nodes. An implicit 4/4 at zero matches text projection and preserves bar numbering when the first stored signature is later.
+- The flat `(index_in_parent,id)` traversal is explicitly documented as not being display order.
+- **8222 checks / 95 suites**, validators clean; snapshot/engine suite **99 checks**. Clang engine/project-view suites pass. Independent edits test each field, old snapshot immutability, nullable/wide color, meter sorting/insertion/deletion, and unchanged-node sharing.
+
+**Window handoff:** after win merges N6, remove the fallback project-file reads described in STEP-7-PLAN §2.2 and use these snapshot fields. N6 is ready for review, not yet claimed landed. No UI files were changed.
+
+### Item 4: first export increment
+
+Ready branch [`engine/export-queue`](https://github.com/arieladi/Adi/tree/engine/export-queue), **`8a64ad636dce3b9255926edf47df0bce7310efe2`**, based on `engine/master-summing` at `fcfaecb`. Please open its PR against `engine/master-summing` (title: “Add export jobs and isolated master WAV rendering”).
+
+`adi/render/queue.hpp` adds application-only jobs, immutable status snapshots, pending edits/removal, explicit retry, cancellation, and retained results. Each job loads a fresh read-only Store/Session/device set under one SQLite snapshot at render start. `rows::readModel` now respects a caller-owned transaction; a concurrent committed-edit regression proves that audio and filename metadata come from one revision.
+
+The first runner streams the master into Float32 WAV, preserving 32/64 graph selection until encoding. It prerolls from zero, crops the heard range with latency compensation, bounds buffers by block/channel count, checks reads/underruns/nonfinite values, and rejects any latency/topology report, including a final-block report or a shorter branch whose change leaves total master latency unchanged. Brace names use the registry form; `{counter}` is the stable enqueue ordinal so removing results never reuses it. Cancellation/failure removes private staging only; publication never overwrites. Host message-thread contracts remain the caller's responsibility; plugin offline-quality negotiation is not added.
+
+**8708 checks / 96 suites**, all validators clean. New export suite: **85 checks**, decoding actual WAV files for ranges/PDC, fresh state, precision, 48→44.1 kHz conversion, concurrent edits, callback mutation, queue lifecycle, cancellation, racing destinations, failures and moving latency. Clang export/plan/session suites pass. The API and limitations are in `docs/ENGINE-EXPORT-QUEUE.md`; prepared PR bodies also remain in `/workspace/adi-review` in the cloud workspace.
+
+**Item 4 is not complete.** Next increments: full-width track/group/region capture and wet/dry/master-path selection, normalization/LUFS, dither and other encoders/bit depths, NI Stems export/import, job persistence and window wiring. The current API explicitly writes Float32; it does not silently claim the registry's PCM24/triangular defaults. Freeze/bounce, history/save and lazy Q/L slots remain after item 4. Existing decisions authorize independent implementation; no new approval gate is inferred from the missing UI.
+
+---
+
 ## 2026-10-29 — cloud takeover: LANES §3 item 3 implemented, integration pending
 
 The director asked Codex to take over the engine lane queue while setting up its cloud environment. The latest `engine/log` handoff through #249 was read before selecting work; the sends stack was not recreated. The newer five-lane ownership in `win/lanes-5` was checked: the window and Pd/native device work remain with their lanes.
