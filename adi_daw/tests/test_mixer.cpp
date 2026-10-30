@@ -138,6 +138,7 @@ private:
 /// A device that delays by `latency` and says so: a slow plug-in in a chain.
 class LateDevice final : public device::DeviceInstance {
 public:
+    int calls = 0;
     LateDevice(device::DeviceIdentity id, std::int32_t latency) : id_(std::move(id)), latency_(latency) {}
     [[nodiscard]] const device::DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return true; }
@@ -148,6 +149,7 @@ public:
         at_ = 0;
     }
     void process(const NodeIo& io) noexcept override {
+        ++calls;
         for (std::int32_t i = 0; i < io.frames; ++i) {
             for (std::int32_t c = 0; c < io.channels && c < 2; ++c) {
                 const auto k = static_cast<std::size_t>(c) * static_cast<std::size_t>(latency_) + at_;
@@ -201,6 +203,7 @@ struct Mix {
     /// A slow plug-in on a track's chain, `latency` samples late: a device
     /// row, made by the loader below.
     std::map<std::int64_t, std::int32_t> lateDevices;   // device id -> latency
+    std::map<std::int64_t, LateDevice*> loadedLateDevices;
     void lateDevice(std::int64_t trackId, std::int64_t deviceId, std::int32_t latency) {
         store->db().exec("INSERT OR IGNORE INTO plugin_refs(id, format, uid, vendor, name, version, subtype) "
                          "VALUES (7, 'vst3', 'adi.test.late', 'ADI', 'Late', '1.0', 'effect')");
@@ -224,7 +227,9 @@ struct Mix {
             id.format = rq.ref->format;
             id.uid = rq.ref->uid;
             id.name = rq.ref->name;
-            return std::make_unique<LateDevice>(id, it->second);
+            auto device = std::make_unique<LateDevice>(id, it->second);
+            loadedLateDevices[rq.device->id] = device.get();
+            return device;
         };
     }
     void load(double sampleRate = 48000.0, Precision precision = Precision::Float32) {
@@ -1088,6 +1093,30 @@ void testTheFeedbackLoop() {
         check(pattern(o, want).empty() && m.session.feedbackTrip(12) == 612,
               "a 100-sample plug-in on R: the dry waits for R's wet, and the echoes come 612 apart, as "
               "reported" + pattern(o, want) + " (trip " + std::to_string(m.session.feedbackTrip(12)) + ")");
+    }
+    for (const bool changePrecision : {false, true}) {
+        // At frame 768 an echo is inside R's 100-sample device delay.
+        // Bypass and rebuild must carry that history and leave D+100 intact.
+        ClickNode click(100);
+        Mix m(changePrecision ? "loop-bypass64" : "loop-bypass32");
+        loopProject(m, click);
+        m.lateDevice(4, 70, 100);
+        m.load();
+        std::vector<float> o = renderRun(m, 768, 128);
+        const auto* device = m.loadedLateDevices.at(70);
+        const int calls = device->calls;
+        check(calls > 0 && m.session.feedbackTrip(12) == 612,
+              "loop bypass control runs DSP and reports D+100");
+        m.set("device.setEnabled", 70, "enabled", false);
+        m.refresh();
+        if (changePrecision)
+            check(m.session.setPrecision(Precision::Float64), "loop bypass changes precision before handover");
+        const auto rest = renderRun(m, 2560 - 768, 128);
+        o.insert(o.end(), rest.begin(), rest.end());
+        const std::map<std::int64_t, double> want{{200, 2.0}, {812, g}, {1424, g * g}, {2036, g * g * g}};
+        check(pattern(o, want).empty() && m.session.feedbackTrip(12) == 612,
+              "bypass carries the pending echo across rebuild and keeps compensation and loop spacing" + pattern(o, want));
+        check(device->calls == calls, "bypassed return keeps echoing without device DSP");
     }
     {
         // A slow plug-in on X, the sender, moves R's junction; the loop's

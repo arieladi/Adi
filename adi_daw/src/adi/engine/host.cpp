@@ -125,7 +125,8 @@ std::int32_t GraphHost::handover(const PublishedGraph& from,
     // them, which delay too: a track delay on a strip that is not the last
     // node of its chain, a source compensated against a later input.
     return carryHistory(from.graph().planEdges(), to.graph().planEdges(), ga, gb) +
-           carryHistory(from.graph().chainEdges(), to.graph().chainEdges(), ga, gb);
+           carryHistory(from.graph().chainEdges(), to.graph().chainEdges(), ga, gb) +
+           gb.adoptBypassHistory(ga);
 }
 
 void GraphHost::process(const AudioIo& io) noexcept {

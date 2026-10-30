@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <random>
 #include <type_traits>
 
@@ -650,6 +651,7 @@ void Graph::computeCompensation() {
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
         s.inDelays.resize(s.inputs.size());
+        if (s.hasBypass) prepareLine(s.dryDelay, s.node->latencySamples());
         for (std::size_t k = 0; k < s.inputs.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
@@ -719,6 +721,8 @@ bool Graph::retapLatency() noexcept {
 
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
+        if (s.hasBypass && !s.dryDelay.beginGlide((std::max)(0, s.node->latencySamples())))
+            allFit = false;
         for (std::size_t k = 0; k < s.inputs.size() && k < s.inDelays.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
@@ -810,6 +814,7 @@ std::size_t Graph::escalateLatency(Unresolved* left) {
 
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
+        if (s.hasBypass) offer(s.dryDelay, (std::max)(0, s.node->latencySamples()));
         for (std::size_t k = 0; k < s.inputs.size() && k < s.inDelays.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             offer(s.inDelays[k], requiredDelay(s.arrival, u.arrival, u.node, s.node));
@@ -831,6 +836,7 @@ std::size_t Graph::collectRings() {
         if (line.reclaim()) ++freed;
     };
     for (Slot& s : slots_) {
+        if (s.hasBypass) take(s.dryDelay);
         for (DelayLine& d : s.inDelays) take(d);
         for (DelayLine& d : s.sideDelays) take(d);
     }
@@ -850,6 +856,7 @@ DelayLine* Graph::edgeLine(NodeId from, NodeId to, Bus bus) noexcept {
 std::size_t Graph::compensationBytes() const noexcept {
     std::size_t n = 0;
     for (const Slot& s : slots_) {
+        if (s.hasBypass) n += s.dryDelay.bytes();
         for (const DelayLine& d : s.inDelays) n += d.bytes();
         for (const DelayLine& d : s.sideDelays) n += d.bytes();
     }
@@ -859,6 +866,7 @@ std::size_t Graph::compensationBytes() const noexcept {
 std::size_t Graph::growingEdges() const noexcept {
     std::size_t n = 0;
     for (const Slot& s : slots_) {
+        if (s.hasBypass && s.dryDelay.growing()) ++n;
         for (const DelayLine& d : s.inDelays) if (d.growing()) ++n;
         for (const DelayLine& d : s.sideDelays) if (d.growing()) ++n;
     }
@@ -915,7 +923,11 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     const auto fr = static_cast<std::size_t>(maxFrames);
 
     const bool wide = precision_ == Precision::Float64;
+    bypassNodes_.clear();
     for (auto& s : slots_) {
+        s.hasBypass = s.node != nullptr && s.node->hasBypass();
+        if (s.hasBypass)
+            bypassNodes_.emplace_back(s.node, static_cast<NodeId>(&s - slots_.data()));
         // ADR-0207 d2. At 64 every slot's output is double; a node that does
         // not process double keeps a float buffer of its own as well, the
         // one it writes, so its view of its output is exactly what it is at 32.
@@ -952,6 +964,10 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         s.dozeGlides = kLinesUnchecked;
         if (s.node != nullptr) s.node->prepare(sampleRate, maxFrames);
     }
+
+    std::sort(bypassNodes_.begin(), bypassNodes_.end(), [](const auto& a, const auto& b) {
+        return std::less<Node*>{}(a.first, b.first);
+    });
 
     mixBuf_.assign(ch * fr, 0.0f);
     mixPtrs_.resize(ch);
@@ -993,6 +1009,26 @@ void Graph::release() {
         if (s.node != nullptr) s.node->release();
     prepared_ = false;
     ok_ = false;
+}
+
+std::int32_t Graph::adoptBypassHistory(const Graph& old) noexcept {
+    // A changed rate describes a different time base, not the same history.
+    if (sampleRate_ != old.sampleRate_) return 0;
+    std::size_t i = 0, j = 0;
+    std::int32_t carried = 0;
+    while (i < bypassNodes_.size() && j < old.bypassNodes_.size()) {
+        const auto& a = bypassNodes_[i];
+        const auto& b = old.bypassNodes_[j];
+        if (std::less<Node*>{}(a.first, b.first)) { ++i; continue; }
+        if (std::less<Node*>{}(b.first, a.first)) { ++j; continue; }
+        auto& dst = slots_[static_cast<std::size_t>(a.second)];
+        const auto& src = old.slots_[static_cast<std::size_t>(b.second)];
+        if (dst.dryDelay.adoptHistory(src.dryDelay)) ++carried;
+        dst.dozeGlides = kLinesUnchecked;
+        ++i;
+        ++j;
+    }
+    return carried;
 }
 
 // ---------------------------------------------------------------------------
@@ -1360,6 +1396,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
                     const TransportInfo* transport) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
     const bool wide = precision_ == Precision::Float64;
+    const bool bypass = s.hasBypass && s.node->bypassed();
     ScopeTap* const inputTap = s.node->inputTap();
     const bool advancing = transport != nullptr && transport->playing;
     const auto firstSample = transport != nullptr ? transport->timelineSample : 0;
@@ -1407,7 +1444,10 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
     // during a reactivation it answers kInfiniteTail without asking its
     // plug-in (ADR-0089 d4). Asked twice, a finite answer then an infinite
     // one made `tail + reach` below INT64_MAX plus something: an overflow.
-    const std::int64_t tail = s.node->tailSamples();
+    const std::int64_t declaredTail = s.node->tailSamples();
+    const std::int64_t tail = s.hasBypass
+        ? (std::max)(declaredTail, static_cast<std::int64_t>(s.dryDelay.reach()))
+        : declaredTail;
     const bool infinite = tail == kInfiniteTail;
 
     if (!inputSilent || hasEvents || holding) {
@@ -1437,6 +1477,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
     // The old test accepted "3 to 6 blocks" for a tail that is exactly 4.
     bool suspend = !infinite && !s.node->alwaysProcess() &&
                    inputSilent && !hasEvents && !holding && s.tailRemaining == 0;
+    if (suspend && s.hasBypass && s.dryDelay.due()) suspend = false;
     // AND NOTHING IS STILL DUE ON AN INPUT LINE (`DelayLine::due`). The tail
     // above is armed on the last loud block, with the reach of that moment.
     // A glide that reaches further, asked for during the drain, or a
@@ -1494,6 +1535,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
             // stays silent while the node sleeps (`forgetAllButSilence`).
             for (DelayLine& d : s.inDelays) d.forgetAllButSilence();
             for (DelayLine& d : s.sideDelays) d.forgetAllButSilence();
+            if (s.hasBypass) s.dryDelay.forgetAllButSilence();
         }
         return;
     }
@@ -1572,10 +1614,54 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         }
         nio.events = EventSpan{first, count};
 
-        s.node->process(nio);
-        ++stats_.nodeCalls;
+        // Keep the dry line warm even while the device runs. Write at graph
+        // precision: a bypassed float-only plug-in must not narrow the dry.
+        if (s.hasBypass) {
+            const bool immediate = s.dryDelay.delay() == 0 && !s.dryDelay.busy();
+            if (immediate) s.dryDelay.forget();
+            // Zero-latency active devices need neither a copy nor a ring
+            // write. A later latency increase primes real history, just as
+            // the graph's zero-compensation edges do (ADR-0079).
+            if (!immediate || bypass) {
+                const auto edge = s.dryDelay.beginEdge();
+                bool drySilent = true;
+                if (!anyMain) {
+                    if (wide) std::fill_n(delayScratch64_.data(), n, 0.0);
+                    else std::fill_n(delayScratch_.data(), n, 0.0f);
+                }
+                for (std::size_t c = 0; c < ch; ++c) {
+                    if (wide) {
+                        const double* src = anyMain ? mixWidePtrs_[c] + begin : delayScratch64_.data();
+                        if (immediate) std::copy_n(src, n, s.widePtrs[c] + begin);
+                        else {
+                            for (std::int32_t k = 0; k < n; ++k)
+                                if (src[k] != 0.0) drySilent = false;
+                            s.dryDelay.process(edge, static_cast<std::int32_t>(c), src,
+                                               s.widePtrs[c] + begin, n);
+                        }
+                    } else {
+                        const float* src = anyMain ? mixPtrs_[c] + begin : delayScratch_.data();
+                        if (immediate) std::copy_n(src, n, s.chanPtrs[c] + begin);
+                        else {
+                            for (std::int32_t k = 0; k < n; ++k)
+                                if (src[k] != 0.0f) drySilent = false;
+                            s.dryDelay.process(edge, static_cast<std::int32_t>(c), src,
+                                               s.chanPtrs[c] + begin, n);
+                        }
+                    }
+                }
+                // Upstream nodes can be asleep while compensated input still
+                // arrives. Only the actual mixed samples establish silence here.
+                if (!immediate) s.dryDelay.endEdge(edge, drySilent);
+            }
+        }
+        if (!bypass) {
+            if (s.hasBypass) s.node->processActive(nio);
+            else s.node->process(nio);
+            ++stats_.nodeCalls;
+        }
         // A float node in a graph at 64: its segment, widened (exact).
-        if (wide && !s.doubles) {
+        if (wide && !s.doubles && !bypass) {
             for (std::size_t c = 0; c < ch; ++c) {
                 const float* f = s.chanPtrs[c] + begin;
                 double* d = s.widePtrs[c] + begin;

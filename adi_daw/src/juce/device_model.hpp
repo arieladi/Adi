@@ -482,8 +482,8 @@ private:
 ///   * `always_process` (`devices.always_process`) forces `kInfiniteTail`,
 ///     which is ADR-0043's escape hatch for a plugin that reports no tail and
 ///     then produces one.
-///   * a bypassed device passes audio through and declares no tail and no
-///     latency, because it is not running.
+///   * a bypassed device runs no DSP; the graph supplies delayed dry audio
+///     and retains its latency (ADR-0203 d4).
 class DeviceNode final : public engine::Node {
 public:
     explicit DeviceNode(DeviceInstance& inst) : inst_(&inst) {}
@@ -492,9 +492,12 @@ public:
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
+    [[nodiscard]] bool hasBypass() const noexcept override { return true; }
+    void processActive(const engine::NodeIo& io) noexcept override;
+
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
-    [[nodiscard]] bool alwaysProcess() const noexcept override { return always_; }
+    [[nodiscard]] bool alwaysProcess() const noexcept override { return always_.load(std::memory_order_relaxed); }
     [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
     /// The instance's answer. Bypass passes through at whichever width the
     /// node is handed, so it does not change the answer.
@@ -504,20 +507,20 @@ public:
     [[nodiscard]] const char* name() const noexcept override { return "device"; }
 
     /// `devices.always_process`. Message thread.
-    void setAlwaysProcess(bool v) noexcept { always_ = v; }
+    void setAlwaysProcess(bool v) noexcept { always_.store(v, std::memory_order_relaxed); }
 
     /// `devices.enabled` = 0. A bypassed device stays in the graph so the
     /// topology — and therefore every other node's compensation — does not
     /// change when someone clicks bypass.
-    void setBypassed(bool v) noexcept { bypassed_ = v; }
-    [[nodiscard]] bool bypassed() const noexcept { return bypassed_; }
+    void setBypassed(bool v) noexcept { bypassed_.store(v, std::memory_order_relaxed); }
+    [[nodiscard]] bool bypassed() const noexcept override { return bypassed_.load(std::memory_order_relaxed); }
 
     [[nodiscard]] DeviceInstance& instance() const noexcept { return *inst_; }
 
 private:
     DeviceInstance* inst_ = nullptr;
-    bool always_ = false;
-    bool bypassed_ = false;
+    std::atomic<bool> always_{false};
+    std::atomic<bool> bypassed_{false};
 };
 
 /// A device that must be DEACTIVATED to take a new layout, rate or sample
