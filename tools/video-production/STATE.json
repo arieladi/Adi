@@ -1,5 +1,5 @@
 {
-  "as_of_utc": "2026-10-30T13:31:22.343329+00:00",
+  "as_of_utc": "2026-10-30T13:51:09.569244+00:00",
   "owner": "Codex owns user-authorized sequential Cosmic rebuild from beginning; preserve all original good takes and Claude work. Quantum complete.",
   "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected). Codex deleted both the completed Avastha monitor and obsolete rejected Cosmic120 pilot monitor on 2026-10-29; Claude Cosmic work untouched.",
   "cosmic_rain": {
@@ -83,12 +83,12 @@
       "policy": "Review raw sequential frames/clip and neighbours. Reject static subjects/camera-only change/noise/anatomy drift. Retry with failure-specific prompt/settings adjustments in new take directories, up to20 before reassessing method. Never automatically approve based on frame differences alone. Preserve existing full-track good scenes and both drafts. No paid calls/downloads."
     },
     "rebuild": {
-      "status": "Shot4take3 accepted clear continuous headturn/hairmotion cleananatomy. OriginalK005 reviewed nearlyfrozen but beautiful artwork retained; shot5take1 reanimating jewel rotation/descent/ripples from explicitlyreviewed originalkeyframe.",
+      "status": "Shot5 take1 rejected: nearly unchanged jewel silhouette and lake, only subtle facets/framing drift. Take2 now rendering a clearly articulated crystal-bud opening into petals; same reviewed original artwork. Shots1-4 retained.",
       "root": "D:/AvasthaAI/CosmicRebuild-20261030",
       "local": "D:/AvasthaAI/Projects/Cosmic Rain/rebuild-20261030",
       "code": "tools/video-production/cosmic-rebuild",
       "scope": "Preserve original0-8sec; same illustrated style/story; recurring RainKeeper, elders, silverrain, goldring/clock. More real internal movement; coherent action/identity/environment across psychedelic scenes. Original plan245slots is timing/story scaffold, NOT approved shots.",
-      "next": "Review shot5take1 actual jewelrotation/facetmotion and lake ripple development, and RainKeeper rightwardgaze -> lake cut coherence before accepting. Added reviewed source_override.json support in worker, still requires precedingacceptance. This is deliberate chapter reanchor, not blindchainface-to-landscape. OriginalK005 sixrawframes0..80 almoststatic; no fakezoom. Check30sec cumulative context after nextshots.",
+      "next": "Review shot05/take02 real petal opening and predecessor gaze-to-lake connection before accepting. SSH session70811; read receipt/history/live process rather than duplicate. If still frozen, reassess conditioning/action rather than repeat same seeds. No shot6 queued.",
       "acceptance": "Use explicit shotNN/accepted.json visual_review_passed real_subject_motion continuity_passed alltrue plus exact continuation_frame generated.frames[deliver_frames-1], selected take and evidence. Camera-motion measurements screening only. Review real action/anatomy/style/identity/energy and neighbour connection. Original good takes can be reused after contextreview; retain oldfiles. For alternatekeyframe require reviewed continuity design and explicit per-shot source support before launch; no blindrecursive245shotchain.",
       "retry": "New take on failure with documented specific changed approach; no hard retry ceiling but repeated same failure mandates method reassessment, never endless identical retries. No paidcalls/downloads. Review each30sec accumulated passage/chapters/full final.",
       "worker": "render_one.py shot take; generates ONE candidate then stops. No digital zoom/speedup/mirror fake motion. start_first_when_free.py is already launched, do not duplicate.",
@@ -98,8 +98,8 @@
         "accepted_through_frame": 524,
         "accepted_through_seconds": 21.833333333333332,
         "active_shot": 5,
-        "active_take": 1,
-        "review": "Local shot01/accepted.json and temporal-review.jpg. Real curved stream deformation and independently moving drops; mild generated camera drift. Style remains opening-like so illustrated reanchor later must be deliberate. Temporal sampling and decode, not full realtime audiovisual watch."
+        "active_take": 2,
+        "review": "Shot5take1: twelve temporal samples0-80, insufficient internal motion. Review saved; raw take preserved. No realtime audiovisual playback claim."
       }
     }
   },
