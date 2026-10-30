@@ -1,0 +1,14 @@
+{
+  "visual_review_passed": false,
+  "real_subject_motion": true,
+  "continuity_passed": false,
+  "selected_take": 1,
+  "reviewevidence": [
+    "Nine samples across41frames show incoming drops merging into a thick cyan spear/column down the centre. Fountain does not settle and surface ripples are not the dominant development.",
+    "Entry matches previous lotus lake, but endpoint adds clutter across petals and gold sphere. Real pixel/subject change alone is insufficient: this does not deliver the intended readable settling action."
+  ],
+  "strategy_change": "Simplify this short1.7second shot to fountain lowering, without asking multiple ripple/particle events. Add targeted negative conditioning against new incoming stream, spear and central column. Preserve same accepted predecessor frame.",
+  "limitations": [
+    "Temporal sample review, no realtime playback claim."
+  ]
+}
