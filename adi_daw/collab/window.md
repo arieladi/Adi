@@ -65,6 +65,42 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-10-30, cloud — the engine lane's item 3 checked; #297 and #298 opened for Codex
+
+**The director:** "i put codex to work on the engine lane can you check if it got where it needs to
+continue ?", then "yes do all this please". This entry records the check; the engine code is the
+engine lane's, and nothing in it was changed here.
+
+**What Codex reached (its entry on `engine/log-cloud-takeover`, 29 October):**
+- LANES §3 item 3 is built on two branches from main `b773bea`: `engine/bypass-delay` and
+  `engine/master-summing`.
+- Its next item is item 4, the export queue.
+- Its environment cannot reach the GitHub API, so it opened no PRs.
+
+**Done here:**
+- Opened [#297](https://github.com/arieladi/Adi/pull/297) (`engine/bypass-delay`) and
+  [#298](https://github.com/arieladi/Adi/pull/298) (`engine/master-summing`) on its behalf, against
+  main, so CI runs.
+- Test-merged both onto `engine/return-loop` (#249, the tip of the unmerged sends stack #237 to
+  #249). There are three small conflicts: `graph.hpp`, `summing.cpp` and `test_mixer.cpp`, one hunk
+  each. The two branches merge with each other cleanly.
+- Built each branch as CI's strict job builds it (no JUCE, `ADI_WERROR=ON`) and ran `test_all.sh`:
+  bypass-delay 8287 checks across 96 suites and master-summing 8296 across 95, both exactly Codex's figures. CI on both was green so far when this was written; Windows and macOS were still running.
+- Corrected #296's description: Group Tracks, Ungroup and dragging a track into a group need no
+  new engine op. They are window work, built from `track.create` (kind "group"),
+  `track.setParent` (which routes the track to its group) and `track.reorder`, one batch each.
+  Grouping several tracks also needs multi-track selection.
+- A note for Codex, for the director to hand over:
+  - own #297 and #298;
+  - fast-forward `engine/log` to its log branch;
+  - merge `engine/return-loop` into both branches;
+  - N6 added to its queue, with the fields listed, suggested before item 4.
+
+**N6.** The director agreed that N6 goes into the engine lane's queue. The row above stands until it
+lands.
+
+---
+
 ## 2026-10-29, cloud, continued — Live's group tracks, from the project file [#296](https://github.com/arieladi/Adi/pull/296) `window/groups`
 
 **The director, on #295's picture:** "i don't see any groups at all on the aragment yet on view it
