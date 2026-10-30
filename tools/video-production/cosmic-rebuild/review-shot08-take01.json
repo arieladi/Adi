@@ -1,0 +1,13 @@
+{
+  "visual_review_passed": false,
+  "real_subject_motion": false,
+  "continuity_passed": false,
+  "selected_take": 1,
+  "reviewevidence": [
+    "Twelve samples0-79 retain virtually the same sunburst/garden layout. Tiny fish/plant shifts and ray changes are too small to satisfy sustained readable internal motion. No transition can compensate for this."
+  ],
+  "strategy_change": "OriginalK008 and this reanimation both retain a dominant rigid radial backdrop. Switch to reviewed K009 jellyfish artwork as the underwater establishing scene: large articulated bell contractions and tentacle motion are more readable than tiny background detail. Same ocean chapter and palette; timing unchanged.",
+  "limitations": [
+    "Temporal sampling only; no full real-time playback claim."
+  ]
+}
