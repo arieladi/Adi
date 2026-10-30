@@ -91,7 +91,8 @@
       "next": "Monitor first-launch.lock, launch-status.json, status.json and receipts; firstshot1take1 uses exact openingframe191,93raw to90delivered at24fps. Review raw and openingjoin. Do not launch shot2 until shot1 accepted. Existing drumming test remains optional candidate only.",
       "acceptance": "Use explicit shotNN/accepted.json visual_review_passed real_subject_motion continuity_passed alltrue plus exact continuation_frame generated.frames[deliver_frames-1], selected take and evidence. Camera-motion measurements screening only. Review real action/anatomy/style/identity/energy and neighbour connection. Original good takes can be reused after contextreview; retain oldfiles. For alternatekeyframe require reviewed continuity design and explicit per-shot source support before launch; no blindrecursive245shotchain.",
       "retry": "New take on failure with documented specific changed approach; no hard retry ceiling but repeated same failure mandates method reassessment, never endless identical retries. No paidcalls/downloads. Review each30sec accumulated passage/chapters/full final.",
-      "worker": "render_one.py shot take; generates ONE candidate then stops. No digital zoom/speedup/mirror fake motion. start_first_when_free.py is already launched, do not duplicate."
+      "worker": "render_one.py shot take; generates ONE candidate then stops. No digital zoom/speedup/mirror fake motion. start_first_when_free.py is already launched, do not duplicate.",
+      "launcher": "Start-Process PID3048 did not survive SSH exit; confirmed absent/no lock/no submission, then launched persistent SSH execsession54879. Read actual processes and first-launch.lock/status, do not rely on old PID."
     }
   },
   "avastha": {
