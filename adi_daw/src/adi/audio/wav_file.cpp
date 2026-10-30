@@ -42,8 +42,10 @@ std::uint16_t sampleBytes(WavFormat f) {
 }
 WavWriter::WavWriter(const std::filesystem::path& path, std::uint32_t rate,
                      std::uint16_t channels, WavFormat format, const WavMetadata* metadata,
-                     std::uint64_t threshold)
-    : format_(format), channels_(channels), bytes_(sampleBytes(format)), threshold_(threshold) {
+                     std::uint64_t threshold, WavDither dither, std::uint64_t seed)
+    : format_(format), channels_(channels), bytes_(sampleBytes(format)), threshold_(threshold),
+      dither_(dither), randomState_(seed) {
+    require(dither == WavDither::None || dither == WavDither::Triangular || dither == WavDither::Rectangular);
     const auto align=static_cast<std::uint32_t>(channels)*bytes_;
     require(channels && rate && align<=65535 && static_cast<std::uint64_t>(align)*rate<=sentinel);
     require(!metadata || metadata->ixml.size()<sentinel);
@@ -90,7 +92,23 @@ void WavWriter::header() {
     if(factOffset_) { file_.seekp(offset(factOffset_)); put(file_,std::min(dataBytes_/(channels_*bytes_),sentinel),4); }
     file_.flush(); file_.seekp(offset(end));
 }
-void WavWriter::write(const float* input, std::uint32_t frames) {
+double WavWriter::uniform() noexcept {
+    // SplitMix64, specified unsigned arithmetic; no library distribution whose
+    // sequence could differ between standard libraries. The top 53 bits map
+    // exactly to [0,1) in double, including seed zero.
+    auto z = (randomState_ += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return static_cast<double>((z ^ (z >> 31)) >> 11) * 0x1p-53;
+}
+double WavWriter::noise() noexcept {
+    if (dither_ == WavDither::None) return 0.0;
+    const double a = uniform();
+    return dither_ == WavDither::Triangular ? a - uniform() : a - 0.5;
+}
+void WavWriter::write(const float* input, std::uint32_t frames) { writeSamples(input, frames); }
+void WavWriter::write(const double* input, std::uint32_t frames) { writeSamples(input, frames); }
+template<class Sample> void WavWriter::writeSamples(const Sample* input, std::uint32_t frames) {
     require(file_.is_open() && (input || !frames));
     const auto samples=static_cast<std::uint64_t>(frames)*channels_;
     require(samples<=std::numeric_limits<std::size_t>::max());
@@ -101,11 +119,18 @@ void WavWriter::write(const float* input, std::uint32_t frames) {
     for(std::uint64_t pos=0;pos<samples;) {
         const auto n=static_cast<std::size_t>(std::min<std::uint64_t>(capacity,samples-pos));
         for(std::size_t i=0;i<n;++i) {
-            const float f=input[static_cast<std::size_t>(pos)+i]; std::uint32_t bits;
-            if(format_==WavFormat::Float32) bits=std::bit_cast<std::uint32_t>(f);
+            const auto f=input[static_cast<std::size_t>(pos)+i]; std::uint32_t bits;
+            if(format_==WavFormat::Float32) {
+                require(!std::isfinite(f) || std::abs(static_cast<double>(f)) <= std::numeric_limits<float>::max());
+                bits=std::bit_cast<std::uint32_t>(static_cast<float>(f));
+            }
             else {
                 const double scale=bytes_==2?32768.0:8388608.0;
-                const auto value=std::isfinite(f)?std::clamp(std::round(static_cast<double>(f)*scale),-scale,scale-1):0;
+                const double dither = noise();
+                // Clamp before scaling as well: a finite double can overflow
+                // when multiplied by the integer scale. Saturate after dither.
+                const auto value=std::isfinite(f)?std::clamp(std::round(
+                    std::clamp(static_cast<double>(f),-2.0,2.0)*scale+dither),-scale,scale-1):0;
                 bits=static_cast<std::uint32_t>(static_cast<std::int32_t>(value));
             }
             for(unsigned j=0;j<bytes_;++j) buffer[i*bytes_+j]=static_cast<char>((bits>>(j*8))&255U);

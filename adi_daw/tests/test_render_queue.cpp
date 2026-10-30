@@ -50,6 +50,7 @@ struct Fixture {
         Job j;
         j.project = store->path(); j.directory = dir.path()/"out"; j.nameTemplate = pattern;
         j.beginSample = 137; j.endSample = 1003; j.session = {2,48000,64};
+        j.encoding.format = audio::WavFormat::Float32;
         return j;
     }
     void effect() {
@@ -101,11 +102,12 @@ struct Delay : device::DeviceInstance {
         if (changeAfter > 0 && processed >= changeAfter && epoch == 0) {++delay; ++epoch;}
     }
 };
-std::vector<float> read(const Result& result, std::uint64_t frames, std::uint32_t rate = 48000) {
+std::vector<float> read(const Result& result, std::uint64_t frames, std::uint32_t rate = 48000,
+                        audio::WavFormat format = audio::WavFormat::Float32) {
     check(result.state==JobState::Completed, result.error.empty() ? "job completed" : result.error.c_str());
     if (result.state!=JobState::Completed) return {};
     audio::WavReader wave(result.output);
-    check(wave.frames()==frames && wave.channels()==2 && wave.sampleRate()==rate && wave.format()==audio::WavFormat::Float32,
+    check(wave.frames()==frames && wave.channels()==2 && wave.sampleRate()==rate && wave.format()==format,
           "published WAV has exact frames, channels, rate and format");
     std::vector<float> samples(static_cast<std::size_t>(2*frames));
     check(wave.read(samples.data(),static_cast<std::uint32_t>(frames))==frames,"published samples decode");
@@ -439,6 +441,50 @@ void invalidStemSources() {
     j.source.trackId=1;j.source.tap=static_cast<OfflineTap>(77);
     check(renderWav(j,{}).state==JobState::Failed,"unsupported capture point is rejected");
 }
+void pcmExports() {
+    Fixture f;
+    check(Job{}.encoding.format==audio::WavFormat::Pcm24 && Job{}.encoding.dither==audio::WavDither::Triangular,
+          "new jobs use the Export registry's PCM24 and triangular defaults");
+    auto j=f.job("default");j.encoding=Encoding{};
+    const auto original=read(renderWav(j,{}),866,48000,audio::WavFormat::Pcm24);
+    check(!original.empty() && !matches(original,137),"default PCM24 adds dither at the final quantizer");
+    j.nameTemplate="partition";j.session.maxFrames=127;
+    check(read(renderWav(j,{}),866,48000,audio::WavFormat::Pcm24)==original,"dithered export is independent of callback partition");
+    j.nameTemplate="seed";j.encoding.ditherSeed=123;
+    check(read(renderWav(j,{}),866,48000,audio::WavFormat::Pcm24)!=original,"job dither seed changes the noise");
+    Queue q;j.nameTemplate="queued-{counter}";q.add(j);q.add(j);q.run({});const auto entries=q.snapshot();
+    check(read(entries[0].result,866,48000,audio::WavFormat::Pcm24)!=read(entries[1].result,866,48000,audio::WavFormat::Pcm24),
+          "different queued jobs have different dither streams");
+    f.effect();
+    struct Constant final : Delay {
+        double value=0;
+        void process(const NodeIo& io) noexcept override {
+            for(int c=0;c<io.channels;++c)for(int i=0;i<io.frames;++i) {
+                const int at=io.blockOffset+i;
+                if(io.wide())io.out64[c][at]=value;else io.out[c][at]=static_cast<float>(value);
+            }
+        }
+    };
+    for(const auto format:{audio::WavFormat::Pcm16,audio::WavFormat::Pcm24}) {
+        const double scale=format==audio::WavFormat::Pcm16?32768.0:8388608.0;
+        j.encoding={format,audio::WavDither::None,0};j.session.precision=Precision::Float64;
+        j.nameTemplate=format==audio::WavFormat::Pcm16 ? "double16" : "double24";
+        auto loader=[&](const DeviceRequest&,std::string&) {
+            auto d=std::make_unique<Constant>();d->delay=0;d->value=0.5+0.5/scale-0x1p-52;return d;
+        };
+        const auto samples=read(renderWav(j,loader),866,48000,format);
+        check(!samples.empty() && std::all_of(samples.begin(),samples.end(),[](float v){return v==0.5f;}),
+              "double graph reaches PCM quantization without a float interleaving boundary");
+        j.nameTemplate+="-float";j.session.precision=Precision::Float32;
+        const auto narrow=read(renderWav(j,loader),866,48000,format);
+        check(!narrow.empty() && std::all_of(narrow.begin(),narrow.end(),[&](float v){return v==0.5+1/scale;}),
+              "float graph positive control rounds the now-exact half-LSB upward");
+    }
+    j.encoding.format=static_cast<audio::WavFormat>(99);
+    check(renderWav(j,{}).state==JobState::Failed && f.noStage(),"unknown encoding fails before rendering or publication");
+    j.encoding.format=audio::WavFormat::Pcm24;j.encoding.dither=static_cast<audio::WavDither>(99);
+    check(renderWav(j,{}).state==JobState::Failed && f.noStage(),"unsupported dither has no silent fallback");
+}
 
 void namesAndValidation() {
     NameContext c{"../A{track}","B/C","G","90",3};
@@ -461,7 +507,7 @@ void namesAndValidation() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); namesAndValidation();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); namesAndValidation();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

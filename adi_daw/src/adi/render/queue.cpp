@@ -31,6 +31,10 @@ void validate(const Job& j) {
     if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
     if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
         throw std::invalid_argument("invalid direct stem source or tap");
+    if (j.encoding.format != audio::WavFormat::Float32 && j.encoding.format != audio::WavFormat::Pcm16 && j.encoding.format != audio::WavFormat::Pcm24)
+        throw std::invalid_argument("unsupported export WAV encoding");
+    if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
+        throw std::invalid_argument("unsupported export dither");
     (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
 }
 struct Stage {
@@ -189,7 +193,8 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         const auto total = static_cast<std::uint64_t>(job.endSample - job.beginSample);
         const auto channels = static_cast<std::size_t>(job.session.channels);
         const auto block = static_cast<std::size_t>(job.session.maxFrames);
-        std::vector<float> narrow(channels * block), interleaved(channels * block);
+        std::vector<float> narrow(channels * block);
+        std::vector<double> interleaved(channels * block);
         std::vector<double> wide(job.session.precision == engine::Precision::Float64 ? channels * block : 0);
         std::vector<float*> fp(channels);
         std::vector<double*> dp(wide.empty() ? 0 : channels);
@@ -200,7 +205,8 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         Stage stage(job.directory);
         const auto staged = stage.path / "render.wav";
         audio::WavWriter writer(staged, static_cast<std::uint32_t>(job.session.sampleRate),
-                                static_cast<std::uint16_t>(channels), audio::WavFormat::Float32);
+                                static_cast<std::uint16_t>(channels), job.encoding.format, nullptr,
+                                std::uint64_t{1} << 32, job.encoding.dither, job.encoding.ditherSeed ^ counter);
         auto progress = [&] {
             if (control.progress) control.progress(id, result.framesWritten, total);
             cancellation(control);
@@ -252,10 +258,11 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             for (std::int32_t f = 0; f < frames; ++f) for (std::size_t c = 0; c < channels; ++c) {
                 const auto i = static_cast<std::size_t>(f);
                 const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
-                if (!std::isfinite(value) || std::abs(value) > static_cast<double>(std::numeric_limits<float>::max()))
+                if (!std::isfinite(value) || (job.encoding.format == audio::WavFormat::Float32 &&
+                    std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
                     throw std::runtime_error("nonfinite or out-of-range audio during export");
                 if (at + f >= first)
-                    interleaved[static_cast<std::size_t>(at + f - first) * channels + c] = static_cast<float>(value);
+                    interleaved[static_cast<std::size_t>(at + f - first) * channels + c] = value;
             }
             if (first < last) {
                 const auto count = static_cast<std::uint32_t>(last - first);

@@ -10,6 +10,8 @@
 #include <iterator>
 #include <vector>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 using namespace adi::audio;
 namespace {
 // std::getenv, with MSVC's C4996 silenced at ONE site -- the same helper as
@@ -102,6 +104,68 @@ void metadata(const std::filesystem::path& p) {
  WavReader r(p);check(r.frames()==1 && r.channels()==6,"metadata skips to data");
  auto bad=b;set(bad,chunk(bad,"fmt ")+36,1,1);refuses(p,bad,"invalid extensible GUID refused");
 }
+void doubleQuantization(const std::filesystem::path& p) {
+ for(const auto format:{WavFormat::Pcm16,WavFormat::Pcm24}) {
+  const double scale=format==WavFormat::Pcm16?32768.0:8388608.0;
+  const double half=0.5/scale;
+  const std::vector<double> input{half-0x1p-52,half,half+0x1p-52,
+      -half+0x1p-52,-half,-half-0x1p-52,1,-1,1e300,-1e300,
+      std::numeric_limits<double>::infinity(),std::numeric_limits<double>::quiet_NaN()};
+  const std::vector<double> codes{0,1,1,0,-1,-1,scale-1,-scale,scale-1,-scale,0,0};
+  {WavWriter w(p,48000,1,format);w.write(input.data(),static_cast<std::uint32_t>(input.size()));}
+  WavReader r(p);std::vector<float> out(input.size());
+  check(r.read(out.data(),static_cast<std::uint32_t>(out.size()))==out.size(),"double PCM length");
+  bool exact=true;for(std::size_t i=0;i<out.size();++i)exact=exact && out[i]*scale==codes[i];
+  check(exact,"double PCM rounds sub-float half-LSB boundaries, signed ties and finite extremes correctly");
+ }
+ const std::array<std::uint32_t,4> patterns{0x80000000U,0x7fc12345U,0x3f800000U,0xff800000U};
+ std::array<float,4> samples{};for(std::size_t i=0;i<samples.size();++i)samples[i]=std::bit_cast<float>(patterns[i]);
+ {WavWriter w(p,48000,1,WavFormat::Float32,nullptr,std::uint64_t{1}<<32,WavDither::Triangular);w.write(samples.data(),4);}
+ auto b=load(p);auto d=chunk(b,"data");bool exact=true;
+ for(std::size_t i=0;i<patterns.size();++i)exact=exact && le(b,d+8+4*i,4)==patterns[i];
+ check(exact,"float input preserves NaN payload, signed zero and infinity bits; float output never dithers");
+ bool rejected=false;
+ try {WavWriter w(p,48000,1,WavFormat::Float32);const double large=1e300;w.write(&large,1);}catch(const std::exception&){rejected=true;}
+ check(rejected,"finite double beyond float range is refused for Float32");
+ rejected=false;
+ try {WavWriter w(p,48000,1,WavFormat::Pcm16,nullptr,std::uint64_t{1}<<32,static_cast<WavDither>(99));}catch(const std::exception&){rejected=true;}
+ check(rejected,"unknown WAV dither is refused");
+}
+void dither(const std::filesystem::path& p) {
+ constexpr std::uint32_t frames=65536;
+ std::vector<double> silence(frames*2,0.0);
+ for(const auto format:{WavFormat::Pcm16,WavFormat::Pcm24}) {
+  const double scale=format==WavFormat::Pcm16?32768.0:8388608.0;
+  auto write=[&](std::uint64_t seed,bool split) {
+   WavWriter w(p,48000,2,format,nullptr,std::uint64_t{1}<<32,WavDither::Triangular,seed);
+   if(split) {w.write(silence.data(),13);w.write(silence.data()+26,4097);
+    w.write(static_cast<const double*>(nullptr),0);w.write(silence.data()+8220,frames-4110);}
+   else w.write(silence.data(),frames);
+   w.close();
+  };
+  write(42,false);const auto whole=load(p);
+  std::vector<float> out(silence.size());{WavReader r(p);(void)r.read(out.data(),frames);}
+  bool bounded=true,separate=false;double sum=0,squares=0,cross=0;
+  for(std::size_t i=0;i<out.size();++i) {const double code=out[i]*scale;
+   bounded=bounded && (code==-1 || code==0 || code==1);sum+=code;squares+=code*code;
+   if(i%2==0){separate=separate || out[i]!=out[i+1];cross+=code*out[i+1]*scale;}
+  }
+  check(bounded && std::abs(sum/static_cast<double>(out.size()))<0.01 &&
+      squares/static_cast<double>(out.size())>0.24 && squares/static_cast<double>(out.size())<0.26,
+      "TPDF silence has bounded one-LSB codes, zero mean and quarter-LSB squared variance");
+  check(separate && std::abs(cross/frames)<0.01,"stereo dither is not correlated or duplicated between channels");
+  write(42,true);check(load(p)==whole,"TPDF stream is identical across write and internal buffer boundaries");
+  write(43,false);check(load(p)!=whole,"different seeds produce different dither streams");
+  {WavWriter w(p,48000,2,format);w.write(silence.data(),frames);}
+  {WavReader r(p);(void)r.read(out.data(),frames);}
+  check(std::all_of(out.begin(),out.end(),[](float v){return v==0;}),"legacy PCM writer default keeps digital silence");
+  std::vector<double> quarter(frames,0.25/scale);
+  {WavWriter w(p,48000,1,format,nullptr,std::uint64_t{1}<<32,WavDither::Rectangular,42);w.write(quarter.data(),frames);}
+  {WavReader r(p);(void)r.read(out.data(),frames);}
+  sum=0;bounded=true;for(std::uint32_t i=0;i<frames;++i){const double v=out[i]*scale;sum+=v;bounded=bounded && (v==0 || v==1);}
+  check(bounded && std::abs(sum/frames-0.25)<0.01,"rectangular half-LSB dither removes quarter-LSB DC rounding bias");
+ }
+}
 void big(const std::filesystem::path& p) {
  if(!envVar("ADI_WAV_BIG") || std::strcmp(envVar("ADI_WAV_BIG"),"1")!=0){std::puts("SKIP real >4GiB test (set ADI_WAV_BIG=1)");return;}
  constexpr std::uint32_t block=262144; constexpr std::uint64_t frames=(std::uint64_t{1}<<30)+block;
@@ -111,7 +175,7 @@ void big(const std::filesystem::path& p) {
 }
 }
 int main() {
- try {adi::test::TempDirectory tmp("wav_file","suite");auto p=tmp.path()/"test.wav";roundTrips(p);auto b=promotion(p);corrupt(p,b);shortSizes(p,b);metadata(p);big(p);}
+ try {adi::test::TempDirectory tmp("wav_file","suite");auto p=tmp.path()/"test.wav";roundTrips(p);auto b=promotion(p);corrupt(p,b);shortSizes(p,b);metadata(p);doubleQuantization(p);dither(p);big(p);}
  catch(const std::exception& e){check(false,e.what());}
  std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }
