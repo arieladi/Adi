@@ -230,6 +230,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/render/queue.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
@@ -1306,6 +1307,11 @@ add_test(NAME adi_automation_tests COMMAND adi_automation_tests)
 add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
 target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
+
+# ADR-0071/0205: queued offline master renders, isolated and published without replacement.
+add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
+target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
 
 
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
