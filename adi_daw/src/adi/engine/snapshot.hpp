@@ -26,9 +26,11 @@
 #pragma once
 
 #include "adi/engine/publisher.hpp"
+#include "adi/textproj.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,6 +64,7 @@ struct TempoMap {
 };
 
 struct ClipNode {
+    std::string name;
     std::int64_t id = 0;
     std::int64_t posTicks = 0;
     std::int64_t lengthTicks = 0;
@@ -71,6 +74,10 @@ struct ClipNode {
 
 struct TrackNode {
     std::int64_t id = 0;
+    std::int64_t parent = 0;      // 0 at the top of the tree
+    std::int64_t indexInParent = 0;
+    std::string kind;
+    std::optional<std::int64_t> color; // absent is distinct from explicit zero
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;
     bool soloed = false;
@@ -85,6 +92,9 @@ struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
     int sampleRate = 48000;
+    // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
+    // build, while unchanged tracks/clips/tempo retain structural sharing.
+    std::vector<textproj::Meter> meters;
 
     [[nodiscard]] const TrackNode* findTrack(std::int64_t id) const noexcept;
     [[nodiscard]] bool anySoloed() const noexcept;

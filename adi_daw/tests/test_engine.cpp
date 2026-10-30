@@ -24,6 +24,7 @@
 #include <exception>
 #include <filesystem>
 #include <string>
+#include <stdexcept>
 #include <thread>
 
 namespace {
@@ -261,6 +262,96 @@ void testStructuralSharing() {
           "audio thread may still be reading it");
 }
 
+void testWindowMetadata() {
+    section("N6: hierarchy, names, colors and meter edits reach immutable snapshots");
+    Scratch sc("window-metadata");
+    if (!sc.store) throw std::runtime_error("create metadata fixture");
+    auto& s = *sc.store;
+    s.db().exec("INSERT INTO project(id,name) VALUES(1,'Window');"
+                "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+                "(1,'group','Outer',10),(2,'group','Inner',3),(3,'midi','Child',7),(4,'master','Master',20);"
+                "UPDATE tracks SET parent_id=1 WHERE id=2;"
+                "UPDATE tracks SET parent_id=2 WHERE id=3;");
+    OpJournal journal(s);
+    for (int id : {10,11}) {
+        OpRequest q;
+        q.opType = "clip.create";
+        q.payload = {{"id",id},{"track",3},{"kind","midi"},{"pos",0},{"length",5765760}};
+        if (!journal.commit(q).ok) throw std::runtime_error("create metadata clip");
+    }
+    s.db().exec("UPDATE clips SET name='Phrase' WHERE id=10");
+    auto before = SnapshotBuilder::fromStore(s);
+    check(before->findTrack(1)->parent == 0 && before->findTrack(4)->parent == 0 &&
+          before->findTrack(2)->parent == 1 && before->findTrack(3)->parent == 2,
+          "top-level zero and both nested parents are projected");
+    check(before->findTrack(3)->indexInParent == 7 && before->findTrack(2)->kind == "group" &&
+          before->findTrack(4)->kind == "master", "sibling places and track kinds are projected");
+    check(!before->findTrack(3)->color && before->findTrack(3)->clips[0]->name == "Phrase",
+          "absent color remains absent and the clip keeps its name");
+    check(before->meters.size() == 1 && before->meters[0].start_ticks == 0 &&
+          before->meters[0].numerator == 4 && before->meters[0].denominator == 4,
+          "an empty signature map has the implicit 4/4 at zero");
+
+    auto editTrack = [&](const char* sql, auto value, const std::string& label) {
+        s.db().exec(sql);
+        auto after = SnapshotBuilder::fromStore(s, *before);
+        check(value(*after->findTrack(3)) && !value(*before->findTrack(3)), label + " changes only in the new snapshot");
+        check(after->findTrack(3) != before->findTrack(3) &&
+              after->findTrack(3)->clips == before->findTrack(3)->clips &&
+              after->findTrack(1) == before->findTrack(1) && after->findTrack(2) == before->findTrack(2) &&
+              after->findTrack(4) == before->findTrack(4) && after->tempo == before->tempo,
+              label + " replaces its track, sharing its clips and unrelated nodes");
+        auto unchanged = SnapshotBuilder::fromStore(s, *after);
+        check(unchanged->findTrack(3) == after->findTrack(3), label + " shares again when unchanged");
+        before = std::move(after);
+    };
+    editTrack("UPDATE tracks SET parent_id=1 WHERE id=3", [](const TrackNode& t) {return t.parent==1;}, "parent");
+    editTrack("UPDATE tracks SET index_in_parent=1 WHERE id=3", [](const TrackNode& t) {return t.indexInParent==1;}, "place");
+    editTrack("UPDATE tracks SET kind='audio' WHERE id=3", [](const TrackNode& t) {return t.kind=="audio";}, "kind");
+    editTrack("UPDATE tracks SET color=0 WHERE id=3", [](const TrackNode& t) {return t.color==0;}, "explicit zero color");
+    editTrack("UPDATE tracks SET color=2309737967 WHERE id=3", [](const TrackNode& t) {return t.color==2309737967LL;}, "wide color");
+    editTrack("UPDATE tracks SET color=NULL WHERE id=3", [](const TrackNode& t) {return !t.color;}, "cleared color");
+    editTrack("UPDATE tracks SET parent_id=NULL WHERE id=3", [](const TrackNode& t) {return t.parent==0;}, "top-level parent");
+
+    s.db().exec("UPDATE clips SET name='Renamed' WHERE id=10");
+    auto renamed = SnapshotBuilder::fromStore(s, *before);
+    const auto& oldClips = before->findTrack(3)->clips;
+    const auto& newClips = renamed->findTrack(3)->clips;
+    check(newClips[0]->name=="Renamed" && oldClips[0]->name=="Phrase" && newClips[0]!=oldClips[0],
+          "renaming a clip replaces its node and preserves the previous name");
+    check(renamed->findTrack(3)!=before->findTrack(3) && newClips[1]==oldClips[1] &&
+          renamed->findTrack(1)==before->findTrack(1) && renamed->tempo==before->tempo,
+          "a clip rename rebuilds only its path to the root");
+    auto unchanged = SnapshotBuilder::fromStore(s, *renamed);
+    check(unchanged->findTrack(3)==renamed->findTrack(3), "unchanged clip names retain sharing");
+    before = std::move(renamed);
+
+    auto editMeters = [&](const char* sql, auto value, const std::string& label) {
+        s.db().exec(sql);
+        auto after = SnapshotBuilder::fromStore(s, *before);
+        check(value(after->meters) && !value(before->meters), label + " is visible only in the new root");
+        check(after->tracks==before->tracks && after->tempo==before->tempo,
+              label + " shares all track, clip and tempo nodes");
+        before = std::move(after);
+    };
+    editMeters("INSERT INTO time_signature_map VALUES(1,46126080,3,4)",
+               [](const auto& m) {return m.size()==2 && m[1].start_ticks==46126080;}, "late first signature");
+    check(textproj::renderPosition(46126080,before->meters)=="3|1|0",
+          "implicit 4/4 before a late first signature preserves bar numbering");
+    editMeters("INSERT INTO time_signature_map VALUES(2,57657600,5,8)",
+               [](const auto& m) {return m.size()==3 && m[2].numerator==5;}, "signature insertion");
+    editMeters("UPDATE time_signature_map SET pos_ticks=69189120 WHERE id=1",
+               [](const auto& m) {return m[1].numerator==5 && m[2].start_ticks==69189120;}, "signature position and sorting");
+    editMeters("UPDATE time_signature_map SET numerator=255 WHERE id=1",
+               [](const auto& m) {return m.back().numerator==255;}, "signature numerator");
+    editMeters("UPDATE time_signature_map SET denominator=128 WHERE id=1",
+               [](const auto& m) {return m.back().denominator==128;}, "signature denominator");
+    editMeters("INSERT INTO time_signature_map VALUES(3,0,7,8)",
+               [](const auto& m) {return m.size()==3 && m.front().numerator==7 && m.front().denominator==8;}, "explicit signature at zero");
+    editMeters("DELETE FROM time_signature_map WHERE id=1",
+               [](const auto& m) {return m.size()==2 && m.back().numerator==5;}, "signature deletion");
+}
+
 // --- tempo ----------------------------------------------------------------------------
 
 void testTempoConversion() {
@@ -447,6 +538,7 @@ int main() {
         testStrictlyGreater();
         testConcurrentHandoff();
         testStructuralSharing();
+        testWindowMetadata();
         testTempoConversion();
         testSnapshotFromRealProject();
         testDeviceSeam();
