@@ -887,6 +887,7 @@ std::int32_t Graph::compensationFor(NodeId from, NodeId to, Bus bus) const noexc
 void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     ok_ = false;
     prepared_ = false;
+    renderedFrames_ = 0;
     error_.clear();
     stats_ = GraphStats{};
 
@@ -1600,7 +1601,59 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
     s.silent = allZero;
 }
 
+void Graph::writeNodeOutput(NodeId id, const AudioIo& io) const noexcept {
+    const Slot& outSlot = slots_[static_cast<std::size_t>(id)];
+    const std::int32_t n = (std::min)(io.numOut, channels_);
+    const bool wide = precision_ == Precision::Float64;
+    const auto frames = io.frames;
+    const auto bytes = static_cast<std::size_t>(frames);
+    for (std::int32_t c = 0; c < n; ++c) {
+        const auto k = static_cast<std::size_t>(c);
+        // A device is float: a graph at 64 is narrowed once, here, at the
+        // last moment (ADR-0207 d2). `out64` takes it whole.
+        if (float* dst = io.out != nullptr ? io.out[c] : nullptr) {
+            if (wide) {
+                const double* w = outSlot.widePtrs[k];
+                for (std::int32_t i = 0; i < frames; ++i) dst[i] = static_cast<float>(w[i]);
+            } else {
+                std::memcpy(dst, outSlot.chanPtrs[k], bytes * sizeof(float));
+            }
+        }
+        if (double* wdst = io.out64 != nullptr ? io.out64[c] : nullptr) {
+            if (wide) {
+                std::memcpy(wdst, outSlot.widePtrs[k], bytes * sizeof(double));
+            } else {
+                const float* f = outSlot.chanPtrs[k];
+                for (std::int32_t i = 0; i < frames; ++i) wdst[i] = f[i];
+            }
+        }
+    }
+}
+
+bool Graph::copyNodeOutput(NodeId id, const AudioIo& io) const noexcept {
+    for (std::int32_t c = 0; c < io.numOut; ++c) {
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            if (io.out && io.out[c]) io.out[c][i] = 0.0f;
+            if (io.out64 && io.out64[c]) io.out64[c][i] = 0.0;
+        }
+    }
+    if (!ok_ || !prepared_ || id < 0 || static_cast<std::size_t>(id) >= slots_.size() ||
+        renderedFrames_ <= 0 || io.frames != renderedFrames_ || io.numOut < 0)
+        return false;
+    writeNodeOutput(id, io);
+    return true;
+}
+
+std::optional<std::int64_t> Graph::outputLatencyOf(NodeId id) const noexcept {
+    if (!ok_ || !prepared_ || id < 0 || static_cast<std::size_t>(id) >= slotLatency_.size())
+        return std::nullopt;
+    const auto i = static_cast<std::size_t>(id);
+    return static_cast<std::int64_t>(slotArrival_[i].load(std::memory_order_relaxed)) +
+           static_cast<std::int64_t>(slotLatency_[i].load(std::memory_order_relaxed));
+}
+
 void Graph::process(const AudioIo& io) noexcept {
+    renderedFrames_ = 0;
     // Silence first and unconditionally, before any early return. A callback
     // that returns without writing hands the driver whatever was in that
     // memory, and on a first callback that is uninitialised.
@@ -1666,31 +1719,7 @@ void Graph::process(const AudioIo& io) noexcept {
     }
 
     // --- out ---------------------------------------------------------------
-    const Slot& outSlot = slots_[static_cast<std::size_t>(output_)];
-    const std::int32_t n = (std::min)(io.numOut, channels_);
-    const bool wide = precision_ == Precision::Float64;
-    const auto bytes = static_cast<std::size_t>(frames);
-    for (std::int32_t c = 0; c < n; ++c) {
-        const auto k = static_cast<std::size_t>(c);
-        // A device is float: a graph at 64 is narrowed once, here, at the
-        // last moment (ADR-0207 d2). `out64` takes it whole.
-        if (float* dst = io.out != nullptr ? io.out[c] : nullptr) {
-            if (wide) {
-                const double* w = outSlot.widePtrs[k];
-                for (std::int32_t i = 0; i < frames; ++i) dst[i] = static_cast<float>(w[i]);
-            } else {
-                std::memcpy(dst, outSlot.chanPtrs[k], bytes * sizeof(float));
-            }
-        }
-        if (double* wdst = io.out64 != nullptr ? io.out64[c] : nullptr) {
-            if (wide) {
-                std::memcpy(wdst, outSlot.widePtrs[k], bytes * sizeof(double));
-            } else {
-                const float* f = outSlot.chanPtrs[k];
-                for (std::int32_t i = 0; i < frames; ++i) wdst[i] = f[i];
-            }
-        }
-    }
+    writeNodeOutput(output_, io);
 
     // A source off may have spent several blocks in a compensation queue.
     // Acknowledge only after it actually reaches a note consumer or output.
@@ -1710,6 +1739,7 @@ void Graph::process(const AudioIo& io) noexcept {
     // Last, after every use of this block's times. Deferred events are keyed
     // to it, so advancing it early would make everything due one block late.
     now_ += frames;
+    renderedFrames_ = frames;
 }
 
 // ---------------------------------------------------------------------------

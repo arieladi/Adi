@@ -20,7 +20,7 @@ namespace fs = std::filesystem;
 namespace {
 void validate(const Job& j) {
     if (j.project.empty() || j.directory.empty()) throw std::invalid_argument("project and output directory are required");
-    if (j.beginSample < 0 || j.endSample <= j.beginSample) throw std::invalid_argument("export range must be nonempty and nonnegative");
+    if (!j.regionId && (j.beginSample < 0 || j.endSample <= j.beginSample)) throw std::invalid_argument("export range must be nonempty and nonnegative");
     if (!std::isfinite(j.session.sampleRate) || j.session.sampleRate < 8000 || j.session.sampleRate > 768000 ||
         std::floor(j.session.sampleRate) != j.session.sampleRate)
         throw std::invalid_argument("export sample rate must be an integer from 8000 through 768000");
@@ -28,7 +28,10 @@ void validate(const Job& j) {
         throw std::invalid_argument("export needs 1..64 channels and 1..4096 frames per block");
     if (j.session.precision != engine::Precision::Float32 && j.session.precision != engine::Precision::Float64)
         throw std::invalid_argument("unknown processing precision");
-    (void)resolveName(j.nameTemplate, {"project","master","group","120",1});
+    if (j.regionId && *j.regionId <= 0) throw std::invalid_argument("region ID must be positive");
+    if (j.source.trackId < 0 || (j.source.tap != engine::OfflineTap::PreFader && j.source.tap != engine::OfflineTap::PostFader))
+        throw std::invalid_argument("invalid direct stem source or tap");
+    (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
 }
 struct Stage {
     fs::path path;
@@ -45,10 +48,44 @@ struct Stage {
     }
     ~Stage() { std::error_code ec; fs::remove_all(path, ec); }
 };
-std::int64_t addLatency(std::int64_t position, std::int32_t latency) {
+std::int64_t addLatency(std::int64_t position, std::int64_t latency) {
     if (latency > 0 && position > std::numeric_limits<std::int64_t>::max() - latency)
         throw std::invalid_argument("export range plus latency overflows");
-    return position + latency; // position >= 0; negative int32 latency cannot underflow
+    return position + latency; // position >= 0; cached endpoint latency is the sum of two int32 values
+}
+std::int64_t positiveEnd(std::int64_t begin, std::int64_t length) {
+    if (begin < 0 || length <= 0 || begin > std::numeric_limits<std::int64_t>::max()-length)
+        throw std::invalid_argument("invalid export region bounds");
+    return begin+length;
+}
+std::int64_t nsSample(std::int64_t ns, std::int64_t rate) {
+    // Integer nearest-sample rounding, avoiding overflow even at INT64_MAX ns.
+    constexpr std::int64_t billion=1000000000;
+    return (ns/billion)*rate + ((ns%billion)*rate+billion/2)/billion;
+}
+std::int64_t tickSample(std::int64_t ticks, const engine::TempoMap& tempo, double rate) {
+    const double sample=tempo.ticksToSeconds(ticks)*rate;
+    if (!std::isfinite(sample) || sample < 0 || sample >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+        throw std::invalid_argument("export region exceeds the supported timeline");
+    return static_cast<std::int64_t>(std::llround(sample));
+}
+void resolveRegion(Job& job, const rows::Model& model, const engine::TempoMap& tempo, NameContext& names) {
+    const auto region=std::find_if(model.markers.begin(),model.markers.end(),
+        [&](const auto& m) {return m.id==*job.regionId;});
+    if (region==model.markers.end() || region->kind!="cycle")
+        throw std::invalid_argument("export region must name a cycle marker");
+    if (region->timeBase==0 && region->posTicks && region->lengthTicks) {
+        const auto end=positiveEnd(*region->posTicks,*region->lengthTicks);
+        job.beginSample=tickSample(*region->posTicks,tempo,job.session.sampleRate);
+        job.endSample=tickSample(end,tempo,job.session.sampleRate);
+    } else if (region->timeBase==1 && region->posNs && region->lengthNs) {
+        const auto end=positiveEnd(*region->posNs,*region->lengthNs);
+        const auto rate=static_cast<std::int64_t>(job.session.sampleRate);
+        job.beginSample=nsSample(*region->posNs,rate);
+        job.endSample=nsSample(end,rate);
+    } else throw std::invalid_argument("export region has no length in its time base");
+    if (job.endSample<=job.beginSample) throw std::invalid_argument("export region is shorter than one output sample");
+    names.region=region->name;
 }
 struct Cancelled {};
 void cancellation(const Control& c) { if (c.stop.stop_requested()) throw Cancelled{}; }
@@ -70,6 +107,7 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
         else if (token == "track") name += context.track;
         else if (token == "group") name += context.group;
         else if (token == "bpm") name += context.bpm;
+        else if (token == "region") name += context.region;
         else if (token == "counter") name += std::to_string(context.counter);
         else throw std::invalid_argument("unknown export name token: " + token);
         at = end + 1;
@@ -90,7 +128,7 @@ std::string resolveName(const std::string& pattern, const NameContext& context) 
     return name;
 }
 
-Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
+Result renderWav(Job job, engine::DeviceLoader loader, Control control,
                        JobId id, std::uint64_t counter) {
     Result result;
     try {
@@ -114,8 +152,22 @@ Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
                 throw std::runtime_error(why);
             }
             names.project = store->db().execAndGet("SELECT name FROM project WHERE id=1").getString();
-            for (const auto& track : session.model().tracks) if (track.kind == "master") names.track = track.name;
+            const auto& tracks = session.model().tracks;
+            auto selected = tracks.end();
+            for (auto it = tracks.begin(); it != tracks.end(); ++it)
+                if (job.source.trackId ? it->id == job.source.trackId : it->kind == "master") { selected=it; break; }
+            if (selected == tracks.end()) throw std::runtime_error("export source track is missing");
+            job.source.trackId = selected->id;
+            names.track = selected->name;
+            auto parent = selected;
+            for (std::size_t depth = 0; parent != tracks.end() && depth < tracks.size(); ++depth) {
+                if (parent->kind == "group") { names.group=parent->name; break; }
+                if (!parent->parentId) break;
+                const auto idOfParent = *parent->parentId;
+                parent = std::find_if(tracks.begin(), tracks.end(), [idOfParent](const auto& t) {return t.id==idOfParent;});
+            }
             const auto snap = engine::SnapshotBuilder::fromStore(*store);
+            if (job.regionId) resolveRegion(job, session.model(), *snap->tempo, names);
             names.bpm = textproj::renderF64(snap->tempo->bpmAt(snap->tempo->secondsToTicks(
                 static_cast<double>(job.beginSample) / job.session.sampleRate)));
             snapshot.commit();
@@ -126,7 +178,9 @@ Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
         if (fs::exists(result.output)) throw std::runtime_error("export destination already exists");
         const auto* graph = session.graph().currentGraph();
         if (!graph) throw std::runtime_error("export has no master graph");
-        const auto latency = graph->latencySamples();
+        const auto endpoint = session.offlineOutput(job.source.trackId, job.source.tap);
+        if (!endpoint) throw std::runtime_error("export source has no audio output at the selected tap");
+        const auto latency = endpoint->latency;
         auto& coalescer = session.devices().coalescer();
         coalescer.setQuietPeriodMs(0); // offline jobs must not outrun the live debounce
         const auto reports = coalescer.stats().reports;
@@ -144,7 +198,7 @@ Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
             if (!wide.empty()) dp[c] = wide.data() + c * block;
         }
         Stage stage(job.directory);
-        const auto staged = stage.path / "master.wav";
+        const auto staged = stage.path / "render.wav";
         audio::WavWriter writer(staged, static_cast<std::uint32_t>(job.session.sampleRate),
                                 static_cast<std::uint16_t>(channels), audio::WavFormat::Float32);
         auto progress = [&] {
@@ -174,7 +228,8 @@ Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
             session.tick(elapsed);
             // A shorter branch can change compensation without changing the
             // master's total latency. Any latency/shape report invalidates the run.
-            if (coalescer.stats().reports != reports || session.graph().currentGraph()->latencySamples() != latency)
+            if (coalescer.stats().reports != reports || session.graph().currentGraph() != graph ||
+                graph->outputLatencyOf(endpoint->node) != latency)
                 throw std::runtime_error("device latency or topology changed during export; retry after it settles");
         };
         // Preroll from zero preserves instruments, effects and automation.
@@ -186,7 +241,10 @@ Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
             io.out = dp.empty() ? fp.data() : nullptr;
             io.out64 = dp.empty() ? nullptr : dp.data();
             io.numOut = job.session.channels; io.frames = frames;
-            session.process(io);
+            engine::AudioIo processIo;
+            processIo.frames = frames;
+            session.process(processIo); // the whole graph, including unexported sidechains and returns
+            if (!graph->copyNodeOutput(endpoint->node, io)) throw std::runtime_error("export source has no complete rendered block");
             if (session.clips()->readErrors() || session.clips()->underrunSamples()) throw std::runtime_error("export clip read failed or underrun");
             const auto first = (std::max)(at, rawBegin);
             const auto last = at + frames;
@@ -222,6 +280,17 @@ Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
         result.state = JobState::Failed; result.error = "unknown exception during export";
     }
     return result;
+}
+
+Result renderMasterWav(Job job, engine::DeviceLoader loader, Control control,
+                       JobId id, std::uint64_t counter) {
+    if (job.source.trackId != 0 || job.source.tap != engine::OfflineTap::PostFader) {
+        Result result;
+        result.state = JobState::Failed;
+        result.error = "renderMasterWav requires the default master source; use renderWav for stems";
+        return result;
+    }
+    return renderWav(std::move(job), std::move(loader), std::move(control), id, counter);
 }
 
 JobId Queue::add(Job job) {
@@ -265,7 +334,7 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
         try {
             // The enqueue ordinal is stable across removal/retry. Reusing a
             // vector index would reuse names of completed files after removal.
-            result = renderMasterWav(job, loader, control, id, id);
+            result = renderWav(job, loader, control, id, id);
         } catch (const std::exception& e) {
             result.state = JobState::Failed; result.error = e.what();
         } catch (...) {

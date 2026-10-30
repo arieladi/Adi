@@ -1,7 +1,7 @@
-# Engine export queue: first runner
+# Engine export queue: WAV jobs and direct stems
 
 `adi/render/queue.hpp` implements the first engine increment of ADR-0071 and
-ADR-0205: editable application jobs and an isolated master-to-Float32-WAV runner.
+ADR-0205: editable application jobs and an isolated direct-to-Float32-WAV runner.
 Jobs are not project operations and do not enter project history.
 
 ```cpp
@@ -17,6 +17,23 @@ const auto id = queue.add(job);
 queue.run(deviceLoader, control);
 const auto entries = queue.snapshot();
 ```
+
+The default source is the master. Set `job.source.trackId` to an audio, MIDI,
+instrument, group, return or master track ID for a direct wet stem. Zero selects
+the project's master when rendering starts. `source.tap` defaults to
+`engine::OfflineTap::PostFader`: after the track's effects and mixer strip, before
+its parent's console channel encoder. `PreFader` captures after the track's own
+effects but before its strip's gain, pan, mute and track delay. It is still wet.
+A group includes its own summing and effects; a child stem excludes its parents'
+effects. Other tracks and returns keep running, including dependencies of the
+selected source. This is not an isolated pass through the master.
+
+Set `job.regionId` to a cycle marker ID to use that single region instead of
+`beginSample`/`endSample`. The runner resolves its current name and bounds when
+the job starts. Tick-based regions use the current tempo map; absolute regions
+use nanoseconds. It rounds the absolute start and end separately to the nearest
+output sample, refusing missing, malformed or empty ranges. Independent region
+jobs are not ADR-0070's continuous, gapless region batch.
 
 The caller supplies the same kind of `engine::DeviceLoader` used for playback.
 Every job opens a fresh read-only Store and Session, with fresh device instances.
@@ -38,16 +55,19 @@ Failed/cancelled jobs require `retry()`. Failure advances to the next job;
 cancellation leaves the remaining jobs pending. A stop requested before a queue
 run leaves all its jobs pending.
 
-Rendering preserves the project's mixer, sends, mute, solo and automation. It
-prerolls from zero to retain effect/instrument history, compensates the output's
+Rendering preserves the project's mixer, sends, solo and automation; the selected
+tap determines whether the source strip's controls are included. It
+prerolls from zero to retain effect/instrument history, compensates the selected output's
 latency, and writes exactly `[beginSample, endSample)`, including a short final
 block. Audio buffers are bounded by the selected channel count and block size.
 Float64 graph output is narrowed only at Float32 encoding. Missing devices,
 unsupported playback, read errors, underruns, nonfinite/out-of-range samples,
 and latency/topology reports fail the job rather than publishing degraded audio.
 
-Names support `{project}`, `{track}` (the master name), `{group}` (empty for a
-master job), `{bpm}` at range start, and `{counter}` (the stable, one-based enqueue
+Names support `{project}`, `{track}` (the source name), `{group}` (the selected
+group's name or its nearest ancestor group's name, otherwise empty), `{region}`
+(the selected cycle marker's name, otherwise empty), `{bpm}` at range start,
+and `{counter}` (the stable, one-based enqueue
 ordinal, unchanged by removal or retry). `{{` and `}}` escape braces.
 Unknown or unmatched braces are errors. Expanded values are sanitized into one
 portable filename component; values cannot introduce folders or more tokens.
@@ -61,12 +81,22 @@ Publication uses `media::publishFile`: its fallback verifies a copy, but that co
 can be visible while in progress. No universal atomic-visibility guarantee is made.
 
 This API explicitly produces Float32 WAV. It does not yet apply the registry's
-PCM24/triangular-dither defaults. Track/group/region stems, wet/dry and master-path
-choices, normalization/LUFS, other encoders and bit depths, NI Stems import/export,
-queue persistence, and the Export window remain subsequent increments. There is
+PCM24/triangular-dither defaults. Dry and isolated through-master choices,
+continuous gapless region batches, normalization/LUFS, other encoders and bit
+depths, NI Stems import/export, queue persistence, and the Export window remain
+subsequent increments. There is
 no new schema or silent fallback for these options.
+
+`renderWav` runs a single job directly; the queue uses it. The compatibility
+entry point `renderMasterWav` accepts only the default master source and reports
+a failure for an explicit track or pre-fader tap.
 
 `adi_render_queue_tests` decodes actual WAVs to check job edits, precise cropped
 ranges, plugin latency plus parallel compensation, fresh state, both graph
 precisions, track delay, concurrent project edits, callback mutations, queue
 lifecycle, cancellation, publication collisions, failures and changing latency.
+Stem checks cover group and console boundaries, return-loop echoes, multichannel
+audio and edited musical/absolute regions. `adi_offline_capture_tests` verifies
+all 64 channels, double precision, segmented blocks, sidechain dependencies,
+silence, stale-block refusal and allocation-free capture without changing the
+master output or compensation.
