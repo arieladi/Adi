@@ -1,0 +1,8 @@
+{
+  "passed": false,
+  "selected_take": 1,
+  "real_motion_present": true,
+  "reason": "Early droplets enter oversized from left then shrink into a neat bead-like row; last half has weak development and frozen ornament appearance. This is not the desired natural continuously evolving cosmic rain. Entry aligns with previous shot, but visual quality/development fail. Do not advance to shot3.",
+  "evidence": "12 temporal samples0-80: large blobs frames6/12, shrinking row20-44, near-repeated necklace arrangement52-80.",
+  "next_change": "Remove chain of reflective spiral drops and repeated tiny objects. One coherent stream sheds small irregular moving droplets throughout; preserve foreground scale and avoid camera-approaching blobs. Continuous flow from first through last frame."
+}
