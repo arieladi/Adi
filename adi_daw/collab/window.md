@@ -112,6 +112,17 @@ Its environment still cannot reach the API, so the window lane:
 The director was told how to give Codex access: `api.github.com` with write methods in its
 environment, and a narrow token as an environment variable.
 
+**30 to 31 October, more of the same relay.**
+- Opened [#301](https://github.com/arieladi/Adi/pull/301) (`engine/export-stems`, against #300) and
+  [#302](https://github.com/arieladi/Adi/pull/302) (`engine/export-pcm`, against #301).
+- #298's Windows MSVC Debug job first timed out in `adi_mixer_tests`. Codex split those tests into
+  `adi_master_summing_tests` and removed a C4456 shadowing warning.
+- The job then hit its 45-minute step limit twice, on slow machines; one re-run is the limit. Every
+  test that finished passed, and the same commit passed within #300 to #302.
+- So the Windows Debug test step has no margin under 45 minutes. That is win's decision (CI) and/or
+  the engine lane's (test time), written on #298.
+- #297, #299, #300, #301 and #302 are green on all 19 checks.
+
 **N6 is #299.** It carries `parent`, `indexInParent`, `kind` and an optional `color` on each track,
 the clip's `name`, and the meters. Once it merges, the window does STEP-7-PLAN §2.2 items 2 to 6.
 The row above stands until then.
