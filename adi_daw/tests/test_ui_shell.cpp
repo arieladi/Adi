@@ -814,6 +814,33 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(laneTop(root, 10) == -200 && laneTop(root, 1) == footY + 96 && laneTop(root, 2) == footY,
           "scrolled, the tracks move and the foot stays");
+    // A row scrolled partly above the lanes: its track controls show no more than its lane does,
+    // and take no click above the lanes (window/controls-clip).
+    {
+        lanes.scrollY = 24;
+        root.arrangement.changed();
+        root.frame();
+        const int top = root.arrangement.topHeight();
+        const MixerStrip *first = nullptr;
+        for (const auto &strip : root.mixer.strips())
+            if (strip->isVisible() && strip->track() == 10)
+                first = strip.get();
+        auto &panel = root.mixer;
+        check(first != nullptr && first->getY() == top - 24 && panel.rowsBand().getStart() == top,
+              "Track 1's controls half above the lanes, as its lane is");
+        auto *strip = const_cast<MixerStrip *>(first);
+        check(strip != nullptr && !strip->hitTest(20, 10) && strip->hitTest(20, 30) &&
+                  panel.getComponentAt(20, top - 14) != strip,
+              "above the lanes a click is not the row's; level with them it is");
+        juce::Image image(juce::Image::ARGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            panel.paintEntireComponent(g, true);
+        }
+        check(image.getPixelAt(20, top - 10) == image.getPixelAt(20, 2) &&
+                  image.getPixelAt(20, top + 10) != image.getPixelAt(20, 2),
+              "the frame's band stands in front of the row above the lanes; the row shows below");
+    }
     lanes.scrollY = 100000;
     check(lanes.maxScroll(root.reader()) == 12 * 48 - ArrangementGeometry::kMinTrackHeight,
           "the tracks scroll no further than their last sliver");
@@ -860,6 +887,22 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
         file.deleteFile();
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        // Half a row scrolled above the lanes: the names, the lanes and the track controls cut
+        // at the same line.
+        lanes.scrollY = 24;
+        root.arrangement.changed();
+        root.mark(DirtySet::All);
+        root.frame();
+        juce::Image cut(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(cut);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto cutFile = juce::File(folder).getChildFile("adi-controls-clip.png");
+        cutFile.deleteFile();
+        if (auto stream = cutFile.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(cut, *stream);
     }
 }
 } // namespace

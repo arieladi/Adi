@@ -41,6 +41,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
+    bool hitTest(int x, int y) override;
     std::int64_t track() const noexcept { return track_; }
     bool dragging() const noexcept { return dragging_; }
     float peak() const noexcept { return peak_; }
@@ -89,9 +91,14 @@ class MixerPanel final : public juce::Component {
     void frame(bool changed) noexcept;
     void resized() override;
     void paint(juce::Graphics &) override;
+    // The frame above and below the lanes stands in front of a row scrolled past either edge.
+    void paintOverChildren(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     void contextMenu(juce::Point<int>);
+    // Where the track controls' rows show, level with the arrangement's lanes, in this panel's
+    // coordinates; the whole height for the Mixer View.
+    juce::Range<int> rowsBand() const noexcept;
     // Fetch every bound row's tap again: after the audio device changes, the taps do.
     void retap();
     // Move Focus to Mixer (§42.16): the Track Activator of the track's strip, else of the
@@ -117,6 +124,8 @@ class MixerPanel final : public juce::Component {
   private:
     void place();
     void placeColumns();
+    // Live's frame above the rows: the band, and H and W beside the Overview's end.
+    void paintTop(juce::Graphics &) const;
     bool vertical_;
     int scrollX_ = 0;
     std::vector<std::unique_ptr<MixerStrip>> strips_;

@@ -411,6 +411,13 @@ void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const 
                        juce::Justification::centredLeft);
     }
 }
+bool MixerStrip::hitTest(int x, int y) {
+    // Above or below the lanes the panel's frame stands in front (MixerPanel::paintOverChildren),
+    // so a click there is not this row's, nor any of its controls'.
+    if (!panel_.rowsBand().contains(getY() + y))
+        return false;
+    return juce::Component::hitTest(x, y);
+}
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     if (!e.mods.isPopupMenu())
         return;
@@ -577,8 +584,9 @@ void MixerPanel::place() {
     // sight.
     const auto foot = geometry.footStart(tracks);
     const int footY = bodyTop + geometry.footTop(root.reader());
+    const int bandEnd = rowsBand().getEnd();
     auto inSight = [&](std::size_t i, int y, int h) {
-        return h > 0 && y + h > bodyTop && y < (i < foot ? std::min(footY, getHeight()) : getHeight());
+        return h > 0 && y + h > bodyTop && y < (i < foot ? std::min(footY, bandEnd) : bandEnd);
     };
     std::size_t wanted = 0;
     int y = bodyTop - geometry.scrollY;
@@ -644,6 +652,11 @@ void MixerPanel::paint(juce::Graphics &g) {
     g.fillRect(0, bottom, getWidth(), std::max(0, getHeight() - bottom - ArrangementView::kTimeRulerHeight));
     g.setColour(look::separator);
     g.fillRect(0, bottom, 2, getHeight() - bottom);
+    paintTop(g);
+}
+void MixerPanel::paintTop(juce::Graphics &g) const {
+    g.setColour(look::band);
+    g.fillRect(0, 0, getWidth(), rowsBand().getStart());
     // H and W, Live's Optimize Arrangement Height and Width, beside the Overview's end.
     g.setFont(look::font(12.f));
     for (const auto &[label, x] : {std::pair{"H", getWidth() - 43}, std::pair{"W", getWidth() - 21}}) {
@@ -652,6 +665,29 @@ void MixerPanel::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.drawText(label, r, juce::Justification::centred);
     }
+}
+juce::Range<int> MixerPanel::rowsBand() const noexcept {
+    if (vertical_)
+        return {0, getHeight()};
+    const int top = root.arrangement.topHeight();
+    const int lanes = root.arrangement.geometry.lanesHeight;
+    return {top, lanes > 0 ? std::min(getHeight(), top + lanes) : getHeight()};
+}
+void MixerPanel::paintOverChildren(juce::Graphics &g) {
+    // The rows scroll with the lanes; above and below them, Live's frame stays in front: a row
+    // scrolled partly above the lanes shows no more than the lanes do (UI-ARCHITECTURE §4).
+    if (vertical_)
+        return;
+    const int bottom = rowsBand().getEnd();
+    paintTop(g);
+    // Below the lanes, as paint() leaves it: the columns' grey, the frame's band at the foot.
+    const int ruler = getHeight() - ArrangementView::kTimeRulerHeight;
+    g.setColour(look::panel);
+    g.fillRect(0, bottom, getWidth(), std::max(0, ruler - bottom));
+    g.setColour(look::band);
+    g.fillRect(0, std::max(bottom, ruler), getWidth(), getHeight() - std::max(bottom, ruler));
+    g.setColour(look::separator);
+    g.fillRect(0, bottom, 2, getHeight() - bottom);
 }
 FlipButton::FlipButton() : juce::Button("Flip Sides") {
     setTitle("Flip Sides");

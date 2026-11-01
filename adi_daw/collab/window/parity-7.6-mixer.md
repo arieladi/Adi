@@ -6,7 +6,7 @@ Drafted by the window lane (ADR-0208) from the Live 12 manual (`live12-manual-en
 
 | # | Live's behaviour | Manual / ADR | ADI in this PR | Status |
 |---|---|---|---|---|
-| 1 | Each arrangement track has its mixer controls in its own row (the Arrangement Track Controls) | §18.1, p. 389; §6.1, p. 162 | The mixer panel's rows sit level with the arrangement's lanes and scroll with them; the panel is ADR-0080's side slot | built; measure: Live's Mixer View of vertical strips is a separate view (row 13) |
+| 1 | Each arrangement track has its mixer controls in its own row (the Arrangement Track Controls) | §18.1, p. 389; §6.1, p. 162 | The mixer panel's rows sit level with the arrangement's lanes and scroll with them; the panel is ADR-0080's side slot. A row scrolled past the lanes' top or bottom shows no more than its lane does: the frame stands in front of it and it takes no click there (`window/controls-clip`); the returns and Main stand at the foot with their lanes (parity-7.3 row 17) | built; measure: Live's Mixer View of vertical strips is a separate view (row 13) |
 | 2 | The Meter shows peak and RMS of the track's output | §18.1, p. 391 | Peak and RMS of the newest 1024 frames of the track's post-fader tap, wait-free, no allocation | built; the scalar meter of UI-ARCHITECTURE §9 is the engine's (window log, N9) |
 | 3 | Volume adjusts the output level, -inf to +6 dB | §18.1, p. 391 | A horizontal fader with its value in dB; a drag is one undo step | partial: the sound follows on release, not during the drag, until win rules how a non-parameter drag coalesces (OpSubmitter's note) |
 | 4 | Pan places the track; a double-click resets it | §18.1, p. 392 | A knob; double-click centres it | built |
