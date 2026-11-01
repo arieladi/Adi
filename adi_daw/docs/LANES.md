@@ -12,8 +12,10 @@ says who takes which part and what "always have work" means in practice.
 | Lane | Account and session | Owns | Never |
 |---|---|---|---|
 | **win** (this one) | Claude, the "ADI Suite Project" session on ORC-VST | coordination: ADRs, FEATURES, the Master Reference, reviews and merges of every PR, the README count, the collab tables, the drone's missions, measurements against Live | engine or UI code of its own beyond small fixes; it reviews |
-| **engine** | Claude Max, Opus 5.5, its own session ("ADI engine lane") on the director's PC, in its own worktree | phase A of the brief, then the P1 engine and host work, then merging and finishing step 7 (the window) from the open step-7 PRs | ADR numbers (asks win), `docs/FEATURES.md`, the README count, the Master Reference, anything in `plugins/` the clones lane owns |
-| **clones** | Codex Pro, its own session ("ADI clones lane"), its own worktree per plug-in | the director's clones as suite members (ADI-Q, ADI-L, ADI Still, ADI Prism) built from measurements, then the parity passes of Live's devices against Live's renders, then the reference reading (the DAWs and plug-ins in `reference/`) | ADI's engine (`src/adi/engine/**`, `src/juce/**`) except the device contract it plugs into; the UI; ADR numbers |
+| **engine** | Claude Max, Opus 5.5, its own session ("ADI engine lane") | the graph, the hosts, the format and export code: `src/adi/engine/**`, `src/adi/*.cpp` store and ops, `src/juce/*host*`, `src/juce/play*`, `docs/format/**`; phase A of the brief, then the P1 engine and host work | ADR numbers (asks win), `docs/FEATURES.md`, the README count, the Master Reference, the UI, the device tier, `plugins/` |
+| **window** (ADR-0208) | a Claude work seat of its own ("ADI window lane") | step 7, the first window: `src/adi/ui/**`, `src/juce/ui_*`, `src/juce/app*`, their tests, `docs/STEP-7-PLAN.md`, `docs/UI-ARCHITECTURE.md`; queue §3b | the engine, the device tier, `plugins/`, ADR numbers |
+| **devices** (ADR-0208) | a Codex work seat of its own ("ADI devices lane") | Live's devices as ADI's built-ins: `pd/**`, `src/adi/dsp/**`, `src/adi/pd_builtins/**`, `cmake/devices/**`, their tests; `src/juce/pd_*` for the zero-delay adapter only; queue §4b | the graph, the UI, `plugins/`, ADR numbers |
+| **clones** | Codex Pro, the director's own programmer and reverse-engineer session | the director's clones as suite members (ADI-Q, ADI-L, **ADI-C**, ADI Still, ADI Prism) built from measurements, in `plugins/`; the FilmCraft contribution; then the reference reading | everything outside `plugins/`; ADR numbers |
 
 The drone (qwen on the 1070 and the A2000) keeps summarising files and manuals; win feeds it.
 
@@ -47,8 +49,8 @@ Phase A, then phase B/C/D of `BUILD-BRIEF.md`, with the rulings of 25 October ap
 2. **Sends and returns play** (ADR-0203 d3): the planner, compensation across sends, the Live loop
    allowed and every other refused, Pre/Post per return, Enable Send, Solo in Place, the three tap
    points, ADI's sends into any track and a pan on a send; step 6 closes.
-3. **A bypassed device keeps its delay** (ADR-0203 d4); the Pd adapter's fixed block removed for the
-   built-ins; the master summed (ADR-0203 d14).
+3. **A bypassed device keeps its delay** (ADR-0203 d4); the master summed (ADR-0203 d14). (The Pd
+   adapter's fixed block is the devices lane's, §4b item 1, since ADR-0208.)
 4. **The export queue** (ADR-0071, P1): jobs, wildcards in the registry's brace form, stem jobs,
    NI Stems export and import (ADR-0205 d8), LUFS targeting (ADR-0203 d14), the Export settings; the
    `.adiviz` pass rides on it later (P2).
@@ -59,13 +61,27 @@ Phase A, then phase B/C/D of `BUILD-BRIEF.md`, with the rulings of 25 October ap
 7. **The channel slots for ADI-Q and ADI-L** (ADR-0204 d1): present-but-off device slots on every
    strip and group, the window that lists them all; the clones lane fills them when the plug-ins
    are handed over.
-8. **Step 7, the window:** review-and-rebase the open step-7 PRs (#196, #198, #199, #203, #204,
-   #205) against today's main with the rulings of ADR-0203 d5 to d7 (purely as Live; keys; zoom
-   around the selection; the strip minimum), merge them through win, then finish 7.2 to 7.6 per
-   `docs/STEP-7-PLAN.md`. **This is the gate the director waits for: a window he can open.**
+8. (Step 7, the window, is the window lane's since ADR-0208: §3b.) The engine lane goes on to the
+   hosts in 64-bit, the sends, the queue, and the P1 engine work of phase D.
 9. Then phase C and D in the brief's order (range selection, fades, tempo detection, automation
    shapes, Capture, Scale Mode, multi-threading, the scanner, stem separation built in, the Loudness
    Drive, Link, the Settings window, the scope).
+
+### 3b. The window lane's queue (a Claude seat), in order
+
+Standing prompt: `collab/prompts/2026-10-27-window-lane.md`; log `collab/window.md`; branches `window/*`.
+
+1. The six open step-7 PRs of 29 September (#196, #198, #199, #203, #204, #205), each rebased onto
+   main and brought under the rulings of ADR-0203 d5 to d7, d11, d12 and ADR-0204 d1 (purely as Live;
+   the keys; zoom around the selection; the strip minimum; the Status Bar; tooltips on; the AI chat
+   tab; the 7.6 mixer with sends and returns, Split Stereo Pan, the master loudness meter, the
+   ADI-Q/ADI-L slots), pushed one at a time in the plan's order.
+2. Everything of `docs/STEP-7-PLAN.md` 7.2 to 7.6 no PR covers, each with its headless test and
+   its parity checklist drafted from the Live 12 manual text. **The first window the director can
+   open is his gate (§5) and this lane's first milestone.**
+3. The window parts of phase C (range selection, fade handles, Insert Silence, the import and
+   bounce prompts); the Settings window in Live's shape (ADR-0203 d11); the EQ/limiter window
+   (ADR-0204 d1).
 
 ## 4. The clones lane's queue (Codex Pro), in order
 
@@ -75,17 +91,30 @@ Phase A, then phase B/C/D of `BUILD-BRIEF.md`, with the rulings of 25 October ap
    highlight, the multi-track overlay carried over from the retired Dynamic EQ (ADR-0195 d4, d5).
 2. **ADI-L** (the Pro-L 2 behaviour clone): the per-channel light mode and the master's full mode;
    the Loudness Drive's cascade stage (ADR-0204 d1).
-3. **ADI Still** (soothe2 class) and **ADI Prism** (Serum 2 class), as CLAP suite members.
+3. **ADI-C** (the K-Clip-class clipper, ADR-0208 d2): the clipper stage of the Loudness Drive's
+   cascade beside ADI-L. Then **ADI Still** (soothe2 class) and **ADI Prism** (Serum 2 class), as
+   CLAP suite members.
 4. **The DJ Filter device** on ADI-Q's cores (ADR-0203 d8), a pure bypass at centre.
-5. **Live's devices, the parity passes:** the fifteen Pd effects re-checked against Live 12 renders
-   as the director's Live 12 arrives; the MIDI effects, OneShot and Sampler against Live's manual;
-   the open device PRs (#206 OneShot, #207 MIDI effects, #208 Sampler, #209 Hybrid Reverb) rebased
-   and brought to win for merge.
+5. (Live's devices and their parity passes are the devices lane's since ADR-0208: §4b.)
 6. **Reading the references** in `adi_daw/reference/` (the DAWs: Ardour, Zrythm, Tracktion, Helio,
    magda; SoundCraft and FilmCraft for ADR-0206; the DSP references of the plug-in line): each a
    short report in `collab/clones.md` naming what ADI should copy (behaviour) and what it already
    does better; the drone's summaries in `D:\adi-drone\missions\` are the starting point.
 7. **The FilmCraft contribution** (the stale-waveform PR 1, `collab/prompts/2026-10-25-codex-filmcraft-pr1-waveforms.md`), on **adi-ubuntu** (192.168.1.97) for the Linux gate: the director's own Linux box, so no new machine is needed.
+
+### 4b. The devices lane's queue (a Codex seat), in order
+
+Standing prompt: `collab/prompts/2026-10-27-devices-lane.md`; log `collab/devices.md`; branches `devices/*`.
+
+1. The zero-delay Pd adapter (ADR-0203 d4): ADI's own devices run their native DSP directly; user
+   patches in whole 64-sample multiples without the fixed block; remainders reported.
+2. The four device PRs of 30 September (#206 OneShot, #207 the MIDI effects, #208 Sampler, #209
+   Hybrid Reverb), rebased and brought to win.
+3. Every Live device not yet built, in the manual's order, P1 before P2 (ADR-0169): the audio
+   effects, then the instruments, then Live Suite's Max for Live devices as native devices; one PR
+   per device with its measured-render test and its plants.
+4. The parity passes of the fifteen built effects against Live 12 renders as they arrive.
+5. The DJ Filter device (ADR-0203 d8) on ADI-Q's cores once handed over, on Auto Filter's until then.
 
 ## 5. The director's gates (the only things that wait on him)
 
