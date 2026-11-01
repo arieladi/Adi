@@ -181,11 +181,11 @@ void basic(Precision precision) {
     check(quiet && source.position > wake, "wake does not replay pre-sleep audio");
     bool resumed = true;
     for (int block = 0; block < 6; ++block) {
-        const int start = source.position;
+        const int from = source.position;
         g->process(out.io(32));
         for (int c = 0; c < 2; ++c)
             for (int i = 0; i < 32; ++i) {
-                const int at = start + i - device.delay;
+                const int at = from + i - device.delay;
                 const double expected = at < wake ? 0.0 : sample(at, c, precision);
                 if (out.doubles[static_cast<std::size_t>(c)][static_cast<std::size_t>(i)] != expected) resumed = false;
             }
