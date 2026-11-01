@@ -44,6 +44,8 @@ struct WindowState {
     int mixerViewHeight = 220;
     // Live's Follow (manual §6.2): the arrangement keeps the playhead on screen while it plays.
     bool follow = false;
+    // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out.
+    bool overview = true, inOut = true;
     // The strip expands upward only: a height below the floor becomes the floor.
     void setDeviceHeight(int h) noexcept { deviceHeight = h < deviceFloor ? deviceFloor : h; }
 };

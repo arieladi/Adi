@@ -595,6 +595,53 @@ int main(int argc, char **argv) {
                                                        persistence, session, "quiet"),
                     commands, false);
     check(quiet.tooltips() == nullptr, "the setting turns them off for new windows");
+    // The View menu's toggles (§42.1): Full Screen, the Overview and In/Out.
+    {
+        AdiWindow viewWindow(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands, persistence,
+                                                                session, "view-toggles"),
+                             commands, false);
+        viewWindow.setSize(1200, 760);
+        auto &viewRoot = viewWindow.root();
+        viewRoot.frame();
+#if JUCE_MAC
+        const juce::KeyPress fullScreenKey('f', juce::ModifierKeys::ctrlModifier | cmd, 0);
+#else
+        const juce::KeyPress fullScreenKey(juce::KeyPress::F11Key);
+#endif
+        // Filling the screen needs a window on it, which a peerless test has not: the key is
+        // mapped, and the command refuses here and says why (seen working in the app itself).
+        check(commands.manager.getKeyMappings()->findCommandForKeyPress(fullScreenKey) == AppCommands::FullScreen &&
+                  viewRoot.keyPressed(fullScreenKey) && !viewWindow.isFullScreen() && !viewRoot.fullScreen() &&
+                  !viewRoot.error().empty(),
+              "Full Screen is F11 (Ctrl+Cmd+F on the Mac); a window off the screen refuses it and says why");
+        auto &lanesView = viewRoot.arrangement;
+        check(lanesView.overview.isVisible() && lanesView.canvas.getY() == ArrangementView::kTopHeight,
+              "the Overview is shown by default");
+        check(viewRoot.keyPressed(juce::KeyPress('o', cmd | alt, 0)) && !lanesView.overview.isVisible() &&
+                  lanesView.ruler.getY() == 0 &&
+                  lanesView.canvas.getY() == ArrangementView::kTopHeight - ArrangementView::kOverviewHeight &&
+                  !persistence.load("view-toggles").overview,
+              "Ctrl/Cmd+Alt+O hides the Overview: the ruler and the lanes move up, kept with the window");
+        viewRoot.frame();
+        const MixerStrip *firstRow = nullptr;
+        for (const auto &row : viewRoot.mixer.strips())
+            if (row->isVisible() && firstRow == nullptr)
+                firstRow = row.get();
+        check(firstRow != nullptr && firstRow->getY() == lanesView.canvas.getY() - lanesView.geometry.scrollY,
+              "the track controls' rows stay level with the lanes");
+        const int activatorWith = firstRow != nullptr ? firstRow->active.getX() : 0;
+        const int controlsWith = viewRoot.mixer.getWidth();
+        check(firstRow != nullptr && firstRow->showsInOut() && viewRoot.keyPressed(juce::KeyPress('i', cmd | alt, 0)) &&
+                  !firstRow->showsInOut() && firstRow->active.getX() == activatorWith - MixerPanel::kInOutWidth &&
+                  viewRoot.mixer.getWidth() == controlsWith - MixerPanel::kInOutWidth &&
+                  !persistence.load("view-toggles").inOut,
+              "Ctrl/Cmd+Alt+I hides the track controls' In/Out: the panel narrows by its column");
+        check(viewRoot.command(AppCommands::ToggleOverview) && viewRoot.command(AppCommands::ToggleInOut) &&
+                  lanesView.overview.isVisible() && firstRow->showsInOut() &&
+                  viewRoot.mixer.getWidth() == controlsWith &&
+                  lanesView.canvas.getY() == ArrangementView::kTopHeight,
+              "and both come back");
+    }
     // An open window follows at its next frame (a change in Settings applies at once).
     window.followSettings();
     check(window.tooltips() == nullptr, "and off in an open window at its next frame");

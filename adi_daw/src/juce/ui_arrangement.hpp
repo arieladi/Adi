@@ -172,6 +172,10 @@ class ArrangementView final : public juce::Component {
     // One press of Alt/Option + or - on a track's height, in units (PROVISIONAL: Live's step
     // is to be measured).
     static constexpr int kHeightStep = 16;
+    // The Overview's row and where the lanes begin in this window: kOverviewHeight and
+    // kTopHeight with the Overview shown, without its row when it is hidden (§42.1).
+    int overviewHeight() const noexcept;
+    int topHeight() const noexcept { return kTopHeight - kOverviewHeight + overviewHeight(); }
     // Where the lanes begin: below the Overview, the ruler and the scrub area.
     static constexpr int kTopHeight = kOverviewHeight + kRulerHeight + kScrubHeight + kLaneGap;
     ArrangementGeometry geometry;

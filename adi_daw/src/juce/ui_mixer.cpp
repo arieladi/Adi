@@ -289,7 +289,9 @@ juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     return {53, kMixerTop + 6, 11, std::max(0, getHeight() - kMixerTop - 10 - (tall ? 15 : 0))};
 }
 bool MixerStrip::showsInOut() const noexcept {
-    return !panel_.vertical() && getWidth() >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth;
+    // Shown when the View menu's In/Out is on (§42.1) and the panel is wide enough.
+    return !panel_.vertical() && panel_.root.state().inOut &&
+           getWidth() >= MixerPanel::kInOutWidth + MixerPanel::kControlsWidth;
 }
 void MixerStrip::paint(juce::Graphics &g) {
     if (panel_.vertical()) {
@@ -457,7 +459,7 @@ void MixerPanel::reveal(std::size_t index) {
     for (std::size_t i = 0; i < index; ++i)
         top += geometry.heightFor(tracks[i]->id);
     const int bottom = top + geometry.heightFor(tracks[index]->id);
-    const int view = std::max(0, getHeight() - ArrangementView::kTopHeight);
+    const int view = std::max(0, getHeight() - root.arrangement.topHeight());
     if (top >= geometry.scrollY && bottom <= geometry.scrollY + view)
         return;
     geometry.scrollY = top < geometry.scrollY ? top : std::min(top, bottom - view);
@@ -534,7 +536,7 @@ void MixerPanel::place() {
     // §10); rows follow the arrangement's lanes, so the two scroll as one.
     const auto &geometry = root.arrangement.geometry;
     const auto &tracks = root.reader().tracks();
-    const int bodyTop = ArrangementView::kTopHeight; // level with the lanes
+    const int bodyTop = root.arrangement.topHeight(); // level with the lanes
     std::size_t wanted = 0;
     int y = bodyTop - geometry.scrollY;
     std::size_t first = tracks.size();
@@ -585,10 +587,11 @@ void MixerPanel::paint(juce::Graphics &g) {
     // columns' grey under the last track.
     g.fillAll(look::band);
     const int strip = getWidth() - kRightStrip;
-    int bottom = ArrangementView::kTopHeight - root.arrangement.geometry.scrollY;
+    const int top = root.arrangement.topHeight();
+    int bottom = top - root.arrangement.geometry.scrollY;
     for (const auto &t : root.reader().tracks())
         bottom += root.arrangement.geometry.heightFor(t->id);
-    bottom = std::clamp(bottom, ArrangementView::kTopHeight, getHeight());
+    bottom = std::clamp(bottom, top, getHeight());
     g.setColour(look::panel);
     g.fillRect(0, bottom, strip, std::max(0, getHeight() - bottom - ArrangementView::kTimeRulerHeight));
     g.setColour(look::separator);

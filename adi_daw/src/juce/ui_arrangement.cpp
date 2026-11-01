@@ -264,14 +264,16 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
         addAndMakeVisible(c);
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
+int ArrangementView::overviewHeight() const noexcept { return root.state().overview ? kOverviewHeight : 0; }
 void ArrangementView::resized() {
     const int headerW = std::min(kHeaderWidth, getWidth() / 3);
     const int clipsW = std::max(0, getWidth() - headerW - kLeftMargin);
-    const int body = std::max(0, getHeight() - kTopHeight - kTimeRulerHeight);
-    ruler.setBounds(kLeftMargin, kOverviewHeight, clipsW, kRulerHeight);
-    scrub.setBounds(kLeftMargin, kOverviewHeight + kRulerHeight, clipsW, kScrubHeight);
-    canvas.setBounds(kLeftMargin, kTopHeight, clipsW, body);
-    headers.setBounds(kLeftMargin + clipsW, kTopHeight, headerW, body);
+    const int top = topHeight(), above = overviewHeight();
+    const int body = std::max(0, getHeight() - top - kTimeRulerHeight);
+    ruler.setBounds(kLeftMargin, above, clipsW, kRulerHeight);
+    scrub.setBounds(kLeftMargin, above + kRulerHeight, clipsW, kScrubHeight);
+    canvas.setBounds(kLeftMargin, top, clipsW, body);
+    headers.setBounds(kLeftMargin + clipsW, top, headerW, body);
     frame(true);
 }
 juce::Colour ArrangementView::colourFor(std::size_t position) const {
@@ -284,7 +286,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     // Above the headers: Live's locator buttons ("Set", previous, next) and its two
     // switches, Follow's lock and the automation's arrow.
     const float hx = static_cast<float>(headers.getX());
-    const float top = kOverviewHeight + kRulerHeight - 2.f;
+    const float top = static_cast<float>(overviewHeight() + kRulerHeight) - 2.f;
     const juce::Rectangle<float> set(hx + 5, top, 28, 12);
     g.setColour(look::button);
     g.fillRoundedRectangle(set, 6.f);
@@ -344,7 +346,7 @@ void ArrangementView::frame(bool modelChanged) noexcept {
     const int x = static_cast<int>(std::clamp(geometry.x(root.timelineTick()), -1e7, 1e7));
     // Live draws the playhead only while it plays.
     playhead.setVisible(root.playing() && x >= 0 && x < canvas.getWidth());
-    playhead.setBounds(canvas.getX() + x, kTopHeight, 1, canvas.getHeight());
+    playhead.setBounds(canvas.getX() + x, canvas.getY(), 1, canvas.getHeight());
     playhead.toFront(false);
     if (modelChanged) {
         canvas.realiseAccessible();
