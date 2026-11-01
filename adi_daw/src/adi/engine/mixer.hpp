@@ -131,6 +131,11 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
+
+    /// Message thread: the next block starts AT the target, as a new strip
+    /// does, rather than ramping from whatever this one last played.
+    void restart() noexcept { restart_.store(true, std::memory_order_release); }
+
     /// ADR-0207 d2: at 64 the gains and their ramps are double too.
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
@@ -200,6 +205,7 @@ private:
     std::atomic<float> volumeDb_{0.0f}, pan_{0.0f};
     std::atomic<int> law_{0};
     std::atomic<bool> audible_{true};
+    std::atomic<bool> restart_{false};
     std::atomic<const StripLanes*> lanes_{nullptr};
     std::shared_ptr<void> keepAlive_;   ///< message thread only
     const Transport* transport_ = nullptr;
@@ -245,6 +251,10 @@ public:
     void process(const NodeIo& io) noexcept override { gain_.process(io); }
     /// Asleep, a send lands a level moved meanwhile, as a strip does.
     void silenceTaps(const NodeIo& io) noexcept override { gain_.silenceTaps(io); }
+
+    /// Message thread: the next block starts at the level, without a ramp --
+    /// for a send back in the plan, which no graph has played meanwhile.
+    void restart() noexcept { gain_.restart(); }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     /// Zero, like a strip's: a send holds nothing back.
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
@@ -296,12 +306,19 @@ public:
     /// The strip for a track the plan realises, or null.
     [[nodiscard]] StripNode* stripFor(std::int64_t trackId) noexcept;
 
+    /// The node a planned send plays through (ADR-0203 d3), by its routing
+    /// row, or null. One per row, kept for the session as a strip is, so a
+    /// level move ramps and the send's edges keep their history.
+    [[nodiscard]] SendNode* sendFor(std::int64_t routingId) noexcept;
+
     /// Rows the strip could not honour, named: an unknown pan law, a volume or
     /// pan that is not finite.
     [[nodiscard]] const std::vector<std::string>& problems() const noexcept { return problems_; }
 
 private:
     std::map<std::int64_t, std::unique_ptr<StripNode>> strips_;
+    std::map<std::int64_t, std::unique_ptr<SendNode>> sends_;
+    std::set<std::int64_t> liveSends_;   ///< the rows planned at the last sync
     std::vector<std::string> problems_;
 };
 

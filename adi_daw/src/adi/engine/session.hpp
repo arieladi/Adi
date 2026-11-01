@@ -245,6 +245,13 @@ public:
     /// `ord`, every device in it by `ord`, skipping what was not resolved.
     /// This is what `RealizeOptions::devicesFor` answers with.
     [[nodiscard]] std::vector<device::DeviceNode*> chainFor(std::int64_t trackId);
+    /// Every node of a track's chain as the graph is given it: the buss half,
+    /// the devices with the input gain after the instrument, the strip, the
+    /// channel half (ADR-0122, ADR-0163, ADR-0174).
+    [[nodiscard]] std::vector<Node*> trackChain(std::int64_t trackId);
+    /// Where on that chain `tap` is (ADR-0203 d3): the node whose output it
+    /// is, or null for the junction.
+    [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
     void attach();
