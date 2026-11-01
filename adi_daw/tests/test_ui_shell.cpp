@@ -112,7 +112,12 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             if (!strip->isVisible() || !root.mixerView.isVisible())
                 continue;
             const auto b = root.getLocalArea(strip.get(), strip->getLocalBounds());
-            g.fillRect(b.getX(), b.getY(), b.getWidth(), 92);
+            g.fillRect(b.getX(), b.getY(), b.getWidth(), 60);
+            // Live's scale beside the meter, and the words on the strip's switches.
+            g.fillRect(b.getX() + 72, b.getY(), b.getWidth() - 72, b.getHeight());
+            for (juce::Component *c : std::initializer_list<juce::Component *>{
+                     &strip->active, &strip->solo, &strip->peakHold})
+                g.fillRect(root.getLocalArea(c, c->getLocalBounds()));
         }
         for (const auto &strip : root.mixer.strips()) {
             if (!strip->isVisible())
@@ -261,8 +266,10 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
               root.mixer.getWidth() == MixerPanel::kFullWidth && root.devices.panels.size() == 2,
           "the parity scene has Live's columns and the fourth track's two devices");
     reference(root, "live-parity", write);
-    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
-        folder.isNotEmpty()) {
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+    auto render = [&root, folder](const char *name) {
+        if (folder.isEmpty())
+            return;
         juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
                           juce::SoftwareImageType{});
         {
@@ -270,11 +277,18 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
             g.addTransform(juce::AffineTransform::scale(2.f));
             root.paintEntireComponent(g, true);
         }
-        const auto file = juce::File(folder).getChildFile("adi-parity.png");
+        const auto file = juce::File(folder).getChildFile(name);
         file.deleteFile();
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
-    }
+    };
+    render("adi-parity.png");
+    // The same set with Live's mixer open, to lay beside Live 11's Session mixer.
+    check(root.command(AppCommands::ToggleMixerView), "the parity scene's Mixer View opens");
+    root.resizeMixerView(220);
+    root.mark(DirtySet::All);
+    root.frame();
+    render("adi-parity-mixer.png");
 }
 } // namespace
 int main(int argc, char **argv) {
@@ -1227,6 +1241,22 @@ int main(int argc, char **argv) {
             numbered = numbered &&
                        columns[i]->active.getButtonText() == juce::String(static_cast<int>(i) + 1);
         check(numbered, "each activator shows its track's place, whatever the track's id");
+        // Live's peak level (manual 18.1): the highest peak since a click, in dB.
+        if (columns.size() >= 2) {
+            auto &held = columns[1]->peakHold;
+            check(columns[1]->track() == 2 && held.isVisible() && std::abs(held.held - .5f) < .01f,
+                  "the Mixer View's peak level holds the track's highest peak");
+            held.onClick();
+            check(held.held == 0, "a click resets it");
+            integrated.frame();
+            check(std::abs(held.held - .5f) < .01f, "and it holds the next peak it meets");
+            check(!columns[0]->peakHold.isVisible() || columns[0]->peakHold.held == 0,
+                  "a silent track's peak level stays at -Inf");
+        }
+        check(std::abs(meterDepth(0) - .06) < 1e-9 && std::abs(meterLevel(meterDepth(-24)) + 24) < 1e-9 &&
+                  !columns.empty() &&
+                  std::abs(columns[0]->volume.valueToProportionOfLength(0) - (1 - meterDepth(0))) < 1e-9,
+              "the fader and the meter share Live's scale");
         check(!columns.empty() &&
                   columns[0]->volume.getSliderStyle() == juce::Slider::LinearVertical &&
                   columns[0]->getHeight() < MixerPanel::kTallHeight &&

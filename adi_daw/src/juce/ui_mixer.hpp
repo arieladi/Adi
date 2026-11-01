@@ -15,6 +15,18 @@ class ArmButton final : public juce::TextButton {
   public:
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+// Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
+// it has clipped. A click resets it.
+class PeakHold final : public juce::Button {
+  public:
+    PeakHold();
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+    float held = 0; // linear
+};
+// Live's meter scale, measured on Live 11's mixer: how far down the meter a level in dB
+// sits, from +6 dB at the top (0) to -60 dB and below at the foot (1); and back.
+double meterDepth(double db) noexcept;
+double meterLevel(double depth) noexcept;
 // One track's mixer controls in the track's own row, as Live's Arrangement Track
 // Controls (manual 18.1), laid out as Live 11 draws them (measured 2026-10-27): the
 // In/Out column, then the Track Activator, Solo and Arm; volume and pan; ADI's
@@ -36,15 +48,20 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::Slider volume, pan;
     juce::TextButton active, solo{"S"}, eq{"Q"}, limiter{"L"};
     ArmButton arm;
+    PeakHold peakHold; // the Mixer View's only
     // Whether the row shows its In/Out column: when the panel is wide enough.
     bool showsInOut() const noexcept;
 
   private:
     void paintInOut(juce::Graphics &, int x) const;
+    // The Mixer View strip's meter, under its fader.
+    juce::Rectangle<int> meterArea() const noexcept;
     void panMenu();
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     MixerPanel &panel_;
     std::int64_t track_ = 0;
+    // Where a Mixer View strip's mixer begins, under the name and the slots.
+    static constexpr int kMixerTop = 40;
     std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
     bool dragging_ = false, selected_ = false;
     float peak_ = 0, rms_ = 0;
@@ -57,9 +74,10 @@ class MixerPanel final : public juce::Component {
   public:
     explicit MixerPanel(AdiRootComponent &, bool vertical = false);
     bool vertical() const noexcept { return vertical_; }
-    // A vertical strip's width, and the height from which it shows tick marks and a
-    // numeric volume field (Live: drag the mixer's top edge up for them).
-    static constexpr int kStripWidth = 72, kTallHeight = 260;
+    // A vertical strip's width, Live 11's 93 and its rule, and the height from which it
+    // shows ticks every 6 dB and a numeric volume field (Live: drag the mixer's top edge
+    // up for them).
+    static constexpr int kStripWidth = 95, kTallHeight = 260;
     // The track controls' columns, Live 11's at 100 %: In/Out with the dark rules
     // either side, the mixer with its meter, the strip down the right-hand edge.
     static constexpr int kInOutWidth = 78, kControlsWidth = 116, kRightStrip = 27;

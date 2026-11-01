@@ -87,6 +87,8 @@ void LiveLook::drawButtonText(juce::Graphics &g, juce::TextButton &b, bool, bool
 }
 juce::Font LiveLook::getTextButtonFont(juce::TextButton &b, int buttonHeight) {
     // Live's box text: 12 pt in a 13 pt box, smaller only in smaller boxes.
+    if (const auto *size = b.getProperties().getVarPointer("live.font"))
+        return font(static_cast<float>(static_cast<double>(*size)));
     return font(std::min(12.f, static_cast<float>(buttonHeight) - 1) -
                 (b.getProperties()["live.small"] ? 1.f : 0.f));
 }
@@ -147,6 +149,15 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
         g.setColour(text);
         g.fillRect(r.getX(), cy - 1, pos - r.getX(), 2.f);
         g.fillRect(pos - 1, cy - 5, 2.f, 10.f);
+    } else if (s.getProperties()["live.meterFader"]) {
+        // Live's mixer fader: an outlined ◁ beside the meter, at the level.
+        const float tx = r.getX() + static_cast<float>(static_cast<int>(s.getProperties()["live.faderX"]));
+        juce::Path cap;
+        cap.addTriangle(tx, pos, tx + 8, pos - 5, tx + 8, pos + 5);
+        g.setColour(field);
+        g.fillPath(cap);
+        g.setColour(text);
+        g.strokePath(cap, juce::PathStrokeType(1.2f));
     } else {
         // A fader: a thin slot and a flat cap, as Live's mixer.
         const float cx = r.getCentreX();
@@ -171,9 +182,11 @@ void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, f
     g.setColour(s.findColour(juce::Slider::rotarySliderFillColourId));
     g.strokePath(ring, stroke);
     const float a = start + pos * (end - start);
-    if (pos > 0.005f) {
+    // A two-sided knob, as pan, fills from its middle.
+    const float from = s.getProperties()["live.bipolar"] ? (start + end) / 2 : start;
+    if (std::abs(a - from) > 0.01f) {
         juce::Path fill;
-        fill.addCentredArc(cx, cy, r, r, 0, start, a, true);
+        fill.addCentredArc(cx, cy, r, r, 0, std::min(from, a), std::max(from, a), true);
         g.setColour(value);
         g.strokePath(fill, stroke);
     }
@@ -183,6 +196,9 @@ void LiveLook::drawRotarySlider(juce::Graphics &g, int x, int y, int w, int h, f
     needle.lineTo(cx + 0.72f * r * std::sin(a), cy - 0.72f * r * std::cos(a));
     g.strokePath(needle, juce::PathStrokeType(2.5f, juce::PathStrokeType::curved,
                                               juce::PathStrokeType::rounded));
+}
+int LiveLook::getSliderThumbRadius(juce::Slider &s) {
+    return s.getProperties()["live.meterFader"] ? 0 : juce::LookAndFeel_V4::getSliderThumbRadius(s);
 }
 juce::Label *LiveLook::createSliderTextBox(juce::Slider &s) {
     auto *l = juce::LookAndFeel_V4::createSliderTextBox(s);
