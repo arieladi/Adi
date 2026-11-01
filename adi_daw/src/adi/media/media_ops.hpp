@@ -2,15 +2,27 @@
 #pragma once
 #include "adi/ops.hpp"
 #include <filesystem>
+#include <optional>
+namespace adi::audio { class DecodeCache; }
 namespace adi::media {
+struct AudioInfo {
+    std::int64_t sampleRate = 0, channels = 0, frames = 0;
+};
 struct MediaResult {
     bool ok = false;
     std::string error;
     std::int64_t mediaId = 0;
     bool existing = false;
+    std::optional<AudioInfo> audio = {};
 };
 // Off-thread path-taking entry points. Relative inputs are project-folder
 // relative. Hashing and metadata capture precede deterministic journal apply.
+// Captures without committing. Append a nonempty request.opType: a new import,
+// or a relink if a reused id has missing/stale paths. existing means id reused;
+// audio holds probed dimensions even for a reused media id.
+// Non-audio files retain nullable audio metadata. Known corrupt audio fails.
+MediaResult prepareImport(Store&, const std::filesystem::path&, std::int64_t id,
+                          std::int64_t importedUtc, OpRequest&, audio::DecodeCache* = nullptr);
 MediaResult importMedia(Store&, const std::filesystem::path&, std::int64_t id,
                         std::int64_t importedUtc, Actor actor = Actor::User);
 MediaResult relinkMedia(Store&, std::int64_t id, const std::filesystem::path&,
