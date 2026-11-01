@@ -693,6 +693,10 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         words.setLineSpacing(2.5f);
         juce::TextLayout layout;
         layout.createLayout(words, static_cast<float>(inner.getWidth() - 10));
+        // A description longer than the panel is cut at its foot, as Live's; it never spills
+        // onto the panel's edge below (each platform's fonts wrap it differently).
+        juce::Graphics::ScopedSaveState clip(g);
+        g.reduceClipRegion(inner);
         layout.draw(g, inner.withTrimmedTop(20).reduced(5, 2).toFloat());
     }
     if (!chatArea_.isEmpty() && state_.aiChatOpen) {

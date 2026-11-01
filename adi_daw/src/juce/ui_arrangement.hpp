@@ -122,14 +122,22 @@ class ArrangementCanvas final : public juce::Component,
     // The clip being moved by its bar (§6.7), and where it would land; 0 when none is.
     std::int64_t movingClip() const noexcept { return moving_; }
     std::int64_t movingTo() const noexcept { return movingTo_; }
-    // A clip's bar, Live's clip title strip: where a drag moves the clip (§6.7).
-    static constexpr int kClipBarHeight = 11;
+    // The clip whose right edge is being dragged (§6.7), and its length so far; 0 when none.
+    std::int64_t resizingClip() const noexcept { return resizing_; }
+    std::int64_t resizedLength() const noexcept { return resizeLength_; }
+    // A clip's bar, Live's clip title strip: where a drag moves the clip (§6.7), and the
+    // width of its right edge, where a drag changes its length.
+    static constexpr int kClipBarHeight = 11, kClipEdge = 4;
+    void mouseMove(const juce::MouseEvent &) override;
 
   private:
     void announceSelection();
     // Deletes or switches the selected clip: one op, through the root.
     bool clipEdit(const char *op, Payload payload, const char *label);
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0;
+    std::int64_t resizing_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
+    // The clip's bar under a point, and whether the point is on its right edge.
+    const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
