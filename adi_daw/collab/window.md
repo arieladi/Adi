@@ -48,7 +48,7 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N20 | A home for the channel configuration: `audio.channelConfig` is Device scope, which `AppSettings::set` refuses ("belongs to a device"), and its text has no format; the app also opens the device with no inputs (`initialise(0, 2, ...)`) | win (the store and the registry); engine for recording | Live's Input and Output Config dialogs on the Audio page: which channels are used, mono or stereo pairs, their names per device (online §17.2, Routing and I/O; parity-settings row 7) | nothing built; the dialogs are a new window, so their pictures would go to the director first |
 | N21 | WITHDRAWN 2026-10-28: both settings exist in the registry (`lookfeel.wrapTabNavigation`, `editing.arrowKeysMoveClips`); the window follows them itself (master-reference-audit.md) | — | — | — |
 | N22 | A track's delay in the snapshot (`mixer.setDelay` exists) | engine | Track Delay in ms on every strip (MR 7, 8.1) | nothing shown |
-| N23 | Solo in Place (a setting or a project field, and the engine following it) and the cue path: Solo/Cue, Cue Out, Cue Volume | engine; win for the registry row | the Solo button's menu and the Options menu (MR 8.1) | Solo is plain solo |
+| N23 | Solo in Place (a setting or a project field, and the engine following it) and the cue path: Solo/Cue, Cue Out, Cue Volume; with it the ★ Reference's exclusive solo, the Main bypassed (ADR-0209 Q7, d11) | engine; win for the registry row | the Solo button's menu and the Options menu (MR 8.1); [REF] and Shift+R (#323) | Solo is plain solo; [REF] latches and holds in the window, and the Status Bar says the sound waits |
 | N24 | Live's Delay Compensation switch: a setting and the engine following it, Track Delay off while it is off | engine; win for the row | the Options menu (MR 7, 8.4) | nothing shown |
 | N25 | Markers and locators: ops, and the snapshot carrying them, a marker holding a note and a prompt | engine | locators, the Set button, markers with prompts (MR 3.3) | the Set button is drawn and says it is not built |
 | N26 | Automation data in the snapshot (lanes, points, the overridden state) | engine | automation lanes, Re-Enable Automation lit (MR 6.1) | the two buttons are drawn |
@@ -63,7 +63,28 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`); win's `.gitignore` line in PR #316 | a clean tree after the gate the window runs before each push | the window deletes them after each run |
 | N36 | What `tracks.color` holds: `docs/format` gives only an INTEGER (Live stores a palette index, one of its 70 colours; ADI's window draws 0xRRGGBB) | win (the format); ruled as ADR-0211 in PR #317: an index into Live's palette, NULL for none | a track's own colour on its lane, title, strip and the project view's folder (STEP-7-PLAN §2.2) | built against the ruling in #319 (`window/track-colour`); the row is struck when #317 merges |
 | N37 | `track.delete`'s inverse captures only the track row (kind, name, parent, index), where OPS.md §6.3 says it captures the row, its clips and its device state. Everything that cascades from `tracks` (clips, lanes, the mixer strip, device chains) is not brought back by undo, nor are the colour and the routing rows | engine (`src/adi/ops_catalog.cpp`) | undo of Delete Track and of Ungroup Tracks (`window/group-commands`) should bring the track back as it was, clips and devices included | both commands are built; undo brings the track or the group back empty; parity-7.3 row 33 says so |
+| N38 | A track's role in the format and the snapshot, and an op to set it: `tracks.role` (null, `kick`, `bass`, `vocal`, `reference`), win's placement in ADR-0209 Q8, to strike if wrong | win (the format); engine (the snapshot, the op) | which track is the ★ Reference (the Mix View's strip, hidden from the project view until shown); later ★ Kick, ★ Bass and ★ Vocal (P2) | `MixViewProvider::reference` and its stub, which names none; the strip says the role waits (`window/mix-view-reference`, #323) |
 | N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-01, cloud, night, last — the ★ Reference [#323](https://github.com/arieladi/Adi/pull/323): the Mix View's P1 is in PRs
+
+**#323.** `window/mix-view-reference`.
+- The strip under the Mix View's tabs: the ★ Reference track's name, [REF], [👁 Reference Track]
+  and its clips against the arrangement's length.
+- The track is hidden from the project view until the toggle shows it; the toggle is kept per
+  window.
+- [REF] and Shift+R: a tap under 200 ms latches, a hold auditions (`ReferenceAudition`); Ctrl+R
+  stays Rename.
+- Which track is the Reference comes through `MixViewProvider`, whose stub names none: new need
+  N38, `tracks.role`. The sound waits for the cue path (N23, now naming the exclusive solo).
+- Checks: shell 557, seams 155, window state 58; `test_all.sh` 9710 across 105 suites, PASS.
+
+The stack: #310 ← #312 ← #313 ← #314 ← #315 ← #318 ← #319 ← #320 ← #321 ← #322 ← #323.
+
+**Next:** the Settings window's pages in Live's ten tab names and order (queue item 3; N14 is
+win's registry), then phase C's window parts.
 
 ---
 
