@@ -105,6 +105,17 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             g.fillRect(root.aiTab.getBounds());
         if (!root.infoArea().isEmpty())
             g.fillRect(root.infoArea().reduced(4));
+        for (const auto &device : root.devices.panels) {
+            const auto b = root.getLocalArea(device.get(), device->getLocalBounds());
+            g.fillRect(b.getX() + 22, b.getY() + 1, std::max(0, b.getWidth() - 23), 20);
+            for (const auto &c : device->controls) {
+                const auto cb = root.getLocalArea(c.get(), c->getLocalBounds());
+                g.fillRect(cb.getX(), cb.getY(), cb.getWidth(), 14);
+                g.fillRect(cb.getX(), cb.getY() + 32, cb.getWidth(), 14);
+                if (c->menu.isVisible())
+                    g.fillRect(cb.getX() + 2, cb.getY() + 14, cb.getWidth() - 4, 18);
+            }
+        }
     }
     const auto file = juce::File(ADI_UI_REFERENCES).getChildFile(juce::String(name) + ".png");
     if (write) {
@@ -605,6 +616,88 @@ int main(int argc, char **argv) {
         }
         integrated.frame();
         reference(integrated, "arrangement", write);
+        // Step 7.4 (#203): the device strip, fed by one publication, in Live's shape.
+        auto publication = std::make_shared<ParameterPublication>();
+        for (int device = 0; device < 2; ++device) {
+            DevicePanelData panelData;
+            panelData.id = 11 + device;
+            panelData.track = 2;
+            panelData.name = device ? "Second device" : "Test device";
+            for (int i = 0; i < (device ? 2 : 5); ++i) {
+                panel::Record record;
+                record.id = std::to_string(i);
+                record.name = "Control " + record.id;
+                record.playing = .5;
+                record.stored = .25;
+                record.shape = static_cast<panel::Shape>(i % 3);
+                record.stepCount = i % 3 == 1 ? 2 : 4;
+                record.text = "Plugin value";
+                panelData.records.push_back(record);
+                panelData.resolved.entries.push_back({record.id, false});
+            }
+            panel::finalize(panelData.records);
+            publication->push_back(panelData);
+        }
+        integrated.devices.publication = [publication] { return publication; };
+        int gestures = 0;
+        integrated.devices.gesture = [&](auto, const auto &, auto, double) {
+            ++gestures;
+            return true;
+        };
+        arrangement.geometry.selectedTrack = 2;
+        integrated.frame();
+        check(integrated.devices.panels.size() == 2 &&
+                  integrated.devices.panels[0]->controls.size() == 5,
+              "the selected track's chain is presented, every resolved parameter");
+        auto &controls = integrated.devices.panels[0]->controls;
+        check(controls[0]->slider.isVisible() && controls[1]->toggle.isVisible() &&
+                  controls[2]->menu.isVisible(),
+              "continuous, switch and menu use distinct controls");
+        controls[1]->toggle.setToggleState(true, juce::dontSendNotification);
+        controls[1]->toggle.onClick();
+        check(gestures == 3, "a switch sends one bounded begin/value/end gesture");
+        check(integrated.devices.getHeight() == 168 && controls[1]->getX() == controls[0]->getX() &&
+                  controls[1]->getY() > controls[0]->getY() &&
+                  controls[2]->getX() > controls[0]->getX(),
+              "at the floor the controls run in columns that fit the strip's height");
+        const auto &panels = integrated.devices.panels;
+        check(panels[1]->getX() > panels[0]->getRight() && panels[0]->getY() == 0 &&
+                  panels[1]->getY() == 0,
+              "devices run left to right, as Live's Device View");
+        integrated.devices.fold(11);
+        check(document->views().load("main").foldedDevices.contains(11) &&
+                  panels[0]->getWidth() == DevicePanelView::kFoldedWidth,
+              "a folded device is a narrow bar, remembered outside the history");
+        integrated.devices.fold(11);
+        integrated.resizeDevices(1);
+        check(integrated.state().deviceHeight == DesktopDefaults{}.deviceFloor,
+              "the strip's floor comes from the desktop defaults");
+        integrated.resizeDevices(10000);
+        check(integrated.arrangement.getHeight() >=
+                  ArrangementView::kRulerHeight + integrated.state().laneHeight,
+              "the strip's ceiling leaves the ruler and a row");
+        integrated.resizeDevices(240);
+        check(integrated.devices.getHeight() == 239 &&
+                  controls[2]->getX() == controls[0]->getX(),
+              "a taller strip holds more rows, so fewer columns");
+        integrated.frame();
+        reference(integrated, "devices", write);
+        allocations = 0;
+        audit = true;
+        for (int i = 0; i < 50; ++i)
+            integrated.frame();
+        audit = false;
+        check(allocations == 0, "unchanged parameter publication frame allocates zero");
+        arrangement.geometry.selectedTrack = 1;
+        integrated.frame();
+        check(integrated.devices.panels.empty(),
+              "selection changes strip even with same parameter publication");
+        check(!document->parameterGesture(99, "0", engine::ParamEventKind::Value, .5),
+              "a gesture for no device is refused");
+        integrated.devices.publication = {};
+        arrangement.geometry.selectedTrack = 2;
+        integrated.frame();
+        integrated.resizeDevices(169);
         document->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);

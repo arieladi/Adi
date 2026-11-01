@@ -236,8 +236,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
                                    TransportMailbox &mailbox, AppCommands &commands,
                                    ViewStateStore &persistence, std::string window,
                                    DesktopDefaults defaults)
-    : transport(*this), status(*this), arrangement(*this), view_(view), submitter_(submitter),
-      mailbox_(mailbox),
+    : transport(*this), status(*this), arrangement(*this), devices(*this), dockResizer(*this),
+      view_(view), submitter_(submitter), mailbox_(mailbox),
       commands_(commands), persistence_(persistence), window_(std::move(window)),
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
     setOpaque(true);
@@ -246,6 +246,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(status);
     addAndMakeVisible(aiTab);
     addAndMakeVisible(arrangement);
+    addAndMakeVisible(devices);
+    addAndMakeVisible(dockResizer);
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
@@ -293,6 +295,7 @@ void AdiRootComponent::frame() noexcept {
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
+    devices.frame(arrangement.geometry.selectedTrack);
     if (lastDrain_ & DirtySet::Transport)
         transport.repaint();
     if (lastDrain_ & DirtySet::Status)
@@ -392,6 +395,11 @@ void AdiRootComponent::resized() {
     leftWidth_ = left;
     rightWidth_ = right;
     arrangement.setBounds(left, top, std::max(0, w - left - right), mid);
+    devices.setVisible(!deviceArea_.isEmpty());
+    dockResizer.setVisible(!deviceArea_.isEmpty());
+    devices.setBounds(deviceArea_.withTrimmedTop(1));
+    dockResizer.setBounds(deviceArea_.getX(), deviceArea_.getY() - 3, deviceArea_.getWidth(), 6);
+    dockResizer.toFront(false);
     dirty_.mark(DirtySet::All);
 }
 void AdiRootComponent::paint(juce::Graphics &g) {
@@ -432,13 +440,16 @@ void AdiRootComponent::paint(juce::Graphics &g) {
     if (right > 0)
         g.drawText(name(slots[1].panel), w - right + 12, top + 12, std::max(0, right - 24), 24,
                    juce::Justification::centredLeft);
-    if (!deviceArea_.isEmpty())
-        g.drawText("Devices", deviceArea_.getX() + 12, deviceArea_.getY() + 12, 160, 24,
-                   juce::Justification::centredLeft);
     if (!infoArea_.isEmpty())
         g.drawFittedText(infoText_, infoArea_.reduced(10), juce::Justification::topLeft, 8);
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
+void AdiRootComponent::resizeDevices(int height) {
+    const int ceiling = getHeight() - kTransportHeight - kStatusHeight -
+                        ArrangementView::kRulerHeight - state_.laneHeight;
+    state_.setDeviceHeight(std::min(height, ceiling));
+    resized();
+}
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
 void AdiRootComponent::say(std::string message) {
     error_ = std::move(message);

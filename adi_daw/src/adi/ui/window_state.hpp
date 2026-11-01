@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 namespace adi {
 class Store;
@@ -33,6 +34,7 @@ struct WindowState {
     double timelineLeft = 0, pixelsPerQuarter = 48;
     int laneHeight = 64;
     std::map<std::int64_t, int> laneHeights;
+    std::set<std::int64_t> foldedDevices; // devices folded in the strip, per window
     // The strip expands upward only: a height below the floor becomes the floor.
     void setDeviceHeight(int h) noexcept { deviceHeight = h < deviceFloor ? deviceFloor : h; }
 };
