@@ -987,6 +987,121 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
             juce::PNGImageFormat{}.writeImageToStream(cut, *stream);
     }
 }
+// The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
+// of the arrangement; its tabs in the draft's order, STACK first; kept per window.
+void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::create(dir / "mixview.adi", err);
+    check(store != nullptr, "the Mix View's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Mix')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    bool madeAll = true;
+    std::int64_t index = 0;
+    for (const auto &[id, kind, name] : {std::tuple{1, "master", "Main"}, std::tuple{10, "audio", "Kick"},
+                                         std::tuple{11, "audio", "Bass"}, std::tuple{12, "midi", "Lead"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", index++}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    check(madeAll, "Kick, Bass, Lead and Main");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mix");
+    root.setSize(1440, 900);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &panel = root.mixViewPanel;
+    const auto lanes = root.arrangement.getBounds();
+    const auto controls = root.mixerArea();
+    check(!panel.isVisible() && root.arrangement.isVisible() && !root.state().mixView,
+          "closed by default: the arrangement as Live's");
+    commands.activate(root);
+    juce::ApplicationCommandInfo info(AppCommands::ToggleMixView);
+    commands.getCommandInfo(AppCommands::ToggleMixView, info);
+    check(info.shortName == "Mix View" && info.defaultKeypresses.size() == 1 &&
+              info.defaultKeypresses[0] == juce::KeyPress(juce::KeyPress::F4Key) &&
+              (info.flags & juce::ApplicationCommandInfo::isTicked) == 0,
+          "the View menu's Mix View, on F4 (ADR-0209 d9)");
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)), "F4 opens it");
+    root.frame();
+    check(root.state().mixView && panel.isVisible() && !root.arrangement.isVisible() && !root.mixer.isVisible() &&
+              panel.getBounds() == lanes.getUnion(controls),
+          "in place of the arrangement and its track controls");
+    check(root.browser.isVisible() && root.strip.isVisible() && root.devices.isVisible(),
+          "the browser, the strip down the edge and the Detail View stay");
+    check(root.transport.mix.getToggleState(), "the control bar's Mix button is lit");
+    commands.getCommandInfo(AppCommands::ToggleMixView, info);
+    check((info.flags & juce::ApplicationCommandInfo::isTicked) != 0, "and the menu's item ticked");
+    // The tabs: the draft's five, in its order and names; STACK shown first, P1's only tab.
+    bool named = true;
+    for (int i = 0; i < MixViewPanel::kTabCount; ++i)
+        named = named && panel.tabs[static_cast<std::size_t>(i)]->getButtonText() ==
+                             MixViewPanel::kTabNames[static_cast<std::size_t>(i)];
+    check(named && panel.tabs[1]->getButtonText() == "STACK", "OVERVIEW, STACK, SCOPE & PHASE, SPECTROGRAM, CTZ CASCADE");
+    check(panel.tab() == MixViewPanel::Tab::Stack && panel.tabs[1]->getToggleState() && panel.stack.isVisible() &&
+              panel.stack.rows().size() == 4,
+          "STACK shows, lit, with a row for each channel");
+    check(panel.stack.getBounds() == panel.body() && panel.body().getY() >= MixViewPanel::kHeaderHeight,
+          "under the tabs");
+    panel.tabs[0]->onClick();
+    root.frame();
+    check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Overview && !panel.stack.isVisible() &&
+              panel.tabs[0]->getToggleState() && !panel.tabs[1]->getToggleState(),
+          "a click on OVERVIEW shows it, drawn empty until after the first window (d11)");
+    check(persistence.load("mix", {}).mixViewTab == 0 && persistence.load("mix", {}).mixView,
+          "the tab and the view are kept with the window's view (ui_view)");
+    check(root.chooseMixViewTab(1), "back to STACK");
+    root.frame();
+    // A steady frame with the Mix View open builds nothing.
+    root.frame();
+    allocations = 0;
+    audit = true;
+    root.frame();
+    audit = false;
+    check(allocations == 0, "a steady frame with the Mix View open allocates zero");
+    // The rows follow the tracks.
+    OpRequest pad;
+    pad.opType = "track.create";
+    pad.payload = {{"id", 13}, {"kind", "midi"}, {"name", "Pad"}, {"index", 3}};
+    pad.label = "Create track";
+    check(submitter.submit(std::move(pad)).ok, "a new track");
+    root.frame();
+    check(panel.stack.rows().size() == 5, "and STACK has a row for it at the next frame");
+    // A second window keeps its own.
+    AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "mix-other");
+    other.setSize(1200, 720);
+    other.frame();
+    check(!other.mixViewPanel.isVisible() && other.arrangement.isVisible(), "a second window keeps its own view");
+    root.transport.mix.onClick();
+    root.frame();
+    check(!root.state().mixView && !panel.isVisible() && root.arrangement.isVisible() && root.mixer.isVisible() &&
+              root.arrangement.getBounds() == lanes && !root.transport.mix.getToggleState(),
+          "the Mix button closes it: the arrangement and its track controls where they were");
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+    if (folder.isNotEmpty()) {
+        root.command(AppCommands::ToggleMixView);
+        root.mark(DirtySet::All);
+        root.frame();
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-mix-view.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        root.command(AppCommands::ToggleMixView);
+    }
+}
 } // namespace
 int main(int argc, char **argv) {
     juce::ScopedJuceInitialiser_GUI init;
@@ -3169,6 +3284,7 @@ int main(int argc, char **argv) {
     liveParity(commands, temp.path(), write);
     groupTracks(commands, temp.path());
     footRows(commands, temp.path());
+    mixViewShell(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

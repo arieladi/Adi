@@ -39,6 +39,8 @@ int main() {
     state.largeTracks = false;
     state.viewGroup = 42;
     state.foldedGroups = {7, 13};
+    state.mixView = true;
+    state.mixViewTab = 3;
     state.gridSnap = false;
     state.gridFixed = true;
     state.gridTriplet = true;
@@ -55,6 +57,9 @@ int main() {
           "the project view's group is kept per window, the whole project until one is chosen");
     check(restored.foldedGroups == std::set<std::int64_t>{7, 13} && views.load("other").foldedGroups.empty(),
           "the folded groups are kept per window, every group open until folded");
+    check(restored.mixView && restored.mixViewTab == 3 && !views.load("other").mixView &&
+              views.load("other").mixViewTab == 1,
+          "the Mix View and its tab are kept per window: closed, on STACK, until opened (ADR-0209)");
     check(!restored.gridSnap && restored.gridFixed && restored.gridTriplet && restored.gridNarrow == 2 &&
               restored.gridFixedQuarters == .125 && views.load("other").gridSnap && !views.load("other").gridFixed,
           "the editing grid is kept per window, snapping and adaptive until changed");

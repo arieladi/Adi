@@ -11,6 +11,7 @@
 #include "ui_look.hpp"
 #include "ui_devices.hpp"
 #include "ui_mixer.hpp"
+#include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
@@ -78,7 +79,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         LargeTracks,
         GroupTracks,
         UngroupTracks,
-        LastId = UngroupTracks
+        ToggleMixView,
+        LastId = ToggleMixView
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -197,6 +199,11 @@ class AdiRootComponent final : public juce::Component {
     DockResizer dockResizer;
     MixerPanel mixer;
     MixerPanel mixerView{*this, true};
+    // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
+    MixViewPanel mixViewPanel{*this};
+    juce::Rectangle<int> mixViewArea() const noexcept { return mixViewArea_; }
+    // The Mix View's tab, this window's view state; false only on a write error.
+    bool chooseMixViewTab(int tab);
     MixerViewResizer mixerViewResizer{*this};
     // Live's strip down the arrangement's outer edge, with the flip arrows.
     SideStrip strip;
@@ -243,7 +250,7 @@ class AdiRootComponent final : public juce::Component {
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
     juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
-        mixerViewArea_, stripArea_;
+        mixerViewArea_, stripArea_, mixViewArea_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
 };
