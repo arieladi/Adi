@@ -1,8 +1,8 @@
 """Fix test: re-run a frozen Draft 1 workflow with ONE recorded change and measure the result.
 
 usage: fix_test.py <root> <variants.json>
-variants.json is a list of {"label", "slot", and any of "seed", "prompt", "image"}. "prompt" replaces the
-whole positive text, "image" is a file name in the ComfyUI input folder. Everything else (model, size,
+variants.json is a list of {"label", "slot", and any of "seed", "prompt", "negative", "image"}. "prompt" and
+"negative" replace the whole positive / negative text, "image" is a file name in the ComfyUI input folder. Everything else (model, size,
 steps, CFG, sampler, decode) stays exactly as the slot's saved anim/<slot>/workflow.json. Outputs go to
 cosmicfull-test/<label>/<slot>; nothing existing is overwritten. Results are appended to
 <root>/freeze-test.json. A variant whose output folder already has frames is skipped (never resubmitted).
@@ -31,6 +31,8 @@ for v in variants:
         g["9"]["inputs"]["seed"] = v["seed"]
     if "prompt" in v:
         g["4"]["inputs"]["text"] = v["prompt"]
+    if "negative" in v:
+        g["5"]["inputs"]["text"] = v["negative"]
     if "image" in v:
         assert (C / "input" / v["image"]).exists(), v["image"]
         g["6"]["inputs"]["image"] = v["image"]
@@ -48,7 +50,7 @@ for v in variants:
     frames = sorted(out.glob("f_*.png"))
     m = motion(frames, plan[sid]["step"])
     row = {"label": label, "slot": sid, "seed": g["9"]["inputs"]["seed"], "image": g["6"]["inputs"]["image"],
-           "change": {k: v[k] for k in ("seed", "prompt", "image") if k in v}, "frames": len(frames),
+           "change": {k: v[k] for k in ("seed", "prompt", "negative", "image") if k in v}, "frames": len(frames),
            "seconds": round(time.time() - t0), **m}
     log = json.loads(log_path.read_text()) if log_path.exists() else []
     log.append(row)
