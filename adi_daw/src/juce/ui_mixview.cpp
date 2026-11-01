@@ -18,7 +18,7 @@ void FloatButton::paintButton(juce::Graphics &g, bool over, bool) {
     g.setColour(look::text);
     g.drawRect(front, 1.f);
 }
-MixViewPanel::MixViewPanel(AdiRootComponent &root) : stack(root), root_(root) {
+MixViewPanel::MixViewPanel(AdiRootComponent &root) : stack(root, stub_), root_(root) {
     setTitle("Mix View");
     setLookAndFeel(&look::liveLook());
     for (int i = 0; i < kTabCount; ++i) {

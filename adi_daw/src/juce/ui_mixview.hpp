@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
-#include "ui_channel_eq.hpp"
+#include "adi/ui/mix_view_provider.hpp"
+#include "ui_stack.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <array>
 #include <memory>
@@ -41,10 +42,14 @@ class MixViewPanel final : public juce::Component {
     std::array<std::unique_ptr<juce::TextButton>, kTabCount> tabs;
     // At the band's right end: into a window of its own, onto any display, and back.
     FloatButton floating;
-    // STACK: every channel, its ADI-Q and its ADI-L, present and off until the engine's slots
-    // arrive (window log, N16). For now the Channel EQ window's rows, which the STACK item
-    // reshapes into Pro-Q's instance list.
-    ChannelEqView stack;
+  private:
+    // The slots the engine has not written yet come from the stub (window log, N16); declared
+    // before STACK, which reads through it.
+    StubMixViewProvider stub_;
+
+  public:
+    // STACK: ADR-0204 d1's one window, every channel's ADI-Q, sidechain slot and ADI-L.
+    StackTab stack;
 
   private:
     AdiRootComponent &root_;
