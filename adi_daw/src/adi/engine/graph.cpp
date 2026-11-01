@@ -962,7 +962,10 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         s.silent = true;
         s.zeroed = true;                 // `assign` above filled it with zeros
         s.dozeGlides = kLinesUnchecked;
-        if (s.node != nullptr) s.node->prepare(sampleRate, maxFrames);
+        if (s.node != nullptr) {
+            s.node->willBeHanded(s.doubles ? Precision::Float64 : Precision::Float32);
+            s.node->prepare(sampleRate, maxFrames);
+        }
     }
 
     std::sort(bypassNodes_.begin(), bypassNodes_.end(), [](const auto& a, const auto& b) {
