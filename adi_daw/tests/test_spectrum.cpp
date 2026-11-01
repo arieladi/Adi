@@ -16,10 +16,44 @@
 
 #include "adi/dsp/spectrum.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <complex>
 #include <cstdio>
+#include <cstdlib>
+#include <limits>
+#include <new>
 #include <string>
 #include <vector>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
+
+namespace {
+thread_local bool auditAllocations = false;
+thread_local unsigned realtimeAllocations = 0;
+#if defined(_MSC_VER) && defined(_DEBUG)
+int allocationHook(int kind, void *, std::size_t, int, long, const unsigned char *, int) {
+    if (auditAllocations && (kind == _HOOK_ALLOC || kind == _HOOK_REALLOC))
+        ++realtimeAllocations;
+    return 1;
+}
+#endif
+} // namespace
+
+void *operator new(std::size_t n) {
+    if (auditAllocations)
+        ++realtimeAllocations;
+    if (auto *p = std::malloc(n ? n : 1))
+        return p;
+    throw std::bad_alloc();
+}
+void *operator new[](std::size_t n) { return ::operator new(n); }
+void operator delete(void *p) noexcept { std::free(p); }
+void operator delete[](void *p) noexcept { std::free(p); }
+void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+void operator delete[](void *p, std::size_t) noexcept { std::free(p); }
 
 namespace {
 
@@ -257,9 +291,171 @@ void testRefusals() {
     near(s.binHz(48000.0), 750.0, 1e-9, "64 bins of 48 kHz are 750 Hz apart");
 }
 
+bool matchesComplex(std::span<const std::complex<float>> actual,
+                    std::span<const std::complex<double>> expected, double tolerance) {
+    if (actual.size() != expected.size())
+        return false;
+    for (std::size_t i = 0; i < actual.size(); ++i)
+        if (!std::isfinite(actual[i].real()) || !std::isfinite(actual[i].imag()) ||
+            std::abs(std::complex<double>(actual[i]) - expected[i]) > tolerance)
+            return false;
+    return true;
+}
+
+double maximumSampleError(std::span<const float> actual, std::span<const float> expected) {
+    if (actual.size() != expected.size())
+        return std::numeric_limits<double>::infinity();
+    double worst = 0;
+    for (std::size_t i = 0; i < actual.size(); ++i) {
+        if (!std::isfinite(actual[i]))
+            return std::numeric_limits<double>::infinity();
+        worst = std::max(worst, std::abs(static_cast<double>(actual[i]) - expected[i]));
+    }
+    return worst;
+}
+
+void testRealFftAnalytic() {
+    section("RealFft -- independent forward and inverse amplitude/phase oracles");
+    for (std::int32_t n : {32, 96, 512}) {
+        RealFft fft(n);
+        check(fft.valid() && fft.size() == n && fft.bins() == n / 2 + 1,
+              "RealFft accepts size and positive-bin count N=" + std::to_string(n));
+        if (!fft.valid())
+            continue;
+        const auto size = static_cast<std::size_t>(n);
+        const auto bins = static_cast<std::size_t>(fft.bins());
+        std::vector<float> input(size), output(size);
+        std::vector<std::complex<float>> actual(bins), analyticBins(bins);
+        std::vector<std::complex<double>> expected(bins);
+        for (std::size_t i = 0; i < size; ++i) {
+            const double angle = 2 * kPi * 3 * static_cast<double>(i) / n;
+            input[i] = static_cast<float>(.25 + (i % 2 ? -.125 : .125) +
+                                          .4 * std::cos(angle) + .2 * std::sin(angle));
+        }
+        expected[0] = .25 * n;
+        expected[bins - 1] = .125 * n;
+        expected[3] = std::complex<double>(.2 * n, -.1 * n);
+        // Includes float input quantization and FFT roundoff, but remains
+        // below 2e-6 relative to an N-amplitude full-scale transform.
+        const double tolerance = 16.0 * static_cast<double>(std::numeric_limits<float>::epsilon()) *
+                                 static_cast<double>(n);
+        check(fft.forward(input, actual), "analytic forward transform succeeds");
+        check(matchesComplex(actual, expected, tolerance),
+              "DC/Nyquist are distinct real bins and a sine has negative imaginary phase");
+
+        // Build the inverse input from mathematics, never from forward().
+        // A mutually cancelling scaling/packing error cannot pass this test.
+        for (std::size_t k = 0; k < bins; ++k)
+            analyticBins[k] = std::complex<float>(expected[k]);
+        // These two bins have no imaginary component in a real transform;
+        // the public inverse contract deliberately ignores the supplied one.
+        analyticBins.front().imag(123.f);
+        analyticBins.back().imag(-456.f);
+        check(fft.inverse(analyticBins, output), "analytic inverse transform succeeds");
+        check(maximumSampleError(output, input) < 2e-6,
+              "inverse independently applies 1/N and reconstructs sine phase");
+
+        auto wrongPacking = actual;
+        std::swap(wrongPacking.front(), wrongPacking.back());
+        check(!matchesComplex(wrongPacking, expected, tolerance),
+              "plant: analytic oracle rejects exchanged DC and Nyquist");
+        auto wrongPhase = actual;
+        wrongPhase[3] = std::conj(wrongPhase[3]);
+        check(!matchesComplex(wrongPhase, expected, tolerance),
+              "plant: analytic oracle rejects conjugated phase");
+
+        // A shifted unit impulse has energy and nontrivial phase in every
+        // positive bin, unlike a test that only excites bin 3.
+        std::fill(input.begin(), input.end(), 0.f);
+        input[7] = .75f;
+        for (std::size_t k = 0; k < bins; ++k)
+            expected[k] = std::polar(.75, -2 * kPi * static_cast<double>(k) * 7 / n);
+        check(fft.forward(input, actual) && matchesComplex(actual, expected, 2e-6),
+              "shifted impulse checks every positive bin's complex phase");
+        check(fft.inverse(actual, output), "impulse round trip succeeds");
+        check(maximumSampleError(output, input) < 2e-6,
+              "impulse round trip preserves its offset and amplitude");
+    }
+}
+
+void testRealFftBoundsAndRealtime() {
+    section("RealFft -- invalid sizes, span guards, and prepared realtime calls");
+    const std::complex<float> binGuard{123.f, -456.f};
+    // The last cases are aligned powers of two, not merely sizes rejected by
+    // the SIMD multiple check: refuse PFFFT's asserted upper limit and byte
+    // counts that exceed the wrapper's portable allocation bound.
+    for (std::int32_t n : std::array<std::int32_t, 8>{0, -32, 1, 31, 224, 1000,
+                                                   1 << 27, 1 << 29}) {
+        RealFft invalid(n);
+        std::array<float, 32> samples{};
+        samples.fill(19.f);
+        std::array<std::complex<float>, 17> bins{};
+        bins.fill(binGuard);
+        check(!invalid.valid(), "RealFft refuses unsupported N=" + std::to_string(n));
+        check(!invalid.forward(samples, bins) &&
+                  std::all_of(bins.begin(), bins.end(), [&](auto x) { return x == binGuard; }),
+              "invalid forward returns false without writes");
+        check(!invalid.inverse(bins, samples) &&
+                  std::all_of(samples.begin(), samples.end(), [](float x) { return x == 19.f; }),
+              "invalid inverse returns false without writes");
+    }
+    RealFft fft(64);
+    std::array<float, 66> input{}, output{};
+    std::array<std::complex<float>, 35> bins{};
+    input.fill(19.f);
+    output.fill(23.f);
+    bins.fill(binGuard);
+    auto frame = std::span(input).subspan(1, 64);
+    auto result = std::span(output).subspan(1, 64);
+    auto spectrum = std::span(bins).subspan(1, 33);
+    auto untouchedBins = [&] {
+        return std::all_of(bins.begin(), bins.end(), [&](auto x) { return x == binGuard; });
+    };
+    auto untouchedOutput = [&] {
+        return std::all_of(output.begin(), output.end(), [](float x) { return x == 23.f; });
+    };
+    check(!fft.forward(frame.first(63), spectrum) && untouchedBins(),
+          "short forward input is rejected without output writes");
+    check(!fft.forward(frame, spectrum.first(32)) && untouchedBins(),
+          "short forward output is rejected without output writes");
+    check(!fft.inverse(spectrum.first(32), result) && untouchedOutput(),
+          "short inverse input is rejected without output writes");
+    check(!fft.inverse(spectrum, result.first(63)) && untouchedOutput(),
+          "short inverse output is rejected without output writes");
+
+    for (std::size_t i = 0; i < frame.size(); ++i)
+        frame[i] = static_cast<float>(.2 * std::sin(.37 * static_cast<double>(i)) + .1);
+    const auto originalInput = input;
+    check(fft.forward(frame, spectrum) && fft.inverse(spectrum, result),
+          "public spans need no PFFFT alignment, including interior buffers");
+    check(bins.front() == binGuard && bins.back() == binGuard && output.front() == 23.f &&
+              output.back() == 23.f && input == originalInput,
+          "transforms preserve both guard ends and the input samples");
+    check(maximumSampleError(result, frame) < 2e-6,
+          "dense off-bin round trip preserves all samples");
+
+    // Audit the first calls too: a lazy scratch allocation must not hide
+    // behind the transforms used by the bounds and round-trip tests above.
+    RealFft realtime(64);
+    check(realtime.valid(), "realtime plan is prepared before allocation auditing");
+    realtimeAllocations = 0;
+    bool success = true;
+    auditAllocations = true;
+    for (int i = 0; i < 128; ++i) {
+        success &= realtime.forward(frame, spectrum);
+        success &= realtime.inverse(spectrum, result);
+    }
+    auditAllocations = false;
+    check(success, "prepared forward and inverse calls keep succeeding");
+    check(realtimeAllocations == 0, "prepared transforms perform no audited allocations");
+}
+
 }  // namespace
 
 int main() {
+#if defined(_MSC_VER) && defined(_DEBUG)
+    _CrtSetAllocHook(allocationHook);
+#endif
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_spectrum_tests -- the one definition of a spectrum\n\n");
     testAgainstTheDefinition();
@@ -267,6 +463,8 @@ int main() {
     testDcAndNyquist();
     testTheWindow();
     testRefusals();
+    testRealFftAnalytic();
+    testRealFftBoundsAndRealtime();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
