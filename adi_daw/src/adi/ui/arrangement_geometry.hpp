@@ -83,8 +83,14 @@ struct ArrangementGeometry {
         double fixedQuarters = .25;  // the fixed grid's step: a sixteenth
         bool operator==(const Grid &) const = default;
     } grid;
-    static constexpr double kFinestGrid = 1. / 32, kWidestGrid = 32; // 1/128 note to 8 bars
-    static constexpr int kGridNarrowest = 3;
+    // The lanes' menu names the widths (§6.10): the fixed grid's from 8 Bars to 1/32, and the
+    // adaptive grid's five, widest first, a step apart. Ctrl/Cmd+1 and 2 stay within them.
+    // PROVISIONAL: the names are Live's as the window recalls them, and which of them is the
+    // default (Medium here) is to be measured; the online manual names neither.
+    static constexpr double kFinestGrid = 1. / 8, kWidestGrid = 32; // a 1/32 note to 8 bars
+    static constexpr std::array<const char *, 5> kAdaptiveNames{"Widest", "Wide", "Medium", "Narrow",
+                                                                "Narrowest"};
+    static constexpr int kGridNarrowest = 2;
     // The step between grid lines, in quarter notes. The adaptive grid at its default keeps
     // lines at least 14 pixels apart and never finer than a quarter, as it is drawn.
     double gridQuarters() const noexcept {
