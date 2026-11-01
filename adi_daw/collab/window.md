@@ -60,10 +60,42 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N32 | A clip's notes, with each note's identity as the note ops address it, and the clip's own properties (kind, name, colour, start and end markers, loop window, signature, scale) where the window can read them: in the snapshot, or a read the UI may call on the message thread when the journal moves, as `MidiClips` reads `rows::Model`; the engine lane's choice | engine | the Clip View's title bar and Main panel, and every note the Note Editor draws or edits (STEP-7-PLAN §7.7) | the view's frame and the note geometry are built without it; the editor draws no notes |
 | N33 | Ops for a clip's start and end markers, its loop window and loop switch, its signature and its scale (Live's Main Clip Properties) | engine | the Main panel's fields and Set buttons, the loop brace, Fit to Scale (§7.7) | the fields show the snapshot's position and length, read-only |
 | N34 | An op for a note's active flag (the `flags` column exists) | engine | 0 deactivates a note (Live manual §10.5.7) | nothing |
-| N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`) | a clean tree after the gate the window runs before each push | the window deletes them after each run |
-| N36 | What `tracks.color` holds: `docs/format` gives only an INTEGER (Live stores a palette index, one of its 70 colours; ADI's window draws 0xRRGGBB) | win (the format) | a track's own colour on its lane, title, strip and the project view's folder (STEP-7-PLAN §2.2) | colours by place, as Live's auto-colours |
+| N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`); win's `.gitignore` line in PR #316 | a clean tree after the gate the window runs before each push | the window deletes them after each run |
+| N36 | What `tracks.color` holds: `docs/format` gives only an INTEGER (Live stores a palette index, one of its 70 colours; ADI's window draws 0xRRGGBB) | win (the format); ruled as ADR-0211 in PR #317: an index into Live's palette, NULL for none | a track's own colour on its lane, title, strip and the project view's folder (STEP-7-PLAN §2.2) | built against the ruling in #319 (`window/track-colour`); the row is struck when #317 merges |
 | N37 | `track.delete`'s inverse captures only the track row (kind, name, parent, index), where OPS.md §6.3 says it captures the row, its clips and its device state. Everything that cascades from `tracks` (clips, lanes, the mixer strip, device chains) is not brought back by undo, nor are the colour and the routing rows | engine (`src/adi/ops_catalog.cpp`) | undo of Delete Track and of Ungroup Tracks (`window/group-commands`) should bring the track back as it was, clips and devices included | both commands are built; undo brings the track or the group back empty; parity-7.3 row 33 says so |
 | N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-01, cloud, later — the foot [#315](https://github.com/arieladi/Adi/pull/315), the track controls clipped [#318](https://github.com/arieladi/Adi/pull/318), a track's own colour [#319](https://github.com/arieladi/Adi/pull/319)
+
+The stack now runs #310 ← #312 ← #313 ← #314 ← #315 ← #318 ← #319.
+
+**#315, the returns and Main at the foot (7.3 row 17).** `window/main-foot`.
+- The one order puts the returns after the tracks and before Main.
+- The geometry pins them at the bottom of the lanes, whatever the scroll; every walk down the rows
+  jumps to the foot, and a click there is the foot's.
+- Four goldens were re-recorded on purpose: Main moved to the foot.
+- Checks: shell 479, seams 145; `test_all.sh` 9698 across 105 suites, PASS.
+
+**#318, track controls only level with the lanes (7.6 row 1).** `window/controls-clip`.
+- Found while making #315's picture: a row scrolled partly above the lanes drew over the frame's
+  band and took clicks there. This is older than the foot.
+- The panel paints its frame over the rows; a strip refuses clicks outside the lanes.
+- Both new checks fail with the fix taken out. Checks: shell 482.
+
+**#319, a track's own colour (7.3 row 34).** `window/track-colour`.
+- Built against ADR-0211 (win's #317, answering N36): an index into Live's palette, NULL for none.
+- `look::paletteColour`: the fourteen measured colours stand in, index % 14, until the seventy
+  are measured from Live 12's chooser.
+- Checks: shell 492, seams 147; `test_all.sh` 9700 across 105 suites, PASS.
+
+**win's PRs for the window's needs:** #316 (N35, the renders' `.gitignore` line) and #317 (N36,
+ADR-0211). The rows name them.
+
+**Next:** the Mix View's P1 (ADR-0209 d11): `MixViewPanel`, F4 and the top-bar button, the
+STACK tab, the ★ Reference strip, the [👁 Reference Track] toggle, [REF] with Shift+R, stub
+providers.
 
 ---
 
