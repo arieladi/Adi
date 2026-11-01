@@ -83,12 +83,12 @@
       "policy": "Review raw sequential frames/clip and neighbours. Reject static subjects/camera-only change/noise/anatomy drift. Retry with failure-specific prompt/settings adjustments in new take directories, up to20 before reassessing method. Never automatically approve based on frame differences alone. Preserve existing full-track good scenes and both drafts. No paid calls/downloads."
     },
     "rebuild": {
-      "status": "Shot8take3 complete, motion candidate promising. Built local12frame smoothstep unscaled dissolve from accepted shot7; sampled transition is readable but brief double exposure. No accepted.json issued yet.",
+      "status": "STOPPED by user: mission transferred to Claude. Codex automation deleted; do not resume or launch jobs.",
       "root": "D:/AvasthaAI/CosmicRebuild-20261030",
       "local": "D:/AvasthaAI/Projects/Cosmic Rain/rebuild-20261030",
       "code": "tools/video-production/cosmic-rebuild",
       "scope": "Preserve original0-8sec; same illustrated style/story; recurring RainKeeper, elders, silverrain, goldring/clock. More real internal movement; coherent action/identity/environment across psychedelic scenes. Original plan245slots is timing/story scaffold, NOT approved shots.",
-      "next": "Finish dense anatomy/motion review of shot08/take03 and transition-review-with-music.mp4; full decode/count verify. Local transition.json records recipe, currently pending. If accepted copy transition media/recipe/acceptance remote, exact continuation generated.frames[79], then choose shot9 continuation. No new diffusion launched. All seven prior accepted shots preserved.",
+      "next": "Claude handoff: seven accepted shots. Shot08/take03 and local transition candidate remain unaccepted pending detailed review. Preserve all assets and reviews. Codex must not advance without new user authorization.",
       "acceptance": "Use explicit shotNN/accepted.json visual_review_passed real_subject_motion continuity_passed alltrue plus exact continuation_frame generated.frames[deliver_frames-1], selected take and evidence. Camera-motion measurements screening only. Review real action/anatomy/style/identity/energy and neighbour connection. Original good takes can be reused after contextreview; retain oldfiles. For alternatekeyframe require reviewed continuity design and explicit per-shot source support before launch; no blindrecursive245shotchain.",
       "retry": "New take on failure with documented specific changed approach; no hard retry ceiling but repeated same failure mandates method reassessment, never endless identical retries. No paidcalls/downloads. Review each30sec accumulated passage/chapters/full final.",
       "worker": "render_one.py shot take; generates ONE candidate then stops. No digital zoom/speedup/mirror fake motion. start_first_when_free.py is already launched, do not duplicate.",
