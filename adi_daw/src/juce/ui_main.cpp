@@ -250,6 +250,10 @@ class AdiApplication final : public juce::JUCEApplication,
             true);
     }
     bool applicationCommand(int id) {
+        if (id == AppCommands::Quit) {
+            systemRequestedQuit();
+            return true;
+        }
         if (id == AppCommands::TakeSnapshot) {
             promptSnapshot();
             return true;

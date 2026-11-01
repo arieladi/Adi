@@ -52,7 +52,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         RenameTrack,
         ToggleMixerView,
         ShowChannelEq,
-        LastId = ShowChannelEq
+        Quit,
+        LastId = Quit
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

@@ -64,7 +64,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Continue Play from Stop Point",
                                   "Insert Audio Track",  "Insert MIDI Track",
                                   "Delete Track",        "Rename",
-                                  "Mixer",               "Channel EQ"};
+                                  "Mixer",               "Channel EQ",
+                                  "Quit"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -176,6 +177,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case DeleteTrack:
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        break;
+    case Quit:
+        // §41.3: Ctrl+Q. On the Mac Cmd+Q is the application menu's own Quit, which
+        // reaches the same place (systemRequestedQuit).
+#if !JUCE_MAC
+        info.addDefaultKeypress('q', cmd);
+#endif
         break;
     case RenameTrack: // §41.5
         info.addDefaultKeypress('r', cmd);
@@ -687,7 +695,8 @@ bool AdiRootComponent::deleteTrack() {
 }
 bool AdiRootComponent::command(int id) {
     // The application's own: files, Settings, and the floating Channel EQ window.
-    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::ShowChannelEq)
+    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::ShowChannelEq ||
+        id == AppCommands::Quit)
         return applicationCommand && applicationCommand(id);
     if (id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart)
         return arrangement.command(id);
@@ -812,6 +821,8 @@ class ShellMenu final : public juce::MenuBarModel {
 #if !JUCE_MAC
             menu.addSeparator();
             add(AppCommands::Settings);
+            menu.addSeparator();
+            add(AppCommands::Quit);
 #endif
         } else if (index == 1) {
             add(AppCommands::Undo);

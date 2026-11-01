@@ -602,9 +602,13 @@ int main(int argc, char **argv) {
         AdiRootComponent integrated(document->view(), document->ops(), document->mailbox(),
                                     commands, document->views(), document->sessionState(),
                                     "main");
-        int snapshots = 0, saveAs = 0;
+        int snapshots = 0, saveAs = 0, quits = 0;
         integrated.afterEdit = [&] { document->synchronise(); };
         integrated.applicationCommand = [&](int id) {
+            if (id == AppCommands::Quit) {
+                ++quits;
+                return true;
+            }
             if (id == AppCommands::SaveAs) {
                 ++saveAs;
                 integrated.say("Save As waits for the engine's (ADR-0203 d6)");
@@ -629,6 +633,19 @@ int main(int argc, char **argv) {
               "and the command's own info carries it");
         check(integrated.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)),
               "application undo key");
+        // Quit (§41.3): every edit is already in the file, so nothing is asked.
+        juce::ApplicationCommandInfo quitInfo(AppCommands::Quit);
+        commands.getCommandInfo(AppCommands::Quit, quitInfo);
+#if JUCE_MAC
+        check(quitInfo.shortName == "Quit" && quitInfo.defaultKeypresses.isEmpty() &&
+                  integrated.command(AppCommands::Quit) && quits == 1,
+              "Quit reaches the application, asking nothing; Cmd+Q is the application menu's");
+#else
+        check(quitInfo.shortName == "Quit" &&
+                  integrated.keyPressed(juce::KeyPress('q', juce::ModifierKeys::commandModifier, 0)) &&
+                  quits == 1,
+              "Ctrl+Q quits, asking nothing");
+#endif
         check(document->session().model().tracks.size() == 1,
               "undo callback updates Session synchronously");
         check(!integrated.command(AppCommands::Undo) && !integrated.error().empty() &&
