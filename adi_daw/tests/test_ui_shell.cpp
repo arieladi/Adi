@@ -643,8 +643,9 @@ int main(int argc, char **argv) {
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack},
               "the Create menu inserts tracks");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
-                                                    C::FocusDeviceView, C::FocusBrowser},
-              "the Navigate menu moves the focus to the views ADI has (§41.4.1)");
+                                                    C::FocusDeviceView, C::FocusBrowser, 0,
+                                                    C::TabMovesFocus},
+              "the Navigate menu moves the focus to the views ADI has, then Tab's switch (§41.4.1)");
         check(!names.contains("Help"), "a menu with no command yet is left out");
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
@@ -1219,6 +1220,21 @@ int main(int argc, char **argv) {
                       browserPanel.search.getHighlightedText() == "drums",
                   "Ctrl/Cmd+F shows the browser and puts the focus in its search, its words selected");
             browserPanel.search.clear();
+            // Use Tab Key to Move Focus (§41.1.1), through the peer's own key path: off, Live's
+            // default, Tab moves nothing; on, it moves the focus on.
+            auto *peer = deviceHost.getPeer();
+            auto &canvas = integrated.arrangement.canvas;
+            const juce::KeyPress tab(juce::KeyPress::tabKey);
+            canvas.grabKeyboardFocus();
+            check(!commands.tabMovesFocus() && peer != nullptr && peer->handleKeyPress(tab) &&
+                      canvas.hasKeyboardFocus(false),
+                  "with Use Tab Key to Move Focus off, Tab moves nothing");
+            check(integrated.command(AppCommands::TabMovesFocus) && commands.tabMovesFocus() &&
+                      settings.get("lookfeel.tabMovesFocus") == true && peer != nullptr &&
+                      peer->handleKeyPress(tab) && !canvas.hasKeyboardFocus(false),
+                  "switched on from the Navigate menu, it is the setting, and Tab moves the focus on");
+            check(integrated.command(AppCommands::TabMovesFocus) && !commands.tabMovesFocus(),
+                  "and off again");
             deviceHost.removeChildComponent(&integrated);
             deviceHost.removeFromDesktop();
             integrated.devices.submit = nullptr;

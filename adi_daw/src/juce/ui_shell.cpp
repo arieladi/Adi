@@ -29,6 +29,7 @@ void AppCommands::reload() {
     const auto delay = settings_.get("lookfeel.tooltipDelayMs");
     tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
     zoomOnSelection_ = flag(settings_, "lookfeel.zoomOnSelection", true);
+    tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
@@ -38,6 +39,12 @@ bool AppCommands::setInfoView(bool on, std::string &why) {
     if (!settings_.set("lookfeel.showInfoView", on, {}, why) || !settings_.save(why))
         return false;
     infoView_ = on;
+    return true;
+}
+bool AppCommands::setTabMovesFocus(bool on, std::string &why) {
+    if (!settings_.set("lookfeel.tabMovesFocus", on, {}, why) || !settings_.save(why))
+        return false;
+    tabMovesFocus_ = on;
     return true;
 }
 void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
@@ -68,7 +75,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Mixer",               "Channel EQ",
                                   "Quit",                "Control Bar",
                                   "Arrangement View",    "Device View",
-                                  "Browser",             "Search in Browser"};
+                                  "Browser",             "Search in Browser",
+                                  "Use Tab Key to Move Focus"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -208,6 +216,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case SearchBrowser: // §41.4.1.6, §42.22
         info.addDefaultKeypress('f', cmd);
+        break;
+    case TabMovesFocus: // §41.1.1: the Navigate menu's switch, also in the Settings
+        info.setTicked(tabMovesFocus_);
         break;
     default:
         break;
@@ -584,7 +595,15 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         g.fillRect(chatArea_);
     }
 }
-bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
+bool AdiRootComponent::keyPressed(const juce::KeyPress &key) {
+    // With Use Tab Key to Move Focus off, Live's default (§41.1.1), Tab and Shift+Tab move
+    // nothing. In Live they switch to Session View, which ADI does not have yet.
+    const auto mods = key.getModifiers();
+    if (key.getKeyCode() == juce::KeyPress::tabKey && !commands_.tabMovesFocus() &&
+        !mods.isCommandDown() && !mods.isCtrlDown() && !mods.isAltDown())
+        return true;
+    return commands_.key(key, *this);
+}
 void AdiRootComponent::resizeMixerView(int height) {
     const int body = getHeight() - kTransportHeight - kStatusHeight - deviceArea_.getHeight();
     state_.mixerViewHeight =
@@ -821,6 +840,12 @@ bool AdiRootComponent::command(int id) {
         infoShown_ = commands_.infoView();
         break;
     }
+    case AppCommands::TabMovesFocus: {
+        std::string why;
+        if (!commands_.setTabMovesFocus(!commands_.tabMovesFocus(), why))
+            return fail(why);
+        break;
+    }
     case AppCommands::InsertAudioTrack:
     case AppCommands::InsertMidiTrack:
         if (!insertTrack(id == AppCommands::InsertMidiTrack))
@@ -897,7 +922,9 @@ const std::vector<MenuEntries> &menuBar() {
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, Clip View, the Groove
         // Pool and the Learn View come with those views; the Mixer with its keyboard.
-        {"Navigate", {C::FocusControlBar, C::FocusArrangement, C::FocusDeviceView, C::FocusBrowser}},
+        {"Navigate",
+         {C::FocusControlBar, C::FocusArrangement, C::FocusDeviceView, C::FocusBrowser, 0,
+          C::TabMovesFocus}},
         {"Help", {}}};
     return bar;
 }

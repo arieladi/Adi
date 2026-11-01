@@ -58,7 +58,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FocusDeviceView,
         FocusBrowser,
         SearchBrowser,
-        LastId = SearchBrowser
+        TabMovesFocus,
+        LastId = TabMovesFocus
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -74,6 +75,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool setInfoView(bool on, std::string &why);
     bool tooltips() const noexcept { return tooltips_; }
     int tooltipDelayMs() const noexcept { return tooltipDelayMs_; }
+    // Live's Use Tab Key to Move Focus (§41.1.1), off by default.
+    bool tabMovesFocus() const noexcept { return tabMovesFocus_; }
+    bool setTabMovesFocus(bool on, std::string &why);
     // Ctrl/Cmd+wheel zooms around the selection, as Live; off, around the cursor.
     bool zoomOnSelection() const noexcept { return zoomOnSelection_; }
     juce::ApplicationCommandManager manager;
@@ -86,6 +90,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool tooltips_ = true;
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
+    bool tabMovesFocus_ = false;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
