@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/check.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
