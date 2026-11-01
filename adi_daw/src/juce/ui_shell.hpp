@@ -60,7 +60,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         SearchBrowser,
         TabMovesFocus,
         Follow,
-        LastId = Follow
+        InsertMarkerToPlayhead,
+        GrowTracks,
+        ShrinkTracks,
+        LastId = ShrinkTracks
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

@@ -169,6 +169,9 @@ class ArrangementView final : public juce::Component {
     // name column with the dark rule before it.
     static constexpr int kOverviewHeight = 20, kRulerHeight = 29, kScrubHeight = 24;
     static constexpr int kHeaderWidth = 95, kTimeRulerHeight = 18, kLaneGap = 7, kLeftMargin = 4;
+    // One press of Alt/Option + or - on a track's height, in units (PROVISIONAL: Live's step
+    // is to be measured).
+    static constexpr int kHeightStep = 16;
     // Where the lanes begin: below the Overview, the ruler and the scrub area.
     static constexpr int kTopHeight = kOverviewHeight + kRulerHeight + kScrubHeight + kLaneGap;
     ArrangementGeometry geometry;

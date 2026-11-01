@@ -77,7 +77,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Quit",                "Control Bar",
                                   "Arrangement View",    "Device View",
                                   "Browser",             "Search in Browser",
-                                  "Use Tab Key to Move Focus", "Follow"};
+                                  "Use Tab Key to Move Focus", "Follow",
+                                  "Move Insert Marker to Playhead Position",
+                                  "Increase Height of Selected Tracks",
+                                  "Decrease Height of Selected Tracks"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -232,6 +235,18 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('f', alt | shift);
 #endif
         info.setTicked(active_ != nullptr && active_->state().follow);
+        break;
+    // §42.16's Arrangement View keys that need no op.
+    case InsertMarkerToPlayhead:
+        info.addDefaultKeypress(juce::KeyPress::spaceKey, cmd | shift);
+        break;
+    case GrowTracks:
+        info.addDefaultKeypress('+', alt);
+        info.addDefaultKeypress('+', alt | shift);
+        info.addDefaultKeypress('=', alt);
+        break;
+    case ShrinkTracks:
+        info.addDefaultKeypress('-', alt);
         break;
     default:
         break;
@@ -794,7 +809,8 @@ bool AdiRootComponent::command(int id) {
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::ShowChannelEq ||
         id == AppCommands::Quit)
         return applicationCommand && applicationCommand(id);
-    if (id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart)
+    if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
+        (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks))
         return arrangement.command(id);
     // No action carries the presented frame into an edit: OpSubmitter resolves
     // current store/history state on arrival, even when this window is a frame behind.
