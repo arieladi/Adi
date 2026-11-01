@@ -3,6 +3,7 @@
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
 #include "app_audio_page.hpp"
+#include "ui_channel_eq.hpp"
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
@@ -171,6 +172,10 @@ class AdiApplication final : public juce::JUCEApplication,
         // and the analyser device's big view (ADR-0183 d4).
         floating_ = std::make_unique<FloatingHost>(
             *root_, *commands_, document_->views(), document_->view(), [this](std::int64_t id) {
+                // A view of no one device (id 0), such as the Channel EQ, lives as long as
+                // the project.
+                if (id == 0)
+                    return true;
                 const auto *e = document_->session().entryFor(id);
                 return e && !e->retired;
             });
@@ -254,6 +259,20 @@ class AdiApplication final : public juce::JUCEApplication,
             // store has no Save As yet; it is the engine lane's (LANES §3 item 6).
             root_->say("Save As is not built yet: it waits for the engine's Save As.");
             return false;
+        }
+        if (id == AppCommands::ShowChannelEq) {
+            // ADI's Channel EQ window (ADR-0204 d1), floating, one for the project.
+            const std::string key = "Channel EQ";
+            if (floating_->content(key) == nullptr) {
+                auto view = std::make_unique<ChannelEqView>(*root_);
+                auto *raw = view.get();
+                if (!floating_->openView(key, 0, std::move(view),
+                                         [raw](const SnapshotReader &reader) { raw->frame(reader); }))
+                    return false;
+            }
+            if (auto *view = dynamic_cast<ChannelEqView *>(floating_->content(key)))
+                view->focus(root_->arrangement.geometry.selection.track);
+            return true;
         }
         if (id == AppCommands::Settings) {
             // Live's Settings window (ADR-0203 d11): its Audio page holds the device
