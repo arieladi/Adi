@@ -2303,10 +2303,10 @@ void testATrackDelayCrossesARebuild() {
         m.set("group.setSummingFlavor", 5, "flavor", "console.md");
         m.refresh();
         m.render(512);
-        std::size_t run = 0, longest = 0;
+        std::size_t silent = 0, longest = 0;
         for (float x : m.l) {
-            run = std::fabs(x) < 1e-5f ? run + 1 : 0;
-            longest = std::max(longest, run);
+            silent = std::fabs(x) < 1e-5f ? silent + 1 : 0;
+            longest = std::max(longest, silent);
         }
         check(m.session.summing().channelOf(1) != before, "a new flavour is a new half");
         check(longest < 8, "and the block after it has no hole: its longest near-silent run is " +
