@@ -59,7 +59,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FocusBrowser,
         SearchBrowser,
         TabMovesFocus,
-        LastId = TabMovesFocus
+        Follow,
+        LastId = Follow
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -77,6 +78,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs() const noexcept { return tooltipDelayMs_; }
     // Live's Use Tab Key to Move Focus (§41.1.1), off by default.
     bool tabMovesFocus() const noexcept { return tabMovesFocus_; }
+    // How Follow keeps the playhead on screen: by page (Live's default), or by scrolling.
+    bool followByPage() const noexcept { return followByPage_; }
     bool setTabMovesFocus(bool on, std::string &why);
     // Ctrl/Cmd+wheel zooms around the selection, as Live; off, around the cursor.
     bool zoomOnSelection() const noexcept { return zoomOnSelection_; }
@@ -91,6 +94,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
+    bool followByPage_ = true;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).

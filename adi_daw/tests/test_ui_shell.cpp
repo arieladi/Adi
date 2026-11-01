@@ -623,8 +623,9 @@ int main(int argc, char **argv) {
         };
         using C = AppCommands;
 #if JUCE_MAC
-        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Navigate"},
-              "the Mac's menu bar: File, Edit, Create, View, Navigate");
+        check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
+              "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
+        check(items("Options") == std::vector<int>{C::Follow}, "Follow is the Options menu's (§6.2)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
                                                 C::TakeSnapshot, C::SaveAs},
               "the File menu; Quit is the application menu's on the Mac");
@@ -634,8 +635,8 @@ int main(int argc, char **argv) {
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
                                                 C::TakeSnapshot, C::SaveAs, 0, C::Quit},
               "the File menu ends with Quit and no longer holds Settings");
-        check(items("Options") == std::vector<int>{C::Settings},
-              "Settings is the Options menu's off the Mac (§2.3)");
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::Settings},
+              "the Options menu: Follow (§6.2), then Settings off the Mac (§2.3)");
 #endif
         check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
                                                 C::RenameTrack},
@@ -1047,8 +1048,74 @@ int main(int argc, char **argv) {
             check(document->mailbox().playing() &&
                       std::llabs(document->mailbox().position() - jumped - io.frames) <= 1,
                   "jumps there and keeps playing");
+            // Live's Follow (§6.2): the arrangement keeps the playhead on screen while it plays.
+            const auto viewBefore = arrangement.geometry;
+            check(!integrated.state().follow && integrated.command(AppCommands::Follow) &&
+                      integrated.state().follow && document->views().load("main").follow,
+                  "Follow switches on, kept with the window");
+            integrated.frame();
+            check(integrated.transport.follow.getToggleState(), "the control bar's Follow is lit");
+            const int lanes = arrangement.canvas.getWidth();
+            auto playAt = [&](std::int64_t tick) {
+                integrated.playFrom(tick);
+                document->process(io);
+                integrated.frame();
+            };
+            auto playheadX = [&] { return arrangement.geometry.x(integrated.timelineTick()); };
+            playAt(arrangement.geometry.tick(lanes + 200));
+            check(playheadX() >= 0 && playheadX() < 2,
+                  "by page: past the right edge, the view jumps to put the playhead at the left");
+            const auto rulerPoint =
+                peerRoot.getLocalPoint(&arrangement.ruler, juce::Point<int>{50, 10}).toFloat();
+            when += 1000;
+            mouse(rulerPoint, 0);
+            mouse(rulerPoint, juce::ModifierKeys::leftButtonModifier);
+            mouse(rulerPoint, 0);
+            const double pausedAt = arrangement.geometry.left;
+            playAt(arrangement.geometry.tick(lanes + 200));
+            check(arrangement.followPaused && arrangement.geometry.left == pausedAt && playheadX() > lanes,
+                  "a click on the beat-time ruler pauses it");
+            const auto scrubEnd =
+                peerRoot.getLocalPoint(&arrangement.scrub, juce::Point<int>{lanes - 40, 7}).toFloat();
+            when += 1000;
+            mouse(scrubEnd, 0);
+            mouse(scrubEnd, juce::ModifierKeys::leftButtonModifier);
+            mouse(scrubEnd, 0);
+            document->process(io);
+            integrated.frame();
+            playAt(arrangement.geometry.tick(lanes + 200));
+            check(!arrangement.followPaused && playheadX() >= 0 && playheadX() < 2,
+                  "a click in the scrub area starts it again");
+            check(settings.set("lookfeel.followMode", "scroll", {}, why), "Follow by scrolling");
+            commands.reload();
+            playAt(arrangement.geometry.tick(lanes + 200));
+            check(std::abs(playheadX() - lanes / 2.) < 2, "by scrolling: the playhead stays in the middle");
+            check(settings.set("lookfeel.followMode", "page", {}, why), "and by page again");
+            commands.reload();
+            const auto selectionBefore = arrangement.geometry.selection;
+            check(integrated.command(AppCommands::InsertAudioTrack) && arrangement.followPaused,
+                  "an edit pauses it");
+            integrated.command(AppCommands::DeleteTrack);
+            arrangement.geometry.selection = selectionBefore;
+            integrated.publishSelection();
+#if JUCE_MAC
+            const juce::KeyPress followKey('f', juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier, 0);
+#else
+            const juce::KeyPress followKey('f', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0);
+            check(commands.manager.getKeyMappings()->findCommandForKeyPress(juce::KeyPress(
+                      'f', juce::ModifierKeys::altModifier | juce::ModifierKeys::shiftModifier, 0)) ==
+                      AppCommands::Follow,
+                  "Alt+Shift+F too, the other key the manual gives Windows");
+#endif
+            check(integrated.keyPressed(followKey) && !integrated.state().follow,
+                  "Follow's key switches it off");
             check(integrated.command(AppCommands::Stop), "stop");
             document->process(io);
+            integrated.frame();
+            check(!arrangement.followPaused, "stopping playback starts Follow again, for when it is on");
+            arrangement.geometry.left = viewBefore.left;
+            arrangement.geometry.scale = viewBefore.scale;
+            arrangement.changed();
             peerRoot.removeChildComponent(&integrated);
             peerRoot.removeFromDesktop();
         }

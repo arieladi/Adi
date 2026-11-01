@@ -33,8 +33,10 @@ int main() {
     state.zoom = 2;
     state.deviceHeight = 245;
     state.docked = false;
+    state.follow = true;
     check(views.save("main", state, error), "save view");
     const auto restored = views.load("main");
+    check(restored.follow && !views.load("other").follow, "Follow is kept per window, off until switched on");
     check(restored.panels.slots()[0].panel == Panel::Mixer, "restore order");
     check(restored.panels.find(Panel::Browser)->width == 333, "width follows panel");
     check(restored.zoom == 2 && restored.deviceHeight == 245 && !restored.docked,
