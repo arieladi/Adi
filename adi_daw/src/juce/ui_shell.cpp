@@ -80,7 +80,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Use Tab Key to Move Focus", "Follow",
                                   "Move Insert Marker to Playhead Position",
                                   "Increase Height of Selected Tracks",
-                                  "Decrease Height of Selected Tracks"};
+                                  "Decrease Height of Selected Tracks",
+                                  "Move Focus to Mixer", "Next Neighbor",
+                                  "Previous Neighbor"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -247,6 +249,24 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ShrinkTracks:
         info.addDefaultKeypress('-', alt);
+        break;
+    case FocusMixer: // §42.16
+        info.addDefaultKeypress('m', alt | shift);
+        break;
+    // §41.4.1.2: Ctrl+Tab and Ctrl+Shift+Tab, Option on the Mac.
+    case NextNeighbor:
+#if JUCE_MAC
+        info.addDefaultKeypress(juce::KeyPress::tabKey, alt);
+#else
+        info.addDefaultKeypress(juce::KeyPress::tabKey, cmd);
+#endif
+        break;
+    case PreviousNeighbor:
+#if JUCE_MAC
+        info.addDefaultKeypress(juce::KeyPress::tabKey, alt | shift);
+#else
+        info.addDefaultKeypress(juce::KeyPress::tabKey, cmd | shift);
+#endif
         break;
     default:
         break;
@@ -800,6 +820,16 @@ bool AdiRootComponent::focusView(int id) {
         browser.search.grabKeyboardFocus();
         browser.search.selectAll();
         return true;
+    case AppCommands::FocusMixer: {
+        // The Mixer View when it is open, else the track controls, shown first if hidden.
+        if (!state_.mixerView && state_.panels.find(Panel::Mixer)->collapsed &&
+            !command(AppCommands::ToggleMixer))
+            return false;
+        auto &panel = state_.mixerView ? mixerView : mixer;
+        panel.frame(true);
+        return panel.focusTrack(arrangement.geometry.selection.track) ||
+               fail("The mixer shows no track.");
+    }
     default:
         return false;
     }
@@ -917,7 +947,13 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::FocusDeviceView:
     case AppCommands::FocusBrowser:
     case AppCommands::SearchBrowser:
+    case AppCommands::FocusMixer:
         return focusView(id);
+    case AppCommands::NextNeighbor:
+    case AppCommands::PreviousNeighbor:
+        // From a mixer switch with the focus, in either mixer; elsewhere nothing moves.
+        return mixerView.focusNeighbour(id == AppCommands::NextNeighbor) ||
+               mixer.focusNeighbour(id == AppCommands::NextNeighbor);
     case AppCommands::ZoomIn:
     case AppCommands::ZoomOut: {
         const auto next = nextZoom(interfaceZoom_, id == AppCommands::ZoomIn);
@@ -973,7 +1009,7 @@ const std::vector<MenuEntries> &menuBar() {
         // Pool and the Learn View come with those views; the Mixer with its keyboard.
         {"Navigate",
          {C::FocusControlBar, C::FocusArrangement, C::FocusDeviceView, C::FocusBrowser, 0,
-          C::TabMovesFocus}},
+          C::NextNeighbor, C::PreviousNeighbor, 0, C::TabMovesFocus}},
         {"Help", {}}};
     return bar;
 }

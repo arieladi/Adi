@@ -51,6 +51,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     PeakHold peakHold; // the Mixer View's only
     // Whether the row shows its In/Out column: when the panel is wide enough.
     bool showsInOut() const noexcept;
+    // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm,
+    // then ADI-Q and ADI-L. A click on one does not take the focus.
+    std::array<juce::Button *, 5> switches() noexcept { return {&active, &solo, &arm, &eq, &limiter}; }
 
   private:
     void paintInOut(juce::Graphics &, int x) const;
@@ -90,6 +93,13 @@ class MixerPanel final : public juce::Component {
     void contextMenu(juce::Point<int>);
     // Fetch every bound row's tap again: after the audio device changes, the taps do.
     void retap();
+    // Move Focus to Mixer (§42.16): the Track Activator of the track's strip, else of the
+    // first strip shown. False when no strip is shown.
+    bool focusTrack(std::int64_t track);
+    // Next or Previous Neighbor (§41.4.1.2): from the switch with the focus to the same
+    // switch on the next or previous track; at either end it stays. False when the focus is
+    // not on one of this panel's switches.
+    bool focusNeighbour(bool next);
     bool submit(const std::string &op, Payload payload, const char *label);
     AdiRootComponent &root;
     // Where a strip's meter reads from: the track's post-fader scope tap (ADR-0175).

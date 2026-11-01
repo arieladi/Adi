@@ -148,6 +148,9 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     for (juce::TextButton *b : {&active, &solo, static_cast<juce::TextButton *>(&arm), &eq, &limiter}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, look::button);
+        // Only the keyboard focuses a mixer switch, so a focused one is ringed (Live 12).
+        b->setMouseClickGrabsKeyboardFocus(false);
+        b->getProperties().set("live.focusRing", true);
     }
     // Live's switches when on: the activator orange, Solo blue, Arm red.
     solo.setColour(juce::TextButton::buttonOnColourId, look::value);
@@ -421,6 +424,40 @@ void MixerPanel::retap() {
     for (auto &s : strips_)
         if (s->track() != 0)
             s->bind(s->track());
+}
+bool MixerPanel::focusTrack(std::int64_t track) {
+    MixerStrip *target = nullptr;
+    for (auto &s : strips_)
+        if (s->isVisible() && (target == nullptr || s->track() == track))
+            target = s.get();
+    if (target == nullptr)
+        return false;
+    target->active.grabKeyboardFocus();
+    return true;
+}
+bool MixerPanel::focusNeighbour(bool next) {
+    const auto *focused = getCurrentlyFocusedComponent();
+    for (auto &s : strips_) {
+        const auto switches = s->switches();
+        const auto at = std::find(switches.begin(), switches.end(), focused);
+        if (!s->isVisible() || at == switches.end())
+            continue;
+        // The same switch on the track before or after, among the strips shown.
+        const auto &tracks = root.reader().tracks();
+        for (std::size_t i = 0; i < tracks.size(); ++i) {
+            if (tracks[i]->id != s->track())
+                continue;
+            if (next ? i + 1 >= tracks.size() : i == 0)
+                return true;
+            const auto neighbour = tracks[next ? i + 1 : i - 1]->id;
+            for (auto &other : strips_)
+                if (other->isVisible() && other->track() == neighbour)
+                    other->switches()[static_cast<std::size_t>(at - switches.begin())]->grabKeyboardFocus();
+            return true;
+        }
+        return true;
+    }
+    return false;
 }
 void MixerPanel::placeColumns() {
     // Strips left to right, realising only the columns on screen (UI-ARCHITECTURE §10).
