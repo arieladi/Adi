@@ -366,6 +366,25 @@ bool AdiRootComponent::locate(std::int64_t tick) {
     return mailbox_.post(TransportMailbox::Command::Locate,
                          static_cast<std::int64_t>(current->tempo->ticksToSeconds(tick) * rate));
 }
+bool AdiRootComponent::playFrom(std::int64_t tick) {
+    const bool start = !mailbox_.desiredPlaying();
+    if (!mailbox_.hasRoom(start ? 2 : 1))
+        return fail("Transport command queue is full");
+    if (start) {
+        OpRequest request;
+        request.opType = "transport.play";
+        request.payload = Payload::object();
+        if (const auto result = submitter_.submit(std::move(request)); !result)
+            return fail(result.error);
+    }
+    if (!locate(tick))
+        return fail("The project has no tempo map to locate in.");
+    if (start)
+        mailbox_.post(TransportMailbox::Command::Play);
+    error_.clear();
+    dirty_.mark(DirtySet::Transport | DirtySet::Status);
+    return true;
+}
 double AdiRootComponent::bpm() const noexcept {
     const auto *tempo = reader_->tempo();
     const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();

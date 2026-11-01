@@ -778,6 +778,36 @@ int main(int argc, char **argv) {
                                    integrated.reader())) -
                                arrangement.canvas.getWidth()) < 1,
                   "a double-click zooms out to the whole arrangement");
+            // The scrub area (Live 12 manual 6.1, p. 161): a click plays from that point.
+            check(arrangement.scrub.getY() ==
+                          ArrangementView::kOverviewHeight + ArrangementView::kRulerHeight &&
+                      arrangement.canvas.getY() == ArrangementView::kTopHeight,
+                  "the scrub area sits between the ruler and the lanes");
+            check(!document->mailbox().desiredPlaying(), "the transport is stopped");
+            const auto scrubPoint =
+                peerRoot.getLocalPoint(&arrangement.scrub, juce::Point<int>{100, 7}).toFloat();
+            const auto target = arrangement.geometry.tick(100);
+            when += 1000;
+            mouse(scrubPoint, juce::ModifierKeys::leftButtonModifier);
+            mouse(scrubPoint, 0);
+            document->process(io);
+            const auto expected = static_cast<std::int64_t>(
+                integrated.current()->tempo->ticksToSeconds(target) *
+                document->mailbox().sampleRate());
+            check(document->mailbox().playing() &&
+                      std::llabs(document->mailbox().position() - expected - io.frames) <= 1,
+                  "a click there starts playback from that point");
+            const auto later = arrangement.geometry.tick(300);
+            check(integrated.playFrom(later), "a click while playing");
+            document->process(io);
+            const auto jumped = static_cast<std::int64_t>(
+                integrated.current()->tempo->ticksToSeconds(later) *
+                document->mailbox().sampleRate());
+            check(document->mailbox().playing() &&
+                      std::llabs(document->mailbox().position() - jumped - io.frames) <= 1,
+                  "jumps there and keeps playing");
+            check(integrated.command(AppCommands::Stop), "stop");
+            document->process(io);
             peerRoot.removeChildComponent(&integrated);
             peerRoot.removeFromDesktop();
         }

@@ -25,6 +25,17 @@ class ArrangementOverview final : public juce::Component, public juce::SettableT
     ArrangementView &view;
     juce::Point<float> last;
 };
+// The scrub area (Live 12 manual 6.1, p. 161): a click anywhere in it launches
+// playback from that point. Holding to loop waits for the transport's loop.
+class ScrubArea final : public juce::Component, public juce::SettableTooltipClient {
+  public:
+    explicit ScrubArea(ArrangementView &);
+    void paint(juce::Graphics &) override;
+    void mouseDown(const juce::MouseEvent &) override;
+
+  private:
+    ArrangementView &view;
+};
 // The beat-time ruler (Live 12 manual 6.1): bars-beats-sixteenths; drag sideways
 // scrolls, vertically zooms; a double-click zooms to the selection, or out to the
 // whole arrangement when nothing is selected.
@@ -139,12 +150,15 @@ class ArrangementView final : public juce::Component {
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);
     const SnapshotReader &reader() const;
-    static constexpr int kOverviewHeight = 16, kRulerHeight = 28, kHeaderWidth = 128;
-    static constexpr int kTopHeight = kOverviewHeight + kRulerHeight; // where the lanes begin
+    static constexpr int kOverviewHeight = 16, kRulerHeight = 28, kScrubHeight = 14;
+    static constexpr int kHeaderWidth = 128;
+    // Where the lanes begin: below the Overview, the ruler and the scrub area.
+    static constexpr int kTopHeight = kOverviewHeight + kRulerHeight + kScrubHeight;
     ArrangementGeometry geometry;
     AdiRootComponent &root;
     ArrangementOverview overview;
     TimelineRuler ruler;
+    ScrubArea scrub;
     TrackHeaderList headers;
     ArrangementCanvas canvas;
     ArrangementPlayhead playhead;
