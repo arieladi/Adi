@@ -225,8 +225,10 @@ juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clip
             // Bars and beats in 4/4 until the snapshot carries the meters (window log, N6).
             const auto beat = c->posTicks / textproj::kPPQ;
             const auto beats = static_cast<double>(c->lengthTicks) / textproj::kPPQ;
-            return juce::String::fromUTF8(displayName(t->name, i + 1).c_str()) +
-                   ", clip at bar " + juce::String(beat / 4 + 1) + " beat " +
+            // The clip's name when it has one: "2 Audio, Verse, at bar 9 beat 1, 16.00 beats".
+            const auto clip = c->name.empty() ? juce::String("clip") : juce::String::fromUTF8(c->name.c_str()) + ",";
+            return juce::String::fromUTF8(displayName(t->name, i + 1).c_str()) + ", " + clip +
+                   " at bar " + juce::String(beat / 4 + 1) + " beat " +
                    juce::String(beat % 4 + 1) + ", " + juce::String(beats, 2) + " beats" +
                    (c->muted ? ", muted" : "");
         }
@@ -1068,6 +1070,16 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
+            // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
+            // arrangement).
+            if (!c->name.empty() && right - left > 6.f) {
+                g.setColour(look::text);
+                g.setFont(look::font(10.f));
+                g.drawText(juce::String::fromUTF8(c->name.c_str()),
+                           juce::Rectangle<float>(left + 3.f, static_cast<float>(y + 1), right - left - 5.f,
+                                                  static_cast<float>(kClipBarHeight)),
+                           juce::Justification::centredLeft, false);
+            }
             g.setColour(clipColour.darker(0.5f));
             g.drawRect(left, static_cast<float>(y + 1), std::max(1.f, right - left),
                        static_cast<float>(h - 4), 1.f);

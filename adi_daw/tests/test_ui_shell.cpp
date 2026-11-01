@@ -112,6 +112,26 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(0, 54, root.getWidth(), 30);
         // The ruler's numbers and the headers' track names are typography as well.
         const auto area = root.arrangement.getBounds();
+        // So are the clips' names, in their title strips.
+        {
+            const auto canvas = root.arrangement.canvas.getBounds() + area.getPosition();
+            const auto &geo = root.arrangement.geometry;
+            g.saveState();
+            g.reduceClipRegion(canvas);
+            int top = canvas.getY() - geo.scrollY;
+            for (const auto row : geo.rows(root.reader())) {
+                const int h = geo.heightFor(row.track->id);
+                if (h > 0)
+                    for (const auto &c : row.track->clips) {
+                        const int x0 = canvas.getX() + static_cast<int>(geo.x(c->posTicks));
+                        const int x1 = canvas.getX() + static_cast<int>(geo.x(c->posTicks + c->lengthTicks));
+                        if (x1 > x0)
+                            g.fillRect(x0, top + 1, x1 - x0, ArrangementCanvas::kClipBarHeight);
+                    }
+                top += h;
+            }
+            g.restoreState();
+        }
         g.fillRect(area.getX(), area.getY() + ArrangementView::kOverviewHeight, area.getWidth(),
                    ArrangementView::kRulerHeight);
         const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
@@ -468,7 +488,12 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         clip.payload = {{"id", clipId++},
                         {"track", track},
                         {"kind", track == 14 || track == 15 ? "midi" : "audio"},
-                        {"name", "Clip"},
+                        {"name", track == 11   ? "Claps"
+                                 : track == 12 ? "Hats Loop"
+                                 : track == 14 ? "Sub Line"
+                                 : track == 15 ? "Pad Chords"
+                                 : track == 17 ? "Riser"
+                                               : "Impact"},
                         {"pos", (track % 2) * 4 * textproj::kPPQ},
                         {"length", bars * 4 * textproj::kPPQ}};
         clip.label = "Create clip";
@@ -1470,9 +1495,9 @@ int main(int argc, char **argv) {
               "each clip on screen has an accessible child the mouse passes through");
         auto handler = readable ? readable->createAccessibilityHandler() : nullptr;
         check(handler && handler->getRole() == juce::AccessibilityRole::listItem &&
-                  handler->getTitle().startsWith("Track, clip at bar 1 beat 1") &&
+                  handler->getTitle().startsWith("Track, Rendered clip, at bar 1 beat 1") &&
                   handler->getTitle().contains("4.00 beats"),
-              "a screen reader hears the clip's track, start and length");
+              "a screen reader hears the clip's track, its name, its start and its length");
         arrangement.geometry.selection.track = 0;
         arrangement.geometry.selection.clip = 0;
         arrangement.changed();
@@ -1499,7 +1524,7 @@ int main(int argc, char **argv) {
         check(arrangement.canvas.keyPressed(juce::KeyPress(
                   juce::KeyPress::leftKey, juce::ModifierKeys::shiftModifier | clipEdgeKey, 0)) &&
                   arrangement.geometry.selection.clip == 1 &&
-                  arrangement.canvas.lastAnnouncement.contains("clip at bar 1 beat 1"),
+                  arrangement.canvas.lastAnnouncement.contains("Rendered clip, at bar 1 beat 1"),
               "with Shift it selects back to the clip's start, which selects the clip, and says which");
         arrangement.geometry.left = 100;
         arrangement.changed();
