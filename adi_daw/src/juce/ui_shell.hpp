@@ -101,7 +101,8 @@ class StatusBar final : public juce::Component {
 class AdiRootComponent final : public juce::Component {
   public:
     AdiRootComponent(engine::ProjectView &, OpSubmitter &, TransportMailbox &, AppCommands &,
-                     ViewStateStore &, std::string window, DesktopDefaults defaults = {});
+                     ViewStateStore &, SessionState &, std::string window,
+                     DesktopDefaults defaults = {});
     ~AdiRootComponent() override;
     void frame() noexcept;
     void paint(juce::Graphics &) override;
@@ -154,6 +155,9 @@ class AdiRootComponent final : public juce::Component {
     juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
     // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
     bool submitEdit(const std::string &op, Payload payload, const char *label);
+    // Hands this window's selection to the session, which every window presents.
+    void publishSelection();
+    SessionState &session() noexcept { return session_; }
     // Drag the strip's top edge: never below the floor, never past the ceiling that
     // leaves the transport, the ruler and one track row (ADR-0184, ADR-0203 d7).
     void resizeDevices(int height);
@@ -168,6 +172,8 @@ class AdiRootComponent final : public juce::Component {
     TransportMailbox &mailbox_;
     AppCommands &commands_;
     ViewStateStore &persistence_;
+    SessionState &session_;
+    std::uint64_t selectionGeneration_ = 0;
     std::string window_;
     WindowState state_;
     DirtySet dirty_;

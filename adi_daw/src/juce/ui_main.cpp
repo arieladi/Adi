@@ -126,7 +126,8 @@ class AdiApplication final : public juce::JUCEApplication,
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
                                                        document_->mailbox(), *commands_,
-                                                       document_->views(), "main");
+                                                       document_->views(),
+                                                       document_->sessionState(), "main");
         root_ = root.get();
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,

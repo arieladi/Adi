@@ -1,5 +1,5 @@
 # Step 7.2: persistence has no GUI dependency; the window tier is optional.
-target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/project_document.cpp src/adi/ui/parameter_feed.cpp)
+target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/project_document.cpp src/adi/ui/parameter_feed.cpp src/adi/ui/session_state.cpp)
 add_executable(adi_ui_document_tests tests/test_ui_document.cpp)
 target_link_libraries(adi_ui_document_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_document_tests COMMAND adi_ui_document_tests)

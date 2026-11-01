@@ -139,6 +139,13 @@ colleague's zoom level turning up in a `git diff`.
 and `DetailEditor` follow `session_state`, per ADR-0021. Neither of them decides
 what is selected, and no op they emit reads it.
 
+*Built (window lane, 2026-10-27):* `adi::ui::SessionState`
+(`src/adi/ui/session_state.hpp`) holds the one selection a project has, in
+`session_state`'s `selection` row. Each window presents a copy at the top of its
+frame, as it presents one snapshot, and writes go back through it, so two windows
+never disagree about what is selected. An edit carries the selection as its
+transaction's advisory `sel_before`, and undo puts it back.
+
 ## 3. `ArrangementCanvas` is one component, and that is the load-bearing decision
 
 Not one `Component` per clip. JUCE's hit-testing, z-order and repaint bookkeeping

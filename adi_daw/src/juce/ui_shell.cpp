@@ -164,11 +164,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('t', cmd | shift);
         break;
     case DeleteTrack:
-        info.setActive(active_ != nullptr && active_->arrangement.geometry.selectedTrack != 0);
+        info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
         break;
     case RenameTrack: // §41.5
         info.addDefaultKeypress('r', cmd);
-        info.setActive(active_ != nullptr && active_->arrangement.geometry.selectedTrack != 0);
+        info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
         break;
     default:
         break;
@@ -238,11 +238,12 @@ void StatusBar::paint(juce::Graphics &g) {
 }
 AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submitter,
                                    TransportMailbox &mailbox, AppCommands &commands,
-                                   ViewStateStore &persistence, std::string window,
-                                   DesktopDefaults defaults)
+                                   ViewStateStore &persistence, SessionState &session,
+                                   std::string window, DesktopDefaults defaults)
     : transport(*this), status(*this), arrangement(*this), devices(*this), dockResizer(*this),
       mixer(*this), view_(view), submitter_(submitter), mailbox_(mailbox),
-      commands_(commands), persistence_(persistence), window_(std::move(window)),
+      commands_(commands), persistence_(persistence), session_(session),
+      window_(std::move(window)),
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
     setOpaque(true);
     setWantsKeyboardFocus(true);
@@ -291,6 +292,13 @@ void AdiRootComponent::frame() noexcept {
         position_ = position;
         dirty_.mark(DirtySet::Transport);
     }
+    // Selection is the session's (ADR-0021): present it again when it changed, from
+    // this window or any other.
+    if (selectionGeneration_ != session_.generation()) {
+        selectionGeneration_ = session_.generation();
+        arrangement.geometry.selection = session_.selection();
+        dirty_.mark(DirtySet::Layout);
+    }
     // The Info View is app-scoped: a toggle in another window shows here too.
     if (infoShown_ != commands_.infoView()) {
         infoShown_ = commands_.infoView();
@@ -300,7 +308,7 @@ void AdiRootComponent::frame() noexcept {
         hover(juce::Desktop::getInstance().getMainMouseSource().getComponentUnderMouse());
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
-    devices.frame(arrangement.geometry.selectedTrack);
+    devices.frame(arrangement.geometry.selection.track);
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (lastDrain_ & DirtySet::Transport)
         transport.repaint();
@@ -457,11 +465,18 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+void AdiRootComponent::publishSelection() {
+    std::string why;
+    if (!session_.select(arrangement.geometry.selection, why))
+        fail(why);
+    selectionGeneration_ = session_.generation();
+}
 bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const char *label) {
     OpRequest request;
     request.opType = op;
     request.payload = std::move(payload);
     request.label = label;
+    request.selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(request));
     if (!result)
         return fail(result.error);
@@ -505,7 +520,7 @@ bool AdiRootComponent::insertTrack(bool midi) {
     std::int64_t id = 1, index = static_cast<std::int64_t>(tracks.size());
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         id = std::max(id, tracks[i]->id + 1);
-        if (tracks[i]->id == arrangement.geometry.selectedTrack)
+        if (tracks[i]->id == arrangement.geometry.selection.track)
             index = static_cast<std::int64_t>(i) + 1;
     }
     OpRequest request;
@@ -516,25 +531,29 @@ bool AdiRootComponent::insertTrack(bool midi) {
                        {"name", midi ? "#-MIDI" : "#-Audio"},
                        {"index", index}};
     request.label = midi ? "Insert MIDI Track" : "Insert Audio Track";
+    request.selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(request));
     if (!result)
         return fail(result.error);
-    arrangement.geometry.selectedTrack = id;
+    arrangement.geometry.selection.track = id;
+    publishSelection();
     return true;
 }
 bool AdiRootComponent::deleteTrack() {
-    const auto id = arrangement.geometry.selectedTrack;
+    const auto id = arrangement.geometry.selection.track;
     if (id == 0)
         return fail("Select a track to delete.");
     OpRequest request;
     request.opType = "track.delete";
     request.payload = {{"id", id}};
     request.label = "Delete Track";
+    request.selBefore = session_.advisory();
     const auto result = submitter_.submit(std::move(request));
     if (!result)
         return fail(result.error);
-    arrangement.geometry.selectedTrack = 0;
-    arrangement.geometry.selectedClip = 0;
+    arrangement.geometry.selection.track = 0;
+    arrangement.geometry.selection.clip = 0;
+    publishSelection();
     return true;
 }
 bool AdiRootComponent::command(int id) {
@@ -560,7 +579,7 @@ bool AdiRootComponent::command(int id) {
         if (!result)
             return fail(result.error);
         if (fromMarker)
-            locate(arrangement.geometry.insert);
+            locate(arrangement.geometry.selection.insert);
         mailbox_.post(play ? TransportMailbox::Command::Play : TransportMailbox::Command::Stop);
         break;
     }
@@ -569,6 +588,9 @@ bool AdiRootComponent::command(int id) {
         const auto result = id == AppCommands::Undo ? submitter_.undo() : submitter_.redo();
         if (!result.ok)
             return fail(result.error);
+        // Undo puts back what was selected before the undone step (ADR-0021).
+        if (id == AppCommands::Undo && result.selBefore)
+            session_.restore(*result.selBefore);
         break;
     }
     case AppCommands::SwapPanels: {
@@ -611,7 +633,7 @@ bool AdiRootComponent::command(int id) {
         break;
     case AppCommands::RenameTrack:
         // The edit itself is its own op when the name is committed.
-        return arrangement.headers.beginRename(arrangement.geometry.selectedTrack) ||
+        return arrangement.headers.beginRename(arrangement.geometry.selection.track) ||
                fail("Select a track to rename.");
     case AppCommands::ZoomIn:
     case AppCommands::ZoomOut: {

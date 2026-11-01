@@ -3,7 +3,8 @@
 #include <chrono>
 namespace adi::ui {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
-    : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_) {}
+    : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_),
+      sessionState_(*store_) {}
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error) {
