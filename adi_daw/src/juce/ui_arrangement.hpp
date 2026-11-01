@@ -185,8 +185,8 @@ class ArrangementView final : public juce::Component {
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
     void paint(juce::Graphics &) override;
-    // A track's colour by its place, as Live's auto-assigned colours (the snapshot does
-    // not carry a track's own colour yet: window log, N6).
+    // A track's colour by its place, as Live's auto-assigned colours (the format does not yet
+    // say what a track's own colour holds: window log, N36).
     juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
     void changed();
@@ -247,10 +247,8 @@ class ArrangementView final : public juce::Component {
     // view chosen there, which the lanes, the track controls and the Mixer View all follow.
     ProjectViewButton projectView;
     // What fills in the project's tracks as the view sees them, in place, for each new snapshot
-    // and when the menu opens; applied at once. The snapshot gives each track its place and name
-    // only; until it carries their groups, kinds and colours (collab/window.md, N6), the
-    // application reads them from the project file (track_rows.hpp), and without that every track
-    // stands alone. Tests give it a tree.
+    // and when the menu opens; applied at once. The snapshot's rows by default (rowsFromSnapshot);
+    // tests give it a tree.
     using TrackRows = std::function<void(const SnapshotReader &, std::vector<TrackRow> &)>;
     void setTrackRows(TrackRows);
     const TrackTree &tree() const noexcept { return tree_; }

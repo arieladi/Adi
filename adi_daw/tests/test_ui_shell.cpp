@@ -6,7 +6,6 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
-#include "adi/ui/track_rows.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -65,6 +64,25 @@ OpRequest track(int id) {
     r.label = "Create track";
     return r;
 }
+// The tracks in the arrangement's order (TrackOrder): each group, then what it holds; Main last,
+// as Live draws it.
+std::vector<std::int64_t> laneOrder(AdiRootComponent &root) {
+    std::vector<std::int64_t> out;
+    for (const auto row : root.arrangement.geometry.rows(root.reader()))
+        out.push_back(row.track->id);
+    return out;
+}
+// Where a track's lane begins in the canvas, scrolled; -1 for a track with no row.
+int laneTop(AdiRootComponent &root, std::int64_t id) {
+    const auto &geometry = root.arrangement.geometry;
+    int y = -geometry.scrollY;
+    for (const auto track : laneOrder(root)) {
+        if (track == id)
+            return y;
+        y += geometry.heightFor(track);
+    }
+    return -1;
+}
 void reference(AdiRootComponent &root, const char *name, bool write) {
     // Explicit software rasterisation, no peer, OpenGL, display, or audio device.
     juce::Image image(juce::Image::ARGB, root.getWidth(), root.getHeight(), true,
@@ -98,9 +116,9 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
                    ArrangementView::kRulerHeight);
         const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
         int laneY = headers.getY() - root.arrangement.geometry.scrollY;
-        for (const auto &trackNode : root.reader().tracks()) {
+        for (const auto track : laneOrder(root)) {
             g.fillRect(headers.getX() + 6, laneY + 4, std::max(0, headers.getWidth() - 8), 24);
-            laneY += root.arrangement.geometry.heightFor(trackNode->id);
+            laneY += root.arrangement.geometry.heightFor(track);
         }
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
@@ -400,8 +418,8 @@ juce::MouseEvent pressAt(juce::Component &c, juce::Point<float> at, juce::Modifi
 }
 // Live's group tracks (manual 18.3) in the director's Bitwig project (Master Reference 10,
 // Figure 32): Drums holds Clap/Snare/Rimshot and Hats & Percs; Body holds Bass, Synths and
-// Fx And Hits, which holds Rises and Hits; Main. Read from the project file as the application
-// reads it until the snapshot carries the tree (collab/window.md, N6).
+// Fx And Hits, which holds Rises and Hits; Main. The tree from the snapshot (#299), as the
+// application reads it.
 void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::create(dir / "groups.adi", err);
@@ -458,14 +476,6 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     }
     check(madeAll, "the director's project: three groups, one inside another, and clips in them");
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "groups");
-    // As the application wires it (ui_main.cpp), counting the reads of the project file.
-    int reads = 0;
-    root.arrangement.setTrackRows([&store, &reads](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
-        refreshTrackRows(reader, [&store, &reads] {
-            ++reads;
-            return rows::readModel(*store);
-        }, rows);
-    });
     root.setSize(1440, 900);
     root.arrangement.geometry.scale = 3.92;
     // Every track in sight: ten at 40 points.
@@ -580,13 +590,19 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
               "Alt+U unfolds every group");
     }
-    // The file is read again on each new snapshot only while the project has groups; the order is
-    // built again in place.
+    // The tree is the snapshot's: a new generation with the same rows costs a frame nothing, groups
+    // and all, and the order is built again in place.
     {
-        const int before = reads;
         check(root.submitEdit("track.rename", {{"id", 14}, {"name", "Sub Bass"}}, "Rename Track"), "a rename");
         root.frame();
-        check(reads == before + 1 && order() == tree, "with groups, an edit reads the project file again");
+        check(order() == tree, "an edit keeps the tree, read from the snapshot");
+        check(root.submitEdit("track.rename", {{"id", 14}, {"name", "Low Bass"}}, "Rename Track"),
+              "a new generation with the same rows");
+        allocations = 0;
+        audit = true;
+        root.frame();
+        audit = false;
+        check(allocations == 0 && order() == tree, "with groups, a generation-change frame allocates zero");
         std::vector<TrackRow> rows = root.arrangement.tree().rows();
         allocations = 0;
         audit = true;
@@ -789,8 +805,8 @@ int main(int argc, char **argv) {
         // every track, and the track controls' rows with them; a track resized while they are
         // small keeps that size when they grow again.
         auto &lanes = a.arrangement.geometry;
-        const auto &rows = a.reader().tracks();
-        const std::int64_t first = rows.empty() ? 0 : rows.front()->id;
+        const auto rows = laneOrder(a);
+        const std::int64_t first = rows.empty() ? 0 : rows.front();
         const int full = lanes.heightFor(first);
         auto ticked = [&commands, &a] {
             commands.activate(a);
@@ -1426,11 +1442,12 @@ int main(int argc, char **argv) {
                         {"pos", 0},        {"length", 4 * textproj::kPPQ}};
         check(document->ops().submit(clip).ok, "arrangement clip created through op");
         integrated.frame();
-        const auto *mainRow = arrangement.geometry.trackAt(integrated.reader(), 4);
-        const auto *hitTrack =
-            arrangement.geometry.trackAt(integrated.reader(), arrangement.geometry.height + 4);
-        check(mainRow && mainRow->id == 1 && hitTrack && hitTrack->id == 2,
-              "every track is a row, in the snapshot's order");
+        const auto *hitTrack = arrangement.geometry.trackAt(integrated.reader(), 4);
+        const auto *mainRow = arrangement.geometry.trackAt(integrated.reader(), laneTop(integrated, 1) + 4);
+        const auto rowsInOrder = laneOrder(integrated);
+        check(mainRow && mainRow->id == 1 && hitTrack && hitTrack->id == 2 && !rowsInOrder.empty() &&
+                  rowsInOrder.back() == 1,
+              "every track is a row; Main last, as Live draws it");
         check(hitTrack && arrangement.geometry.hit(*hitTrack, 0) &&
                   !arrangement.geometry.hit(*hitTrack, 4 * textproj::kPPQ),
               "hit-test includes start and excludes end");
@@ -1571,7 +1588,7 @@ int main(int argc, char **argv) {
             auto *peer = peerRoot.getPeer();
             check(peer != nullptr, "fake peer created without OS window");
             const auto origin =
-                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, 64 + 35})
+                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 35})
                     .toFloat();
             juce::int64 when = 100000;
             auto mouse = [&](juce::Point<float> point, int mods) {
@@ -1614,7 +1631,8 @@ int main(int argc, char **argv) {
                 auto &geo = arrangement.geometry;
                 std::int64_t clipTrack = 0, pos0 = 0;
                 int barTop = -geo.scrollY;
-                for (const auto &tr : integrated.reader().tracks()) {
+                for (const auto row : geo.rows(integrated.reader())) {
+                    const auto *tr = row.track;
                     for (const auto &c : tr->clips)
                         if (c->id == 1) {
                             clipTrack = tr->id;
@@ -1941,7 +1959,7 @@ int main(int argc, char **argv) {
                       arrangement.geometry.selection.marked && arrangement.geometry.selection.clip == 0 &&
                       arrangement.geometry.selection.start == arrangement.geometry.selection.end,
                   "Ctrl/Cmd+Shift+Space puts the insert marker where the playhead is");
-            const auto heightTrack = integrated.reader().tracks().front()->id;
+            const auto heightTrack = laneOrder(integrated).front();
             arrangement.geometry.selection.track = heightTrack;
             const int heightBefore = arrangement.geometry.heightFor(heightTrack);
             check(integrated.keyPressed(juce::KeyPress('=', alt, 0)) &&
@@ -2175,11 +2193,11 @@ int main(int argc, char **argv) {
             // Neighbor (§41.4.1.2) to the same switch on the track after or before. The selection
             // stays as it is: the device strip, and `controls` below, follow it.
             {
-                const auto &rows = integrated.reader().tracks();
+                const auto rows = laneOrder(integrated);
                 const auto selected = integrated.arrangement.geometry.selection.track;
                 std::size_t at = 0;
                 for (std::size_t i = 0; i < rows.size(); ++i)
-                    if (rows[i]->id == selected)
+                    if (rows[i] == selected)
                         at = i;
                 const bool forward = at + 1 < rows.size();
                 const std::size_t there = forward ? at + 1 : (at > 0 ? at - 1 : at);
@@ -2199,16 +2217,16 @@ int main(int argc, char **argv) {
                     previousKey(juce::KeyPress::tabKey, neighbourMods | juce::ModifierKeys::shiftModifier, 0);
                 const juce::KeyPress mixerKey('m', alt | juce::ModifierKeys::shiftModifier, 0);
                 check(integrated.keyPressed(mixerKey) && focusedRow() != nullptr &&
-                          focusedRow()->track() == rows[at]->id && focusedRow()->active.hasKeyboardFocus(false),
+                          focusedRow()->track() == rows[at] && focusedRow()->active.hasKeyboardFocus(false),
                       "Alt/Option+Shift+M moves the focus to the selected track's Track Activator");
                 check(rows.size() >= 2 && integrated.keyPressed(forward ? nextKey : previousKey) &&
-                          focusedRow() != nullptr && focusedRow()->track() == rows[there]->id &&
+                          focusedRow() != nullptr && focusedRow()->track() == rows[there] &&
                           focusedRow()->active.hasKeyboardFocus(false),
                       "a Neighbor key: the same switch on the next or previous track");
                 if (auto *row = focusedRow())
                     row->solo.grabKeyboardFocus();
                 check(integrated.keyPressed(forward ? previousKey : nextKey) && focusedRow() != nullptr &&
-                          focusedRow()->track() == rows[at]->id && focusedRow()->solo.hasKeyboardFocus(false),
+                          focusedRow()->track() == rows[at] && focusedRow()->solo.hasKeyboardFocus(false),
                       "and the other one back, on the switch that had the focus");
                 check(focusedRow() != nullptr && !focusedRow()->solo.getMouseClickGrabsKeyboardFocus(),
                       "a click on a mixer switch leaves the focus where it was");
@@ -2221,18 +2239,18 @@ int main(int argc, char **argv) {
                 auto &lanes = integrated.arrangement.geometry;
                 const auto heightsWas = lanes.heights;
                 const int scrollWas = lanes.scrollY;
-                for (const auto &row : rows)
-                    lanes.resizeTrack(row->id, 400);
+                for (const auto row : rows)
+                    lanes.resizeTrack(row, 400);
                 integrated.arrangement.changed();
                 integrated.frame();
                 for (std::size_t k = 0; k < rows.size(); ++k)
                     integrated.keyPressed(previousKey);
-                const bool reachedFirst = focusedRow() != nullptr && focusedRow()->track() == rows.front()->id &&
+                const bool reachedFirst = focusedRow() != nullptr && focusedRow()->track() == rows.front() &&
                                           lanes.scrollY == 0;
                 for (std::size_t k = 0; k < rows.size(); ++k)
                     integrated.keyPressed(nextKey);
                 check(rows.size() >= 2 && reachedFirst && focusedRow() != nullptr &&
-                          focusedRow()->track() == rows.back()->id && lanes.scrollY > 0 &&
+                          focusedRow()->track() == rows.back() && lanes.scrollY > 0 &&
                           focusedRow()->getY() >= ArrangementView::kTopHeight,
                       "a neighbour out of view is scrolled into view, its row's top showing");
                 lanes.heights = heightsWas;
@@ -2406,13 +2424,7 @@ int main(int argc, char **argv) {
                 row = s.get();
         check(row != nullptr && mixer.getX() == integrated.arrangement.getRight(),
               "every visible track has a mixer row, beside the headers");
-        int lane = integrated.arrangement.getY() + integrated.arrangement.canvas.getY() -
-                   arrangement.geometry.scrollY;
-        for (const auto &t : integrated.reader().tracks()) {
-            if (t->id == 2)
-                break;
-            lane += arrangement.geometry.heightFor(t->id);
-        }
+        const int lane = integrated.arrangement.getY() + integrated.arrangement.canvas.getY() + laneTop(integrated, 2);
         check(row && mixer.getY() + row->getY() == lane &&
                   row->getHeight() == arrangement.geometry.heightFor(2),
               "a mixer row sits level with its track's lane, as Live's track controls");
@@ -2441,8 +2453,10 @@ int main(int argc, char **argv) {
             row->pan.setValue(0, juce::sendNotificationSync);
             row->active.onClick();
             integrated.frame();
-            check(document->view().current()->findTrack(2)->muted &&
-                      !row->active.getToggleState() && row->active.getButtonText() == "2",
+            const auto lanesNow = laneOrder(integrated);
+            const auto place = std::find(lanesNow.begin(), lanesNow.end(), 2) - lanesNow.begin() + 1;
+            check(document->view().current()->findTrack(2)->muted && !row->active.getToggleState() &&
+                      row->active.getButtonText() == juce::String(static_cast<int>(place)),
                   "the Track Activator, numbered by its place as Live's, mutes the track");
             row->active.onClick();
             row->solo.onClick();
@@ -2484,11 +2498,15 @@ int main(int argc, char **argv) {
             ChannelEqView eqView(integrated);
             SnapshotReader eqReader(document->view().current());
             eqView.frame(eqReader);
-            const auto &all = integrated.reader().tracks();
+            const auto all = laneOrder(integrated);
             bool ordered = !all.empty() && eqView.rows().size() == all.size();
             for (std::size_t i = 0; ordered && i < all.size(); ++i)
-                ordered = eqView.rows()[i]->track() == all[i]->id;
-            check(ordered, "the Channel EQ window lists every channel, in the snapshot's order");
+                ordered = eqView.rows()[i]->track() == all[i];
+            check(ordered, "the Channel EQ window lists every channel, in the arrangement's order");
+            bool modes = !eqView.rows().empty();
+            for (const auto &eqRow : eqView.rows())
+                modes = modes && std::string(eqRow->mode()) == (eqRow->track() == 1 ? "Full" : "Light");
+            check(modes, "ADI-L is full on Main's row and light on every other channel's");
             allocations = 0;
             audit = true;
             eqView.frame(eqReader);
@@ -2535,10 +2553,10 @@ int main(int argc, char **argv) {
         for (const auto &strip : mixerView.strips())
             if (strip->isVisible())
                 columns.push_back(strip.get());
-        const auto &trackOrder = integrated.reader().tracks();
+        const auto trackOrder = laneOrder(integrated);
         check(columns.size() >= 2 && columns.size() < trackOrder.size() &&
-                  columns[0]->track() == trackOrder[0]->id &&
-                  columns[1]->track() == trackOrder[1]->id &&
+                  columns[0]->track() == trackOrder[0] &&
+                  columns[1]->track() == trackOrder[1] &&
                   columns[1]->getX() == columns[0]->getX() + MixerPanel::kStripWidth,
               "one strip per track, left to right, only those on screen");
         bool numbered = true;
@@ -2547,15 +2565,24 @@ int main(int argc, char **argv) {
                        columns[i]->active.getButtonText() == juce::String(static_cast<int>(i) + 1);
         check(numbered, "each activator shows its track's place, whatever the track's id");
         // Live's peak level (manual 18.1): the highest peak since a click, in dB.
-        if (columns.size() >= 2) {
-            auto &held = columns[1]->peakHold;
-            check(columns[1]->track() == 2 && held.isVisible() && std::abs(held.held - .5f) < .01f,
+        // Track 2 sounds (its tap reads a half-scale sine); the others are silent.
+        MixerStrip *sounding = nullptr, *silent = nullptr;
+        for (auto *column : columns) {
+            if (column->track() == 2)
+                sounding = column;
+            else if (silent == nullptr)
+                silent = column;
+        }
+        check(sounding != nullptr && silent != nullptr, "a sounding and a silent strip in view");
+        if (sounding != nullptr && silent != nullptr) {
+            auto &held = sounding->peakHold;
+            check(held.isVisible() && std::abs(held.held - .5f) < .01f,
                   "the Mixer View's peak level holds the track's highest peak");
             held.onClick();
             check(held.held == 0, "a click resets it");
             integrated.frame();
             check(std::abs(held.held - .5f) < .01f, "and it holds the next peak it meets");
-            check(!columns[0]->peakHold.isVisible() || columns[0]->peakHold.held == 0,
+            check(!silent->peakHold.isVisible() || silent->peakHold.held == 0,
                   "a silent track's peak level stays at -Inf");
         }
         check(std::abs(meterDepth(0) - .06) < 1e-9 && std::abs(meterLevel(meterDepth(-24)) + 24) < 1e-9 &&

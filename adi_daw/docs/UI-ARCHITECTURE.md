@@ -231,15 +231,11 @@ View's columns, hit tests, the keys) passes over it from the one list. The tree 
 built only while a group is chosen or the menu is open, in buffers kept between
 frames, so a new generation with the same rows allocates nothing (§8).
 
-*The director's choice, 2026-10-29:* until the snapshot carries a track's parent,
-place in its parent, kind and colour (window log, N6), the window reads them from
-the project file (`rows::readModel`, as the engine's MIDI player does;
-`adi::ui::refreshTrackRows`), wired by the application in `ui_main.cpp`: when the
-menu opens, and on each new snapshot whose tracks changed or whose project has a
-group (a project without groups reads nothing). It is the one place the window
-reads past the snapshot; STEP-7-PLAN §2.2 lists what changes when N6 arrives. If the
-engine's way proves better, N6 replaces it: the arrangement's `TrackRows` is the only
-thing that changes.
+*From the snapshot since 1 November:* each track's parent, place in its parent and kind
+come from the snapshot (#299, window log N6; `adi::ui::rowsFromSnapshot`). The window
+read them from the project file from 29 October until then, the director's choice;
+STEP-7-PLAN §2.2 records how that ended. A track's own colour waits on the format's
+meaning of `tracks.color` (N36); until then colours are by place.
 
 **Open, and it is not a UI question:** where a *keyboard* map lives.
 `controller_maps` is project-scoped and right for MIDI and OSC. A keymap is

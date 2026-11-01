@@ -55,11 +55,14 @@ void ChannelEqRow::paint(juce::Graphics &g) {
         g.drawText(juce::String::fromUTF8(displayName(rows[i].track->name, i + 1).c_str()), kNameX, 0,
                    kEqX - kNameX - 8, kHeight, juce::Justification::centredLeft, true);
     }
-    // ADI-L's mode (ADR-0204 d1): light on a channel, full on the master's, which the
-    // snapshot cannot point out yet (N6).
     g.setColour(look::textDim);
     g.setFont(look::font(11.5f));
-    g.drawText("Light", kModeX, 0, 60, kHeight, juce::Justification::centredLeft);
+    g.drawText(mode(), kModeX, 0, 60, kHeight, juce::Justification::centredLeft);
+}
+const char *ChannelEqRow::mode() const {
+    const auto rows = view_.root.arrangement.geometry.rows(view_.root.reader());
+    const auto i = rows.find(track_);
+    return i < rows.size() && rows[i].place.main ? "Full" : "Light";
 }
 void ChannelEqRow::mouseDown(const juce::MouseEvent &) { view_.focus(track_); }
 ChannelEqView::ChannelEqView(AdiRootComponent &r) : root(r) {
