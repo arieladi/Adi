@@ -354,6 +354,61 @@ void testWindowMetadata() {
 
 // --- tempo ----------------------------------------------------------------------------
 
+void testSendSnapshots() {
+    section("N11 -- send rows are immutable and shared independently of tracks");
+    Scratch scratch("sends");auto& store=*scratch.store;auto& db=store.db();
+    db.exec("INSERT INTO project(id,name) VALUES(1,'Sends');"
+        "INSERT INTO tracks(id,kind,name) VALUES(1,'audio','A'),(2,'return','R'),(3,'audio','B'),(9,'master','Main');"
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,ord,gain_db,pan,pre_fader,enabled) VALUES"
+        "(20,'track',1,'track',2,'send',5,-10.25,0.125,1,0),"
+        "(10,'track',2,'track',3,'send',9,-150,0,0,1),"
+        "(30,'track',1,'track',9,'main',0,0,0,0,1),"
+        "(40,'track',1,'track',3,'sidechain',0,0,0,0,1);");
+    const auto first=SnapshotBuilder::fromStore(store);
+    check(first->sends.size()==2 && first->sends[0]->id==10 && first->sends[1]->id==20,
+          "only sends, including disabled ones, are captured in routing-id order");
+    const auto original=first->sends[1];
+    check(original->sourceKind=="track" && original->sourceId==1 && original->destinationKind=="track" &&
+          original->destinationId==2 && original->order==5 && original->gainDb==-10.25 &&
+          original->pan==0.125 && original->preFader && !original->enabled,
+          "every send control value and endpoint is captured");
+    check(first->sends[0]->sourceId==2 && first->sends[0]->destinationId==3,
+          "a return's send into an ordinary track is retained");
+    auto prior=SnapshotBuilder::fromStore(store,*first);
+    check(prior->sends==first->sends && SnapshotBuilder::sharedNodeCount(*first,*prior)==
+          first->tracks.size()+first->sends.size()+1,"unchanged sends share nodes and count as shared structure");
+    for(const char* edit:{"src_kind='hw_in'","src_id=99","dst_kind='device'","dst_id=900", "ord=6",
+                         "gain_db=-10.2500000001","pan=0.25","pre_fader=0","enabled=1"}) {
+        db.exec(std::string("UPDATE routing SET ")+edit+" WHERE id=20");
+        auto next=SnapshotBuilder::fromStore(store,*prior);
+        check(next->sends.size()==2 && next->sends[1]!=prior->sends[1] && next->sends[0]==prior->sends[0] &&
+              next->tracks==prior->tracks && next->tempo==prior->tempo,
+              std::string("a send change replaces only its node: ")+edit);
+        prior=std::move(next);
+    }
+    check(original->sourceKind=="track" && original->sourceId==1 && original->destinationKind=="track" &&
+          original->destinationId==2 && original->order==5 && original->gainDb==-10.25 && original->pan==0.125 &&
+          original->preFader && !original->enabled,"an older send snapshot is immutable after every edit");
+    check(prior->sends[1]->gainDb==-10.2500000001,"send gain keeps SQL double precision");
+    db.exec("UPDATE routing SET id=21 WHERE id=20");
+    auto renamed=SnapshotBuilder::fromStore(store,*prior);
+    check(renamed->sends[1]->id==21 && renamed->sends[1]!=prior->sends[1] && prior->sends[1]->id==20,
+          "routing identity changes are visible without mutating an old node");
+    db.exec("DELETE FROM routing WHERE id=10");
+    auto removed=SnapshotBuilder::fromStore(store,*renamed);
+    check(removed->sends.size()==1 && removed->sends[0]==renamed->sends[1],"deleting one send retains the other node");
+    db.exec("INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind) "
+            "VALUES(1099511627776,'track',1099511627777,'track',1099511627778,'send');"
+            "UPDATE routing SET kind='send' WHERE id=30;");
+    auto inserted=SnapshotBuilder::fromStore(store,*removed);
+    check(inserted->sends.size()==3 && inserted->sends[0]==removed->sends[0] && inserted->sends[1]->id==30,
+          "new send rows and a main-to-send change are included");
+    check(inserted->sends[2]->id==1099511627776 && inserted->sends[2]->sourceId==1099511627777 &&
+          inserted->sends[2]->destinationId==1099511627778,"routing and endpoint IDs retain all 64 bits");
+    db.exec("UPDATE routing SET kind='cue' WHERE kind='send'");
+    check(SnapshotBuilder::fromStore(store,*inserted)->sends.empty(),"rows that stop being sends disappear from the send snapshot");
+}
+
 void testTempoConversion() {
     section("tempo: ticks to seconds across a change");
     TempoMap m;
@@ -539,6 +594,7 @@ int main() {
         testConcurrentHandoff();
         testStructuralSharing();
         testWindowMetadata();
+        testSendSnapshots();
         testTempoConversion();
         testSnapshotFromRealProject();
         testDeviceSeam();
