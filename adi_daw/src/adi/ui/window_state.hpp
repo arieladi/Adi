@@ -35,6 +35,8 @@ struct WindowState {
     int laneHeight = 64;
     std::map<std::int64_t, int> laneHeights;
     std::set<std::int64_t> foldedDevices; // devices folded in the strip, per window
+    bool mixerView = false;               // Live's Mixer View, hidden until asked for
+    int mixerViewHeight = 220;
     // The strip expands upward only: a height below the floor becomes the floor.
     void setDeviceHeight(int h) noexcept { deviceHeight = h < deviceFloor ? deviceFloor : h; }
 };

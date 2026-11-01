@@ -31,16 +31,24 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
 
   private:
     void panMenu();
+    void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     MixerPanel &panel_;
     std::int64_t track_ = 0;
+    std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
     bool dragging_ = false;
     float peak_ = 0, rms_ = 0;
     std::shared_ptr<const engine::ScopeTap> tap_;
     std::array<float, 1024> left_{}, right_{};
 };
+// Two shapes over one strip: rows level with the arrangement's lanes (the track
+// controls), or Live's Mixer View, vertical strips left to right (manual 18.1).
 class MixerPanel final : public juce::Component {
   public:
-    explicit MixerPanel(AdiRootComponent &);
+    explicit MixerPanel(AdiRootComponent &, bool vertical = false);
+    bool vertical() const noexcept { return vertical_; }
+    // A vertical strip's width, and the height from which it shows tick marks and a
+    // numeric volume field (Live: drag the mixer's top edge up for them).
+    static constexpr int kStripWidth = 72, kTallHeight = 260;
     void frame(bool changed) noexcept;
     void resized() override;
     void paint(juce::Graphics &) override;
@@ -59,6 +67,21 @@ class MixerPanel final : public juce::Component {
 
   private:
     void place();
+    void placeColumns();
+    bool vertical_;
+    int scrollX_ = 0;
     std::vector<std::unique_ptr<MixerStrip>> strips_;
+};
+// The Mixer View's top edge: drag it up for taller strips.
+class MixerViewResizer final : public juce::Component {
+  public:
+    explicit MixerViewResizer(AdiRootComponent &);
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+
+  private:
+    AdiRootComponent &root;
+    int start = 0;
 };
 } // namespace adi::ui

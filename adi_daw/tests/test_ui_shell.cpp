@@ -108,6 +108,12 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             g.fillRect(root.aiTab.getBounds());
         if (!root.infoArea().isEmpty())
             g.fillRect(root.infoArea().reduced(4));
+        for (const auto &strip : root.mixerView.strips()) {
+            if (!strip->isVisible() || !root.mixerView.isVisible())
+                continue;
+            const auto b = root.getLocalArea(strip.get(), strip->getLocalBounds());
+            g.fillRect(b.getX(), b.getY(), b.getWidth(), 92);
+        }
         for (const auto &strip : root.mixer.strips()) {
             if (!strip->isVisible())
                 continue;
@@ -369,10 +375,9 @@ int main(int argc, char **argv) {
     check(a.keyPressed(juce::KeyPress('5', cmd | alt, 0)) &&
               !a.state().panels.find(Panel::Browser)->collapsed,
           "Ctrl/Cmd+Alt+5 shows it again");
-    check(a.keyPressed(juce::KeyPress('m', cmd | alt, 0)) &&
-              a.state().panels.find(Panel::Mixer)->collapsed,
-          "Ctrl/Cmd+Alt+M hides the mixer");
-    check(a.keyPressed(juce::KeyPress('m', cmd | alt, 0)), "and shows it");
+    check(a.command(AppCommands::ToggleMixer) && a.state().panels.find(Panel::Mixer)->collapsed,
+          "the View menu hides the track controls' panel");
+    check(a.command(AppCommands::ToggleMixer), "and shows it");
     check(a.keyPressed(juce::KeyPress('4', cmd | alt, 0)) && !a.state().docked &&
               a.deviceArea().isEmpty(),
           "Ctrl/Cmd+Alt+4 hides the Device View");
@@ -1001,7 +1006,7 @@ int main(int argc, char **argv) {
             integrated.frame();
             check(document->view().current()->findTrack(2)->muted &&
                       !row->active.getToggleState() && row->active.getButtonText() == "2",
-                  "the Track Activator, numbered as Live's, mutes the track");
+                  "the Track Activator, numbered by its place as Live's, mutes the track");
             row->active.onClick();
             row->solo.onClick();
             integrated.frame();
@@ -1036,6 +1041,72 @@ int main(int argc, char **argv) {
             integrated.frame();
         audit = false;
         check(allocations == 0, "a steady mixer frame, meters included, allocates zero");
+        // Live's Mixer View (manual 6.1 p. 162, 18.1; §41.1): vertical strips, left to right.
+        auto &mixerView = integrated.mixerView;
+        mixerView.tap = mixer.tap;
+        const int arrangementBefore = integrated.arrangement.getHeight();
+        check(!integrated.state().mixerView && !mixerView.isVisible(),
+              "the Mixer View starts hidden");
+        check(integrated.keyPressed(
+                  juce::KeyPress('m', cmdKey | juce::ModifierKeys::altModifier, 0)) &&
+                  mixerView.isVisible() &&
+                  integrated.arrangement.getHeight() < arrangementBefore &&
+                  mixerView.getBottom() == integrated.arrangement.getBottom() +
+                                               integrated.mixerViewArea().getHeight() &&
+                  integrated.status.mixerToggle.getToggleState(),
+              "Ctrl/Cmd+Alt+M opens it at the foot of the arrangement");
+        check(document->views().load("main").mixerView, "and the window remembers it");
+        integrated.mark(DirtySet::All);
+        integrated.frame();
+        std::vector<MixerStrip *> columns;
+        for (const auto &strip : mixerView.strips())
+            if (strip->isVisible())
+                columns.push_back(strip.get());
+        const auto &trackOrder = integrated.reader().tracks();
+        check(columns.size() >= 2 && columns.size() < trackOrder.size() &&
+                  columns[0]->track() == trackOrder[0]->id &&
+                  columns[1]->track() == trackOrder[1]->id &&
+                  columns[1]->getX() == columns[0]->getX() + MixerPanel::kStripWidth,
+              "one strip per track, left to right, only those on screen");
+        bool numbered = true;
+        for (std::size_t i = 0; i < columns.size(); ++i)
+            numbered = numbered &&
+                       columns[i]->active.getButtonText() == juce::String(static_cast<int>(i) + 1);
+        check(numbered, "each activator shows its track's place, whatever the track's id");
+        check(!columns.empty() &&
+                  columns[0]->volume.getSliderStyle() == juce::Slider::LinearVertical &&
+                  columns[0]->getHeight() < MixerPanel::kTallHeight &&
+                  columns[0]->volume.getTextBoxPosition() == juce::Slider::NoTextBox,
+              "a vertical fader, and no numeric field while the strips are short");
+        if (columns.size() >= 2) {
+            auto &column = *columns[1];
+            column.volume.onDragStart();
+            column.volume.setValue(-3, juce::sendNotificationSync);
+            column.volume.onDragEnd();
+            check(std::abs(document->view().current()->findTrack(column.track())->volumeDb + 3) <
+                      .01,
+                  "its fader edits the track, as the track controls' does");
+            check(integrated.command(AppCommands::Undo), "undo it");
+        }
+        integrated.resizeMixerView(320);
+        integrated.frame();
+        check(!columns.empty() && columns[0]->getHeight() >= MixerPanel::kTallHeight &&
+                  columns[0]->volume.getTextBoxPosition() == juce::Slider::TextBoxBelow,
+              "dragged taller, the strips show a numeric volume field");
+        integrated.resizeMixerView(10);
+        check(integrated.state().mixerViewHeight == 120, "and never go below their floor");
+        integrated.resizeMixerView(220);
+        integrated.frame();
+        allocations = 0;
+        audit = true;
+        for (int i = 0; i < 20; ++i)
+            integrated.frame();
+        audit = false;
+        check(allocations == 0, "a steady frame with the Mixer View open allocates zero");
+        reference(integrated, "mixer-view", write);
+        integrated.status.mixerToggle.onClick();
+        check(!mixerView.isVisible() && !document->views().load("main").mixerView,
+              "the Status Bar's corner toggle hides it again");
         document->release();
     }
     std::printf("%d checks, %d failures\n", checks, failures);

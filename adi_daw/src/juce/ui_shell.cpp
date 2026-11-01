@@ -47,7 +47,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     static const char *names[] = {"Play / stop",         "Stop",
                                   "Undo",                "Redo",
                                   "Swap side panels",    "Hide/Show Browser",
-                                  "Hide/Show Mixer",     "Hide/Show Device View",
+                                  "Arrangement Track Controls", "Hide/Show Device View",
                                   "Hide/Show Info View", "Zoom In Window",
                                   "Zoom Out Window",     "New Project",
                                   "Open Project...",     "Take Snapshot...",
@@ -59,7 +59,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Move Insert Marker to Beginning",
                                   "Continue Play from Stop Point",
                                   "Insert Audio Track",  "Insert MIDI Track",
-                                  "Delete Track",        "Rename"};
+                                  "Delete Track",        "Rename",
+                                  "Mixer"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -95,7 +96,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('5', cmd | alt);
         break;
     case ToggleMixer:
+        // The side panel of track controls; Ctrl/Cmd+Alt+M is the Mixer View's (§41.1).
+        break;
+    case ToggleMixerView:
+        // Live 12: the View menu's Mixer and the toggle in the window's bottom-right
+        // corner open the Mixer View in the Arrangement (manual 6.1, p. 162; §41.1).
         info.addDefaultKeypress('m', cmd | alt);
+        info.setTicked(active_ != nullptr && active_->state().mixerView);
         break;
     case ToggleDeviceView:
         info.addDefaultKeypress('4', cmd | alt);
@@ -223,8 +230,16 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     infoToggle.setTitle("Info View");
     infoToggle.setTooltip("Shows or hides the Info View. Shift+?.");
     infoToggle.onClick = [this] { root_.command(AppCommands::ToggleInfoView); };
+    addAndMakeVisible(mixerToggle);
+    mixerToggle.setTitle("Mixer View");
+    mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
+    mixerToggle.setClickingTogglesState(false);
+    mixerToggle.onClick = [this] { root_.command(AppCommands::ToggleMixerView); };
 }
-void StatusBar::resized() { infoToggle.setBounds(2, 2, 22, getHeight() - 4); }
+void StatusBar::resized() {
+    infoToggle.setBounds(2, 2, 22, getHeight() - 4);
+    mixerToggle.setBounds(getWidth() - 62, 2, 60, getHeight() - 4);
+}
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff1d2128));
     g.setColour(juce::Colour(0xff343b47));
@@ -254,6 +269,8 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(devices);
     addAndMakeVisible(dockResizer);
     addAndMakeVisible(mixer);
+    addChildComponent(mixerView);
+    addChildComponent(mixerViewResizer);
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
@@ -310,6 +327,8 @@ void AdiRootComponent::frame() noexcept {
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     devices.frame(arrangement.geometry.selection.track);
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
+    if (mixerView.isVisible())
+        mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (lastDrain_ & DirtySet::Transport)
         transport.repaint();
     if (lastDrain_ & DirtySet::Status)
@@ -413,7 +432,20 @@ void AdiRootComponent::resized() {
     }
     leftWidth_ = left;
     rightWidth_ = right;
-    arrangement.setBounds(left, top, std::max(0, w - left - right), mid);
+    // Live's Mixer View sits at the foot of the arrangement, its full width (§18.1).
+    const int centreW = std::max(0, w - left - right);
+    const int mvh = state_.mixerView
+                        ? std::clamp(state_.mixerViewHeight, 120,
+                                     std::max(120, mid - ArrangementView::kTopHeight - 64))
+                        : 0;
+    mixerViewArea_ = mvh > 0 && mid > mvh ? juce::Rectangle<int>(left, top + mid - mvh, centreW, mvh)
+                                          : juce::Rectangle<int>();
+    mixerView.setVisible(!mixerViewArea_.isEmpty());
+    mixerViewResizer.setVisible(!mixerViewArea_.isEmpty());
+    mixerView.setBounds(mixerViewArea_.withTrimmedTop(1));
+    mixerViewResizer.setBounds(mixerViewArea_.getX(), mixerViewArea_.getY() - 3, centreW, 6);
+    status.mixerToggle.setToggleState(state_.mixerView, juce::dontSendNotification);
+    arrangement.setBounds(left, top, centreW, mid - mixerViewArea_.getHeight());
     devices.setVisible(!deviceArea_.isEmpty());
     dockResizer.setVisible(!deviceArea_.isEmpty());
     devices.setBounds(deviceArea_.withTrimmedTop(1));
@@ -458,6 +490,13 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         g.drawFittedText(infoText_, infoArea_.reduced(10), juce::Justification::topLeft, 8);
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
+void AdiRootComponent::resizeMixerView(int height) {
+    const int body = getHeight() - kTransportHeight - kStatusHeight - deviceArea_.getHeight();
+    state_.mixerViewHeight =
+        std::clamp(height, 120,
+                   std::max(120, body - ArrangementView::kTopHeight - state_.laneHeight));
+    resized();
+}
 void AdiRootComponent::resizeDevices(int height) {
     const int ceiling = getHeight() - kTransportHeight - kStatusHeight -
                         ArrangementView::kTopHeight - state_.laneHeight;
@@ -608,6 +647,13 @@ bool AdiRootComponent::command(int id) {
         if (!toggle(id == AppCommands::ToggleBrowser ? Panel::Browser : Panel::Mixer))
             return false;
         break;
+    case AppCommands::ToggleMixerView:
+        state_.mixerView = !state_.mixerView;
+        if (!persist()) {
+            state_.mixerView = !state_.mixerView;
+            return fail(error_);
+        }
+        break;
     case AppCommands::ToggleDeviceView:
         state_.docked = !state_.docked;
         if (!persist()) {
@@ -686,6 +732,7 @@ class ShellMenu final : public juce::MenuBarModel {
             add(AppCommands::InsertMidiTrack);
         } else if (index == 3) {
             add(AppCommands::ToggleBrowser);
+            add(AppCommands::ToggleMixerView);
             add(AppCommands::ToggleMixer);
             add(AppCommands::ToggleDeviceView);
             add(AppCommands::ToggleInfoView);

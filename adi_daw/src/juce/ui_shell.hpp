@@ -47,7 +47,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         InsertMidiTrack,
         DeleteTrack,
         RenameTrack,
-        LastId = RenameTrack
+        ToggleMixerView,
+        LastId = ToggleMixerView
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -93,7 +94,7 @@ class StatusBar final : public juce::Component {
     explicit StatusBar(AdiRootComponent &);
     void paint(juce::Graphics &) override;
     void resized() override;
-    juce::TextButton infoToggle{"?"};
+    juce::TextButton infoToggle{"?"}, mixerToggle{"Mixer"};
 
   private:
     AdiRootComponent &root_;
@@ -152,6 +153,11 @@ class AdiRootComponent final : public juce::Component {
     DeviceChainStrip devices;
     DockResizer dockResizer;
     MixerPanel mixer;
+    MixerPanel mixerView{*this, true};
+    MixerViewResizer mixerViewResizer{*this};
+    juce::Rectangle<int> mixerViewArea() const noexcept { return mixerViewArea_; }
+    // Drag the Mixer View's top edge: taller strips, never past one track row.
+    void resizeMixerView(int height);
     juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
     // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
     bool submitEdit(const std::string &op, Payload payload, const char *label);
@@ -187,7 +193,8 @@ class AdiRootComponent final : public juce::Component {
     float interfaceZoom_ = 1;
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
-    juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_;
+    juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
+        mixerViewArea_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
 };

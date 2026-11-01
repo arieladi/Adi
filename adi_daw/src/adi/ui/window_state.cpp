@@ -2,6 +2,7 @@
 #include "window_state.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <cmath>
 #include <nlohmann/json.hpp>
 namespace adi::ui {
@@ -65,6 +66,8 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.timelineLeft = j.value("timelineLeft", 0.);
         state.pixelsPerQuarter = j.value("pixelsPerQuarter", 48.);
         state.laneHeight = j.value("laneHeight", 64);
+        state.mixerView = j.value("mixerView", false);
+        state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
         if (j.contains("folded"))
             for (const auto &id : j.at("folded"))
                 state.foldedDevices.insert(id.get<std::int64_t>());
@@ -112,6 +115,8 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"timelineLeft", state.timelineLeft},
                             {"pixelsPerQuarter", state.pixelsPerQuarter},
                             {"laneHeight", state.laneHeight},
+                            {"mixerView", state.mixerView},
+                            {"mixerViewHeight", state.mixerViewHeight},
                             {"panels", nlohmann::json::array()}};
         for (const auto &p : state.panels.slots())
             j["panels"].push_back({{"id", static_cast<int>(p.panel)},
