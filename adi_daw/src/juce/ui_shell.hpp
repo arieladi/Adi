@@ -6,6 +6,7 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
 #include <memory>
 #include <optional>
 namespace adi::ui {
@@ -26,11 +27,17 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleInfoView,
         ZoomIn,
         ZoomOut,
-        LastId = ZoomOut
+        NewProject,
+        OpenProject,
+        TakeSnapshot,
+        SaveAs,
+        Settings,
+        LastId = Settings
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
     bool key(const juce::KeyPress &, AdiRootComponent &);
+    void activate(AdiRootComponent &);
     void detach(AdiRootComponent &);
     juce::ApplicationCommandTarget *getNextCommandTarget() override { return nullptr; }
     void getAllCommands(juce::Array<juce::CommandID> &) override;
@@ -92,6 +99,15 @@ class AdiRootComponent final : public juce::Component {
     const std::string &error() const noexcept { return error_; }
     WindowState &state() noexcept { return state_; }
     bool persist();
+    // A message for the Status Bar from outside the root (the application's commands).
+    void say(std::string message);
+    bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
+    // What Live's Edit menu shows: "Undo" and the step's own label.
+    std::string undoTitle(bool redo) const;
+    // The application's commands (New, Open, Take Snapshot, Save As, Settings) and
+    // the engine refresh after an edit belong to whoever owns the document.
+    std::function<bool(int)> applicationCommand;
+    std::function<void()> afterEdit;
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
     // own, and the ZoomHost around the root applies it as a transform.
     float interfaceZoom() const noexcept { return interfaceZoom_; }
@@ -124,6 +140,7 @@ class AdiRootComponent final : public juce::Component {
     bool playing_ = false;
     bool infoShown_ = true;
     std::int64_t position_ = 0;
+    double sampleRate_ = 0; // the device's granted rate, once a driver runs
     float interfaceZoom_ = 1;
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
@@ -144,13 +161,21 @@ class ZoomHost final : public juce::Component {
 };
 // One attachment, key binding and tooltip window per native window, sharing
 // the app command manager.
+class ShellMenu;
 class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
   public:
     // `onDesktop` false builds the window without a native peer, for tests.
     AdiWindow(std::unique_ptr<AdiRootComponent>, AppCommands &, bool onDesktop = true);
     ~AdiWindow() override;
     using juce::DocumentWindow::keyPressed;
-    void closeButtonPressed() override { setVisible(false); }
+    std::function<void()> onClose;
+    void closeButtonPressed() override {
+        if (onClose)
+            onClose();
+        else
+            setVisible(false);
+    }
+    juce::MenuBarModel *menu() noexcept;
     AdiRootComponent &root() noexcept { return *root_; }
     const juce::TooltipWindow *tooltips() const noexcept { return tips_.get(); }
     int tooltipDelayMs() const noexcept { return tipDelayMs_; }
@@ -161,6 +186,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     AppCommands &commands_;
     std::unique_ptr<juce::TooltipWindow> tips_;
     int tipDelayMs_ = 0;
+    std::unique_ptr<ShellMenu> menu_;
     juce::VBlankAttachment clock_;
 };
 } // namespace adi::ui

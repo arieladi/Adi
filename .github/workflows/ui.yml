@@ -45,11 +45,21 @@ jobs:
       - name: Build root window and both test tiers
         run: |
           cmake -S adi_daw -B "$ADI_UI_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
-          cmake --build "$ADI_UI_BUILD" --target adi_ui_shell_tests adi_ui_window_state_tests --parallel 2
+          cmake --build "$ADI_UI_BUILD" --target adi_app adi_ui_shell_tests adi_ui_window_state_tests adi_ui_document_tests --parallel 2
       - name: Peerless software renders and synthesised keyboard events
         run: |
           # An unset DISPLAY deliberately proves the Linux offscreen path.
-          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_ui_(shell|window_state)_tests$' --output-on-failure
+          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_ui_(shell|window_state|document)_tests$' --output-on-failure
+      - name: Windows native window smoke (no audio device)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & "$env:ADI_UI_BUILD/adi_ui_document_tests.exe" --fixture "$env:ADI_UI_BUILD/native.adi"
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture failed' }
+          $process = Start-Process -FilePath "$env:ADI_UI_BUILD/adi_app_artefacts/Debug/ADI.exe" -ArgumentList "$env:ADI_UI_BUILD/native.adi",'--no-audio','--smoke-output',"$env:ADI_UI_BUILD/native-actual.png" -WindowStyle Hidden -PassThru
+          if (-not $process.WaitForExit(30000)) { Stop-Process -Id $process.Id; throw 'Native window timed out' }
+          $process.Refresh()
+          if ($process.ExitCode -ne 0 -or -not (Test-Path "$env:ADI_UI_BUILD/native-actual.png")) { throw 'Native window smoke failed' }
       - uses: actions/upload-artifact@v4
         if: always()
         with:

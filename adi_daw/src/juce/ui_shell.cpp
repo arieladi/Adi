@@ -23,6 +23,8 @@ void AppCommands::reload() {
     tooltips_ = flag(settings_, "lookfeel.showTooltips", true);
     const auto delay = settings_.get("lookfeel.tooltipDelayMs");
     tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
+    // A preset changes default keys, so the old registrations go first.
+    manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
     manager.getKeyMappings()->resetToDefaultMappings();
 }
@@ -37,13 +39,26 @@ void AppCommands::getAllCommands(juce::Array<juce::CommandID> &ids) {
         ids.add(id);
 }
 void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInfo &info) {
+    if (id < PlayStop || id > LastId) {
+        info.setActive(false);
+        return;
+    }
     static const char *names[] = {"Play / stop",         "Stop",
                                   "Undo",                "Redo",
                                   "Swap side panels",    "Hide/Show Browser",
                                   "Hide/Show Mixer",     "Hide/Show Device View",
                                   "Hide/Show Info View", "Zoom In Window",
-                                  "Zoom Out Window"};
+                                  "Zoom Out Window",     "New Project",
+                                  "Open Project...",     "Take Snapshot...",
+                                  "Save Project As...",  "Settings..."};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
+    if (id == Undo || id == Redo) {
+        const bool redo = id == Redo;
+        info.setInfo(active_ ? juce::String(active_->undoTitle(redo))
+                             : juce::String(names[id - PlayStop]),
+                     names[id - PlayStop], "ADI", 0);
+        info.setActive(active_ != nullptr && active_->canUndo(redo));
+    }
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     const auto shift = juce::ModifierKeys::shiftModifier;
@@ -88,20 +103,46 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ZoomOut:
         info.addDefaultKeypress('-', cmd);
         break;
+    // §41.3. Ctrl/Cmd+S takes a named snapshot rather than saving, a deviation the
+    // director ruled (ADR-0203 d6, d12); Save As is Live's, a true one.
+    case NewProject:
+        info.addDefaultKeypress('n', cmd);
+        break;
+    case OpenProject:
+        info.addDefaultKeypress('o', cmd);
+        break;
+    case TakeSnapshot:
+        info.addDefaultKeypress('s', cmd);
+        break;
+    case SaveAs:
+        info.addDefaultKeypress('s', cmd | shift);
+        break;
+    case Settings:
+        info.addDefaultKeypress(',', cmd);
+        break;
     default:
         break;
     }
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
-    active_ = &root;
+    activate(root);
     return manager.getKeyMappings()->keyPressed(key, &root);
+}
+void AppCommands::activate(AdiRootComponent &root) {
+    active_ = &root;
+    // Re-read the command infos so the Edit menu names the step it would undo.
+    manager.commandStatusChanged();
 }
 void AppCommands::detach(AdiRootComponent &root) {
     if (active_ == &root)
         active_ = nullptr;
 }
 bool AppCommands::perform(const InvocationInfo &info) {
-    return active_ && active_->command(info.commandID);
+    // A command the root refuses has still been handled: the Status Bar says why.
+    if (active_ == nullptr)
+        return false;
+    active_->command(info.commandID);
+    return true;
 }
 TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     addAndMakeVisible(play);
@@ -184,7 +225,9 @@ void AdiRootComponent::frame() noexcept {
     }
     const bool playing = mailbox_.playing();
     const auto position = mailbox_.position();
-    if (playing != playing_ || position != position_) {
+    const double rate = mailbox_.sampleRate();
+    if (playing != playing_ || position != position_ || rate != sampleRate_) {
+        sampleRate_ = rate;
         playing_ = playing;
         position_ = position;
         dirty_.mark(DirtySet::Transport);
@@ -222,7 +265,7 @@ void AdiRootComponent::hover(juce::Component *c) {
 }
 double AdiRootComponent::bpm() const noexcept {
     const auto *tempo = reader_->tempo();
-    const auto rate = reader_->sampleRate();
+    const double rate = sampleRate_ > 0 ? sampleRate_ : reader_->sampleRate();
     return tempo ? tempo->bpmAt(
                        tempo->secondsToTicks(rate > 0 ? static_cast<double>(position_) / rate : 0))
                  : 120.;
@@ -330,6 +373,15 @@ void AdiRootComponent::paint(juce::Graphics &g) {
 }
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+void AdiRootComponent::say(std::string message) {
+    error_ = std::move(message);
+    dirty_.mark(DirtySet::Status);
+}
+std::string AdiRootComponent::undoTitle(bool redo) const {
+    const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
+    return std::string(redo ? "Redo" : "Undo") +
+           (step && !step->label.empty() ? " " + step->label : "");
+}
 bool AdiRootComponent::fail(std::string message) {
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
@@ -347,6 +399,8 @@ bool AdiRootComponent::toggle(Panel p) {
     return true;
 }
 bool AdiRootComponent::command(int id) {
+    if (id >= AppCommands::NewProject && id <= AppCommands::Settings)
+        return applicationCommand && applicationCommand(id);
     // No action carries the presented frame into an edit: OpSubmitter resolves
     // current store/history state on arrival, even when this window is a frame behind.
     switch (id) {
@@ -415,10 +469,54 @@ bool AdiRootComponent::command(int id) {
     default:
         return false;
     }
+    if (afterEdit)
+        afterEdit();
     error_.clear();
     resized();
     return true;
 }
+// Live's menu bar, as far as step 7 has commands for it: File, Edit, View.
+// Transport has no menu in Live; Space is its key.
+class ShellMenu final : public juce::MenuBarModel {
+  public:
+    ShellMenu(AdiRootComponent &r, AppCommands &c) : root(r), commands(c) {}
+    juce::StringArray getMenuBarNames() override { return {"File", "Edit", "View"}; }
+    juce::PopupMenu getMenuForIndex(int index, const juce::String &) override {
+        commands.activate(root);
+        juce::PopupMenu menu;
+        auto add = [&](int id) { menu.addCommandItem(&commands.manager, id); };
+        if (index == 0) {
+            add(AppCommands::NewProject);
+            add(AppCommands::OpenProject);
+            menu.addSeparator();
+            add(AppCommands::TakeSnapshot);
+            add(AppCommands::SaveAs);
+#if !JUCE_MAC
+            menu.addSeparator();
+            add(AppCommands::Settings);
+#endif
+        } else if (index == 1) {
+            add(AppCommands::Undo);
+            add(AppCommands::Redo);
+        } else if (index == 2) {
+            add(AppCommands::ToggleBrowser);
+            add(AppCommands::ToggleMixer);
+            add(AppCommands::ToggleDeviceView);
+            add(AppCommands::ToggleInfoView);
+            menu.addSeparator();
+            add(AppCommands::ZoomIn);
+            add(AppCommands::ZoomOut);
+            menu.addSeparator();
+            add(AppCommands::SwapPanels);
+        }
+        return menu;
+    }
+    void menuItemSelected(int, int) override {}
+
+  private:
+    AdiRootComponent &root;
+    AppCommands &commands;
+};
 ZoomHost::ZoomHost(std::unique_ptr<AdiRootComponent> root) : root_(std::move(root)) {
     setOpaque(true);
     addAndMakeVisible(*root_);
@@ -444,8 +542,26 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
         tipDelayMs_ = commands_.tooltipDelayMs();
         tips_ = std::make_unique<juce::TooltipWindow>(this, tipDelayMs_);
     }
+    commands_.activate(*root_);
+    menu_ = std::make_unique<ShellMenu>(*root_, commands_);
+    // On the Mac the menu is the application's, at the top of the screen, as Live's.
+#if JUCE_MAC
+    if (onDesktop)
+        juce::MenuBarModel::setMacMainMenu(menu_.get());
+#else
+    setMenuBar(menu_.get());
+#endif
 }
-AdiWindow::~AdiWindow() { removeKeyListener(this); }
+AdiWindow::~AdiWindow() {
+#if JUCE_MAC
+    if (juce::MenuBarModel::getMacMainMenu() == menu_.get())
+        juce::MenuBarModel::setMacMainMenu(nullptr);
+#else
+    setMenuBar(nullptr);
+#endif
+    removeKeyListener(this);
+}
+juce::MenuBarModel *AdiWindow::menu() noexcept { return menu_.get(); }
 bool AdiWindow::keyPressed(const juce::KeyPress &key, juce::Component *) {
     return commands_.key(key, *root_);
 }

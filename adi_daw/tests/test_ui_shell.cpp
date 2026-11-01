@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "../src/juce/ui_shell.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
+#include "adi/ui/project_document.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
@@ -364,6 +366,91 @@ int main(int argc, char **argv) {
                                                        persistence, "quiet"),
                     commands, false);
     check(quiet.tooltips() == nullptr, "the setting turns them off for new windows");
+    // Step 7.2's application half (#198): a real document, its engine and its keys.
+    std::string documentError;
+    auto document = ProjectDocument::open(temp.path() / "integrated.adi", true, {}, documentError);
+    check(document != nullptr, "application document opens");
+    if (document) {
+        AdiRootComponent integrated(document->view(), document->ops(), document->mailbox(),
+                                    commands, document->views(), "main");
+        int snapshots = 0, saveAs = 0;
+        integrated.afterEdit = [&] { document->synchronise(); };
+        integrated.applicationCommand = [&](int id) {
+            if (id == AppCommands::SaveAs) {
+                ++saveAs;
+                integrated.say("Save As waits for the engine's (ADR-0203 d6)");
+                return false;
+            }
+            if (id != AppCommands::TakeSnapshot)
+                return false;
+            ++snapshots;
+            return document->takeSnapshot({}, 0, 0).ok;
+        };
+        check(!integrated.canUndo(false) && integrated.undoTitle(false) == "Undo",
+              "a new project has nothing to undo, as Live");
+        check(document->ops().submit(track(2)).ok && document->synchronise(),
+              "application edit reaches engine");
+        check(integrated.undoTitle(false) == "Undo Create track",
+              "the Edit menu names the step it would undo");
+        commands.activate(integrated);
+        juce::ApplicationCommandInfo undoInfo(AppCommands::Undo);
+        commands.getCommandInfo(AppCommands::Undo, undoInfo);
+        check(undoInfo.shortName == "Undo Create track" &&
+                  (undoInfo.flags & juce::ApplicationCommandInfo::isDisabled) == 0,
+              "and the command's own info carries it");
+        check(integrated.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier, 0)),
+              "application undo key");
+        check(document->session().model().tracks.size() == 1,
+              "undo callback updates Session synchronously");
+        check(!integrated.command(AppCommands::Undo) && !integrated.error().empty() &&
+                  document->session().model().tracks.size() == 1,
+              "undo stops at the project's creation and says so");
+        check(integrated.command(AppCommands::Redo) &&
+                  document->session().model().tracks.size() == 2,
+              "redo callback restores engine track");
+        document->prepare(48000, 64);
+        std::array<float, 64> left{}, right{};
+        float *channels[]{left.data(), right.data()};
+        engine::AudioIo io;
+        io.out = channels;
+        io.numOut = 2;
+        io.frames = 64;
+        check(integrated.keyPressed(juce::KeyPress(juce::KeyPress::spaceKey)),
+              "application play key");
+        document->process(io);
+        integrated.frame();
+        check(integrated.playing() && document->mailbox().position() == 64,
+              "TransportBar reflects actual engine playback");
+        check(integrated.command(AppCommands::Stop), "application stop");
+        document->process(io);
+        integrated.frame();
+        check(!integrated.playing() && document->mailbox().position() == 64,
+              "engine stop reaches bar");
+        const auto opsBeforeSnapshot =
+            document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+        check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier, 0)) &&
+                  snapshots == 1,
+              "Ctrl/Cmd+S takes a snapshot (ADR-0203 d6), not a save");
+        check(document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
+                  opsBeforeSnapshot,
+              "and writes no op");
+        check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier |
+                                                            juce::ModifierKeys::shiftModifier,
+                                                   0)) &&
+                  saveAs == 1 && !integrated.error().empty(),
+              "Save As reaches the application, which says why it cannot yet");
+        OpRequest tempoChange;
+        tempoChange.opType = "project.insertTempoEvent";
+        tempoChange.payload = {{"pos", 2 * textproj::kPPQ}, {"bpm", 60.0}, {"curve", 0}};
+        check(document->ops().submit(tempoChange).ok && document->synchronise(),
+              "tempo change for hardware-rate test");
+        document->prepare(96000, 64);
+        document->session().transport().locate(72000); // offline driver, 0.75 seconds
+        document->process(io);
+        integrated.frame();
+        check(integrated.bpm() == 120, "TransportBar uses granted device rate at tempo boundaries");
+        document->release();
+    }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
