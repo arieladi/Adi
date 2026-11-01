@@ -1906,5 +1906,23 @@
   "feasibility": "good",
   "visible": "Black hole with a glowing blue ring inside concentric grey and violet swirl lines, two cyan ribbons crossing left and right, magenta fluid clouds at lower left, white star specks on black.",
   "risk": "Ribbons may only wiggle in place; mirror composite could make the inward pull look doubled or odd."
+ },
+ {
+  "slot": "K056b",
+  "prompt": "Continue this exact swirling storm of liquid gold, cyan and magenta. The gold streams surge outward from the centre like flames while the cyan currents curl over and crash around them like waves, the whole mass churning and pouring across the picture from left to right. Bright sparks and droplets fly off the curling edges and stream away. Continuous clear fast swirling and surging movement from the first frame.",
+  "verdict": "claude",
+  "problem": "added: bar B must continue the redo bar A it follows",
+  "feasibility": "good",
+  "visible": "Abstract swirl of liquid gold, cyan and magenta (end of K056ar).",
+  "risk": "low"
+ },
+ {
+  "slot": "K080b",
+  "prompt": "Continue this exact walk down the glowing hexagon tunnel. The figure strides forward toward the bright white light at the far end, legs stepping and arms swinging, while the honeycomb walls and floor cells stream toward the viewer and slide out past the sides. Small bees of light fly along the walls and race ahead toward the light. Continuous clear walking and forward travel movement from the first frame. Keep the same figure and tunnel.",
+  "verdict": "claude",
+  "problem": "added: bar B must continue the redo bar A it follows",
+  "feasibility": "good",
+  "visible": "Figure walking down a blue/orange hexagon tunnel toward a white light (end of K080ar).",
+  "risk": "low"
  }
 ]
