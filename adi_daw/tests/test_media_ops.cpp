@@ -19,7 +19,7 @@ struct Fixture {
     std::unique_ptr<Store> store;
     Fixture() {
         fs::create_directory(temp.path() / "project");
-        StoreError error; store = Store::create(temp.path() / "project" / "song.adi", error);
+        StoreError error; store = Store::createEmpty(temp.path() / "project" / "song.adi", error);
         if (!store) throw std::runtime_error("fixture create");
         store->db().exec("INSERT INTO project(id,name) VALUES(1,'Media')");
     }

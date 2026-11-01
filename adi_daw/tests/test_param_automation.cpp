@@ -329,7 +329,7 @@ struct Project {
     std::int32_t block;
     Project(const char* name, double r, std::int32_t b) : temp("param_automation", name), rate(r), block(b) {
         StoreError e{};
-        store = Store::create(temp.path() / "p.adi", e);
+        store = Store::createEmpty(temp.path() / "p.adi", e);
         if (!store) throw std::runtime_error("create");
         store->db().exec(
             "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','A',0),(9,'master','Master',1);"

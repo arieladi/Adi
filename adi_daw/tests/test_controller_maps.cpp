@@ -15,7 +15,7 @@ int checks=0, failures=0;
 void check(bool ok,const char* label) { ++checks; if(!ok) { ++failures; std::printf("FAIL: %s\n",label); } }
 std::unique_ptr<Store> project(const std::filesystem::path& path) {
     StoreError error=StoreError::Ok;
-    auto s=Store::create(path,error);
+    auto s=Store::createEmpty(path,error);
     if(!s) throw std::runtime_error("create store");
     s->db().exec("INSERT INTO project(id,name) VALUES(1,'Learn'); INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Track');"
         "INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,param_name) VALUES(2,'track',1,'volume','Display only')");
