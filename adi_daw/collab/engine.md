@@ -12,6 +12,23 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-01 — ADR-0210 adopted; N1 new-project metadata ready
+
+The director's standing prompt of 1 November replaces the old order: the window's needs table is now the head of the engine queue. Read the updated LANES and ADR-0209/0210 on `win/adr-0209-ruled`, and the needs table on `window/log`. `origin/main` at `6fa069a` contains the merges of #297 through #302, including N6; none of those PRs remains queued here. New work starts from main, with at most two dependent branches. UI and device production files remain their lanes' work.
+
+### PR requested — N1
+
+**Title:** Initialize new-project metadata at 44.1 kHz (N1)
+**Head:** `engine/project-defaults`, `b47b6ec`; **base:** `main` at `6fa069a`.
+
+`Store::create(path, error)` now creates the singleton project row (`id=1`, `Untitled`, 44100 Hz) before any undoable edit. `project.setName` immediately changes it, undo returns to its initial name, and snapshot reads report 44100. Snapshot's missing-row fallback also uses 44100. Schema1.9 implements ADR-0203 d18's new default; migration from every frozen minor preserves stored project values, restores indexes/triggers, leaves read-only files untouched, and rolls back unsafe extension copies. The 1.8 schema is frozen byte-for-byte. The validator allows only this named default change. Converters/low-level fixtures that supply their own rows use `Store::createEmpty`; fixture calls were mechanically updated without UI production changes.
+
+**For the window:** existing `Store::create` calls now get the project row and correct rate automatically; `project.setName` needs no workaround. The Main-track bootstrap is N2, next, so retain that workaround until N2's opt-in factory is available. No new op or UI implementation is included in N1.
+
+**Validation:** CI-style build-only dependency fetch; GCC Debug `ADI_WERROR=ON`, real libpd on/JUCE off: **9708 checks / 105 suites**, all validators clean. Store56, migration149; seven focused Clang Werror suites pass. Compiled missing-row and wrong-rate plants both fail the new tests. Frozen1.8 SHA matches main's original schema. MSVC/seven-ABI CI remains external. API retry still returns Forbidden; ADR-0210 d4's PR-request path is used, without a director relay.
+
+---
+
 ## 2026-10-30 — MSVC CI repair, direct stems and PCM export
 
 The window opened #301 (`engine/export-stems` → `engine/export-queue`) at a4e814a. The window reports #297 all green; #299 has 18/19 green with macOS still running. #298's Windows MSVC Debug mixer timed out at the existing 600-second limit; its other 94 tests passed. Those reports describe the pre-repair heads; new CI still needs relaying because `api.github.com/graphql` remains Forbidden here. Win merges.
