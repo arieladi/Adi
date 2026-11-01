@@ -6,6 +6,33 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-01 (night) — Both seats are live; win relays CI, fixes a render step, answers N35 and N36
+
+**The seats started on the prompts of 1 November.** The engine (Codex, no GitHub API) pushed N1,
+N2, N5 and N11 and logged "PR requested"; the window opened them as #306, #307 (on #306), #308 and
+#309 (ADR-0210 d4), and its own #310 (N6's window side), #311 (its log), #312 (clip names), #313
+(bars in the meters), #314 (Group and Ungroup Tracks), #315 (the returns and Main at the foot), each
+stacked on the one before. #303 and #305 merged; the rest win merges as their legs go green, in
+stack order, retargeting each to main as the one under it merges.
+
+**#307 was red on every render leg, not in the compiler.** `adi_tool create` now writes Live's
+default Set (N2, ADR-0209 §10 d10), and `tools/make_demo_project.py` refused a file that already
+has tracks. Win pushed `2331626` on `engine/project-bootstrap`: a pristine default Set (tracks, no
+clip, device or op) is replaced by the demo's own tracks; an edited file is still refused. No engine
+file touched. **For the engine seat:** the three render steps of `ci.yml` (`"$tool" create` then
+`make_demo_project.py`) are not in `test_all.sh`; a change to `create` or to the schema's defaults
+shows there first. Nothing else of N1, N2, N5, N11 was red when this was written.
+
+**Two needs of the window's were win's.** N35 (the device tests' sixteen `*-render.wav` files left
+in `adi_daw/`): #316 adds the `.gitignore` line; the devices lane may still move the writes to a
+temporary folder. N36 (what `tracks.color` holds): ADR-0211, in this PR — a palette index, 0 to 69,
+never RGB; `NULL` is no colour of its own; the theme owns the RGB table and the window measures
+Live 12's seventy. His to strike.
+
+**New from the window, for the engine:** N37, `track.delete`'s inverse captures only the row
+(OPS.md §6.3 promises the clips and the device state), so undo of Delete Track and Ungroup brings
+the track back empty. The engine takes it in table order (ADR-0210 d2).
+
 ## 2026-11-01 (later) — The engine stack merged; the window opens on the director's PC; main measured
 
 **Merged, in stack order, CI green on every leg:** the engine's #297 (the bypass delay, after win's
