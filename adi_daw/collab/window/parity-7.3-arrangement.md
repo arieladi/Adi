@@ -26,6 +26,6 @@ against Live 12 (ADR-0108). Rows describe the behaviour in our words. Status as 
 | 17 | The Main track is the arrangement's last row | §6 | Listed where the snapshot puts it, since the snapshot does not say which track is Main (N6) | partial |
 | 18 | Clips show their names | §6 | Drawn unnamed until the snapshot carries clip names (N6) | partial |
 | 19 | Dropping an audio file on a track makes a clip there | §6.1; §9 | The drop is accepted and the Status Bar says it waits for the engine's audio-clip op (N5); nothing is written | open |
-| 20 | The Overview above the ruler: drag scrolls and zooms, double-click zooms out fully | §6.1, p. 160–161; ADR-0129 | — | open: a later 7.3 item |
+| 20 | The Overview above the ruler: the whole arrangement in miniature, an outline around what is on screen; drag sideways scrolls, vertically zooms; a double-click zooms out fully | §6.1, p. 160–161; ADR-0129 | Built (`window/overview`): 16 units tall, a row per track, the outline drawn over it; the drag moves by the Overview's own scale | built; measure its height and the outline's colour. ADR-0129's edge handles (deviation 3) wait until these rows pass |
 | 21 | Scrub area: a click launches playback from that point | §6.1, p. 161 | — | open: with locators |
 | 22 | The playhead never repaints the arrangement | ADR-0050 d2 | A one-pixel component above the canvas, transparent to the mouse; a moving playhead allocates nothing | built |

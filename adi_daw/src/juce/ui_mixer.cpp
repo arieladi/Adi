@@ -204,7 +204,7 @@ void MixerPanel::place() {
     // §10); rows follow the arrangement's lanes, so the two scroll as one.
     const auto &geometry = root.arrangement.geometry;
     const auto &tracks = root.reader().tracks();
-    const int bodyTop = kHeaderHeight;
+    const int bodyTop = ArrangementView::kTopHeight; // level with the lanes
     std::size_t wanted = 0;
     int y = bodyTop - geometry.scrollY;
     std::size_t first = tracks.size();
@@ -248,7 +248,7 @@ void MixerPanel::frame(bool changed) noexcept {
 void MixerPanel::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff21262e));
     g.setColour(juce::Colour(0xff303944));
-    g.fillRect(0, 0, getWidth(), kHeaderHeight);
+    g.fillRect(0, 0, getWidth(), ArrangementView::kTopHeight);
 }
 void MixerPanel::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())

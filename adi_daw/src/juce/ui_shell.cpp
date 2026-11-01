@@ -448,7 +448,7 @@ void AdiRootComponent::paint(juce::Graphics &g) {
 bool AdiRootComponent::keyPressed(const juce::KeyPress &key) { return commands_.key(key, *this); }
 void AdiRootComponent::resizeDevices(int height) {
     const int ceiling = getHeight() - kTransportHeight - kStatusHeight -
-                        ArrangementView::kRulerHeight - state_.laneHeight;
+                        ArrangementView::kTopHeight - state_.laneHeight;
     state_.setDeviceHeight(std::min(height, ceiling));
     resized();
 }

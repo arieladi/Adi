@@ -2,6 +2,57 @@
 #include "ui_arrangement.hpp"
 #include "ui_shell.hpp"
 namespace adi::ui {
+ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
+    setTitle("Overview");
+    setTooltip("The whole arrangement. Drag sideways to scroll, up or down to zoom; "
+               "double-click to see all of it.");
+}
+std::int64_t ArrangementOverview::span() const noexcept {
+    const auto &g = view.geometry;
+    const auto visibleEnd = g.tick(static_cast<double>(view.canvas.getWidth()));
+    return std::max<std::int64_t>({g.end(view.reader()), visibleEnd, textproj::kPPQ});
+}
+juce::Rectangle<float> ArrangementOverview::outline() const noexcept {
+    const auto &g = view.geometry;
+    const double total = static_cast<double>(span()), w = getWidth();
+    const double from = g.left * textproj::kPPQ;
+    const double to = static_cast<double>(g.tick(static_cast<double>(view.canvas.getWidth())));
+    return {static_cast<float>(from / total * w), 0.f,
+            static_cast<float>(std::max(2., (to - from) / total * w)),
+            static_cast<float>(getHeight())};
+}
+void ArrangementOverview::paint(juce::Graphics &g) {
+    g.fillAll(juce::Colour(0xff1b2129));
+    const auto &tracks = view.reader().tracks();
+    const double total = static_cast<double>(span()), w = getWidth();
+    const float row = std::max(1.f, static_cast<float>(getHeight() - 2) /
+                                        static_cast<float>(std::max<std::size_t>(1, tracks.size())));
+    g.setColour(juce::Colour(0xff488a9a));
+    float y = 1;
+    for (const auto &t : tracks) {
+        for (const auto &c : t->clips)
+            g.fillRect(static_cast<float>(static_cast<double>(c->posTicks) / total * w), y,
+                       std::max(1.f, static_cast<float>(static_cast<double>(c->lengthTicks) /
+                                                        total * w)),
+                       std::max(1.f, row - 1));
+        y += row;
+    }
+    g.setColour(juce::Colour(0xffe0e5ed));
+    g.drawRect(outline(), 1.f);
+}
+void ArrangementOverview::mouseDown(const juce::MouseEvent &e) { last = e.position; }
+void ArrangementOverview::mouseDrag(const juce::MouseEvent &e) {
+    const auto d = e.position - last;
+    last = e.position;
+    // Sideways moves the outline: the overview's pixels are the whole span's.
+    const double quarters = d.x * static_cast<double>(span()) / textproj::kPPQ /
+                            std::max(1, getWidth());
+    view.geometry.pan(quarters * view.geometry.scale);
+    // Vertically zooms around what is in the middle of the screen.
+    view.geometry.zoom(std::exp(-d.y * .02), view.canvas.getWidth() / 2.);
+    view.changed();
+}
+void ArrangementOverview::mouseDoubleClick(const juce::MouseEvent &) { view.fit(false); }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
     // The snapshot carries no time signatures yet (collab/window.md, N6).
@@ -24,26 +75,29 @@ std::unique_ptr<juce::AccessibilityHandler> ArrangementCanvas::createAccessibili
     return std::make_unique<juce::AccessibilityHandler>(*this, juce::AccessibilityRole::list);
 }
 ArrangementView::ArrangementView(AdiRootComponent &r)
-    : root(r), ruler(*this), headers(*this), canvas(*this) {
-    for (auto *c : std::array<juce::Component *, 4>{&ruler, &headers, &canvas, &playhead})
+    : root(r), overview(*this), ruler(*this), headers(*this), canvas(*this) {
+    for (auto *c :
+         std::array<juce::Component *, 5>{&overview, &ruler, &headers, &canvas, &playhead})
         addAndMakeVisible(c);
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
 void ArrangementView::resized() {
     const int headerW = std::min(kHeaderWidth, getWidth() / 3);
     const int clipsW = std::max(0, getWidth() - headerW);
-    const int body = std::max(0, getHeight() - kRulerHeight);
-    ruler.setBounds(0, 0, clipsW, kRulerHeight);
-    canvas.setBounds(0, kRulerHeight, clipsW, body);
-    headers.setBounds(clipsW, kRulerHeight, headerW, body);
+    const int body = std::max(0, getHeight() - kTopHeight);
+    overview.setBounds(0, 0, clipsW, kOverviewHeight);
+    ruler.setBounds(0, kOverviewHeight, clipsW, kRulerHeight);
+    canvas.setBounds(0, kTopHeight, clipsW, body);
+    headers.setBounds(clipsW, kTopHeight, headerW, body);
     frame(true);
 }
 void ArrangementView::frame(bool modelChanged) noexcept {
     const int x = static_cast<int>(std::clamp(geometry.x(root.timelineTick()), -1e7, 1e7));
     playhead.setVisible(x >= 0 && x < canvas.getWidth());
-    playhead.setBounds(canvas.getX() + x, kRulerHeight, 1, canvas.getHeight());
+    playhead.setBounds(canvas.getX() + x, kTopHeight, 1, canvas.getHeight());
     playhead.toFront(false);
     if (modelChanged) {
+        overview.repaint();
         canvas.repaint();
         headers.repaint();
         ruler.repaint();

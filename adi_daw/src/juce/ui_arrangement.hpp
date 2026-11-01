@@ -6,6 +6,25 @@
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
+// The Overview (Live 12 manual 6.1, ADR-0129): the whole arrangement in miniature,
+// an outline around the part on screen. Drag sideways to scroll, vertically to zoom;
+// a double-click zooms out to the whole arrangement.
+class ArrangementOverview final : public juce::Component, public juce::SettableTooltipClient {
+  public:
+    explicit ArrangementOverview(ArrangementView &);
+    void paint(juce::Graphics &) override;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
+    // The span the overview draws, in ticks: the arrangement, or what is on screen if longer.
+    std::int64_t span() const noexcept;
+    // The outline around the visible part, in the overview's pixels.
+    juce::Rectangle<float> outline() const noexcept;
+
+  private:
+    ArrangementView &view;
+    juce::Point<float> last;
+};
 // The beat-time ruler (Live 12 manual 6.1): bars-beats-sixteenths; drag sideways
 // scrolls, vertically zooms; a double-click zooms to the selection, or out to the
 // whole arrangement when nothing is selected.
@@ -79,9 +98,11 @@ class ArrangementView final : public juce::Component {
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);
     const SnapshotReader &reader() const;
-    static constexpr int kRulerHeight = 28, kHeaderWidth = 128;
+    static constexpr int kOverviewHeight = 16, kRulerHeight = 28, kHeaderWidth = 128;
+    static constexpr int kTopHeight = kOverviewHeight + kRulerHeight; // where the lanes begin
     ArrangementGeometry geometry;
     AdiRootComponent &root;
+    ArrangementOverview overview;
     TimelineRuler ruler;
     TrackHeaderList headers;
     ArrangementCanvas canvas;
