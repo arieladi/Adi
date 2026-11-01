@@ -54,8 +54,13 @@ public:
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return true; }
 
-    void prepare(double, std::int32_t) override { ++prepares_; }
+    void prepare(double, std::int32_t) override { ++prepares_; widths_ += "p"; }
     void release() override { ++releases_; }
+    // ADR-0207 d2.
+    [[nodiscard]] bool processesDouble() const noexcept override { return doubles_; }
+    void willBeHanded(engine::Precision w) override { widths_ += w == engine::Precision::Float64 ? "64" : "32"; }
+    void setDoubles(bool d) { doubles_ = d; }
+    [[nodiscard]] const std::string& widths() const { return widths_; }
 
     void process(const engine::NodeIo& io) noexcept override {
         ++calls_;
@@ -86,6 +91,8 @@ private:
     std::int64_t tail_ = 0;
     std::int32_t lat_ = 0;
     int prepares_ = 0, releases_ = 0, calls_ = 0;
+    bool doubles_ = false;
+    std::string widths_;
 };
 
 /// A device that overrides NOTHING, to read the base class's own answers.
@@ -362,6 +369,32 @@ void testPrepareAndReleaseReachTheDevice() {
     check(d.releases() == 1, "and the release");
 }
 
+void testTheWidthReachesTheDevice() {
+    section("ADR-0207 d2: a graph at 64 tells a device that processes double "
+            "so, through DeviceNode, before it prepares it");
+    FakeDevice wide({}), narrow({});
+    wide.setDoubles(true);
+    DeviceNode nw(wide), nn(narrow);
+    check(nw.processesDouble() && !nn.processesDouble(), "the node says what its device says");
+    engine::Graph g;
+    g.setPrecision(engine::Precision::Float64);
+    const engine::NodeId a = g.addNode(nw), b = g.addNode(nn);
+    g.connect(a, b);
+    g.setOutput(b);
+    g.prepare(48000.0, 512);
+    check(wide.widths() == "64p", "the device that processes double is told 64, then prepared: " + wide.widths());
+    check(narrow.widths() == "32p", "the one that does not is told 32: " + narrow.widths());
+    check(nw.handed() == engine::Precision::Float64 && nn.handed() == engine::Precision::Float32,
+          "and each node remembers what it was told");
+    // A device whose answer moves after the build: the node still says what
+    // the graph decided, which is what it is handed until the next one.
+    narrow.setDoubles(true);
+    check(nn.processesDouble() && nn.handed() == engine::Precision::Float32,
+          "a device that now says double is still handed float until a rebuild");
+    g.prepare(48000.0, 512);
+    check(nn.handed() == engine::Precision::Float64, "and the rebuild hands it double");
+}
+
 // --- the missing plugin ------------------------------------------------------
 
 void testMissingPluginIsStillADevice() {
@@ -505,6 +538,7 @@ int main() {
     testPassThroughHonoursTheSegmentOffset();
     testAnInstrumentConsumesAndBypassDoesNot();
     testPrepareAndReleaseReachTheDevice();
+    testTheWidthReachesTheDevice();
     testMissingPluginIsStillADevice();
     testMissingPluginPassesAudio();
     testMissingPluginKeepsStateByteForByte();

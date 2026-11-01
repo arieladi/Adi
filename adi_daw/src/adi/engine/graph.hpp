@@ -244,6 +244,14 @@ public:
     /// is still handed the width the graph kept, which it takes anyway.
     [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
 
+    /// The width this build hands the node (ADR-0207 d2): `Float64` when it
+    /// said `processesDouble()` in a graph at 64, `Float32` otherwise. Told
+    /// by the graph at `prepare`, on the message thread, just before the
+    /// node's own `prepare`. A node whose plug-in fixes its sample size when
+    /// it is activated -- VST3's `setupProcessing` -- has to know then;
+    /// every other node takes the width it is handed and ignores this.
+    virtual void willBeHanded(Precision /*width*/) {}
+
     /// Whether note events stop at this node or pass on (ADR-0091).
     ///
     /// **Through by default, and that is the conservative answer here.** The
