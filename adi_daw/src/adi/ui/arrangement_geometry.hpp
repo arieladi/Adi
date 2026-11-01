@@ -23,6 +23,18 @@ inline std::string displayName(const std::string &name, std::size_t position) {
         number.insert(0, hashes - number.size(), '0');
     return number + name.substr(hashes);
 }
+// What Live shows for the grid's spacing (manual §6.10), in 4/4 until the snapshot carries
+// the meters (collab/window.md, N6): "1/16", "1/8T", "1 Bar", "2 Bars".
+inline std::string gridLabel(double quarters, bool triplet) {
+    const double plain = triplet ? quarters * 3 / 2 : quarters;
+    std::string label;
+    if (plain >= 4) {
+        const auto bars = std::llround(plain / 4);
+        label = std::to_string(bars) + (bars == 1 ? " Bar" : " Bars");
+    } else
+        label = "1/" + std::to_string(std::llround(4 / plain));
+    return triplet ? label + "T" : label;
+}
 // View-only coordinates and selection. No committed project state is copied here.
 //
 // Every track the snapshot holds is a row, in the snapshot's order. Live draws its
@@ -61,6 +73,34 @@ struct ArrangementGeometry {
         }
         if (!changed)
             resizeTrack(under, heightFor(under) + delta);
+    }
+    // Live's editing grid (manual §6.10): the cursor snaps to its lines, which are
+    // zoom-adaptive or fixed; narrowing doubles their density, widening halves it, triplets
+    // take two thirds of the step. A view setting, kept per window.
+    struct Grid {
+        bool snap = true, fixed = false, triplet = false;
+        int narrow = 0;              // the adaptive grid's steps narrower (+) or wider (-)
+        double fixedQuarters = .25;  // the fixed grid's step: a sixteenth
+        bool operator==(const Grid &) const = default;
+    } grid;
+    static constexpr double kFinestGrid = 1. / 32, kWidestGrid = 32; // 1/128 note to 8 bars
+    static constexpr int kGridNarrowest = 3;
+    // The step between grid lines, in quarter notes. The adaptive grid at its default keeps
+    // lines at least 14 pixels apart and never finer than a quarter, as it is drawn.
+    double gridQuarters() const noexcept {
+        return grid.triplet ? plainGridQuarters() * 2 / 3 : plainGridQuarters();
+    }
+    // The same step before triplets.
+    double plainGridQuarters() const noexcept {
+        const double adaptive = std::max(1., std::pow(2., std::ceil(std::log2(14. / scale)))) *
+                                std::pow(2., -grid.narrow);
+        return std::clamp(grid.fixed ? grid.fixedQuarters : adaptive, kFinestGrid, kWidestGrid);
+    }
+    // The grid line at or before `tick`, or at or after it with `up`.
+    std::int64_t snap(std::int64_t tick, bool up) const noexcept {
+        const double step = gridQuarters() * textproj::kPPQ;
+        const double cells = static_cast<double>(tick) / step;
+        return std::llround((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * step);
     }
     // This window's presented copy of the session's selection (ADR-0021): read at the
     // top of each frame, written back through the root. Never a second source of truth.

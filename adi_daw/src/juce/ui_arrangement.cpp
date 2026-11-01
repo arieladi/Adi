@@ -9,11 +9,12 @@ ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
 }
 namespace {
 // Live's lanes: grey, every other sixteen grid steps a shade lighter, lighter again
-// for the selected track, with the grid a quarter darker than the lane under it.
+// for the selected track, with the grid (§6.10) a quarter darker than the lane under it.
 void paintLanes(juce::Graphics &g, const ArrangementGeometry &geo, int width, int top, int height,
                 bool selected) {
-    const double grid = std::max(1., std::pow(2., std::ceil(std::log2(14. / geo.scale))));
-    const double group = grid * 16;
+    // The shading follows the plain step, so triplets keep it on the bars.
+    const double grid = geo.gridQuarters();
+    const double group = geo.plainGridQuarters() * 16;
     for (double q = std::floor(geo.left / group) * group; q < geo.left + width / geo.scale; q += group) {
         const bool alt = static_cast<std::int64_t>(std::llround(q / group)) % 2 != 0;
         const auto lane = selected ? (alt ? look::laneSelectedAlt : look::laneSelected)
@@ -321,6 +322,8 @@ void ArrangementView::paint(juce::Graphics &g) {
     const juce::Rectangle<int> time(canvas.getX(), canvas.getBottom(), clipsW, kTimeRulerHeight);
     g.setColour(look::band);
     g.fillRect(time);
+    // The grid's spacing sits at the ruler's right end, as Live shows it (§6.10).
+    const juce::Rectangle<int> spacing(time.getRight() - 48, time.getY() + 2, 46, 14);
     if (const auto *tempo = reader().tempo()) {
         const double from = tempo->ticksToSeconds(geometry.tick(0));
         const double to = tempo->ticksToSeconds(geometry.tick(static_cast<double>(clipsW)));
@@ -337,10 +340,18 @@ void ArrangementView::paint(juce::Graphics &g) {
             g.setColour(look::textOnBand);
             g.fillRect(x, time.getY(), 1, 5);
             const int sec = static_cast<int>(t + 0.5);
-            g.drawText(juce::String(sec / 60) + ":" + juce::String(sec % 60).paddedLeft('0', 2),
-                       x + 3, time.getY() + 2, 50, 14, juce::Justification::centredLeft);
+            // A time that would run into the grid's spacing keeps its mark only.
+            if (x + 3 + 32 < spacing.getX())
+                g.drawText(juce::String(sec / 60) + ":" + juce::String(sec % 60).paddedLeft('0', 2),
+                           x + 3, time.getY() + 2, 50, 14, juce::Justification::centredLeft);
         }
     }
+    g.setColour(look::band);
+    g.fillRect(spacing);
+    g.setColour(look::textOnBand);
+    g.setFont(look::font(11.5f));
+    g.drawText(juce::String(gridLabel(geometry.gridQuarters(), geometry.grid.triplet)), spacing,
+               juce::Justification::centredRight);
 }
 void ArrangementView::frame(bool modelChanged) noexcept {
     const int x = static_cast<int>(std::clamp(geometry.x(root.timelineTick()), -1e7, 1e7));
@@ -377,6 +388,11 @@ void ArrangementView::changed() {
     state.pixelsPerQuarter = geometry.scale;
     state.laneHeight = geometry.height;
     state.laneHeights = geometry.heights;
+    state.gridSnap = geometry.grid.snap;
+    state.gridFixed = geometry.grid.fixed;
+    state.gridTriplet = geometry.grid.triplet;
+    state.gridNarrow = geometry.grid.narrow;
+    state.gridFixedQuarters = geometry.grid.fixedQuarters;
     root.persist();
     root.publishSelection();
     // The mixer's rows follow these lanes: re-place them on the next frame.
@@ -428,6 +444,31 @@ bool ArrangementView::command(int id) {
         geometry.selection.marked = true;
         break;
     }
+    case AppCommands::NarrowGrid:
+    case AppCommands::WidenGrid: {
+        // Narrowing doubles the lines' density, widening halves it (§6.10), within Live's range.
+        const bool narrower = id == AppCommands::NarrowGrid;
+        if (geometry.grid.fixed)
+            geometry.grid.fixedQuarters =
+                std::clamp(geometry.grid.fixedQuarters * (narrower ? .5 : 2.), ArrangementGeometry::kFinestGrid,
+                           ArrangementGeometry::kWidestGrid);
+        else
+            geometry.grid.narrow = std::clamp(geometry.grid.narrow + (narrower ? 1 : -1),
+                                              -ArrangementGeometry::kGridNarrowest, ArrangementGeometry::kGridNarrowest);
+        break;
+    }
+    case AppCommands::TripletGrid:
+        geometry.grid.triplet = !geometry.grid.triplet;
+        break;
+    case AppCommands::SnapToGrid:
+        geometry.grid.snap = !geometry.grid.snap;
+        break;
+    case AppCommands::FixedGrid:
+        // Fixed keeps the spacing on screen when it is switched on, as Live's.
+        if (!geometry.grid.fixed)
+            geometry.grid.fixedQuarters = geometry.plainGridQuarters();
+        geometry.grid.fixed = !geometry.grid.fixed;
+        break;
     case AppCommands::GrowTracks:
     case AppCommands::ShrinkTracks:
         // Alt/Option + and - (§42.16): the selected track, or, with a time selection, every
@@ -443,11 +484,13 @@ bool ArrangementView::command(int id) {
     return true;
 }
 void ArrangementView::locate() { root.locate(geometry.selection.insert); }
-void ArrangementView::select(int x, int y) {
+void ArrangementView::select(int x, int y, bool snapToGrid) {
     if (const auto *t = geometry.trackAt(reader(), y)) {
         geometry.selection.track = t->id;
-        const auto tick = geometry.tick(x);
-        const auto *c = geometry.hit(*t, tick);
+        const auto at = geometry.tick(x);
+        // The clip under the mouse is hit where it is; the insert marker snaps (§6.10).
+        const auto *c = geometry.hit(*t, at);
+        const auto tick = snapToGrid ? geometry.snap(at, false) : at;
         geometry.selection.clip = c ? c->id : 0;
         geometry.selection.insert = tick;
         geometry.selection.marked = true;
@@ -456,6 +499,15 @@ void ArrangementView::select(int x, int y) {
         locate();
         changed();
     }
+}
+bool ArrangementView::snaps(const juce::ModifierKeys &mods) const noexcept {
+    // Alt (Cmd on the Mac) bypasses snapping; with the grid off, it snaps while held.
+#if JUCE_MAC
+    const bool bypass = mods.isCommandDown();
+#else
+    const bool bypass = mods.isAltDown();
+#endif
+    return geometry.grid.snap != bypass;
 }
 void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
     const auto *t = reader().findTrack(track);
@@ -481,6 +533,13 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
         menu.addSeparator();
         menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
         menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+    }
+    if (!header) {
+        // The lanes' menu sets the grid as well (§6.10).
+        menu.addSeparator();
+        for (const int id : {AppCommands::NarrowGrid, AppCommands::WidenGrid, AppCommands::TripletGrid,
+                             AppCommands::SnapToGrid, AppCommands::FixedGrid})
+            menu.addCommandItem(&commands.manager, id);
     }
     menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
         juce::Rectangle<int>(where.x, where.y, 1, 1)));
@@ -725,10 +784,10 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     last = e.position;
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     if (e.mods.isPopupMenu()) {
-        view.select(e.x, e.y);
+        view.select(e.x, e.y, view.snaps(e.mods));
         view.contextMenu(e.getScreenPosition(), false);
     } else if (!panning)
-        view.select(e.x, e.y);
+        view.select(e.x, e.y, view.snaps(e.mods));
 }
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
@@ -738,8 +797,12 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         view.geometry.scrollY =
             std::max(0, view.geometry.scrollY + static_cast<int>(last.y - e.position.y));
         last = e.position;
-    } else
-        view.geometry.selection.end = view.geometry.tick(e.x);
+    } else {
+        // A time selection covers whole grid cells while snapping (§6.10).
+        const auto at = view.geometry.tick(e.x);
+        view.geometry.selection.end =
+            view.snaps(e.mods) ? view.geometry.snap(at, at >= view.geometry.selection.start) : at;
+    }
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &) { view.changed(); }

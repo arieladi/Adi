@@ -69,7 +69,12 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FullScreen,
         ToggleOverview,
         ToggleInOut,
-        LastId = ToggleInOut
+        NarrowGrid,
+        WidenGrid,
+        TripletGrid,
+        SnapToGrid,
+        FixedGrid,
+        LastId = FixedGrid
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

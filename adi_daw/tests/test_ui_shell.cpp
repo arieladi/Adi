@@ -636,6 +636,46 @@ int main(int argc, char **argv) {
                   viewRoot.mixer.getWidth() == controlsWith - MixerPanel::kInOutWidth &&
                   !persistence.load("view-toggles").inOut,
               "Ctrl/Cmd+Alt+I hides the track controls' In/Out: the panel narrows by its column");
+        // Live's editing grid (§6.10, §42.13): the commands on Ctrl/Cmd+1 to 5, kept with the
+        // window; the step and its label; snapping.
+        {
+            auto &lanes = lanesView.geometry;
+            const auto ppq = textproj::kPPQ;
+            lanes.scale = 48;
+            check(lanes.grid == ArrangementGeometry::Grid{} && lanes.gridQuarters() == 1 &&
+                      gridLabel(lanes.gridQuarters(), false) == "1/4" && lanes.snap(ppq * 3 / 2, false) == ppq &&
+                      lanes.snap(ppq * 3 / 2, true) == 2 * ppq && lanesView.snaps(juce::ModifierKeys()),
+                  "the grid by default: zoom-adaptive, a quarter at this zoom, snapping");
+            check(viewRoot.keyPressed(juce::KeyPress('1', cmd, 0)) && lanes.gridQuarters() == .5 &&
+                      persistence.load("view-toggles").gridNarrow == 1,
+                  "Ctrl/Cmd+1 narrows it, kept with the window");
+            check(viewRoot.keyPressed(juce::KeyPress('3', cmd, 0)) && lanes.grid.triplet &&
+                      std::abs(lanes.gridQuarters() - 1. / 3) < 1e-12 &&
+                      gridLabel(lanes.gridQuarters(), true) == "1/8T",
+                  "Ctrl/Cmd+3 makes it triplets: 1/8T");
+            check(viewRoot.keyPressed(juce::KeyPress('5', cmd, 0)) && lanes.grid.fixed &&
+                      lanes.grid.fixedQuarters == .5,
+                  "Ctrl/Cmd+5 fixes it at the spacing on screen");
+            lanes.scale = 4;
+            check(std::abs(lanes.gridQuarters() - 1. / 3) < 1e-12, "a fixed grid keeps its step at any zoom");
+            check(viewRoot.keyPressed(juce::KeyPress('2', cmd, 0)) && lanes.grid.fixedQuarters == 1,
+                  "Ctrl/Cmd+2 widens it");
+            check(viewRoot.keyPressed(juce::KeyPress('4', cmd, 0)) && !lanes.grid.snap &&
+                      !lanesView.snaps(juce::ModifierKeys()) &&
+                      persistence.load("view-toggles").gridSnap == false,
+                  "Ctrl/Cmd+4 switches snapping off");
+#if JUCE_MAC
+            const juce::ModifierKeys bypass(juce::ModifierKeys::commandModifier);
+#else
+            const juce::ModifierKeys bypass(juce::ModifierKeys::altModifier);
+#endif
+            check(lanesView.snaps(bypass), "with snapping off, Alt (Cmd on the Mac) snaps while held");
+            check(gridLabel(4, false) == "1 Bar" && gridLabel(8, false) == "2 Bars" && gridLabel(.25, false) == "1/16",
+                  "the spacing reads as Live's: bars, then fractions");
+            lanes.grid = {};
+            lanes.scale = 48;
+            lanesView.changed();
+        }
         check(viewRoot.command(AppCommands::ToggleOverview) && viewRoot.command(AppCommands::ToggleInOut) &&
                   lanesView.overview.isVisible() && firstRow->showsInOut() &&
                   viewRoot.mixer.getWidth() == controlsWith &&
@@ -672,7 +712,9 @@ int main(int argc, char **argv) {
 #if JUCE_MAC
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
-        check(items("Options") == std::vector<int>{C::Follow}, "Follow is the Options menu's (§6.2)");
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+                                                   C::SnapToGrid, C::FixedGrid},
+              "the Options menu: Follow (§6.2), then the grid (§6.10)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
                                                 C::TakeSnapshot, C::SaveAs},
               "the File menu; Quit is the application menu's on the Mac");
@@ -682,8 +724,9 @@ int main(int argc, char **argv) {
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
                                                 C::TakeSnapshot, C::SaveAs, 0, C::Quit},
               "the File menu ends with Quit and no longer holds Settings");
-        check(items("Options") == std::vector<int>{C::Follow, 0, C::Settings},
-              "the Options menu: Follow (§6.2), then Settings off the Mac (§2.3)");
+        check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::Settings},
+              "the Options menu: Follow (§6.2), the grid (§6.10), then Settings off the Mac (§2.3)");
 #endif
         check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
                                                 C::RenameTrack},
@@ -1022,8 +1065,32 @@ int main(int argc, char **argv) {
             mouse(origin, juce::ModifierKeys::leftButtonModifier);
             mouse(origin.translated(48, 0), juce::ModifierKeys::leftButtonModifier);
             mouse(origin.translated(48, 0), 0);
+            // Live's grid (§6.10): the selection covers whole grid cells while snapping.
+            check(arrangement.geometry.grid.snap &&
+                      arrangement.geometry.selection.end == arrangement.geometry.snap(arrangement.geometry.tick(58), true) &&
+                      arrangement.geometry.selection.end % static_cast<std::int64_t>(
+                                                               arrangement.geometry.gridQuarters() * textproj::kPPQ) == 0,
+                  "peer drag capture updates time selection, to the grid");
+#if JUCE_MAC
+            const int bypassKey = juce::ModifierKeys::commandModifier;
+#else
+            const int bypassKey = juce::ModifierKeys::altModifier;
+#endif
+            // A mouse event takes its keys from the keyboard's state, not from the event.
+            when += 1000;
+            juce::ModifierKeys::currentModifiers = juce::ModifierKeys(bypassKey);
+            mouse(origin, bypassKey);
+            mouse(origin, juce::ModifierKeys::leftButtonModifier | bypassKey);
+            mouse(origin.translated(48, 0), juce::ModifierKeys::leftButtonModifier | bypassKey);
+            mouse(origin.translated(48, 0), bypassKey);
+            juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
             check(arrangement.geometry.selection.end == arrangement.geometry.tick(58),
-                  "peer drag capture updates time selection");
+                  "Alt (Cmd on the Mac) bypasses the grid while dragging");
+            when += 1000;
+            mouse(origin, 0);
+            mouse(origin, juce::ModifierKeys::leftButtonModifier);
+            mouse(origin.translated(48, 0), juce::ModifierKeys::leftButtonModifier);
+            mouse(origin.translated(48, 0), 0);
             // The Overview (Live 12 manual 6.1, ADR-0129's rows).
             auto &overview = arrangement.overview;
             check(overview.getParentComponent() == &integrated &&

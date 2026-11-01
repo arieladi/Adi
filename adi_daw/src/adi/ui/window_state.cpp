@@ -71,6 +71,12 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.follow = j.value("follow", false);
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
+        state.gridSnap = j.value("gridSnap", true);
+        state.gridFixed = j.value("gridFixed", false);
+        state.gridTriplet = j.value("gridTriplet", false);
+        state.gridNarrow = std::clamp(j.value("gridNarrow", 0), -3, 3);
+        const double fixedStep = j.value("gridFixedQuarters", .25);
+        state.gridFixedQuarters = std::isfinite(fixedStep) ? std::clamp(fixedStep, 1. / 32, 32.) : .25;
         if (j.contains("folded"))
             for (const auto &id : j.at("folded"))
                 state.foldedDevices.insert(id.get<std::int64_t>());
@@ -123,6 +129,11 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"follow", state.follow},
                             {"overview", state.overview},
                             {"inOut", state.inOut},
+                            {"gridSnap", state.gridSnap},
+                            {"gridFixed", state.gridFixed},
+                            {"gridTriplet", state.gridTriplet},
+                            {"gridNarrow", state.gridNarrow},
+                            {"gridFixedQuarters", state.gridFixedQuarters},
                             {"panels", nlohmann::json::array()}};
         for (const auto &p : state.panels.slots())
             j["panels"].push_back({{"id", static_cast<int>(p.panel)},

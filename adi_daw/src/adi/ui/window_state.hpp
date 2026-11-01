@@ -46,6 +46,10 @@ struct WindowState {
     bool follow = false;
     // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out.
     bool overview = true, inOut = true;
+    // The arrangement's editing grid (§6.10), as ArrangementGeometry::Grid holds it.
+    bool gridSnap = true, gridFixed = false, gridTriplet = false;
+    int gridNarrow = 0;
+    double gridFixedQuarters = .25;
     // The strip expands upward only: a height below the floor becomes the floor.
     void setDeviceHeight(int h) noexcept { deviceHeight = h < deviceFloor ? deviceFloor : h; }
 };
