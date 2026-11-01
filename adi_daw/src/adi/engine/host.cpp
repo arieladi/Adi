@@ -87,16 +87,14 @@ void GraphHost::fadeIn(const AudioIo& io) noexcept {
     fadeRemaining_ -= n;
 }
 
-std::int32_t GraphHost::handover(const PublishedGraph& from,
-                                const PublishedGraph& to) noexcept {
-    const auto& a = from.graph().planEdges();
-    const auto& b = to.graph().planEdges();
-    Graph& ga = from.graph().graph();
-    Graph& gb = to.graph().graph();
+namespace {
 
-    // One walk over two sorted lists: no allocation, no map, and linear in the
-    // number of edges. Keyed by (track, track, bus), because node ids shift
-    // when a track is added and every junction is a new object per rebuild.
+// One walk over two sorted lists: no allocation, no map, and linear in the
+// number of edges. Keyed by what an edge joins, never by node id, because ids
+// shift when a track is added and every junction is a new object per rebuild.
+template <typename Record>
+std::int32_t carryHistory(const std::vector<Record>& a, const std::vector<Record>& b,
+                          Graph& ga, Graph& gb) noexcept {
     std::int32_t carried = 0;
     std::size_t i = 0, j = 0;
     while (i < a.size() && j < b.size()) {
@@ -105,15 +103,29 @@ std::int32_t GraphHost::handover(const PublishedGraph& from,
         const DelayLine* oldLine = ga.edgeLine(a[i].from, a[i].to, a[i].bus);
         DelayLine* newLine = gb.edgeLine(b[j].from, b[j].to, b[j].bus);
         // Only a line that DELAYS has history anyone will hear. A zero tap
-        // reads the sample just written, so there is nothing to carry.
-        if (oldLine != nullptr && newLine != nullptr && newLine->delay() > 0) {
-            newLine->adoptHistory(*oldLine);
+        // reads the sample just written, so there is nothing to carry. And
+        // only a line that took some is counted: one whose old ring held
+        // nothing, or had none, carried nothing.
+        if (oldLine != nullptr && newLine != nullptr && newLine->delay() > 0 &&
+            newLine->adoptHistory(*oldLine))
             ++carried;
-        }
         ++i;
         ++j;
     }
     return carried;
+}
+
+}  // namespace
+
+std::int32_t GraphHost::handover(const PublishedGraph& from,
+                                const PublishedGraph& to) noexcept {
+    Graph& ga = from.graph().graph();
+    Graph& gb = to.graph().graph();
+    // The edges between tracks, (track, track, bus); then the edges inside
+    // them, which delay too: a track delay on a strip that is not the last
+    // node of its chain, a source compensated against a later input.
+    return carryHistory(from.graph().planEdges(), to.graph().planEdges(), ga, gb) +
+           carryHistory(from.graph().chainEdges(), to.graph().chainEdges(), ga, gb);
 }
 
 void GraphHost::process(const AudioIo& io) noexcept {
