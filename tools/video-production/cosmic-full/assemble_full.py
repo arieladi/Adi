@@ -1,11 +1,12 @@
 """Assemble the full Cosmic Rain video (or a preview of the finished prefix) with the original music.
 
-usage: assemble_full.py <root> [--preview]
+usage: assemble_full.py <root> [--preview] [--plan plan.json] [--name "DRAFT 2"]
 Frames 0-191: the original opening (as in the pilot). Then every plan slot in order, exactly like the
 approved 16s test assembler: every `step`-th generated frame, 8 px crop top/bottom (never stretched),
 per-frame symmetry, optional push, portal_in circle reveal or dissolve_in crossfade, hard cuts on the slot's absolute frame.
 Reused test slots read their takes from take_root. --preview stops at the first slot not rendered yet
 and writes a shorter "PREVIEW" file; the full run requires every slot. Music is never retimed.
+--name puts a label in the output, silent and receipt file names so earlier drafts are never overwritten.
 """
 import json, subprocess, sys, time
 from pathlib import Path
@@ -16,13 +17,22 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).parent))
 from symmetry import OPS
 
+
+def opt(flag, default):
+    return sys.argv[sys.argv.index(flag) + 1] if flag in sys.argv else default
+
+
 ROOT = Path(sys.argv[1])
 PREVIEW = "--preview" in sys.argv
-plan = json.loads((ROOT / "plan.json").read_text(encoding="utf-8"))
+plan = json.loads((ROOT / opt("--plan", "plan.json")).read_text(encoding="utf-8"))
+LABEL = opt("--name", "")
 FF = imageio_ffmpeg.get_ffmpeg_exe()
 FPS = plan["fps"]
-name = "Cosmic Rain - full track keyframe edit" + (" - PREVIEW" if PREVIEW else "") + " - with music.mp4"
-OUT, SILENT = ROOT / name, ROOT / ("preview-silent.mp4" if PREVIEW else "full-silent.mp4")
+name = ("Cosmic Rain - " + (LABEL + " - " if LABEL else "") + "full track keyframe edit"
+        + (" - PREVIEW" if PREVIEW else "") + " - with music.mp4")
+stem = ("preview" if PREVIEW else "full") + ("-" + LABEL.lower().replace(" ", "") if LABEL else "")
+OUT, SILENT = ROOT / name, ROOT / f"{stem}-silent.mp4"
+assert not (LABEL and not PREVIEW and OUT.exists()), f"{OUT.name} exists; never overwrite a delivered draft"
 
 
 def gen_of(s):
@@ -100,5 +110,5 @@ subprocess.run([FF, "-v", "error", "-xerror", "-i", str(OUT), "-f", "null", "-"]
 receipt = {"output": str(OUT), "preview": PREVIEW, "frames": total, "fps": FPS, "size": [1280, 720], "duration": dur,
            "slots_used": len(slots), "slots_total": len(plan["slots"]), "music_retimed": False, "full_decode": True,
            "time": time.time()}
-(ROOT / ("preview-receipt.json" if PREVIEW else "full-receipt.json")).write_text(json.dumps(receipt, indent=2))
+(ROOT / f"{stem}-receipt.json").write_text(json.dumps(receipt, indent=2))
 print(json.dumps(receipt, indent=2))
