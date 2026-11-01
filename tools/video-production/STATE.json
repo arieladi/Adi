@@ -109,7 +109,7 @@
       "render_order": "Frozen per render-order quartile 7, 18, 20, 25 of 61; same render seconds (675 s median) frozen vs good. ComfyUI 8192 not restarted since 2026-10-25.",
       "raw_calibration": "motion_check.py on raw PNGs: frozen double-speed clips mean 0.35-0.49, good 4-6; gate MIN_MEAN step2 1.5, step1 0.6.",
       "test": "freeze_test.py reruns frozen workflows unchanged (outputs cosmicfull-test/<label>/). Step 1 before-restart K136a K131a K127a, then restart ComfyUI and rerun.",
-      "result_1": "K136a rerun unchanged in the long-running ComfyUI (before restart): mean 0.489, static 10%, identical to its Draft 1 value 0.489 -> the freeze is deterministic for that seed+still+prompt. K131a and K127a were still running when the session handed over (check freeze-test.json; rerun only missing ones).",
+      "result_1": "before-restart COMPLETE (finished after the orc-vst takeover): K136a 0.489, K131a 0.409, K127a 0.413, all frozen. K136a and K131a match their Draft 1 raw values exactly: the freeze is deterministic for seed+still+prompt in the same long-running ComfyUI.",
       "next": "Finish before-restart (K131a, K127a), restart ComfyUI, rerun the 3 as after-restart. If identical again, the runtime is not the cause: change seed and/or start the slot from a video-like keyframe, gate with motion_check, re-render only frozen slots."
     }
   },
