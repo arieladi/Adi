@@ -1040,6 +1040,65 @@ int main(int argc, char **argv) {
                   panels[0]->getWidth() == DevicePanelView::kFoldedWidth,
               "a folded device is a narrow bar, remembered outside the history");
         integrated.devices.fold(11);
+        // The title bar's menu in Live's order, and Rename typed in the title bar (§23.2.1).
+        {
+            auto &first = *integrated.devices.panels[0];
+            juce::StringArray items;
+            std::function<void()> renameAction;
+            const auto menu = first.commands();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (!it.getItem().isSeparator) {
+                    items.add(it.getItem().text);
+                    if (it.getItem().text == "Rename")
+                        renameAction = it.getItem().action;
+                }
+            check(items == juce::StringArray{"Delete", "Rename", "Fold", "Configure"},
+                  "a device's menu: Delete, Rename, then the device's own, in Live's order");
+            std::string renameOp;
+            Payload renamed;
+            integrated.devices.submit = [&](const std::string &op, Payload p) {
+                renameOp = op;
+                renamed = std::move(p);
+                return true;
+            };
+            if (renameAction)
+                renameAction();
+            check(first.rename.isVisible() && first.rename.getText() == "Test device" &&
+                      first.rename.getBounds() == first.title.getBounds(),
+                  "Rename edits the name in the title bar");
+            first.rename.setText("Kick", false);
+            juce::Component &editor = first.rename;
+            check(editor.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) &&
+                      renameOp == "device.rename" && renamed.value("id", 0) == 11 &&
+                      renamed.value("name", std::string{}) == "Kick" && !first.rename.isVisible(),
+                  "Enter renames the device, one op");
+            renameOp.clear();
+            first.beginRename();
+            first.rename.setText("Snare", false);
+            const bool escaped = editor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+            first.beginRename();
+            first.rename.setText("  ", false);
+            const bool emptied = editor.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+            check(escaped && emptied && renameOp.empty() && !first.rename.isVisible(),
+                  "Esc keeps the name, and so does an empty one");
+            integrated.devices.fold(11);
+            check(!first.beginRename() && !first.rename.isVisible(), "a folded device has no title to rename");
+            integrated.devices.fold(11);
+            UiPeerRoot deviceHost;
+            deviceHost.setSize(integrated.getWidth(), integrated.getHeight());
+            deviceHost.addAndMakeVisible(integrated);
+            deviceHost.setVisible(true);
+            deviceHost.addToDesktop(0);
+            first.grabKeyboardFocus();
+            const bool focused = first.hasKeyboardFocus(true);
+            check(focused && integrated.command(AppCommands::RenameTrack) && first.rename.isVisible() &&
+                      first.rename.hasKeyboardFocus(false) && !integrated.arrangement.headers.editor.isVisible(),
+                  "the Edit menu's Rename renames the device with the focus, not the track");
+            editor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+            deviceHost.removeChildComponent(&integrated);
+            deviceHost.removeFromDesktop();
+            integrated.devices.submit = nullptr;
+        }
         integrated.resizeDevices(1);
         check(integrated.state().deviceHeight == DesktopDefaults{}.deviceFloor,
               "the strip's floor comes from the desktop defaults");

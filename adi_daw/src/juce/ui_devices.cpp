@@ -117,6 +117,13 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
         strip.action("device.setEnabled", {{"id", id}, {"enabled", enabled.getToggleState()}});
     };
     configureButton.onClick = [this] { configure(); };
+    addChildComponent(rename);
+    rename.setTitle("Device name");
+    rename.setFont(look::font(12.f));
+    rename.onCommit = [this] { endRename(true); };
+    rename.onCancel = [this] { endRename(false); };
+    rename.onTab = [this](bool) { endRename(true); };
+    rename.onFocusLost = [this] { endRename(true); };
     present(d);
 }
 void DevicePanelView::present(const DevicePanelData &d) {
@@ -229,22 +236,61 @@ void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
     if (e.eventComponent == &title || e.y < kTitleHeight)
         strip.fold(id);
 }
-void DevicePanelView::contextMenu(juce::Point<int> where) {
+juce::PopupMenu DevicePanelView::commands() {
+    // Live's order (manual 23.2.1): Cut, Copy, Duplicate and Delete, then Rename, then the
+    // device's own. Cut, Copy and Duplicate wait for a device's copy (window log, N18).
     juce::PopupMenu m;
-    m.addItem(strip.folded(id) ? "Unfold" : "Fold", [safe = SafePointer<DevicePanelView>(this)] {
-        if (safe)
-            safe->strip.fold(safe->id);
-    });
-    m.addItem("Configure", [safe = SafePointer<DevicePanelView>(this)] {
-        if (safe)
-            safe->configure();
-    });
-    m.addSeparator();
-    m.addItem("Delete", [safe = SafePointer<DevicePanelView>(this)] {
+    const auto safe = SafePointer<DevicePanelView>(this);
+    m.addItem("Delete", [safe] {
         if (safe)
             safe->strip.action("device.remove", {{"id", safe->id}});
     });
-    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+    m.addSeparator();
+    juce::PopupMenu::Item renameItem("Rename");
+    renameItem.shortcutKeyDescription =
+        juce::KeyPress('r', juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
+    renameItem.isEnabled = !strip.folded(id);
+    renameItem.action = [safe] {
+        if (safe)
+            safe->beginRename();
+    };
+    m.addItem(std::move(renameItem));
+    m.addSeparator();
+    m.addItem(strip.folded(id) ? "Unfold" : "Fold", [safe] {
+        if (safe)
+            safe->strip.fold(safe->id);
+    });
+    m.addItem("Configure", [safe] {
+        if (safe)
+            safe->configure();
+    });
+    return m;
+}
+void DevicePanelView::contextMenu(juce::Point<int> where) {
+    commands().showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea({where.x, where.y, 1, 1}));
+}
+bool DevicePanelView::beginRename() {
+    // A folded device has no title bar to type in.
+    if (data == nullptr || strip.folded(id))
+        return false;
+    rename.setBounds(title.getBounds());
+    rename.setText(juce::String::fromUTF8(data->name.c_str()), false);
+    rename.selectAll();
+    rename.setVisible(true);
+    if (rename.isShowing())
+        rename.grabKeyboardFocus();
+    return true;
+}
+void DevicePanelView::endRename(bool commit) {
+    if (!rename.isVisible())
+        return;
+    rename.setVisible(false);
+    // An empty name keeps the one the device has.
+    const auto name = rename.getText().trim().toStdString();
+    if (commit && data != nullptr && !name.empty() && name != data->name)
+        strip.action("device.rename", {{"id", id}, {"name", name}});
+    if (isShowing())
+        grabKeyboardFocus();
 }
 void DevicePanelView::configure() {
     if (!data)
