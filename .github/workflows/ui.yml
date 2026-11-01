@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Step 7 UI
+on:
+  pull_request:
+    paths: ['adi_daw/**', '.github/workflows/ui.yml']
+  push:
+    branches: [main]
+    paths: ['adi_daw/**', '.github/workflows/ui.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ui-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  shell:
+    name: GUI shell / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Linux build headers (no display server)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev libxi-dev libglu1-mesa-dev mesa-common-dev libegl-dev
+      - name: Fetch pinned sources
+        run: bash adi_daw/tools/fetch_external.sh --with-juce
+      - name: Select a short build path
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            echo "ADI_UI_BUILD=C:/b/adi-ui-${GITHUB_RUN_ID}" >> "$GITHUB_ENV"
+          else
+            echo "ADI_UI_BUILD=$RUNNER_TEMP/adi-ui" >> "$GITHUB_ENV"
+          fi
+      - name: Build root window and both test tiers
+        run: |
+          cmake -S adi_daw -B "$ADI_UI_BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Debug -DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF -DADI_WERROR=ON
+          cmake --build "$ADI_UI_BUILD" --target adi_ui_shell_tests adi_ui_window_state_tests --parallel 2
+      - name: Peerless software renders and synthesised keyboard events
+        run: |
+          # An unset DISPLAY deliberately proves the Linux offscreen path.
+          env -u DISPLAY ctest --test-dir "$ADI_UI_BUILD" -C Debug -R '^adi_ui_(shell|window_state)_tests$' --output-on-failure
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-renders-${{ matrix.os }}
+          path: ${{ env.ADI_UI_BUILD }}/*-actual.png
+          if-no-files-found: ignore
