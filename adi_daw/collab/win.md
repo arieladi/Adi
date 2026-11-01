@@ -6,7 +6,7 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
-## 2026-11-01 — Fifty-eight lane PRs merged; ADR-0209 (the MIX View, proposed) and ADR-0210 (nobody waits); the prompts of 1 November
+## 2026-11-01 — Fifty-eight lane PRs merged; ADR-0209 (the Mix View, proposed in the morning, ruled in the evening) and ADR-0210 (nobody waits); the prompts of 1 November
 
 **The director:** the window and engine lanes had stopped, the window waiting on the engine and both
 waiting on him; "merge whatever you need", two new standing prompts, "a better plan"; and a MIX View
@@ -41,6 +41,14 @@ points, four of them his to rule: Ctrl+R is Live's Rename; the CTZ hierarchy as 
 default Set; P1 cut to the shell with STACK and the ★ Reference; the analyser tabs from the existing
 analyser, Spacer and Fuser as the only new DSP). FEATURES rows carry "proposed"; LANES lists the MIX
 View after his ruling; UI-ARCHITECTURE §12 is the shape, marked proposed.
+
+**Ruled the same evening** ("agree on all 4, keep Mix View, make it decided"): §10 of the entry, d9 to
+d13. While recording it win found its own Q1 recommendation wrong: Ctrl+Shift+R is Live's Export
+Audio/Video (manual ch. 41), Ctrl+Alt+R its Hide/Show Returns; the ★ Reference is on **Shift+R**, free
+in Live 12's list, as win's placement to strike. FEATURES, LANES, UI-ARCHITECTURE §12 and both
+prompts corrected in place; the Master Reference v1.3 carries the Mix View in 3.9 with the reference
+pictures he asked for (SPAN, Bluprint, s(M)exoscope, VISU, Trackspacer, RMSC, Pro-Q's instance list,
+FUSER), sources in its Appendix E.
 
 **Also:** `docs/LANES.md` rewritten for ADR-0210; the two standing prompts of 1 November
 (`collab/prompts/2026-11-01-engine-lane.md`, `2026-11-01-window-lane.md`); Master Reference v1.3 in
