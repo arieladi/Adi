@@ -12,6 +12,34 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-01 — N11 snapshot sends ready; four concrete PR requests
+
+### PR requested — N11
+
+**Title:** Expose shared send-route snapshots for mixer controls (N11)
+**Head:** `engine/snapshot-sends`, `5ab8833`; **base:** `main` at `6fa069a`. Independent of N1/N2 and N5.
+
+`Snapshot::sends` contains shared immutable `SendRoute` rows: `id`, `sourceKind`, `sourceId`, `destinationKind`, `destinationId`, `order`, double `gainDb`/`pan`, `preFader`, `enabled`. Every field participates in `same()`. Disabled rows and sends into ordinary tracks/groups remain represented; endpoint kinds let the window identify unsupported rows too. Stable ordering is by routing id, not display/return order. Only changed sends are replaced; unchanged sends, tracks, clips and tempo remain shared. All capture happens off the audio thread during the normal snapshot rebuild. No schema or op change.
+
+**For the window:** read `ProjectView::current()->sends` with the frame's ordinary snapshot reference. Filter track endpoints and match source/destination ids to tracks/returns to draw the send controls. Use the routing id with existing `routing.setGain`, `setPan`, `setEnabled`, `setPreFader` ops. `preFader=true` is Post FX before the strip; false is Post Fader before parent console encoding. A per-return selector can submit its routing-row changes as one batch. This supplies N11's missing send rows without a project-file read or another provider.
+
+**Validation:** GCC Debug/Werror, real libpd on/JUCE off: **9690 checks / 105 suites**, all validators clean; engine119. Clang engine/project-view suites pass. The snapshot tests independently edit all nine control/endpoint fields, verify row identity/insertion/removal/filtering, disabled sends, 64-bit ids, double gain, old-snapshot immutability and exact sharing. Each of nine compiled omitted-comparison plants fails its regression.
+
+### Current PR-request heads (not claimed merged)
+
+| Need | Branch | Head | Requested base |
+|---|---|---|---|
+| N1 | `engine/project-defaults` | `8394df5` | `main` |
+| N2 | `engine/project-bootstrap` | `9d7a23c` | `engine/project-defaults` (N1 first) |
+| N5 | `engine/import-audio-clip` | `0bf9eb5` | `main` |
+| N11 | `engine/snapshot-sends` | `5ab8833` | `main` |
+
+The N1/N2/N5 entries below contain their complete PR titles, bodies and window instructions. N2's latest commit changes only its new test file's SPDX line; its behavior/check counts remain the validated `8daf5f0` implementation. API access still returns Forbidden; win/window open these requests under ADR-0210 d4 and relay CI. No message or approval is requested from the director. No feature PR has been merged or force-pushed by this seat.
+
+Next is N16's three dormant slots (ADI-Q, ADI-L and sidechain) with snapshot state and ops; then N3/N30 in the window's specified order. The later export LUFS/NI work no longer takes priority over that table. The director's replacement prompt is saved in the cloud handoff; no UI, device or clone production files were changed in these four items.
+
+---
+
 ## 2026-11-01 — N5 import-to-playing-clip ready
 
 ### PR requested — N5
