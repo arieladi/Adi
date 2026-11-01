@@ -526,9 +526,11 @@ in the checklist, or (b) an ADR rejects the Live behaviour — only ADR-0072
 
 Named so they are visible rather than silently resolved:
 
-1. **The device strip's floor is 169 logical pixels, UNVERIFIED.** It is the
-   director's figure for Live 12's default Device View; the measurement is with
-   him and his reply of 2026-09-29 confirms it stays unverified. **The plan
+1. **The device strip's floor: 169 logical pixels, measured on Live 11 as 196.**
+   169 is the director's figure for Live 12's default Device View; his reply of
+   2026-09-29 left it unverified. On 2026-10-27 the window lane measured Live
+   11.2.7: the whole panel is 196 with its edges, its body about 170. The floor
+   is 196 (`collab/window/look-live11.md`), still to be read on Live 12. **The plan
    carries it as unverified and must not harden it into a constant** — and
    ADR-0200 d5 now requires the same thing for a second reason (§8). It is also
    a deliberate departure from Live, whose Device View is fixed height

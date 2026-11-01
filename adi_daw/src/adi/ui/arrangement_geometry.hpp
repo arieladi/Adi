@@ -30,7 +30,7 @@ inline std::string displayName(const std::string &name, std::size_t position) {
 // so the rows follow the snapshot until it does (collab/window.md, N6).
 struct ArrangementGeometry {
     double left = 0, scale = 48; // quarter notes at the left edge; pixels per quarter
-    int height = 64, scrollY = 0;
+    int height = 88, scrollY = 0;
     std::map<std::int64_t, int> heights;
     int heightFor(std::int64_t id) const noexcept {
         const auto i = heights.find(id);

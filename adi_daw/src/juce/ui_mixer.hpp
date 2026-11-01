@@ -10,9 +10,16 @@
 namespace adi::ui {
 class AdiRootComponent;
 class MixerPanel;
+// Live's Arm switch: a box with its dot.
+class ArmButton final : public juce::TextButton {
+  public:
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // One track's mixer controls in the track's own row, as Live's Arrangement Track
-// Controls (manual 18.1): the meter, volume, pan, the Track Activator and Solo,
-// and ADI's channel slots for ADI-Q and ADI-L, present but off (ADR-0204 d1).
+// Controls (manual 18.1), laid out as Live 11 draws them (measured 2026-10-27): the
+// In/Out column, then the Track Activator, Solo and Arm; volume and pan; ADI's
+// channel slots for ADI-Q and ADI-L (ADR-0204 d1) on the row where Live shows the
+// sends; the meter.
 class MixerStrip final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit MixerStrip(MixerPanel &);
@@ -28,14 +35,18 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     float rms() const noexcept { return rms_; }
     juce::Slider volume, pan;
     juce::TextButton active, solo{"S"}, eq{"Q"}, limiter{"L"};
+    ArmButton arm;
+    // Whether the row shows its In/Out column: when the panel is wide enough.
+    bool showsInOut() const noexcept;
 
   private:
+    void paintInOut(juce::Graphics &, int x) const;
     void panMenu();
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
     MixerPanel &panel_;
     std::int64_t track_ = 0;
     std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
-    bool dragging_ = false;
+    bool dragging_ = false, selected_ = false;
     float peak_ = 0, rms_ = 0;
     std::shared_ptr<const engine::ScopeTap> tap_;
     std::array<float, 1024> left_{}, right_{};
@@ -49,6 +60,10 @@ class MixerPanel final : public juce::Component {
     // A vertical strip's width, and the height from which it shows tick marks and a
     // numeric volume field (Live: drag the mixer's top edge up for them).
     static constexpr int kStripWidth = 72, kTallHeight = 260;
+    // The track controls' columns, Live 11's at 100 %: In/Out with the dark rules
+    // either side, the mixer with its meter, the strip down the right-hand edge.
+    static constexpr int kInOutWidth = 78, kControlsWidth = 116, kRightStrip = 27;
+    static constexpr int kFullWidth = kInOutWidth + kControlsWidth + kRightStrip;
     void frame(bool changed) noexcept;
     void resized() override;
     void paint(juce::Graphics &) override;

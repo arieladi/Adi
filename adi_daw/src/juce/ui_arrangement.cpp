@@ -7,6 +7,28 @@ ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTooltip("The whole arrangement. Drag sideways to scroll, up or down to zoom; "
                "double-click to see all of it.");
 }
+namespace {
+// Live's lanes: grey, every other sixteen grid steps a shade lighter, lighter again
+// for the selected track, with the grid a quarter darker than the lane under it.
+void paintLanes(juce::Graphics &g, const ArrangementGeometry &geo, int width, int top, int height,
+                bool selected) {
+    const double grid = std::max(1., std::pow(2., std::ceil(std::log2(14. / geo.scale))));
+    const double group = grid * 16;
+    for (double q = std::floor(geo.left / group) * group; q < geo.left + width / geo.scale; q += group) {
+        const bool alt = static_cast<std::int64_t>(std::llround(q / group)) % 2 != 0;
+        const auto lane = selected ? (alt ? look::laneSelectedAlt : look::laneSelected)
+                                   : (alt ? look::laneAlt : look::lane);
+        const double x0 = (q - geo.left) * geo.scale, x1 = x0 + group * geo.scale;
+        g.setColour(lane);
+        g.fillRect(static_cast<float>(x0), static_cast<float>(top), static_cast<float>(x1 - x0),
+                   static_cast<float>(height));
+        g.setColour(lane.darker(0.33f));
+        for (double line = q; line < q + group && line < geo.left + width / geo.scale; line += grid)
+            if (line >= geo.left)
+                g.fillRect(static_cast<int>((line - geo.left) * geo.scale), top, 1, height);
+    }
+}
+} // namespace
 std::int64_t ArrangementOverview::span() const noexcept {
     const auto &g = view.geometry;
     const auto visibleEnd = g.tick(static_cast<double>(view.canvas.getWidth()));
@@ -22,23 +44,27 @@ juce::Rectangle<float> ArrangementOverview::outline() const noexcept {
             static_cast<float>(getHeight())};
 }
 void ArrangementOverview::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff1b2129));
+    // Live's Overview: a grey line per track on the dark band, its clips in the
+    // track's colour, and a black outline around what is on screen.
+    g.fillAll(look::band);
     const auto &tracks = view.reader().tracks();
     const double total = static_cast<double>(span()), w = getWidth();
-    const float row = std::max(1.f, static_cast<float>(getHeight() - 2) /
-                                        static_cast<float>(std::max<std::size_t>(1, tracks.size())));
-    g.setColour(juce::Colour(0xff488a9a));
-    float y = 1;
-    for (const auto &t : tracks) {
-        for (const auto &c : t->clips)
+    const float row = std::max(2.f, static_cast<float>(getHeight() - 4) /
+                                        static_cast<float>(std::max<std::size_t>(4, tracks.size())));
+    float y = 2;
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        const float line = std::max(1.f, row - 1);
+        g.setColour(look::panel);
+        g.fillRect(0.f, y, static_cast<float>(w), line);
+        g.setColour(view.colourFor(i));
+        for (const auto &c : tracks[i]->clips)
             g.fillRect(static_cast<float>(static_cast<double>(c->posTicks) / total * w), y,
-                       std::max(1.f, static_cast<float>(static_cast<double>(c->lengthTicks) /
-                                                        total * w)),
-                       std::max(1.f, row - 1));
+                       std::max(1.f, static_cast<float>(static_cast<double>(c->lengthTicks) / total * w)),
+                       line);
         y += row;
     }
-    g.setColour(juce::Colour(0xffe0e5ed));
-    g.drawRect(outline(), 1.f);
+    g.setColour(juce::Colours::black);
+    g.drawRect(outline(), 2.f);
 }
 void ArrangementOverview::mouseDown(const juce::MouseEvent &e) { last = e.position; }
 void ArrangementOverview::mouseDrag(const juce::MouseEvent &e) {
@@ -59,9 +85,9 @@ ScrubArea::ScrubArea(ArrangementView &v) : view(v) {
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
 }
 void ScrubArea::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff262e38));
-    g.setColour(juce::Colour(0xff3a4553));
-    g.fillRect(0, getHeight() - 1, getWidth(), 1);
+    // Live's locator band: the lanes' grey and grid, where the loop brace and the
+    // locators sit.
+    paintLanes(g, view.geometry, getWidth(), 0, getHeight(), false);
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
@@ -133,8 +159,12 @@ ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
     setWantsKeyboardFocus(true);
     setTitle("Arrangement");
     setDescription("Clips on a timeline. Arrow keys move between tracks and clips.");
-    setTooltip("Click to place the insert marker or select a clip; drag to select time. "
-               "Ctrl/Cmd+wheel zooms around the selection, Alt+wheel sizes tracks.");
+    // In the Info View's shape: what it is, then its keys in brackets, as Live's.
+    setTooltip("Shows every track's clips in time. Click to place the insert marker or "
+               "select a clip; drag to select time.\n\n"
+               "[Ctrl/Cmd + Scroll Wheel] Zoom In/Out\n"
+               "[Alt + Scroll Wheel] Adjust Track Height\n"
+               "[Arrow Keys] Move Between Tracks and Clips");
 }
 std::unique_ptr<juce::AccessibilityHandler> ArrangementCanvas::createAccessibilityHandler() {
     return std::make_unique<juce::AccessibilityHandler>(*this, juce::AccessibilityRole::list);
@@ -234,18 +264,84 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
 void ArrangementView::resized() {
     const int headerW = std::min(kHeaderWidth, getWidth() / 3);
-    const int clipsW = std::max(0, getWidth() - headerW);
-    const int body = std::max(0, getHeight() - kTopHeight);
-    overview.setBounds(0, 0, clipsW, kOverviewHeight);
-    ruler.setBounds(0, kOverviewHeight, clipsW, kRulerHeight);
-    scrub.setBounds(0, kOverviewHeight + kRulerHeight, clipsW, kScrubHeight);
-    canvas.setBounds(0, kTopHeight, clipsW, body);
-    headers.setBounds(clipsW, kTopHeight, headerW, body);
+    const int clipsW = std::max(0, getWidth() - headerW - kLeftMargin);
+    const int body = std::max(0, getHeight() - kTopHeight - kTimeRulerHeight);
+    ruler.setBounds(kLeftMargin, kOverviewHeight, clipsW, kRulerHeight);
+    scrub.setBounds(kLeftMargin, kOverviewHeight + kRulerHeight, clipsW, kScrubHeight);
+    canvas.setBounds(kLeftMargin, kTopHeight, clipsW, body);
+    headers.setBounds(kLeftMargin + clipsW, kTopHeight, headerW, body);
     frame(true);
+}
+juce::Colour ArrangementView::colourFor(std::size_t position) const {
+    return look::trackColour(position);
+}
+void ArrangementView::paint(juce::Graphics &g) {
+    // The arrangement's frame is Live's dark band; the rulers and the header column's
+    // top sit on it.
+    g.fillAll(look::band);
+    // Above the headers: Live's locator buttons ("Set", previous, next) and its two
+    // switches, Follow's lock and the automation's arrow.
+    const float hx = static_cast<float>(headers.getX());
+    const float top = kOverviewHeight + kRulerHeight - 2.f;
+    const juce::Rectangle<float> set(hx + 5, top, 28, 12);
+    g.setColour(look::button);
+    g.fillRoundedRectangle(set, 6.f);
+    g.setColour(look::outline);
+    g.drawRoundedRectangle(set.reduced(0.5f), 6.f, 1.f);
+    g.setColour(look::text);
+    g.setFont(look::font(11.f));
+    g.drawText("Set", set, juce::Justification::centred);
+    for (int i = 0; i < 2; ++i) {
+        const juce::Rectangle<float> c(hx + 4 + static_cast<float>(i) * 17, top + 15, 12, 12);
+        g.setColour(look::button);
+        g.fillEllipse(c);
+        g.setColour(look::outline);
+        g.drawEllipse(c.reduced(0.5f), 1.f);
+        // Live's arrows: back to the previous locator, on to the next.
+        const float dir = i == 0 ? -1.f : 1.f, cy = c.getCentreY(), cx = c.getCentreX();
+        g.setColour(i == 0 ? look::text : look::textDim);
+        g.drawLine(cx - 3.f * dir, cy, cx + 3.f * dir, cy, 1.5f);
+        g.drawLine(cx + 3.f * dir, cy, cx, cy - 3.f, 1.5f);
+        g.drawLine(cx + 3.f * dir, cy, cx, cy + 3.f, 1.5f);
+    }
+    look::box(g, {hx + 45, top + 15, 22, 12}, look::button);
+    g.setColour(look::text);
+    g.drawLine(hx + 51, top + 24, hx + 61, top + 18, 1.2f);
+    g.fillEllipse(hx + 49.5f, top + 22.5f, 3, 3);
+    g.fillEllipse(hx + 59.5f, top + 16.5f, 3, 3);
+    look::box(g, {hx + 72, top + 15, 22, 12}, juce::Colour(0xfff0773a));
+    g.fillRect(hx + 79.f, top + 20.5f, 8.f, 4.5f);
+    g.drawRoundedRectangle(hx + 80.5f, top + 17.5f, 5.f, 5.f, 2.f, 1.f);
+    // Under the lanes: the time ruler, in minutes and seconds (manual 6.1).
+    const int clipsW = canvas.getWidth();
+    const juce::Rectangle<int> time(canvas.getX(), canvas.getBottom(), clipsW, kTimeRulerHeight);
+    g.setColour(look::band);
+    g.fillRect(time);
+    if (const auto *tempo = reader().tempo()) {
+        const double from = tempo->ticksToSeconds(geometry.tick(0));
+        const double to = tempo->ticksToSeconds(geometry.tick(static_cast<double>(clipsW)));
+        const double span = std::max(1e-3, to - from);
+        double step = 1;
+        for (double s : {1., 5., 15., 30., 60., 300., 900.})
+            if (span / s <= 10) {
+                step = s;
+                break;
+            }
+        g.setFont(look::font(11.5f));
+        for (double t = std::ceil(from / step) * step; t <= to; t += step) {
+            const int x = canvas.getX() + static_cast<int>(geometry.x(tempo->secondsToTicks(t)));
+            g.setColour(look::textOnBand);
+            g.fillRect(x, time.getY(), 1, 5);
+            const int sec = static_cast<int>(t + 0.5);
+            g.drawText(juce::String(sec / 60) + ":" + juce::String(sec % 60).paddedLeft('0', 2),
+                       x + 3, time.getY() + 2, 50, 14, juce::Justification::centredLeft);
+        }
+    }
 }
 void ArrangementView::frame(bool modelChanged) noexcept {
     const int x = static_cast<int>(std::clamp(geometry.x(root.timelineTick()), -1e7, 1e7));
-    playhead.setVisible(x >= 0 && x < canvas.getWidth());
+    // Live draws the playhead only while it plays.
+    playhead.setVisible(root.playing() && x >= 0 && x < canvas.getWidth());
     playhead.setBounds(canvas.getX() + x, kTopHeight, 1, canvas.getHeight());
     playhead.toFront(false);
     if (modelChanged) {
@@ -375,18 +471,33 @@ void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDet
     changed();
 }
 void TimelineRuler::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff303944));
-    g.setColour(juce::Colour(0xffd1d8e0));
-    g.setFont(juce::FontOptions(12.f));
-    // One label per bar at most, then per beat as the zoom allows.
-    const double step = std::max(1., std::pow(2., std::ceil(std::log2(32. / view.geometry.scale))));
-    for (double q = std::floor(view.geometry.left / step) * step;
-         q < view.geometry.left + getWidth() / view.geometry.scale; q += step) {
-        const int x = static_cast<int>((q - view.geometry.left) * view.geometry.scale);
-        g.drawVerticalLine(x, 20, 28);
-        g.drawText(juce::String(textproj::renderPosition(
-                       static_cast<std::int64_t>(q * textproj::kPPQ), {})),
-                   x + 3, 0, 52, 20, juce::Justification::centredLeft);
+    // Live's beat-time ruler: bar numbers along its foot in light grey on the dark
+    // band, each after its hook; a dot at the bars between them. In 4/4 until the
+    // snapshot carries the meters (window log, N6).
+    g.fillAll(look::band);
+    const auto &geo = view.geometry;
+    double stepQ = 4; // quarters between labels
+    while (stepQ * geo.scale < 56)
+        stepQ *= 2;
+    while (stepQ > 1 && stepQ / 2 * geo.scale >= 56)
+        stepQ /= 2;
+    const int foot = getHeight();
+    g.setFont(look::font(12.f, true));
+    for (double q = std::floor(geo.left / stepQ) * stepQ; q < geo.left + getWidth() / geo.scale; q += stepQ) {
+        const int x = static_cast<int>((q - geo.left) * geo.scale);
+        const auto quarter = static_cast<std::int64_t>(std::llround(q));
+        const auto bar = quarter / 4 + 1, beat = quarter % 4 + 1;
+        g.setColour(juce::Colour(0xff7d7d7d));
+        g.fillRect(x, foot - 11, 1, 8);
+        g.fillRect(x, foot - 11, 3, 1);
+        g.setColour(look::textOnBand);
+        g.drawText(beat == 1 ? juce::String(bar) : juce::String(bar) + "." + juce::String(beat), x + 5,
+                   foot - 15, 60, 14, juce::Justification::centredLeft);
+    }
+    if (4 * geo.scale >= 8) {
+        g.setColour(juce::Colour(0xff7d7d7d));
+        for (double q = std::floor(geo.left / 4) * 4; q < geo.left + getWidth() / geo.scale; q += 4)
+            g.fillRect(static_cast<int>((q - geo.left) * geo.scale), foot - 2, 1, 1);
     }
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) { last = e.position; }
@@ -401,18 +512,30 @@ void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &) {
     view.fit(view.geometry.selection.start != view.geometry.selection.end);
 }
 void TrackHeaderList::paint(juce::Graphics &g) {
-    g.fillAll(juce::Colour(0xff242b35));
+    // Live's track header's first column: the track's colour, its fold switch and its
+    // name; the panel's grey under the last track.
+    g.fillAll(look::panel);
     int y = -view.geometry.scrollY;
     std::size_t position = 0;
     for (const auto &t : view.reader().tracks()) {
         const int h = view.geometry.heightFor(t->id);
+        const auto colour = view.colourFor(position);
         ++position;
-        g.setColour(juce::Colour(t->id == view.geometry.selection.track ? 0xff416976 : 0xff343e4b));
-        g.fillRect(1, y, getWidth() - 1, h - 1);
-        g.setColour(juce::Colour(0xffe0e5ed));
-        if (t->id != renaming_)
-            g.drawText(juce::String::fromUTF8(displayName(t->name, position).c_str()), 8, y + 4,
-                       getWidth() - 12, 22, juce::Justification::centredLeft);
+        g.setColour(look::separator);
+        g.fillRect(0, y, 2, h);
+        g.fillRect(0, y + h - 2, getWidth(), 2);
+        g.setColour(colour);
+        g.fillRect(2, y, getWidth() - 2, h - 2);
+        const juce::Rectangle<float> fold(5, static_cast<float>(y) + 3, 13, 13);
+        g.setColour(colour.darker(1.6f));
+        g.drawEllipse(fold.reduced(0.6f), 1.2f);
+        look::triangle(g, fold.reduced(3.5f), juce::MathConstants<float>::halfPi, colour.darker(1.6f));
+        if (t->id != renaming_) {
+            g.setColour(look::text);
+            g.setFont(look::font(11.5f, true));
+            g.drawText(juce::String::fromUTF8(displayName(t->name, position).c_str()), 25, y + 2,
+                       getWidth() - 27, 15, juce::Justification::centredLeft);
+        }
         y += h;
     }
 }
@@ -491,45 +614,67 @@ void TrackHeaderList::mouseWheelMove(const juce::MouseEvent &e, const juce::Mous
     view.wheel(e, w);
 }
 void ArrangementCanvas::paint(juce::Graphics &g) {
+    // Live's lanes: grey, every other group of bars a shade lighter, the selected
+    // track's lanes lighter still, the bar grid, a dark rule between tracks.
     ++view.canvasPaints;
-    g.fillAll(juce::Colour(0xff171d25));
-    const double grid = std::max(1., std::pow(2., std::ceil(std::log2(20. / view.geometry.scale))));
-    g.setColour(juce::Colour(0xff222c36));
-    for (double q = std::floor(view.geometry.left / grid) * grid;
-         q < view.geometry.left + getWidth() / view.geometry.scale; q += grid)
-        g.drawVerticalLine(static_cast<int>((q - view.geometry.left) * view.geometry.scale), 0,
-                           static_cast<float>(getHeight()));
-    int y = -view.geometry.scrollY;
-    for (const auto &t : view.reader().tracks()) {
-        const int h = view.geometry.heightFor(t->id);
-        g.setColour(juce::Colour(0xff313b47));
-        g.drawHorizontalLine(y + h - 1, 0, static_cast<float>(getWidth()));
+    const auto &geo = view.geometry;
+    const auto &tracks = view.reader().tracks();
+    int y = -geo.scrollY;
+    auto lanes = [&](int top, int height, bool selected) {
+        paintLanes(g, geo, getWidth(), top, height, selected);
+    };
+    std::size_t position = 0;
+    for (const auto &t : tracks) {
+        const int h = geo.heightFor(t->id);
+        const bool selected = t->id == geo.selection.track;
+        lanes(y, h - 2, selected);
+        g.setColour(look::separator);
+        g.fillRect(0, y + h - 2, getWidth(), 2);
+        // The time selection lights the selected track's lanes, as Live's.
+        if (selected && geo.selection.start != geo.selection.end) {
+            const float x0 = static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end)));
+            const float x1 = static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end)));
+            g.setColour(look::selection.withAlpha(0.85f));
+            g.fillRect(x0, static_cast<float>(y), x1 - x0, static_cast<float>(h - 2));
+        }
+        const auto colour = view.colourFor(position);
         for (const auto &c : t->clips) {
-            const double x = view.geometry.x(c->posTicks),
-                         end = view.geometry.x(c->posTicks + c->lengthTicks);
+            const double x = geo.x(c->posTicks), end = geo.x(c->posTicks + c->lengthTicks);
             if (end < 0 || x > getWidth())
                 continue;
             const float left = static_cast<float>(std::max(-1., x)),
-                        right =
-                            static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
-            g.setColour(
-                juce::Colour(c->id == view.geometry.selection.clip ? 0xff89c7cf : 0xff488a9a));
-            g.fillRect(left, static_cast<float>(y + 3), std::max(1.f, right - left),
-                       static_cast<float>(h - 7));
+                        right = static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
+            const bool picked = c->id == geo.selection.clip;
+            // A clip in its track's colour: a solid title strip, a lighter body.
+            g.setColour(picked ? colour.brighter(0.25f) : colour.withMultipliedAlpha(0.75f));
+            g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
+            g.setColour(colour);
+            g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), 11.f);
+            g.setColour(colour.darker(0.5f));
+            g.drawRect(left, static_cast<float>(y + 1), std::max(1.f, right - left),
+                       static_cast<float>(h - 4), 1.f);
         }
+        ++position;
         y += h;
     }
-    if (view.geometry.selection.start != view.geometry.selection.end) {
-        const float x = static_cast<float>(
-            view.geometry.x(std::min(view.geometry.selection.start, view.geometry.selection.end)));
-        const float end = static_cast<float>(
-            view.geometry.x(std::max(view.geometry.selection.start, view.geometry.selection.end)));
-        g.setColour(juce::Colour(0x2265c4d0));
-        g.fillRect(x, 0.f, end - x, static_cast<float>(getHeight()));
-    } else if (view.geometry.selection.marked) {
-        g.setColour(juce::Colour(0xffe0e5ed));
-        g.drawVerticalLine(static_cast<int>(view.geometry.x(view.geometry.selection.insert)), 0,
-                           static_cast<float>(getHeight()));
+    // Under the last track, Live's drop area.
+    if (y < getHeight()) {
+        lanes(y, getHeight() - y, false);
+        g.setColour(look::text);
+        g.setFont(look::font(12.f));
+        g.drawText("Drop Files and Devices Here", 0, y, getWidth(), getHeight() - y,
+                   juce::Justification::centred);
+    }
+    // The insert marker, a thin blue line in the selected track.
+    if (geo.selection.start == geo.selection.end && geo.selection.marked) {
+        int top = -geo.scrollY;
+        for (const auto &t : tracks) {
+            if (t->id == geo.selection.track) {
+                g.setColour(juce::Colour(0xff5dc9e8));
+                g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, geo.heightFor(t->id) - 2);
+            }
+            top += geo.heightFor(t->id);
+        }
     }
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {

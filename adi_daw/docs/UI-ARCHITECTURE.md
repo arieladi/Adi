@@ -99,11 +99,13 @@ Live 12 lets its Clip View grow (§10a) and keeps its Device View at one
 height. ADI lets the device strip grow too: a dated departure from Live under
 ADR-0108, approved by the director on 2026-09-27.
 
-- **The floor is Live's default device area: 169 pixels** (ADR-0188 d6),
-  logical pixels at 100 % zoom, scaled with the UI zoom and the display's
-  scale factor. The number is the director's; mac checks it against a live
-  copy of Live, and a difference goes back to the director. The strip can
-  only be made bigger.
+- **The floor is Live's default device area** (ADR-0188 d6), in logical
+  pixels at 100 % zoom, scaled with the UI zoom and the display's scale
+  factor. The director's figure was 169 for the device body. Measured on Live
+  11.2.7 on 2026-10-27, the whole Device View panel is 196 with its 4-pixel
+  edges, and the body under the title bars is about 170. ADI's strip is that
+  whole panel, so its floor is 196 (`collab/window/look-live11.md`), to be
+  read again on Live 12. The strip can only be made bigger.
 - **The ceiling** leaves the transport, the ruler and one track row visible.
 - **The height is view state,** kept per project in `ui_view` (SPEC §8.4)
   like the other panel sizes.

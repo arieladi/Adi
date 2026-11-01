@@ -118,22 +118,50 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             if (!strip->isVisible())
                 continue;
             for (juce::Component *c : std::initializer_list<juce::Component *>{
-                     &strip->active, &strip->solo, &strip->eq, &strip->limiter})
+                     &strip->active, &strip->solo, &strip->eq, &strip->limiter, &strip->volume,
+                     &strip->pan})
                 g.fillRect(root.getLocalArea(c, c->getLocalBounds()));
-            const auto v = root.getLocalArea(&strip->volume, strip->volume.getLocalBounds());
-            g.fillRect(v.getRight() - 50, v.getY(), 50, v.getHeight());
+            // The In/Out column's choosers are words.
+            if (strip->showsInOut())
+                g.fillRect(root.getLocalArea(strip.get(), strip->getLocalBounds())
+                               .withWidth(MixerPanel::kInOutWidth));
         }
+        // Live's look puts words in more places: the browser's lists and search, the
+        // time ruler, "Set", H and W, the right-hand strip's switches, the drop areas.
+        if (root.browser.isVisible()) {
+            const auto at = root.browser.getPosition();
+            g.fillRect(root.browser.sidebarArea() + at);
+            g.fillRect(root.browser.search.getBounds() + at);
+            g.fillRect(root.browser.contentArea().withHeight(19) + at);
+        }
+        g.fillRect(area.getX(), area.getBottom() - ArrangementView::kTimeRulerHeight, area.getWidth(),
+                   ArrangementView::kTimeRulerHeight);
+        g.fillRect(headers.getX() + 4, area.getY() + ArrangementView::kOverviewHeight +
+                                           ArrangementView::kRulerHeight - 3,
+                   32, 15);
+        const auto canvas = root.arrangement.canvas.getBounds() + area.getPosition();
+        g.fillRect(canvas.withTrimmedTop(std::max(0, laneY - canvas.getY())));
+        if (root.mixer.isVisible() && !root.mixer.vertical()) {
+            const auto m = root.mixer.getBounds();
+            g.fillRect(m.getRight() - MixerPanel::kRightStrip - 44, m.getY() + 3, 42, 17);
+            g.fillRect(m.withTrimmedLeft(m.getWidth() - MixerPanel::kRightStrip));
+        }
+        int chainEnd = root.devices.getX();
         for (const auto &device : root.devices.panels) {
             const auto b = root.getLocalArea(device.get(), device->getLocalBounds());
-            g.fillRect(b.getX() + 22, b.getY() + 1, std::max(0, b.getWidth() - 23), 20);
+            chainEnd = std::max(chainEnd, b.getRight());
+            g.fillRect(b.getX() + 30, b.getY() + 1, std::max(0, b.getWidth() - 31), 16);
             for (const auto &c : device->controls) {
                 const auto cb = root.getLocalArea(c.get(), c->getLocalBounds());
                 g.fillRect(cb.getX(), cb.getY(), cb.getWidth(), 14);
-                g.fillRect(cb.getX(), cb.getY() + 32, cb.getWidth(), 14);
+                g.fillRect(cb.getX(), cb.getY() + 39, cb.getWidth(), 14);
                 if (c->menu.isVisible())
                     g.fillRect(cb.getX() + 2, cb.getY() + 14, cb.getWidth() - 4, 18);
             }
         }
+        if (root.devices.isVisible())
+            g.fillRect(root.devices.getBounds().withTrimmedLeft(
+                std::max(0, chainEnd - root.devices.getX())));
     }
     const auto file = juce::File(ADI_UI_REFERENCES).getChildFile(juce::String(name) + ".png");
     if (write) {
@@ -163,6 +191,91 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
     if (differences)
         std::printf("%s: %d differing pixels\n", name, differences);
 }
+// Live parity (ADR-0203 d5): Live 11's default set as the director's capture shows it
+// (collab/window/look-live11.md): four tracks, the fourth selected with EQ Eight and
+// Auto Filter on it, at 1440 x 900 points. The golden is this scene; ADI_UI_PARITY
+// names a folder for a 2x render to lay beside the capture.
+void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool write) {
+    StoreError err{};
+    auto store = Store::create(dir / "parity.adi", err);
+    check(store != nullptr, "the parity project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Parity')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    for (int id = 1; id <= 4; ++id) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id},
+                     {"kind", id <= 2 ? "midi" : "audio"},
+                     {"name", id <= 2 ? "# MIDI" : "# Audio"}};
+        r.label = "Create track";
+        check(submitter.submit(std::move(r)).ok, "Live's default tracks");
+    }
+    auto publication = std::make_shared<ParameterPublication>();
+    struct Knob {
+        const char *name, *text;
+        double value;
+    };
+    const std::array<std::pair<const char *, std::vector<Knob>>, 2> devices{
+        {{"EQ Eight", {{"Freq", "10.0 Hz", 0}, {"Gain", "0.00 dB", .5}, {"Q", "0.71", .25}}},
+         {"Auto Filter",
+          {{"Freq", "12.5 kHz", .9}, {"Res", "14 %", .14}, {"Attack", "6.00 ms", .2},
+           {"Release", "200 ms", .5}, {"Amount", "0.00", 0}, {"Rate", "0.11 Hz", .1},
+           {"Phase", "0.00\u00b0", 0}}}}};
+    std::int64_t deviceId = 21;
+    for (const auto &[name, knobs] : devices) {
+        DevicePanelData data;
+        data.id = deviceId++;
+        data.track = 4;
+        data.name = name;
+        for (const auto &k : knobs) {
+            panel::Record record;
+            record.id = k.name;
+            record.name = k.name;
+            record.playing = record.stored = k.value;
+            record.shape = panel::Shape::Continuous;
+            record.text = k.text;
+            data.records.push_back(record);
+            data.resolved.entries.push_back({record.id, false});
+        }
+        panel::finalize(data.records);
+        publication->push_back(data);
+    }
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "parity");
+    root.devices.publication = [publication] { return publication; };
+    root.setSize(1440, 900);
+    // Live's default zoom: a bar is 15.67 points.
+    root.arrangement.geometry.scale = 3.92;
+    root.arrangement.geometry.selection.track = 4;
+    root.frame();
+    root.frame();
+    // The capture's mouse rests on the lanes: the Info View describes them.
+    root.hover(&root.arrangement.canvas);
+    check(root.arrangement.headers.getWidth() == ArrangementView::kHeaderWidth &&
+              root.mixer.getWidth() == MixerPanel::kFullWidth && root.devices.panels.size() == 2,
+          "the parity scene has Live's columns and the fourth track's two devices");
+    reference(root, "live-parity", write);
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+        folder.isNotEmpty()) {
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                          juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-parity.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    }
+}
 } // namespace
 int main(int argc, char **argv) {
     juce::ScopedJuceInitialiser_GUI init;
@@ -191,9 +304,9 @@ int main(int argc, char **argv) {
     check(a.reader().get() == b.reader().get() && a.generation() == b.generation(),
           "windows initially present same generation");
     check(a.bpm() == 120, "TransportBar reads initial BPM from ProjectView");
-    check(a.transport.play.getButtonText() == "Play / stop" &&
-              a.transport.stop.getButtonText() == "Stop",
-          "button labels");
+    check(a.transport.play.getTitle() == "Play" && a.transport.stop.getTitle() == "Stop" &&
+              a.transport.play.glyph == BarItem::Glyph::Play,
+          "the transport's buttons are Live's glyphs, named for the Info View");
     reference(a, "root-default", write);
     check(submitter.submit(track(1)).ok, "commit between window frames");
     const auto before = b.generation();
@@ -259,7 +372,7 @@ int main(int argc, char **argv) {
           "per-window zoom persistence");
     check(a.command(AppCommands::SwapPanels), "swap command");
     check(a.state().panels.slots()[0].panel == Panel::Mixer &&
-              a.state().panels.find(Panel::Browser)->width == 240,
+              a.state().panels.find(Panel::Browser)->width == DesktopDefaults{}.browser,
           "panel widths follow identity");
     a.frame();
     reference(a, "root-swapped", write);
@@ -356,15 +469,17 @@ int main(int argc, char **argv) {
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     a.setSize(1200, 720);
-    check(a.state().deviceFloor == 169 && a.deviceArea().getHeight() == 169,
-          "the device strip starts at its floor");
+    const int floor = DesktopDefaults{}.deviceFloor;
+    check(floor == look::detailHeight && a.state().deviceFloor == floor &&
+              a.deviceArea().getHeight() == floor,
+          "the device strip starts at its floor, Live 11's Device View");
     a.state().setDeviceHeight(40);
-    check(a.state().deviceHeight == 169, "the strip never goes below its floor");
+    check(a.state().deviceHeight == floor, "the strip never goes below its floor");
     a.state().setDeviceHeight(300);
     a.resized();
     check(a.deviceArea().getHeight() == 300, "the strip grows upward");
     a.setSize(1200, 300);
-    check(a.deviceArea().getHeight() == 169, "a short window keeps the floor");
+    check(a.deviceArea().getHeight() == floor, "a short window keeps the floor");
     a.setSize(1200, 720);
     check(a.keyPressed(juce::KeyPress('b', cmd | alt, 0)) &&
               a.state().panels.find(Panel::Browser)->collapsed,
@@ -384,17 +499,18 @@ int main(int argc, char **argv) {
     check(a.keyPressed(juce::KeyPress('4', cmd | alt, 0)) && a.state().docked &&
               a.deviceArea().getHeight() == 300,
           "and shows it at its own height");
-    check(!a.state().aiChatOpen && a.aiTab.isVisible() && a.chatArea().getHeight() == 24 &&
-              a.chatArea().getBottom() == a.browserArea().getBottom(),
-          "the AI chat is a collapsed tab at the browser's foot");
+    check(!a.state().aiChatOpen && a.aiTab.isVisible() && a.chatArea().getHeight() == 20 &&
+              a.chatArea().getBottom() ==
+                  a.browserArea().getBottom() - BrowserPanel::kBarHeight - look::border,
+          "the AI chat is a collapsed tab at the foot of the browser's panes");
     a.aiTab.onClick();
-    check(a.state().aiChatOpen && a.chatArea().getHeight() > 24 &&
+    check(a.state().aiChatOpen && a.chatArea().getHeight() > 20 &&
               persistence.load("main").aiChatOpen,
           "the tab opens and is remembered per window");
     a.aiTab.onClick();
-    check(commands.infoView() && a.infoArea().getX() == 0 &&
+    check(commands.infoView() && a.infoArea().getX() == look::gap &&
               a.infoArea().getBottom() == a.status.getY() &&
-              a.infoArea().getRight() == a.deviceArea().getX(),
+              a.infoArea().getRight() + look::gap == a.deviceArea().getX(),
           "the Info View is on, bottom-left, beside the Device View");
     a.hover(&a.transport.play);
     check(a.infoText().contains("Play") && a.infoText().contains("Space"),
@@ -402,7 +518,7 @@ int main(int argc, char **argv) {
     a.hover(nullptr);
     check(a.infoText().isEmpty(), "and clears when nothing is under it");
     check(a.keyPressed(juce::KeyPress('?', juce::ModifierKeys::shiftModifier, 0)) &&
-              !commands.infoView() && a.infoArea().isEmpty() && a.deviceArea().getX() == 0,
+              !commands.infoView() && a.infoArea().isEmpty() && a.deviceArea().getX() == look::gap,
           "Shift+? hides the Info View");
     b.frame();
     check(b.infoArea().isEmpty(), "the Info View is app-scoped: every window follows");
@@ -412,7 +528,8 @@ int main(int argc, char **argv) {
     a.setSize(400, 540);
     check(!a.command(AppCommands::SwapPanels) && !a.error().empty(),
           "a refused swap says why in the Status Bar");
-    check(a.status.getBounds() == juce::Rectangle<int>(0, 540 - 22, 400, 22),
+    check(a.status.getBounds() ==
+              juce::Rectangle<int>(0, 540 - look::statusBarHeight, 400, look::statusBarHeight),
           "the Status Bar runs along the window's foot");
     a.setSize(1200, 720);
     check(a.command(AppCommands::PlayStop) && a.error().empty(),
@@ -432,7 +549,7 @@ int main(int argc, char **argv) {
     check(zoomed.keyPressed(juce::KeyPress('-', cmd, 0)) &&
               zoomed.keyPressed(juce::KeyPress('-', cmd, 0)) && zoomed.interfaceZoom() == .75f,
           "Ctrl/Cmd+- zooms out");
-    check(zoomed.deviceArea().getHeight() == 169, "the floor is in zoom-independent units");
+    check(zoomed.deviceArea().getHeight() == floor, "the floor is in zoom-independent units");
     AdiWindow window(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
                                                         persistence, session, "tips"),
                      commands, false);
@@ -536,7 +653,7 @@ int main(int argc, char **argv) {
         check(integrated.keyPressed(juce::KeyPress('t', cmdKey, 0)),
               "Ctrl/Cmd+T inserts an audio track");
         check(value(document->store(), "SELECT kind||' '||name FROM tracks WHERE id=3") ==
-                      "audio #-Audio" &&
+                      "audio # Audio" &&
                   arrangement.geometry.selection.track == 3,
               "after the selected track, numbered by position, and selected");
         if (!integrated.error().empty())
@@ -570,11 +687,11 @@ int main(int argc, char **argv) {
         headers.editor.setText("Lead", false);
         check(headers.editor.keyPressed(juce::KeyPress(juce::KeyPress::tabKey)) &&
                   value(document->store(), "SELECT name FROM tracks WHERE id=2") == "Lead" &&
-                  headers.renaming() == 3 && headers.editor.getText() == "#-Audio",
+                  headers.renaming() == 3 && headers.editor.getText() == "# Audio",
               "Tab commits and moves on to the next track's title");
         headers.editor.setText("Gone", false);
         check(headers.editor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) &&
-                  value(document->store(), "SELECT name FROM tracks WHERE id=3") == "#-Audio" &&
+                  value(document->store(), "SELECT name FROM tracks WHERE id=3") == "# Audio" &&
                   headers.renaming() == 0 && !headers.editor.isVisible(),
               "Esc cancels and leaves the name as it was");
         check(integrated.undoTitle(false) == "Undo Rename Track",
@@ -594,7 +711,8 @@ int main(int argc, char **argv) {
         check(document->ops().submit(clip).ok, "arrangement clip created through op");
         integrated.frame();
         const auto *mainRow = arrangement.geometry.trackAt(integrated.reader(), 4);
-        const auto *hitTrack = arrangement.geometry.trackAt(integrated.reader(), 64 + 4);
+        const auto *hitTrack =
+            arrangement.geometry.trackAt(integrated.reader(), arrangement.geometry.height + 4);
         check(mainRow && mainRow->id == 1 && hitTrack && hitTrack->id == 2,
               "every track is a row, in the snapshot's order");
         check(hitTrack && arrangement.geometry.hit(*hitTrack, 0) &&
@@ -645,7 +763,7 @@ int main(int argc, char **argv) {
         arrangement.changed();
         check(arrangement.headers.getX() > arrangement.canvas.getX() &&
                   arrangement.headers.getRight() == arrangement.getWidth() &&
-                  arrangement.canvas.getX() == 0,
+                  arrangement.canvas.getX() == ArrangementView::kLeftMargin,
               "the track headers sit to the right of the clips, as Live's");
         arrangement.geometry.selection.clip = 1;
         arrangement.geometry.selection.start = 0;
@@ -741,10 +859,15 @@ int main(int argc, char **argv) {
                   "peer drag capture updates time selection");
             // The Overview (Live 12 manual 6.1, ADR-0129's rows).
             auto &overview = arrangement.overview;
-            check(overview.getY() == 0 &&
+            check(overview.getParentComponent() == &integrated &&
+                      overview.getY() > integrated.arrangement.getY() &&
+                      overview.getBottom() <=
+                          integrated.arrangement.getY() + ArrangementView::kOverviewHeight &&
+                      overview.getX() == integrated.arrangement.getX() + arrangement.canvas.getX() &&
+                      overview.getRight() > integrated.arrangement.getRight() &&
                       arrangement.ruler.getY() == ArrangementView::kOverviewHeight &&
                       arrangement.canvas.getY() == ArrangementView::kTopHeight,
-                  "the Overview sits above the beat-time ruler");
+                  "the Overview sits above the beat-time ruler, across the track headers as Live's");
             arrangement.geometry.left = 1;
             arrangement.geometry.scale = 48;
             arrangement.changed();
@@ -853,9 +976,10 @@ int main(int argc, char **argv) {
         controls[1]->toggle.setToggleState(true, juce::dontSendNotification);
         controls[1]->toggle.onClick();
         check(gestures == 3, "a switch sends one bounded begin/value/end gesture");
-        check(integrated.devices.getHeight() == 168 && controls[1]->getX() == controls[0]->getX() &&
+        check(integrated.devices.getHeight() == DesktopDefaults{}.deviceFloor - 2 * look::border &&
+                  controls[1]->getX() == controls[0]->getX() &&
                   controls[1]->getY() > controls[0]->getY() &&
-                  controls[2]->getX() > controls[0]->getX(),
+                  controls[3]->getX() > controls[0]->getX(),
               "at the floor the controls run in columns that fit the strip's height");
         const auto &panels = integrated.devices.panels;
         check(panels[1]->getX() > panels[0]->getRight() && panels[0]->getY() == 0 &&
@@ -873,9 +997,9 @@ int main(int argc, char **argv) {
         check(integrated.arrangement.getHeight() >=
                   ArrangementView::kTopHeight + integrated.state().laneHeight,
               "the strip's ceiling leaves the ruler and a row");
-        integrated.resizeDevices(240);
-        check(integrated.devices.getHeight() == 239 &&
-                  controls[2]->getX() == controls[0]->getX(),
+        integrated.resizeDevices(260);
+        check(integrated.devices.getHeight() == 260 - 2 * look::border &&
+                  controls[3]->getX() == controls[0]->getX(),
               "a taller strip holds more rows, so fewer columns");
         integrated.frame();
         reference(integrated, "devices", write);
@@ -997,7 +1121,7 @@ int main(int argc, char **argv) {
         for (const auto &s : mixer.strips())
             if (s->isVisible() && s->track() == 2)
                 row = s.get();
-        check(row != nullptr && mixer.getX() == integrated.arrangement.getRight() + 1,
+        check(row != nullptr && mixer.getX() == integrated.arrangement.getRight(),
               "every visible track has a mixer row, beside the headers");
         int lane = integrated.arrangement.getY() + integrated.arrangement.canvas.getY() -
                    arrangement.geometry.scrollY;
@@ -1139,6 +1263,7 @@ int main(int argc, char **argv) {
               "the Status Bar's corner toggle hides it again");
         document->release();
     }
+    liveParity(commands, temp.path(), write);
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
