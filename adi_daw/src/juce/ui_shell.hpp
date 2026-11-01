@@ -57,7 +57,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FocusArrangement,
         FocusDeviceView,
         FocusBrowser,
-        LastId = FocusBrowser
+        SearchBrowser,
+        LastId = SearchBrowser
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

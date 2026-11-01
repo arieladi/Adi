@@ -68,7 +68,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Mixer",               "Channel EQ",
                                   "Quit",                "Control Bar",
                                   "Arrangement View",    "Device View",
-                                  "Browser"};
+                                  "Browser",             "Search in Browser"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -205,6 +205,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case FocusBrowser:
         info.addDefaultKeypress('5', alt);
+        break;
+    case SearchBrowser: // §41.4.1.6, §42.22
+        info.addDefaultKeypress('f', cmd);
         break;
     default:
         break;
@@ -728,9 +731,16 @@ bool AdiRootComponent::focusView(int id) {
         devices.panels.front()->grabKeyboardFocus();
         return true;
     case AppCommands::FocusBrowser:
+    case AppCommands::SearchBrowser:
         if (state_.panels.find(Panel::Browser)->collapsed && !command(AppCommands::ToggleBrowser))
             return false;
-        browser.grabKeyboardFocus();
+        if (id == AppCommands::FocusBrowser) {
+            browser.grabKeyboardFocus();
+            return true;
+        }
+        // Ctrl/Cmd+F, from anywhere: the search field, its words selected to type over.
+        browser.search.grabKeyboardFocus();
+        browser.search.selectAll();
         return true;
     default:
         return false;
@@ -832,6 +842,7 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::FocusArrangement:
     case AppCommands::FocusDeviceView:
     case AppCommands::FocusBrowser:
+    case AppCommands::SearchBrowser:
         return focusView(id);
     case AppCommands::ZoomIn:
     case AppCommands::ZoomOut: {
