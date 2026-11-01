@@ -65,24 +65,18 @@ OpRequest track(int id) {
     r.label = "Create track";
     return r;
 }
-// The tracks in the arrangement's order (TrackOrder): each group, then what it holds; Main last,
-// as Live draws it.
+// The tracks in the arrangement's order (TrackOrder): each group, then what it holds; the returns,
+// then Main, as Live draws them.
 std::vector<std::int64_t> laneOrder(AdiRootComponent &root) {
     std::vector<std::int64_t> out;
     for (const auto row : root.arrangement.geometry.rows(root.reader()))
         out.push_back(row.track->id);
     return out;
 }
-// Where a track's lane begins in the canvas, scrolled; -1 for a track with no row.
+// Where a track's lane begins in the canvas, scrolled, or at the foot for the returns and Main; -1
+// for a track with no row.
 int laneTop(AdiRootComponent &root, std::int64_t id) {
-    const auto &geometry = root.arrangement.geometry;
-    int y = -geometry.scrollY;
-    for (const auto track : laneOrder(root)) {
-        if (track == id)
-            return y;
-        y += geometry.heightFor(track);
-    }
-    return -1;
+    return root.arrangement.geometry.rowTop(root.reader(), id);
 }
 void reference(AdiRootComponent &root, const char *name, bool write) {
     // Explicit software rasterisation, no peer, OpenGL, display, or audio device.
@@ -761,6 +755,112 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.toggleFold(16);
     root.arrangement.toggleFold(10);
     render("adi-groups-folded.png");
+}
+// Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
+// bottom of the lanes, below the drop area, whatever the scroll.
+void footRows(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::create(dir / "foot.adi", err);
+    check(store != nullptr, "the foot's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Foot')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    // Main and the returns made first, at index 0, so only the order puts them at the foot.
+    bool madeAll = true;
+    auto make = [&submitter, &madeAll](std::int64_t id, const char *kind, const std::string &name, std::int64_t index) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    };
+    make(1, "master", "Main", 0);
+    make(2, "return", "A Reverb", 0);
+    make(3, "return", "B Delay", 0);
+    for (std::int64_t i = 0; i < 12; ++i)
+        make(10 + i, "audio", "Track " + std::to_string(i + 1), i);
+    check(madeAll, "twelve tracks, two returns and Main");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "foot");
+    root.setSize(1200, 720);
+    root.arrangement.geometry.resizeTrack(0, 48, true);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &lanes = root.arrangement.geometry;
+    const auto rows = laneOrder(root);
+    check(rows.size() == 15 && rows[11] == 21 && rows[12] == 2 && rows[13] == 3 && rows[14] == 1,
+          "the tracks, then the returns, then Main, as Live's");
+    const int lanesHeight = root.arrangement.canvas.getHeight();
+    check(lanes.lanesHeight == lanesHeight && lanes.footHeight(root.reader()) == 3 * 48,
+          "the foot is the returns and Main, the lanes' height known to the geometry");
+    const int footY = lanesHeight - 3 * 48;
+    check(laneTop(root, 2) == footY && laneTop(root, 3) == footY + 48 && laneTop(root, 1) == footY + 96,
+          "they stand at the bottom of the lanes");
+    check(lanes.tracksHeight(root.reader()) == 12 * 48 && 12 * 48 > footY,
+          "twelve tracks run on under the foot");
+    // A point in the foot is the foot's, though Track 9 or so is scrolled under it.
+    check(lanes.trackAt(root.reader(), footY + 5)->id == 2 && lanes.trackAt(root.reader(), lanesHeight - 5)->id == 1,
+          "a point in the foot finds a return or Main, never the track under it");
+    check(lanes.trackAt(root.reader(), footY - 5) != nullptr && lanes.trackAt(root.reader(), footY - 5)->id != 2,
+          "just above it, a track");
+    // Scrolled: the tracks move, the foot does not.
+    lanes.scrollY = 200;
+    root.arrangement.changed();
+    root.frame();
+    check(laneTop(root, 10) == -200 && laneTop(root, 1) == footY + 96 && laneTop(root, 2) == footY,
+          "scrolled, the tracks move and the foot stays");
+    lanes.scrollY = 100000;
+    check(lanes.maxScroll(root.reader()) == 12 * 48 - ArrangementGeometry::kMinTrackHeight,
+          "the tracks scroll no further than their last sliver");
+    lanes.scrollY = lanes.maxScroll(root.reader());
+    root.arrangement.changed();
+    root.frame();
+    // The track controls follow: the foot's strips at the foot, in front of any partly under it.
+    const int bodyTop = root.arrangement.topHeight();
+    const MixerStrip *mainStrip = nullptr;
+    int shownUnder = 0;
+    for (const auto &strip : root.mixer.strips()) {
+        if (!strip->isVisible())
+            continue;
+        if (strip->track() == 1)
+            mainStrip = strip.get();
+        else if (strip->track() >= 10 && strip->getY() >= bodyTop + footY)
+            ++shownUnder;
+    }
+    check(mainStrip != nullptr && mainStrip->getY() == bodyTop + footY + 96 && shownUnder == 0,
+          "Main's track controls at the foot; no track's realised under it");
+    // Down from the last track goes into the foot, and the foot never scrolls.
+    lanes.scrollY = 0;
+    lanes.selection.track = 21;
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && lanes.selection.track == 2,
+          "down from the last track selects the first return");
+    root.arrangement.changed();
+    root.frame();
+    check(laneTop(root, 2) == footY, "and the foot is where it was");
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+    if (folder.isNotEmpty()) {
+        // The last tracks, the drop area under them, and the foot, as Live's figure.
+        lanes.scrollY = lanes.tracksHeight(root.reader()) - 3 * 48;
+        lanes.selection.track = 20;
+        root.arrangement.changed();
+        root.mark(DirtySet::All);
+        root.frame();
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-foot.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    }
 }
 } // namespace
 int main(int argc, char **argv) {
@@ -2943,6 +3043,7 @@ int main(int argc, char **argv) {
     }
     liveParity(commands, temp.path(), write);
     groupTracks(commands, temp.path());
+    footRows(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

@@ -15,6 +15,7 @@ struct TrackRow {
     std::uint32_t colour = 0; // 0xRRGGBB; 0 when the project gives none
     std::string name;
     std::int64_t index = 0; // its place among what its parent holds (index_in_parent)
+    bool ret = false;       // a return track: after the rest, before Main
 };
 // The project's tracks as a tree of groups, built from the snapshot's rows (rowsFromSnapshot,
 // track_order.hpp).
