@@ -164,10 +164,12 @@ ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
     setDescription("Clips on a timeline. Arrow keys move between tracks and clips.");
     // In the Info View's shape: what it is, then its keys in brackets, as Live's.
     setTooltip("Shows every track's clips in time. Click to place the insert marker or "
-               "select a clip; drag to select time.\n\n"
+               "select a clip; drag to select time, or drag a clip's bar to move it.\n\n"
                "[Ctrl/Cmd + Scroll Wheel] Zoom In/Out\n"
                "[Alt + Scroll Wheel] Adjust Track Height\n"
-               "[Arrow Keys] Move Between Tracks and Clips");
+               "[Arrow Keys] Move Between Tracks and Clips\n"
+               "[Delete] Delete Clip\n"
+               "[0] Deactivate/Activate Clip");
 }
 std::unique_ptr<juce::AccessibilityHandler> ArrangementCanvas::createAccessibilityHandler() {
     return std::make_unique<juce::AccessibilityHandler>(*this, juce::AccessibilityRole::list);
@@ -740,18 +742,22 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         }
         const auto colour = view.colourFor(position);
         for (const auto &c : t->clips) {
-            const double x = geo.x(c->posTicks), end = geo.x(c->posTicks + c->lengthTicks);
+            // A clip being moved by its bar is drawn where it would land.
+            const auto pos = c->id == moving_ ? movingTo_ : c->posTicks;
+            const double x = geo.x(pos), end = geo.x(pos + c->lengthTicks);
             if (end < 0 || x > getWidth())
                 continue;
             const float left = static_cast<float>(std::max(-1., x)),
                         right = static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
             const bool picked = c->id == geo.selection.clip;
-            // A clip in its track's colour: a solid title strip, a lighter body.
-            g.setColour(picked ? colour.brighter(0.25f) : colour.withMultipliedAlpha(0.75f));
+            // A clip in its track's colour: a solid title strip, a lighter body. A
+            // deactivated clip is grey, as Live's.
+            const auto clipColour = c->muted ? juce::Colour(0xff9a9a9a) : colour;
+            g.setColour(picked ? clipColour.brighter(0.25f) : clipColour.withMultipliedAlpha(0.75f));
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
-            g.setColour(colour);
-            g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), 11.f);
-            g.setColour(colour.darker(0.5f));
+            g.setColour(clipColour);
+            g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
+            g.setColour(clipColour.darker(0.5f));
             g.drawRect(left, static_cast<float>(y + 1), std::max(1.f, right - left),
                        static_cast<float>(h - 4), 1.f);
         }
@@ -782,16 +788,42 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
     view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
+    moving_ = 0;
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
         view.contextMenu(e.getScreenPosition(), false);
-    } else if (!panning)
+    } else if (!panning) {
         view.select(e.x, e.y, view.snaps(e.mods));
+        // Only a clip's bar moves it, not its body (§6.7).
+        const auto &sel = view.geometry.selection;
+        int top = -view.geometry.scrollY;
+        for (const auto &t : view.reader().tracks()) {
+            if (t->id == sel.track) {
+                for (const auto &c : t->clips)
+                    if (c->id == sel.clip && sel.clip != 0 && e.y >= top + 1 && e.y < top + 1 + kClipBarHeight) {
+                        moving_ = c->id;
+                        movingFrom_ = movingTo_ = c->posTicks;
+                        grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
+                    }
+                break;
+            }
+            top += view.geometry.heightFor(t->id);
+        }
+    }
 }
 void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
         return;
+    if (moving_ != 0) {
+        // The clip's start follows the mouse, to the nearest grid line while snapping;
+        // it stays on its own track until the snapshot says which tracks can take it (N6).
+        const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
+        const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+        movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
+        repaint();
+        return;
+    }
     if (panning) {
         view.geometry.pan(last.x - e.position.x);
         view.geometry.scrollY =
@@ -805,7 +837,26 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     }
     view.frame(true);
 }
-void ArrangementCanvas::mouseUp(const juce::MouseEvent &) { view.changed(); }
+void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
+    if (moving_ != 0) {
+        const auto clip = moving_, to = movingTo_, from = movingFrom_;
+        moving_ = 0;
+        // One drag, one undo step (§6.7); the selection follows the clip.
+        if (to != from) {
+            auto &sel = view.geometry.selection;
+            const auto length = sel.end - sel.start;
+            if (clipEdit("clip.move", {{"id", clip}, {"to", to}, {"track", sel.track}}, "Move Clip")) {
+                sel.start = to;
+                sel.end = to + length;
+            }
+        }
+        repaint();
+    }
+    view.changed();
+}
+bool ArrangementCanvas::clipEdit(const char *op, Payload payload, const char *label) {
+    return view.root.submitEdit(op, std::move(payload), label);
+}
 void ArrangementCanvas::mouseWheelMove(const juce::MouseEvent &e,
                                        const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
@@ -859,6 +910,28 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         view.changed();
         announceSelection();
         return true;
+    }
+    // Live's Delete, and 0 to deactivate (§6.9), on the selected clip.
+    if (const auto clip = view.geometry.selection.clip; clip != 0) {
+        if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) {
+            if (!clipEdit("clip.delete", {{"id", clip}}, "Delete Clip"))
+                return true;
+            auto &sel = view.geometry.selection;
+            sel.clip = 0;
+            sel.end = sel.start;
+            sel.insert = sel.start;
+            view.changed();
+            return true;
+        }
+        if (k == juce::KeyPress('0')) {
+            // A refused edit is still the key's: the Status Bar says why.
+            if (const auto *t = view.reader().findTrack(view.geometry.selection.track))
+                for (const auto &c : t->clips)
+                    if (c->id == clip)
+                        clipEdit("clip.setMute", {{"id", clip}, {"muted", !c->muted}},
+                                 c->muted ? "Activate Clip" : "Deactivate Clip");
+            return true;
+        }
     }
     return view.root.keyPressed(k);
 }

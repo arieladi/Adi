@@ -119,9 +119,17 @@ class ArrangementCanvas final : public juce::Component,
         return accessible_;
     }
     juce::String lastAnnouncement;
+    // The clip being moved by its bar (§6.7), and where it would land; 0 when none is.
+    std::int64_t movingClip() const noexcept { return moving_; }
+    std::int64_t movingTo() const noexcept { return movingTo_; }
+    // A clip's bar, Live's clip title strip: where a drag moves the clip (§6.7).
+    static constexpr int kClipBarHeight = 11;
 
   private:
     void announceSelection();
+    // Deletes or switches the selected clip: one op, through the root.
+    bool clipEdit(const char *op, Payload payload, const char *label);
+    std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
