@@ -1103,6 +1103,16 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         announce(view.root.selectionText());
         return true;
     }
+    if (sel.start != sel.end && !view.root.commands().arrowKeysMoveClips()) {
+        // Move Clips with Arrow Keys off (§41.1.1): left collapses the selection to its start,
+        // right to its end.
+        sel.insert = sel.start = sel.end = forward ? std::max(sel.start, sel.end) : std::min(sel.start, sel.end);
+        sel.clip = 0;
+        view.locate();
+        view.changed();
+        announce(view.root.selectionText());
+        return true;
+    }
     if (sel.clip != 0) {
         // Move Clips with Arrow Keys, on by default in Live (§41.1.1): the selected clip moves
         // to the next or previous grid line, one undo step a press.

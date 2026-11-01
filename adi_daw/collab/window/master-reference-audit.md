@@ -151,7 +151,7 @@ MR § is the Master Reference's section.
 | Options: Chase MIDI Notes, MIDI Envelope Auto-Reset | V.2 §5 | Missing: both settings exist (`midi.chaseNotes`, `midi.envelopeAutoReset`) |
 | Options: Edit MIDI Map, Edit Key Map | 3.6 | Partial: the control bar's Key and MIDI buttons; the menu items are Missing |
 | Options: Solo in Place, Delay Compensation, Reduced Latency When Monitoring | 8.1, 8.4 | See section 3 |
-| Navigate: Wrap Tab Navigation; Move Clips with Arrow Keys off | V.2 §1 | Missing: both settings exist (`lookfeel.wrapTabNavigation`, `editing.arrowKeysMoveClips`). The window log's N21 said they did not; that was wrong and is withdrawn |
+| Navigate: Wrap Tab Navigation; Move Clips with Arrow Keys off | V.2 §1 | Built (`window/settings-nav`), from the existing settings (`lookfeel.wrapTabNavigation`, `editing.arrowKeysMoveClips`). The window log's N21 said they did not exist; that was wrong and is withdrawn |
 | Help | — | Waits for a Help View |
 | F3 Session View, Tab between the views, Alt+1 | 3.6, 3.8 | Later (Session View, P2); Alt+2 is built |
 | F7 offline processing | 4.5 | Later (with Direct Offline Processing) |
