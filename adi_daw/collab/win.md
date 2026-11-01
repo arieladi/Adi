@@ -6,6 +6,26 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-01 (later) — The engine stack merged; the window opens on the director's PC; main measured
+
+**Merged, in stack order, CI green on every leg:** the engine's #297 (the bypass delay, after win's
+one-hunk merge), #299 (the snapshot's N6), #298 (master summing), #300, #301, #302 (the export
+queue, stems and PCM; each retargeted to main as the one under it merged). Then win's #304 (the MSVC `/WX` fix in
+`tests/test_plan.cpp`; #304 conflicted with #298's own rename of the same mixer variable, resolved by
+taking main's). #303 (ADR-0209, ADR-0210, LANES, the prompts) and #305 (the ruling) follow when their macOS
+leg, which hung once and was re-run, is green. Nothing of the lanes is left open but #278 (draft) and the old
+#207, #208, #210.
+
+**The window opened on this PC.** Built as `.github/workflows/ui.yml` does (Ninja, Debug, JUCE on, Pd
+off, `/WX`): `D:\adi-ui\adi_app_artefacts\Debug\ADI.exe`. Live's layout; the three UI suites pass
+(55, 38 and 438 checks). One thing for the window lane's queue: on start an alert says
+`audio.bufferSize does not offer 480` on this machine's device; the Settings page should offer what
+the device offers and fall back without a dialog. Handed to the director with this entry (ADR-0210 d6).
+
+**main measured on MSVC after the merges:** `4398f4b`, **9700 checks across 106 suites**, `/WX`
+clean; the README's count line is corrected in #305. Master Reference v1.3 built from it and split into
+chapters under `reference/DOCS/Adi Master Reference/` (the generator stays on disk, out of git).
+
 ## 2026-11-01 — Fifty-eight lane PRs merged; ADR-0209 (the Mix View, proposed in the morning, ruled in the evening) and ADR-0210 (nobody waits); the prompts of 1 November
 
 **The director:** the window and engine lanes had stopped, the window waiting on the engine and both
