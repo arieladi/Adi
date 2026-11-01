@@ -62,7 +62,40 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N34 | An op for a note's active flag (the `flags` column exists) | engine | 0 deactivates a note (Live manual §10.5.7) | nothing |
 | N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`) | a clean tree after the gate the window runs before each push | the window deletes them after each run |
 | N36 | What `tracks.color` holds: `docs/format` gives only an INTEGER (Live stores a palette index, one of its 70 colours; ADI's window draws 0xRRGGBB) | win (the format) | a track's own colour on its lane, title, strip and the project view's folder (STEP-7-PLAN §2.2) | colours by place, as Live's auto-colours |
+| N37 | `track.delete`'s inverse captures only the track row (kind, name, parent, index), where OPS.md §6.3 says it captures the row, its clips and its device state. Everything that cascades from `tracks` (clips, lanes, the mixer strip, device chains) is not brought back by undo, nor are the colour and the routing rows | engine (`src/adi/ops_catalog.cpp`) | undo of Delete Track and of Ungroup Tracks (`window/group-commands`) should bring the track back as it was, clips and devices included | both commands are built; undo brings the track or the group back empty; parity-7.3 row 33 says so |
 | N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-01, cloud, continued — clip names [#312](https://github.com/arieladi/Adi/pull/312), meters [#313](https://github.com/arieladi/Adi/pull/313), Group Tracks [#314](https://github.com/arieladi/Adi/pull/314)
+
+Three items of the 1 November list, each its own PR, stacked #310 ← #312 ← #313 ← #314 (the
+goldens move in #310 and #312, so the later ones stand on them).
+
+**#312, clip names (7.3 row 18).** `window/clip-names`.
+- A clip's name in its title strip, as Live draws it; what a screen reader hears names the clip.
+- The goldens mask the title strips' text; re-recorded once, on purpose.
+
+**#313, bars in the project's meters (7.3 row 11).** `window/meters`.
+- `adi::ui::barPosition`, `barSpan`, `meterAt` and `forEachBar` (`adi/ui/meters.hpp`, headless)
+  count bars as the text projection does.
+- The ruler numbers bars in the meters; the scrub area marks each change; the control bar, the
+  Status Bar and a screen reader follow the meter at the playhead.
+- Checks: shell 446, seams 123; `test_all.sh` 9676 across 105 suites, PASS.
+
+**#314, Group Tracks and Ungroup Tracks (7.3 row 33).** `window/group-commands`.
+- Ctrl/Cmd+G and Ctrl/Cmd+Shift+G, in the Edit menu and a track title's menu.
+- Each is one batch of existing ops, built from the snapshot (`adi/ui/track_edits.hpp`), so one
+  undo step.
+- The window has one selected track, so Group Tracks groups that one.
+- Found on the way: `track.delete`'s inverse captures only the row, so undoing Delete Track or
+  Ungroup brings the track back empty (new need N37, the engine's).
+- Checks: shell 466, seams 138; `test_all.sh` 9691 across 105 suites, PASS.
+- The picture puts ADI's new group beside Live's group figures.
+
+**CI.** #310 green on every finished leg when #314 opened (macOS legs queued, MSVC running).
+
+**Next:** the returns and Main pinned at the foot (row 17's remainder), then the Mix View's P1.
 
 ---
 
