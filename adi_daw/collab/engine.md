@@ -12,6 +12,25 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-01 — N2 bootstrap ready; N1 migration hardened
+
+### PR requested — N2
+
+**Title:** Bootstrap New projects at the history root (N2)
+**Head:** `engine/project-bootstrap`, `8daf5f0`; **base:** `engine/project-defaults` at `8394df5`. Depends on N1's project row/schema1.9; this is the second and last level of this stack. Please merge N1 first.
+
+`Store::createNewProject(path, error)` creates the project row, Main (id1), two MIDI/two audio tracks (ids2–5), all five mixer strips, 120 BPM and4/4 maps. All initialized state is the history root: zero ops, no Undo/Redo, persistent across reopening, undo, redo, branching and reverting to a snapshot named before any edit. The default track counts follow ADR-0209 §10 d10; CTZ is not selected. `adi_tool create` also uses the new factory. No new schema/op and no UI production edit.
+
+**For the window:** use `Store::createNewProject` for New in place of `Store::create`; remove its subsequent Main `track.create` bootstrap and its special `protectRoot(kNewProjectLabel)` workaround. Keep normal protection/error handling for actual edits. Read the root's five tracks and rate through the ordinary ProjectView snapshot; first user edits undo normally. `Store::create` remains row-only, `createEmpty` schema-only, for callers supplying another layout.
+
+**Validation:** GCC Debug/Werror, real libpd on/JUCE off: **9732 checks / 106 suites**, all validators clean; bootstrap24, store56, migration149. Six focused Clang Werror suites pass. The CLI creates schema1.9 with five tracks and zero ops. Compiled wrong-Main and bootstrap-as-an-op plants fail5 and7 checks. The official Live manual fetch is denied in this environment and no local copy exists: the four-track default comes from the director's explicit d10 ruling; no measured parity claim is made for the template names/order.
+
+**N1 correction:** its latest head is now `8394df5`, also contained in N2. Incoming project foreign keys are matched case-insensitively, as SQLite matches table identifiers. The mixed-case extension regression fails without this guard. This final combined full run includes that correction; old stored rates and extension data remain protected. The earlier N1 title/body still applies with this updated head.
+
+**PR requested via ADR-0210 d4:** GitHub API access is still Forbidden. Win/window can open these two branches directly; the director need not carry a message. Next independent branch starts from main for N5, the import-to-playing-clip path.
+
+---
+
 ## 2026-11-01 — ADR-0210 adopted; N1 new-project metadata ready
 
 The director's standing prompt of 1 November replaces the old order: the window's needs table is now the head of the engine queue. Read the updated LANES and ADR-0209/0210 on `win/adr-0209-ruled`, and the needs table on `window/log`. `origin/main` at `6fa069a` contains the merges of #297 through #302, including N6; none of those PRs remains queued here. New work starts from main, with at most two dependent branches. UI and device production files remain their lanes' work.
