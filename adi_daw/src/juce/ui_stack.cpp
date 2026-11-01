@@ -180,7 +180,8 @@ void StackRow::mouseDown(const juce::MouseEvent &e) {
         stack_.root.publishSelection();
     }
 }
-StackTab::StackTab(AdiRootComponent &r, const MixViewProvider &p) : root(r), provider_(&p) {
+const MixViewProvider &StackTab::provider() const noexcept { return root.mixProvider(); }
+StackTab::StackTab(AdiRootComponent &r) : root(r) {
     setTitle("STACK");
     scroll_.setViewedComponent(&list_, false);
     scroll_.setScrollBarsShown(true, false);

@@ -14,6 +14,23 @@ class FloatButton final : public juce::Button {
     FloatButton() : juce::Button("Mix View in a Window") {}
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+// [REF] (ADR-0209 d9): down auditions the ★ Reference, up lets go; a tap under 200 ms latches it.
+class ReferenceButton final : public juce::Button {
+  public:
+    explicit ReferenceButton(AdiRootComponent &r) : juce::Button("REF"), root_(r) {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+
+  private:
+    AdiRootComponent &root_;
+};
+// [Reference Track] (ADR-0209 §4, d11): an eye and the words, lit while the track shows.
+class EyeButton final : public juce::Button {
+  public:
+    EyeButton() : juce::Button("Reference Track") {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // The Mix View (ADR-0209, ruled 1 November 2026; UI-ARCHITECTURE §12): every channel's ADI-Q, ADI-L
 // and sidechain slot in one view. F4 or the control bar's Mix button opens it, docked in the centre
 // in place of the arrangement and its track controls; the browser, the strip down the edge and the
@@ -30,6 +47,9 @@ class MixViewPanel final : public juce::Component {
     // The tabs' widths, Live's 17 pt fields on its dark band.
     static constexpr std::array<int, kTabCount> kTabWidths{72, 52, 100, 100, 92};
     static constexpr int kHeaderHeight = 25;
+    // The ★ Reference strip under the tabs (ADR-0209 d11): the track against the arrangement's
+    // length, [REF] and [Reference Track].
+    static constexpr int kStripHeight = 30;
     explicit MixViewPanel(AdiRootComponent &);
     ~MixViewPanel() override;
     // The window's frame: the shown tab follows the view state, and STACK its rows.
@@ -42,12 +62,13 @@ class MixViewPanel final : public juce::Component {
     std::array<std::unique_ptr<juce::TextButton>, kTabCount> tabs;
     // At the band's right end: into a window of its own, onto any display, and back.
     FloatButton floating;
-  private:
-    // The slots the engine has not written yet come from the stub (window log, N16); declared
-    // before STACK, which reads through it.
-    StubMixViewProvider stub_;
-
-  public:
+    ReferenceButton ref;
+    EyeButton eye;
+    // What the strip says of the ★ Reference track: its name, or that none is yet.
+    juce::String referenceText() const;
+    // The strip's own rectangle, and where its timeline runs.
+    juce::Rectangle<int> strip() const noexcept;
+    juce::Rectangle<int> timeline() const noexcept;
     // STACK: ADR-0204 d1's one window, every channel's ADI-Q, sidechain slot and ADI-L.
     StackTab stack;
 

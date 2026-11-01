@@ -23,6 +23,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/reference_audition.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
@@ -698,6 +699,31 @@ void returnsStandBeforeMain() {
           "the rows carry the index; none, or a value outside the palette, is -1");
 }
 
+void referenceTapAndHold() {
+    section("the Reference's [REF] and Shift+R: a tap latches, a hold auditions (ADR-0209 d9)");
+    ui::ReferenceAudition ref;
+    check(!ref.on(), "off to begin with");
+    ref.press(0);
+    check(ref.on() && ref.held() && !ref.latched(), "down: on, held");
+    ref.press(30);
+    ref.release(199);
+    check(ref.on() && ref.latched() && !ref.held(), "up within 200 ms: a tap latches it; a repeat changed nothing");
+    ref.press(1000);
+    check(ref.on() && !ref.latched(), "down again: on, held, the latch let go");
+    ref.release(1100);
+    check(!ref.on(), "a second tap lets it go");
+    ref.press(2000);
+    ref.release(2200);
+    check(!ref.on(), "a hold of 200 ms or more auditions only while held");
+    ref.release(2300);
+    check(!ref.on(), "an up with nothing down changes nothing");
+    ref.press(3000);
+    ref.release(3010);
+    ref.press(4000);
+    ref.release(5000);
+    check(!ref.on(), "latched, then held and let go: off");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -718,6 +744,7 @@ int main() {
     metersCountBars();
     groupAndUngroupAsBatches();
     returnsStandBeforeMain();
+    referenceTapAndHold();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
