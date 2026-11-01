@@ -375,6 +375,12 @@ void Session::attach() {
     };
     rs.sendFor = [this](std::int64_t routingId) -> Node* { return strips_.sendFor(routingId); };
     rs.sendTailFor = [this](std::int64_t routingId) { return summing_.sendTailFor(routingId); };
+    // A return's send into itself ends in its loop's writer, and the loop's
+    // reader feeds the return a block later (Live's feedback loop).
+    rs.feedbackFor = [this](std::int64_t routingId) {
+        FeedbackLoop* loop = strips_.loopFor(routingId);
+        return loop == nullptr ? FeedbackNodes{} : FeedbackNodes{&loop->writer(), &loop->reader()};
+    };
     auto* clipSource = clips();
     auto* midiSource = midi_.get();
     rs.sourcesFor = [this, clipSource, midiSource](std::int64_t id) {
@@ -485,6 +491,7 @@ bool Session::rebuild() {
             gain->setDb(db);
         }
     }
+    strips_.setFormat(spec_.channels, spec_.maxFrames);    // a return's loop, for the graph built here
     strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
@@ -607,6 +614,25 @@ bool Session::refresh(const Store& store) {
 }
 
 void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }
+
+std::int32_t Session::feedbackTrip(std::int64_t routingId) {
+    FeedbackLoop* loop = strips_.loopFor(routingId);
+    SendNode* send = strips_.sendFor(routingId);
+    Graph* g = graph_.currentGraph();
+    if (loop == nullptr || send == nullptr || g == nullptr) return -1;
+    const NodeId sendAt = g->find(*send);
+    if (sendAt == kInvalidNode || g->find(loop->reader()) == kInvalidNode) return -1;
+    std::int64_t trackId = 0;
+    for (const rows::Routing& r : model_.routing)
+        if (r.id == routingId) trackId = r.srcId;
+    // The send's arrival is when its tap's output is ready; the chain's first
+    // node takes the junction's output as it is, so its arrival is the
+    // junction's. Every return's chain has its strip, so it has a first node.
+    const std::vector<Node*> chain = trackChain(trackId);
+    const NodeId first = chain.empty() ? kInvalidNode : g->find(*chain.front());
+    if (first == kInvalidNode) return -1;
+    return loop->delay() + g->arrivalOf(sendAt) - g->arrivalOf(first);
+}
 
 // ---------------------------------------------------------------------------
 // The scope's taps (ADR-0175)

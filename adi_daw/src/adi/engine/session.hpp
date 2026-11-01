@@ -209,6 +209,8 @@ public:
 
     /// ADR-0174: the group summing this graph plays. Message thread.
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
+    /// ADR-0163, ADR-0203 d3: the strips, sends and loops it plays. Message thread.
+    [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
 
     /// ADR-0175/0195: a track/point tap holding `seconds` of audio. The default
     /// is after the fader; spectrum.post is PreFader, spectrum.pre ChainInput.
@@ -219,6 +221,14 @@ public:
     [[nodiscard]] std::shared_ptr<const ScopeTap> openScope(std::int64_t trackId, double seconds = 10.0,
                                                          ScopePoint point = ScopePoint::PostFader);
     void closeScope(std::int64_t trackId, ScopePoint point = ScopePoint::PostFader);
+
+    /// ADR-0203 d3: how long a return's send into itself takes to come back,
+    /// in samples, in the graph now playing -- the loop's block, D, plus the
+    /// latency of the return's chain from its junction to the send's tap.
+    /// Its own track delay is not in it: that is reported latency, played by
+    /// compensation elsewhere, and the loop is not compensated. -1 for a row
+    /// that is not a loop playing. Message thread.
+    [[nodiscard]] std::int32_t feedbackTrip(std::int64_t routingId);
 
     /// Message thread: isolated offline analysis, then one undoable transaction.
     [[nodiscard]] GainStageResult autoGainStage(Store& store, const GainStageOptions& options = {});

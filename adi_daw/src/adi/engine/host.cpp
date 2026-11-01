@@ -158,6 +158,19 @@ void GraphHost::process(const AudioIo& io) noexcept {
         if (lastSnap_ != nullptr && keepHistory_)
             stats_.historyCarried += handover(*lastSnap_, *snap);
 
+        // ADR-0203 d3: a feedback loop in play again after time out of it
+        // starts empty. Decided here, against the graph that really played
+        // last block, and not by whoever last published: a loop the audio
+        // thread never stopped playing keeps its echoes, and one it did stop
+        // never plays what it held when it left.
+        const std::vector<Node*>& now = snap->graph().loopReaders();
+        const std::vector<Node*>* before = lastSnap_ != nullptr ? &lastSnap_->graph().loopReaders() : nullptr;
+        std::size_t j = 0;
+        for (Node* reader : now) {
+            while (before != nullptr && j < before->size() && std::less<Node*>()((*before)[j], reader)) ++j;
+            if (before == nullptr || j == before->size() || (*before)[j] != reader) reader->enterPlay();
+        }
+
         // NOT on the first graph. `lastSeq_` is 0 until something has played,
         // and ramping the opening milliseconds of every session is an artefact
         // rather than the absence of one -- there is nothing to fade FROM.

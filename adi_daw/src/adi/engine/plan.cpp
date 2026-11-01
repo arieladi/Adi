@@ -232,14 +232,14 @@ GraphPlan planGraph(const rows::Model& m) {
             plan.problems.push_back(ref + ": the master has no sends");
             continue;
         }
-        if (r->srcId == r->dstId) {
-            // Only a return may feed itself (ADR-0203 d3); the loop check
-            // below cannot see a loop of one, so it is refused here.
-            if (src == PlannedKind::Return)
-                plan.problems.push_back(ref + ": a return sending to itself (Live's feedback loop) is not played yet");
-            else
-                plan.problems.push_back(ref + ": this send would close a loop, a track into itself; only a "
-                                              "return may feed itself, so it is not planned");
+        // Only a return may feed itself (ADR-0203 d3): Live's feedback loop,
+        // planned as a feedback edge and closed outside the topology. Any
+        // other track into itself is a loop, and the check below cannot see a
+        // loop of one, so it is refused here.
+        const bool feedback = r->srcId == r->dstId;
+        if (feedback && src != PlannedKind::Return) {
+            plan.problems.push_back(ref + ": this send would close a loop, a track into itself; only a "
+                                          "return may feed itself, so it is not planned");
             continue;
         }
         // A return's own sends play as any track's do (ADR-0203 d3): off until
@@ -284,6 +284,7 @@ GraphPlan planGraph(const rows::Model& m) {
         // Pre leaves after the effects and before the strip: the source's
         // fader, pan and track delay do not reach it (ADR-0203 d3).
         e.tap = r->preFader ? Tap::PostFx : Tap::PostFader;
+        e.feedback = feedback;
         plan.edges.push_back(e);
     }
 
@@ -291,12 +292,13 @@ GraphPlan planGraph(const rows::Model& m) {
     //
     // Found here rather than left to `Graph::prepare`, which would also refuse
     // it (ADR-0055) but only after a caller had built every node. A plan that
-    // cannot be realised should say so before anything is constructed.
+    // cannot be realised should say so before anything is constructed. A
+    // return's feedback loop is not in the topology, so it is not counted.
     {
         const std::size_t n = plan.nodes.size();
         std::vector<std::size_t> indegree(n, 0);
         for (const auto& e : plan.edges)
-            if (e.to < n) ++indegree[e.to];
+            if (e.to < n && !e.feedback) ++indegree[e.to];
 
         std::vector<std::size_t> ready;
         for (std::size_t i = 0; i < n; ++i)

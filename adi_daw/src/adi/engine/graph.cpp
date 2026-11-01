@@ -607,6 +607,17 @@ void Graph::prepareLine(DelayLine& line, std::int32_t delaySamples) {
     line.setDelay(d);
 }
 
+namespace {
+
+/// ADR-0203 d3: an edge from a feedback loop's reader or into its writer is
+/// the loop's own, and its line never delays. (The reader's arrival and
+/// latency are 0, so it never sets its junction's arrival either.)
+bool loopEdge(const Node* from, const Node* to) noexcept {
+    return (from != nullptr && from->closesFeedback()) || (to != nullptr && to->closesFeedback());
+}
+
+}  // namespace
+
 void Graph::computeCompensation() {
     // ADR-0058 decision 2. A node's input is whole only once the LATEST of its
     // feeds has arrived, so its arrival is the max over inputs of (that input's
@@ -643,8 +654,14 @@ void Graph::computeCompensation() {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
-            const std::int32_t d = s.arrival - ready;
-            prepareLine(s.inDelays[k], d);
+            if (loopEdge(u.node, s.node)) {
+                // No ring at all, not even the headroom: it never delays,
+                // so a retap that tried to move it would be refused.
+                s.inDelays[k].prepare(channels_, 0, precision_ == Precision::Float64);
+                s.inDelays[k].setDelay(0);
+                continue;
+            }
+            prepareLine(s.inDelays[k], s.arrival - ready);
         }
         s.sideDelays.resize(s.sidechains.size());
         for (std::size_t k = 0; k < s.sidechains.size(); ++k) {
@@ -706,7 +723,7 @@ bool Graph::retapLatency() noexcept {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
-            const std::int32_t d = s.arrival - ready;
+            const std::int32_t d = loopEdge(u.node, s.node) ? 0 : s.arrival - ready;
             // EVERYTHING THAT FITS IS MOVED, even when something else does not.
             // A partial correction is closer to right than none, and the edges
             // that failed are about to be rebuilt anyway.
@@ -742,7 +759,8 @@ namespace {
 
 /// The required delay on one edge, from the arrivals already computed.
 std::int32_t requiredDelay(std::int32_t toArrival, std::int32_t fromArrival,
-                           const Node* fromNode) noexcept {
+                           const Node* fromNode, const Node* toNode) noexcept {
+    if (loopEdge(fromNode, toNode)) return 0;
     const std::int32_t ready =
         fromArrival + (fromNode != nullptr ? fromNode->latencySamples() : 0);
     const std::int32_t d = toArrival - ready;
@@ -794,11 +812,11 @@ std::size_t Graph::escalateLatency(Unresolved* left) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
         for (std::size_t k = 0; k < s.inputs.size() && k < s.inDelays.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
-            offer(s.inDelays[k], requiredDelay(s.arrival, u.arrival, u.node));
+            offer(s.inDelays[k], requiredDelay(s.arrival, u.arrival, u.node, s.node));
         }
         for (std::size_t k = 0; k < s.sidechains.size() && k < s.sideDelays.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
-            offer(s.sideDelays[k], requiredDelay(s.arrival, u.arrival, u.node));
+            offer(s.sideDelays[k], requiredDelay(s.arrival, u.arrival, u.node, s.node));
         }
     }
     if (left != nullptr) *left = unresolved;

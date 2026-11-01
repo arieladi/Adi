@@ -73,6 +73,11 @@ struct PlannedEdge {
     /// for by this id.
     std::int64_t routingId = 0;
     Tap tap = Tap::Tail;
+    /// A return's send into itself, Live's feedback loop (ADR-0203 d3): from
+    /// and to are the same return. It is not an edge of the topology -- the
+    /// realiser closes it through a ring a block long, outside the graph's
+    /// order -- so no cycle check counts it.
+    bool feedback = false;
 };
 
 struct GraphPlan {

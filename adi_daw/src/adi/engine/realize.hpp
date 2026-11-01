@@ -99,6 +99,16 @@ using TapFn = std::function<Node*(std::int64_t trackId, Tap tap)>;
 /// is; null refuses the send, named.
 using SendFn = std::function<Node*(std::int64_t routingId)>;
 
+/// The two nodes that close a return's feedback loop (ADR-0203 d3), by its
+/// routing row: the writer the send ends in and the reader that starts the
+/// return again. Caller-owned and kept across rebuilds; a null in either
+/// refuses the send, named.
+struct FeedbackNodes {
+    Node* writer = nullptr;
+    Node* reader = nullptr;
+};
+using FeedbackFn = std::function<FeedbackNodes(std::int64_t routingId)>;
+
 struct RealizeOptions {
     std::int32_t channels = 2;
 
@@ -122,6 +132,10 @@ struct RealizeOptions {
     /// a channel half of its own when it enters a summing group (ADR-0174),
     /// else null. Unset, nothing.
     SendFn sendTailFor;
+
+    /// What closes a return's send into itself (a plan's feedback edge).
+    /// Unset means no feedback loop can be made, and each is named.
+    FeedbackFn feedbackFor;
 };
 
 /// A live graph and everything it owns.
@@ -259,6 +273,11 @@ public:
         return chainEdges_;
     }
 
+    /// Every feedback loop's reader this graph plays (ADR-0203 d3), SORTED by
+    /// address, so a swap can tell, in one walk, which loops come back into
+    /// play: `Node::enterPlay`.
+    [[nodiscard]] const std::vector<Node*>& loopReaders() const noexcept { return loopReaders_; }
+
 private:
     friend std::unique_ptr<RealizedGraph> realize(const GraphPlan&,
                                                   const RealizeOptions&);
@@ -278,6 +297,7 @@ private:
     std::unordered_map<std::int64_t, Chain> chains_;
     std::vector<EdgeRecord> planEdges_;
     std::vector<ChainRecord> chainEdges_;
+    std::vector<Node*> loopReaders_;
     std::vector<std::string> problems_;
     std::string error_;
     bool ok_ = false;

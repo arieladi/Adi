@@ -349,6 +349,69 @@ void testASendIsCompensated() {
     check(got == 11.25f + 101.25f, "both paths meet in the master: " + std::to_string(got));
 }
 
+void testAReturnsLoopIsRealised() {
+    section("ADR-0203 d3 -- a return's send into itself: the send ends in a writer, a reader starts the return");
+
+    // Row 12, R into itself (a plan's feedback edge), at R's junction.
+    auto loopPlan = [](const SendRig& rig) {
+        GraphPlan p = planGraph(rig.m);
+        PlannedEdge e;
+        e.from = e.to = *p.indexOf(3);
+        e.kind = "send";
+        e.routingId = 12;
+        e.tap = Tap::PostFader;
+        e.feedback = true;
+        p.edges.push_back(e);
+        return p;
+    };
+    {
+        SendRig rig;
+        AddNode writer(0.0f), reader(0.0f);
+        rig.opts.sendFor = [&](std::int64_t id) -> Node* { return id == 12 ? &rig.send : nullptr; };
+        rig.opts.feedbackFor = [&](std::int64_t id) {
+            return id == 12 ? FeedbackNodes{&writer, &reader} : FeedbackNodes{};
+        };
+        auto r = realize(loopPlan(rig), rig.opts);
+        check(r->ok() && r->problems().empty(), "realised, no problems" + problems(*r));
+        check(rig.play(*r) == 11.25f, "the graph prepares and plays: A's own path, the loop empty");
+        const Graph& g = r->graph();
+        const NodeId ns = g.find(rig.send), nw = g.find(writer), nr = g.find(reader);
+        check(ns != kInvalidNode && nw != kInvalidNode && nr != kInvalidNode, "the send, the writer and the reader");
+        check(g.compensationFor(r->inputFor(3), ns, Bus::Main) >= 0 && g.compensationFor(ns, nw, Bus::Main) >= 0 &&
+                  g.compensationFor(nr, r->inputFor(3), Bus::Main) >= 0,
+              "joined R's junction -> the send -> the writer, and the reader -> R's junction");
+        check(g.compensationFor(ns, r->inputFor(3), Bus::Main) == -1, "and the send does not feed R: no cycle");
+        using Key = RealizedGraph::ChainKey;
+        auto has = [&](std::int64_t track, Key::Leg leg, const Node* from, std::uint64_t name) {
+            for (const auto& c : r->chainEdges())
+                if (c.key.track == track && c.key.leg == leg && c.key.from == from && c.key.name == name) return true;
+            return false;
+        };
+        check(has(3, Key::Leg::Send, nullptr, 12) && has(3, Key::Leg::Next, &rig.send, 0) &&
+                  has(3, Key::Leg::Into, &reader, 0) &&
+                  std::is_sorted(r->chainEdges().begin(), r->chainEdges().end(),
+                                 [](const auto& a, const auto& b) { return a.key < b.key; }),
+              "each of its edges keyed, the keys sorted");
+        check(r->loopReaders() == std::vector<Node*>{&reader}, "and the reader listed, for the swap");
+    }
+    // No loop for it: the row is named, nothing of it is in the graph, and
+    // the rest plays.
+    for (const bool unset : {true, false}) {
+        SendRig rig;
+        AddNode reader(0.0f);
+        rig.opts.sendFor = [&](std::int64_t id) -> Node* { return id == 12 ? &rig.send : nullptr; };
+        if (!unset) rig.opts.feedbackFor = [&](std::int64_t) { return FeedbackNodes{nullptr, &reader}; };
+        auto r = realize(loopPlan(rig), rig.opts);
+        const std::string what = unset ? "no loop function" : "a loop with no writer";
+        check(r->ok() && problems(*r).find("routing#12: no loop to close") != std::string::npos,
+              what + ": named" + problems(*r));
+        check(r->graph().find(rig.send) == kInvalidNode && r->graph().find(reader) == kInvalidNode &&
+                  r->loopReaders().empty(),
+              what + ": none of its nodes is placed");
+        check(rig.play(*r) == 11.25f, what + ": and the rest plays");
+    }
+}
+
 void testASendIsRefusedByName() {
     section("ADR-0203 d3 -- a send that cannot be made is named, and the rest plays");
 
@@ -738,6 +801,7 @@ int main() {
     testCompensationIsReachedFromAPlan();
     testASendLeavesAtItsTap();
     testASendIsCompensated();
+    testAReturnsLoopIsRealised();
     testASendIsRefusedByName();
     testASendsEdgesAreKeyedForTheNextGraph();
     testBypassChangesLatencyButNotTopology();

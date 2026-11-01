@@ -234,6 +234,24 @@ public:
     /// plugin.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
 
+    /// One end of a feedback loop (ADR-0203 d3): the writer a return's send
+    /// into itself ends in, a sink, or the reader that plays it back into the
+    /// return's junction a block later, a source. Its edge is the loop's own
+    /// and never the project's compensation -- not delayed, glided or grown --
+    /// so the loop's trip is the ring's block and the chain's latency alone:
+    /// not the arrival of whatever else feeds the return, nor the return's
+    /// own track delay, which its send reports as latency. Nothing else in the
+    /// project waits for it (the reader's arrival and latency are 0). Message
+    /// thread, asked with `latencySamples`.
+    [[nodiscard]] virtual bool closesFeedback() const noexcept { return false; }
+
+    /// Audio thread, at a swap, before the new graph's first block: this
+    /// feedback loop's reader is in the graph now playing and was not in the
+    /// one played last (ADR-0203 d3), so its loop starts empty rather than
+    /// playing what it held when it left. Only a loop's reader is told
+    /// (`RealizedGraph::loopReaders`). Bounded, allocation-free.
+    virtual void enterPlay() noexcept {}
+
     /// The `devices.always_process` escape hatch (ADR-0043), for a plugin that
     /// reports no tail and then produces one.
     [[nodiscard]] virtual bool alwaysProcess() const noexcept { return false; }

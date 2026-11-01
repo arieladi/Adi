@@ -501,6 +501,16 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         else if (!liveSends_.count(r.id)) send->restart();
         if (tapOf[r.id] == Tap::PostFader) postSendsOf[r.srcId].push_back(send.get());
     }
+    // A return's send into itself closes a loop through a ring of its own,
+    // kept per row as its send is (back in play, it empties itself:
+    // FeedbackLoop). Too small for the graphs now built, it is replaced, and
+    // the old one kept for any graph still naming it.
+    for (const PlannedEdge& e : plan.edges) {
+        if (!e.feedback) continue;
+        auto& loop = loops_[e.routingId];
+        if (loop && !loop->fits(channels_, maxFrames_)) retiredLoops_.push_back(std::move(loop));
+        if (!loop) loop = std::make_unique<FeedbackLoop>(channels_, maxFrames_);
+    }
 
     std::map<std::int64_t, bool> present;
     for (const PlannedNode& node : plan.nodes) {
@@ -637,6 +647,87 @@ void SendNode::process(const NodeIo& io) noexcept {
 SendNode* MixerStrips::sendFor(std::int64_t routingId) noexcept {
     const auto it = sends_.find(routingId);
     return it == sends_.end() ? nullptr : it->second.get();
+}
+
+FeedbackLoop* MixerStrips::loopFor(std::int64_t routingId) noexcept {
+    const auto it = loops_.find(routingId);
+    return it == loops_.end() ? nullptr : it->second.get();
+}
+
+// ---------------------------------------------------------------------------
+// FeedbackLoop (ADR-0203 d3)
+// ---------------------------------------------------------------------------
+
+FeedbackLoop::FeedbackLoop(std::int32_t channels, std::int32_t maxFrames)
+    : channels_(channels > 0 ? channels : 1),
+      capacity_(2 * std::max(maxFrames, kMinBlock)),
+      ring_(static_cast<std::size_t>(channels_) * static_cast<std::size_t>(capacity_), 0.0),
+      pendingDelay_(std::clamp(maxFrames, 1, capacity_ / 2)) {}
+
+bool FeedbackLoop::fits(std::int32_t channels, std::int32_t maxFrames) const noexcept {
+    return channels == channels_ && maxFrames <= capacity_ / 2;
+}
+
+void FeedbackLoop::prepareFormat(double sampleRate, std::int32_t maxFrames) noexcept {
+    pendingDelay_.store(std::clamp(maxFrames, 1, capacity_ / 2), std::memory_order_relaxed);
+    const double was = rate_.exchange(sampleRate, std::memory_order_relaxed);
+    if (was != 0.0 && was != sampleRate) restart_.store(true, std::memory_order_release);
+}
+
+void FeedbackLoop::read(const NodeIo& io) noexcept {
+    if (io.blockOffset == 0) {
+        // A block starts: what changed since the last one lands here, where
+        // the writer cannot be halfway through it.
+        if (restart_.exchange(false, std::memory_order_acq_rel)) empty();
+        delay_ = pendingDelay_.load(std::memory_order_relaxed);
+        blockStart_ = clock_;
+    }
+    const std::int64_t from = blockStart_ + io.blockOffset - delay_;
+    const std::int64_t to = from + io.frames;
+    // What may be played of [from, to): not played already (nor emptied),
+    // and written. Silence either side of it.
+    const std::int64_t lo = std::max(from, readEnd_);
+    const std::int64_t hi = std::max(lo, std::min(to, writtenEnd_));
+    for (std::int32_t c = 0; c < io.channels; ++c) {
+        const double* src = c < channels_ ? lane(c) : nullptr;
+        for (std::int64_t q = from; q < to; ++q) {
+            const double v = (src != nullptr && q >= lo && q < hi) ? src[slot(q)] : 0.0;
+            const auto i = static_cast<std::size_t>(io.blockOffset + (q - from));
+            if (io.wide()) io.out64[c][i] = v;
+            else io.out[c][i] = static_cast<float>(v);
+        }
+    }
+    readEnd_ = std::max(readEnd_, to);
+    clock_ = blockStart_ + io.blockOffset + io.frames;
+}
+
+void FeedbackLoop::write(const NodeIo& io) noexcept {
+    const std::int64_t at = blockStart_ + io.blockOffset;
+    // Blocks this writer was not run for are silence, not what the ring held
+    // before them.
+    for (std::int64_t q = std::max(writtenEnd_, at - capacity_); q < at; ++q)
+        for (std::int32_t c = 0; c < channels_; ++c) lane(c)[slot(q)] = 0.0;
+    for (std::int32_t c = 0; c < channels_; ++c) {
+        double* dst = lane(c);
+        const bool here = c < io.channels;
+        const double* in64 = here && io.in64 != nullptr ? io.in64[c] : nullptr;
+        const float* in = here && io.in != nullptr ? io.in[c] : nullptr;
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            const auto k = static_cast<std::size_t>(io.blockOffset + i);
+            double x = in64 != nullptr ? in64[k] : in != nullptr ? static_cast<double>(in[k]) : 0.0;
+            if (!std::isfinite(x)) {
+                guarded_.fetch_add(1, std::memory_order_relaxed);
+                x = 0.0;
+            } else if (std::fabs(x) < kFloor) {
+                x = 0.0;
+            } else if (std::fabs(x) > kCeiling) {
+                guarded_.fetch_add(1, std::memory_order_relaxed);
+                x = std::copysign(kCeiling, x);
+            }
+            dst[slot(at + i)] = x;
+        }
+    }
+    writtenEnd_ = std::max(writtenEnd_, at + io.frames);
 }
 
 StripNode* MixerStrips::stripFor(std::int64_t trackId) noexcept {
