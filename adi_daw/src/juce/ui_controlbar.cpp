@@ -130,6 +130,20 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         g.setFont(look::font(11.5f));
         g.drawText(text, content, juce::Justification::centred);
     }
+    if (ring_) {
+        g.setColour(look::accent);
+        g.drawRect(getLocalBounds(), 1);
+    }
+}
+void BarItem::focusGained(FocusChangeType cause) {
+    ring_ = cause != focusChangedByMouseClick;
+    if (onFocus)
+        onFocus();
+    juce::Button::focusGained(cause);
+}
+void BarItem::focusLost(FocusChangeType cause) {
+    ring_ = false;
+    juce::Button::focusLost(cause);
 }
 TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     struct Info {
@@ -171,6 +185,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         info.item->setTitle(info.title);
         info.item->setTooltip(juce::String(info.title) + ". " + info.tip);
         addAndMakeVisible(*info.item);
+        // The bar remembers the control that last had the focus; Link until one has.
+        info.item->onFocus = [this, item = info.item] { lastFocused_ = item; };
     }
     play.onClick = [this] { root_.command(AppCommands::PlayStop); };
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
@@ -247,4 +263,5 @@ void TransportBar::refresh() {
     play.setToggleState(root_.playing(), juce::dontSendNotification);
 }
 void TransportBar::paint(juce::Graphics &g) { g.fillAll(look::frame); }
+void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }
 } // namespace adi::ui

@@ -223,6 +223,9 @@ void DevicePanelView::paint(juce::Graphics &g) {
 bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
         return strip.action("device.remove", {{"id", id}});
+    // Live moves between devices with the left and right arrows (§41.4.1.5).
+    if (k == juce::KeyPress::leftKey || k == juce::KeyPress::rightKey)
+        return strip.focusNext(id, k == juce::KeyPress::rightKey);
     return false;
 }
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
@@ -433,6 +436,17 @@ bool DeviceChainStrip::edit(std::int64_t id, const std::string &p, engine::Param
 }
 bool DeviceChainStrip::action(const std::string &op, Payload p) {
     return submit && submit(op, std::move(p));
+}
+bool DeviceChainStrip::focusNext(std::int64_t from, bool forward) {
+    for (std::size_t i = 0; i < panels.size(); ++i)
+        if (panels[i]->id == from) {
+            if (forward && i + 1 < panels.size())
+                panels[i + 1]->grabKeyboardFocus();
+            else if (!forward && i > 0)
+                panels[i - 1]->grabKeyboardFocus();
+            return true;
+        }
+    return false;
 }
 DockResizer::DockResizer(AdiRootComponent &r) : root(r) {
     setMouseCursor(juce::MouseCursor::UpDownResizeCursor);

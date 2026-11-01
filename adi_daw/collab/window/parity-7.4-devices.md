@@ -3,6 +3,8 @@
 Drafted by the window lane (ADR-0208) from the Live 12 manual (`live12-manual-en.pdf`, the PDF's
 pages), for win to run against Live 12 (ADR-0108). Rows describe the behaviour in our words.
 Status as in `parity-7.2-shell.md`: built, partial, open, measure.
+"Online §" cites Ableton's online Live 12 manual (ableton.com/en/live-manual/12/, the
+2026-10-01 edition); see `parity-7.2-application.md`.
 
 | # | Live's behaviour | Manual / ADR | ADI in this PR | Status |
 |---|---|---|---|---|
@@ -20,3 +22,4 @@ Status as in `parity-7.2-shell.md`: built, partial, open, measure.
 | 12 | Dragging a control changes the parameter, one undo step per gesture | ADR-0124, ADR-0181 d5 | The control sends a bounded begin/value/end gesture; the document refuses it and the Status Bar says why: ParamOps has no UI producer yet (window log, N7) | open |
 | 13 | The mouse wheel over a control only scrolls | ADR-0203 d11 | Sliders ignore the wheel | built |
 | 14 | An Airwindows suite device shows only its active algorithm's controls | ADR-0198 | `panel::activeAlgorithmParams` | built |
+| 15 | In the Device View, the left and right arrows move between devices | online §41.4.1.5 | A device with the focus passes it to its neighbour; at either end it stays (`window/navigate-menu`) | built |

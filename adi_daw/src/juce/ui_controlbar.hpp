@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <functional>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
@@ -30,10 +31,18 @@ class BarItem final : public juce::Button {
     BarItem(const juce::String &text, Glyph glyph = Glyph::None, bool boxed = true,
             bool dropdown = false);
     void paintButton(juce::Graphics &, bool over, bool down) override;
+    void focusGained(FocusChangeType) override;
+    void focusLost(FocusChangeType) override;
     void setText(const juce::String &t);
+    // Live 12's focus ring: shown where the keyboard put the focus, never after a click.
+    bool focusRing() const noexcept { return ring_; }
+    std::function<void()> onFocus;
     juce::String text;
     Glyph glyph;
     bool boxed, dropdown;
+
+  private:
+    bool ring_ = false;
 };
 // Live's control bar (manual 3.1): tempo and the metronome on the left, the
 // transport and the loop in the middle, the global switches on the right. What the
@@ -46,6 +55,8 @@ class TransportBar final : public juce::Component {
     void resized() override;
     // Refreshes the live fields: the tempo, the position, the transport's state.
     void refresh();
+    // Navigate's Control Bar (§41.4.1.1): the focus returns to the control that last had it.
+    void focus();
     BarItem link{"Link"}, tap{"Tap"}, tempo{"120.00"},
         nudgeDown{{}, BarItem::Glyph::NudgeDown}, nudgeUp{{}, BarItem::Glyph::NudgeUp},
         signature{"4 / 4"}, metronome{{}, BarItem::Glyph::Metronome, true, true},
@@ -64,6 +75,7 @@ class TransportBar final : public juce::Component {
   private:
     std::vector<BarItem *> items();
     AdiRootComponent &root_;
+    BarItem *lastFocused_ = &link;
     // What the fields last showed, so a frame that changes nothing formats nothing.
     double shownBpm_ = -1;
     std::int64_t shownSixteenths_ = -1;

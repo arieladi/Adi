@@ -87,6 +87,8 @@ class DeviceChainStrip final : public juce::Component {
     bool folded(std::int64_t) const;
     bool edit(std::int64_t, const std::string &, engine::ParamEventKind, double);
     bool action(const std::string &, Payload);
+    // Moves the focus from a device to its neighbour; at either end it stays.
+    bool focusNext(std::int64_t from, bool forward);
     AdiRootComponent &root;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
