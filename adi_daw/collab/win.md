@@ -6,6 +6,47 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-01 — Fifty-eight lane PRs merged; ADR-0209 (the MIX View, proposed) and ADR-0210 (nobody waits); the prompts of 1 November
+
+**The director:** the window and engine lanes had stopped, the window waiting on the engine and both
+waiting on him; "merge whatever you need", two new standing prompts, "a better plan"; and a MIX View
+specification to record, which he later said was Gemini's draft to be gone through before a final
+decision.
+
+**Merged, in stack order (CI green on every leg; review was the PR bodies, the lane logs and CI, not
+a line-by-line read, at this volume):** win's #238 (ADR-0208); the engine's #237, #239 to #245, #247,
+#249 (VST3 at 64, the Pd prepare gate, the sends and returns stack); the devices' #250 (the zero-delay
+adapter), #253 (Hybrid Reverb), #259 (Limiter), #255 (log); the window's #246 to #296, forty-five PRs
+(the six rebased step-7 PRs, Live's look measured on 11.2.7, the mixer, Settings, the channel EQ
+window, the menus and keys, the grid and clip editing, the view filter and group tracks), #252 (log).
+Closed as superseded: #196, #198, #199, #203, #204, #205 (rebased as window/*), #206 (#278), #209
+(#253), #173 (mac retired). Still open: #297, #298, #300 to #302 (the export stack, waiting on CI
+after a merge of main), #299, #278 (draft), #207, #208, #210.
+
+**One conflict resolved by win,** `src/juce/device_model.hpp` on `engine/bypass-delay` (#297): #237's
+`handed_` beside the branch's atomic `always_`/`bypassed_`; merged main into the branch (a merge
+commit, no rewrite), pushed. The engine seat (Codex, no GitHub API) could not do it; ADR-0210 d5 makes
+this the rule.
+
+**ADR-0210, the plan.** The lanes were not blocked on each other's code: forty-five green window PRs
+and fifteen engine PRs sat unmerged for five days, the window's needs table (N1 to N35) was never the
+engine's queue, and the engine seat's PRs went through the director. Now: the needs table heads the
+engine lane's queue; the window never waits (a stub and a row); a seat without the API pushes and
+logs; win merges whenever the lanes push; win builds main on Windows for him. Not "all on the engine":
+the window has months of work that needs nothing from the engine, and two seats on the engine's files
+would conflict.
+
+**ADR-0209, the MIX View, recorded as PROPOSED** with the draft in full and win's critique (§9: nine
+points, four of them his to rule: Ctrl+R is Live's Rename; the CTZ hierarchy as a template, not the
+default Set; P1 cut to the shell with STACK and the ★ Reference; the analyser tabs from the existing
+analyser, Spacer and Fuser as the only new DSP). FEATURES rows carry "proposed"; LANES lists the MIX
+View after his ruling; UI-ARCHITECTURE §12 is the shape, marked proposed.
+
+**Also:** `docs/LANES.md` rewritten for ADR-0210; the two standing prompts of 1 November
+(`collab/prompts/2026-11-01-engine-lane.md`, `2026-11-01-window-lane.md`); Master Reference v1.3 in
+build. main at 044b660 fails MSVC `/WX` in `tests/test_plan.cpp` (a warning the cloud legs do not
+raise): fixed separately; the README count is re-measured on that build.
+
 ## 2026-10-25 — Master Reference v1.1 built (179 pages); ADR-0205; the old versions deleted
 
 **v1.1.** Built from ADR-0203, ADR-0204 and ADR-0205: a Part 0 "For the agents, and for the project's sanity" (pp. 7 to 16: the facts, the tags, the rules, what ADI is not, the eight commitments as the agents' means, the roster, the history), then Part I "The dream DAW" written for the director with every ability named, then the rest as before. No {OPEN:} or {WISH:} tag remains: a Live measurement is a note with its AWAITING row and Live version; the wishes were ruled; the rejections keep their reasons. The content scripts went through three subagent passes (write; two-lens verify; fix; recheck) and a text scan of the built PDF. On the director's order every older version was deleted (v0.9.7 to v1.0, and the generator backups except `*_v10.py.bak`), and v1.1 is split into chapters in `reference/DOCS/Adi Master Reference/` (tools/ADI-PDF-To-Chapters). Only v1.1 exists; it is rebuilt from `_build/`.

@@ -249,6 +249,8 @@ subject, say so in your log instead of writing it twice.
 | 0206 | win | `win/adr-0206-artcraft` | interoperability with the storytold ArtCraft suite: a converter plus a client of the control API; the exact time base and a schema reservation P1; the bridge P2; what waits on storytold P3 (director's request; the repositories read first) | used |
 | 0207 | win | `win/lanes` | no orchestrator: three lanes (win, engine, clones) with queues for months; 64-bit end to end; the evening's rulings of 25 October (director) | used |
 | 0208 | win | `win/lanes-5` | five lanes: the window (a Claude seat) and the devices (a Codex seat) get seats of their own; ADI-C joins the clones (director) | used |
+| 0209 | win | `win/adr-0209-mixview` | the MIX View (F4), Gemini's draft handed over by the director, recorded in full as a proposal with win's critique and nine questions; nothing ordered until he rules | used |
+| 0210 | win | `win/adr-0209-mixview` | nobody waits: the window's needs table heads the engine lane's queue; a seat without the GitHub API pushes and logs; win merges whenever the lanes push (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
