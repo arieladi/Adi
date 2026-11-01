@@ -6,7 +6,22 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <string>
 namespace adi::ui {
+// What a track's title shows (Live 12 manual 18.2): a name that begins with # shows
+// the track's number there, and the number follows the track when it moves; each
+// further # adds a leading zero. `position` counts from 1.
+inline std::string displayName(const std::string &name, std::size_t position) {
+    std::size_t hashes = 0;
+    while (hashes < name.size() && name[hashes] == '#')
+        ++hashes;
+    if (hashes == 0)
+        return name;
+    auto number = std::to_string(position);
+    if (number.size() < hashes)
+        number.insert(0, hashes - number.size(), '0');
+    return number + name.substr(hashes);
+}
 // View-only coordinates and selection. No committed project state is copied here.
 //
 // Every track the snapshot holds is a row, in the snapshot's order. Live draws its

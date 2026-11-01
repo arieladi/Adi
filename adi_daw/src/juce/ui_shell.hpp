@@ -46,7 +46,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         InsertAudioTrack,
         InsertMidiTrack,
         DeleteTrack,
-        LastId = DeleteTrack
+        RenameTrack,
+        LastId = RenameTrack
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -137,6 +138,8 @@ class AdiRootComponent final : public juce::Component {
     juce::Rectangle<int> browserArea() const noexcept { return browserArea_; }
     juce::Rectangle<int> chatArea() const noexcept { return chatArea_; }
     AppCommands &commands() noexcept { return commands_; }
+    // The project as it is now: what an action lands on, never this window's last frame.
+    std::shared_ptr<const engine::Snapshot> current() const { return view_.current(); }
     // The playhead in ticks, from the driver's feedback at the device's rate.
     std::int64_t timelineTick() const noexcept;
     // Asks the driver to move the playhead; reads the current cell on arrival.

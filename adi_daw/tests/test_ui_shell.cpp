@@ -503,9 +503,9 @@ int main(int argc, char **argv) {
         check(integrated.keyPressed(juce::KeyPress('t', cmdKey, 0)),
               "Ctrl/Cmd+T inserts an audio track");
         check(value(document->store(), "SELECT kind||' '||name FROM tracks WHERE id=3") ==
-                      "audio 3-Audio" &&
+                      "audio #-Audio" &&
                   arrangement.geometry.selectedTrack == 3,
-              "after the selected track, named by position, and selected");
+              "after the selected track, numbered by position, and selected");
         if (!integrated.error().empty())
             std::printf("status: %s\n", integrated.error().c_str());
         check(integrated.keyPressed(
@@ -520,6 +520,34 @@ int main(int argc, char **argv) {
               "Delete Track removes the selected track through its op");
         check(integrated.command(AppCommands::Undo) && document->synchronise(),
               "and undo brings it back");
+        integrated.frame();
+        // Rename (Ctrl/Cmd+R, the Edit menu; Live 12 manual 18.2).
+        check(displayName("#-Audio", 3) == "3-Audio" && displayName("##Drums", 7) == "07Drums" &&
+                  displayName("Bass", 2) == "Bass",
+              "a name that begins with # shows the track's number, a # per digit");
+        arrangement.geometry.selectedTrack = 2;
+        auto &headers = arrangement.headers;
+        check(integrated.keyPressed(juce::KeyPress('r', cmdKey, 0)) && headers.renaming() == 2 &&
+                  headers.editor.isVisible() && headers.editor.getText() == "Track",
+              "Ctrl/Cmd+R edits the selected track's name in its title bar");
+        headers.editor.setText("Lead", false);
+        check(headers.editor.keyPressed(juce::KeyPress(juce::KeyPress::tabKey)) &&
+                  value(document->store(), "SELECT name FROM tracks WHERE id=2") == "Lead" &&
+                  headers.renaming() == 3 && headers.editor.getText() == "#-Audio",
+              "Tab commits and moves on to the next track's title");
+        headers.editor.setText("Gone", false);
+        check(headers.editor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) &&
+                  value(document->store(), "SELECT name FROM tracks WHERE id=3") == "#-Audio" &&
+                  headers.renaming() == 0 && !headers.editor.isVisible(),
+              "Esc cancels and leaves the name as it was");
+        check(integrated.undoTitle(false) == "Undo Rename Track",
+              "a rename is one named undo step");
+        check(integrated.command(AppCommands::Undo) &&
+                  value(document->store(), "SELECT name FROM tracks WHERE id=2") == "Track",
+              "and undo restores the name");
+        arrangement.geometry.selectedTrack = 0;
+        check(!integrated.command(AppCommands::RenameTrack) && !integrated.error().empty(),
+              "with no track selected, Rename says why");
         integrated.frame();
         OpRequest clip;
         clip.opType = "clip.create";

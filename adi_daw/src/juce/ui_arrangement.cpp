@@ -59,7 +59,55 @@ TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTooltip("Drag sideways to scroll, up or down to zoom; double-click to zoom to the "
                "selection. Bars are counted in 4/4 until the project's meters reach the view.");
 }
+bool RenameEditor::keyPressed(const juce::KeyPress &k) {
+    if (k == juce::KeyPress::returnKey) {
+        if (onCommit)
+            onCommit();
+        return true;
+    }
+    if (k == juce::KeyPress::escapeKey) {
+        if (onCancel)
+            onCancel();
+        return true;
+    }
+    if (k.getKeyCode() == juce::KeyPress::tabKey) {
+        if (onTab)
+            onTab(!k.getModifiers().isShiftDown());
+        return true;
+    }
+    return juce::TextEditor::keyPressed(k);
+}
 TrackHeaderList::TrackHeaderList(ArrangementView &v) : view(v) {
+    addChildComponent(editor);
+    editor.setTitle("Track name");
+    editor.onCommit = [this] {
+        commitRename();
+        endRename();
+    };
+    editor.onCancel = [this] { endRename(); };
+    editor.onTab = [this](bool forward) {
+        // Commit, then move to the neighbouring title bar to rename a series.
+        const auto from = renaming_;
+        commitRename();
+        const auto now = view.root.current();
+        const auto &tracks = now->tracks;
+        for (std::size_t i = 0; i < tracks.size(); ++i)
+            if (tracks[i]->id == from) {
+                const bool has = forward ? i + 1 < tracks.size() : i > 0;
+                if (has) {
+                    beginRename(tracks[forward ? i + 1 : i - 1]->id);
+                    return;
+                }
+                break;
+            }
+        endRename();
+    };
+    editor.onFocusLost = [this] {
+        if (renaming_ != 0) {
+            commitRename();
+            endRename();
+        }
+    };
     setTitle("Track headers");
     setTooltip("Click to select a track; drag its lower part to resize it, with Alt to resize "
                "all. Right-click for the track's commands.");
@@ -179,6 +227,7 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     menu.addCommandItem(&commands.manager, AppCommands::InsertMidiTrack);
     if (header && geometry.selectedTrack != 0) {
         menu.addSeparator();
+        menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
         menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
     }
     menu.showMenuAsync(juce::PopupMenu::Options{}.withTargetScreenArea(
@@ -234,15 +283,65 @@ void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &) {
 void TrackHeaderList::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff242b35));
     int y = -view.geometry.scrollY;
+    std::size_t position = 0;
     for (const auto &t : view.reader().tracks()) {
         const int h = view.geometry.heightFor(t->id);
+        ++position;
         g.setColour(juce::Colour(t->id == view.geometry.selectedTrack ? 0xff416976 : 0xff343e4b));
         g.fillRect(1, y, getWidth() - 1, h - 1);
         g.setColour(juce::Colour(0xffe0e5ed));
-        g.drawText(juce::String::fromUTF8(t->name.c_str()), 8, y + 4, getWidth() - 12, 22,
-                   juce::Justification::centredLeft);
+        if (t->id != renaming_)
+            g.drawText(juce::String::fromUTF8(displayName(t->name, position).c_str()), 8, y + 4,
+                       getWidth() - 12, 22, juce::Justification::centredLeft);
         y += h;
     }
+}
+void TrackHeaderList::resized() {
+    if (renaming_ != 0)
+        beginRename(renaming_);
+}
+bool TrackHeaderList::beginRename(std::int64_t track) {
+    // The name as it is now, not as this window last drew it.
+    int y = -view.geometry.scrollY;
+    const auto now = view.root.current();
+    for (const auto &t : now->tracks) {
+        if (t->id == track) {
+            renaming_ = track;
+            view.geometry.selectedTrack = track;
+            editor.setBounds(4, y + 3, std::max(0, getWidth() - 8), 24);
+            if (!editor.isVisible() || editor.getName() != juce::String(track)) {
+                editor.setName(juce::String(track));
+                editor.setText(juce::String::fromUTF8(t->name.c_str()), false);
+                editor.selectAll();
+            }
+            editor.setVisible(true);
+            if (editor.isShowing())
+                editor.grabKeyboardFocus();
+            repaint();
+            return true;
+        }
+        y += view.geometry.heightFor(t->id);
+    }
+    return false;
+}
+bool TrackHeaderList::commitRename() {
+    const auto id = renaming_;
+    if (id == 0)
+        return false;
+    const auto text = editor.getText().toStdString();
+    const auto now = view.root.current();
+    const auto *t = now->findTrack(id);
+    if (t == nullptr || t->name == text)
+        return true;
+    return view.root.submitEdit("track.rename", {{"id", id}, {"name", text}}, "Rename Track");
+}
+void TrackHeaderList::endRename() {
+    renaming_ = 0;
+    editor.setName({});
+    editor.setVisible(false);
+    if (view.canvas.isShowing())
+        view.canvas.grabKeyboardFocus();
+    repaint();
 }
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {

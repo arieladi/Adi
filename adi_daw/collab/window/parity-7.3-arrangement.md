@@ -21,8 +21,10 @@ against Live 12 (ADR-0108). Rows describe the behaviour in our words. Status as 
 | 12 | A click in the track area places the insert marker; Space plays from it | §6.3; §41.20 | Built; the marker is drawn as a line when there is no time selection | built |
 | 13 | Home moves the insert marker to the beginning | §41.20, p. 1001 | Built | built |
 | 14 | Shift+Space continues from the stop point | §41.20, p. 1001 | Built | built |
-| 15 | Insert Audio Track Ctrl/Cmd+T; Insert MIDI Track Ctrl/Cmd+Shift+T, after the selected track, which the new one replaces as the selection | §41.19, p. 1000 | Built, in the Create menu and the right-click menus | built; measure Live's default names (ADI: "2-Audio", "3-MIDI") |
-| 16 | A track header's right-click menu holds the track's commands | §6, the track header's context menu | Insert Audio/MIDI Track and Delete Track so far | partial: Rename (Ctrl+R), Group, Freeze and the rest arrive with their ops |
+| 15 | Insert Audio Track Ctrl/Cmd+T; Insert MIDI Track Ctrl/Cmd+Shift+T, after the selected track, which the new one replaces as the selection | §41.19, p. 1000 | Built, in the Create menu and the right-click menus | built |
+| 16 | A track header's right-click menu holds the track's commands | §6, the track header's context menu | Insert Audio/MIDI Track, Rename and Delete Track so far | partial: Group, Freeze and the rest arrive with their ops |
+| 16a | Rename (Ctrl/Cmd+R, the Edit menu) edits the selected track's name in its title bar; Tab moves on to the next track's title to rename a series | §18.2, p. 394; §41.5 | Built (`window/rename`): Enter commits one undo step, Esc cancels, Tab and Shift+Tab move on; focus leaving commits | built |
+| 16b | A name that begins with # shows the track's number, which follows the track when it moves; more # add leading zeros | §18.2, p. 394 | Built: new tracks are named "#-Audio" and "#-MIDI" and show their position | built; measure Live's default names exactly |
 | 17 | The Main track is the arrangement's last row | §6 | Listed where the snapshot puts it, since the snapshot does not say which track is Main (N6) | partial |
 | 18 | Clips show their names | §6 | Drawn unnamed until the snapshot carries clip names (N6) | partial |
 | 19 | Dropping an audio file on a track makes a clip there | §6.1; §9 | The drop is accepted and the Status Bar says it waits for the engine's audio-clip op (N5); nothing is written | open |

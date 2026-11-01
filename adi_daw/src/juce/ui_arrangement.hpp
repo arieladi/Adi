@@ -41,18 +41,33 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
     juce::Point<float> last;
 };
 // One row per track, on the RIGHT of the clips as in Live's Arrangement View.
+// The title bar's own editor for Rename: Enter commits, Esc cancels, Tab commits
+// and moves on to the next track's title (Shift+Tab, the previous), as Live.
+class RenameEditor final : public juce::TextEditor {
+  public:
+    bool keyPressed(const juce::KeyPress &) override;
+    std::function<void()> onCommit, onCancel;
+    std::function<void(bool forward)> onTab;
+};
 class TrackHeaderList final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit TrackHeaderList(ArrangementView &);
     void paint(juce::Graphics &) override;
+    void resized() override;
+    // Rename (Ctrl/Cmd+R, the Edit menu): edit this track's name in its title bar.
+    bool beginRename(std::int64_t track);
+    std::int64_t renaming() const noexcept { return renaming_; }
+    RenameEditor editor;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
 
   private:
+    bool commitRename();
+    void endRename();
     ArrangementView &view;
-    std::int64_t resizeId = 0;
+    std::int64_t resizeId = 0, renaming_ = 0;
     int initialHeight = 0;
 };
 // ONE component paints every clip and hit-tests them itself (ADR-0044).
