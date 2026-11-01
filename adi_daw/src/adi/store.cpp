@@ -132,7 +132,7 @@ bool migrateToCurrent(SQLite::Database& db, int fromMinor, std::string& error) {
                 // at project; refuse an extension that would cascade on DROP.
                 if (db.execAndGet("SELECT count(*) FROM sqlite_master m, "
                         "pragma_foreign_key_list(m.name) f WHERE m.type='table' "
-                        "AND f.\"table\"='project'").getInt() != 0)
+                        "AND f.\"table\" COLLATE NOCASE='project'").getInt() != 0)
                     throw std::runtime_error("cannot migrate project default with extension foreign keys");
                 std::vector<std::string> adjuncts;
                 SQLite::Statement extra(db, "SELECT sql FROM sqlite_master WHERE tbl_name='project' "

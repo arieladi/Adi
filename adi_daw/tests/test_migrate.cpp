@@ -325,7 +325,7 @@ void testProjectMigrationRefusesDataLoss() {
         const auto p = buildOld(temp.path(), 8);
         {
             SQLite::Database db(p.string(), SQLite::OPEN_READWRITE);
-            if (foreignKey) db.exec("CREATE TABLE project_child(id INTEGER REFERENCES project(id) ON DELETE CASCADE);"
+            if (foreignKey) db.exec("CREATE TABLE project_child(id INTEGER REFERENCES PrOjEcT(id) ON DELETE CASCADE);"
                                     "INSERT INTO project_child VALUES(1)");
             else db.exec("ALTER TABLE project ADD COLUMN custom TEXT DEFAULT 'keep me'");
         }
