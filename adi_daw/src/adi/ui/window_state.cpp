@@ -5,6 +5,26 @@
 #include <cmath>
 #include <nlohmann/json.hpp>
 namespace adi::ui {
+FloatingState ViewStateStore::loadFloating(const std::string& key) const {
+    FloatingState s;
+    SQLite::Statement q(store_.db(),"SELECT value FROM ui_view WHERE scope_kind='project' AND scope_id IS NULL AND key=?");
+    q.bind(1,"floating."+key);
+    if(!q.executeStep()) return s;
+    try {
+        const auto j=nlohmann::json::parse(q.getColumn(0).getString());
+        s.monitor=j.at("monitor").get<std::string>();s.x=j.at("x");s.y=j.at("y");s.width=j.at("width");s.height=j.at("height");s.open=j.at("open");
+        if(s.width<100 || s.width>10000 || s.height<100 || s.height>10000)return {};
+    }catch(const std::exception&){return {};}
+    return s;
+}
+bool ViewStateStore::saveFloating(const std::string& key,const FloatingState& s,std::string& error){
+    try {
+        if(store_.readOnly()) {error="Project is read-only";return false;}
+        nlohmann::json j={{"monitor",s.monitor},{"x",s.x},{"y",s.y},{"width",s.width},{"height",s.height},{"open",s.open}};
+        SQLite::Statement q(store_.db(),"INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES('project',NULL,?,?) ON CONFLICT DO UPDATE SET value=excluded.value");
+        q.bind(1,"floating."+key);q.bind(2,j.dump());q.exec();error.clear();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
 WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defaults) const {
     WindowState state(defaults);
     SQLite::Statement query(

@@ -5,6 +5,12 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 namespace adi::ui {
+// A view that draws on its window's frame clock and never drives its own repaint
+// (ADR-0180 d1): the floating host calls frame() from the window's VBlank.
+class ClockedView : public juce::Component {
+  public:
+    virtual void frame() noexcept = 0;
+};
 class AdiRootComponent;
 class DeviceChainStrip;
 // One parameter of the DAW-drawn panel (ADR-0150, ADR-0198): its name, a control
