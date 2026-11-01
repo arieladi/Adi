@@ -108,6 +108,13 @@ via ADR-0195's Auto Gain Stage). So step 7.1 is not wiring an established
 mechanism — it is the **first** user of the publish side, and the first place
 its epoch discipline is exercised at all.
 
+*One dated exception, the director's (2026-10-29):* the project view (Bitwig's,
+Master Reference 10) reads each track's parent and kind from the project file
+through `rows::readModel`, as the engine's `MidiClips` does, on the message thread,
+only when its menu opens or while a group is chosen. It stands until the snapshot
+carries those fields (window log, N6); the director noted the engine's way may
+replace it if it proves better. Nothing else in the window reads past the snapshot.
+
 ### 2.3 `MainSplit` is a panel→slot map, not a `StretchableLayoutManager` — APPROVED
 
 *(Director, 2026-09-29. `UI-ARCHITECTURE.md:55` is amended, and the map is built

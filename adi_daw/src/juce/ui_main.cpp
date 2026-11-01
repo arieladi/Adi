@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/track_rows.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
 #include "app_audio_page.hpp"
@@ -163,6 +164,12 @@ class AdiApplication final : public juce::JUCEApplication,
                 report(document_->error());
         };
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
+        // Bitwig's project view: each track's group and kind, read from the project file until the
+        // snapshot carries them (N6). The director's choice, 29 October 2026; the engine's way may
+        // replace it if it proves better.
+        root->arrangement.trackRows = [this](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
+            trackRowsFrom(reader, rows::readModel(document_->store()), rows);
+        };
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());

@@ -22,6 +22,8 @@
 #include "adi/store.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include "adi/ui/track_rows.hpp"
+#include "adi/ui/track_tree.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -405,6 +407,78 @@ void aFrameKeepsItsSnapshot() {
 
 }  // namespace
 
+void projectViewTree() {
+    section("Bitwig's project view: groups in groups, a view keeps Main (Master Reference 10)");
+    // Figure 32's project: Drums holds Clap/Snare/Rimshot and Hats; Body holds Bass, Synths and
+    // Fx And Hits, which holds Rises and Hits; Main last.
+    const adi::ui::TrackTree tree({{1, 0, true, false, 0x40e0e0, "Drums"},
+                                   {2, 1, false, false, 0, "Clap/Snare/Rimshot"},
+                                   {3, 1, false, false, 0, "Hats & Percs"},
+                                   {4, 0, true, false, 0xe080c0, "Body"},
+                                   {5, 4, false, false, 0, "Bass"},
+                                   {6, 4, false, false, 0, "Synths"},
+                                   {7, 4, true, false, 0x4080ff, "Fx And Hits"},
+                                   {8, 7, false, false, 0, "Rises"},
+                                   {9, 7, false, false, 0, "Hits"},
+                                   {10, 0, false, true, 0, "Main"}});
+    const auto groups = tree.groups();
+    check(groups.size() == 3 && groups[0].id == 1 && groups[0].depth == 0 && groups[1].id == 4 &&
+              groups[1].depth == 0 && groups[2].id == 7 && groups[2].depth == 1 &&
+              groups[2].row->name == "Fx And Hits",
+          "the groups in the arrangement's order, each with how deep it sits");
+    check(tree.shows(7) == std::set<std::int64_t>{7, 8, 9, 10}, "a group shows itself, what is in it, and Main");
+    check(tree.shows(4) == std::set<std::int64_t>{4, 5, 6, 7, 8, 9, 10}, "and what is in the groups inside it");
+    check(tree.shows(0).size() == 10, "0 is the whole project");
+    check(tree.isGroup(7) && !tree.isGroup(8) && !tree.isGroup(99), "only a group is a group");
+    // A parent that loops back must not hang the window.
+    const adi::ui::TrackTree loop({{1, 2, true, false, 0, "a"}, {2, 1, true, false, 0, "b"}});
+    check(loop.groups().size() == 2 && loop.shows(1).count(2) == 1, "a loop in the parents ends the walk");
+    // Until the snapshot carries groups (N6), every track stands alone.
+    const adi::ui::TrackTree alone({{1, 0, false, false, 0, "Main"}, {2, 0, false, false, 0, "Track"}});
+    check(alone.groups().empty() && alone.shows(0).size() == 2, "without groups, nothing to choose");
+}
+
+void projectViewRowsFromTheFile() {
+    section("the project view's rows from the project file (the director, 29 October 2026)");
+    adi::test::TempDirectory temp("ui_seams", "rows");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    auto create = [&sub](std::int64_t id, const char* kind, const char* name, std::int64_t parent) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        if (parent != 0) r.payload["parent"] = parent;
+        r.label = "Create track";
+        return sub.submit(std::move(r)).ok;
+    };
+    check(create(1, "master", "Main", 0) && create(2, "group", "Body", 0) && create(3, "group", "Fx And Hits", 2) &&
+              create(4, "audio", "Hits", 3) && create(5, "midi", "Lead", 0),
+          "Main, Body holding Fx And Hits holding Hits, and Lead alone");
+    const ui::SnapshotReader reader(view.current());
+    std::vector<ui::TrackRow> rows;
+    ui::trackRowsFrom(reader, rows::readModel(*store), rows);
+    auto row = [&rows](std::int64_t id) -> const ui::TrackRow* {
+        for (const auto& r : rows)
+            if (r.id == id) return &r;
+        return nullptr;
+    };
+    check(rows.size() == reader.tracks().size() && rows.size() == 5, "a row for every track the snapshot shows");
+    bool inOrder = true;
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        inOrder = inOrder && rows[i].id == reader.tracks()[i]->id;
+    check(inOrder, "in the snapshot's order");
+    check(row(1) && row(1)->main && !row(1)->group && row(2) && row(2)->group && row(2)->parent == 0 && row(3) &&
+              row(3)->group && row(3)->parent == 2 && row(4) && row(4)->parent == 3 && !row(4)->group && row(5) &&
+              !row(5)->main && row(5)->parent == 0 && row(4)->name == "Hits",
+          "each with what it sits in, and whether it is a group or Main");
+    const ui::TrackTree tree(rows);
+    check(tree.groups().size() == 2 && tree.shows(3) == std::set<std::int64_t>{1, 3, 4},
+          "the tree: Fx And Hits shows itself, Hits and Main");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -420,6 +494,8 @@ int main() {
     aRefusedOpWritesNothing();
     everyWriteRefreshesTheView();
     aFrameKeepsItsSnapshot();
+    projectViewTree();
+    projectViewRowsFromTheFile();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

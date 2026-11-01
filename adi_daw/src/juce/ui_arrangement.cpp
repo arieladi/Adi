@@ -50,10 +50,17 @@ void ArrangementOverview::paint(juce::Graphics &g) {
     g.fillAll(look::band);
     const auto &tracks = view.reader().tracks();
     const double total = static_cast<double>(span()), w = getWidth();
+    // The tracks the project view shows, as the lanes do.
+    std::size_t shown = 0;
+    for (const auto &t : tracks)
+        if (view.geometry.shown(t->id))
+            ++shown;
     const float row = std::max(2.f, static_cast<float>(getHeight() - 4) /
-                                        static_cast<float>(std::max<std::size_t>(4, tracks.size())));
+                                        static_cast<float>(std::max<std::size_t>(4, shown)));
     float y = 2;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (!view.geometry.shown(tracks[i]->id))
+            continue;
         const float line = std::max(1.f, row - 1);
         g.setColour(look::panel);
         g.fillRect(0.f, y, static_cast<float>(w), line);
@@ -234,7 +241,7 @@ void ArrangementCanvas::realiseAccessible() {
     int y = -view.geometry.scrollY;
     for (const auto &t : view.reader().tracks()) {
         const int h = view.geometry.heightFor(t->id);
-        if (y + h > 0 && y < getHeight())
+        if (h > 0 && y + h > 0 && y < getHeight())
             for (const auto &c : t->clips) {
                 const double x = view.geometry.x(c->posTicks),
                              end = view.geometry.x(c->posTicks + c->lengthTicks);
@@ -267,9 +274,160 @@ void ArrangementCanvas::announce(const juce::String &words) {
 }
 ArrangementView::ArrangementView(AdiRootComponent &r)
     : root(r), overview(*this), ruler(*this), scrub(*this), headers(*this), canvas(*this) {
-    for (auto *c : std::array<juce::Component *, 6>{&overview, &ruler, &scrub, &headers, &canvas,
-                                                     &playhead})
+    for (auto *c : std::array<juce::Component *, 7>{&overview, &ruler, &scrub, &headers, &canvas,
+                                                     &playhead, &projectView})
         addAndMakeVisible(c);
+    // Each track alone, its place and name, until the snapshot carries more (N6).
+    trackRows = [](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
+        const auto &tracks = reader.tracks();
+        rows.resize(tracks.size());
+        for (std::size_t i = 0; i < tracks.size(); ++i) {
+            auto &row = rows[i];
+            row.id = tracks[i]->id;
+            row.parent = 0;
+            row.group = row.main = false;
+            row.colour = 0;
+            row.name = tracks[i]->name;
+        }
+    };
+    projectView.onClick = [this] {
+        projectViewMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&projectView));
+    };
+}
+namespace {
+// Bitwig's project view menu, as the director's screenshot shows it (28 October 2026): a dark
+// menu with a thin light edge, large rows, the view in use on a light grey row.
+constexpr juce::uint32 kMenuBack = 0xff2b2b2b, kMenuEdge = 0xff5a5a5a, kRowCurrent = 0xffc8c8c8,
+                       kTextCurrent = 0xff2b2b2b, kRowHover = 0xff484848, kText = 0xffe2e2e2;
+class ProjectViewMenuLook final : public juce::LookAndFeel_V4 {
+  public:
+    void drawPopupMenuBackground(juce::Graphics &g, int width, int height) override {
+        g.fillAll(juce::Colour(kMenuBack));
+        g.setColour(juce::Colour(kMenuEdge));
+        g.drawRect(0, 0, width, height, 1);
+    }
+    int getPopupMenuBorderSize() override { return 3; }
+};
+// One entry: indented by how deep it sits, a folder in its group's colour, its name.
+class ViewMenuItem final : public juce::PopupMenu::CustomComponent {
+  public:
+    static constexpr int kIndent = 14, kRow = 26;
+    ViewMenuItem(juce::String name, int depth, juce::Colour colour, bool current)
+        : name_(std::move(name)), depth_(depth), colour_(colour), current_(current) {}
+    void getIdealSize(int &width, int &height) override {
+        width = 56 + depth_ * kIndent + juce::roundToInt(juce::GlyphArrangement::getStringWidth(look::font(15.f), name_));
+        height = kRow;
+    }
+    void paint(juce::Graphics &g) override {
+        if (current_ || isItemHighlighted()) {
+            g.setColour(juce::Colour(current_ ? kRowCurrent : kRowHover));
+            g.fillRect(getLocalBounds());
+        }
+        // A folder: its body and the tab on its top left.
+        const float x = 10.f + static_cast<float>(depth_ * kIndent);
+        juce::Path folder;
+        folder.addRoundedRectangle(x, 8.f, 16.f, 12.f, 1.5f);
+        folder.addRoundedRectangle(x, 6.f, 7.f, 4.f, 1.f);
+        g.setColour(colour_);
+        g.fillPath(folder);
+        g.setColour(juce::Colour(current_ ? kTextCurrent : kText));
+        g.setFont(look::font(15.f));
+        const int textX = juce::roundToInt(x) + 25;
+        g.drawText(name_, textX, 0, std::max(0, getWidth() - textX - 8), getHeight(),
+                   juce::Justification::centredLeft);
+    }
+
+  private:
+    juce::String name_;
+    int depth_;
+    juce::Colour colour_;
+    bool current_;
+};
+} // namespace
+ProjectViewButton::ProjectViewButton() : juce::Button("Project View") {
+    setTitle("Project View");
+    setTooltip("Project view: see the whole project, or only a group and what is inside it.");
+    // A view command, as Bitwig's: it takes no keyboard focus.
+    setWantsKeyboardFocus(false);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    // Bitwig's icon: a list with its lower lines indented, and the menu's arrow beside it.
+    g.setColour(getToggleState() ? look::accent : over || down ? juce::Colours::white : look::textOnBand);
+    const auto r = getLocalBounds().toFloat().reduced(2.f, 3.f);
+    for (int line = 0; line < 3; ++line)
+        g.fillRect(r.getX() + (line == 0 ? 0.f : 4.f), r.getY() + static_cast<float>(line) * 4.f,
+                   line == 0 ? 12.f : 8.f, 2.f);
+    const float ax = r.getX() + 15.f, ay = r.getY() + 3.f;
+    juce::Path arrow;
+    arrow.addTriangle(ax, ay, ax + 7.f, ay, ax + 3.5f, ay + 4.f);
+    g.fillPath(arrow);
+}
+void ArrangementView::refreshTree() {
+    if (trackRows)
+        trackRows(reader(), tree_.rows());
+    else
+        tree_.rows().clear();
+}
+void ArrangementView::applyView() {
+    auto &group = root.state().viewGroup;
+    geometry.hidden.clear();
+    if (group != 0) {
+        refreshTree();
+        if (!tree_.isGroup(group))
+            group = 0;
+        else
+            for (const auto &row : tree_.rows())
+                if (!tree_.shows(group, row))
+                    geometry.hidden.push_back(row.id);
+        std::sort(geometry.hidden.begin(), geometry.hidden.end());
+    }
+    projectView.setToggleState(group != 0, juce::dontSendNotification);
+}
+void ArrangementView::chooseView(std::int64_t group) {
+    root.state().viewGroup = group;
+    applyView();
+    if (!geometry.shown(geometry.selection.track)) {
+        geometry.selection.track = 0;
+        geometry.selection.clip = 0;
+        for (const auto &t : reader().tracks())
+            if (geometry.shown(t->id)) {
+                geometry.selection.track = t->id;
+                break;
+            }
+    }
+    geometry.scrollY = 0;
+    changed();
+}
+juce::PopupMenu ArrangementView::projectViewMenu() {
+    refreshTree();
+    juce::PopupMenu menu;
+    if (menuLook_ == nullptr)
+        menuLook_ = std::make_unique<ProjectViewMenuLook>();
+    menu.setLookAndFeel(menuLook_.get());
+    const auto chosen = root.state().viewGroup;
+    int itemId = 0;
+    auto add = [&](std::int64_t group, int depth, const juce::String &name, juce::Colour colour) {
+        juce::PopupMenu::Item item(name);
+        item.itemID = ++itemId;
+        item.isTicked = group == chosen;
+        item.customComponent = new ViewMenuItem(name, depth, colour, item.isTicked);
+        item.action = [safe = juce::Component::SafePointer<ArrangementView>(this), group] {
+            if (safe)
+                safe->chooseView(group);
+        };
+        menu.addItem(std::move(item));
+    };
+    // Project's folder is grey, as Bitwig's; a group's is its track's colour as the window draws
+    // it, unless the project gives one.
+    add(0, 0, "Project", juce::Colour(0xff8a8a8a));
+    const auto &rows = tree_.rows();
+    for (const auto &g : tree_.groups()) {
+        const auto position = static_cast<std::size_t>(g.row - rows.data());
+        add(g.id, g.depth + 1, juce::String::fromUTF8(g.row->name.c_str()),
+            g.row->colour != 0 ? juce::Colour(0xff000000 | g.row->colour) : colourFor(position));
+    }
+    return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
 int ArrangementView::overviewHeight() const noexcept { return root.state().overview ? kOverviewHeight : 0; }
@@ -292,6 +450,8 @@ void ArrangementView::resized() {
     scrub.setBounds(lanesX, above + kRulerHeight, clipsW, kScrubHeight);
     canvas.setBounds(lanesX, top, clipsW, body);
     headers.setBounds(namesFirst_ ? 0 : kLeftMargin + clipsW, top, headerW, body);
+    // Bitwig's place for it: the top of the track names, level with the ruler.
+    projectView.setBounds(headers.getX() + 4, above + 5, 30, 17);
     frame(true);
 }
 juce::Colour ArrangementView::colourFor(std::size_t position) const {
@@ -673,6 +833,8 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         const int h = view.geometry.heightFor(t->id);
         const auto colour = view.colourFor(position);
         ++position;
+        if (h == 0)
+            continue; // left out by the project view
         g.setColour(look::separator);
         g.fillRect(0, y, 2, h);
         g.fillRect(0, y + h - 2, getWidth(), 2);
@@ -778,6 +940,11 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     std::size_t position = 0;
     for (const auto &t : tracks) {
         const int h = geo.heightFor(t->id);
+        if (h == 0) {
+            // Left out by the project view: no room, and its colour keeps its place.
+            ++position;
+            continue;
+        }
         const bool selected = t->id == geo.selection.track;
         lanes(y, h - 2, selected);
         g.setColour(look::separator);
@@ -871,7 +1038,7 @@ const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &tra
     const auto &geo = view.geometry;
     int top = -geo.scrollY;
     for (const auto &t : view.reader().tracks()) {
-        if (y >= top + 1 && y < top + 1 + kClipBarHeight)
+        if (geo.shown(t->id) && y >= top + 1 && y < top + 1 + kClipBarHeight)
             for (const auto &c : t->clips) {
                 const int left = static_cast<int>(geo.x(c->posTicks));
                 const int right = static_cast<int>(geo.x(c->posTicks + c->lengthTicks));
@@ -1009,19 +1176,33 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     }
     const auto &tracks = view.reader().tracks();
     if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) {
+        // Between the tracks shown: those the project view leaves out are passed over. At
+        // either end the selection stays; with none, it goes to the first track shown.
         std::size_t at = tracks.size();
         for (std::size_t i = 0; i < tracks.size(); ++i)
             if (tracks[i]->id == sel.track) {
                 at = i;
                 break;
             }
-        if (tracks.empty())
+        std::size_t to = tracks.size();
+        if (at == tracks.size()) {
+            for (std::size_t i = 0; i < tracks.size() && to == tracks.size(); ++i)
+                if (view.geometry.shown(tracks[i]->id))
+                    to = i;
+        } else if (code == juce::KeyPress::downKey) {
+            for (std::size_t i = at + 1; i < tracks.size() && to == tracks.size(); ++i)
+                if (view.geometry.shown(tracks[i]->id))
+                    to = i;
+        } else {
+            for (std::size_t i = at; i-- > 0 && to == tracks.size();)
+                if (view.geometry.shown(tracks[i]->id))
+                    to = i;
+        }
+        if (to == tracks.size())
+            to = at;
+        if (to == tracks.size())
             return true;
-        if (code == juce::KeyPress::downKey)
-            at = at == tracks.size() ? 0 : std::min(at + 1, tracks.size() - 1);
-        else
-            at = at == tracks.size() || at == 0 ? 0 : at - 1;
-        sel.track = tracks[at]->id;
+        sel.track = tracks[to]->id;
         sel.clip = 0;
         view.changed();
         return true;

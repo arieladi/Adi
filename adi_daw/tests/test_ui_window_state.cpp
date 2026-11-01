@@ -37,6 +37,7 @@ int main() {
     state.overview = false;
     state.inOut = false;
     state.largeTracks = false;
+    state.viewGroup = 42;
     state.gridSnap = false;
     state.gridFixed = true;
     state.gridTriplet = true;
@@ -49,6 +50,8 @@ int main() {
           "the Overview and In/Out are kept per window, shown until hidden");
     check(!restored.largeTracks && views.load("other").largeTracks,
           "Use Large Track Height is kept per window, on until switched off");
+    check(restored.viewGroup == 42 && views.load("other").viewGroup == 0,
+          "the project view's group is kept per window, the whole project until one is chosen");
     check(!restored.gridSnap && restored.gridFixed && restored.gridTriplet && restored.gridNarrow == 2 &&
               restored.gridFixedQuarters == .125 && views.load("other").gridSnap && !views.load("other").gridFixed,
           "the editing grid is kept per window, snapping and adaptive until changed");

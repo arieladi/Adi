@@ -48,6 +48,9 @@ struct WindowState {
     bool overview = true, inOut = true;
     // Bitwig's Use Large Track Height (Master Reference 10): off, every track at half height.
     bool largeTracks = true;
+    // Bitwig's project view (Master Reference 10, ADR-0112 d2): the group this window shows,
+    // with everything inside it and Main; 0 for the whole project.
+    std::int64_t viewGroup = 0;
     // The arrangement's editing grid (§6.10), as ArrangementGeometry::Grid holds it.
     bool gridSnap = true, gridFixed = false, gridTriplet = false;
     int gridNarrow = 0;

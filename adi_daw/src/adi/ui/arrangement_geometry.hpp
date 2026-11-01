@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <vector>
 #include <string>
 namespace adi::ui {
 // What a track's title shows (Live 12 manual 18.2): a name that begins with # shows
@@ -48,7 +49,15 @@ struct ArrangementGeometry {
     // at half its height, never below the smallest. The heights kept are the large ones.
     bool largeTracks = true;
     static constexpr int kMinTrackHeight = 24, kMaxTrackHeight = 512;
+    // The project view (Master Reference 10, ADR-0112 d2): the tracks a view leaves out, sorted.
+    // They take no room, so every walk down the rows passes over them; their heights are kept.
+    std::vector<std::int64_t> hidden;
+    bool shown(std::int64_t id) const noexcept {
+        return !std::binary_search(hidden.begin(), hidden.end(), id);
+    }
     int heightFor(std::int64_t id) const noexcept {
+        if (!shown(id))
+            return 0;
         const auto i = heights.find(id);
         const int h = i == heights.end() ? height : i->second;
         return largeTracks ? h : std::max(kMinTrackHeight, h / 2);
@@ -74,7 +83,7 @@ struct ArrangementGeometry {
                        b = std::max(selection.start, selection.end);
             for (const auto &t : reader.tracks())
                 for (const auto &c : t->clips)
-                    if (c->posTicks < b && c->posTicks + c->lengthTicks > a) {
+                    if (shown(t->id) && c->posTicks < b && c->posTicks + c->lengthTicks > a) {
                         resizeTrack(t->id, heightFor(t->id) + delta);
                         changed = true;
                         break;

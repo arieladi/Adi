@@ -485,12 +485,23 @@ bool MixerPanel::focusNeighbour(bool next) {
     // The same switch on the track before or after; out of view, it is brought into view
     // first, as Live's.
     const auto &tracks = root.reader().tracks();
+    const auto &geometry = root.arrangement.geometry;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         if (tracks[i]->id != from->track())
             continue;
-        if (next ? i + 1 >= tracks.size() : i == 0)
+        // The next or previous track the project view shows; at either end the focus stays.
+        std::size_t to = tracks.size();
+        if (next) {
+            for (std::size_t j = i + 1; j < tracks.size() && to == tracks.size(); ++j)
+                if (geometry.shown(tracks[j]->id))
+                    to = j;
+        } else {
+            for (std::size_t j = i; j-- > 0 && to == tracks.size();)
+                if (geometry.shown(tracks[j]->id))
+                    to = j;
+        }
+        if (to == tracks.size())
             return true;
-        const std::size_t to = next ? i + 1 : i - 1;
         reveal(to);
         for (const auto &other : strips_)
             if (other->isVisible() && other->track() == tracks[to]->id)
@@ -501,31 +512,37 @@ bool MixerPanel::focusNeighbour(bool next) {
 }
 void MixerPanel::placeColumns() {
     // Strips left to right, realising only the columns on screen (UI-ARCHITECTURE §10).
+    // Only the tracks the project view shows, as the lanes.
     const auto &tracks = root.reader().tracks();
-    const int total = static_cast<int>(tracks.size()) * kStripWidth;
+    const auto &geometry = root.arrangement.geometry;
+    std::size_t count = 0;
+    for (const auto &t : tracks)
+        if (geometry.shown(t->id))
+            ++count;
+    const int total = static_cast<int>(count) * kStripWidth;
     scrollX_ = std::clamp(scrollX_, 0, std::max(0, total - getWidth()));
     const std::size_t first = static_cast<std::size_t>(scrollX_ / kStripWidth);
     const std::size_t wanted =
-        std::min(tracks.size() - std::min(first, tracks.size()),
-                 static_cast<std::size_t>(getWidth() / kStripWidth + 2));
+        std::min(count - std::min(first, count), static_cast<std::size_t>(getWidth() / kStripWidth + 2));
     while (strips_.size() < wanted) {
         auto strip = std::make_unique<MixerStrip>(*this);
         addChildComponent(*strip);
         strips_.push_back(std::move(strip));
     }
-    for (std::size_t n = 0; n < strips_.size(); ++n) {
-        auto &s = *strips_[n];
-        if (n >= wanted) {
-            if (!s.dragging())
-                s.setVisible(false);
+    // The n-th strip takes the (first + n)-th track shown.
+    std::size_t n = 0, column = 0;
+    for (std::size_t i = 0; i < tracks.size() && n < wanted; ++i) {
+        if (!geometry.shown(tracks[i]->id) || column++ < first)
             continue;
-        }
-        const auto i = first + n;
+        auto &s = *strips_[n++];
         if (s.track() != tracks[i]->id && !s.dragging())
             s.bind(tracks[i]->id);
-        s.setBounds(static_cast<int>(i) * kStripWidth - scrollX_, 0, kStripWidth, getHeight());
+        s.setBounds(static_cast<int>(column - 1) * kStripWidth - scrollX_, 0, kStripWidth, getHeight());
         s.setVisible(true);
     }
+    for (; n < strips_.size(); ++n)
+        if (!strips_[n]->dragging())
+            strips_[n]->setVisible(false);
 }
 void MixerPanel::place() {
     if (vertical_) {
@@ -542,7 +559,7 @@ void MixerPanel::place() {
     std::size_t first = tracks.size();
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         const int h = geometry.heightFor(tracks[i]->id);
-        if (y + h > bodyTop && y < getHeight()) {
+        if (h > 0 && y + h > bodyTop && y < getHeight()) {
             first = std::min(first, i);
             ++wanted;
         }
@@ -557,7 +574,7 @@ void MixerPanel::place() {
     std::size_t used = 0;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
         const int h = geometry.heightFor(tracks[i]->id);
-        if (i >= first && used < wanted) {
+        if (h > 0 && i >= first && used < wanted) {
             auto &s = *strips_[used++];
             if (s.track() != tracks[i]->id && !s.dragging())
                 s.bind(tracks[i]->id);

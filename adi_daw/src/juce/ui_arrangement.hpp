@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/track_tree.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 namespace adi::ui {
@@ -154,6 +155,14 @@ class ArrangementCanvas final : public juce::Component,
     juce::Point<float> last;
     bool panning = false;
 };
+// Bitwig's project view button (Master Reference 10, Figure 32; the director, 28 October 2026):
+// at the top of the track names, a tree with its menu's arrow. Lit while a group is chosen, so a
+// view that leaves tracks out always says so.
+class ProjectViewButton final : public juce::Button {
+  public:
+    ProjectViewButton();
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // One pixel wide, above the canvas, transparent to the mouse (ADR-0050 d2): moving
 // it repaints two thin strips, never the arrangement.
 class ArrangementPlayhead final : public juce::Component {
@@ -226,8 +235,29 @@ class ArrangementView final : public juce::Component {
     ArrangementCanvas canvas;
     ArrangementPlayhead playhead;
     std::uint64_t canvasPaints = 0;
+    // Bitwig's project view: the button, its menu of the whole project and its groups, and the
+    // view chosen there, which the lanes, the track controls and the Mixer View all follow.
+    ProjectViewButton projectView;
+    // Fills in the project's tracks as the view sees them, in place. The snapshot gives each
+    // track its place and name only; until it carries their groups, kinds and colours
+    // (collab/window.md, N6), every track stands alone. Tests give it a tree.
+    std::function<void(const SnapshotReader &, std::vector<TrackRow> &)> trackRows;
+    const TrackTree &tree() const noexcept { return tree_; }
+    // Leaves out what the chosen view does not show, building the tree again only while a group
+    // is chosen; a group that is gone gives way to the whole project. A new generation with the
+    // same rows allocates nothing.
+    void applyView();
+    // Shows `group`, everything inside it and Main; 0 for the whole project. Kept per window; a
+    // selected track left out gives the selection to the first track shown.
+    void chooseView(std::int64_t group);
+    // The button's menu: the project, then its groups as a tree, as Bitwig's.
+    juce::PopupMenu projectViewMenu();
 
   private:
+    void refreshTree();
+    TrackTree tree_;
+    // The menu's own look, Bitwig's; a menu keeps only a weak reference to it.
+    std::unique_ptr<juce::LookAndFeel_V4> menuLook_;
     bool namesFirst_ = false;
     int controlsGap_ = 0;
 };
