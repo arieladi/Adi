@@ -67,6 +67,43 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-01, cloud, night — the Mix View's P1: shell [#320](https://github.com/arieladi/Adi/pull/320), its own window [#321](https://github.com/arieladi/Adi/pull/321), STACK [#322](https://github.com/arieladi/Adi/pull/322); the goldens' masks fixed in #315
+
+The stack now runs #310 ← #312 ← #313 ← #314 ← #315 ← #318 ← #319 ← #320 ← #321 ← #322.
+
+**#320, the Mix View's shell (ADR-0209 d11).** `window/mix-view-shell`.
+- `MixViewPanel`, docked in place of the arrangement and its track controls.
+- F4 and a Mix field in the control bar open it; the five tabs are in the draft's order, with
+  STACK first and the P2 tabs drawn empty.
+- The view and its tab are kept per window. New checklist: `collab/window/parity-mix-view.md`.
+
+**#321, in a window of its own.** `window/mix-view-detach`.
+- The same panel moves into the floating host's window and back.
+- F4 opens and closes that window; its own close button closes the Mix View.
+- Where it opens is kept per window, and it reopens there with the project.
+
+**#322, STACK.** `window/mix-view-stack`.
+- Pro-Q's instance list: a row per channel of the project view's group; dormant slots are flat
+  dimmed lines; the row under the mouse opens with ADI-Q's graph and drawers for the sidechain
+  slot and ADI-L.
+- `MixViewProvider` and its stub stand in for the engine's slots (N16).
+- The Channel EQ command and a row's Q and L now open STACK; the separate Channel EQ window is
+  gone.
+- Checks: shell 542; `test_all.sh` 9702 across 105 suites, PASS.
+
+**CI, and its fix.**
+- GUI shell failed on macOS and Windows for #315 and every PR above it: arrangement, devices,
+  mixer and mixer-view differed by 888 to 922 pixels.
+- The goldens' typography masks still summed the rows from the top, so Main's name and the drop
+  area's words, which #315 moved, showed each platform's font.
+- Fixed in #315 (masks at `ArrangementGeometry::rowTop`; four goldens re-recorded, only masks
+  moved) and merged up the stack. #315's Windows GUI job is green since.
+
+**Next:** the ★ Reference strip, [👁 Reference Track] and [REF] with Shift+R
+(`window/mix-view-reference`), against a stub until the role and the cue path arrive (N23).
+
+---
+
 ## 2026-11-01, cloud, later — the foot [#315](https://github.com/arieladi/Adi/pull/315), the track controls clipped [#318](https://github.com/arieladi/Adi/pull/318), a track's own colour [#319](https://github.com/arieladi/Adi/pull/319)
 
 The stack now runs #310 ← #312 ← #313 ← #314 ← #315 ← #318 ← #319.
