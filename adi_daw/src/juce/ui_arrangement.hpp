@@ -129,13 +129,23 @@ class ArrangementCanvas final : public juce::Component,
     // width of its right edge, where a drag changes its length.
     static constexpr int kClipBarHeight = 11, kClipEdge = 4;
     void mouseMove(const juce::MouseEvent &) override;
+    // Whether the clip's length is being changed from the keyboard: Enter with the insert
+    // marker at its end, the arrows, then Enter to keep it or Esc to cancel (§41.4.1.3).
+    bool keyResizing() const noexcept { return resizing_ != 0 && keyResize_; }
 
   private:
-    void announceSelection();
+    // What a screen reader hears after a key moves the selection.
+    void announce(const juce::String &);
+    // Live's left and right arrows (online §41.4.1.3): by the grid, or to a clip's edge with
+    // Ctrl (Option on the Mac); with Shift they select.
+    bool arrow(bool forward, const juce::ModifierKeys &);
+    // The nearest clip edge on the selected track after `tick`, or before it; `tick` if none.
+    std::int64_t clipEdge(std::int64_t tick, bool forward) const;
     // Deletes or switches the selected clip: one op, through the root.
     bool clipEdit(const char *op, Payload payload, const char *label);
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0;
-    std::int64_t resizing_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
+    std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
+    bool keyResize_ = false;
     // The clip's bar under a point, and whether the point is on its right edge.
     const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;

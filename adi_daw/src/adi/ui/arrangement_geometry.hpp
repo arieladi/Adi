@@ -108,6 +108,11 @@ struct ArrangementGeometry {
         const double cells = static_cast<double>(tick) / step;
         return std::llround((up ? std::ceil(cells - 1e-9) : std::floor(cells + 1e-9)) * step);
     }
+    // The grid line after `tick`, or the one before it: where an arrow key takes the insert
+    // marker, a clip or a selection's edge (online §41.4.1.3). Never before the start.
+    std::int64_t nextGridLine(std::int64_t tick, bool forward) const noexcept {
+        return forward ? snap(tick + 1, true) : std::max<std::int64_t>(0, snap(tick - 1, false));
+    }
     // This window's presented copy of the session's selection (ADR-0021): read at the
     // top of each frame, written back through the root. Never a second source of truth.
     Selection selection;

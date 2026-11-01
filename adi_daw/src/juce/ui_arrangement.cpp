@@ -161,14 +161,20 @@ TrackHeaderList::TrackHeaderList(ArrangementView &v) : view(v) {
 ArrangementCanvas::ArrangementCanvas(ArrangementView &v) : view(v) {
     setWantsKeyboardFocus(true);
     setTitle("Arrangement");
-    setDescription("Clips on a timeline. Arrow keys move between tracks and clips.");
+    setDescription("Clips on a timeline. Up and down move between tracks; left and right move the "
+                   "insert marker or the selection by the grid, or to a clip's edge with Ctrl "
+                   "(Option on the Mac); Shift selects.");
     // In the Info View's shape: what it is, then its keys in brackets, as Live's.
     setTooltip("Shows every track's clips in time. Click to place the insert marker or "
                "select a clip; drag to select time, drag a clip's bar to move it, or its right "
                "edge to change its length.\n\n"
                "[Ctrl/Cmd + Scroll Wheel] Zoom In/Out\n"
                "[Alt + Scroll Wheel] Adjust Track Height\n"
-               "[Arrow Keys] Move Between Tracks and Clips\n"
+               "[Up/Down] Move Between Tracks\n"
+               "[Left/Right] Move Insert Marker or Selection\n"
+               "[Ctrl/Option + Left/Right] Previous/Next Clip Edge\n"
+               "[Shift + Left/Right] Select\n"
+               "[Enter] at a Clip's End: Resize Clip\n"
                "[Delete] Delete Clip\n"
                "[0] Deactivate/Activate Clip");
 }
@@ -252,14 +258,12 @@ void ArrangementCanvas::realiseAccessible() {
     for (std::size_t i = used; i < accessible_.size(); ++i)
         accessible_[i]->setVisible(false);
 }
-void ArrangementCanvas::announceSelection() {
+void ArrangementCanvas::announce(const juce::String &words) {
     // The keyboard moves the selection; a screen reader says where it landed.
-    lastAnnouncement = view.geometry.selection.clip != 0
-                           ? describe(view.geometry.selection.track, view.geometry.selection.clip)
-                           : juce::String();
-    if (lastAnnouncement.isNotEmpty())
-        juce::AccessibilityHandler::postAnnouncement(
-            lastAnnouncement, juce::AccessibilityHandler::AnnouncementPriority::medium);
+    lastAnnouncement = words;
+    if (words.isNotEmpty())
+        juce::AccessibilityHandler::postAnnouncement(words,
+                                                     juce::AccessibilityHandler::AnnouncementPriority::medium);
 }
 ArrangementView::ArrangementView(AdiRootComponent &r)
     : root(r), overview(*this), ruler(*this), scrub(*this), headers(*this), canvas(*this) {
@@ -821,6 +825,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
     moving_ = resizing_ = 0;
+    keyResize_ = false; // a click ends a resize begun from the keyboard, as Esc does
     panning = e.mods.isCommandDown() && e.mods.isAltDown();
     if (e.mods.isPopupMenu()) {
         view.select(e.x, e.y, view.snaps(e.mods));
@@ -835,6 +840,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.start = c->posTicks;
             view.geometry.selection.end = c->posTicks + c->lengthTicks;
             resizing_ = c->id;
+            resizeStart_ = c->posTicks;
             resizeFrom_ = resizeLength_ = c->lengthTicks;
             view.changed();
             return;
@@ -878,7 +884,7 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     if (resizing_ != 0) {
         // The clip's end follows the mouse, to the nearest grid line while snapping, never
         // shorter than one grid step.
-        const auto start = view.geometry.selection.start;
+        const auto start = resizeStart_;
         const auto step = static_cast<std::int64_t>(view.geometry.gridQuarters() * textproj::kPPQ);
         const auto raw = view.geometry.tick(e.x);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
@@ -910,14 +916,14 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     view.frame(true);
 }
 void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
-    if (resizing_ != 0) {
+    if (resizing_ != 0 && !keyResize_) {
         const auto clip = resizing_, length = resizeLength_;
         resizing_ = 0;
         // One drag, one undo step; the start, and the audio under it, stay where they are.
         auto &sel = view.geometry.selection;
         if (length != resizeFrom_ &&
-            clipEdit("clip.resize", {{"id", clip}, {"pos", sel.start}, {"length", length}}, "Resize Clip"))
-            sel.end = sel.start + length;
+            clipEdit("clip.resize", {{"id", clip}, {"pos", resizeStart_}, {"length", length}}, "Resize Clip"))
+            sel.end = resizeStart_ + length;
         repaint();
     }
     if (moving_ != 0) {
@@ -954,51 +960,90 @@ void ArrangementCanvas::mouseMagnify(const juce::MouseEvent &e, float factor) {
     view.changed();
 }
 bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
+    const auto code = k.getKeyCode();
+    const auto mods = k.getModifiers();
+    auto &sel = view.geometry.selection;
+    // A clip's length from the keyboard (online §41.4.1.3): the arrows move its end by the
+    // grid, Enter keeps it as one undo step, Esc or any other key puts it back.
+    if (keyResizing()) {
+        if ((code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey) && !mods.isAnyModifierKeyDown()) {
+            const auto step = std::max<std::int64_t>(
+                1, static_cast<std::int64_t>(view.geometry.gridQuarters() * textproj::kPPQ));
+            const auto end = view.geometry.nextGridLine(resizeStart_ + resizeLength_,
+                                                        code == juce::KeyPress::rightKey);
+            resizeLength_ = std::max(step, end - resizeStart_);
+            repaint();
+            announce("Length " + juce::String(static_cast<double>(resizeLength_) / textproj::kPPQ, 2) + " beats");
+            return true;
+        }
+        const auto clip = resizing_, length = resizeLength_;
+        resizing_ = 0;
+        keyResize_ = false;
+        repaint();
+        if (code == juce::KeyPress::returnKey) {
+            if (length != resizeFrom_ &&
+                clipEdit("clip.resize", {{"id", clip}, {"pos", resizeStart_}, {"length", length}}, "Resize Clip"))
+                sel.insert = sel.start = sel.end = resizeStart_ + length;
+            view.changed();
+            announce(view.root.selectionText());
+            return true;
+        }
+        if (code == juce::KeyPress::escapeKey) {
+            announce("Resize cancelled");
+            return true;
+        }
+    }
     const auto &tracks = view.reader().tracks();
-    if (k.getKeyCode() == juce::KeyPress::upKey || k.getKeyCode() == juce::KeyPress::downKey) {
+    if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) {
         std::size_t at = tracks.size();
         for (std::size_t i = 0; i < tracks.size(); ++i)
-            if (tracks[i]->id == view.geometry.selection.track) {
+            if (tracks[i]->id == sel.track) {
                 at = i;
                 break;
             }
         if (tracks.empty())
             return true;
-        if (k.getKeyCode() == juce::KeyPress::downKey)
+        if (code == juce::KeyPress::downKey)
             at = at == tracks.size() ? 0 : std::min(at + 1, tracks.size() - 1);
         else
             at = at == tracks.size() || at == 0 ? 0 : at - 1;
-        view.geometry.selection.track = tracks[at]->id;
-        view.geometry.selection.clip = 0;
+        sel.track = tracks[at]->id;
+        sel.clip = 0;
         view.changed();
         return true;
     }
-    if (k.getKeyCode() == juce::KeyPress::leftKey || k.getKeyCode() == juce::KeyPress::rightKey) {
-        const auto *t = view.reader().findTrack(view.geometry.selection.track);
-        if (!t || t->clips.empty())
-            return false;
-        std::size_t i = 0;
-        for (; i < t->clips.size(); ++i)
-            if (t->clips[i]->id == view.geometry.selection.clip)
-                break;
-        if (k.getKeyCode() == juce::KeyPress::rightKey)
-            i = i == t->clips.size() ? 0 : std::min(i + 1, t->clips.size() - 1);
-        else
-            i = i > 0 && i < t->clips.size() ? i - 1 : 0;
-        const auto &c = t->clips[i];
-        view.geometry.selection.clip = c->id;
-        view.geometry.selection.start = c->posTicks;
-        view.geometry.selection.end = c->posTicks + c->lengthTicks;
-        view.changed();
-        announceSelection();
-        return true;
+    if (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey) {
+        if (arrow(code == juce::KeyPress::rightKey, mods))
+            return true;
+        return view.root.keyPressed(k);
     }
+    // Enter with the insert marker at a clip's end changes its length from the keyboard; at
+    // its start it would move the audio under it, which waits for a content offset.
+    if (code == juce::KeyPress::returnKey && !mods.isAnyModifierKeyDown() && sel.start == sel.end && sel.marked)
+        if (const auto *t = view.reader().findTrack(sel.track)) {
+            for (const auto &c : t->clips)
+                if (sel.insert == c->posTicks + c->lengthTicks) {
+                    resizing_ = c->id;
+                    keyResize_ = true;
+                    resizeStart_ = c->posTicks;
+                    resizeFrom_ = resizeLength_ = c->lengthTicks;
+                    announce("Resizing " + describe(sel.track, c->id) +
+                             ". Left and right change its length; Enter keeps it, Esc cancels.");
+                    repaint();
+                    return true;
+                }
+            for (const auto &c : t->clips)
+                if (sel.insert == c->posTicks) {
+                    view.root.say("Moving a clip's start waits for a content offset in clip.resize; "
+                                  "without one its audio would slide.");
+                    return true;
+                }
+        }
     // Live's Delete, and 0 to deactivate (§6.9), on the selected clip.
     if (const auto clip = view.geometry.selection.clip; clip != 0) {
         if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) {
             if (!clipEdit("clip.delete", {{"id", clip}}, "Delete Clip"))
                 return true;
-            auto &sel = view.geometry.selection;
             sel.clip = 0;
             sel.end = sel.start;
             sel.insert = sel.start;
@@ -1016,6 +1061,103 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         }
     }
     return view.root.keyPressed(k);
+}
+bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
+#if JUCE_MAC
+    const bool edgeKey = mods.isAltDown(), other = mods.isCommandDown() || mods.isCtrlDown();
+#else
+    const bool edgeKey = mods.isCtrlDown(), other = mods.isAltDown();
+#endif
+    if (other)
+        return false;
+    auto &geo = view.geometry;
+    auto &sel = geo.selection;
+    const auto *track = view.reader().findTrack(sel.track);
+    if (mods.isShiftDown()) {
+        // Shift selects from the insert marker, or moves the selection's far edge; a selection
+        // that is exactly a clip selects that clip (§6.9).
+        if (sel.start == sel.end)
+            sel.start = sel.end = sel.insert;
+        sel.end = edgeKey ? clipEdge(sel.end, forward) : geo.nextGridLine(sel.end, forward);
+        sel.clip = 0;
+        sel.marked = true;
+        const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
+        if (track != nullptr)
+            for (const auto &c : track->clips)
+                if (c->posTicks == lo && c->posTicks + c->lengthTicks == hi)
+                    sel.clip = c->id;
+        view.changed();
+        announce(sel.clip != 0 ? describe(sel.track, sel.clip) : view.root.selectionText());
+        return true;
+    }
+    if (edgeKey) {
+        // The previous or next clip edge on the track (the locators are not built yet).
+        const auto from = sel.start == sel.end ? sel.insert
+                          : forward            ? std::max(sel.start, sel.end)
+                                               : std::min(sel.start, sel.end);
+        sel.insert = sel.start = sel.end = clipEdge(from, forward);
+        sel.clip = 0;
+        sel.marked = true;
+        view.locate();
+        view.changed();
+        announce(view.root.selectionText());
+        return true;
+    }
+    if (sel.clip != 0) {
+        // Move Clips with Arrow Keys, on by default in Live (§41.1.1): the selected clip moves
+        // to the next or previous grid line, one undo step a press.
+        if (track != nullptr)
+            for (const auto &c : track->clips)
+                if (c->id == sel.clip) {
+                    const auto id = c->id, from = c->posTicks, length = c->lengthTicks;
+                    const auto target = geo.nextGridLine(from, forward);
+                    if (target != from &&
+                        clipEdit("clip.move", {{"id", id}, {"to", target}, {"track", sel.track}}, "Move Clip")) {
+                        sel.insert = sel.start = target;
+                        sel.end = target + length;
+                        view.changed();
+                        announce(view.root.selectionText());
+                    }
+                    break;
+                }
+        return true;
+    }
+    if (sel.start != sel.end) {
+        // A time selection moves by the grid when it holds no clip; moving part of a clip
+        // needs it split first.
+        const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
+        if (track != nullptr)
+            for (const auto &c : track->clips)
+                if (c->posTicks < hi && c->posTicks + c->lengthTicks > lo) {
+                    view.root.say("Moving part of a clip waits for the engine's split (window log, N17).");
+                    return true;
+                }
+        const auto delta = geo.nextGridLine(lo, forward) - lo;
+        sel.start += delta;
+        sel.end += delta;
+        sel.insert = lo + delta;
+        view.locate();
+        view.changed();
+        announce(view.root.selectionText());
+        return true;
+    }
+    // The insert marker moves by the grid.
+    sel.insert = sel.start = sel.end = geo.nextGridLine(sel.marked ? sel.insert : 0, forward);
+    sel.marked = true;
+    view.locate();
+    view.changed();
+    announce(view.root.selectionText());
+    return true;
+}
+std::int64_t ArrangementCanvas::clipEdge(std::int64_t tick, bool forward) const {
+    auto best = tick;
+    if (const auto *t = view.reader().findTrack(view.geometry.selection.track))
+        for (const auto &c : t->clips)
+            for (const auto edge : {c->posTicks, c->posTicks + c->lengthTicks})
+                if (forward ? edge > tick && (best == tick || edge < best)
+                            : edge < tick && (best == tick || edge > best))
+                    best = edge;
+    return best;
 }
 bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
     return files.size() == 1;
