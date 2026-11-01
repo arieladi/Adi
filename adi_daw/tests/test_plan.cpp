@@ -241,12 +241,12 @@ void testASendThatCannotPlayIsRefusedByRow() {
         rows::Model r;
         r.tracks = {track(1, "master", "Master"), track(2, "audio", "X"), track(4, "return", "R1"),
                     track(5, "return", "R2"), track(6, "audio", "Y")};
-        rows::Routing off = route(33, 4, 6, "send", "user");
-        off.enabled = false;   // Enable Send off: planned all the same
+        rows::Routing offSend = route(33, 4, 6, "send", "user");
+        offSend.enabled = false;   // Enable Send off: planned all the same
         r.routing = {route(30, 2, 4, "send", "user"),    // X -> R1
                      route(31, 4, 5, "send", "user"),    // R1 -> R2: plays
                      route(32, 5, 4, "send", "user"),    // R2 -> R1: a ring between returns
-                     off};                               // R1 -> Y, switched off
+                     offSend};                           // R1 -> Y, switched off
         const GraphPlan pr = planGraph(r);
         const PlannedEdge* r12 = sendEdge(pr, 31);
         check(r12 != nullptr && r12->tap == Tap::PostFader && !mentions(pr, "routing#31"),
@@ -263,10 +263,10 @@ void testASendThatCannotPlayIsRefusedByRow() {
         rows::Model r;
         r.tracks = {track(1, "master", "Master"), track(2, "audio", "X"), track(4, "return", "R1"),
                     track(5, "return", "R2")};
-        rows::Routing pre = route(41, 4, 4, "send", "user");
-        pre.preFader = true;
+        rows::Routing preSelf = route(41, 4, 4, "send", "user");
+        preSelf.preFader = true;
         r.routing = {route(40, 2, 4, "send", "user"),   // X -> R1
-                     pre,                               // R1 into itself, Pre
+                     preSelf,                           // R1 into itself, Pre
                      route(42, 4, 5, "send", "user"),   // R1 -> R2
                      route(43, 5, 5, "send", "user")};  // R2 into itself
         const GraphPlan pr = planGraph(r);

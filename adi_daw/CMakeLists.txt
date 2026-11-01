@@ -230,6 +230,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/render/queue.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
@@ -677,6 +678,10 @@ add_executable(adi_device_model_tests tests/test_device_model.cpp)
 target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
 
+add_executable(adi_bypass_delay_tests tests/test_bypass_delay.cpp)
+target_link_libraries(adi_bypass_delay_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_bypass_delay_tests COMMAND adi_bypass_delay_tests)
+
 add_executable(adi_device_ops_tests tests/test_device_ops.cpp)
 target_link_libraries(adi_device_ops_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_ops_tests COMMAND adi_device_ops_tests)
@@ -717,6 +722,14 @@ add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
+
+# Keep the master console renders in their own suite: the combined mixer suite
+# exceeded CI's per-test timeout under MSVC Debug.
+# Both targets use the same fixtures and checks, with no shorter audio renders.
+add_executable(adi_master_summing_tests tests/test_mixer.cpp)
+target_compile_definitions(adi_master_summing_tests PRIVATE ADI_TEST_MASTER_SUMMING=1)
+target_link_libraries(adi_master_summing_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_master_summing_tests COMMAND adi_master_summing_tests)
 
 # ADR-0165: plug-in parameter automation, the engine side.
 add_executable(adi_param_automation_tests tests/test_param_automation.cpp)
@@ -1306,6 +1319,15 @@ add_test(NAME adi_automation_tests COMMAND adi_automation_tests)
 add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
 target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
+
+# ADR-0071/0205: queued offline master renders, isolated and published without replacement.
+add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
+target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
+
+add_executable(adi_offline_capture_tests tests/test_offline_capture.cpp)
+target_link_libraries(adi_offline_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_offline_capture_tests COMMAND adi_offline_capture_tests)
 
 
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)

@@ -40,6 +40,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -173,6 +174,15 @@ public:
 
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
+
+    /// Opt-in device bypass (ADR-0203 d4). The graph keeps a dry delay at
+    /// graph precision, including while the node is active, and owns its
+    /// history across rebuilds. Bypass never removes the declared latency.
+    [[nodiscard]] virtual bool hasBypass() const noexcept { return false; }
+    [[nodiscard]] virtual bool bypassed() const noexcept { return false; }
+    /// Called only after the graph sampled bypass for this block. Do not
+    /// re-read the switch: a concurrent toggle must not select undelayed dry.
+    virtual void processActive(const NodeIo& io) noexcept { process(io); }
 
     /// Notification when scheduling skips a silent node. No DSP work; a strip
     /// uses it to keep watched rings current through silence, and to land a
@@ -838,6 +848,15 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
+    /// Offline owner only, between process calls with no concurrent rendering,
+    /// retap or rebuild. Copies a node's last complete block at graph precision;
+    /// out64 retains double samples and extra destination channels are silence.
+    /// False (and clears output) for an invalid node, stale/unprepared graph or
+    /// a frame count different from the last successful process call.
+    [[nodiscard]] bool copyNodeOutput(NodeId, const AudioIo&) const noexcept;
+    /// Cached arrival + node latency, at the same output point. No device call.
+    [[nodiscard]] std::optional<std::int64_t> outputLatencyOf(NodeId) const noexcept;
+
     // --- what happened -----------------------------------------------------
 
     [[nodiscard]] bool ok() const noexcept { return ok_; }
@@ -985,9 +1004,17 @@ public:
     /// Sorting and random-number generation happen here, never in process().
     void permuteLevelsForTest(std::uint32_t seed);
 
+    /// Audio-thread handover, before the old graph is retired. Device nodes
+    /// retain their identity across rebuilds; the matching table is sorted
+    /// during prepare, so this walk allocates nothing.
+    std::int32_t adoptBypassHistory(const Graph& old) noexcept;
+
 private:
+    void writeNodeOutput(NodeId, const AudioIo&) const noexcept;
     struct Slot {
         Node* node = nullptr;
+        bool hasBypass = false;
+        DelayLine dryDelay;
         std::vector<NodeId> inputs;
         std::vector<NodeId> sidechains;
         std::vector<DelayLine> inDelays;     ///< parallel to `inputs`
@@ -1038,6 +1065,8 @@ private:
         std::uint64_t dozeGlides = kLinesUnchecked;
     };
     static constexpr std::uint64_t kLinesUnchecked = ~std::uint64_t{0};
+
+    std::vector<std::pair<Node*, NodeId>> bypassNodes_;
 
     bool topoSort();
 
@@ -1162,6 +1191,7 @@ private:
     std::int32_t latencyHeadroom_ = 8192;
     bool ok_ = false;
     bool prepared_ = false;
+    std::int32_t renderedFrames_ = 0;
     bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;
