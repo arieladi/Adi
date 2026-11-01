@@ -14,10 +14,10 @@ pushes and logs, and win merges whenever the lanes push.
 | Lane | Account and session | Owns | Never |
 |---|---|---|---|
 | **win** (this one) | Claude, the "ADI Suite Project" session on ORC-VST | coordination: ADRs, FEATURES, the Master Reference, reviews and merges of every PR, the README count, the collab tables, the drone's missions, measurements against Live, the Windows build the director opens | engine or UI code of its own beyond small fixes and one-hunk merge conflicts; it reviews |
-| **engine** | Claude Max or Codex, its own session ("ADI engine lane") | the graph, the hosts, the format and export code: `src/adi/engine/**`, `src/adi/*.cpp` store and ops, `src/juce/*host*`, `src/juce/play*`, `src/juce/device_model*`, `docs/format/**`; **first the window's needs table (ADR-0210 d2)**, then the P1 engine and host work (ADR-0209's engine part once ruled); queue §3 | ADR numbers (asks win), `docs/FEATURES.md`, the README count, the Master Reference, the UI, the device tier, `plugins/` |
-| **window** (ADR-0208) | a Claude work seat of its own ("ADI window lane") | the window: `src/adi/ui/**`, `src/juce/ui_*`, `src/juce/app*`, their tests, `docs/STEP-7-PLAN.md`, `docs/UI-ARCHITECTURE.md`, `collab/window.md` and its needs table; the MIX View once ADR-0209 is ruled; queue §3b | the engine, the device tier, `plugins/`, ADR numbers; **waiting** (ADR-0210 d3) |
+| **engine** | Claude Max or Codex, its own session ("ADI engine lane") | the graph, the hosts, the format and export code: `src/adi/engine/**`, `src/adi/*.cpp` store and ops, `src/juce/*host*`, `src/juce/play*`, `src/juce/device_model*`, `docs/format/**`; **first the window's needs table (ADR-0210 d2)**, then the P1 engine and host work (ADR-0209's engine part, d11's P1 pieces with the needs); queue §3 | ADR numbers (asks win), `docs/FEATURES.md`, the README count, the Master Reference, the UI, the device tier, `plugins/` |
+| **window** (ADR-0208) | a Claude work seat of its own ("ADI window lane") | the window: `src/adi/ui/**`, `src/juce/ui_*`, `src/juce/app*`, their tests, `docs/STEP-7-PLAN.md`, `docs/UI-ARCHITECTURE.md`, `collab/window.md` and its needs table; the Mix View (ADR-0209 d11: the shell, STACK and the ★ Reference at P1); queue §3b | the engine, the device tier, `plugins/`, ADR numbers; **waiting** (ADR-0210 d3) |
 | **devices** (ADR-0208) | a Codex work seat of its own ("ADI devices lane") | Live's devices as ADI's built-ins: `pd/**`, `src/adi/dsp/**`, `src/adi/pd_builtins/**`, `cmake/devices/**`, their tests; `src/juce/pd_*` for the zero-delay adapter only; queue §4b | the graph, the UI, `plugins/`, ADR numbers |
-| **clones** | Codex Pro, the director's own programmer and reverse-engineer session | the director's clones as suite members (ADI-Q, ADI-L, **ADI-C**, ADI Still, ADI Prism; the analyser clones of ADR-0209 once ruled) built from measurements, in `plugins/`; the FilmCraft contribution; then the reference reading | everything outside `plugins/`; ADR numbers |
+| **clones** | Codex Pro, the director's own programmer and reverse-engineer session | the director's clones as suite members (ADI-Q, ADI-L, **ADI-C**, ADI Still, ADI Prism; ADI Spacer and ADI Fuser of ADR-0209 d12, after ADI-C) built from measurements, in `plugins/`; the FilmCraft contribution; then the reference reading | everything outside `plugins/`; ADR numbers |
 
 The drone (qwen on the 1070 and the A2000) keeps summarising files and manuals; win feeds it.
 
@@ -56,10 +56,11 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md`; log `collab/engine.
    of ADR-0209 d1), N3 and N30, N9, N13, N19, N22, N23 with the ★ Reference route of ADR-0209 d4,
    N25, N26, N29, N32 to N34, N7, N8, N12, N17, N18, N20, N28, N31, N35. Rows win owns (N4, N14,
    registry rows) are win's.
-2. **ADR-0209's engine part, once the director rules (its §9):** `tracks.role` and its op; the
-   ★ Kick sidechain helper (wake the slot, wire the compensated edge from the chosen tap, Pre FX by
-   default); the CTZ group metadata the navigator reads; multi-track tap subscription batching;
-   the RMSC slot mode on ADR-0166's DSP. Until then this item is skipped, not waited on.
+2. **ADR-0209's engine part, ruled 1 November (§10):** at P1, with the needs above, `tracks.role`
+   with `reference` and its op, and the exclusive reference route on the cue path (N23); at P2,
+   after the first-window gate, the other roles, the ★ Kick sidechain helper (wake the slot, wire
+   the compensated edge from the chosen tap, Pre FX by default), the CTZ group metadata the
+   navigator reads, multi-track tap subscription batching, the RMSC slot mode on ADR-0166's DSP.
 3. **The export queue's rest** (ADR-0071, P1): LUFS targeting (ADR-0203 d14), NI Stems export and
    import (ADR-0205 d8), the Export settings; the `.adiviz` pass rides on it later (P2). (Jobs,
    stems, PCM and dither merged 1 November, #300 to #302.)
@@ -84,12 +85,13 @@ Standing prompt: `collab/prompts/2026-11-01-window-lane.md`; log `collab/window.
    Live's in the PR body. (The six rebased step-7 PRs and forty more merged 1 November, #246 to
    #296.) **The first window the director can open on his PC is his gate (§5): win builds main on
    Windows and hands him the executable; what he says about it is this lane's next items.**
-2. **The MIX View (ADR-0209), after the director rules on its §9 questions** (the keys, the
-   template, the P1 set, which tabs are clones): `MixViewPanel`, F4 and the top-bar button, docked
-   or detached; the STACK tab first (the "one window" of ADR-0204 d1), the ★ Reference strip and
-   toggle, then the tabs he keeps at P1, each from what exists today with stubs for the fields the
-   engine has not written; the Info View switcher and the device strip's pinned analyser. One PR
-   per tab or part; the P2 parts drawn empty. Until he rules, item 3 follows item 1 directly.
+2. **The Mix View (ADR-0209, ruled 1 November, §10):** `MixViewPanel`, F4 and the top-bar button,
+   docked or detached; the STACK tab (the "one window" of ADR-0204 d1), the ★ Reference strip, the
+   [👁 Reference Track] toggle and the [REF] button with Shift+R, tap or hold: that is P1 (d11), each
+   from what the snapshot has today with stubs for the fields the engine has not written. The other
+   four tabs, the CTZ navigator, [⚡ Kick], the Info View switcher and the device strip's pinned
+   analyser are P2, after the first-window gate, drawn empty until then; OVERVIEW, SCOPE & PHASE and
+   SPECTROGRAM from the existing analyser and Scope (d12). One PR per tab or part.
 3. **The Settings window's pages** in Live's ten tab names and order, then ADI's own (ADR-0203
    d11, Master Reference Part V); then the window parts of phase C (range selection, fade handles,
    Insert Silence, the import and bounce prompts).
@@ -114,10 +116,10 @@ Standing prompt: `collab/prompts/2026-11-01-window-lane.md`; log `collab/window.
    does better; the drone's summaries in `D:\adi-drone\missions\` are the starting point.
 6. **The FilmCraft contribution** (the stale-waveform PR 1, `collab/prompts/2026-10-25-codex-filmcraft-pr1-waveforms.md`), on **adi-ubuntu** (192.168.1.97) for the Linux gate: the director's own Linux box, so no new machine is needed.
 
-7. **The analyser and conflict clones of ADR-0209, once the director rules on its Q4** (win's
-   recommendation: the SPAN, s(M)exoscope and VISU work as parity passes on the existing analyser
-   and Scope; **ADI Spacer** (the Trackspacer class) and **ADI Fuser** (the FUSER class) as new
-   DSP after ADI-C; the Bluprint matcher last), each from measurements, original C++ under the
+7. **ADI Spacer and ADI Fuser (ADR-0209 d12, ruled 1 November):** the SPAN, s(M)exoscope and VISU
+   work is a parity pass on the existing analyser and Scope, not this lane's; **ADI Spacer** (the
+   Trackspacer class) and **ADI Fuser** (the FUSER class) are new DSP after ADI-C, the Bluprint
+   matcher last, each from measurements, original C++ under the
    director's names, handed over through `plugins/` with its measurement report.
 
 ### 4b. The devices lane's queue (a Codex seat), in order
@@ -143,8 +145,8 @@ Standing prompt: `collab/prompts/2026-10-27-devices-lane.md`; log `collab/device
 | ADI-Q / ADI-L hand-over | when Codex calls each ready | run the measurement round himself against Pro-Q 4 / Pro-L 2 on his machine, say "accepted" |
 | The first window | when win hands him the Windows build of main (ADR-0210 d6) | open it, say what is wrong; each remark becomes a window-lane item |
 | Live measurements | any time | `docs/AWAITING.md` rows 6 to 17, on his Mac (Live 11) and the PC (Live 12) |
-| ADR-0209, the MIX View | now | answer Q1 to Q4 of its §9 (the keys, the template, the P1 set, which tabs are clones); strike Q8's placements if wrong |
-| Master Reference v1.3 | after ADR-0209 and ADR-0210 are in | read it; strike the placements marked "win's" |
+| ADR-0209, the Mix View | ruled 1 November | strike the placements if wrong: Shift+R for the ★ Reference (d9), `tracks.role` and the slot rows (Q8) |
+| Master Reference v1.3 | built 1 November | read it; strike the placements marked "win's" |
 | Strikes | any time | any "win's placement, to strike if wrong" he disagrees with |
 
 ## 6. How win keeps it honest

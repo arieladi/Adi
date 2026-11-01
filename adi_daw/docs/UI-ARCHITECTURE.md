@@ -474,12 +474,12 @@ there would make every project file a vector for changing a user's keyboard.
 
 ---
 
-## 12. The MIX View, the Info View's switcher and the device strip's pinned slot (ADR-0209, proposed)
+## 12. The Mix View, the Info View's switcher and the device strip's pinned slot (ADR-0209)
 
-**Status: proposed.** ADR-0209 records Gemini's draft with win's critique; the director has not
-ruled. This section is the shape the draft implies, so the window lane can plan; nothing in it is
-ordered until the ruling, and Q1 to Q4 of the ADR may change the keys, the template, the P1 set and
-which tabs are clones.
+**Status: decided (ADR-0209 §10, 1 November).** P1 is the shell, `StackTab` and the ★ Reference
+strip with its toggle and [REF]; the other tabs, `CtzNavigator`, the ⚡ Kick SC pill, the switcher
+and the pinned slot are P2 after the first-window gate, drawn empty until then (d11). `OverviewTab`,
+`ScopePhaseTab` and `SpectrogramTab` are built from the existing analyser and the Scope (d12).
 `MixViewPanel` is the window of ADR-0209: F4 and a top-bar button open it, docked in the
 centre slot of `MainSplit` in place of the arrangement or detached through the floating-window
 host (ADR-0180 d3) onto a second display. It obeys the three rules of §2 unchanged: it reads
@@ -508,6 +508,7 @@ pinned right-hand slot through the upward `DockResizer` of ADR-0184, showing the
 pre or post spectrum, scope, or ADI-Q / RMSC curve, again the same components. Nothing is drawn
 twice from two sources.
 
-**Keys.** F4 toggles the MIX View; Ctrl+R / Cmd+R tapped (under 200 ms) latches the ★ Reference,
-held is momentary, both through the application's command target so the Stream Deck's key (ADR-0181)
-maps to the same two commands; Rename Track is F2 and Ctrl+Shift+R (ADR-0209 d4).
+**Keys.** F4 toggles the Mix View; **Shift+R** and the [REF] button tapped (under 200 ms) latch the
+★ Reference, held they are momentary, both through the application's command target so the Stream
+Deck's key (ADR-0181) maps to the same two commands. Ctrl+R stays Live's Rename and Ctrl+Shift+R
+Live's Export Audio/Video (ADR-0209 d9).

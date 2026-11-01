@@ -16850,7 +16850,7 @@ second Codex seat and a second Claude seat take ADI work he does not have to tou
 | ADR-0204 d1, ADR-0205 d3 | the clones gain ADI-C (d2) |
 | `docs/LANES.md` | §1, §3, §4 rewritten for five lanes (d1, d3) |
 
-## ADR-0209 — The MIX View (F4): every channel's ADI-Q, ADI-L and sidechain slot in one detachable window; anchor roles and the CTZ hierarchy; Quick Kick Sidechain with RMSC, ADI Spacer and ADI Fuser; the ★ Reference track on Ctrl+R, tap or hold; six analyser clones — `PROPOSED` (2026-11-01) — **GEMINI'S DRAFT, HANDED OVER BY THE DIRECTOR; RECORDED IN FULL WITH WIN'S CRITIQUE; NOTHING IN IT IS ORDERED UNTIL HE RULES ON THE QUESTIONS BELOW. WOULD EXTEND ADR-0204 d1, ADR-0183, ADR-0167/ADR-0175, ADR-0166, ADR-0195 d4, ADR-0203 d14, ADR-0112; WOULD AMEND ADR-0203 d6 AND d12 (THE KEYS)**
+## ADR-0209 — The Mix View (F4): every channel's ADI-Q, ADI-L and sidechain slot in one detachable window; anchor roles and the CTZ hierarchy as a template; Quick Kick Sidechain with RMSC, ADI Spacer and ADI Fuser; the ★ Reference track on Shift+R, tap or hold; the analyser tabs from the existing analyser — `DECIDED` (2026-11-01) — **GEMINI'S DRAFT, HANDED OVER BY THE DIRECTOR AND RECORDED IN FULL WITH WIN'S CRITIQUE (§1 TO §9); RULED BY HIM THE SAME DAY (§10): WIN'S FOUR RECOMMENDATIONS TAKEN, THE NAME MIX VIEW KEPT. EXTENDS ADR-0204 d1, ADR-0183, ADR-0167/ADR-0175, ADR-0166, ADR-0195 d4, ADR-0203 d14, ADR-0112; AMENDS ADR-0203 d6 (F4 AND Shift+R JOIN THE KEYS); LEAVES ADR-0203 d12 ALONE (Ctrl+R STAYS RENAME)**
 
 **Where this comes from.** On 1 November the director handed over a specification: "We are adding a
 major new first-class surface to ADI: the MIX View (F4), along with docked mini-analyzer modes in
@@ -16863,10 +16863,10 @@ SPAN**, **Big Z Bluprint**, **s(M)exoscope**, **Tritik VISU**, **Mastering The M
 **Wavesfactory Trackspacer** (ADR-0204 d3). He then said the text was **written by Gemini** and
 that "we might wanna go through them before [we] make a final decision". So this entry records
 the draft in full (§1 to §8, Gemini's content in the document's words), then win's critique and
-the questions he has to answer (§9). The MIX View enters the queues as "after the ruling", not as
-work. He asked for the number 0208; that was used on 27 October, so this is ADR-0209.
+the questions he has to answer (§9), then his ruling of the same evening (§10). He asked for the
+number 0208; that was used on 27 October, so this is ADR-0209.
 
-### The draft, recorded (not yet decided)
+### The draft, recorded (§1 to §8 as handed over; §10 cuts and corrects it)
 
 1. **Every channel is already in the MIX View; a slot never touched costs nothing.**
    - Every track and group appears in the MIX View without inserting anything, because ADI-Q, ADI-L
@@ -16971,11 +16971,62 @@ models' proposals are challenged, not copied. Read against that and against the 
 | Q8 | **Format:** the draft reserves nothing. | win's placements: `tracks.role` (null, `kick`, `bass`, `vocal`, `reference`); the sidechain slot's rows beside ADR-0204 d1's slot rows with a `mode` and the key's tap; the MIX View's tab, filter and comparison pair in `ui_view`; the template is a project template. | to strike if wrong |
 | Q9 | **The 200 ms tap/hold threshold** and the **5 ms ramp** are fine as fixed values; no setting (ADR-0203 d2). The **Delta** on ADI-L and the sidechain slot, the **inverse-linked band**, the **Kick & Bass Lab split**, the **AI Mix Radar** at P2, the **Stream Deck** keys: nothing to object to. | adopt as drafted when he rules | none |
 
-**Until he rules:** the window lane's queue lists the MIX View after the first-window gate and
+**(Written before the ruling; superseded by §10 the same day.)** Until he rules: the window lane's queue lists the MIX View after the first-window gate and
 after his answers (LANES §3b item 2); the engine's slots (N16) and the cue path (N23) are already
 queued as the window's needs; the clones lane's queue lists the six clones last, "after the ruling
 on ADR-0209 Q4". FEATURES rows for the above carry "proposed"; the Master Reference v1.3 records
 the draft as a direction with these questions.
+
+### 10. The director's ruling (1 November 2026, the same evening)
+
+"Agree on all 4, keep Mix View, make it decided." He also asked that the Master Reference describe
+the Mix View and all its abilities with reference pictures of the products the draft names, and gave
+the sources: Voxengo SPAN (voxengo.com/product/span), Big Z Bluprint (bigzstudios.com/bluprint),
+s(M)exoscope (github.com/bdejong/smartelectronix), Tritik VISU (tritik.com/product/visu), Wavesfactory
+Trackspacer (wavesfactory.com/audio-plugins/trackspacer), RMSC with Polarity Music's "Ringmod
+Sidechain" video (youtube.com/watch?v=7LV4LZQOad8), FabFilter Pro-Q's instance list
+(fabfilter.com/help/pro-q/using/instance-list) and Mastering The Mix FUSER. Recorded in v1.3's 3.9
+and its Appendix E.
+
+- **d9 (Q1, the keys).** Ctrl+R stays Live's Rename; Rename does not move. **F4** opens and closes
+  the Mix View (the function keys do functions, ADR-0203 d6, which this amends by one key). The
+  ★ Reference is the **[REF] button** and one key, tapped under 200 ms to latch, held to audition.
+  win recommended Ctrl+Shift+R and was wrong: that is Live's Export Audio/Video (manual ch. 41);
+  Ctrl+Alt+R is Live's Hide/Show Return Tracks and R alone reverses a clip. The key is therefore
+  **Shift+R**, free in Live 12's list and beside Live's Rename: win's placement, to strike if he
+  prefers another (F5 is the free function key). The Stream Deck key maps to the same command.
+- **d10 (Q2, the hierarchy).** The CTZ hierarchy ships as a **bundled template named CTZ**, one
+  click away in the New dialog and the browser's Templates; Live's default Set (two audio, two MIDI
+  tracks) stays the default. The roles and the navigator work on any project that has the groups.
+- **d11 (Q3, the P1 set).** P1 is **the shell** (F4 and the top-bar button, docked in the centre or
+  detached), **the STACK tab** (the "one window" ADR-0204 d1 already owes: every channel of the
+  selected group or filter, dormant slots dimmed, the hovered row zoomed for ADI-Q, drawers for the
+  sidechain slot and ADI-L) and **the ★ Reference track** (hidden by default, the [👁 Reference
+  Track] toggle, the strip in the Mix View, exclusive with the Master bypassed on the cue path, tap
+  or hold). The engine's three present-but-off slots in the snapshot stay P1 as the window's need
+  N16; the `reference` role and the exclusive route are P1 with N23. **Everything else is P2, after
+  the first-window gate (LANES §5):** ★ Kick, ★ Bass and ★ Vocal with the navigator and the CTZ
+  CASCADE tab, [⚡ Kick] and the RMSC slot mode, OVERVIEW, SCOPE & PHASE, SPECTROGRAM, the Info View
+  switcher and the device strip's pinned slot, the Stream Deck, Bluprint's matcher and the stem
+  split, ADI Spacer, ADI Fuser, the AI Mix Radar.
+- **d12 (Q4, the clones).** OVERVIEW, SCOPE & PHASE and SPECTROGRAM are built from **the existing
+  analyser (ADR-0183) and the Scope (ADR-0167, ADR-0175)**; SPAN, s(M)exoscope and VISU are
+  **parity passes** on them (the window lane draws, the engine publishes what is missing), not new
+  plug-ins. **ADI Spacer** (the Trackspacer class) and **ADI Fuser** (the FUSER class) are the only
+  new DSP: the clones lane, P2, after ADI-C. Bluprint's matcher is P2 on the analyser.
+- **d13 (the name).** **Mix View**, written as Live writes its views (Session View, Arrangement
+  View, Mix View), never in capitals; the tab names stay as drafted. The title of this entry and
+  every document follow.
+- **Q5 to Q9** as win wrote them: the slot's DSP costs nothing while off and the drawing costs one
+  tap per visible row; `MixViewPanel`, the switcher and the pinned slot are the window lane's; the
+  reference route is the cue path (N23), no separate bus; the format placements of Q8 stand until
+  struck; the 200 ms and the 5 ms are fixed values, no setting.
+
+**Consequences.** FEATURES rows lose "proposed" and take d11's priorities; in LANES the engine's
+item 2 and the window's item 2 are live (the P1 parts first) and the clones' item 7 is Spacer and
+Fuser after ADI-C; UI-ARCHITECTURE §12 is decided with d9's keys; the standing prompts of
+1 November are corrected in place; the Master Reference v1.3 describes the Mix View in 3.9 with the
+reference pictures. ADR-0203 d6 is amended (F4, Shift+R); ADR-0204 d1's one window is the STACK tab.
 
 ## ADR-0210 — Nobody waits: the window's needs table is the head of the engine lane's queue; a seat without the GitHub API pushes and logs; win merges whenever the lanes push — `DECIDED` (2026-11-01) — **DIRECTOR'S DECISION; AMENDS ADR-0207 d1 AND ADR-0208 d1, `docs/LANES.md` §3, §3b, §6**
 

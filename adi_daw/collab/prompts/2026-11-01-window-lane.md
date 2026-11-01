@@ -23,8 +23,8 @@ Read, in this order: `adi_daw/docs/LANES.md` (§2 rules, §3b your queue, §5 ga
 `adi_daw/docs/STEP-7-PLAN.md`, `adi_daw/docs/UI-ARCHITECTURE.md`, the Master Reference (v1.3 when
 it exists, else v1.2: Part 0 rule 0.3, Part II in full, 8.1 to 8.6, Part V), `adi_daw/docs/DECISIONS.md`
 entries ADR-0180, ADR-0201, ADR-0203 (d5, d6, d7, d11, d12), ADR-0204 d1, ADR-0208, **ADR-0209**
-(the MIX View, a proposal under the director's review: its §9 lists the questions he has to
-answer before it is built) and **ADR-0210**, then `adi_daw/collab/README.md`
+(the Mix View, ruled by the director on 1 November: its §10 fixes the keys, the template, the P1
+set and which tabs are clones) and **ADR-0210**, then `adi_daw/collab/README.md`
 ("Building", "What done means here", "Process rules that have bitten").
 
 Your queue, in order; take the first item not yet merged or in a green PR:
@@ -34,17 +34,18 @@ Your queue, in order; take the first item not yet merged or in a green PR:
    manual text, and one picture of ADI beside Live's for the PR body. The first window the director
    can open on his PC (win builds main on Windows and hands him the executable) is the gate of
    LANES §5 and your first milestone; everything he says about it is your next items.
-2. **The MIX View of ADR-0209, only after the director has ruled on its §9** (the keys, the
-   template, the P1 set, which tabs are clones; until then skip this item, do not wait): as
-   `MixViewPanel`, F4 and the top-bar button; docked in the centre or detached through the
-   floating-window host; the STACK tab first (the "one window" of ADR-0204 d1: every channel of the
-   selected group or filter, dormant slots dimmed, the hovered row zoomed for ADI-Q); the ★
-   Reference strip and the [👁 Reference Track] toggle; then the tabs he keeps at P1 (OVERVIEW from
-   the analyser's published arrays, SCOPE & PHASE from the scope taps, CTZ CASCADE from the group
-   tree and the summing and ADI-L state), each with a stub provider for the fields the engine has
-   not written yet so the layout is complete before the data is; the CTZ navigator; the [⚡ Kick]
-   button and pill; the Info View's switcher and the device strip's pinned analyser slot; the keys
-   as he rules them. One PR per tab or part; the P2 parts drawn empty.
+2. **The Mix View of ADR-0209 (ruled 1 November, §10):** as `MixViewPanel`, F4 and the top-bar
+   button; docked in the centre or detached through the floating-window host. **P1 (d11):** the
+   STACK tab (the "one window" of ADR-0204 d1: every channel of the selected group or filter,
+   dormant slots dimmed, the hovered row zoomed for ADI-Q), the ★ Reference strip, the
+   [👁 Reference Track] toggle and the [REF] button with Shift+R, a tap to latch and a hold for
+   momentary (d9; Ctrl+R stays Rename), each with a stub provider for the fields the engine has
+   not written yet so the layout is complete before the data is. **P2, after the first-window
+   gate:** OVERVIEW from the analyser's published arrays, SCOPE & PHASE from the scope taps,
+   SPECTROGRAM from the analyser's spectrogram, CTZ CASCADE from the group tree and the summing and
+   ADI-L state (all from what exists, d12); the CTZ navigator; the [⚡ Kick] button and pill; the
+   Info View's switcher and the device strip's pinned analyser slot. One PR per tab or part; the P2
+   parts drawn empty until their turn.
 3. **The Settings window's pages** in Live's ten tab names and order, then ADI's own (ADR-0203
    d11, the Master Reference's Part V), each page reading and writing the registry; then the
    window parts of phase C (range selection, the fade handles, Insert Silence, the import and
