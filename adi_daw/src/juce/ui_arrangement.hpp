@@ -70,6 +70,20 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     std::int64_t resizeId = 0, renaming_ = 0;
     int initialHeight = 0;
 };
+// What a screen reader finds for one clip on screen (UI-ARCHITECTURE §6). The
+// canvas paints every clip itself; JUCE gathers accessibility children only from
+// child components, so each visible clip gets one of these: it paints nothing, the
+// mouse passes through it, and it is recycled as the view scrolls (§10).
+class ClipAccessible final : public juce::Component {
+  public:
+    explicit ClipAccessible(ArrangementView &);
+    void bind(std::int64_t track, std::int64_t clip);
+    std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
+    std::int64_t track = 0, clip = 0;
+
+  private:
+    ArrangementView &view;
+};
 // ONE component paints every clip and hit-tests them itself (ADR-0044).
 class ArrangementCanvas final : public juce::Component,
                                 public juce::FileDragAndDropTarget,
@@ -86,8 +100,18 @@ class ArrangementCanvas final : public juce::Component,
     bool isInterestedInFileDrag(const juce::StringArray &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
     std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
+    // One accessible child per clip on screen; on a model or view change only.
+    void realiseAccessible();
+    // What the reader says for a clip: its track, where it starts, how long it is.
+    juce::String describe(std::int64_t track, std::int64_t clip) const;
+    const std::vector<std::unique_ptr<ClipAccessible>> &accessible() const noexcept {
+        return accessible_;
+    }
+    juce::String lastAnnouncement;
 
   private:
+    void announceSelection();
+    std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
     bool panning = false;
@@ -109,6 +133,8 @@ class ArrangementView final : public juce::Component {
     void fit(bool selection);
     void wheel(const juce::MouseEvent &, const juce::MouseWheelDetails &);
     void select(int x, int y);
+    // Select one clip by identity: the accessible children's press action.
+    void selectClip(std::int64_t track, std::int64_t clip);
     void locate();
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);

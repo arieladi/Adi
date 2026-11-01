@@ -595,6 +595,49 @@ int main(int argc, char **argv) {
         check(hitTrack && arrangement.geometry.hit(*hitTrack, 0) &&
                   !arrangement.geometry.hit(*hitTrack, 4 * textproj::kPPQ),
               "hit-test includes start and excludes end");
+        // The canvas's accessibility layer (UI-ARCHITECTURE §6): a child per clip on screen.
+        integrated.mark(DirtySet::All);
+        integrated.frame();
+        ClipAccessible *readable = nullptr;
+        std::size_t shown = 0;
+        for (const auto &child : arrangement.canvas.accessible())
+            if (child->isVisible()) {
+                ++shown;
+                if (child->clip == 1)
+                    readable = child.get();
+            }
+        bool clicksHere = true, clicksBelow = true;
+        if (readable)
+            readable->getInterceptsMouseClicks(clicksHere, clicksBelow);
+        check(readable != nullptr && shown == 1 && !clicksHere && !clicksBelow &&
+                  readable->getParentComponent() == &arrangement.canvas,
+              "each clip on screen has an accessible child the mouse passes through");
+        auto handler = readable ? readable->createAccessibilityHandler() : nullptr;
+        check(handler && handler->getRole() == juce::AccessibilityRole::listItem &&
+                  handler->getTitle().startsWith("Track, clip at bar 1 beat 1") &&
+                  handler->getTitle().contains("4.00 beats"),
+              "a screen reader hears the clip's track, start and length");
+        arrangement.geometry.selection.track = 0;
+        arrangement.geometry.selection.clip = 0;
+        arrangement.changed();
+        check(handler && handler->getActions().invoke(juce::AccessibilityActionType::press) &&
+                  arrangement.geometry.selection.clip == 1 &&
+                  document->sessionState().selection().clip == 1,
+              "its press action selects the clip, in the session");
+        handler.reset();
+        arrangement.geometry.selection.clip = 0;
+        check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) &&
+                  arrangement.canvas.lastAnnouncement.contains("clip at bar 1 beat 1"),
+              "moving the selection by key announces where it landed");
+        arrangement.geometry.left = 100;
+        arrangement.changed();
+        shown = 0;
+        for (const auto &child : arrangement.canvas.accessible())
+            if (child->isVisible())
+                ++shown;
+        check(shown == 0, "a clip scrolled off screen has no accessible child");
+        arrangement.geometry.left = 0;
+        arrangement.changed();
         check(arrangement.headers.getX() > arrangement.canvas.getX() &&
                   arrangement.headers.getRight() == arrangement.getWidth() &&
                   arrangement.canvas.getX() == 0,
