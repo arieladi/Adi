@@ -100,6 +100,23 @@ void AnalyserView::paint(juce::Graphics &g) {
     }
     g.strokePath(line, juce::PathStrokeType(1.5f));
 }
+namespace {
+// An ADI view at its floating window's own interface zoom, as ZoomHost holds the main
+// window's root: the view lays out in logical units and the transform scales it.
+struct Zoomed final : juce::Component {
+    explicit Zoomed(juce::Component &c) : view(c) {
+        addAndMakeVisible(view);
+        setSize(view.getWidth(), view.getHeight());
+    }
+    void resized() override {
+        view.setTransform(juce::AffineTransform::scale(zoom));
+        view.setBounds(0, 0, juce::roundToInt(static_cast<float>(getWidth()) / zoom),
+                       juce::roundToInt(static_cast<float>(getHeight()) / zoom));
+    }
+    juce::Component &view;
+    float zoom = 1;
+};
+} // namespace
 struct FloatingHost::Entry {
     std::string key;
     std::int64_t device = 0;
@@ -108,6 +125,7 @@ struct FloatingHost::Entry {
     juce::Component::SafePointer<juce::Component> component, dock;
     juce::Rectangle<int> dockBounds;
     std::unique_ptr<juce::Component> owned;
+    std::unique_ptr<Zoomed> zoomed; // an ADI view's, in openView's windows
     std::function<void(const SnapshotReader &)> onFrame;
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
@@ -121,6 +139,12 @@ struct FloatingHost::Entry {
         }
         using juce::DocumentWindow::keyPressed;
         bool keyPressed(const juce::KeyPress &k, juce::Component *) override {
+            // The zoom keys zoom this window; every other key is the main window's.
+            const auto id = h.commands_.manager.getKeyMappings()->findCommandForKeyPress(k);
+            if (e.zoomed && (id == AppCommands::ZoomIn || id == AppCommands::ZoomOut)) {
+                h.zoom(e.key, id == AppCommands::ZoomIn);
+                return true;
+            }
             return h.commands_.key(k, h.root_);
         }
         void closeButtonPressed() override {
@@ -146,7 +170,11 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     auto *raw = e.get();
     entries_[key] = std::move(e);
     raw->window = std::make_unique<Entry::Window>(*this, *raw);
-    raw->window->setContentNonOwned(raw->component.getComponent(), false);
+    if (raw->owned)
+        raw->zoomed = std::make_unique<Zoomed>(*raw->component);
+    raw->window->setContentNonOwned(raw->zoomed ? static_cast<juce::Component *>(raw->zoomed.get())
+                                                : raw->component.getComponent(),
+                                    false);
     raw->window->setBounds(restoreFloating(states_.loadFloating(key), currentMonitors()));
     if (native_)
         raw->window->setVisible(true);
@@ -189,6 +217,22 @@ void FloatingHost::frame(const std::string &key) {
     ++e.drains;
     if (e.onFrame)
         e.onFrame(reader);
+}
+bool FloatingHost::zoom(const std::string &key, bool in) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end() || !it->second->zoomed)
+        return false;
+    auto &zoomed = *it->second->zoomed;
+    const auto next = nextZoom(zoomed.zoom, in);
+    if (!next)
+        return false;
+    zoomed.zoom = *next;
+    zoomed.resized();
+    return true;
+}
+float FloatingHost::zoomOf(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it == entries_.end() || !it->second->zoomed ? 1.f : it->second->zoomed->zoom;
 }
 void FloatingHost::save(Entry &e, bool open) {
     auto state = states_.loadFloating(e.key);

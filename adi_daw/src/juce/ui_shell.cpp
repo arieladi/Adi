@@ -787,12 +787,10 @@ bool AdiRootComponent::command(int id) {
                fail("Select a track to rename.");
     case AppCommands::ZoomIn:
     case AppCommands::ZoomOut: {
-        const auto at = std::find(kZoomSteps.begin(), kZoomSteps.end(), interfaceZoom_);
-        const auto i = at == kZoomSteps.end() ? 2 : at - kZoomSteps.begin();
-        const auto next = id == AppCommands::ZoomIn ? i + 1 : i - 1;
-        if (next < 0 || next >= static_cast<std::ptrdiff_t>(kZoomSteps.size()))
+        const auto next = nextZoom(interfaceZoom_, id == AppCommands::ZoomIn);
+        if (!next)
             return false;
-        interfaceZoom_ = kZoomSteps[static_cast<std::size_t>(next)];
+        interfaceZoom_ = *next;
         if (auto *host = getParentComponent())
             host->resized();
         break;
@@ -862,6 +860,14 @@ class ShellMenu final : public juce::MenuBarModel {
     AdiRootComponent &root;
     AppCommands &commands;
 };
+std::optional<float> nextZoom(float now, bool in) noexcept {
+    const auto at = std::find(kZoomSteps.begin(), kZoomSteps.end(), now);
+    const auto i = at == kZoomSteps.end() ? 2 : at - kZoomSteps.begin();
+    const auto next = in ? i + 1 : i - 1;
+    if (next < 0 || next >= static_cast<std::ptrdiff_t>(kZoomSteps.size()))
+        return std::nullopt;
+    return kZoomSteps[static_cast<std::size_t>(next)];
+}
 ZoomHost::ZoomHost(std::unique_ptr<AdiRootComponent> root) : root_(std::move(root)) {
     setOpaque(true);
     addAndMakeVisible(*root_);

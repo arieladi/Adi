@@ -1203,6 +1203,35 @@ int main(int argc, char **argv) {
                 floating.frame(analyserKey);
             audit = false;
             check(allocations == 0, "floating analyser frame allocates zero");
+            // Each window's own interface zoom (ADR-0129 d3): Ctrl/Cmd + and - in a floating
+            // view's window zoom that window, never the main one.
+            const float mainZoom = integrated.interfaceZoom();
+            auto *floatWindow = bigPtr->getTopLevelComponent();
+            auto *windowKeys = dynamic_cast<juce::KeyListener *>(floatWindow);
+            const auto zoomKey = juce::ModifierKeys::commandModifier;
+            const bool zoomedIn = windowKeys != nullptr &&
+                                  windowKeys->keyPressed(juce::KeyPress('=', zoomKey, 0), floatWindow);
+            const auto *frameOf = bigPtr->getParentComponent();
+            check(zoomedIn && floating.zoomOf(analyserKey) == 1.25f && integrated.interfaceZoom() == mainZoom &&
+                      juce::approximatelyEqual(bigPtr->getTransform().mat00, 1.25f) && frameOf != nullptr &&
+                      bigPtr->getWidth() == juce::roundToInt(static_cast<float>(frameOf->getWidth()) / 1.25f),
+                  "Ctrl/Cmd + zooms the floating window it is pressed in, not the main one");
+            if (windowKeys != nullptr) {
+                windowKeys->keyPressed(juce::KeyPress('-', zoomKey, 0), floatWindow);
+                windowKeys->keyPressed(juce::KeyPress('-', zoomKey, 0), floatWindow);
+            }
+            check(floating.zoomOf(analyserKey) == .75f && integrated.interfaceZoom() == mainZoom,
+                  "and Ctrl/Cmd - zooms it out");
+            for (int i = 0; i < 4; ++i)
+                floating.zoom(analyserKey, false);
+            check(!floating.zoom(analyserKey, false) && floating.zoomOf(analyserKey) == .5f,
+                  "between Live's 50 % and 200 %");
+            const bool infoShown = commands.infoView();
+            const auto infoKey = juce::KeyPress('/', juce::ModifierKeys::shiftModifier, 0);
+            const bool toggled = windowKeys != nullptr && windowKeys->keyPressed(infoKey, floatWindow) &&
+                                 commands.infoView() != infoShown;
+            check(toggled && windowKeys->keyPressed(infoKey, floatWindow) && commands.infoView() == infoShown,
+                  "other keys in it are still the main window's");
             floating.close("analyser");
         }
         integrated.devices.publication = {};
