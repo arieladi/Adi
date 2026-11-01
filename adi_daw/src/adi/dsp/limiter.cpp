@@ -17,7 +17,7 @@ void LookaheadLimiter::prepare(double sampleRate, int channels, int maxLookahead
     dqValue_.assign(static_cast<std::size_t>(dqCap_), 1.0);
     dqIndex_.assign(static_cast<std::size_t>(dqCap_), 0);
     box_.assign(static_cast<std::size_t>(ring_), 1.0);
-    if (releaseCoef_ == 0.0) setReleaseSeconds(0.05);
+    setReleaseSeconds(releaseSeconds_);
     lookahead_ = std::min(lookahead_, maxLookahead_);
     reset();
 }
@@ -32,8 +32,8 @@ void LookaheadLimiter::setLookaheadMs(double ms) {
 }
 
 void LookaheadLimiter::setReleaseSeconds(double s) noexcept {
-    const double t = s > 1.0e-5 ? s : 1.0e-5;
-    releaseCoef_ = std::exp(-1.0 / (t * sr_));
+    releaseSeconds_ = s > 1.0e-5 ? s : 1.0e-5;
+    releaseCoef_ = std::exp(-1.0 / (releaseSeconds_ * sr_));
 }
 
 void LookaheadLimiter::reset() noexcept {
