@@ -113,28 +113,26 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
             const auto &geo = root.arrangement.geometry;
             g.saveState();
             g.reduceClipRegion(canvas);
-            int top = canvas.getY() - geo.scrollY;
             for (const auto row : geo.rows(root.reader())) {
-                const int h = geo.heightFor(row.track->id);
-                if (h > 0)
-                    for (const auto &c : row.track->clips) {
-                        const int x0 = canvas.getX() + static_cast<int>(geo.x(c->posTicks));
-                        const int x1 = canvas.getX() + static_cast<int>(geo.x(c->posTicks + c->lengthTicks));
-                        if (x1 > x0)
-                            g.fillRect(x0, top + 1, x1 - x0, ArrangementCanvas::kClipBarHeight);
-                    }
-                top += h;
+                const int rowTop = geo.rowTop(root.reader(), row.track->id);
+                if (rowTop < 0)
+                    continue;
+                const int top = canvas.getY() + rowTop;
+                for (const auto &c : row.track->clips) {
+                    const int x0 = canvas.getX() + static_cast<int>(geo.x(c->posTicks));
+                    const int x1 = canvas.getX() + static_cast<int>(geo.x(c->posTicks + c->lengthTicks));
+                    if (x1 > x0)
+                        g.fillRect(x0, top + 1, x1 - x0, ArrangementCanvas::kClipBarHeight);
+                }
             }
             g.restoreState();
         }
         g.fillRect(area.getX(), area.getY() + ArrangementView::kOverviewHeight, area.getWidth(),
                    ArrangementView::kRulerHeight);
         const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
-        int laneY = headers.getY() - root.arrangement.geometry.scrollY;
-        for (const auto track : laneOrder(root)) {
-            g.fillRect(headers.getX() + 6, laneY + 4, std::max(0, headers.getWidth() - 8), 24);
-            laneY += root.arrangement.geometry.heightFor(track);
-        }
+        for (const auto track : laneOrder(root))
+            if (const int top = root.arrangement.geometry.rowTop(root.reader(), track); top >= 0)
+                g.fillRect(headers.getX() + 6, headers.getY() + top + 4, std::max(0, headers.getWidth() - 8), 24);
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
@@ -182,7 +180,16 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
                                            ArrangementView::kRulerHeight - 3,
                    32, 15);
         const auto canvas = root.arrangement.canvas.getBounds() + area.getPosition();
-        g.fillRect(canvas.withTrimmedTop(std::max(0, laneY - canvas.getY())));
+        {
+            const auto &geo = root.arrangement.geometry;
+            const auto rowsShown = geo.rows(root.reader());
+            const int dropTop = canvas.getY() + geo.tracksHeight(root.reader()) - geo.scrollY;
+            const int dropBottom = geo.footStart(rowsShown) < rowsShown.size()
+                                       ? canvas.getY() + geo.footTop(root.reader())
+                                       : canvas.getBottom();
+            if (dropBottom > dropTop)
+                g.fillRect(canvas.getX(), dropTop, canvas.getWidth(), dropBottom - dropTop);
+        }
         if (root.mixer.isVisible() && !root.mixer.vertical()) {
             const auto m = root.mixer.getBounds();
             g.fillRect(m.getRight() - 44, m.getY() + 3, 42, 17);
