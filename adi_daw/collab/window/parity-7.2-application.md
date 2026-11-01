@@ -2,6 +2,9 @@
 
 Drafted by the window lane (ADR-0208) from the Live 12 manual (`live12-manual-en.pdf`, the PDF's
 pages), for win to run against Live 12 (ADR-0108). Rows describe the behaviour in our words.
+"Online §" cites Ableton's online Live 12 manual (ableton.com/en/live-manual/12/, the
+2026-10-01 edition), read in the cloud session where the PDF is not available. Its keyboard
+shortcuts are chapter 42, the PDF's 41.
 Status as in `parity-7.2-shell.md`: built, partial, open, measure.
 
 | # | Live's behaviour | Manual | ADI in this PR | Status |
@@ -16,5 +19,5 @@ Status as in `parity-7.2-shell.md`: built, partial, open, measure.
 | 8 | Ctrl/Cmd+, opens the Settings; audio is set up on its Audio page | §40.2, p. 975; §41.1, p. 985 | Opens the Settings window; its Audio page leads with Live's Audio Device, Sample Rate and Latency sections over the device manager, stored in App scope (`audio.*`) | built (`window/settings`, `parity-settings.md`) |
 | 9 | — (ADR-0203 d11) a device that cannot be opened always warns, never switches silently | ADR-0203 d11 | An unavailable driver or a failed open is reported, and nothing else is opened in its place | built |
 | 10 | Quit: Ctrl+Q / Cmd+Q | §41.3, p. 986 | Cmd+Q is the Mac's application menu; Ctrl+Q, and Quit at the foot of the File menu, on Windows and Linux. Both reach the same quit, which asks nothing, since every edit is already in the file | built |
-| 11 | The menu bar: File, Edit, Create, View, Options, Navigate, Help; on the Mac at the top of the screen | Live's menus | File, Edit, View, as far as step 7 has commands; the Mac's main menu | partial |
+| 11 | The menu bar: File, Edit, Create, View, Options, Navigate, Help; on the Mac at the top of the screen. Settings is in the Options menu on Windows and in the Live menu on the Mac; tracks are deleted with the Edit menu's Delete | Live's menus; online §2.3, §18.2, §41.4.1, §42.28 | Live's menus in Live's order, each listing only the commands ADI has: File, Edit (with Delete Track before Rename), Create, View, and Options with Settings off the Mac; on the Mac, Settings in the application menu (`window/menu-bar`). A menu with no command is left out | partial: Navigate waits for its focus moves (Alt+0 to Alt+8, §41.4.1) and Help for a Learn View (§2.2.1); Live's other commands arrive with their ops |
 | 12 | Space plays the project through the audio device | §41.20, p. 1001 | The driver drains the UI's queue between blocks; the bar reads its feedback; the tempo is read at the device's granted rate | built |

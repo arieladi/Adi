@@ -213,6 +213,9 @@ class ZoomHost final : public juce::Component {
   private:
     std::unique_ptr<AdiRootComponent> root_;
 };
+// The Mac's application menu, Live's "Live" menu: Settings, above the system's own items
+// (Live 12 manual §2.3). Off the Mac, Settings is the Options menu's.
+juce::PopupMenu applicationMenu(AppCommands &);
 // One attachment, key binding and tooltip window per native window, sharing
 // the app command manager.
 class ShellMenu;
