@@ -1,5 +1,5 @@
 {
-  "as_of_utc": "2026-11-01T17:50:00Z",
+  "as_of_utc": "2026-11-01T18:20:00Z",
   "owner": "claude (orc-vst session) owns Cosmic Rain from 2026-11-01 ~19:50 studio time, after the salon-tv Claude handed over at d83b3f0 on the user's request. Quantum complete.",
   "ownership_note": "User directed Claude on 2026-10-27 to make keyframe stills for a 16s Cosmic test. Claude uses only the idle A2000 webui (port 7865) and does not touch the Avastha renderer, run.py or Comfy queue. Codex review-cosmic-rain-120-second-pilot monitor is obsolete (pilot rejected). Codex deleted both the completed Avastha monitor and obsolete rejected Cosmic120 pilot monitor on 2026-10-29; Claude Cosmic work untouched.",
   "cosmic_rain": {
@@ -110,8 +110,17 @@
       "raw_calibration": "motion_check.py on raw PNGs: frozen double-speed clips mean 0.35-0.49, good 4-6; gate MIN_MEAN step2 1.5, step1 0.6.",
       "test": "freeze_test.py reruns frozen workflows unchanged (outputs cosmicfull-test/<label>/). Step 1 before-restart K136a K131a K127a, then restart ComfyUI and rerun.",
       "result_1": "before-restart COMPLETE (finished after the orc-vst takeover): K136a 0.489, K131a 0.409, K127a 0.413, all frozen. K136a and K131a match their Draft 1 raw values exactly: the freeze is deterministic for seed+still+prompt in the same long-running ComfyUI.",
-      "next": "Finish before-restart (K131a, K127a), restart ComfyUI, rerun the 3 as after-restart. If identical again, the runtime is not the cause: change seed and/or start the slot from a video-like keyframe, gate with motion_check, re-render only frozen slots."
-    }
+      "next": "Read after-restart + animstyle results; settle the failure list (raw gate on all 245) and the wording; render replacements with the gated animate_full.py (takes kept, new seed per retake, chained bar B re-rendered from its new bar A); review every accepted take by eye; assemble 'DRAFT 2' from plan_v2 timing.",
+      "result_2": "before-restart reruns, unchanged workflows: K136a 0.489, K131a 0.409, K127a 0.413 (all identical to Draft 1). Freeze is deterministic per seed+keyframe+prompt.",
+      "render_order_explained": "Draft 1 rendered in timeline order, so 'more freezes later in the run' = harder late scenes (K127-K143 froze on both tries), not ComfyUI uptime.",
+      "restart": "ComfyUI 8192 restarted 2026-11-01 ~20:00 studio time by restart_comfy.ps1 (queue empty; stops only the launch_server.py chain; Deforum 7865 / Forge 7866 untouched). New launcher PID 14568 via Win32_Process Create. Control rerun 'after-restart K136a' queued.",
+      "redo1_analysis": "redo_motion.py (raw frames): redo1 = new seed + 'Fast dynamic motion, the camera moves forward quickly ... nothing stays still' wording. 47/77 pass the 1.5 gate, but from-still bar A still froze 26/60 (43%, same as Draft 1 46%): the wording did not fix it, it was a seed lottery. 42 of the 70 Draft 1 frozen slots have a passing redo1 take; 27 froze again; K139b has none.",
+      "visual_review_redo1": "clip_sheet.py sheets: passing the 1.5 gate is NOT enough. K054r = flat zoom of the still; K120r, K136ar, K018r = a dark blue blob flying through the frame (Wan draws a literal camera when the prompt says 'camera'); K084ar = smear; K065ar = static brain with shimmering rays; K036ar ends in a motion-blur smear. Real motion: K124br aliens, K081ar peacock, K097ar spiral turns; K056ar dissolves into elements (fits its story line).",
+      "content_metric": "motion_check.content(): change left after an ECC affine fit (removes zoom/pan/rotation) between 5 evenly spaced frames. Frozen Draft 1 1.2-1.9; flat zoom K054r 3.1; good takes 13+. Screening only: blob artifacts score high, so every take is also reviewed by eye.",
+      "draft1_more_stills": "A sample of Draft 1 slots NOT flagged by the encoded-video diagnosis is also near-still on raw frames (K020 clock, K141b wave, K113b faces, K071b flower: mean 0.55-1.16, look still). Matches the user's 'Draft 1 had too many stills'. calib_content.py --all measures all 245 raw takes to get the real failure list.",
+      "test_animstyle": "fix_test.py 'animstyle': same Draft 1 seed/keyframe/action sentence, only the style tail changed from 'psychedelic psytrance poster illustration, visionary art, ... centered composition' to '... 2D animation, animated cartoon, ... smooth continuous motion' (look words kept). Slots K136a K127a K131a K139a. Hypothesis: 'poster illustration' tells Wan the clip is a still picture."
+    },
+    "decision_20261101_followup": "Draft 2 = Draft 1 timing (plan_v2.json, its 32 gentle calm pushes kept), only failing slots replaced. Reuse a redo1 take only if it passes the new gate AND an eye review."
   },
   "avastha": {
     "remote_root": "D:/AvasthaAI/Avastha4K60-20261026",
@@ -145,5 +154,5 @@
     "ADI-MOBILE stays free"
   ],
   "naming": "Avastha = the artist duo (Adi and Valentin). Tracks: Quantum Ascent and Cosmic Rain.",
-  "handover": "2026-11-01: taken over on orc-vst. orc-vst reaches avastha-remote@192.168.1.54 with its own key (already authorised; no access.txt copy needed). Local deliveries D:\\AvasthaAI\\Projects are on ADI-PC. At takeover freeze_test.py before-restart was still running K127a (K136a 0.489, K131a 0.409: both froze again, identical to Draft 1); not touched, left to finish."
+  "handover": "2026-11-01: taken over on orc-vst. orc-vst reaches avastha-remote@192.168.1.54 with its own key (already authorised; no access.txt copy needed). Earlier local deliveries (D:/AvasthaAI/Projects/Cosmic Rain) are on SALON-TV, not adi-pc (adi-pc has no Projects folder). The before-restart freeze test was left to finish (all 3 froze again)."
 }
