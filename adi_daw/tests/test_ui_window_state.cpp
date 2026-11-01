@@ -36,6 +36,7 @@ int main() {
     state.follow = true;
     state.overview = false;
     state.inOut = false;
+    state.largeTracks = false;
     state.gridSnap = false;
     state.gridFixed = true;
     state.gridTriplet = true;
@@ -46,6 +47,8 @@ int main() {
     check(restored.follow && !views.load("other").follow, "Follow is kept per window, off until switched on");
     check(!restored.overview && !restored.inOut && views.load("other").overview && views.load("other").inOut,
           "the Overview and In/Out are kept per window, shown until hidden");
+    check(!restored.largeTracks && views.load("other").largeTracks,
+          "Use Large Track Height is kept per window, on until switched off");
     check(!restored.gridSnap && restored.gridFixed && restored.gridTriplet && restored.gridNarrow == 2 &&
               restored.gridFixedQuarters == .125 && views.load("other").gridSnap && !views.load("other").gridFixed,
           "the editing grid is kept per window, snapping and adaptive until changed");

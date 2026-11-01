@@ -32,6 +32,7 @@ MR § is the Master Reference's section.
 | The device strip: Live's height at least, dragged taller, never shorter | 3.4 (ADR-0184) | Built |
 | Interface zoom per window, Ctrl/Cmd and + or − | 1.1, 10 | Built for the session; remembered across launches waits (N4) |
 | The space bar reaches the transport from every window | 1.1, 3.7 | Built |
+| Bitwig's smaller track height (Figure 33), one click for every track | 10 | Built (window/track-height): Use Large Track Height, a button in Live's strip and the View menu; half height off, per window |
 | Three view states in one value, Global / Group focus / Detailed zoom (Macro / Main / Micro); the mixer and the timeline always show the same tracks | 1.1, 3.2, 10 (ADR-0112) | Missing. Global is the window's alone; Group focus needs the snapshot's groups (N6: a track's parent and kind); Detailed zoom needs the detail editor (section 5) |
 | Named view filters, Bitwig's project filter (figure 32: a menu at the top of the track-header column listing the project's group tree; choose one to see only it), a manual filter tab and an un-filter toggle, applied to the timeline and the mixer | 1.1, 3.2, 10 (ADR-0112 d2) | Missing. Explicit membership and name patterns are the window's alone; filters by group, kind or colour wait for N6. A new control: its picture goes to the director first |
 | The AI builds a view from a sentence ("put all percussion in a view group") | 3.2, 10 | Later (the agent, steps 8 and 9) |

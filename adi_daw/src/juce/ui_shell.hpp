@@ -75,7 +75,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         SnapToGrid,
         FixedGrid,
         WrapTabNavigation,
-        LastId = WrapTabNavigation
+        LargeTracks,
+        LastId = LargeTracks
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

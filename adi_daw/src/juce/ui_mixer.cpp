@@ -622,12 +622,31 @@ void FlipButton::paintButton(juce::Graphics &g, bool over, bool down) {
     arrows.addArrow({r.getRight(), lower, r.getX(), lower}, 1.4f, 5.f, 4.f);
     g.fillPath(arrows);
 }
+TrackHeightButton::TrackHeightButton() : juce::Button("Use Large Track Height") {
+    setTitle("Use Large Track Height");
+    setTooltip("Use Large Track Height: every track at its own height; off, at half of it.");
+    setClickingTogglesState(false);
+    // A view command, reached from the keyboard through the View menu: it takes no focus.
+    setWantsKeyboardFocus(false);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+void TrackHeightButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    g.setColour(getToggleState() ? look::accent : over || down ? juce::Colours::white : look::textOnBand);
+    const auto r = getLocalBounds().toFloat().reduced(3.f, 3.f);
+    const float w = (r.getWidth() - 2.f) / 2.f, pitch = r.getHeight() / 3.f;
+    for (int column = 0; column < 2; ++column)
+        for (int bar = 0; bar < 3; ++bar)
+            g.fillRect(r.getX() + static_cast<float>(column) * (w + 2.f), r.getY() + static_cast<float>(bar) * pitch, w,
+                       std::max(1.f, pitch - 1.5f));
+}
 SideStrip::SideStrip() {
     addAndMakeVisible(flip);
+    addAndMakeVisible(tracks);
 }
 void SideStrip::resized() {
-    // Under the two view switches, above the first track's row.
+    // Under the two view switches: the flip arrows, then the track height.
     flip.setBounds(4, 47, 19, 15);
+    tracks.setBounds(4, 64, 19, 14);
 }
 void SideStrip::paint(juce::Graphics &g) {
     g.fillAll(look::band);

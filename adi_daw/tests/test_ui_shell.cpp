@@ -460,6 +460,49 @@ int main(int argc, char **argv) {
         check(a.arrangement.namesFirst() && a.state().panels.slots()[0].panel == Panel::Mixer,
               "and swaps them again");
     }
+    {
+        // Bitwig's Use Large Track Height (the director, 2026-10-28): the strip's button halves
+        // every track, and the track controls' rows with them; a track resized while they are
+        // small keeps that size when they grow again.
+        auto &lanes = a.arrangement.geometry;
+        const auto &rows = a.reader().tracks();
+        const std::int64_t first = rows.empty() ? 0 : rows.front()->id;
+        const int full = lanes.heightFor(first);
+        auto ticked = [&commands, &a] {
+            commands.activate(a);
+            juce::ApplicationCommandInfo info(AppCommands::LargeTracks);
+            commands.getCommandInfo(AppCommands::LargeTracks, info);
+            return (info.flags & juce::ApplicationCommandInfo::isTicked) != 0 &&
+                   info.shortName == "Use Large Track Height";
+        };
+        auto rowsFollow = [&a, &lanes] {
+            for (const auto &row : a.mixer.strips())
+                if (row->isVisible() && row->getHeight() != lanes.heightFor(row->track()))
+                    return false;
+            return true;
+        };
+        const auto at = a.strip.tracks.getBounds() + a.strip.getPosition();
+        check(first != 0 && a.state().largeTracks && a.strip.tracks.getToggleState() && ticked() &&
+                  at.getY() >= (a.strip.flip.getBounds() + a.strip.getPosition()).getBottom() &&
+                  a.stripArea().contains(at),
+              "large tracks by default: the button lit under the flip arrows, the View menu ticked");
+        a.strip.tracks.onClick();
+        a.frame();
+        check(!a.state().largeTracks && !a.strip.tracks.getToggleState() && !ticked() &&
+                  lanes.heightFor(first) == std::max(ArrangementGeometry::kMinTrackHeight, full / 2) &&
+                  rowsFollow(),
+              "off, every track shows at half its height, the track controls' rows with it");
+        lanes.resizeTrack(first, 30);
+        a.arrangement.changed();
+        a.frame();
+        a.strip.tracks.onClick();
+        a.frame();
+        check(a.state().largeTracks && lanes.heightFor(first) == 60 && rowsFollow(),
+              "a track resized to 30 while small comes back at 60");
+        lanes.resizeTrack(first, full);
+        a.arrangement.changed();
+        a.frame();
+    }
     a.setSize(400, 540);
     const auto order = a.state().panels.slots()[0].panel;
     check(!a.command(AppCommands::SwapPanels) && a.state().panels.slots()[0].panel == order,
