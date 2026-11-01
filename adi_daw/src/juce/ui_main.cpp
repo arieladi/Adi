@@ -289,6 +289,9 @@ class AdiApplication final : public juce::JUCEApplication,
                         return std::make_unique<AudioDevicePage>(manager_);
                     };
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
+                // A change applies at once: the commands re-read what they keep of the
+                // settings, and every open window follows at its next frame.
+                settingsWindow_->panel().onChange = [this] { commands_->reload(); };
             }
             settingsWindow_->setVisible(true);
             settingsWindow_->toFront(true);

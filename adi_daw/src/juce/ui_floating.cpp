@@ -130,12 +130,15 @@ struct FloatingHost::Entry {
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
             : DocumentWindow(entry.key, juce::Colours::black, allButtons, host.native_), h(host),
-              e(entry), clock(this, [this](double) { h.frame(e.key); }) {
+              e(entry), clock(this, [this](double) {
+                  followTooltips(*this, h.commands_, tips, tipDelayMs);
+                  h.frame(e.key);
+              }) {
             setResizable(true, false);
             addKeyListener(this);
-            // Tooltips are on in every native window (ADR-0203 d12), as the main one.
-            if (h.commands_.tooltips())
-                tips = std::make_unique<juce::TooltipWindow>(this, h.commands_.tooltipDelayMs());
+            // Tooltips are on in every native window (ADR-0203 d12), as the main one, and
+            // follow the Settings window as it does.
+            followTooltips(*this, h.commands_, tips, tipDelayMs);
         }
         using juce::DocumentWindow::keyPressed;
         bool keyPressed(const juce::KeyPress &k, juce::Component *) override {
@@ -154,6 +157,7 @@ struct FloatingHost::Entry {
         FloatingHost &h;
         Entry &e;
         std::unique_ptr<juce::TooltipWindow> tips;
+        int tipDelayMs = 0;
         juce::VBlankAttachment clock;
     };
     std::unique_ptr<Window> window;

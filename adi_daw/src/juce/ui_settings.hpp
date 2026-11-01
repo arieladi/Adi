@@ -87,6 +87,9 @@ class SettingsPanel final : public juce::Component {
     juce::Component *audioDevices() const noexcept { return audio_.get(); }
     settings::AppSettings &store;
     std::function<void()> onClose;
+    // After every value the window sets, so what the application keeps of the settings
+    // follows at once (no OK button: a change applies as it is made).
+    std::function<void()> onChange;
     juce::TextEditor search;
     SettingsPageList pageList{*this};
     juce::TextButton defaults{"Restore Defaults"};
