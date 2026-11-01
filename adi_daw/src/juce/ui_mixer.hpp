@@ -100,6 +100,11 @@ class MixerPanel final : public juce::Component {
     // switch on the next or previous track; at either end it stays. False when the focus is
     // not on one of this panel's switches.
     bool focusNeighbour(bool next);
+    // Brings the track at `index`, in the snapshot's order, into view, as Live does when the
+    // focus moves to it: the Mixer View scrolls sideways; the track controls' rows are the
+    // arrangement's lanes, so the arrangement scrolls, its top kept when a row is taller than
+    // the view.
+    void reveal(std::size_t index);
     bool submit(const std::string &op, Payload payload, const char *label);
     AdiRootComponent &root;
     // Where a strip's meter reads from: the track's post-fader scope tap (ADR-0175).
