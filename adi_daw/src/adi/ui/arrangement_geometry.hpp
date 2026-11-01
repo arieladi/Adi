@@ -25,8 +25,10 @@ inline std::string displayName(const std::string &name, std::size_t position) {
         number.insert(0, hashes - number.size(), '0');
     return number + name.substr(hashes);
 }
-// What Live shows for the grid's spacing (manual §6.10), in 4/4 until the snapshot carries
-// the meters (collab/window.md, N6): "1/16", "1/8T", "1 Bar", "2 Bars".
+// What Live shows for the grid's spacing (manual §6.10): "1/16", "1/8T", "1 Bar", "2 Bars". A bar
+// here is four quarters: the ruler and the positions count bars in the project's meters (#299),
+// but the grid's widths stay in note values until it snaps by bars of the meter in force
+// (parity-7.3 row 11).
 inline std::string gridLabel(double quarters, bool triplet) {
     const double plain = triplet ? quarters * 3 / 2 : quarters;
     std::string label;

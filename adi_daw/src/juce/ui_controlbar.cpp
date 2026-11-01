@@ -254,14 +254,19 @@ void TransportBar::refresh() {
         shownBpm_ = bpm;
         tempo.setText(juce::String(bpm, 2));
     }
-    // Bars, beats and sixteenths, as Live shows the position (4/4 until the snapshot
-    // carries the meters: window log, N6).
-    if (const auto sixteenths = root_.timelineTick() / (textproj::kPPQ / 4);
-        sixteenths != shownSixteenths_) {
-        shownSixteenths_ = sixteenths;
-        position.setText(juce::String(sixteenths / 16 + 1) + ".  " +
-                         juce::String(sixteenths / 4 % 4 + 1) + ".  " +
-                         juce::String(sixteenths % 4 + 1));
+    // Bars, beats and sixteenths, as Live shows the position, and the signature in force there,
+    // in the project's meters (#299).
+    const auto &meters = root_.reader().meters();
+    const auto tick = root_.timelineTick();
+    if (const auto at = barPosition(tick, meters); at != shownPosition_) {
+        shownPosition_ = at;
+        position.setText(juce::String(at.bar) + ".  " + juce::String(at.beat) + ".  " + juce::String(at.sixteenth));
+    }
+    const auto &meter = meterAt(tick, meters);
+    if (const auto shown = static_cast<std::uint32_t>(meter.numerator) << 16 | meter.denominator;
+        shown != shownSignature_) {
+        shownSignature_ = shown;
+        signature.setText(juce::String(meter.numerator) + " / " + juce::String(meter.denominator));
     }
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
