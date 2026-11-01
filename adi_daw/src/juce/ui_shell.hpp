@@ -221,6 +221,9 @@ class ZoomHost final : public juce::Component {
 // The Mac's application menu, Live's "Live" menu: Settings, above the system's own items
 // (Live 12 manual §2.3). Off the Mac, Settings is the Options menu's.
 juce::PopupMenu applicationMenu(AppCommands &);
+// Live on Windows (§42.28): Alt and a menu's first letter opens that menu. The menu's index
+// in the bar, or -1 when the key opens none.
+int menuForKey(juce::MenuBarModel &, const juce::KeyPress &);
 // One attachment, key binding and tooltip window per native window, sharing
 // the app command manager.
 class ShellMenu;

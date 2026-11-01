@@ -631,6 +631,16 @@ int main(int argc, char **argv) {
                                                     C::FocusDeviceView, C::FocusBrowser},
               "the Navigate menu moves the focus to the views ADI has (§41.4.1)");
         check(!names.contains("Help"), "a menu with no command yet is left out");
+        // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
+        check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
+                  menuForKey(*bar, juce::KeyPress('E', alt, 0)) == names.indexOf("Edit") &&
+                  menuForKey(*bar, juce::KeyPress('n', alt, 0)) == names.indexOf("Navigate"),
+              "Alt and a menu's first letter names that menu");
+        check(menuForKey(*bar, juce::KeyPress('f', 0, 0)) < 0 &&
+                  menuForKey(*bar, juce::KeyPress('f', cmd | alt, 0)) < 0 &&
+                  menuForKey(*bar, juce::KeyPress('h', alt, 0)) < 0 &&
+                  menuForKey(*bar, juce::KeyPress('2', alt, 0)) < 0,
+              "only Alt alone opens a menu, and only one that is there");
         const auto appMenu = applicationMenu(commands);
         juce::PopupMenu::MenuItemIterator first(appMenu);
         check(first.next() && first.getItem().itemID == C::Settings && !first.next(),

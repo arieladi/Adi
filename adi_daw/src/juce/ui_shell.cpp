@@ -925,6 +925,16 @@ juce::PopupMenu applicationMenu(AppCommands &commands) {
     menu.addCommandItem(&commands.manager, AppCommands::Settings);
     return menu;
 }
+int menuForKey(juce::MenuBarModel &bar, const juce::KeyPress &key) {
+    if (key.getModifiers().withoutMouseButtons() != juce::ModifierKeys(juce::ModifierKeys::altModifier))
+        return -1;
+    const auto letter = juce::CharacterFunctions::toLowerCase(static_cast<juce::juce_wchar>(key.getKeyCode()));
+    const auto names = bar.getMenuBarNames();
+    for (int i = 0; i < names.size(); ++i)
+        if (juce::CharacterFunctions::toLowerCase(names[i][0]) == letter)
+            return i;
+    return -1;
+}
 std::optional<float> nextZoom(float now, bool in) noexcept {
     const auto at = std::find(kZoomSteps.begin(), kZoomSteps.end(), now);
     const auto i = at == kZoomSteps.end() ? 2 : at - kZoomSteps.begin();
@@ -982,6 +992,15 @@ AdiWindow::~AdiWindow() {
 }
 juce::MenuBarModel *AdiWindow::menu() noexcept { return menu_.get(); }
 bool AdiWindow::keyPressed(const juce::KeyPress &key, juce::Component *) {
+#if !JUCE_MAC
+    // Alt and a menu's first letter opens it (§42.28); JUCE's menus then take the arrows,
+    // to move through a menu and on to its neighbours, and Enter.
+    if (const int index = menuForKey(*menu_, key); index >= 0) {
+        if (auto *bar = dynamic_cast<juce::MenuBarComponent *>(getMenuBarComponent()))
+            bar->showMenu(index);
+        return true;
+    }
+#endif
     return commands_.key(key, *root_);
 }
 } // namespace adi::ui
