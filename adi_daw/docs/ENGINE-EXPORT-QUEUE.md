@@ -1,7 +1,7 @@
 # Engine export queue: WAV jobs and direct stems
 
 `adi/render/queue.hpp` implements the first engine increment of ADR-0071 and
-ADR-0205: editable application jobs and an isolated direct-to-Float32-WAV runner.
+ADR-0205: editable application jobs and an isolated WAV runner.
 Jobs are not project operations and do not enter project history.
 
 ```cpp
@@ -60,8 +60,9 @@ tap determines whether the source strip's controls are included. It
 prerolls from zero to retain effect/instrument history, compensates the selected output's
 latency, and writes exactly `[beginSample, endSample)`, including a short final
 block. Audio buffers are bounded by the selected channel count and block size.
-Float64 graph output is narrowed only at Float32 encoding. Missing devices,
-unsupported playback, read errors, underruns, nonfinite/out-of-range samples,
+Float64 graph output keeps its precision through final PCM quantization or
+Float32 encoding. Missing devices, unsupported playback, read errors, underruns,
+nonfinite samples (or values outside Float32 range when encoding Float32),
 and latency/topology reports fail the job rather than publishing degraded audio.
 
 Names support `{project}`, `{track}` (the source name), `{group}` (the selected
@@ -80,11 +81,25 @@ successfully published is retained even if cancellation arrives afterward.
 Publication uses `media::publishFile`: its fallback verifies a copy, but that copy
 can be visible while in progress. No universal atomic-visibility guarantee is made.
 
-This API explicitly produces Float32 WAV. It does not yet apply the registry's
-PCM24/triangular-dither defaults. Dry and isolated through-master choices,
-continuous gapless region batches, normalization/LUFS, other encoders and bit
-depths, NI Stems import/export, queue persistence, and the Export window remain
-subsequent increments. There is
+`job.encoding` selects `audio::WavFormat::Pcm16`, `Pcm24` or `Float32` and
+`audio::WavDither::None`, `Triangular` or `Rectangular`. New jobs default to
+PCM24/triangular, matching the Export registry. **Callers of the earlier Float32
+runner must explicitly select `Float32` to keep that encoding.** Float32 never
+dithers; the setting applies only below 32 bits. Unsupported formats and dither
+values are refused; noise-shaped Pow-r options are not implemented.
+
+PCM rounds to nearest with ties away from zero and saturates to the signed
+integer range. Dither is applied once, immediately before rounding: triangular
+is the difference of two uniform samples (two LSB peak to peak), rectangular
+is one LSB peak to peak. A specified unsigned generator keeps the sequence
+portable and continuous across channels and write boundaries. Its seed is
+`encoding.ditherSeed` XOR the stable enqueue ordinal, so different jobs use
+different streams and unchanged retries reproduce their samples. The standalone
+WAV writer retains its previous no-dither default for existing callers.
+
+Dry and isolated through-master choices, continuous gapless region batches,
+normalization/LUFS, other containers, noise shaping, NI Stems import/export,
+queue persistence, and the Export window remain subsequent increments. There is
 no new schema or silent fallback for these options.
 
 `renderWav` runs a single job directly; the queue uses it. The compatibility
@@ -100,3 +115,7 @@ audio and edited musical/absolute regions. `adi_offline_capture_tests` verifies
 all 64 channels, double precision, segmented blocks, sidechain dependencies,
 silence, stale-block refusal and allocation-free capture without changing the
 master output or compensation.
+PCM checks decode both depths, distinguish double from prematurely narrowed
+half-LSB values, and verify callback-independent dither. The WAV suite also
+checks saturation, legacy float bits, seeded streams, stereo independence and
+the distribution of quantized triangular/rectangular noise.
