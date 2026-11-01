@@ -5,6 +5,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
+#include "ui_arrangement.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
@@ -32,7 +33,18 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         TakeSnapshot,
         SaveAs,
         Settings,
-        LastId = Settings
+        TimeZoomIn,
+        TimeZoomOut,
+        ZoomToSelection,
+        ZoomBack,
+        OptimizeWidth,
+        OptimizeHeight,
+        GoStart,
+        ContinuePlay,
+        InsertAudioTrack,
+        InsertMidiTrack,
+        DeleteTrack,
+        LastId = DeleteTrack
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -48,6 +60,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool setInfoView(bool on, std::string &why);
     bool tooltips() const noexcept { return tooltips_; }
     int tooltipDelayMs() const noexcept { return tooltipDelayMs_; }
+    // Ctrl/Cmd+wheel zooms around the selection, as Live; off, around the cursor.
+    bool zoomOnSelection() const noexcept { return zoomOnSelection_; }
     juce::ApplicationCommandManager manager;
 
   private:
@@ -57,6 +71,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool infoView_ = true;
     bool tooltips_ = true;
     int tooltipDelayMs_ = 600;
+    bool zoomOnSelection_ = true;
 };
 class TransportBar final : public juce::Component {
   public:
@@ -119,11 +134,19 @@ class AdiRootComponent final : public juce::Component {
     juce::Rectangle<int> infoArea() const noexcept { return infoArea_; }
     juce::Rectangle<int> browserArea() const noexcept { return browserArea_; }
     juce::Rectangle<int> chatArea() const noexcept { return chatArea_; }
+    AppCommands &commands() noexcept { return commands_; }
+    // The playhead in ticks, from the driver's feedback at the device's rate.
+    std::int64_t timelineTick() const noexcept;
+    // Asks the driver to move the playhead; reads the current cell on arrival.
+    bool locate(std::int64_t tick);
     TransportBar transport;
     StatusBar status;
     juce::TextButton aiTab{"AI"};
+    ArrangementView arrangement;
 
   private:
+    bool insertTrack(bool midi);
+    bool deleteTrack();
     bool fail(std::string message);
     bool toggle(Panel);
     engine::ProjectView &view_;

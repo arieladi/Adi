@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <map>
 #include <string>
 namespace adi {
 class Store;
@@ -28,6 +29,10 @@ struct WindowState {
     int deviceFloor; // from DesktopDefaults, never persisted
     bool docked = true;
     bool aiChatOpen = false; // the AI tab at the browser's foot, collapsed as Live's column
+    // The arrangement's own view: where it starts, its time zoom and its lane heights.
+    double timelineLeft = 0, pixelsPerQuarter = 48;
+    int laneHeight = 64;
+    std::map<std::int64_t, int> laneHeights;
     // The strip expands upward only: a height below the floor becomes the floor.
     void setDeviceHeight(int h) noexcept { deviceHeight = h < deviceFloor ? deviceFloor : h; }
 };
@@ -56,16 +61,17 @@ class DirtySet {
 // One UI producer and one driver consumer. No UI ever reads/writes Transport.
 class TransportMailbox {
   public:
-    enum class Command { Play, Stop };
-    bool hasRoom() const noexcept {
-        return write_.load(std::memory_order_relaxed) - read_.load(std::memory_order_acquire) <
-               queue_.size();
+    enum class Command { Play, Stop, Locate };
+    bool hasRoom(std::size_t count = 1) const noexcept {
+        return count <= queue_.size() &&
+               write_.load(std::memory_order_relaxed) - read_.load(std::memory_order_acquire) <=
+                   queue_.size() - count;
     }
-    bool post(Command c) noexcept {
+    bool post(Command c, std::int64_t sample = 0) noexcept {
         auto w = write_.load(std::memory_order_relaxed);
         if (w - read_.load(std::memory_order_acquire) >= queue_.size())
             return false;
-        queue_[w % queue_.size()] = c;
+        queue_[w % queue_.size()] = {c, sample};
         write_.store(w + 1, std::memory_order_release);
         return true;
     }
@@ -73,7 +79,11 @@ class TransportMailbox {
         auto r = read_.load(std::memory_order_relaxed);
         const auto w = write_.load(std::memory_order_acquire);
         while (r != w) {
-            transport.play(queue_[r % queue_.size()] == Command::Play);
+            const auto item = queue_[r % queue_.size()];
+            if (item.command == Command::Locate)
+                transport.locate(item.sample);
+            else
+                transport.play(item.command == Command::Play);
             ++r;
         }
         publish(transport);
@@ -86,9 +96,13 @@ class TransportMailbox {
     // UI producer sees the last queued intent until the driver acknowledges it.
     bool desiredPlaying() const noexcept {
         const auto w = write_.load(std::memory_order_relaxed);
-        return w != read_.load(std::memory_order_acquire)
-                   ? queue_[(w - 1) % queue_.size()] == Command::Play
-                   : playing();
+        const auto r = read_.load(std::memory_order_acquire);
+        for (auto i = w; i != r;) {
+            const auto c = queue_[--i % queue_.size()].command;
+            if (c != Command::Locate)
+                return c == Command::Play;
+        }
+        return playing();
     }
     void setSampleRate(double rate) noexcept { sampleRate_.store(rate, std::memory_order_relaxed); }
     double sampleRate() const noexcept { return sampleRate_.load(std::memory_order_relaxed); }
@@ -96,7 +110,11 @@ class TransportMailbox {
     std::int64_t position() const noexcept { return position_.load(std::memory_order_relaxed); }
 
   private:
-    std::array<Command, 16> queue_{};
+    struct Item {
+        Command command = Command::Stop;
+        std::int64_t sample = 0;
+    };
+    std::array<Item, 16> queue_{};
     std::atomic<std::size_t> write_{0}, read_{0};
     std::atomic<bool> playing_{false};
     std::atomic<double> sampleRate_{0};
