@@ -56,6 +56,8 @@ void ArrangementView::changed() {
     state.laneHeight = geometry.height;
     state.laneHeights = geometry.heights;
     root.persist();
+    // The mixer's rows follow these lanes: re-place them on the next frame.
+    root.mark(DirtySet::Layout);
     frame(true);
 }
 void ArrangementView::fit(bool selection) {

@@ -7,6 +7,7 @@
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
 #include "ui_devices.hpp"
+#include "ui_mixer.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
@@ -146,6 +147,10 @@ class AdiRootComponent final : public juce::Component {
     ArrangementView arrangement;
     DeviceChainStrip devices;
     DockResizer dockResizer;
+    MixerPanel mixer;
+    juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
+    // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
+    bool submitEdit(const std::string &op, Payload payload, const char *label);
     // Drag the strip's top edge: never below the floor, never past the ceiling that
     // leaves the transport, the ruler and one track row (ADR-0184, ADR-0203 d7).
     void resizeDevices(int height);
@@ -173,7 +178,7 @@ class AdiRootComponent final : public juce::Component {
     float interfaceZoom_ = 1;
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
-    juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_;
+    juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
 };

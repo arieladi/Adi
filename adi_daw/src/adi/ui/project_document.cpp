@@ -96,6 +96,17 @@ void ProjectDocument::tick(std::int64_t milliseconds) {
     }
     feed_.publish(session_);
 }
+bool ProjectDocument::autoGainStage(bool lufs) {
+    engine::GainStageOptions options;
+    options.measure =
+        lufs ? engine::GainStageMeasure::IntegratedLufs : engine::GainStageMeasure::GatedRms;
+    const auto result = session_.autoGainStage(*store_, options);
+    error_ = result.commit.error;
+    if (!result.commit.ok)
+        return false;
+    view_.refresh(*store_);
+    return synchronise();
+}
 bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     OpRequest r;
     r.opType = op;

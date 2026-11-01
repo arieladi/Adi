@@ -44,6 +44,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
     bool parameterGesture(std::int64_t, const std::string &, engine::ParamEventKind, double);
+    // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
+    bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
 

@@ -237,7 +237,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
                                    ViewStateStore &persistence, std::string window,
                                    DesktopDefaults defaults)
     : transport(*this), status(*this), arrangement(*this), devices(*this), dockResizer(*this),
-      view_(view), submitter_(submitter), mailbox_(mailbox),
+      mixer(*this), view_(view), submitter_(submitter), mailbox_(mailbox),
       commands_(commands), persistence_(persistence), window_(std::move(window)),
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
     setOpaque(true);
@@ -248,6 +248,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(arrangement);
     addAndMakeVisible(devices);
     addAndMakeVisible(dockResizer);
+    addAndMakeVisible(mixer);
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
@@ -296,6 +297,7 @@ void AdiRootComponent::frame() noexcept {
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     devices.frame(arrangement.geometry.selectedTrack);
+    mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (lastDrain_ & DirtySet::Transport)
         transport.repaint();
     if (lastDrain_ & DirtySet::Status)
@@ -378,6 +380,11 @@ void AdiRootComponent::resized() {
     }
     const int top = kTransportHeight, mid = std::max(0, rowY - top);
     const bool browserLeft = slots[0].panel == Panel::Browser;
+    const int mw = browserLeft ? right : left;
+    mixerArea_ = mw > 0 ? juce::Rectangle<int>(browserLeft ? w - right : 0, top, mw, mid)
+                        : juce::Rectangle<int>();
+    mixer.setVisible(!mixerArea_.isEmpty());
+    mixer.setBounds(mixerArea_.withTrimmedLeft(browserLeft ? 1 : 0));
     const int bw = browserLeft ? left : right;
     browserArea_ = bw > 0 ? juce::Rectangle<int>(browserLeft ? 0 : w - right, top, bw, mid)
                           : juce::Rectangle<int>();
@@ -404,7 +411,6 @@ void AdiRootComponent::resized() {
 }
 void AdiRootComponent::paint(juce::Graphics &g) {
     g.fillAll(juce::Colour(0xff171a20));
-    const auto &slots = state_.panels.slots();
     const int w = getWidth();
     const int top = kTransportHeight;
     const int bottom = (infoArea_.isEmpty() && deviceArea_.isEmpty())
@@ -433,13 +439,9 @@ void AdiRootComponent::paint(juce::Graphics &g) {
         g.fillRect(chatArea_.getX(), chatArea_.getY(), chatArea_.getWidth(), 1);
     g.setColour(juce::Colour(0xffa5b0c0));
     g.setFont(juce::FontOptions(14.f));
-    auto name = [](Panel p) { return p == Panel::Browser ? "Browser" : "Mixer"; };
-    if (left > 0)
-        g.drawText(name(slots[0].panel), 12, top + 12, std::max(0, left - 24), 24,
-                   juce::Justification::centredLeft);
-    if (right > 0)
-        g.drawText(name(slots[1].panel), w - right + 12, top + 12, std::max(0, right - 24), 24,
-                   juce::Justification::centredLeft);
+    if (!browserArea_.isEmpty())
+        g.drawText("Browser", browserArea_.getX() + 12, top + 12,
+                   std::max(0, browserArea_.getWidth() - 24), 24, juce::Justification::centredLeft);
     if (!infoArea_.isEmpty())
         g.drawFittedText(infoText_, infoArea_.reduced(10), juce::Justification::topLeft, 8);
 }
@@ -451,6 +453,20 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const char *label) {
+    OpRequest request;
+    request.opType = op;
+    request.payload = std::move(payload);
+    request.label = label;
+    const auto result = submitter_.submit(std::move(request));
+    if (!result)
+        return fail(result.error);
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    dirty_.mark(DirtySet::All);
+    return true;
+}
 void AdiRootComponent::say(std::string message) {
     error_ = std::move(message);
     dirty_.mark(DirtySet::Status);
