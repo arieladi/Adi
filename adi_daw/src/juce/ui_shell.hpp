@@ -195,6 +195,9 @@ class AdiRootComponent final : public juce::Component {
     MixerPanel mixer;
     MixerPanel mixerView{*this, true};
     MixerViewResizer mixerViewResizer{*this};
+    // Live's strip down the arrangement's outer edge, with the flip arrows.
+    SideStrip strip;
+    juce::Rectangle<int> stripArea() const noexcept { return stripArea_; }
     juce::Rectangle<int> mixerViewArea() const noexcept { return mixerViewArea_; }
     // Drag the Mixer View's top edge: taller strips, never past one track row.
     void resizeMixerView(int height);
@@ -235,7 +238,7 @@ class AdiRootComponent final : public juce::Component {
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
     juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
-        mixerViewArea_;
+        mixerViewArea_, stripArea_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
 };

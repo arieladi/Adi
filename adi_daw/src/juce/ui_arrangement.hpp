@@ -51,7 +51,8 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
     ArrangementView &view;
     juce::Point<float> last;
 };
-// One row per track, on the RIGHT of the clips as in Live's Arrangement View.
+// One row per track, on the RIGHT of the clips as in Live's Arrangement View (on the left,
+// before the track controls, with the side panels swapped).
 // The title bar's own editor for Rename: Enter commits, Esc cancels, Tab commits
 // and moves on to the next track's title (Shift+Tab, the previous), as Live.
 class RenameEditor final : public juce::TextEditor {
@@ -210,6 +211,12 @@ class ArrangementView final : public juce::Component {
     int topHeight() const noexcept { return kTopHeight - kOverviewHeight + overviewHeight(); }
     // Where the lanes begin: below the Overview, the ruler and the scrub area.
     static constexpr int kTopHeight = kOverviewHeight + kRulerHeight + kScrubHeight + kLaneGap;
+    // The track names' column for a span of names and lanes: Live's width, at most a third.
+    static int headerWidth(int span) noexcept { return std::min(kHeaderWidth, span / 3); }
+    // With the track controls on the left (the swap, ADR-0080), the names lead: names, a
+    // gap of `controls` units the root fills with the track controls, then the lanes.
+    void setNamesFirst(bool first, int controls);
+    bool namesFirst() const noexcept { return namesFirst_; }
     ArrangementGeometry geometry;
     AdiRootComponent &root;
     ArrangementOverview overview;
@@ -219,5 +226,9 @@ class ArrangementView final : public juce::Component {
     ArrangementCanvas canvas;
     ArrangementPlayhead playhead;
     std::uint64_t canvasPaints = 0;
+
+  private:
+    bool namesFirst_ = false;
+    int controlsGap_ = 0;
 };
 } // namespace adi::ui

@@ -561,7 +561,7 @@ void MixerPanel::place() {
             auto &s = *strips_[used++];
             if (s.track() != tracks[i]->id && !s.dragging())
                 s.bind(tracks[i]->id);
-            s.setBounds(0, y, std::max(0, getWidth() - kRightStrip), h);
+            s.setBounds(0, y, getWidth(), h);
             s.setVisible(true);
         }
         y += h;
@@ -583,31 +583,58 @@ void MixerPanel::paint(juce::Graphics &g) {
         g.fillAll(look::panel);
         return;
     }
-    // Live's arrangement frame above the rows and down the right-hand edge; the
-    // columns' grey under the last track.
+    // Live's arrangement frame above the rows; the columns' grey under the last track. The
+    // strip down the outer edge is the root's SideStrip.
     g.fillAll(look::band);
-    const int strip = getWidth() - kRightStrip;
     const int top = root.arrangement.topHeight();
     int bottom = top - root.arrangement.geometry.scrollY;
     for (const auto &t : root.reader().tracks())
         bottom += root.arrangement.geometry.heightFor(t->id);
     bottom = std::clamp(bottom, top, getHeight());
     g.setColour(look::panel);
-    g.fillRect(0, bottom, strip, std::max(0, getHeight() - bottom - ArrangementView::kTimeRulerHeight));
+    g.fillRect(0, bottom, getWidth(), std::max(0, getHeight() - bottom - ArrangementView::kTimeRulerHeight));
     g.setColour(look::separator);
     g.fillRect(0, bottom, 2, getHeight() - bottom);
     // H and W, Live's Optimize Arrangement Height and Width, beside the Overview's end.
     g.setFont(look::font(12.f));
-    for (const auto &[label, x] : {std::pair{"H", strip - 43}, std::pair{"W", strip - 21}}) {
+    for (const auto &[label, x] : {std::pair{"H", getWidth() - 43}, std::pair{"W", getWidth() - 21}}) {
         const juce::Rectangle<float> r(static_cast<float>(x), 4, 18, 15);
         look::box(g, r, look::chooser);
         g.setColour(look::text);
         g.drawText(label, r, juce::Justification::centred);
     }
+}
+FlipButton::FlipButton() : juce::Button("Flip Sides") {
+    setTitle("Flip Sides");
+    setTooltip("Flip sides");
+    setClickingTogglesState(false);
+    // A view command, reached from the keyboard through the View menu: it takes no focus.
+    setWantsKeyboardFocus(false);
+    setMouseClickGrabsKeyboardFocus(false);
+}
+void FlipButton::paintButton(juce::Graphics &g, bool over, bool down) {
+    // Two small arrows, one each way, as Bitwig draws its own.
+    g.setColour(getToggleState() ? look::accent : over || down ? juce::Colours::white : look::textOnBand);
+    const auto r = getLocalBounds().toFloat().reduced(3.f, 2.f);
+    const float upper = r.getY() + r.getHeight() * .3f, lower = r.getY() + r.getHeight() * .7f;
+    juce::Path arrows;
+    arrows.addArrow({r.getX(), upper, r.getRight(), upper}, 1.4f, 5.f, 4.f);
+    arrows.addArrow({r.getRight(), lower, r.getX(), lower}, 1.4f, 5.f, 4.f);
+    g.fillPath(arrows);
+}
+SideStrip::SideStrip() {
+    addAndMakeVisible(flip);
+}
+void SideStrip::resized() {
+    // Under the two view switches, above the first track's row.
+    flip.setBounds(4, 47, 19, 15);
+}
+void SideStrip::paint(juce::Graphics &g) {
+    g.fillAll(look::band);
     // At the strip's head, Live's switches between Arrangement and Session View; the
     // Arrangement's is lit.
     for (int i = 0; i < 2; ++i) {
-        const juce::Rectangle<float> r(static_cast<float>(strip) + 4, 3.f + 22.f * static_cast<float>(i), 19, 19);
+        const juce::Rectangle<float> r(4.f, 3.f + 22.f * static_cast<float>(i), 19, 19);
         g.setColour(juce::Colour(0xff3c3c3c));
         g.fillEllipse(r);
         g.setColour(i == 0 ? look::accent : look::panel);
@@ -622,7 +649,7 @@ void MixerPanel::paint(juce::Graphics &g) {
         {{"I-O", true}, {"R", true}, {"M", true}, {"D", false}}};
     float y = static_cast<float>(getHeight() - ArrangementView::kTimeRulerHeight) - 4 * 19.f;
     for (const auto &[label, on] : switches) {
-        const juce::Rectangle<float> r(static_cast<float>(strip) + 7, y, 15, 15);
+        const juce::Rectangle<float> r(7.f, y, 15, 15);
         g.setColour(on ? look::accent : juce::Colour(0xff0a0a0a));
         g.fillEllipse(r);
         g.setColour(on ? look::text : look::textOnBand);

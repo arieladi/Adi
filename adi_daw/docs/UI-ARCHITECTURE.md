@@ -93,6 +93,18 @@ The map and its refusal are `adi::ui::PanelLayout`
 arithmetic of "does this swap fit" is where a layout is actually wrong, and it
 needs no window to be checked.
 
+*(The director, 2026-10-28.)* Swapped, the track names lead: names, the track
+controls, the strip, then the lanes, as Bitwig and Cubase have them, so a
+track's name stays beside its controls. The arrangement leaves a gap between its
+names and its lanes and the root puts the track controls in it
+(`ArrangementView::setNamesFirst`). The swap is shown, not hidden (ADR-0203 d2):
+small arrows under the two view switches at the head of Live's strip down the
+arrangement's outer edge, "Flip sides" on hovering, lit while flipped; the View
+menu's Flip Sides does the same and is its keyboard path (the arrows take no
+focus). Flipped, the strip moves to the window's left edge so the track controls
+meet the lanes: the strip is its own component, `SideStrip`, beside the track
+controls on Live's sides (the director, 28 October 2026).
+
 ### The device strip's height (ADR-0184)
 
 Live 12 lets its Clip View grow (§10a) and keeps its Device View at one
