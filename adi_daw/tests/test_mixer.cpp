@@ -861,6 +861,76 @@ void mainRoute(Mix& m, std::int64_t id, std::int64_t from, std::int64_t to) {
     q.exec();
 }
 
+void testAReturnsOwnSends() {
+    section("ADR-0203 d3 -- a return's own sends play: off until Enable Send, into another return");
+
+    for (const Precision width : {Precision::Float32, Precision::Float64}) {
+        const std::string at = width == Precision::Float64 ? " (at 64)" : "";
+        Mix m(width == Precision::Float64 ? "rr64" : "rr32");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R1");
+        m.track(5, "return", "R2");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4);
+        sendRow(m, 12, 4, 5);
+        m.load(48000.0, width);
+        m.settle();
+        check(m.l[511] == 1.5f, "A, its return R1, and R1's send into R2: 0.5 each" + at + ": " +
+                                    std::to_string(m.l[511]));
+        m.store->db().exec("UPDATE routing SET gain_db=-6.0206 WHERE id=12");
+        m.refresh();
+        m.settle();
+        check(near(m.l[511], 1.25, 1e-4), "R1's send at -6.02 dB: R2 hears 0.25" + at);
+        m.set("mixer.setVolume", 4, "db", -6.0206);
+        m.refresh();
+        m.settle();
+        check(near(m.l[511], 0.5 + 0.25 + 0.125, 1e-4),
+              "R1's fader at -6.02 dB: its own output and its Post send both follow it" + at + ": " +
+                  std::to_string(m.l[511]));
+        m.set("mixer.setVolume", 4, "db", 0.0);
+        m.store->db().exec("UPDATE routing SET enabled=0 WHERE id=12");
+        m.refresh();
+        m.settle();
+        check(m.l[511] == 1.0f, "Enable Send off: R2 silent, the rest as before" + at);
+    }
+    {
+        // R2 soloed hears R1's send, and through it A's.
+        Mix m("rr-solo");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R1");
+        m.track(5, "return", "R2");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4);
+        sendRow(m, 12, 4, 5);
+        m.set("track.setSolo", 5, "soloed", true);
+        m.load();
+        m.settle();
+        check(m.l[511] == 0.5f, "R2 soloed: what R1 sends it, A's wet through R1, and nothing else: " +
+                                    std::to_string(m.l[511]));
+        m.set("track.setSolo", 5, "soloed", false);
+        m.set("track.setSolo", 4, "soloed", true);
+        m.refresh();
+        m.settle();
+        check(m.l[511] == 1.0f, "R1 soloed: R1, and the R2 it feeds, and not A's dry: " + std::to_string(m.l[511]));
+    }
+    {
+        // Two returns feeding each other: the later row loses, named, and the
+        // project plays.
+        Mix m("rr-ring");
+        m.track(1, "audio", "A", 0.5f);
+        m.track(4, "return", "R1");
+        m.track(5, "return", "R2");
+        m.track(9, "master", "Master");
+        sendRow(m, 11, 1, 4);
+        sendRow(m, 12, 4, 5);
+        sendRow(m, 13, 5, 4);
+        m.load();
+        m.settle();
+        check(m.l[511] == 1.5f && m.mentions("routing#13"), "R2 back into R1 is refused, named; the rest plays: " +
+                                                                std::to_string(m.l[511]));
+    }
+}
+
 void testSoloAcrossSends() {
     section("ADR-0203 d3 -- solo across sends: a soloed return hears its senders, and nothing leaks");
 
@@ -2275,6 +2345,7 @@ int main() {
         testATrackDelayCrossesARebuild();
         testHearing();
         testSoloAcrossSends();
+        testAReturnsOwnSends();
         testSendsPlay();
         testSendsHoldTheirLevel();
         testPreSendsAndTheSendsPan();

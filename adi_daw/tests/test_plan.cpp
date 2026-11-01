@@ -193,7 +193,7 @@ void testASendThatCannotPlayIsRefusedByRow() {
                  off,                               // switched off: planned all the same
                  route(25, 2, 1, "send", "user"),   // into the master
                  route(26, 4, 4, "send", "user"),   // a return into itself
-                 route(27, 4, 2, "send", "user"),   // a return's own send
+                 route(27, 4, 2, "send", "user"),   // a return's own send, back into X, which feeds it
                  route(28, 2, 6, "send", "user"),   // into a VCA
                  route(29, 2, 99, "send", "user"),  // a track that is not there
                  route(30, 2, 2, "send", "user"),   // an audio track into itself: a loop
@@ -211,8 +211,8 @@ void testASendThatCannotPlayIsRefusedByRow() {
     check(sendEdge(p, 25) == nullptr && mentions(p, "routing#25", "master"), "a send into the master is refused");
     check(sendEdge(p, 26) == nullptr && mentions(p, "routing#26", "itself"),
           "a return into itself, Live's feedback loop, is named, not played yet");
-    check(sendEdge(p, 27) == nullptr && mentions(p, "routing#27", "return's own sends"),
-          "a return's own send is named, not played yet");
+    check(sendEdge(p, 27) == nullptr && mentions(p, "routing#27", "would close a loop"),
+          "a return's own send back into a track that feeds it is a loop, refused");
     check(sendEdge(p, 28) == nullptr && mentions(p, "routing#28", "VCA"), "a VCA takes no send");
     check(sendEdge(p, 29) == nullptr && mentions(p, "routing#29", "not there"), "nor does a track that is not there");
     check(sendEdge(p, 30) == nullptr && mentions(p, "routing#30", "would close a loop") &&
@@ -228,6 +228,29 @@ void testASendThatCannotPlayIsRefusedByRow() {
           "a send row with id 0 is refused, named: it would play as a plain route" + problems(p));
     check(hasEdge(p, 2, 1) && hasEdge(p, 3, 5) && hasEdge(p, 5, 1) && hasEdge(p, 4, 1),
           "and every track's own output is planned as before");
+
+    // A return's own sends (ADR-0203 d3): into another return, and into a
+    // track that does not feed it, they play; two returns feeding each other
+    // wait on Live's being measured (AWAITING 7(f)), the later row losing.
+    {
+        rows::Model r;
+        r.tracks = {track(1, "master", "Master"), track(2, "audio", "X"), track(4, "return", "R1"),
+                    track(5, "return", "R2"), track(6, "audio", "Y")};
+        rows::Routing off = route(33, 4, 6, "send", "user");
+        off.enabled = false;   // Enable Send off: planned all the same
+        r.routing = {route(30, 2, 4, "send", "user"),    // X -> R1
+                     route(31, 4, 5, "send", "user"),    // R1 -> R2: plays
+                     route(32, 5, 4, "send", "user"),    // R2 -> R1: a ring between returns
+                     off};                               // R1 -> Y, switched off
+        const GraphPlan pr = planGraph(r);
+        const PlannedEdge* r12 = sendEdge(pr, 31);
+        check(r12 != nullptr && r12->tap == Tap::PostFader && !mentions(pr, "routing#31"),
+              "a return's own send into another return plays, after its fader" + problems(pr));
+        check(sendEdge(pr, 32) == nullptr && mentions(pr, "routing#32", "ring between returns") && !pr.cycle,
+              "two returns feeding each other: the later row is refused, named, and nothing loops");
+        check(sendEdge(pr, 33) != nullptr, "a return's own send switched off is planned, so Enable Send never retimes");
+        check(hasEdge(pr, 4, 1) && hasEdge(pr, 5, 1), "and both returns still go to the master");
+    }
 
     // A loop through a sidechain is a loop: the return keys a device on X,
     // so a send from X into it would close R -> X -> R, and the whole
