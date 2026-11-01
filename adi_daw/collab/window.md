@@ -27,16 +27,16 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 | # | Need | Owner | Why the window needs it | What the window does meanwhile |
 |---|---|---|---|---|
-| N1 | `Store::create` writes no `project` row, so `project.setName` updates nothing on a new file and the snapshot falls back to 48 kHz (ADR-0203 d21 says 44.1 kHz) | engine | STEP-7-PLAN §3.0, still open on main `a57d47a` | New makes no project row; the Take Snapshot prompt names the project after its file |
-| N2 | A bootstrap for a new project (the project row and the Main track) that is the history's root, not an undo step (Live manual 5.4.2) | engine | #198 wrote both rows with raw SQL from the UI, which the plan forbids | New makes the Main track through `track.create` and the UI's `OpSubmitter::protectRoot` refuses to undo that step |
+| N1 | `Store::create` writes no `project` row, so `project.setName` updates nothing on a new file and the snapshot falls back to 48 kHz (ADR-0203 d21 says 44.1 kHz) | engine (PR #306) | STEP-7-PLAN §3.0, still open on main `a57d47a` | New makes no project row; the Take Snapshot prompt names the project after its file |
+| N2 | A bootstrap for a new project (the project row and the Main track) that is the history's root, not an undo step (Live manual 5.4.2) | engine (PR #307, on #306) | #198 wrote both rows with raw SQL from the UI, which the plan forbids | New makes the Main track through `track.create` and the UI's `OpSubmitter::protectRoot` refuses to undo that step |
 | N3 | Save As, a true one that writes a new `.adi` and carries on in it (ADR-0203 d6, LANES §3 item 6) | engine | Ctrl/Cmd+Shift+S | the key and the menu item exist; the Status Bar says Save As waits for the engine |
 | N4 | An app-scoped home for each window's interface zoom, per window and per display (ADR-0129 d3; ADR-0203 d11 "kept with the application") | win (the settings registry) | Ctrl/Cmd + and - zoom each window, but the zoom is not remembered across launches | held per window for the session |
-| N5 | An undoable path from a file and a track to a clip that plays: `importMedia` that captures without committing (so media and clip are one undo step) and fills `sample_rate`/`channels`/`frames`, and an op pair that attaches an `audio_clips` row (STEP-7-PLAN §3.0). #199's commit `3feee62` has a working version (`prepareImport`, `clip.attachAudio`/`clip.detachAudio`) in `media_ops.*` and `ops_catalog.cpp`, for the engine lane to lift | engine | dropping audio onto a track, 7.3's headline gesture | the arrangement accepts the drop and the Status Bar says it waits for the engine; nothing is written |
+| N5 | An undoable path from a file and a track to a clip that plays: `importMedia` that captures without committing (so media and clip are one undo step) and fills `sample_rate`/`channels`/`frames`, and an op pair that attaches an `audio_clips` row (STEP-7-PLAN §3.0). #199's commit `3feee62` has a working version (`prepareImport`, `clip.attachAudio`/`clip.detachAudio`) in `media_ops.*` and `ops_catalog.cpp`, for the engine lane to lift | engine (PR #308) | dropping audio onto a track, 7.3's headline gesture | the arrangement accepts the drop and the Status Bar says it waits for the engine; nothing is written |
 | N7 | A UI producer into the edit capture: `ParamOps` has one ring per plug-in and none for the window, so a drag in the device strip cannot become an op whose first touch emits its opener (ADR-0124, ADR-0181 d5). #203's `537c56d` has `ParamOps::uiEvent` (its own `ParamEditCapture`, begin/value/end, reusing the opener machinery) for the engine lane to lift | engine | editing a parameter from the strip, 7.4 | the strip shows every value; a gesture is refused and the Status Bar says why |
 | N8 | A plug-in's editor from the hosts: VST3 (`IPlugView`, through JUCE's `createEditor`) and CLAP (`clap_plugin_gui`), as a component the floating host can place, and the editor's own size | engine (`src/juce/*host*`) | Live's wrench toggle and Ctrl/Cmd+Alt+P; the floating host's main users (ADR-0076) | the host is built and tested; nothing opens a plug-in window |
 | N9 | The scalar meter of UI-ARCHITECTURE §9, one `{peak, rms}` per strip written by the audio thread (#205's `9e4f4af` has a `StripMeter` in `engine/mixer.*`) | engine | metering a hundred strips without reading a tap each | each visible row reads the newest 1024 frames of its track's post-fader tap |
 | N10 | A Learn target for a mixer control that has no automation lane yet (#205's `learnControllerTarget` in `controller_maps.*`) | engine | MIDI Learn on lane headers, P2 (ADR-0203 d7) | nothing; Live learns through MIDI Map mode, which comes later |
-| N11 | The snapshot to carry the send rows (`routing` with `kind='send'`: source, return, gain, pre/post) | engine | one send knob per return on every row (ADR-0203 d3) | no send knobs; the routing ops exist and are ready to be called |
+| N11 | The snapshot to carry the send rows (`routing` with `kind='send'`: source, return, gain, pre/post) | engine (PR #309) | one send knob per return on every row (ADR-0203 d3) | no send knobs; the routing ops exist and are ready to be called |
 | N12 | Split Stereo Pan: a pan mode and two pans per strip in the format and the mixer (ADR-0203 d9) | engine | the pan control's context menu | the menu shows the mode disabled |
 | N13 | A loudness meter's DSP: momentary, short-term and integrated LUFS and true peak, cheap enough for the Main track at all times (ADR-0203 d14) | engine or devices | the Main track's loudness meter | none yet |
 | N14 | The registry's pages in Live's ten tab names and order, then ADI's own (ADR-0203 d11, Master Reference V.2): the Display & Input / Theme & Colors split of "Look & Feel", Link, Tempo & MIDI, Record, Warp & Launch, Licenses & Updates | win (`src/adi/settings/registry.cpp`) | the Settings window lists `settings::pages()` as they are, by design: one source for the left-hand list | the window shows the registry's pages in the registry's order |
@@ -61,7 +61,47 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N33 | Ops for a clip's start and end markers, its loop window and loop switch, its signature and its scale (Live's Main Clip Properties) | engine | the Main panel's fields and Set buttons, the loop brace, Fit to Scale (§7.7) | the fields show the snapshot's position and length, read-only |
 | N34 | An op for a note's active flag (the `flags` column exists) | engine | 0 deactivates a note (Live manual §10.5.7) | nothing |
 | N35 | The device tests write their renders (`*-pd-render.wav`, 16 files) into `adi_daw/` itself, wherever `test_all.sh` is started from, so every full run leaves untracked files in the tree: a `.gitignore` line, or the renders written to a temporary folder | devices (`tests/test_*_pd.cpp`) | a clean tree after the gate the window runs before each push | the window deletes them after each run |
-| N6 | The snapshot to carry what the arrangement draws: a track's `kind` (to place Main last, as Live's arrangement does), a track's `parent` and `color` (WIDENED 2026-10-28: the director's Bitwig project view lists the groups as a tree with their colours, and a group's tracks show beneath it; since 2026-10-29 the window reads parent, place in the parent and kind from the project file meanwhile, the director's choice, and he noted the engine's way may replace it if better; WIDENED again 2026-10-29: Live's group tracks are drawn from that tree, and STEP-7-PLAN §2.2 lists the six fixes for the day the snapshot carries it, as the director asked), a track's `index_in_parent` with them, a clip's `name`, and the time-signature map (bars in the ruler). #199's `3feee62` adds all three to `engine/snapshot.*` | engine | the ruler, the clip labels, the groups without reading the project file on every edit | the ruler counts bars in 4/4 and says so in its tooltip; clips are drawn unnamed; the groups and Main's place come from the project file (`adi::ui::refreshTrackRows`), read on each edit while the project has groups |
+| N36 | What `tracks.color` holds: `docs/format` gives only an INTEGER (Live stores a palette index, one of its 70 colours; ADI's window draws 0xRRGGBB) | win (the format) | a track's own colour on its lane, title, strip and the project view's folder (STEP-7-PLAN §2.2) | colours by place, as Live's auto-colours |
+| N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-01, cloud — the standing prompt of 1 November; N6's window side [#310](https://github.com/arieladi/Adi/pull/310) `window/n6-snapshot`
+
+**The new standing prompt** (ADR-0210, nobody waits; ADR-0209 ruled, the Mix View).
+- The window builds against the snapshot or a stub and logs a need; the engine takes the needs
+  table as the head of its queue.
+- win merged the window's stack (#246 to #296, this log as #252) and the engine's (#297 to #302,
+  N6 as #299).
+- The queue now runs: what STEP-7-PLAN 7.2 to 7.6 still lists; the Mix View's P1 (the shell,
+  STACK, the ★ Reference); the Settings pages; parity passes.
+
+**Opened for the engine under ADR-0210 d4** (its seat has no API):
+- [#306](https://github.com/arieladi/Adi/pull/306) N1
+- [#307](https://github.com/arieladi/Adi/pull/307) N2, stacked on #306
+- [#308](https://github.com/arieladi/Adi/pull/308) N5
+- [#309](https://github.com/arieladi/Adi/pull/309) N11
+
+Each body is the engine log's "PR requested" text. The rows above name their PRs.
+
+**#310, N6's window side.** The tree comes from the snapshot (`rowsFromSnapshot`), and the
+project-file read of 29 October is deleted.
+- Main is the last row everywhere; the Channel EQ window shows ADI-L Full on Main's row.
+- A track's own colour waits on what `tracks.color` holds (new need N36, win's).
+- The older test scenes now find rows by the arrangement's order. Four goldens were re-recorded
+  (Main moved, nothing else).
+- Checks: shell 442, seams 115; `test_all.sh` 9668 checks across 105 suites, PASS.
+- The picture puts Live 12's demo arrangement beside ADI's.
+- N6 is struck.
+
+**Next, in order** (the open rows of the parity checklists that the snapshot now makes buildable):
+1. clip names (7.3 row 18);
+2. bars in the project's meters (row 11);
+3. Group Tracks and Ungroup, with existing ops (row 33);
+4. the returns and Main pinned at the foot (row 17's remainder);
+5. the Mix View's P1.
+
+The sends (row 9 of 7.6) and the audio drop (row 19 of 7.3) follow #309 and #308.
 
 ---
 
