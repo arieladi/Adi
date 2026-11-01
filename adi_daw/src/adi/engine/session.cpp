@@ -310,9 +310,8 @@ void Session::syncFlags() {
         for (const rows::Device& d : model_.devices) {
             if (d.id != e.deviceId) continue;
             device::DeviceNode& node = devices_.nodeAt(e.hostIndex);
-            // A clip-only refresh must not write DeviceNode's plain flags
-            // while its audio consumer reads them. Actual flag changes still
-            // require the device layer's own synchronization contract.
+            // DeviceNode publishes these switches atomically; the graph
+            // samples bypass once per block before choosing delayed dry/DSP.
             const bool bypassed = e.placeholder || !d.enabled;
             if (node.bypassed() != bypassed) node.setBypassed(bypassed);
             if (node.alwaysProcess() != d.alwaysProcess) node.setAlwaysProcess(d.alwaysProcess);
