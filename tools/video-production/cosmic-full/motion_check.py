@@ -31,3 +31,23 @@ def motion(frames, step=1):
     static = float((d < STILL).mean())
     return {"mean": round(float(d.mean()), 3), "static_pct": round(static * 100),
             "moves": float(d.mean()) >= MIN_MEAN.get(step, MIN_MEAN[2])}
+
+
+def content(frames, n=5):
+    """Change that is left after removing any global zoom, pan or rotation (an affine fit by ECC) between
+    n evenly spaced frames. A flat picture that only zooms or slides scores near a frozen clip; a subject
+    or environment that really changes scores high. Screening only, never a substitute for looking."""
+    idx = np.linspace(0, len(frames) - 1, n).round().astype(int)
+    g = [cv2.resize(cv2.imread(str(frames[i]), cv2.IMREAD_GRAYSCALE), (W, H), interpolation=cv2.INTER_AREA)
+         .astype(np.float32) for i in idx]
+    crit = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-5)
+    r = []
+    for a, b in zip(g, g[1:]):
+        try:
+            _, warp = cv2.findTransformECC(b, a, np.eye(2, 3, dtype=np.float32), cv2.MOTION_AFFINE, crit, None, 5)
+            aligned = cv2.warpAffine(a, warp, (W, H), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP,
+                                     borderMode=cv2.BORDER_REFLECT)
+        except cv2.error:  # no global fit: the change is not a camera move
+            aligned = a
+        r.append(min(np.abs(aligned - b)[8:-8, 8:-8].mean(), np.abs(a - b)[8:-8, 8:-8].mean()))
+    return round(float(np.mean(r)), 3)
