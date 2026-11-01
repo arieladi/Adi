@@ -473,3 +473,41 @@ rather than of this project. Nothing about it needs the format, and putting it
 there would make every project file a vector for changing a user's keyboard.
 
 ---
+
+## 12. The MIX View, the Info View's switcher and the device strip's pinned slot (ADR-0209, proposed)
+
+**Status: proposed.** ADR-0209 records Gemini's draft with win's critique; the director has not
+ruled. This section is the shape the draft implies, so the window lane can plan; nothing in it is
+ordered until the ruling, and Q1 to Q4 of the ADR may change the keys, the template, the P1 set and
+which tabs are clones.
+`MixViewPanel` is the window of ADR-0209: F4 and a top-bar button open it, docked in the
+centre slot of `MainSplit` in place of the arrangement or detached through the floating-window
+host (ADR-0180 d3) onto a second display. It obeys the three rules of §2 unchanged: it reads
+project state from `ProjectView` and the snapshot only, it never holds a visibility flag of its
+own (the tab, the filter and the comparison pair live in `ui_view`), and nothing in it touches
+the audio thread. Its children, one component each, in the tab order: `OverviewTab` (the SPAN
+class overlay and the Bluprint parts, from the analyser's published arrays, ADR-0183),
+`StackTab` (every channel of the selected CTZ group or filter, dormant slots dimmed, the hovered
+row zoomed for ADI-Q editing with its drawers), `ScopePhaseTab` (the scope taps of ADR-0175, up
+to eight tracks), `SpectrogramTab` (the PerceptoMap OpenGL base) and `CascadeTab` (the group
+tree with summing and ADI-L state). Above them `CtzNavigator` (the block tree, read from the
+group metadata the engine writes per rebuild), the view-filter button with Link to Arrangement,
+the ⚡ Kick SC pill, the ★ Reference strip (the ★ Reference track against the ruler) and the track
+minimap on the right edge.
+
+**Stubs, by rule (ADR-0210 d3).** A field the engine has not written yet (a slot's state, a group's
+crest or shaving, a role) comes from a `MixViewProvider` interface with two implementations: the
+snapshot's, and a stub that returns the layout's placeholders. The tab is built and tested against
+the stub, the row goes into `collab/window.md`'s needs table, and the real provider replaces the
+stub when the field arrives; no tab waits.
+
+**The two docks.** `InfoViewPanel` gains a header switcher (`Info | SPAN | Scope | VISU | Bluprint |
+CTZ | AI Radar`); each mini-graph is the matching tab's component at a small size, sharing its
+provider, and a click inside opens `MixViewPanel` on that tab. `DeviceChainStrip` gains an optional
+pinned right-hand slot through the upward `DockResizer` of ADR-0184, showing the selected track's
+pre or post spectrum, scope, or ADI-Q / RMSC curve, again the same components. Nothing is drawn
+twice from two sources.
+
+**Keys.** F4 toggles the MIX View; Ctrl+R / Cmd+R tapped (under 200 ms) latches the ★ Reference,
+held is momentary, both through the application's command target so the Stream Deck's key (ADR-0181)
+maps to the same two commands; Rename Track is F2 and Ctrl+Shift+R (ADR-0209 d4).
