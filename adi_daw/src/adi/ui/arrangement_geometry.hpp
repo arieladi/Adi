@@ -3,6 +3,7 @@
 #include "adi/textproj.hpp"
 #include "session_state.hpp"
 #include "snapshot_reader.hpp"
+#include "track_order.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -38,9 +39,8 @@ inline std::string gridLabel(double quarters, bool triplet) {
 }
 // View-only coordinates and selection. No committed project state is copied here.
 //
-// Every track the snapshot holds is a row, in the snapshot's order. Live draws its
-// Main track last; the snapshot does not yet say which track is Main (its kind),
-// so the rows follow the snapshot until it does (collab/window.md, N6).
+// Every track the snapshot holds is a row, in the arrangement's order (TrackOrder): each group
+// followed by what it holds, Main last.
 struct ArrangementGeometry {
     double left = 0, scale = 48; // quarter notes at the left edge; pixels per quarter
     int height = 88, scrollY = 0;
@@ -52,8 +52,72 @@ struct ArrangementGeometry {
     // The project view (Master Reference 10, ADR-0112 d2): the tracks a view leaves out, sorted.
     // They take no room, so every walk down the rows passes over them; their heights are kept.
     std::vector<std::int64_t> hidden;
+    // Live's folded groups (manual 18.3): what they hold, sorted. Out of the lanes, the names and
+    // the track controls, as `hidden`; the Mixer View still shows them (UI-ARCHITECTURE §4).
+    std::vector<std::int64_t> foldedAway;
+    // Whether a track has a row in the lanes.
     bool shown(std::int64_t id) const noexcept {
+        return inView(id) && !std::binary_search(foldedAway.begin(), foldedAway.end(), id);
+    }
+    // Whether the project view shows a track: the Mixer View's columns.
+    bool inView(std::int64_t id) const noexcept {
         return !std::binary_search(hidden.begin(), hidden.end(), id);
+    }
+    // The rows' order, built by the view for each new snapshot.
+    TrackOrder order;
+    struct Row {
+        const engine::TrackNode *track; // never null
+        TrackPlace place;
+        std::size_t position; // down the rows, from 0: Live's track number less one
+    };
+    // The tracks in the arrangement's order: `order` when it was built for this snapshot, else
+    // the snapshot's own, every track at the top (a geometry used without its view).
+    class Rows {
+      public:
+        Rows(const std::vector<std::shared_ptr<const engine::TrackNode>> &tracks,
+             const std::vector<TrackPlace> *places) noexcept
+            : tracks_(tracks), places_(places) {}
+        std::size_t size() const noexcept { return tracks_.size(); }
+        Row operator[](std::size_t i) const noexcept {
+            if (places_ != nullptr) {
+                const auto &p = (*places_)[i];
+                return {tracks_[p.at].get(), p, i};
+            }
+            TrackPlace p;
+            p.at = static_cast<std::uint32_t>(i);
+            p.id = tracks_[i]->id;
+            return {tracks_[i].get(), p, i};
+        }
+        class iterator {
+          public:
+            iterator(const Rows &rows, std::size_t i) noexcept : rows_(&rows), i_(i) {}
+            Row operator*() const noexcept { return (*rows_)[i_]; }
+            iterator &operator++() noexcept {
+                ++i_;
+                return *this;
+            }
+            bool operator!=(const iterator &other) const noexcept { return i_ != other.i_; }
+
+          private:
+            const Rows *rows_;
+            std::size_t i_;
+        };
+        iterator begin() const noexcept { return {*this, 0}; }
+        iterator end() const noexcept { return {*this, size()}; }
+        // A track's row, or size() when it has none.
+        std::size_t find(std::int64_t id) const noexcept {
+            for (std::size_t i = 0; i < size(); ++i)
+                if ((*this)[i].track->id == id)
+                    return i;
+            return size();
+        }
+
+      private:
+        const std::vector<std::shared_ptr<const engine::TrackNode>> &tracks_;
+        const std::vector<TrackPlace> *places_;
+    };
+    Rows rows(const SnapshotReader &r) const noexcept {
+        return {r.tracks(), order.fits(r) ? &order.places() : nullptr};
     }
     int heightFor(std::int64_t id) const noexcept {
         if (!shown(id))
@@ -181,16 +245,26 @@ struct ArrangementGeometry {
         }
     }
     const engine::TrackNode *trackAt(const SnapshotReader &r, int y) const noexcept {
+        const auto all = rows(r);
+        const auto i = rowAt(r, y);
+        return i < all.size() ? all[i].track : nullptr;
+    }
+    // The row at `y`, or the rows' size when there is none; `top` gets where it begins.
+    std::size_t rowAt(const SnapshotReader &r, int y, int *top = nullptr) const noexcept {
+        const auto all = rows(r);
         if (y < 0)
-            return nullptr;
+            return all.size();
         int at = -scrollY;
-        for (const auto &t : r.tracks()) {
-            const int h = heightFor(t->id);
-            if (y >= at && y < at + h)
-                return t.get();
+        for (std::size_t i = 0; i < all.size(); ++i) {
+            const int h = heightFor(all[i].track->id);
+            if (y >= at && y < at + h) {
+                if (top != nullptr)
+                    *top = at;
+                return i;
+            }
             at += h;
         }
-        return nullptr;
+        return all.size();
     }
     int contentHeight(const SnapshotReader &r) const noexcept {
         int total = 0;

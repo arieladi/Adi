@@ -188,6 +188,26 @@ insertion. One model, two readers, no second ordering anywhere.
 Collapsing a group hides its children in the timeline. It does **not** hide them
 in the mixer by default; that is what the group/stem focus view state is for.
 
+*Built (window lane, 2026-10-29): Live's group tracks (manual 18.3).* The model is
+`adi::ui::TrackOrder` (`src/adi/ui/track_order.hpp`), held by `ArrangementGeometry`
+and built again in place for each new snapshot: each group followed by what it
+holds, by `index_in_parent` then id, at any depth; Main last, as Live draws it. Every
+walk down the tracks reads it through `ArrangementGeometry::rows` (the lanes, the
+names, the track controls, the Mixer View, the Overview, the Channel EQ window, the
+keys, the Status Bar's number), so no panel orders tracks itself. The snapshot's own
+order (`index_in_parent, id`) mixes one group's tracks with another's and is not
+used for display.
+
+A group's title shows Live 12's group switch (three lines, the top one out while
+open); a track in a group sits past a band in the group's colour for each group it
+is in; a group's lane is darker and shows the clips of everything it holds, a thin
+row each (the manual's figure of a folded group). The switch, U, and Alt+U (§42.16,
+§42.19) fold and unfold; the folds are one value per window in `ui_view`
+(`WindowState::foldedGroups`). `ArrangementGeometry::foldedAway` takes what a folded
+group holds out of the lanes, the names and the track controls; the Mixer View keeps
+it, as this section says. A group the project view leaves out folds nothing, so a
+view of a group inside it still shows.
+
 ## 5. The three view states
 
 | State | Shows |
@@ -212,12 +232,14 @@ built only while a group is chosen or the menu is open, in buffers kept between
 frames, so a new generation with the same rows allocates nothing (§8).
 
 *The director's choice, 2026-10-29:* until the snapshot carries a track's parent,
-kind and colour (window log, N6), the window reads them from the project file
-(`rows::readModel`, as the engine's MIDI player does; `adi::ui::trackRowsFrom`),
-wired by the application in `ui_main.cpp`, and only when the menu opens or while a
-group is chosen. It is the one place the window reads past the snapshot (STEP-7-PLAN
-§2.2). If the engine's way proves better, N6 replaces it: the arrangement's
-`trackRows` is the only thing that changes.
+place in its parent, kind and colour (window log, N6), the window reads them from
+the project file (`rows::readModel`, as the engine's MIDI player does;
+`adi::ui::refreshTrackRows`), wired by the application in `ui_main.cpp`: when the
+menu opens, and on each new snapshot whose tracks changed or whose project has a
+group (a project without groups reads nothing). It is the one place the window
+reads past the snapshot; STEP-7-PLAN §2.2 lists what changes when N6 arrives. If the
+engine's way proves better, N6 replaces it: the arrangement's `TrackRows` is the only
+thing that changes.
 
 **Open, and it is not a UI question:** where a *keyboard* map lives.
 `controller_maps` is project-scoped and right for MIDI and OSC. A keymap is

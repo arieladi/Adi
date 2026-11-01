@@ -6,6 +6,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/track_rows.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -313,13 +314,12 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     render("adi-parity-mixer.png");
     // Bitwig's project view (the director, 2026-10-28), given a tree as the snapshot will give
     // it once it carries groups (N6): track 2 is a group holding 3, a group holding 4; 1 is Main.
-    root.arrangement.trackRows = [](const SnapshotReader &, std::vector<TrackRow> &rows) {
-        rows = {{1, 0, false, true, 0, "Main"},
-                {2, 0, true, false, 0xe080c0, "Body"},
-                {3, 2, true, false, 0x4080ff, "Fx"},
-                {4, 3, false, false, 0, "Hits"}};
-    };
-    root.arrangement.applyView();
+    root.arrangement.setTrackRows([](const SnapshotReader &, std::vector<TrackRow> &rows) {
+        rows = {{1, 0, false, true, 0, "Main", 0},
+                {2, 0, true, false, 0xe080c0, "Body", 0},
+                {3, 2, true, false, 0x4080ff, "Fx", 0},
+                {4, 3, false, false, 0, "Hits", 0}};
+    });
     auto items = [&root] {
         std::vector<std::pair<juce::String, bool>> out;
         const auto menu = root.arrangement.projectViewMenu();
@@ -357,8 +357,8 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
             passesOver = false;
     check(root.state().viewGroup == 3 && root.arrangement.projectView.getToggleState() &&
               lanes.hidden == std::vector<std::int64_t>{2} && lanes.heightFor(2) == 0 && passesOver &&
-              lanes.selection.track == 1 && items()[2].second,
-          "Fx chosen: Body is left out of the lanes, Main kept, the button lit, the selection moved");
+              lanes.selection.track == 3 && items()[2].second,
+          "Fx chosen: Body is left out of the lanes, Main kept, the button lit, the selection on Fx");
     render("adi-parity-project-view.png");
     check(shownRows(root.mixer) == std::vector<std::int64_t>{1, 3, 4} &&
               shownRows(root.mixerView) == std::vector<std::int64_t>{1, 3, 4},
@@ -370,16 +370,19 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     check(contiguous, "the Mixer View closes up the gap a hidden track leaves");
     lanes.selection.track = 3;
     check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+              lanes.selection.track == 3,
+          "up from Fx stays: Body, above it, is left out");
+    lanes.selection.track = 4;
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) &&
               lanes.selection.track == 1,
-          "up from Fx passes over Body to Main");
+          "down from Hits reaches Main, last as Live draws it");
     // The tree changes under the view: Fx is no longer a group, so the whole project shows.
-    root.arrangement.trackRows = [](const SnapshotReader &, std::vector<TrackRow> &rows) {
-        rows = {{1, 0, false, true, 0, "Main"},
-                {2, 0, true, false, 0xe080c0, "Body"},
-                {3, 2, false, false, 0, "Fx"},
-                {4, 2, false, false, 0, "Hits"}};
-    };
-    root.arrangement.applyView();
+    root.arrangement.setTrackRows([](const SnapshotReader &, std::vector<TrackRow> &rows) {
+        rows = {{1, 0, false, true, 0, "Main", 0},
+                {2, 0, true, false, 0xe080c0, "Body", 0},
+                {3, 2, false, false, 0, "Fx", 0},
+                {4, 2, false, false, 0, "Hits", 0}};
+    });
     check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.arrangement.projectView.getToggleState(),
           "a chosen group that is gone gives way to the whole project");
     choose("Body");
@@ -388,6 +391,250 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.arrangement.projectView.getToggleState() &&
               shownRows(root.mixer) == std::vector<std::int64_t>{1, 2, 3, 4},
           "Project shows every track again, the button unlit");
+}
+// A mouse press at a point of a component, for its own mouseDown.
+juce::MouseEvent pressAt(juce::Component &c, juce::Point<float> at, juce::ModifierKeys mods = {}) {
+    const auto now = juce::Time::getCurrentTime();
+    return {juce::Desktop::getInstance().getMainMouseSource(), at, mods, 1.f, 0.f, 0.f, 0.f, 0.f, &c, &c, now, at,
+            now, 1, false};
+}
+// Live's group tracks (manual 18.3) in the director's Bitwig project (Master Reference 10,
+// Figure 32): Drums holds Clap/Snare/Rimshot and Hats & Percs; Body holds Bass, Synths and
+// Fx And Hits, which holds Rises and Hits; Main. Read from the project file as the application
+// reads it until the snapshot carries the tree (collab/window.md, N6).
+void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::create(dir / "groups.adi", err);
+    check(store != nullptr, "the groups project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Groups')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    struct Made {
+        std::int64_t id;
+        const char *kind, *name;
+        std::int64_t parent, index;
+    };
+    // Each in its place in what holds it, so the snapshot's order (by that place alone) mixes
+    // one group's tracks with another's.
+    const std::array<Made, 10> made{{{1, "master", "Main", 0, 0},
+                                      {10, "group", "Drums", 0, 0},
+                                      {11, "audio", "Clap/Snare/Rimshot", 10, 0},
+                                      {12, "audio", "Hats & Percs", 10, 1},
+                                      {13, "group", "Body", 0, 1},
+                                      {14, "midi", "Bass", 13, 0},
+                                      {15, "midi", "Synths", 13, 1},
+                                      {16, "group", "Fx And Hits", 13, 2},
+                                      {17, "audio", "Rises", 16, 0},
+                                      {18, "audio", "Hits", 16, 1}}};
+    bool madeAll = true;
+    for (const auto &m : made) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", m.id}, {"kind", m.kind}, {"name", m.name}, {"index", m.index}};
+        if (m.parent != 0)
+            r.payload["parent"] = m.parent;
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    std::int64_t clipId = 100;
+    for (const std::int64_t track : {11, 12, 14, 15, 17, 18}) {
+        OpRequest clip;
+        clip.opType = "clip.create";
+        const auto bars = track % 3 + 2;
+        clip.payload = {{"id", clipId++},
+                        {"track", track},
+                        {"kind", track == 14 || track == 15 ? "midi" : "audio"},
+                        {"name", "Clip"},
+                        {"pos", (track % 2) * 4 * textproj::kPPQ},
+                        {"length", bars * 4 * textproj::kPPQ}};
+        clip.label = "Create clip";
+        madeAll = submitter.submit(std::move(clip)).ok && madeAll;
+    }
+    check(madeAll, "the director's project: three groups, one inside another, and clips in them");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "groups");
+    // As the application wires it (ui_main.cpp), counting the reads of the project file.
+    int reads = 0;
+    root.arrangement.setTrackRows([&store, &reads](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
+        refreshTrackRows(reader, [&store, &reads] {
+            ++reads;
+            return rows::readModel(*store);
+        }, rows);
+    });
+    root.setSize(1440, 900);
+    root.arrangement.geometry.scale = 3.92;
+    // Every track in sight: ten at 40 points.
+    root.arrangement.geometry.resizeTrack(0, 40, true);
+    root.arrangement.geometry.selection.track = 14;
+    root.mark(DirtySet::All);
+    root.frame();
+    root.frame();
+    auto &lanes = root.arrangement.geometry;
+    auto order = [&root, &lanes] {
+        std::vector<std::pair<std::int64_t, std::uint32_t>> out;
+        for (const auto row : lanes.rows(root.reader()))
+            out.emplace_back(row.track->id, row.place.depth);
+        return out;
+    };
+    const std::vector<std::pair<std::int64_t, std::uint32_t>> tree{
+        {10, 0}, {11, 1}, {12, 1}, {13, 0}, {14, 1}, {15, 1}, {16, 1}, {17, 2}, {18, 2}, {1, 0}};
+    bool mixed = false;
+    const auto &snapshot = root.reader().tracks();
+    for (std::size_t i = 0; i < snapshot.size(); ++i)
+        mixed = mixed || snapshot[i]->id != tree[i].first;
+    check(mixed && order() == tree,
+          "the lanes in Live's order: each group, then what it holds, at its depth; Main last");
+    check(lanes.trackAt(root.reader(), 1)->id == 10, "the first lane is the first group's");
+    auto shownStrips = [](const MixerPanel &panel) {
+        std::vector<std::int64_t> out;
+        for (const auto &s : panel.strips())
+            if (s->isVisible())
+                out.push_back(s->track());
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    auto topOf = [&root, &lanes](std::int64_t id) {
+        int y = -lanes.scrollY;
+        for (const auto row : lanes.rows(root.reader())) {
+            if (row.track->id == id)
+                return y;
+            y += lanes.heightFor(row.track->id);
+        }
+        return -1;
+    };
+    // The group lane: Live's overview of the clips of everything the group holds.
+    {
+        auto &canvas = root.arrangement.canvas;
+        juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            canvas.paintEntireComponent(g, true);
+        }
+        // Body's first row of the overview is Bass's, whose clip starts at the start.
+        const auto body = root.arrangement.colourFor(3).brighter(0.2f);
+        const int x = static_cast<int>(lanes.x(0)) + 2, y = topOf(13) + 4;
+        check(image.getPixelAt(x, y) == body && image.getPixelAt(x, topOf(14) + 4) != body,
+              "a group's lane shows the clips of what it holds, in its colour");
+    }
+    // A group's fold switch: what it holds leaves the lanes and the track controls, not the
+    // Mixer View; the click selects nothing.
+    {
+        auto &headers = root.arrangement.headers;
+        const auto at = headers.foldSwitch(1, topOf(16)).getCentre();
+        headers.mouseDown(pressAt(headers, at));
+        headers.mouseUp(pressAt(headers, at));
+        root.mark(DirtySet::All);
+        root.frame();
+        check(root.state().foldedGroups == std::set<std::int64_t>{16} && lanes.heightFor(17) == 0 &&
+                  lanes.heightFor(18) == 0 && lanes.heightFor(16) > 0 && lanes.selection.track == 14,
+              "Fx And Hits's switch folds it: Rises and Hits leave the lanes; the selection stays");
+        const auto strips = shownStrips(root.mixer);
+        check(std::find(strips.begin(), strips.end(), 17) == strips.end() &&
+                  std::find(strips.begin(), strips.end(), 16) != strips.end(),
+              "and the track controls, row for row");
+        check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+        root.resizeMixerView(220);
+        root.mark(DirtySet::All);
+        root.frame();
+        const auto columns = shownStrips(root.mixerView);
+        check(std::find(columns.begin(), columns.end(), 17) != columns.end(),
+              "the Mixer View still shows them: folding is the timeline's (UI-ARCHITECTURE §4)");
+        check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+        lanes.selection.track = 16;
+        check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && lanes.selection.track == 1,
+              "down from a folded group passes over what it holds");
+        const auto reloaded = persistence.load("groups", {});
+        check(reloaded.foldedGroups == std::set<std::int64_t>{16}, "the fold is kept with the window's view");
+        headers.mouseDown(pressAt(headers, at));
+        root.frame();
+        check(root.state().foldedGroups.empty() && lanes.heightFor(17) > 0, "a second click unfolds it");
+    }
+    // The keys: U folds the selected group, Alt+U unfolds them all (§42.16, §42.19); a selected
+    // track folded away gives the selection to its group.
+    {
+        auto &canvas = root.arrangement.canvas;
+        lanes.selection.track = 18;
+        root.arrangement.toggleFold(13);
+        check(lanes.selection.track == 13 && lanes.heightFor(14) == 0 && lanes.heightFor(16) == 0 &&
+                  lanes.heightFor(18) == 0,
+              "Body folded: everything in it leaves, Fx And Hits's tracks too; Hits's selection goes to Body");
+        lanes.selection.track = 10;
+        check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{10, 13},
+              "U folds the selected group");
+        check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13},
+              "and unfolds it");
+        lanes.selection.track = 1;
+        check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13},
+              "U on a track that is not a group folds nothing");
+        // A view of a group inside a folded one shows it: the folded group is left out.
+        root.arrangement.chooseView(16);
+        check(lanes.heightFor(16) > 0 && lanes.heightFor(17) > 0 && lanes.heightFor(13) == 0 && lanes.heightFor(1) > 0,
+              "Fx And Hits viewed alone inside folded Body: it shows, with its tracks and Main");
+        root.arrangement.chooseView(0);
+        check(canvas.keyPressed(juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) &&
+                  root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
+              "Alt+U unfolds every group");
+    }
+    // The file is read again on each new snapshot only while the project has groups; the order is
+    // built again in place.
+    {
+        const int before = reads;
+        check(root.submitEdit("track.rename", {{"id", 14}, {"name", "Sub Bass"}}, "Rename Track"), "a rename");
+        root.frame();
+        check(reads == before + 1 && order() == tree, "with groups, an edit reads the project file again");
+        std::vector<TrackRow> rows = root.arrangement.tree().rows();
+        allocations = 0;
+        audit = true;
+        lanes.order.build(root.reader(), rows);
+        audit = false;
+        check(allocations == 0 && order() == tree, "the same tree's order is built again without allocating");
+    }
+    // The names: a band in each group's colour, the switch, then the track's own colour.
+    {
+        auto &headers = root.arrangement.headers;
+        check(headers.nameLeft(0) == 2 && headers.nameLeft(2) == 2 + 2 * ArrangementView::kGroupBand,
+              "a track sits past one band for each group it is in");
+        juce::Image image(juce::Image::ARGB, headers.getWidth(), headers.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            headers.paintEntireComponent(g, true);
+        }
+        const auto drums = root.arrangement.colourFor(0), body = root.arrangement.colourFor(3),
+                   fx = root.arrangement.colourFor(6), hits = root.arrangement.colourFor(8);
+        const int y = topOf(18) + 20;
+        check(image.getPixelAt(3, topOf(11) + 20) == drums && image.getPixelAt(3, y) == body &&
+                  image.getPixelAt(3 + ArrangementView::kGroupBand, y) == fx &&
+                  image.getPixelAt(headers.nameLeft(2) + 1, y) == hits,
+              "Hits's header: Body's band, Fx And Hits's band, then its own colour");
+    }
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+    auto render = [&root, folder](const char *name) {
+        if (folder.isEmpty())
+            return;
+        root.mark(DirtySet::All);
+        root.frame();
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                          juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile(name);
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    };
+    lanes.selection.track = 15;
+    render("adi-groups.png");
+    root.arrangement.toggleFold(16);
+    root.arrangement.toggleFold(10);
+    render("adi-groups-folded.png");
 }
 } // namespace
 int main(int argc, char **argv) {
@@ -2530,6 +2777,7 @@ int main(int argc, char **argv) {
         }
     }
     liveParity(commands, temp.path(), write);
+    groupTracks(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

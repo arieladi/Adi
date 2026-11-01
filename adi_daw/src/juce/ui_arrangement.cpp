@@ -48,24 +48,24 @@ void ArrangementOverview::paint(juce::Graphics &g) {
     // Live's Overview: a grey line per track on the dark band, its clips in the
     // track's colour, and a black outline around what is on screen.
     g.fillAll(look::band);
-    const auto &tracks = view.reader().tracks();
+    const auto rows = view.geometry.rows(view.reader());
     const double total = static_cast<double>(span()), w = getWidth();
-    // The tracks the project view shows, as the lanes do.
+    // The tracks the lanes show, in their order.
     std::size_t shown = 0;
-    for (const auto &t : tracks)
-        if (view.geometry.shown(t->id))
+    for (const auto r : rows)
+        if (view.geometry.shown(r.track->id))
             ++shown;
     const float row = std::max(2.f, static_cast<float>(getHeight() - 4) /
                                         static_cast<float>(std::max<std::size_t>(4, shown)));
     float y = 2;
-    for (std::size_t i = 0; i < tracks.size(); ++i) {
-        if (!view.geometry.shown(tracks[i]->id))
+    for (const auto r : rows) {
+        if (!view.geometry.shown(r.track->id))
             continue;
         const float line = std::max(1.f, row - 1);
         g.setColour(look::panel);
         g.fillRect(0.f, y, static_cast<float>(w), line);
-        g.setColour(view.colourFor(i));
-        for (const auto &c : tracks[i]->clips)
+        g.setColour(view.colourFor(r.position));
+        for (const auto &c : r.track->clips)
             g.fillRect(static_cast<float>(static_cast<double>(c->posTicks) / total * w), y,
                        std::max(1.f, static_cast<float>(static_cast<double>(c->lengthTicks) / total * w)),
                        line);
@@ -139,19 +139,17 @@ TrackHeaderList::TrackHeaderList(ArrangementView &v) : view(v) {
     };
     editor.onCancel = [this] { endRename(); };
     editor.onTab = [this](bool forward) {
-        // Commit, then move to the neighbouring title bar to rename a series.
+        // Commit, then move to the neighbouring title bar shown to rename a series.
         const auto from = renaming_;
         commitRename();
-        const auto now = view.root.current();
-        const auto &tracks = now->tracks;
-        for (std::size_t i = 0; i < tracks.size(); ++i)
-            if (tracks[i]->id == from) {
-                const bool has = forward ? i + 1 < tracks.size() : i > 0;
-                if (has) {
-                    beginRename(tracks[forward ? i + 1 : i - 1]->id);
+        const auto rows = view.geometry.rows(view.reader());
+        if (const auto at = rows.find(from); at < rows.size())
+            for (auto i = at; forward ? i + 1 < rows.size() : i > 0;) {
+                i = forward ? i + 1 : i - 1;
+                if (view.geometry.shown(rows[i].track->id)) {
+                    beginRename(rows[i].track->id);
                     return;
                 }
-                break;
             }
         endRename();
     };
@@ -218,17 +216,16 @@ std::unique_ptr<juce::AccessibilityHandler> ClipAccessible::createAccessibilityH
     return std::make_unique<ClipHandler>(*this, view);
 }
 juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clipId) const {
-    const auto &tracks = view.reader().tracks();
-    for (std::size_t i = 0; i < tracks.size(); ++i) {
-        if (tracks[i]->id != trackId)
-            continue;
-        for (const auto &c : tracks[i]->clips) {
+    const auto rows = view.geometry.rows(view.reader());
+    if (const auto i = rows.find(trackId); i < rows.size()) {
+        const auto *t = rows[i].track;
+        for (const auto &c : t->clips) {
             if (c->id != clipId)
                 continue;
             // Bars and beats in 4/4 until the snapshot carries the meters (window log, N6).
             const auto beat = c->posTicks / textproj::kPPQ;
             const auto beats = static_cast<double>(c->lengthTicks) / textproj::kPPQ;
-            return juce::String::fromUTF8(displayName(tracks[i]->name, i + 1).c_str()) +
+            return juce::String::fromUTF8(displayName(t->name, i + 1).c_str()) +
                    ", clip at bar " + juce::String(beat / 4 + 1) + " beat " +
                    juce::String(beat % 4 + 1) + ", " + juce::String(beats, 2) + " beats" +
                    (c->muted ? ", muted" : "");
@@ -239,7 +236,8 @@ juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clip
 void ArrangementCanvas::realiseAccessible() {
     std::size_t used = 0;
     int y = -view.geometry.scrollY;
-    for (const auto &t : view.reader().tracks()) {
+    for (const auto row : view.geometry.rows(view.reader())) {
+        const auto *t = row.track;
         const int h = view.geometry.heightFor(t->id);
         if (h > 0 && y + h > 0 && y < getHeight())
             for (const auto &c : t->clips) {
@@ -277,14 +275,14 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
     for (auto *c : std::array<juce::Component *, 7>{&overview, &ruler, &scrub, &headers, &canvas,
                                                      &playhead, &projectView})
         addAndMakeVisible(c);
-    // Each track alone, its place and name, until the snapshot carries more (N6).
-    trackRows = [](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
+    // Each track alone, its name only, until the snapshot carries more (N6).
+    trackRows_ = [](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
         const auto &tracks = reader.tracks();
         rows.resize(tracks.size());
         for (std::size_t i = 0; i < tracks.size(); ++i) {
             auto &row = rows[i];
             row.id = tracks[i]->id;
-            row.parent = 0;
+            row.parent = row.index = 0;
             row.group = row.main = false;
             row.colour = 0;
             row.name = tracks[i]->name;
@@ -363,17 +361,33 @@ void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
     arrow.addTriangle(ax, ay, ax + 7.f, ay, ax + 3.5f, ay + 4.f);
     g.fillPath(arrow);
 }
+void ArrangementView::setTrackRows(TrackRows rows) {
+    trackRows_ = std::move(rows);
+    // Rows the last way filled are not this one's: it starts from none (track_rows.hpp reads the
+    // project file only when the rows it has may be stale).
+    tree_.rows().clear();
+    applyView();
+    // Drawn again on the next frame; nothing of the view changed, so nothing is saved.
+    root.mark(DirtySet::All);
+}
 void ArrangementView::refreshTree() {
-    if (trackRows)
-        trackRows(reader(), tree_.rows());
+    if (trackRows_)
+        trackRows_(reader(), tree_.rows());
     else
         tree_.rows().clear();
+    geometry.order.build(reader(), tree_.rows());
 }
 void ArrangementView::applyView() {
+    refreshTree();
+    leaveOut();
+    // A title being renamed stays on its track, wherever the new rows put it.
+    if (headers.renaming() != 0)
+        headers.beginRename(headers.renaming());
+}
+void ArrangementView::leaveOut() {
     auto &group = root.state().viewGroup;
     geometry.hidden.clear();
     if (group != 0) {
-        refreshTree();
         if (!tree_.isGroup(group))
             group = 0;
         else
@@ -383,20 +397,58 @@ void ArrangementView::applyView() {
         std::sort(geometry.hidden.begin(), geometry.hidden.end());
     }
     projectView.setToggleState(group != 0, juce::dontSendNotification);
+    // Live's folded groups: what each holds, at any depth, down to the next row as shallow as
+    // it. A group the project view leaves out folds nothing, so a view inside it still shows.
+    geometry.foldedAway.clear();
+    const auto &folded = root.state().foldedGroups;
+    if (folded.empty())
+        return;
+    std::uint32_t foldDepth = 0;
+    bool inFold = false;
+    for (const auto row : geometry.rows(reader())) {
+        if (inFold && row.place.depth > foldDepth) {
+            geometry.foldedAway.push_back(row.track->id);
+            continue;
+        }
+        inFold = row.place.group && folded.count(row.track->id) != 0 && geometry.inView(row.track->id);
+        foldDepth = row.place.depth;
+    }
+    std::sort(geometry.foldedAway.begin(), geometry.foldedAway.end());
+}
+void ArrangementView::firstShownIfHidden() {
+    if (geometry.shown(geometry.selection.track))
+        return;
+    geometry.selection.track = 0;
+    geometry.selection.clip = 0;
+    for (const auto row : geometry.rows(reader()))
+        if (geometry.shown(row.track->id)) {
+            geometry.selection.track = row.track->id;
+            break;
+        }
 }
 void ArrangementView::chooseView(std::int64_t group) {
     root.state().viewGroup = group;
     applyView();
-    if (!geometry.shown(geometry.selection.track)) {
-        geometry.selection.track = 0;
-        geometry.selection.clip = 0;
-        for (const auto &t : reader().tracks())
-            if (geometry.shown(t->id)) {
-                geometry.selection.track = t->id;
-                break;
-            }
-    }
+    firstShownIfHidden();
     geometry.scrollY = 0;
+    changed();
+}
+void ArrangementView::toggleFold(std::int64_t group) {
+    auto &folded = root.state().foldedGroups;
+    if (folded.erase(group) == 0)
+        folded.insert(group);
+    leaveOut();
+    // Live keeps the selection in sight: a track folded away gives it to its group.
+    if (!geometry.shown(geometry.selection.track) && geometry.shown(group)) {
+        geometry.selection.track = group;
+        geometry.selection.clip = 0;
+    }
+    firstShownIfHidden();
+    changed();
+}
+void ArrangementView::unfoldAll() {
+    root.state().foldedGroups.clear();
+    leaveOut();
     changed();
 }
 juce::PopupMenu ArrangementView::projectViewMenu() {
@@ -419,14 +471,18 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
         menu.addItem(std::move(item));
     };
     // Project's folder is grey, as Bitwig's; a group's is its track's colour as the window draws
-    // it, unless the project gives one.
+    // it, unless the project gives one. The groups in the arrangement's order.
     add(0, 0, "Project", juce::Colour(0xff8a8a8a));
-    const auto &rows = tree_.rows();
-    for (const auto &g : tree_.groups()) {
-        const auto position = static_cast<std::size_t>(g.row - rows.data());
-        add(g.id, g.depth + 1, juce::String::fromUTF8(g.row->name.c_str()),
-            g.row->colour != 0 ? juce::Colour(0xff000000 | g.row->colour) : colourFor(position));
-    }
+    for (const auto row : geometry.rows(reader()))
+        if (row.place.group) {
+            // Its name as its title shows it (a # is its number).
+            const auto *stored = tree_.find(row.track->id);
+            const auto &name = stored != nullptr ? stored->name : row.track->name;
+            add(row.track->id, static_cast<int>(row.place.depth) + 1,
+                juce::String::fromUTF8(displayName(name, row.position + 1).c_str()),
+                stored != nullptr && stored->colour != 0 ? juce::Colour(0xff000000 | stored->colour)
+                                                         : colourFor(row.position));
+        }
     return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
@@ -602,7 +658,10 @@ bool ArrangementView::command(int id) {
         fit(false);
         return true;
     case AppCommands::OptimizeHeight: {
-        const int count = static_cast<int>(reader().tracks().size());
+        int count = 0;
+        for (const auto &t : reader().tracks())
+            if (geometry.shown(t->id))
+                ++count;
         geometry.resizeTrack(0, canvas.getHeight() / std::max(1, count), true);
         geometry.scrollY = 0;
         break;
@@ -823,32 +882,62 @@ void TimelineRuler::mouseDrag(const juce::MouseEvent &e) {
 void TimelineRuler::mouseDoubleClick(const juce::MouseEvent &) {
     view.fit(view.geometry.selection.start != view.geometry.selection.end);
 }
+int TrackHeaderList::nameLeft(std::uint32_t depth) const noexcept {
+    // One band per group the track sits in, as many as leave the name some room.
+    const auto room = static_cast<std::uint32_t>(std::max(0, getWidth() - 60) / ArrangementView::kGroupBand);
+    return 2 + static_cast<int>(std::min({depth, room, kMaxBands})) * ArrangementView::kGroupBand;
+}
+juce::Rectangle<float> TrackHeaderList::foldSwitch(std::uint32_t depth, int top) const noexcept {
+    return {static_cast<float>(nameLeft(depth) + 3), static_cast<float>(top) + 3, 13, 13};
+}
 void TrackHeaderList::paint(juce::Graphics &g) {
-    // Live's track header's first column: the track's colour, its fold switch and its
-    // name; the panel's grey under the last track.
+    // Live's track header's first column: the track's colour, its fold switch and its name;
+    // the panel's grey under the last track. A track in a group sits past a band in the group's
+    // colour, one for each group it is in (Live 12 manual 18.3).
     g.fillAll(look::panel);
     int y = -view.geometry.scrollY;
-    std::size_t position = 0;
-    for (const auto &t : view.reader().tracks()) {
+    // The colour of the group at each depth: the walk goes down the tree, so above any row they
+    // are its own groups'.
+    std::array<juce::Colour, kMaxBands> groups{};
+    const auto &folded = view.root.state().foldedGroups;
+    for (const auto row : view.geometry.rows(view.reader())) {
+        const auto *t = row.track;
+        const auto colour = view.colourFor(row.position);
+        if (row.place.group && row.place.depth < groups.size())
+            groups[row.place.depth] = colour;
         const int h = view.geometry.heightFor(t->id);
-        const auto colour = view.colourFor(position);
-        ++position;
         if (h == 0)
-            continue; // left out by the project view
+            continue; // left out by the project view, or folded away
         g.setColour(look::separator);
         g.fillRect(0, y, 2, h);
         g.fillRect(0, y + h - 2, getWidth(), 2);
+        const int x = nameLeft(row.place.depth);
+        for (int band = 0; 2 + band * ArrangementView::kGroupBand < x; ++band) {
+            g.setColour(groups[static_cast<std::size_t>(band)]);
+            g.fillRect(2 + band * ArrangementView::kGroupBand, y, ArrangementView::kGroupBand - 1, h - 2);
+        }
         g.setColour(colour);
-        g.fillRect(2, y, getWidth() - 2, h - 2);
-        const juce::Rectangle<float> fold(5, static_cast<float>(y) + 3, 13, 13);
-        g.setColour(colour.darker(1.6f));
+        g.fillRect(x, y, getWidth() - x, h - 2);
+        const auto fold = foldSwitch(row.place.depth, y);
+        const auto ink = colour.darker(1.6f);
+        g.setColour(ink);
         g.drawEllipse(fold.reduced(0.6f), 1.2f);
-        look::triangle(g, fold.reduced(3.5f), juce::MathConstants<float>::halfPi, colour.darker(1.6f));
+        if (row.place.group) {
+            // Live 12's group switch: three lines, the top one out to the left while the group
+            // is open, level while it is folded, as the manual's two figures show it.
+            const bool closed = folded.count(t->id) != 0;
+            for (int line = 0; line < 3; ++line) {
+                const float shift = closed ? 0.f : line == 0 ? -1.f : 1.f;
+                g.fillRect(fold.getCentreX() - 3.f + shift, fold.getCentreY() - 3.6f + 3.f * static_cast<float>(line),
+                           6.f, 1.2f);
+            }
+        } else
+            look::triangle(g, fold.reduced(3.5f), juce::MathConstants<float>::halfPi, ink);
         if (t->id != renaming_) {
             g.setColour(look::text);
             g.setFont(look::font(11.5f, true));
-            g.drawText(juce::String::fromUTF8(displayName(t->name, position).c_str()), 25, y + 2,
-                       getWidth() - 27, 15, juce::Justification::centredLeft);
+            g.drawText(juce::String::fromUTF8(displayName(t->name, row.position + 1).c_str()), x + 23, y + 2,
+                       getWidth() - x - 25, 15, juce::Justification::centredLeft);
         }
         y += h;
     }
@@ -859,28 +948,35 @@ void TrackHeaderList::resized() {
 }
 bool TrackHeaderList::beginRename(std::int64_t track) {
     // The name as it is now, not as this window last drew it.
-    int y = -view.geometry.scrollY;
     const auto now = view.root.current();
-    for (const auto &t : now->tracks) {
-        if (t->id == track) {
-            renaming_ = track;
-            view.geometry.selection.track = track;
-            view.root.publishSelection();
-            editor.setBounds(4, y + 3, std::max(0, getWidth() - 8), 24);
-            if (!editor.isVisible() || editor.getName() != juce::String(track)) {
-                editor.setName(juce::String(track));
-                editor.setText(juce::String::fromUTF8(t->name.c_str()), false);
-                editor.selectAll();
-            }
-            editor.setVisible(true);
-            if (editor.isShowing())
-                editor.grabKeyboardFocus();
-            repaint();
-            return true;
-        }
-        y += view.geometry.heightFor(t->id);
+    const auto *t = now->findTrack(track);
+    if (t == nullptr)
+        return false;
+    // Its title bar where this window draws it; a track newer than this frame below the rows,
+    // until the next frame's rows place it (ArrangementView::applyView).
+    const auto rows = view.geometry.rows(view.reader());
+    int y = -view.geometry.scrollY;
+    std::uint32_t depth = 0;
+    const auto at = rows.find(track);
+    for (std::size_t i = 0; i < std::min(at, rows.size()); ++i)
+        y += view.geometry.heightFor(rows[i].track->id);
+    if (at < rows.size())
+        depth = rows[at].place.depth;
+    renaming_ = track;
+    view.geometry.selection.track = track;
+    view.root.publishSelection();
+    const int x = nameLeft(depth) + 2;
+    editor.setBounds(x, y + 3, std::max(0, getWidth() - x - 4), 24);
+    if (!editor.isVisible() || editor.getName() != juce::String(track)) {
+        editor.setName(juce::String(track));
+        editor.setText(juce::String::fromUTF8(t->name.c_str()), false);
+        editor.selectAll();
     }
-    return false;
+    editor.setVisible(true);
+    if (editor.isShowing())
+        editor.grabKeyboardFocus();
+    repaint();
+    return true;
 }
 bool TrackHeaderList::commitRename() {
     const auto id = renaming_;
@@ -902,6 +998,16 @@ void TrackHeaderList::endRename() {
     repaint();
 }
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
+    // A group's fold switch folds or unfolds it (Live 12 manual 18.3), and selects nothing.
+    int top = 0;
+    const auto rows = view.geometry.rows(view.reader());
+    if (const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
+        !e.mods.isPopupMenu() && at < rows.size() && rows[at].place.group &&
+        foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position)) {
+        resizeId = 0;
+        view.toggleFold(rows[at].track->id);
+        return;
+    }
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
         view.geometry.selection.track = t->id;
         resizeId = t->id;
@@ -932,19 +1038,17 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     // track's lanes lighter still, the bar grid, a dark rule between tracks.
     ++view.canvasPaints;
     const auto &geo = view.geometry;
-    const auto &tracks = view.reader().tracks();
+    const auto rows = geo.rows(view.reader());
     int y = -geo.scrollY;
     auto lanes = [&](int top, int height, bool selected) {
         paintLanes(g, geo, getWidth(), top, height, selected);
     };
-    std::size_t position = 0;
-    for (const auto &t : tracks) {
+    for (std::size_t i = 0; i < rows.size(); ++i) {
+        const auto row = rows[i];
+        const auto *t = row.track;
         const int h = geo.heightFor(t->id);
-        if (h == 0) {
-            // Left out by the project view: no room, and its colour keeps its place.
-            ++position;
-            continue;
-        }
+        if (h == 0)
+            continue; // left out by the project view, or folded away: no room
         const bool selected = t->id == geo.selection.track;
         lanes(y, h - 2, selected);
         g.setColour(look::separator);
@@ -956,7 +1060,9 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.setColour(look::selection.withAlpha(0.85f));
             g.fillRect(x0, static_cast<float>(y), x1 - x0, static_cast<float>(h - 2));
         }
-        const auto colour = view.colourFor(position);
+        const auto colour = view.colourFor(row.position);
+        if (row.place.group)
+            paintGroupLane(g, i, y, h, colour);
         for (const auto &c : t->clips) {
             // A clip being moved by its bar is drawn where it would land.
             const auto pos = c->id == moving_ ? movingTo_ : c->posTicks;
@@ -978,7 +1084,6 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.drawRect(left, static_cast<float>(y + 1), std::max(1.f, right - left),
                        static_cast<float>(h - 4), 1.f);
         }
-        ++position;
         y += h;
     }
     // Under the last track, Live's drop area.
@@ -992,13 +1097,46 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     // The insert marker, a thin blue line in the selected track.
     if (geo.selection.start == geo.selection.end && geo.selection.marked) {
         int top = -geo.scrollY;
-        for (const auto &t : tracks) {
-            if (t->id == geo.selection.track) {
+        for (const auto row : rows) {
+            const auto id = row.track->id;
+            if (id == geo.selection.track && geo.heightFor(id) > 0) {
                 g.setColour(juce::Colour(0xff5dc9e8));
-                g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, geo.heightFor(t->id) - 2);
+                g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, geo.heightFor(id) - 2);
             }
-            top += geo.heightFor(t->id);
+            top += geo.heightFor(id);
         }
+    }
+}
+void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y, int h, juce::Colour colour) const {
+    // Live's group track (manual 18.3, its figure of a folded group): a darker lane, and in it an
+    // overview of the clips of every track the group holds, at any depth, a thin row each, in
+    // the group's colour. Folded or not.
+    const auto &geo = view.geometry;
+    const auto rows = geo.rows(view.reader());
+    g.setColour(juce::Colours::black.withAlpha(0.16f));
+    g.fillRect(0, y, getWidth(), h - 2);
+    const auto depth = rows[at].place.depth;
+    std::size_t held = 0;
+    for (auto i = at + 1; i < rows.size() && rows[i].place.depth > depth; ++i)
+        if (!rows[i].place.group)
+            ++held;
+    if (held == 0)
+        return;
+    const float pitch = std::min(8.f, static_cast<float>(h - 6) / static_cast<float>(held));
+    const float bar = pitch >= 4.f ? pitch - 2.f : std::max(1.f, pitch);
+    float top = static_cast<float>(y) + 3.f;
+    g.setColour(colour.brighter(0.2f));
+    for (auto i = at + 1; i < rows.size() && rows[i].place.depth > depth; ++i) {
+        if (rows[i].place.group)
+            continue;
+        for (const auto &c : rows[i].track->clips) {
+            const double x = geo.x(c->posTicks), end = geo.x(c->posTicks + c->lengthTicks);
+            if (end < 0 || x > getWidth())
+                continue;
+            const float left = static_cast<float>(std::max(-1., x));
+            g.fillRect(left, top, std::max(1.f, static_cast<float>(std::min(end, getWidth() + 1.)) - left), bar);
+        }
+        top += pitch;
     }
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
@@ -1037,7 +1175,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
 const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &track, bool &edge) const {
     const auto &geo = view.geometry;
     int top = -geo.scrollY;
-    for (const auto &t : view.reader().tracks()) {
+    for (const auto row : geo.rows(view.reader())) {
+        const auto *t = row.track;
         if (geo.shown(t->id) && y >= top + 1 && y < top + 1 + kClipBarHeight)
             for (const auto &c : t->clips) {
                 const int left = static_cast<int>(geo.x(c->posTicks));
@@ -1174,35 +1313,42 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             return true;
         }
     }
-    const auto &tracks = view.reader().tracks();
+    // U folds or unfolds the selected group; Alt+U unfolds them all (§42.16, §42.19). The other
+    // tracks' fold, which shows their automation, waits for the lanes.
+    if (k == juce::KeyPress('u')) {
+        if (view.tree().isGroup(sel.track))
+            view.toggleFold(sel.track);
+        return true;
+    }
+    if (k == juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) {
+        view.unfoldAll();
+        return true;
+    }
+    const auto tracks = view.geometry.rows(view.reader());
     if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) {
-        // Between the tracks shown: those the project view leaves out are passed over. At
-        // either end the selection stays; with none, it goes to the first track shown.
-        std::size_t at = tracks.size();
-        for (std::size_t i = 0; i < tracks.size(); ++i)
-            if (tracks[i]->id == sel.track) {
-                at = i;
-                break;
-            }
+        // Between the tracks shown, in the lanes' order: those the project view leaves out or a
+        // folded group holds are passed over. At either end the selection stays; with none, it
+        // goes to the first track shown.
+        const auto at = tracks.find(sel.track);
         std::size_t to = tracks.size();
         if (at == tracks.size()) {
             for (std::size_t i = 0; i < tracks.size() && to == tracks.size(); ++i)
-                if (view.geometry.shown(tracks[i]->id))
+                if (view.geometry.shown(tracks[i].track->id))
                     to = i;
         } else if (code == juce::KeyPress::downKey) {
             for (std::size_t i = at + 1; i < tracks.size() && to == tracks.size(); ++i)
-                if (view.geometry.shown(tracks[i]->id))
+                if (view.geometry.shown(tracks[i].track->id))
                     to = i;
         } else {
             for (std::size_t i = at; i-- > 0 && to == tracks.size();)
-                if (view.geometry.shown(tracks[i]->id))
+                if (view.geometry.shown(tracks[i].track->id))
                     to = i;
         }
         if (to == tracks.size())
             to = at;
         if (to == tracks.size())
             return true;
-        sel.track = tracks[to]->id;
+        sel.track = tracks[to].track->id;
         sel.clip = 0;
         view.changed();
         return true;
