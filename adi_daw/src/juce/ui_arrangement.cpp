@@ -499,9 +499,7 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
             const auto *stored = tree_.find(row.track->id);
             const auto &name = stored != nullptr ? stored->name : row.track->name;
             add(row.track->id, static_cast<int>(row.place.depth) + 1,
-                juce::String::fromUTF8(displayName(name, row.position + 1).c_str()),
-                stored != nullptr && stored->colour != 0 ? juce::Colour(0xff000000 | stored->colour)
-                                                         : colourFor(row.position));
+                juce::String::fromUTF8(displayName(name, row.position + 1).c_str()), colourFor(row.position));
         }
     return menu;
 }
@@ -532,6 +530,10 @@ void ArrangementView::resized() {
     frame(true);
 }
 juce::Colour ArrangementView::colourFor(std::size_t position) const {
+    const auto rows = geometry.rows(reader());
+    if (position < rows.size())
+        if (const auto &own = rows[position].track->color; own && *own >= 0 && *own < kPaletteColours)
+            return look::paletteColour(*own);
     return look::trackColour(position);
 }
 void ArrangementView::paint(juce::Graphics &g) {

@@ -240,8 +240,9 @@ frames, so a new generation with the same rows allocates nothing (§8).
 *From the snapshot since 1 November:* each track's parent, place in its parent and kind
 come from the snapshot (#299, window log N6; `adi::ui::rowsFromSnapshot`). The window
 read them from the project file from 29 October until then, the director's choice;
-STEP-7-PLAN §2.2 records how that ended. A track's own colour waits on the format's
-meaning of `tracks.color` (N36); until then colours are by place.
+STEP-7-PLAN §2.2 records how that ended. A track's own colour is an index into Live's
+palette (ADR-0211), drawn through `look::paletteColour`; a track with none is coloured by
+its place.
 
 **Open, and it is not a UI question:** where a *keyboard* map lives.
 `controller_maps` is project-scoped and right for MIDI and OSC. A keymap is

@@ -677,6 +677,25 @@ void returnsStandBeforeMain() {
           "with its view, it stands at the bottom of the lanes");
     check(ui::groupTrack(view.current()->tracks, 2).refusal == "Main and return tracks can't be grouped.",
           "a return can't be grouped");
+
+    // A track's own colour (ADR-0211): an index into Live's palette, or none.
+    auto colour = [&sub](std::int64_t id, std::int64_t value) {
+        OpRequest r;
+        r.opType = "track.setColor";
+        r.payload = {{"id", id}, {"color", value}};
+        r.label = "Recolour Track";
+        return sub.submit(std::move(r)).ok;
+    };
+    check(colour(3, 26) && colour(5, 0xff0000), "one track given palette colour 26, another an RGB value");
+    const ui::SnapshotReader coloured(view.current());
+    ui::rowsFromSnapshot(coloured, rows);
+    auto colourOf = [&rows](std::int64_t id) {
+        for (const auto& r : rows)
+            if (r.id == id) return r.colour;
+        return -2;
+    };
+    check(colourOf(3) == 26 && colourOf(5) == -1 && colourOf(4) == -1 && colourOf(1) == -1,
+          "the rows carry the index; none, or a value outside the palette, is -1");
 }
 
 int main() {

@@ -185,8 +185,8 @@ class ArrangementView final : public juce::Component {
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
     void paint(juce::Graphics &) override;
-    // A track's colour by its place, as Live's auto-assigned colours (the format does not yet
-    // say what a track's own colour holds: window log, N36).
+    // The colour of the track at `position` down the rows: its own, an index into Live's palette
+    // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
     void changed();

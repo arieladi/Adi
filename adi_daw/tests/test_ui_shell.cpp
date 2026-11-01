@@ -869,6 +869,88 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.changed();
     root.frame();
     check(laneTop(root, 2) == footY, "and the foot is where it was");
+    // A track's own colour (ADR-0211): an index into Live's palette, drawn on its title, its lane's
+    // clips and its track controls; without one, or outside the palette, the colour of its place.
+    {
+        auto headerPixel = [&root](std::int64_t id) {
+            auto &headers = root.arrangement.headers;
+            juce::Image image(juce::Image::ARGB, headers.getWidth(), headers.getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                headers.paintEntireComponent(g, true);
+            }
+            return image.getPixelAt(headers.nameLeft(0) + 1, laneTop(root, id) + 30);
+        };
+        lanes.scrollY = 0;
+        root.arrangement.changed();
+        root.frame();
+        const auto byPlace = root.arrangement.colourFor(1);
+        check(byPlace == juce::Colour(0xffeb4cce) && headerPixel(11) == byPlace,
+              "Track 2 has no colour of its own: the colour of its place");
+        check(root.submitEdit("track.setColor", {{"id", 11}, {"color", 26}}, "Recolour Track"), "Track 2 recoloured");
+        root.arrangement.changed();
+        root.frame();
+        // Until the seventy are measured, index 26 stands in as the fourteen's 26 % 14 = 12th.
+        const juce::Colour own(0xff92a7ff);
+        check(root.arrangement.colourFor(1) == own && headerPixel(11) == own,
+              "its own colour, index 26 of Live's palette, on its title");
+        check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+        root.resizeMixerView(220);
+        root.mark(DirtySet::All);
+        root.frame();
+        MixerStrip *column = nullptr;
+        for (const auto &strip : root.mixerView.strips())
+            if (strip->isVisible() && strip->track() == 11)
+                column = strip.get();
+        juce::Colour nameBar;
+        if (column != nullptr) {
+            juce::Image image(juce::Image::ARGB, column->getWidth(), column->getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                column->paintEntireComponent(g, true);
+            }
+            nameBar = image.getPixelAt(column->getWidth() - 6, 10);
+        }
+        check(column != nullptr && nameBar == own, "and on its strip's name in the Mixer View");
+        check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+        check(root.submitEdit("track.setColor", {{"id", 11}, {"color", 0xff0000}}, "Recolour Track"),
+              "a value outside the palette, as an RGB colour would be");
+        root.arrangement.changed();
+        root.frame();
+        check(root.arrangement.colourFor(1) == byPlace, "is not a colour of the palette: the colour of its place");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+        root.arrangement.changed();
+        root.frame();
+        check(root.arrangement.colourFor(1) == byPlace && headerPixel(11) == byPlace, "and it has no colour of its own again");
+        const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+        if (folder.isNotEmpty()) {
+            // Four tracks in colours of their own, the rest by place, for the picture.
+            int edits = 0;
+            for (const auto &[id, index] : {std::pair{10, 7}, std::pair{11, 26}, std::pair{13, 47}, std::pair{14, 3}})
+                edits += root.submitEdit("track.setColor", {{"id", id}, {"color", index}}, "Recolour Track") ? 1 : 0;
+            lanes.selection.track = 11;
+            root.arrangement.changed();
+            root.mark(DirtySet::All);
+            root.frame();
+            juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-track-colour.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            for (int k = 0; k < edits; ++k)
+                root.command(AppCommands::Undo);
+            root.arrangement.changed();
+            root.frame();
+        }
+    }
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (folder.isNotEmpty()) {
         // The last tracks, the drop area under them, and the foot, as Live's figure.
