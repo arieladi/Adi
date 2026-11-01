@@ -12,6 +12,23 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-01 — N5 import-to-playing-clip ready
+
+### PR requested — N5
+
+**Title:** Prepare audio imports and attach playing clips atomically (N5)
+**Head:** `engine/import-audio-clip`, `0bf9eb5`; **base:** `main` at `6fa069a`. Independent of N1/N2, not a third stack level.
+
+`media::prepareImport` captures a file without committing project rows/history. Recognized audio supplies source rate/channels/decoded frames, duration, format and native WAV bit depth; generic non-audio retains nullable metadata. It checks the content hash again after capture, releases temporary cache pins, and reports known corrupt audio. Reused media ids still return `result.audio`; stale/missing paths yield a captured relink to the matching file. Existing reused rows keep their old stored metadata, while the caller receives fresh dimensions.
+
+`clip.attachAudio {id,media,frames}` / `clip.detachAudio {id}` are lifted from `3feee62`, with source bounds checked. Attach creates an unwarped source window; detach refuses edited audio rather than losing it. Import + `clip.create` + attach can commit as one transaction; failure rolls back all three and one Undo removes them together. Deleting an imported clip also now captures its complete audio attachment in inverse `clip.create`'s optional `audio` object, including empty/NULL warp bytes, source edits and pitch/channel properties. Neither handler reads files. OPS.md documents the two new P0 ops (172 total) and captured payloads; no schema/UI production change.
+
+**For the window:** call `prepareImport` off the audio thread and require successful `result.audio`; append its request only if `request.opType` is nonempty (it can be a relink for an existing id). Use `result.mediaId` and `result.audio->frames` in `clip.attachAudio`, explicit placement/length in `clip.create`, and submit the entire list through one OpSubmitter batch. Omit the empty request for healthy deduplication. An optional DecodeCache pointer supports the caller's configured worker cache. This replaces the N5 drop stub; playback is exercised in the engine test, not inferred from inserted rows.
+
+**Validation:** GCC Debug/Werror, libpd on/JUCE off: **9704 checks / 105 suites**, all validators clean; media71. Four focused Clang Werror suites pass. Tests cover actual playback, single-step undo/redo with source removed, deletion/undo of all audio properties, decode metadata/pin release, moved deduplication, rejection paths and transaction rollback. Four compiled plants fail: wrong metadata (1), early commit (9), lost attachment (2), oversized window (3). Remote MSVC/seven-ABI CI remains external; API is Forbidden, so this is the ADR-0210 d4 PR request. Next: N11 snapshot sends, on a new main-based branch.
+
+---
+
 ## 2026-11-01 — N2 bootstrap ready; N1 migration hardened
 
 ### PR requested — N2
