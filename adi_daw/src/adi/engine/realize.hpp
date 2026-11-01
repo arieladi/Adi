@@ -87,9 +87,11 @@ using DeviceChainFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 /// sourceLifetime() token retained by the realised graph (ADR-0151).
 using SourceFn = std::function<std::vector<Node*>(std::int64_t trackId)>;
 
-/// Where a send leaves its source (ADR-0203 d3): the node whose output IS
-/// `tap` on `trackId`'s chain -- one of the nodes `devicesFor` gave that
-/// track -- or null for its junction.
+/// Where a send leaves its source (ADR-0203 d3): the node on `trackId`'s
+/// chain -- one of the nodes `devicesFor` gave that track -- that a send at
+/// `tap` reads from, or null for its junction. That is the node whose output
+/// is `tap`, unless the send's own node plays what comes after it: the
+/// session's Post send plays its source's strip, so it reads before the strip.
 using TapFn = std::function<Node*(std::int64_t trackId, Tap tap)>;
 
 /// The node a send plays through, by its routing row (ADR-0203 d3): its
@@ -204,8 +206,9 @@ public:
     /// the junction, the junction into the chain's first node, one chain node
     /// into the next. Such an edge delays when the node before it reports a
     /// negative latency -- a strip playing a track delay (ADR-0172) with a
-    /// node after it, as a summed child's channel half is -- or, for a source,
-    /// when something else into the junction arrives later.
+    /// node after it, as a summed child's channel half is, or a send's node
+    /// playing its source's strip -- or, for a source, when something else
+    /// into the junction arrives later.
     ///
     /// Keyed by where the edge LEAVES, because a ring holds what that end
     /// sent. A chain node has one next node, so its edge onward is `Next` from
