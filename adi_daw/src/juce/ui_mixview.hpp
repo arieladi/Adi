@@ -7,6 +7,12 @@
 namespace adi::ui {
 class AdiRootComponent;
 class SnapshotReader;
+// The Mix View's own window or the centre: two overlapping boxes, lit while it is in a window.
+class FloatButton final : public juce::Button {
+  public:
+    FloatButton() : juce::Button("Mix View in a Window") {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // The Mix View (ADR-0209, ruled 1 November 2026; UI-ARCHITECTURE §12): every channel's ADI-Q, ADI-L
 // and sidechain slot in one view. F4 or the control bar's Mix button opens it, docked in the centre
 // in place of the arrangement and its track controls; the browser, the strip down the edge and the
@@ -33,6 +39,8 @@ class MixViewPanel final : public juce::Component {
     // What the tabs sit above, in the panel's coordinates.
     juce::Rectangle<int> body() const noexcept;
     std::array<std::unique_ptr<juce::TextButton>, kTabCount> tabs;
+    // At the band's right end: into a window of its own, onto any display, and back.
+    FloatButton floating;
     // STACK: every channel, its ADI-Q and its ADI-L, present and off until the engine's slots
     // arrive (window log, N16). For now the Channel EQ window's rows, which the STACK item
     // reshapes into Pro-Q's instance list.

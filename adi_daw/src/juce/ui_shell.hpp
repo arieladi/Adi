@@ -80,7 +80,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         GroupTracks,
         UngroupTracks,
         ToggleMixView,
-        LastId = ToggleMixView
+        DetachMixView,
+        LastId = DetachMixView
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -204,6 +205,9 @@ class AdiRootComponent final : public juce::Component {
     juce::Rectangle<int> mixViewArea() const noexcept { return mixViewArea_; }
     // The Mix View's tab, this window's view state; false only on a write error.
     bool chooseMixViewTab(int tab);
+    // Opens or closes the Mix View and says where it goes; the application moves the panel into
+    // its floating window or back (ui_floating.hpp, detachMixView). False only on a write error.
+    bool setMixView(bool open, bool detached);
     MixerViewResizer mixerViewResizer{*this};
     // Live's strip down the arrangement's outer edge, with the flip arrows.
     SideStrip strip;

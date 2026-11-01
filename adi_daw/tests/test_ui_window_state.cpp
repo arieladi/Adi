@@ -41,6 +41,7 @@ int main() {
     state.foldedGroups = {7, 13};
     state.mixView = true;
     state.mixViewTab = 3;
+    state.mixViewDetached = true;
     state.gridSnap = false;
     state.gridFixed = true;
     state.gridTriplet = true;
@@ -60,6 +61,8 @@ int main() {
     check(restored.mixView && restored.mixViewTab == 3 && !views.load("other").mixView &&
               views.load("other").mixViewTab == 1,
           "the Mix View and its tab are kept per window: closed, on STACK, until opened (ADR-0209)");
+    check(restored.mixViewDetached && !views.load("other").mixViewDetached,
+          "and where it opens: docked until moved into a window of its own");
     check(!restored.gridSnap && restored.gridFixed && restored.gridTriplet && restored.gridNarrow == 2 &&
               restored.gridFixedQuarters == .125 && views.load("other").gridSnap && !views.load("other").gridFixed,
           "the editing grid is kept per window, snapping and adaptive until changed");

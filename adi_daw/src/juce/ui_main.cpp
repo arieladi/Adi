@@ -180,6 +180,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 return e && !e->retired;
             });
         window_->setVisible(true);
+        // A Mix View kept open in its own window opens there again.
+        syncMixView(*floating_, *root_, true);
         if (!noAudio_)
             attachAudio();
         return true;
@@ -264,6 +266,12 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->say("Save As is not built yet: it waits for the engine's Save As.");
             return false;
         }
+        // The Mix View in a window of its own, or docked back (ADR-0209 d11); F4 while it opens
+        // in a window opens or closes that window.
+        if (id == AppCommands::DetachMixView)
+            return detachMixView(*floating_, *root_, !root_->state().mixViewDetached);
+        if (id == AppCommands::ToggleMixView)
+            return toggleMixViewWindow(*floating_, *root_);
         if (id == AppCommands::ShowChannelEq) {
             // ADI's Channel EQ window (ADR-0204 d1), floating, one for the project.
             const std::string key = "Channel EQ";
@@ -350,8 +358,10 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
-        if (floating_)
+        if (floating_) {
             floating_->collect();
+            syncMixView(*floating_, *root_);
+        }
         if (smokeOutput_ != juce::File{}) {
             // Native-window smoke: software screenshot only, never an audio device.
             if (!window_->isShowing() || window_->getPeer() == nullptr) {

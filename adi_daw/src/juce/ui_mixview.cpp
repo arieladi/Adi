@@ -4,6 +4,20 @@
 #include "ui_shell.hpp"
 #include <algorithm>
 namespace adi::ui {
+void FloatButton::paintButton(juce::Graphics &g, bool over, bool) {
+    const auto r = getLocalBounds().toFloat();
+    look::box(g, r, getToggleState() ? look::accent : over ? look::chooser : look::button);
+    // Two boxes, the front one offset down and right: a window over the window.
+    g.setColour(look::text);
+    const float s = std::min(r.getWidth(), r.getHeight());
+    const juce::Rectangle<float> back(r.getX() + s * .25f, r.getY() + s * .22f, s * .42f, s * .34f);
+    g.drawRect(back, 1.f);
+    const auto front = back.translated(s * .14f, s * .2f);
+    g.setColour(getToggleState() ? look::accent : look::button);
+    g.fillRect(front);
+    g.setColour(look::text);
+    g.drawRect(front, 1.f);
+}
 MixViewPanel::MixViewPanel(AdiRootComponent &root) : stack(root), root_(root) {
     setTitle("Mix View");
     setLookAndFeel(&look::liveLook());
@@ -20,6 +34,11 @@ MixViewPanel::MixViewPanel(AdiRootComponent &root) : stack(root), root_(root) {
         addAndMakeVisible(*button);
         tabs[static_cast<std::size_t>(i)] = std::move(button);
     }
+    floating.setTooltip("Mix View in a Window. Moves the Mix View to a window of its own, onto any display; "
+                        "again, back to the centre.");
+    floating.setMouseClickGrabsKeyboardFocus(false);
+    floating.onClick = [this] { root_.command(AppCommands::DetachMixView); };
+    addAndMakeVisible(floating);
     addChildComponent(stack);
 }
 MixViewPanel::~MixViewPanel() { setLookAndFeel(nullptr); }
@@ -30,6 +49,7 @@ juce::Rectangle<int> MixViewPanel::body() const noexcept {
     return getLocalBounds().withTrimmedTop(kHeaderHeight).reduced(look::border);
 }
 void MixViewPanel::frame(const SnapshotReader &reader) {
+    floating.setToggleState(root_.state().mixViewDetached, juce::dontSendNotification);
     const int shown = static_cast<int>(tab());
     if (shown != shownTab_) {
         shownTab_ = shown;
@@ -51,6 +71,7 @@ void MixViewPanel::resized() {
         tabs[static_cast<std::size_t>(i)]->setBounds(x, y, w, look::fieldHeight);
         x += w + 2;
     }
+    floating.setBounds(getWidth() - look::gap - 22, y, 22, look::fieldHeight);
     stack.setBounds(body());
 }
 void MixViewPanel::paint(juce::Graphics &g) {
