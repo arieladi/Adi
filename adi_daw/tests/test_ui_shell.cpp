@@ -1437,6 +1437,52 @@ int main(int argc, char **argv) {
         check(ranged && !panel.change(*ranged, static_cast<std::int64_t>(ranged->max) + 1) &&
                   panel.help().isNotEmpty(),
               "a value the registry refuses is not written, and the help line says why");
+        // The keyboard's part (manual 40.1.2): with the focus, the arrows switch a switch
+        // and step a value box, and Enter switches too.
+        if (auto *row = rowFor(flag)) {
+            // Through the Component, as the window's key dispatch reaches it.
+            juce::Component *control = row->control.get();
+            auto *button = dynamic_cast<juce::TextButton *>(control);
+            const bool initial = settings.get(flag->key).get<bool>();
+            const bool up = button && control->keyPressed(juce::KeyPress(juce::KeyPress::upKey)) &&
+                            settings.get(flag->key) == !initial;
+            const bool down = button && control->keyPressed(juce::KeyPress(juce::KeyPress::downKey)) &&
+                              settings.get(flag->key) == initial;
+            const bool enter = button && control->keyPressed(juce::KeyPress(juce::KeyPress::returnKey)) &&
+                               settings.get(flag->key) == !initial &&
+                               button->getButtonText() == (initial ? "Off" : "On");
+            check(up && down && enter, "with the focus, either arrow or Enter switches a switch, at once");
+            panel.defaults.onClick();
+        }
+        if (auto *row = rowFor(ranged)) {
+            auto *box = dynamic_cast<juce::Slider *>(row->control.get());
+            const auto stored = settings.get(ranged->key).get<std::int64_t>();
+            const bool rising = stored < static_cast<std::int64_t>(ranged->max);
+            check(box && box->getWantsKeyboardFocus() &&
+                      box->keyPressed(juce::KeyPress(rising ? juce::KeyPress::upKey : juce::KeyPress::downKey)) &&
+                      settings.get(ranged->key) == stored + (rising ? 1 : -1),
+                  "and the arrows step a value box by one, written at once");
+            panel.change(*ranged, stored);
+            row->refresh();
+            UiPeerRoot settingsHost;
+            settingsHost.setSize(panel.getWidth(), panel.getHeight());
+            settingsHost.addAndMakeVisible(panel);
+            settingsHost.setVisible(true);
+            settingsHost.addToDesktop(0);
+            if (box)
+                box->grabKeyboardFocus();
+            const bool marked = row->keyFocused();
+            row->focusOfChildComponentChanged(juce::Component::focusChangedByMouseClick);
+            const bool clicked = !row->keyFocused();
+            if (box)
+                box->grabKeyboardFocus();
+            if (box)
+                box->giveAwayKeyboardFocus();
+            check(marked && clicked && !row->keyFocused(),
+                  "the focus the keyboard gives is marked; a click's focus and none are not");
+            settingsHost.removeChildComponent(&panel);
+            settingsHost.removeFromDesktop();
+        }
         if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
             folder.isNotEmpty()) {
             panel.showPage("Audio");

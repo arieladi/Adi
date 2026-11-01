@@ -34,6 +34,21 @@ Value list(const juce::String &typed) {
             out.push_back(part.trim().toStdString());
     return out;
 }
+// Live's switch: a box that reads On, lit, or Off. With the focus, either arrow or Enter
+// switches it, as a click does (manual 40.1.2).
+class SettingSwitch final : public juce::TextButton {
+  public:
+    bool keyPressed(const juce::KeyPress &k) override {
+        const bool key = k == juce::KeyPress::upKey || k == juce::KeyPress::downKey ||
+                         k == juce::KeyPress::returnKey;
+        if (!key || !isEnabled())
+            return juce::TextButton::keyPressed(k);
+        setToggleState(!getToggleState(), juce::dontSendNotification);
+        if (onClick)
+            onClick();
+        return true;
+    }
+};
 } // namespace
 SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
     : setting(s), panel_(panel) {
@@ -41,8 +56,7 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
     setTooltip(juce::String::fromUTF8(s.help.c_str()));
     switch (s.type) {
     case Type::Bool: {
-        // Live's switch: a box that reads On, lit, or Off.
-        auto button = std::make_unique<juce::TextButton>();
+        auto button = std::make_unique<SettingSwitch>();
         button->setClickingTogglesState(true);
         button->setColour(juce::TextButton::buttonColourId, look::button);
         auto *raw = button.get();
@@ -72,6 +86,8 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
             box->setRange(s.min, s.max, s.type == Type::Int ? 1. : 0.);
             box->setTextBoxIsEditable(true);
             box->setScrollWheelEnabled(false);
+            // With the focus, the arrows step it: by one, or a hundredth of its range.
+            box->setWantsKeyboardFocus(true);
             box->setNumDecimalPlacesToDisplay(s.type == Type::Int ? 0 : 2);
             box->setColour(juce::Slider::textBoxTextColourId, look::text);
             auto *raw = box.get();
@@ -172,7 +188,19 @@ void SettingRow::resized() {
     width = std::min(width, std::max(40, getWidth() - kControlX - 8));
     control->setBounds(kControlX, 3, width, kHeight - 6);
 }
+void SettingRow::focusOfChildComponentChanged(FocusChangeType cause) {
+    // Marked where the keyboard put the focus, as Live 12's focus ring; a click marks nothing.
+    const bool now = control->hasKeyboardFocus(true) && cause != focusChangedByMouseClick;
+    if (now != keyFocus_) {
+        keyFocus_ = now;
+        repaint();
+    }
+}
 void SettingRow::paint(juce::Graphics &g) {
+    if (keyFocus_) {
+        g.setColour(look::accent);
+        g.drawRect(control->getBounds().expanded(1), 1);
+    }
     g.setColour(setting.scope == Scope::App ? look::text : look::textDim);
     g.setFont(look::font(12.5f));
     int right = kControlX - 8;
