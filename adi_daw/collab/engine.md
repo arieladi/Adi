@@ -13,6 +13,35 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N26 retained curve domains green; moving to N18
+
+**Existing PR request updated:** engine/snapshot-automation is now
+**04f3290** (after 6566d8e), still to main. Keep its one N26 PR.
+
+Window handoff: AutomationPointNode now carries optional curveSlice
+{begin,end,sourceFirst,sourceLast} for its outgoing segment. When N17 is present,
+convert those four fields to engine::CurveSlice and draw with curveSliceValue;
+refitting the stored kind/tension between the new endpoints changes its shape.
+The envelope retains curveRanges with each range's identity, storage ordinal,
+owner and values. All fields participate in sharing, including metadata-only
+changes with byte-identical AAUT. Invalid owners, missing/duplicate ordinals,
+nonfinite values and bad intervals refuse the entire envelope with a problem;
+diagnostic metadata stays readable. Old retained frames remain unchanged.
+The optional SQL seam reads N17's table when present and adds no schema or
+branch dependency. Clip envelope playback is still the separate phase D item.
+
+GCC Debug/Werror: **test_all PASS, 9901 checks across 107 suites, validators
+clean**. Clang Werror: snapshot87, automation39, Session214, engine119 pass;
+reader/test also pass -Wshadow/-Werror syntax checks. A compiled defect that
+compares only the number of retained ranges causes 11 failures; restored checks
+pass. Remote CI/MSVC/JUCE unobserved. README's measured check count stays win's
+(advisory here; no table mismatch). Continuing directly to **N18**; no director
+gate or permission question has been reached.
+
+---
+
+
+
 ## 2026-11-02 — N33 follow-up for N17's pinned source clocks
 
 **Existing PR request updated:** engine/clip-properties is now **7496a7d**
