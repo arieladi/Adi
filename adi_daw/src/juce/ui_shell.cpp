@@ -1040,29 +1040,20 @@ bool AdiRootComponent::toggle(Panel p) {
 bool AdiRootComponent::insertTrack(bool midi) {
     // Live inserts after the selected track and selects the new one. The id is the
     // payload's, never SQLite's (ADR-0021), and it comes from the CURRENT cell: an
-    // action lands on the project as it is now, not on this window's last frame.
+    // action lands on the project as it is now, not on this window's last frame. In the selected
+    // track's group, right after it; the tracks after it move down one, in the same step.
     const auto current = view_.current();
-    const auto &tracks = current->tracks;
-    std::int64_t id = 1, index = static_cast<std::int64_t>(tracks.size());
-    for (std::size_t i = 0; i < tracks.size(); ++i) {
-        id = std::max(id, tracks[i]->id + 1);
-        if (tracks[i]->id == arrangement.geometry.selection.track)
-            index = static_cast<std::int64_t>(i) + 1;
-    }
-    OpRequest request;
-    request.opType = "track.create";
-    request.payload = {{"id", id},
-                       {"kind", midi ? "midi" : "audio"},
-                       // '#' shows the track's number and follows it (manual 18.2).
-                       {"name", midi ? "# MIDI" : "# Audio"},
-                       {"index", index}};
-    request.label = midi ? "Insert MIDI Track" : "Insert Audio Track";
-    request.selBefore = session_.advisory();
-    const auto result = submitter_.submit(std::move(request));
+    if (!current)
+        return fail("Inserting a track needs an open project.");
+    auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    edit.ops.front().selBefore = session_.advisory();
+    const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)
         return fail(result.error);
     arrangement.followPaused = true;
-    arrangement.geometry.selection.track = id;
+    arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
     publishSelection();

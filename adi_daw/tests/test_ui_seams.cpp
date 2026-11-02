@@ -686,6 +686,28 @@ void groupAndUngroupAsBatches() {
               ui::moveTracks(view.current()->tracks, {2}, {0, 6}).ops.empty() &&
               ui::moveTracks(view.current()->tracks, {3}, {6, 0}).ops.empty(),
           "dropped where they stand, nothing moves and no step is made");
+    // Live's Insert Track (manual 18.2): right after the selected track, in its group; the tracks
+    // after it move down one, in the same step.
+    auto inserted = ui::insertTrack(view.current()->tracks, 2, false);
+    check(inserted.refusal.empty() && inserted.select == 7 && inserted.ops.front().payload["index"] == 1 &&
+              inserted.ops.front().payload["parent"].is_null() && sub.submit(std::move(inserted.ops)).ok &&
+              order() == Order{{2, 0}, {7, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}} &&
+              sub.nextUndo()->label == "Insert Audio Track",
+          "an audio track inserted with Kick selected: right after Kick, the group and Bass after it, one step");
+    check(sub.undo().ok && order() == before, "undo removes it");
+    auto inGroup = ui::insertTrack(view.current()->tracks, 3, true);
+    check(inGroup.ops.front().payload["parent"] == 6 && sub.submit(std::move(inGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {7, 1}, {4, 0}, {1, 0}} &&
+              view.current()->findTrack(7)->kind == "midi" && sub.nextUndo()->label == "Insert MIDI Track",
+          "a MIDI track inserted with Snare selected: in Snare's group, after it");
+    check(sub.undo().ok, "undo");
+    for (const std::int64_t selected : {std::int64_t{1}, std::int64_t{0}}) {
+        auto last = ui::insertTrack(view.current()->tracks, selected, false);
+        check(sub.submit(std::move(last.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {7, 0}, {1, 0}},
+              selected == 1 ? "with Main selected, after the last track, before Main"
+                            : "with nothing selected, after the last track");
+        check(sub.undo().ok && order() == before, "undo");
+    }
     check(ui::moveTracks(view.current()->tracks, {6}, {6, 0}).refusal == "A group can't go inside itself." &&
               ui::moveTracks(view.current()->tracks, {1}, {0, 2}).refusal == "Main and the return tracks stay at the foot." &&
               ui::moveTracks(view.current()->tracks, {2}, {4, 0}).refusal == "Tracks go into a group track only." &&

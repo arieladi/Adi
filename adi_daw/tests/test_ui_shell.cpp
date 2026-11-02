@@ -1015,6 +1015,33 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         lanes.resizeTrack(12, 40);
         root.frame();
     }
+    // Live's Insert Track (manual 18.2) inside a group: right after the selected track, in its group.
+    {
+        lanes.selection.track = 11;
+        lanes.selection.toTrack = 0;
+        lanes.selection.picked.clear();
+        check(root.command(AppCommands::InsertAudioTrack), "Insert Audio Track with Clap/Snare/Rimshot selected");
+        root.frame();
+        check(order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {11, 1}, {19, 1}, {12, 1}, {13, 0},
+                                                                               {14, 1}, {15, 1}, {16, 1}, {17, 2}, {18, 2}, {1, 0}} &&
+                  lanes.selection.track == 19 && root.undoTitle(false) == "Undo Insert Audio Track",
+              "the new track in Drums, right after Clap/Snare/Rimshot, Hats & Percs after it; selected; one step");
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+            juce::Image shot(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(shot);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile("adi-insert-place.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
+        }
+        root.command(AppCommands::Undo);
+        root.frame();
+        check(order() == tree, "undo removes it");
+    }
     lanes.selection.track = 15;
     // Two changes of signature, for the picture of the ruler and its markers.
     for (const auto &[pos, num, den] : {std::tuple{8 * textproj::kPPQ, 3, 4}, std::tuple{14 * textproj::kPPQ, 7, 8}}) {
