@@ -35,3 +35,15 @@ All reads, decoding and node allocation happen on the calling message thread.
 Every exposed field affects sharing; unchanged lanes, envelopes, tracks and
 tempo retain their nodes. This adds no schema or op and changes no playback
 policy. The window owns forwarding the live Session state at its refresh seam.
+
+N17 compatibility: when automation_segment_ranges is present, each outgoing
+AutomationPointNode has an optional curveSlice with begin/end progress and
+sourceFirst/sourceLast. Use N17's engine::curveSliceValue for drawing: convert
+these four values to its CurveSlice, then evaluate with the stored curve,
+tension and endpoints. Refitting the curve between the new endpoints changes
+its shape. The snapshot also retains curveRanges with identity/ordinal/owner;
+all fields participate in sharing, including range-only changes with identical
+AAUT bytes. Invalid owners, duplicate/missing ordinals, nonfinite values and
+bad intervals empty the entire envelope with an explicit problem. This is an
+optional SQL seam, with no dependency or schema bump on this branch. Clip
+envelope data remains readable here; this does not add its playback.

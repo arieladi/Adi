@@ -12,6 +12,16 @@
 namespace SQLite { class Database; }
 namespace adi::engine {
 
+struct AutomationCurveSlice {
+    double begin=0,end=1,sourceFirst=0,sourceLast=0;
+    friend bool operator==(const AutomationCurveSlice&,const AutomationCurveSlice&)=default;
+};
+struct AutomationSegmentRangeNode {
+    std::int64_t id=0,recordIndex=0;
+    std::optional<std::int64_t> clipId;
+    AutomationCurveSlice slice;
+    friend bool operator==(const AutomationSegmentRangeNode&,const AutomationSegmentRangeNode&)=default;
+};
 /// AAUT identity and original units; clip envelopes are clip-relative.
 struct AutomationPointNode {
     std::uint64_t id = 0;
@@ -19,6 +29,7 @@ struct AutomationPointNode {
     double value = 0.0;
     float tension = 0.0f;
     std::uint8_t curve = 1, flags = 0;
+    std::optional<AutomationCurveSlice> curveSlice{}; // outgoing retained domain, if any
     friend bool operator==(const AutomationPointNode&, const AutomationPointNode&) = default;
 };
 struct AutomationEnvelopeNode {
@@ -26,6 +37,7 @@ struct AutomationEnvelopeNode {
     std::optional<std::int64_t> clipId; // absent: arrangement
     std::uint32_t streamFlags = 0;
     std::vector<AutomationPointNode> points;
+    std::vector<AutomationSegmentRangeNode> curveRanges; // also retained when invalid; participates in sharing
     std::string problem; // invalid stream: empty points, explicit problem
     // Original bytes participate in sharing, including unknown future tails
     // and malformed data. A redraw cannot silently lose an imported change.

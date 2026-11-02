@@ -194,9 +194,56 @@ void runtimeOverride() {
     check(view.current()->automationOverridden && !view.current()->findAutomationLane(1)->overridden,
           "global Re-Enable mirrors whole session set even before an unknown lane appears");
 }
+void retainedCurves() {
+    Fixture f("retained");auto& db=f.store->db();
+    // Optional N17 table; this reader remains independent of its schema PR.
+    db.exec("CREATE TABLE automation_segment_ranges(id INTEGER PRIMARY KEY,data_id INTEGER NOT NULL,clip_id INTEGER,"
+        "record_index INTEGER NOT NULL,progress_begin REAL NOT NULL,progress_end REAL NOT NULL,source_first REAL NOT NULL,source_last REAL NOT NULL) STRICT");
+    db.exec("INSERT INTO automation_segment_ranges SELECT 12,id,NULL,0,0.2,0.8,-3,-12 FROM automation_data WHERE lane_id=1 AND clip_id IS NULL");
+    auto prior=SnapshotBuilder::fromStore(*f.store);
+    const auto envelope=prior->findAutomationLane(1)->envelopes[0];
+    check(envelope->problem.empty() && envelope->points[0].curveSlice &&
+          envelope->points[0].curveSlice->begin==0.2 && envelope->points[0].curveSlice->end==0.8 &&
+          envelope->points[0].curveSlice->sourceFirst==-3 && envelope->points[0].curveSlice->sourceLast==-12,
+          "window reads original source values and retained progress interval on outgoing point");
+    check(envelope->curveRanges.size()==1 && envelope->curveRanges[0].id==12 &&
+          envelope->curveRanges[0].recordIndex==0 && !envelope->curveRanges[0].clipId,"range identity, storage ordinal and owner are retained");
+    const auto same=SnapshotBuilder::fromStore(*f.store,*prior);
+    check(same->automationLanes==prior->automationLanes,"unchanged retained curves share");
+    for(const char* change:{"progress_begin=0.1","progress_end=0.9","source_first=-6","source_last=0","id=13","record_index=1"}) {
+        db.exec(std::string("UPDATE automation_segment_ranges SET ")+change);
+        auto next=SnapshotBuilder::fromStore(*f.store,*prior);
+        check(next->findAutomationLane(1)->envelopes[0]!=prior->findAutomationLane(1)->envelopes[0] &&
+              next->findAutomationLane(1)->envelopes[1]==prior->findAutomationLane(1)->envelopes[1] &&
+              next->findAutomationLane(2)==prior->findAutomationLane(2),"every range field participates in sharing without changing siblings");
+        prior=std::move(next);
+    }
+    check(prior->findAutomationLane(1)->envelopes[0]->encoded==envelope->encoded &&
+          !prior->findAutomationLane(1)->envelopes[0]->points[0].curveSlice &&
+          prior->findAutomationLane(1)->envelopes[0]->points[1].curveSlice,"range-only edits update decoded geometry despite identical AAUT bytes");
+    for(const char* change:{"clip_id=5","clip_id=NULL,record_index=99","record_index=0,progress_end=0.01",
+                           "progress_end=0.9,source_last=1e999"}) {
+        db.exec(std::string("UPDATE automation_segment_ranges SET ")+change);
+        const auto bad=SnapshotBuilder::fromStore(*f.store,*prior);
+        check(bad->findAutomationLane(1)->envelopes[0]->points.empty() &&
+              bad->findAutomationLane(1)->envelopes[0]->problem.find("retained")!=std::string::npos &&
+              bad->findAutomationLane(1)->envelopes[0]->curveRanges.size()==1,"invalid owner, record, interval or value refuses whole envelope and retains diagnostic data");
+    }
+    db.exec("UPDATE automation_segment_ranges SET record_index=0,progress_begin=0.1,progress_end=0.9,source_last=0");
+    db.exec("INSERT INTO automation_segment_ranges SELECT 14,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last FROM automation_segment_ranges");
+    const auto duplicate=SnapshotBuilder::fromStore(*f.store,*prior);
+    check(duplicate->findAutomationLane(1)->envelopes[0]->points.empty() &&
+          !duplicate->findAutomationLane(1)->envelopes[0]->problem.empty(),"duplicate storage ordinal refuses the whole envelope");
+    db.exec("DELETE FROM automation_segment_ranges");
+    const auto reset=SnapshotBuilder::fromStore(*f.store,*prior);
+    check(reset->findAutomationLane(1)->envelopes[0]->problem.empty() &&
+          !reset->findAutomationLane(1)->envelopes[0]->points[0].curveSlice &&
+          envelope->points[0].curveSlice->begin==0.2,"removing the domain restores legacy geometry without mutating retained frames");
+}
+
 } // namespace
 int main() {
-    try { valuesAndSharing(); envelopeIdentityAndRules(); badAndFutureStreams(); runtimeOverride(); }
+    try { valuesAndSharing(); envelopeIdentityAndRules(); badAndFutureStreams(); runtimeOverride(); retainedCurves(); }
     catch (const std::exception& e) { check(false, std::string("exception: ") + e.what()); }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

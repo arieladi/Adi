@@ -6,9 +6,30 @@
 #include <cmath>
 #include <map>
 #include <span>
+#include <set>
 
 namespace adi::engine::detail {
 namespace {
+bool hasCurveRanges(SQLite::Database& db) {
+    SQLite::Statement table(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name='automation_segment_ranges' "
+        "UNION ALL SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name='automation_segment_ranges'");
+    return table.executeStep();
+}
+std::vector<AutomationSegmentRangeNode> curveRanges(SQLite::Database& db,std::int64_t id) {
+    std::vector<AutomationSegmentRangeNode> result;
+    SQLite::Statement rows(db,"SELECT id,clip_id,record_index,progress_begin,progress_end,source_first,source_last "
+        "FROM automation_segment_ranges WHERE data_id=? ORDER BY record_index,id");
+    rows.bind(1,id);
+    while(rows.executeStep()) {
+        AutomationSegmentRangeNode range;range.id=rows.getColumn(0).getInt64();
+        if(!rows.getColumn(1).isNull())range.clipId=rows.getColumn(1).getInt64();
+        range.recordIndex=rows.getColumn(2).getInt64();
+        range.slice={rows.getColumn(3).getDouble(),rows.getColumn(4).getDouble(),
+                     rows.getColumn(5).getDouble(),rows.getColumn(6).getDouble()};
+        result.push_back(range);
+    }
+    return result;
+}
 void decode(AutomationEnvelopeNode& envelope, const AutomationLaneNode& lane) {
     const StreamReader<AutomationPoint> reader(envelope.encoded, FourCC::Automation);
     if (!reader.ok()) { envelope.problem = toString(reader.error()); return; }
@@ -35,6 +56,19 @@ void decode(AutomationEnvelopeNode& envelope, const AutomationLaneNode& lane) {
         envelope.points.push_back({point->point_id, point->time, point->value, point->tension,
                                    point->curve, point->flags});
     }
+    std::set<std::int64_t> seen;
+    for(const auto& range:envelope.curveRanges) {
+        const auto& slice=range.slice;
+        if(range.recordIndex<0 || static_cast<std::uint64_t>(range.recordIndex)>=envelope.points.size() ||
+           !seen.insert(range.recordIndex).second || range.clipId!=envelope.clipId ||
+           !std::isfinite(slice.begin) || !std::isfinite(slice.end) ||
+           !std::isfinite(slice.sourceFirst) || !std::isfinite(slice.sourceLast) ||
+           slice.begin<0 || slice.end>1 || slice.begin>=slice.end) {
+            envelope.problem="invalid retained automation curve range";
+            envelope.points.clear();return;
+        }
+        envelope.points[static_cast<std::size_t>(range.recordIndex)].curveSlice=slice;
+    }
 }
 } // namespace
 
@@ -48,6 +82,7 @@ std::vector<std::shared_ptr<const AutomationLaneNode>> readAutomationSnapshot(
         for (const auto& envelope : lane->envelopes) oldEnvelopes[envelope->id] = envelope;
     }
     std::vector<std::shared_ptr<const AutomationLaneNode>> result;
+    const bool retained=hasCurveRanges(db);
     SQLite::Statement metadata(db,
         "SELECT id,owner_kind,owner_id,param_ref,param_name,time_base,value_domain,unit,default_value,"
         "min_value,max_value,enabled,visible,height FROM automation_lanes ORDER BY id");
@@ -75,13 +110,15 @@ std::vector<std::shared_ptr<const AutomationLaneNode>> readAutomationSnapshot(
                 const auto* begin = static_cast<const std::byte*>(column.getBlob());
                 envelope.encoded.assign(begin, begin + column.getBytes());
             }
+            if(retained)envelope.curveRanges=curveRanges(db,envelope.id);
             const auto old = oldEnvelopes.find(envelope.id);
             // Decoding depends on unit and bounds as well as bytes. A metadata
             // edit can turn the very same encoded stream into an invalid one.
             const bool sameRules = oldLane != oldLanes.end() && oldLane->second->timeBase == lane.timeBase &&
                 oldLane->second->minValue == lane.minValue && oldLane->second->maxValue == lane.maxValue;
             if (sameRules && old != oldEnvelopes.end() && old->second->laneId == lane.id &&
-                old->second->clipId == envelope.clipId && old->second->encoded == envelope.encoded) {
+                old->second->clipId == envelope.clipId && old->second->encoded == envelope.encoded &&
+                old->second->curveRanges == envelope.curveRanges) {
                 lane.envelopes.push_back(old->second);
             } else {
                 decode(envelope, lane);
