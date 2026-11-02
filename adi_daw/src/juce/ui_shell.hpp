@@ -86,7 +86,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleReferenceTrack,
         PlayReference,
         SelectAll,
-        LastId = SelectAll
+        InsertReturnTrack,
+        ToggleReturnTracks,
+        LastId = ToggleReturnTracks
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -254,6 +256,9 @@ class AdiRootComponent final : public juce::Component {
 
   private:
     bool insertTrack(bool midi);
+    // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
+    // letter, selected; the returns shown again if they were hidden.
+    bool insertReturnTrack();
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
     bool groupTracks(bool ungroup);

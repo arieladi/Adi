@@ -97,7 +97,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Triplet Grid", "Snap to Grid", "Fixed Grid",
                                   "Wrap Tab Navigation", "Use Large Track Height",
                                   "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
-                                  "Reference Track", "Play Reference", "Select All"};
+                                  "Reference Track", "Play Reference", "Select All", "Insert Return Track",
+                                  "Return Tracks"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -235,6 +236,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case PlayReference: // ADR-0209 d9: [REF] and Shift+R; Ctrl+R stays Rename
         info.addDefaultKeypress('r', shift);
         info.setTicked(active_ != nullptr && active_->reference().on());
+        break;
+    case InsertReturnTrack: // §18.4, §42.19: Ctrl/Cmd+Alt+T
+        info.addDefaultKeypress('t', cmd | juce::ModifierKeys::altModifier);
+        break;
+    case ToggleReturnTracks: // §18.4, §42.1: Hide/Show Return Tracks, Ctrl/Cmd+Alt+R
+        info.addDefaultKeypress('r', cmd | juce::ModifierKeys::altModifier);
+        info.setTicked(active_ != nullptr && !active_->state().hideReturns);
         break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
@@ -993,7 +1001,44 @@ bool AdiRootComponent::insertTrack(bool midi) {
         return fail(result.error);
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = id;
+    arrangement.geometry.selection.toTrack = 0;
     publishSelection();
+    return true;
+}
+bool AdiRootComponent::insertReturnTrack() {
+    // From the CURRENT cell (ADR-0201). The new return comes after the others, as every return
+    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Inserting a return needs an open project.");
+    const auto &tracks = current->tracks;
+    std::int64_t id = 1, returns = 0;
+    for (const auto &t : tracks) {
+        id = std::max(id, t->id + 1);
+        if (t->kind == "return")
+            ++returns;
+    }
+    OpRequest request;
+    request.opType = "track.create";
+    request.payload = {{"id", id},
+                       {"kind", "return"},
+                       {"name", std::string(1, static_cast<char>('A' + returns % 26)) + " Return"},
+                       {"index", static_cast<std::int64_t>(tracks.size())}};
+    request.label = "Insert Return Track";
+    request.selBefore = session_.advisory();
+    const auto result = submitter_.submit(std::move(request));
+    if (!result)
+        return fail(result.error);
+    arrangement.followPaused = true;
+    if (state_.hideReturns) {
+        state_.hideReturns = false;
+        persist();
+    }
+    arrangement.geometry.selection.track = id;
+    arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.clip = 0;
+    publishSelection();
+    arrangement.applyView();
     return true;
 }
 bool AdiRootComponent::deleteTrack() {
@@ -1033,6 +1078,7 @@ bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track
     if (!submitEdits(std::move(edit.ops)))
         return false;
     arrangement.geometry.selection.track = edit.select;
+    arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.clip = edit.clip;
     publishSelection();
     return true;
@@ -1051,6 +1097,7 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
         return fail(result.error);
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = edit.select;
+    arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.clip = 0;
     publishSelection();
     return true;
@@ -1286,6 +1333,19 @@ bool AdiRootComponent::command(int id) {
         if (!arrangement.selectAll())
             return false;
         break;
+    case AppCommands::InsertReturnTrack:
+        if (!insertReturnTrack())
+            return false;
+        break;
+    case AppCommands::ToggleReturnTracks:
+        state_.hideReturns = !state_.hideReturns;
+        if (!persist()) {
+            state_.hideReturns = !state_.hideReturns;
+            return fail(error_);
+        }
+        arrangement.applyView();
+        arrangement.firstShownIfHidden();
+        break;
     case AppCommands::RenameTrack:
         // Rename acts on the selection: the device with the focus, else the selected track.
         // The edit itself is its own op when the name is committed.
@@ -1345,10 +1405,10 @@ const std::vector<MenuEntries> &menuBar() {
         // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
         // Paste and Duplicate; those wait for their ops.
         {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks}},
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack}},
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
-         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut,
+         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut, C::ToggleReturnTracks,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
           C::PlayReference, C::ToggleMixer, C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,

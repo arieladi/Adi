@@ -758,6 +758,18 @@ void sendsAsBatches() {
               "No track sends to this return yet, so there is nothing to switch.",
           "a return no send reaches has nothing to switch, and says so");
     check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->sends, 10), "undo puts A back to Post");
+
+    // Enable All Sends on B Delay (Live 12 §18.4): a row to A and to itself, each with its own id, fully
+    // down, one step; again, nothing to do.
+    const std::vector<std::int64_t> both{10, 11};
+    auto all = ui::enableAllSends(view.current()->sends, 11, both);
+    check(all.refusal.empty() && all.ops.size() == 4 && all.ops[0].opType == "routing.connect" &&
+              all.ops[2].opType == "routing.connect" && all.ops[2].payload["id"] != all.ops[0].payload["id"] &&
+              sub.submit(std::move(all.ops)).ok && sub.nextUndo()->label == "Enable All Sends" &&
+              ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr,
+          "Enable All Sends: B to A and B to itself, two new rows, one undo step");
+    check(ui::enableAllSends(view.current()->sends, 11, both).refusal == "Every send of this return is on already.",
+          "again: every send is on already");
 }
 
 void audioDropAsOneStep() {
