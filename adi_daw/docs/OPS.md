@@ -490,7 +490,10 @@ prepareDevicePaste captures an ordered batch with a caller-supplied new ID,
 destination chain and optional before-device. It normalizes that chain's
 integer ordinals in its existing (ord,id) order, inserts immediately before the
 selection (or appends), and captures every move. One undo restores exact prior
-ordinals, including legacy ties and large values. commitDevicePaste preserves
+ordinals, including legacy ties and large values. Paste checks the copied
+plug-in's format/UID/shell identity and remote endpoint identity, so ID reuse
+after history changes cannot select a different plug-in or host; labels and
+binary relocation remain compatible. commitDevicePaste preserves
 the captured expected head, including a null root. Keep the document generation
 with an asynchronous result; cross-project state/ref import and nested rack
 images are not supplied and return explicit refusals. The reader still exposes

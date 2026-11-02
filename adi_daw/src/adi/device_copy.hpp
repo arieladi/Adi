@@ -3,11 +3,17 @@
 #include "adi/ops.hpp"
 #include "adi/store_rows.hpp"
 namespace adi {
+struct DeviceRemoteReference {
+    std::int64_t id=0,port=0;
+    std::string host,protocol;
+    friend bool operator==(const DeviceRemoteReference&,const DeviceRemoteReference&)=default;
+};
 struct DeviceCopy {
     bool ok=false;
     std::string error,sourceFile;
     Payload insert;
     std::optional<rows::PluginRef> reference;
+    std::optional<DeviceRemoteReference> remoteHost;
     bool hasNestedChains=false;
 };
 /// Stored state on this connection's owner, off the callback. Uses the same

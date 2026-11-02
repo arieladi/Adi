@@ -109,5 +109,22 @@ void refusals() {
     const auto refused=prepareDevicePaste(*f.store,rack,70,20);
     check(!refused.ok && refused.error.find("nested chain image")!=std::string::npos,"nested rack copy refuses rather than dropping its contents");
 }
+void reusedReferenceIds() {
+    Fixture f;auto& db=f.store->db();const auto copy=readDeviceCopy(*f.store,40);
+    check(copy.remoteHost && copy.remoteHost->id==50 && copy.remoteHost->host=="localhost" &&
+          copy.remoteHost->port==55000 && copy.remoteHost->protocol=="audiogridder","clipboard captures remote endpoint identity without opening it");
+    // Simulates ID reuse after undoing the original reference creation.
+    db.exec("UPDATE plugin_refs SET uid='different.plugin' WHERE id=30");
+    const auto wrong=prepareDevicePaste(*f.store,copy,70,20);
+    check(!wrong.ok && wrong.error.find("identity changed")!=std::string::npos,"same project and row ID cannot select a different plug-in from an old clipboard");
+    db.exec("UPDATE plugin_refs SET uid='test.uid',name='Updated label',path_hint='moved.clap' WHERE id=30");
+    check(prepareDevicePaste(*f.store,copy,70,20).ok,"plug-in label and binary relocation keep the same identity");
+    db.exec("UPDATE remote_hosts SET host='other-machine' WHERE id=50");
+    const auto remote=prepareDevicePaste(*f.store,copy,70,20);
+    check(!remote.ok && remote.error.find("identity changed")!=std::string::npos,"reused remote endpoint ID cannot redirect a copied device");
+    db.exec("UPDATE remote_hosts SET host='localhost',name='New label' WHERE id=50");
+    check(prepareDevicePaste(*f.store,copy,70,20).ok,"remote endpoint label does not change its identity");
 }
-int main(){try{reads();pasteAndUndo();refusals();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+
+}
+int main(){try{reads();pasteAndUndo();refusals();reusedReferenceIds();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -20,6 +20,29 @@ std::string identity(Store& store) {
     while(row.executeStep())if(row.getColumn(1).getString()=="main")return row.getColumn(2).getString();
     throw std::runtime_error("device clipboard needs a project connection");
 }
+DeviceRemoteReference remoteReference(SQLite::Database& db,std::int64_t id) {
+    SQLite::Statement row(db,"SELECT host,port,protocol FROM remote_hosts WHERE id=?");row.bind(1,id);
+    if(!row.executeStep())throw std::runtime_error("copied remote host reference is missing");
+    return {id,row.getColumn(1).getInt64(),row.getColumn(0).getString(),row.getColumn(2).getString()};
+}
+void verifyReferences(Store& store,const DeviceCopy& copy) {
+    const auto& reference=copy.insert.at("ref");
+    if(!reference.is_null()) {
+        if(!copy.reference || reference!=copy.reference->id)throw std::runtime_error("copied plug-in identity is not captured");
+        SQLite::Statement row(store.db(),"SELECT format,uid,shell_id FROM plugin_refs WHERE id=?");row.bind(1,copy.reference->id);
+        if(!row.executeStep())throw std::runtime_error("copied plug-in reference is missing");
+        std::optional<std::int64_t> shell;if(!row.getColumn(2).isNull())shell=row.getColumn(2).getInt64();
+        if(row.getColumn(0).getString()!=copy.reference->format || row.getColumn(1).getString()!=copy.reference->uid || shell!=copy.reference->shellId)
+            throw std::runtime_error("plug-in reference identity changed after copy");
+    }
+    if(copy.insert.contains("remoteHost") && !copy.insert.at("remoteHost").is_null()) {
+        if(!copy.remoteHost || copy.insert.at("remoteHost")!=copy.remoteHost->id)
+            throw std::runtime_error("copied remote host identity is not captured");
+        if(remoteReference(store.db(),copy.remoteHost->id)!=*copy.remoteHost)
+            throw std::runtime_error("remote host identity changed after copy");
+    }
+}
+
 }
 DeviceCopy readDeviceCopy(Store& store,std::int64_t id) {
     DeviceCopy result;
@@ -43,6 +66,8 @@ DeviceCopy readDeviceCopy(Store& store,std::int64_t id) {
             if(!reference.getColumn(9).isNull())value.shellId=reference.getColumn(9).getInt64();
             result.reference=std::move(value);
         }
+        if(result.insert.contains("remoteHost") && !result.insert.at("remoteHost").is_null())
+            result.remoteHost=remoteReference(store.db(),result.insert.at("remoteHost").get<std::int64_t>());
         SQLite::Statement nested(store.db(),"SELECT 1 FROM device_chains WHERE parent_device_id=? LIMIT 1");
         nested.bind(1,id);result.hasNestedChains=nested.executeStep();result.ok=true;
     } catch(const std::exception& error){result.error=error.what();}
@@ -59,6 +84,7 @@ PreparedDevicePaste prepareDevicePaste(Store& store,const DeviceCopy& copy,std::
         Read read(store.db());result.sourceFile=identity(store);
         if(copy.sourceFile!=result.sourceFile)throw std::runtime_error("device clipboard belongs to a different project");
         result.options.expectHead.emplace(OpJournal(store).headSeq());
+        verifyReferences(store,copy);
         if(newId==copy.insert.at("id").get<std::int64_t>())throw std::runtime_error("device copy needs a new identity");
         SQLite::Statement occupied(store.db(),"SELECT 1 FROM devices WHERE id=?");occupied.bind(1,newId);
         if(occupied.executeStep())throw std::runtime_error("new device id is occupied");
