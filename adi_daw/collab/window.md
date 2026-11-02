@@ -73,6 +73,26 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — several files dropped at once [#352](https://github.com/arieladi/Adi/pull/352) `window/multi-drop`, on #351
+
+**Built: several audio files dropped at once** (parity 7.3 row 19). They go one after another on
+the track, or with Ctrl/Cmd held the first there and each other on a new audio track of its own at
+the end, all at the drop's time; one undo step for them all (`adi::ui::dropAudio` over a list of
+`DroppedAudio`). Each file is captured before the batch lands: `AudioImport::firstFreeId`, honoured
+by `ProjectDocument::prepareImport`, keeps new pool rows from taking the same id; a file dropped twice
+is captured once. The first clip is selected with its time (the one-file drop left the old time
+selection on screen).
+
+**To measure:** the manuals say only "the new item(s)"; where Live puts the separate tracks, and
+which clip it selects.
+
+**Check-in (16:05 UTC):** #318–#351, 32 PRs, no failed check, no conflict, no unresolved thread;
+macOS runners and a few MSVC jobs pending. Next check-in at 20:05 UTC.
+
+**Tests.** shell 741; `test_all.sh` PASS (9953 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — the View menu's two submenus [#351](https://github.com/arieladi/Adi/pull/351) `window/view-submenus`, on #350
 
 **Built: Live 12's Arrangement Track Controls and Mixer Controls submenus** (parity 7.2 rows 6 and
