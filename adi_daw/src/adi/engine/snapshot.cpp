@@ -5,6 +5,7 @@
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <map>
@@ -25,7 +26,7 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
-           a.muted == b.muted && a.gainDb == b.gainDb;
+           a.muted == b.muted && a.gainDb == b.gainDb && a.audio == b.audio;
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
@@ -124,6 +125,11 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const Snapshot& previous) {
     auto snap = std::make_unique<Snapshot>();
     auto& db = const_cast<SQLite::Database&>(store.db());
+    // A frame and its anchor owners must come from one WAL state. Reuse a
+    // caller's read/write transaction rather than nesting or committing it.
+    std::optional<SQLite::Transaction> readSnapshot;
+    if(sqlite3_get_autocommit(db.getHandle())!=0)
+        readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -178,6 +184,29 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             snap->meters.insert(snap->meters.begin(), {0, 4, 4});
     }
 
+    // Source metadata only: no pool peaks, decoding or filesystem work while
+    // rebuilding a frame. Waveform data is read/built by media/peaks off-thread.
+    std::map<std::int64_t,AudioClipSource> audioSources;
+    try {
+        SQLite::Statement query(db,"SELECT a.clip_id,a.media_id,a.src_start_frames,a.src_len_frames,a.warp_enabled,a.warp_mode,a.warp_markers,a.transpose_semis,a.formant_shift,a.reverse,a.channel_mode,m.id,m.hash_blake3,m.sample_rate,m.channels,m.frames,m.missing FROM audio_clips a LEFT JOIN media_files m ON m.id=a.media_id ORDER BY a.clip_id");
+        while(query.executeStep()) {
+            AudioClipSource source;source.mediaId=query.getColumn(1).getInt64();source.sourceStartFrames=query.getColumn(2).getInt64();source.sourceLengthFrames=query.getColumn(3).getInt64();source.warpEnabled=query.getColumn(4).getInt()!=0;source.warpMode=query.getColumn(5).getString();
+            if(!query.getColumn(6).isNull()) {
+                const auto blob=query.getColumn(6);source.warpMarkers.emplace(static_cast<std::size_t>(blob.getBytes()));
+                if(blob.getBytes()>0)std::copy_n(static_cast<const std::byte*>(blob.getBlob()),source.warpMarkers->size(),source.warpMarkers->data());
+            }
+            source.transposeSemis=query.getColumn(7).getDouble();source.formantShift=query.getColumn(8).getDouble();source.reverse=query.getColumn(9).getInt()!=0;source.channelMode=query.getColumn(10).getInt64();
+            if(!query.getColumn(11).isNull()) {
+                AudioMediaIdentity media;media.contentHash=query.getColumn(12).getString();
+                if(!query.getColumn(13).isNull())media.sampleRate=query.getColumn(13).getInt64();
+                if(!query.getColumn(14).isNull())media.channels=query.getColumn(14).getInt64();
+                if(!query.getColumn(15).isNull())media.frames=query.getColumn(15).getInt64();
+                media.missing=query.getColumn(16).getInt()!=0;source.mediaInfo=std::move(media);
+            }
+            audioSources.emplace(query.getColumn(0).getInt64(),std::move(source));
+        }
+    }catch(const std::exception&){}
+
     // --- clips, grouped by track -------------------------------------------------
     std::map<std::int64_t, std::vector<std::shared_ptr<const ClipNode>>> clipsByTrack;
     try {
@@ -193,6 +222,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.muted = st.getColumn(4).getInt() != 0;
             c.gainDb = static_cast<float>(st.getColumn(5).getDouble());
             c.name = st.getColumn(6).getString();
+            if(const auto source=audioSources.find(c.id);source!=audioSources.end())c.audio=source->second;
 
             const auto prev = prevClips.find(c.id);
             if (prev != prevClips.end() && same(*prev->second, c))

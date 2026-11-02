@@ -751,6 +751,15 @@ add_executable(adi_param_ops_tests tests/test_param_ops.cpp)
 target_link_libraries(adi_param_ops_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
 
+add_executable(adi_snapshot_audio_tests tests/test_snapshot_audio.cpp)
+target_link_libraries(adi_snapshot_audio_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_snapshot_audio_tests COMMAND adi_snapshot_audio_tests)
+
+add_executable(adi_media_peaks_tests tests/test_media_peaks.cpp)
+target_link_libraries(adi_media_peaks_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_media_peaks_tests PRIVATE ADI_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
+add_test(NAME adi_media_peaks_tests COMMAND adi_media_peaks_tests)
+
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)
@@ -1213,7 +1222,7 @@ target_link_libraries(adi_zip_writer_tests PRIVATE adi_core adi_warnings adi_min
 add_test(NAME adi_zip_writer_tests COMMAND adi_zip_writer_tests)
 
 # linux/collect-export: only this assignment's sources and test targets.
-target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp)
+target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp src/adi/media/peaks.cpp)
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")

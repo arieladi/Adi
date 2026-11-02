@@ -29,6 +29,7 @@
 #include "adi/textproj.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
@@ -63,6 +64,22 @@ struct TempoMap {
     [[nodiscard]] double bpmAt(std::int64_t ticks) const noexcept;
 };
 
+struct AudioMediaIdentity {
+    std::string contentHash;
+    std::optional<std::int64_t> sampleRate,channels,frames;
+    bool missing=false; // stored pool flag, not a fresh filesystem probe
+    friend bool operator==(const AudioMediaIdentity&,const AudioMediaIdentity&)=default;
+};
+struct AudioClipSource {
+    std::int64_t mediaId=0,sourceStartFrames=0,sourceLengthFrames=0,channelMode=0;
+    bool warpEnabled=false,reverse=false;
+    std::string warpMode;
+    std::optional<std::vector<std::byte>> warpMarkers; // NULL differs from empty
+    double transposeSemis=0,formantShift=0;
+    std::optional<AudioMediaIdentity> mediaInfo; // absent if pool row is missing
+    friend bool operator==(const AudioClipSource&,const AudioClipSource&)=default;
+};
+
 struct ClipNode {
     std::string name;
     std::int64_t id = 0;
@@ -70,6 +87,7 @@ struct ClipNode {
     std::int64_t lengthTicks = 0;
     bool muted = false;
     float gainDb = 0.0f;
+    std::optional<AudioClipSource> audio;
 };
 
 struct TrackNode {
