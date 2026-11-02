@@ -13,6 +13,33 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N27 remarks in the immutable snapshot
+
+**PR requested:** engine/snapshot-remarks -> main, head **06c372f**.
+**Title:** Expose remarks and coherent anchor ownership in snapshots
+**Body:** N27: Snapshot.remarks holds shared const RemarkNode values with all nine
+stored fields (id, targetKind, targetId, nullable paramId, author, actorDetail,
+text, createdUtc, resolved), plus optional trackId and anchorMissing. The window
+can filter trackId for row pips or use the raw target address for Info View.
+Clip ownership and nested device/rack ownership resolve once per rebuild;
+parameters need no plugin_params mirror row. Deleted, missing or cyclic anchors
+retain their metadata as unresolved remarks. Every raw and derived field takes
+part in sharing, including owner changes with unchanged remark text. The builder
+borrows an existing caller transaction or starts a deferred read transaction so
+a concurrent WAL writer cannot mix ownership and annotation states. With no
+remarks it skips device ownership reads. No schema/opcode or UI production change.
+ENGINE-SNAPSHOT-REMARKS.md describes the interface; existing remark ops edit it.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9914 checks / 107
+suites**, all validators clean. GCC and Clang 19: snapshot remarks **29**, engine
+**119**, existing remark ops **52**. Strict GCC shadow checks pass. Isolated
+compiled defects are caught: missing coherent read (1 failure), text-only sharing
+(14), lost author field (2). No MSVC or remote CI claim. GitHub API remains
+CONNECT 403; win/window opens from the exact branch above. Then continuing N37.
+
+---
+
+
 ## 2026-11-02 — N24 engine backend: alignment switch, Track Delay suspended
 
 **PR requested:** engine/delay-compensation-switch -> main, head **5af5a8e**.
