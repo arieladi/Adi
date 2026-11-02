@@ -13,6 +13,71 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N17 continuation: the whole-Set Time clipboard now acts
+
+**Existing N17 PR request updated, no new PR/stack:** engine/phase-c-editing
+-> main, head **db2ec7a943710566ce3381b19760fc7157cceaa2** (after ceeacbc).
+**Title:** Add captured editing, whole-Set time commands and material actions (N17)
+**Body / window handoff:** clip_commands.hpp now supplies TimeCopy/TimeCut and
+copyTime, prepareCutTime, preparePasteTime and prepareDuplicateTime, beside the
+previous Delete Time, Insert Silence, range/clip edits, fades and import/bounce
+APIs on this same branch. The new clipboard includes every track's clipped
+material and global automation, tempo/meter/key carry and interior events,
+tuned-key bindings/composite degree overrides, locators/cycles and clipped
+arranger sections. Paste inserts the source's integrated physical duration
+and musical length, places its context, then restores the destination's maps
+and automation at the far join. It works at zero, with captured replacement/
+restoration of root map bindings. Duplicate pastes at the source end; Cut
+captures its value and deletion under one read snapshot. Commit the one
+arranger.splice packet through commitPrepared with its expected head and the
+window's document generation. No UI production change. Old material-only
+insertTime overloads remain material-only; use the new named APIs for the
+global timeline. ENGINE-EDIT-COMMANDS.md and OPS.md document calls and limits.
+
+Unchanged outside envelopes retain their point identities/flags/curve domains
+and stream trailer; pasted points/ranges receive fresh captured IDs. Empty
+source envelopes copy their default; missing targets, insertion before a first
+or after a last point, coincident joins and nonlinear subdomains retain the
+proper values rather than inventing ramps. New target data retains captured
+source future columns/trailer, while existing target metadata stays intact.
+Media content, referenced tuning system/degrees, full lane contract, project
+filename, captured track kinds and reference render rate are checked before
+paste. Current scope is the same project/track ids and reference rate, with no
+implicit cross-project mapping; a changed lane contract/rate needs a fresh copy.
+Existing arranger playlist references follow insertion but copied sections do
+not duplicate the playback playlist. There is no new schema/opcode. Also fixes
+material-only paste reusing a synthetic ID allocated while trimming the
+clipboard: both range paste paths now reserve all copied root identities.
+
+**Validation:** final GCC14 Debug/Werror/PD ON/JUCE OFF full runner **10639
+checks / 110 C++ suites, every suite passes** (all 110 result lines verified).
+The sole failed validator remains **README 51 vs actual schema 53 tables**,
+win-owned and already logged for this N17 PR; win fixes that count on integration.
+All other schema/frozen migration, ops/Pd/CI/layout validators pass. GCC +
+Clang19 Time edits **413**, clip edits **172**, actual playback **247**, row edits
+**36**; Clang replay **63**. Tests include whole-state undo/redo/reopen, empty
+envelopes, guarded lane/tuning identity, stale head and late SQL rollback. Heard
+44.1/48-kHz resampled/faded/looped sources in both precisions copy exactly:
+400 source frames are inserted where the destination tempo alone would yield
+100, including the following clip's physical shift and heard undo/redo.
+Strict GCC shadow checks pass for four changed sources. Compiled defects caught:
+target-tempo gap (8), lost destination context (1), reused clipboard id (32),
+changed lane contract (1), lost new-stream trailer (1), material-only timeline
+(21). No MSVC/remote CI/measured-Live claim; API blocked, win/window updates or
+opens the one requested N17 PR. Main0cadd72/window49b597d unchanged at last fetch.
+
+**N17 continues:** global Time commands are no longer an open engine gap.
+Auto-Warp import/detection and warped playback are next, then video attachment;
+the existing named refusals are still accurate until those backends land.
+ADR-0188 d2's approved engine split governs: native Beats/Texture, libsamplerate
+Re-Pitch, Rubber Band R3 for Tones/Complex/Complex Pro. No director gate blocks
+implementation; continue the queue. General alias playback/consolidation remains
+separate existing engine work rather than a claim of this clipboard increment.
+
+---
+
+
+
 ## 2026-11-02 — N17 continuation: Delete Time preserves the whole Set
 
 **Existing PR request updated, not a second N17 PR:** engine/phase-c-editing
