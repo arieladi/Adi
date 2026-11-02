@@ -23,7 +23,6 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_order.hpp"
-#include "adi/ui/track_rows.hpp"
 #include "adi/ui/track_tree.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -439,8 +438,8 @@ void projectViewTree() {
     check(alone.groups().empty() && alone.shows(0).size() == 2, "without groups, nothing to choose");
 }
 
-void projectViewRowsFromTheFile() {
-    section("the project view's rows from the project file (the director, 29 October 2026)");
+void projectViewRowsFromTheSnapshot() {
+    section("the tracks' tree from the snapshot (#299; the project file until then)");
     adi::test::TempDirectory temp("ui_seams", "rows");
     auto store = freshProject(temp.path() / "p.adi");
     check(store != nullptr, "store created");
@@ -460,7 +459,7 @@ void projectViewRowsFromTheFile() {
           "Main, Body holding Fx And Hits holding Hits, and Lead alone");
     const ui::SnapshotReader reader(view.current());
     std::vector<ui::TrackRow> rows;
-    ui::trackRowsFrom(reader, rows::readModel(*store), rows);
+    ui::rowsFromSnapshot(reader, rows);
     auto row = [&rows](std::int64_t id) -> const ui::TrackRow* {
         for (const auto& r : rows)
             if (r.id == id) return &r;
@@ -509,28 +508,15 @@ void projectViewRowsFromTheFile() {
     const ui::SnapshotReader other(nullptr);
     check(!order.fits(other), "an order fits only the snapshot it was built for");
 
-    // The file is read again only when the tree may have changed (track_rows.hpp).
-    int reads = 0;
-    auto read = [&reads, &store] {
-        ++reads;
-        return rows::readModel(*store);
-    };
-    std::vector<ui::TrackRow> refreshed;
-    ui::refreshTrackRows(reader, read, refreshed);
-    ui::refreshTrackRows(reader, read, refreshed);
-    check(reads == 2 && refreshed.size() == 5, "with groups, every new snapshot reads the file");
-    auto flat = refreshed;
-    for (auto& r : flat) {
-        r.group = false;
-        r.parent = 0;
-        r.name = "old";
-    }
-    ui::refreshTrackRows(reader, read, flat);
-    check(reads == 2 && flat[1].name == reader.tracks()[1]->name,
-          "without groups and with the same tracks, nothing is read; the names follow");
-    flat.pop_back();
-    ui::refreshTrackRows(reader, read, flat);
-    check(reads == 3 && flat.size() == 5, "a track that came or went reads the file again");
+    // Refilled in place: the same tracks again change nothing and keep the names the snapshot gives.
+    auto again = rows;
+    for (auto& r : again) r.name = "old";
+    ui::rowsFromSnapshot(reader, again);
+    bool sameRows = again.size() == rows.size();
+    for (std::size_t i = 0; sameRows && i < rows.size(); ++i)
+        sameRows = again[i].id == rows[i].id && again[i].parent == rows[i].parent && again[i].name == rows[i].name &&
+                   again[i].group == rows[i].group && again[i].main == rows[i].main;
+    check(sameRows, "refilled from the same snapshot, the rows are the same, names included");
 }
 
 int main() {
@@ -549,7 +535,7 @@ int main() {
     everyWriteRefreshesTheView();
     aFrameKeepsItsSnapshot();
     projectViewTree();
-    projectViewRowsFromTheFile();
+    projectViewRowsFromTheSnapshot();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

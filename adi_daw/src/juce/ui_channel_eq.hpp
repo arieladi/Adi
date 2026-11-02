@@ -16,6 +16,8 @@ class ChannelEqRow final : public juce::Component, public juce::SettableTooltipC
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
     std::int64_t track() const noexcept { return track_; }
+    // ADI-L's mode (ADR-0204 d1): full on Main's, light on every other channel.
+    const char *mode() const;
     juce::TextButton eq{"Off"}, limiter{"Off"};
     static constexpr int kHeight = 21;
 

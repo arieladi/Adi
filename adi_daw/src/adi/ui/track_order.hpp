@@ -20,9 +20,27 @@ struct TrackPlace {
 // at the top; so does one in a loop of parents, which the project should never hold.
 //
 // The snapshot's own order is by index_in_parent alone (engine/snapshot.cpp), which mixes what
-// one group holds with what another does; until it carries the tree (collab/window.md, N6) the
-// rows come from the project file (track_rows.hpp). Built again in place for each new snapshot,
-// so the same tracks allocate nothing.
+// one group holds with what another does; it carries the tree (#299), and this orders by it. Built
+// again in place for each new snapshot, so the same tracks allocate nothing.
+// The rows the snapshot gives (#299): each track's group, its place there, whether it is a group
+// or Main, its name; in the snapshot's order, refilled in place, so the same tracks allocate
+// nothing. A track's colour stays 0 (the window's colour by place) until the format says what
+// `tracks.color` holds (collab/window.md, N36).
+inline void rowsFromSnapshot(const SnapshotReader &reader, std::vector<TrackRow> &rows) {
+    const auto &tracks = reader.tracks();
+    rows.resize(tracks.size());
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        const auto &t = *tracks[i];
+        auto &row = rows[i];
+        row.id = t.id;
+        row.parent = t.parent;
+        row.index = t.indexInParent;
+        row.group = t.kind == "group";
+        row.main = t.kind == "master";
+        row.colour = 0;
+        row.name = t.name;
+    }
+}
 class TrackOrder {
   public:
     void build(const SnapshotReader &reader, const std::vector<TrackRow> &rows) {

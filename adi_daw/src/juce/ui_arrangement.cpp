@@ -275,19 +275,8 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
     for (auto *c : std::array<juce::Component *, 7>{&overview, &ruler, &scrub, &headers, &canvas,
                                                      &playhead, &projectView})
         addAndMakeVisible(c);
-    // Each track alone, its name only, until the snapshot carries more (N6).
-    trackRows_ = [](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
-        const auto &tracks = reader.tracks();
-        rows.resize(tracks.size());
-        for (std::size_t i = 0; i < tracks.size(); ++i) {
-            auto &row = rows[i];
-            row.id = tracks[i]->id;
-            row.parent = row.index = 0;
-            row.group = row.main = false;
-            row.colour = 0;
-            row.name = tracks[i]->name;
-        }
-    };
+    // The tree the snapshot carries (#299).
+    trackRows_ = rowsFromSnapshot;
     projectView.onClick = [this] {
         projectViewMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&projectView));
     };
@@ -363,8 +352,7 @@ void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
 }
 void ArrangementView::setTrackRows(TrackRows rows) {
     trackRows_ = std::move(rows);
-    // Rows the last way filled are not this one's: it starts from none (track_rows.hpp reads the
-    // project file only when the rows it has may be stale).
+    // Rows the last way filled are not this one's: it starts from none.
     tree_.rows().clear();
     applyView();
     // Drawn again on the next frame; nothing of the view changed, so nothing is saved.
