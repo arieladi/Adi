@@ -116,12 +116,14 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
     case Type::Text:
     case Type::Path:
     case Type::PathList:
-    case Type::Table: {
+    case Type::Table:
+    case Type::Record: {
         auto editor = std::make_unique<juce::TextEditor>();
         editor->setFont(look::font(12.f));
         editor->setIndents(4, 2);
-        // A table is kept by the windows themselves (window.zoom, N4): shown, not typed.
-        editor->setReadOnly(s.type == Type::Table);
+        // A table is kept by the windows themselves (window.zoom, N4) and a record by its
+        // own dialogs (the channel configuration, N20): shown, not typed.
+        editor->setReadOnly(s.type == Type::Table || s.type == Type::Record);
         auto *raw = editor.get();
         auto send = [this, raw] {
             switch (setting.type) {
@@ -135,6 +137,7 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
                 commit(list(raw->getText()));
                 break;
             case Type::Table:
+            case Type::Record:
                 break;
             default:
                 commit(raw->getText().toStdString());
@@ -193,6 +196,7 @@ void SettingRow::resized() {
     case Type::Path:
     case Type::PathList:
     case Type::Table:
+    case Type::Record:
         width = std::max(kWide, getWidth() - kControlX - 16);
         break;
     case Type::Choice:

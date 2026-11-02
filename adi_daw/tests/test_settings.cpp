@@ -12,6 +12,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/settings/bundle.hpp"
 #include "adi/settings/catalogue.hpp"
+#include "adi/settings/channel_config.hpp"
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
 
@@ -658,6 +659,77 @@ void testWindowZoom() {
     check(again.get("window.zoom").size() == 3, "three rows in the table");
 }
 
+void testChannelConfig() {
+    section("the channel configuration: one record per audio device, Live's Input and Output Config (N20)");
+    const Setting* c = find("audio.channelConfig");
+    check(c && c->type == Type::Record && c->scope == Scope::App && c->page == "Audio" &&
+              c->section == "Audio Device" && c->label == "Channel Configuration" &&
+              c->defaultValue == Value::object() && c->check != nullptr,
+          "the registry row: a record per device on Audio's Audio Device section, Live's label, empty by default");
+    check(c && agentForbidden(*c), "the agent never touches the channel configuration (the Audio page)");
+
+    const auto d = defaultChannelConfig(4, 2);
+    check(d.monoInputs.size() == 4 && d.stereoInputs.size() == 2 && d.monoOutputs.size() == 2 &&
+              d.stereoOutputs.size() == 1,
+          "Live's default lists every mono channel and every pair of a 4-in 2-out device");
+    check(d.monoInputs[0].on && d.monoInputs[1].on && !d.monoInputs[2].on && !d.monoInputs[3].on &&
+              d.stereoInputs[0].on && !d.stereoInputs[1].on && d.stereoOutputs[0].on,
+          "with 1, 2 and 1/2 on and the rest off");
+    check(d.activeInputs() == std::set<int>{1, 2} && d.activeOutputs() == std::set<int>{1, 2},
+          "so the device opens with channels 1 and 2 on each side");
+    const auto odd = defaultChannelConfig(3, 1);
+    check(odd.stereoInputs.size() == 1 && odd.stereoInputs[0].left == 1 && odd.stereoOutputs.empty(),
+          "an odd channel has no pair");
+    check(displayName(d.monoInputs[2]) == "3 (mono)" && displayName(d.stereoInputs[1]) == "3/4 (stereo)",
+          "Live's names for channels with none of their own");
+
+    ChannelConfig mine = d;
+    mine.monoInputs[0].name = "Vocal";
+    mine.stereoInputs[1].on = true;
+    mine.stereoInputs[1].name = "Synth";
+    check(displayName(mine.monoInputs[0]) == "Vocal" && mine.activeInputs() == std::set<int>{1, 2, 3, 4},
+          "a renamed channel shows its name; an enabled pair adds both its channels");
+    std::string why;
+    const auto back = channelConfigFromJson(toJson(mine), why);
+    check(back && *back == mine, "a record round-trips through JSON: " + why);
+    check(!toJson(d).at("inputs").at("mono")[0].contains("name"), "an empty name is not written");
+
+    check(!channelConfigFromJson(Value::array(), why), "a list is not a record: " + why);
+    check(!channelConfigFromJson(Value({{"inputs", toJson(d).at("inputs")}}), why), "the outputs are required: " + why);
+    Value twice = toJson(d);
+    twice["inputs"]["mono"].push_back({{"ch", 1}, {"on", false}});
+    check(!channelConfigFromJson(twice, why) && why.find("twice") != std::string::npos, "a channel listed twice: " + why);
+    Value zero = toJson(d);
+    zero["outputs"]["stereo"][0]["ch"] = 0;
+    check(!channelConfigFromJson(zero, why), "channels are numbered from 1: " + why);
+    Value text = toJson(d);
+    text["inputs"]["mono"][0]["on"] = "yes";
+    check(!channelConfigFromJson(text, why), "a switch is a boolean: " + why);
+    check(checkChannelConfigs(Value::object(), why) && checkChannelConfigs(Value({{"Scarlett 2i2", toJson(d)}}), why),
+          "the setting: no devices, or a record per device: " + why);
+    check(!checkChannelConfigs(Value({{"Scarlett 2i2", 5}}), why) && why.find("Scarlett 2i2") != std::string::npos,
+          "a device's bad record is refused by the device's name: " + why);
+
+    adi::test::TempDirectory temp("settings", "channels");
+    const auto file = temp.path() / "settings.json";
+    {
+        AppSettings s(appdata::App::Daw, file);
+        check(!channelConfig(s, "Scarlett 2i2"), "no record yet: the window starts from Live's default");
+        check(setChannelConfig(s, "Scarlett 2i2", mine, kUser, why), "keep the Scarlett's record: " + why);
+        check(setChannelConfig(s, "Built-in", defaultChannelConfig(2, 2), kUser, why), "and the built-in device's");
+        check(!s.set("audio.channelConfig", Value({{"Scarlett 2i2", 5}}), kUser, why),
+              "the store refuses a bad record through its own door: " + why);
+        check(channelConfig(s, "Scarlett 2i2") == mine, "and the refusal changed nothing");
+        check(s.save(why), "saved: " + why);
+    }
+    AppSettings again(appdata::App::Daw, file);
+    const auto kept = channelConfig(again, "Scarlett 2i2");
+    check(kept && *kept == mine && kept->monoInputs[0].name == "Vocal",
+          "the record and its names come back after a relaunch, under the device's name");
+    check(channelConfig(again, "Built-in") == defaultChannelConfig(2, 2) && !channelConfig(again, "Other"),
+          "each device has its own; an unseen device has none");
+}
+
 void testCatalogue() {
     section("the catalogue: every row a setting, or deliberately absent with a reason (ADR-0156)");
     const auto rows = readCatalogue();
@@ -764,6 +836,7 @@ int runAll() {
     testApplicationsNeverShare();
     testChangeLog();
     testWindowZoom();
+    testChannelConfig();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();

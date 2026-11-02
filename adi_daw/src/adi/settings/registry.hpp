@@ -19,6 +19,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,8 +29,9 @@ namespace adi::settings {
 using Value = nlohmann::json;
 
 /// Table: numbers keyed by text, each within the row's range when it has one
-/// (`window.zoom`: a window's interface zoom per display, N4).
-enum class Type { Bool, Int, Real, Text, Choice, Path, PathList, Table };
+/// (`window.zoom`: a window's interface zoom per display, N4). Record: an object
+/// whose shape the row's own `check` validates (`audio.channelConfig`, N20).
+enum class Type { Bool, Int, Real, Text, Choice, Path, PathList, Table, Record };
 enum class Scope { App, Project, Device };
 
 [[nodiscard]] const char* toString(Type);
@@ -50,6 +52,8 @@ struct Setting {
     double min = 0.0;             // Int, Real and each Table value: inclusive range, when max > min
     double max = 0.0;
     std::string op;         // Project scope: the op that sets it (OPS.md 9)
+    /// Type::Record: the shape check, from the record's own header; `why` says what is wrong.
+    std::function<bool(const Value&, std::string&)> check;
     /// ADR-0125 d2: on the agent's whitelist. Off unless someone set it on
     /// purpose -- a new setting is never agent-writable by default.
     bool agentMayChange = false;

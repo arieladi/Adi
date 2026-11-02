@@ -6,6 +6,39 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-02 (night) — N20 done: the channel configuration has its home, one record per audio device
+
+**N20 (win's half, from the window's needs table) is in this PR.** `audio.channelConfig` was Device
+scope with a text value and no format, and nothing anywhere stored a Device-scope value. Live keeps
+its Input Config and Output Config in its own preferences, per device, with the names "always
+associated with their respective audio device" (manual 17.2), so the setting is now App scope: one
+record per audio device under the device's name, on Audio's Audio Device section under Live's label.
+The registry gains a `Record` type, an object whose shape the row's own `check` validates, and
+`channel_config.{hpp,cpp}` is that shape: mono channels and stereo pairs on each side, numbered from
+1 as Live shows them, each with its switch and its name; `defaultChannelConfig(inputs, outputs)` is
+Live's default for a device with no record (every channel and pair listed, 1, 2 and 1/2 on);
+`activeInputs()` and `activeOutputs()` are the channels a record opens the device with; `displayName`
+is Live's "1 (mono)" and "1/2 (stereo)" when a channel has no name of its own; `channelConfig` and
+`setChannelConfig` read and keep a device's record through the store, so a bad record is refused by
+the device's name and nothing changes. `audio.outputRoles` (Bitwig's speakers/headphones roles) stays
+Device scope for now; it is not Live's and has no feature behind it yet.
+
+**What the window does with it (the other half of N20):** the Audio page's Input Config and Output
+Config buttons open Live's two dialogs, each a list of the device's mono channels and stereo pairs
+with a switch and a name field (Tab moves between names, 17.2); they read `channelConfig` or the
+default for the device's counts and keep the result with `setChannelConfig`; `ui_main.cpp` then opens
+the device with the record's active channels instead of `initialise(0, 2, ...)`, through
+`AudioDeviceSetup::inputChannels` and `outputChannels` (0-based bits of the 1-based channels). The
+dialogs are a new window, so their pictures go to the director first (LANES §5). The engine's half,
+recording from a mono or a stereo input (17.2.1), stays an engine need.
+
+**Measured on MSVC in the worktree:** `tools\build.bat werror` clean, `tools/test_all.sh build`
+9931 checks across 106 suites, validators clean; `test_settings` 166 PASS
+with the new section (the row, Live's default for 4-in 2-out and for odd counts, names, the JSON
+round trip, five refusals, two devices kept and read back after a relaunch).
+
+---
+
 ## 2026-11-02 (night) — N4 done: each window's interface zoom has its home, `window.zoom`
 
 **N4 (win's, from the window's needs table) is in this PR.** The registry gains a `Table` type

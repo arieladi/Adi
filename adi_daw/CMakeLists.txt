@@ -552,6 +552,7 @@ add_test(NAME adi_snapshots_tests COMMAND adi_snapshots_tests)
 add_library(adi_settings STATIC
     src/adi/settings/registry.cpp
     src/adi/settings/store.cpp
+    src/adi/settings/channel_config.cpp
     src/adi/settings/bundle.cpp
     src/adi/settings/catalogue.cpp)
 target_link_libraries(adi_settings PUBLIC adi_core PRIVATE adi_miniz adi_warnings)

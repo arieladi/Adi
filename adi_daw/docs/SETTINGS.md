@@ -10,8 +10,9 @@ defaults, ADR-0203 (§8). The decisions this library adds are ADR-0152.
 One typed table of every setting:
 
 - **key**, e.g. `audio.bufferSize`. Permanent, like an op name.
-- **type**: bool, int, real, text, choice, path, path list or table (numbers keyed by
-  text, each within the row's range: `window.zoom`, N4).
+- **type**: bool, int, real, text, choice, path, path list, table (numbers keyed by
+  text, each within the row's range: `window.zoom`, N4) or record (an object whose
+  shape the row's own check validates: `audio.channelConfig`, N20).
 - **scope** (R-03 badge): App, Project or Device.
 - **page**: the left-hand list (R-01). Live's ten tab names for the settings Live has
   (ADR-0203 d11; Live 12 manual 2.3), in Live's order, then ADI's own pages.
@@ -72,6 +73,15 @@ clicks away.
   `windowZoom` and kept with `setWindowZoom` (`store.hpp`). A window names its display
   by geometry and DPI, as the floating windows name the monitors. Each window zooms
   itself with Ctrl/Cmd + and -; the Settings page shows the table and does not edit it.
+- **The channel configuration lives here** (N20; Live 12 manual 17.2): `audio.channelConfig`
+  is a record per audio device, `{"inputs": {"mono": [{"ch": 1, "on": true, "name":
+  "Vocal"}, ...], "stereo": [{"ch": 1, "on": true}, ...]}, "outputs": {...}}`, channels
+  numbered from 1 as Live shows them and a pair named by its left channel.
+  `channel_config.hpp` reads and keeps it (`channelConfig`, `setChannelConfig`), gives
+  Live's default for a device with no record (`defaultChannelConfig`: 1, 2 and 1/2 on)
+  and the channels a record opens the device with (`activeInputs`, `activeOutputs`).
+  The Audio page's Input Config and Output Config dialogs are the window's; the
+  Settings row shows the record and does not edit it.
 
 ## 3. The change log
 
@@ -168,7 +178,7 @@ servers, appear in two sections each, so the section is part of the name.
 |---|---|---|
 | Display & Input | 20 | Live's sections Display, Display Options, Navigation and Keyboard, Mouse and Pen Input; Zoom Display is the table of every window's zoom per display |
 | Theme & Colors | 29 | Theme, Customization, Track and Clip Colors; the waveform, fade and meter looks are ADI's, unsectioned |
-| Audio | 26 | Audio Device, Sample Rate, Latency, Test; 2 Device scope |
+| Audio | 26 | Audio Device, Sample Rate, Latency, Test; the Channel Configuration is one record per device; 1 Device scope (the output roles) |
 | Link | 9 | Live's two switches under Link; PTP; the LAN audio node, labelled as not Link Audio |
 | Tempo & MIDI | 25 | Control Surface, MIDI Ports (8 Device scope, per port); the chase and filter switches are ADI's |
 | File & Folder | 12 | Sample Editor, Decoding Cache |
@@ -216,7 +226,11 @@ decoder's own.
   called R-26's page Project scope, but no op sets them in the `.adi`, and a
   Project setting must name its op. ADR-0203 drops the page (§8).
 - **Per-port MIDI switches and per-plug-in overrides are Device scope:**
-  listed for the badge and stored with the port or device.
+  listed for the badge and stored with the port or device. The channel
+  configuration is not: since N20 it is App scope, one record per audio device
+  under the device's name, as Live keeps its Input and Output Config in its own
+  preferences (manual 17.2: the names "are always associated with their
+  respective audio device").
 - **Where the catalogue names no default, the default is Live's where Live
   has one, and otherwise stated in the help.** For example: the PDC threshold
   when recording is 10 ms (behind a switch since ADR-0203), the rate cap is

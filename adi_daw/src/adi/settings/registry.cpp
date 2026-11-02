@@ -2,6 +2,8 @@
 
 #include "adi/settings/registry.hpp"
 
+#include "adi/settings/channel_config.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -273,10 +275,18 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "The input device. Empty: use the system device.", ""));
     r.push_back(make("audio.outputDevice", Type::Text, "Audio", "Audio Output Device",
                      "The output device. Empty: use the system device.", ""));
-    r.push_back(device("audio.channelConfig", Type::Text, "Audio", "Channel Configuration",
-                       "The device's enabled inputs and outputs and their names (Live's Input and "
-                       "Output Config). Stored with the device.",
-                       ""));
+    {
+        // Live's Input Config and Output Config (manual 17.2), one record per audio device
+        // under the device's name, kept with the application as Live keeps them (N20).
+        Setting s = make("audio.channelConfig", Type::Record, "Audio", "Channel Configuration",
+                         "Live's Input Config and Output Config (manual 17.2): for each audio "
+                         "device, the mono channels and stereo pairs in use and their names, under "
+                         "the device's name. A device with no record uses Live's default: its "
+                         "channels 1, 2 and 1/2 on. Set from the Audio page's two dialogs.",
+                         Value::object());
+        s.check = checkChannelConfigs;
+        r.push_back(std::move(s));
+    }
     r.push_back(device("audio.outputRoles", Type::Text, "Audio", "Output roles",
                        "Each output pair's role: speakers, headphones or output (Bitwig). The cue "
                        "bus plays to the headphones (R-11). Stored with the device.",
@@ -873,6 +883,7 @@ const char* toString(Type t) {
         case Type::Path:     return "path";
         case Type::PathList: return "path list";
         case Type::Table:    return "table";
+        case Type::Record:   return "record";
     }
     return "?";
 }
@@ -984,6 +995,9 @@ bool validate(const Setting& s, const Value& v, std::string& why) {
                 if (!inRange(e.get<double>())) return false;
             }
             return true;
+        case Type::Record:
+            if (!v.is_object()) { why = s.key + " takes a record"; return false; }
+            return !s.check || s.check(v, why);
         case Type::Choice:
             if (std::find(s.choices.begin(), s.choices.end(), v) != s.choices.end()) return true;
             why = s.key + " does not offer " + v.dump();
