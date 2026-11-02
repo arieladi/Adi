@@ -124,6 +124,9 @@ public:
     /// the host as the headroom is. Takes effect at the next `rebuild`.
     void setPrecision(Precision p) noexcept { precision_ = p; }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
+    /// Message-thread policy for the next graph, like Processing Precision.
+    void setDelayCompensation(bool on) noexcept { delayCompensation_=on; }
+    [[nodiscard]] bool delayCompensation() const noexcept { return delayCompensation_; }
     /// What a graph built at `sampleRate` gets (ADR-0157 d3).
     [[nodiscard]] std::int32_t latencyHeadroomAt(double sampleRate) const noexcept;
 
@@ -183,6 +186,7 @@ private:
     std::int32_t headroom_ = 8192;
     std::int32_t fadeFrames_ = 0;
     Precision precision_ = Precision::Float32;
+    bool delayCompensation_ = true;
     bool keepHistory_ = true;
 
     // Audio thread only.

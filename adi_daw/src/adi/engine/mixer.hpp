@@ -543,7 +543,8 @@ public:
     /// and bind its lanes. Creates strips for new tracks; a departed track's
     /// strip is kept, silent, until the session ends, as a departed device is
     /// (ADR-0122), since a retired graph may still name it.
-    void sync(const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&);
+    void sync(const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&,
+              bool delayCompensation=true);
 
     /// The strip for a track the plan realises, or null.
     [[nodiscard]] StripNode* stripFor(std::int64_t trackId) noexcept;

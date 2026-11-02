@@ -81,6 +81,8 @@ struct SessionSpec {
     std::int32_t maxFrames = 512;
     /// `audio.processingPrecision` (ADR-0207 d2): Live's scheme by default.
     Precision precision = Precision::Float32;
+    /// The app's Delay Compensation choice; its registry row is win-owned.
+    bool delayCompensation = true;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -199,6 +201,10 @@ public:
     /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
     /// does nothing. False only when a graph was due and could not be built.
     bool setPrecision(Precision p);
+
+    /// Message thread. Publish a new alignment policy without reloading
+    /// devices. Track Delay is suspended with it; stored values are retained.
+    bool setDelayCompensation(bool on);
 
     // --- inspection (message thread) ---------------------------------------
 

@@ -682,6 +682,10 @@ add_executable(adi_device_model_tests tests/test_device_model.cpp)
 target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
 
+add_executable(adi_delay_compensation_tests tests/test_delay_compensation.cpp)
+target_link_libraries(adi_delay_compensation_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_delay_compensation_tests COMMAND adi_delay_compensation_tests)
+
 add_executable(adi_bypass_delay_tests tests/test_bypass_delay.cpp)
 target_link_libraries(adi_bypass_delay_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_bypass_delay_tests COMMAND adi_bypass_delay_tests)

@@ -476,7 +476,7 @@ std::shared_ptr<StripAutomation> bindStripAutomation(std::shared_ptr<const Autom
 }
 
 void MixerStrips::sync(const rows::Model& model, const Transport* transport,
-                       const std::shared_ptr<StripAutomation>& automation) {
+                       const std::shared_ptr<StripAutomation>& automation,bool delayCompensation) {
     problems_.clear();
     const GraphPlan plan = planGraph(model);
     const Hearing hears = hearing(model, plan);
@@ -544,6 +544,9 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         // latency there would make the graph's own latency negative.
         std::int64_t delay = 0;
         if (const auto it = row.find(node.trackId); it != row.end()) delay = it->second->delaySamples;
+        // Track Delay is suspended with compensation; model/SQL values remain
+        // unchanged and re-enabling uses their latest saved values.
+        if(!delayCompensation)delay=0;
         const bool isMaster = plan.output && plan.nodes[*plan.output].trackId == node.trackId;
         const std::int64_t rate = model.project.sampleRate > 0 ? model.project.sampleRate : 48000;
         const auto limit = static_cast<std::int64_t>(StripNode::kMaxDelaySeconds * static_cast<double>(rate));

@@ -33,6 +33,7 @@ bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
 
     rg->graph().setLatencyHeadroom(latencyHeadroomAt(sampleRate));
     rg->graph().setPrecision(precision_);
+    rg->graph().setDelayCompensation(delayCompensation_);
     rg->graph().prepare(sampleRate, maxFrames);
     if (!rg->graph().ok()) {
         error_ = rg->graph().error();

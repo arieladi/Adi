@@ -508,7 +508,7 @@ bool Session::rebuild() {
         }
     }
     strips_.setFormat(spec_.channels, spec_.maxFrames);    // a return's loop, for the graph built here
-    strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
+    strips_.sync(model_, &transport_, stripAutomation_,spec_.delayCompensation);   // ADR-0163: before the graph names them
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
     attach();   // the spec, the sources or the placement may have changed
@@ -553,6 +553,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     loader_ = std::move(loader);
     spec_ = spec;
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
+    graph_.setDelayCompensation(spec_.delayCompensation);
     stats_ = Stats{};
     model_ = rows::readModel(store);
     clipProject_ = readClipProject(store, model_);
@@ -786,6 +787,13 @@ bool Session::setPrecision(Precision p) {
     spec_.precision = p;
     graph_.setPrecision(p);
     if (!loaded_) return true;
+    return rebuild();
+}
+
+bool Session::setDelayCompensation(bool on) {
+    if(on==spec_.delayCompensation)return true;
+    spec_.delayCompensation=on;graph_.setDelayCompensation(on);
+    if(!loaded_)return true;
     return rebuild();
 }
 
