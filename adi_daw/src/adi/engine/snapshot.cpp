@@ -5,6 +5,7 @@
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <map>
@@ -30,7 +31,7 @@ bool same(const ClipNode& a, const ClipNode& b) {
 
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
-        a.kind != b.kind || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
+        a.kind != b.kind || a.role != b.role || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
@@ -124,6 +125,11 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const Snapshot& previous) {
     auto snap = std::make_unique<Snapshot>();
     auto& db = const_cast<SQLite::Database&>(store.db());
+    // A frame and its anchor owners must come from one WAL state. Reuse a
+    // caller's read/write transaction rather than nesting or committing it.
+    std::optional<SQLite::Transaction> readSnapshot;
+    if(sqlite3_get_autocommit(db.getHandle())!=0)
+        readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -203,6 +209,11 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    // Native role format/migration belongs to win (N38); older projects have
+    // no assignment. Read the column in the same statement as each track.
+    bool hasRole=false;
+    {SQLite::Statement columns(db,"PRAGMA table_info(tracks)");while(columns.executeStep())hasRole=hasRole || columns.getColumn(1).getString()=="role";}
+
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -210,7 +221,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         SQLite::Statement st(db,
             "SELECT t.id, t.name, t.muted, t.soloed, "
             "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0), "
-            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color "
+            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color, " +
+            std::string(hasRole?"t.role ":"NULL ")+
             "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id "
             "ORDER BY t.index_in_parent, t.id");
         while (st.executeStep()) {
@@ -225,6 +237,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.indexInParent = st.getColumn(7).getInt64();
             t.kind = st.getColumn(8).getString();
             if (!st.getColumn(9).isNull()) t.color = st.getColumn(9).getInt64();
+            if (!st.getColumn(10).isNull()) t.role = st.getColumn(10).getString();
             if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
                 t.clips = it->second;
 

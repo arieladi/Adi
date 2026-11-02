@@ -326,6 +326,52 @@ bool setProjectNameInverse(OpContext& c, const Payload&, Payload& inv, std::stri
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
+// N38: win owns the native nullable tracks.role format/migration. Refuse a
+// write on older schemas; readers can still show an unassigned role.
+bool hasTrackRole(SQLite::Database& db) {
+    SQLite::Statement columns(db,"PRAGMA table_info(tracks)");
+    while(columns.executeStep())if(columns.getColumn(1).getString()=="role")return true;
+    return false;
+}
+bool knownRole(const Payload& role) {
+    return role.is_null() || (role.is_string() && (role=="kick" || role=="bass" || role=="vocal" || role=="reference"));
+}
+bool trackRoleValue(OpContext& c,const Payload& p,Payload& role,std::string& err) {
+    if(!hasTrackRole(c.db)){err="tracks.role format migration has not landed";return false;}
+    if(p.at("id").get<std::int64_t>()<=0){err="track role needs a positive id";return false;}
+    role=p.value("role",Payload(nullptr));
+    if(!knownRole(role)){err="unknown track role";return false;}
+    SQLite::Statement row(c.db,"SELECT kind,role FROM tracks WHERE id=?");row.bind(1,p.at("id").get<std::int64_t>());
+    if(!row.executeStep()){err="no such track";return false;}
+    if(!role.is_null()) {
+        const auto kind=row.getColumn(0).getString();
+        if(kind!="audio" && kind!="midi" && kind!="instrument" && kind!="group" && kind!="return"){err="track kind cannot be an anchor role";return false;}
+        if(role=="reference") {
+            SQLite::Statement other(c.db,"SELECT 1 FROM tracks WHERE role='reference' AND id<>? LIMIT 1");other.bind(1,p.at("id").get<std::int64_t>());
+            if(other.executeStep()){err="clear the existing reference role in the same batch first";return false;}
+        }
+    }
+    return true;
+}
+bool trackRoleApply(OpContext& c,const Payload& p,std::string& err) {
+    try {
+        Payload role;if(!trackRoleValue(c,p,role,err))return false;
+        SQLite::Statement update(c.db,"UPDATE tracks SET role=? WHERE id=?");
+        if(role.is_null())update.bind(1);else update.bind(1,role.get<std::string>());
+        update.bind(2,p.at("id").get<std::int64_t>());return update.exec()==1;
+    }catch(const std::exception& exception){err=exception.what();return false;}
+}
+bool trackRoleInverse(OpContext& c,const Payload& p,Payload& inverse,std::string& err) {
+    try {
+        Payload role;if(!trackRoleValue(c,p,role,err))return false;
+        SQLite::Statement row(c.db,"SELECT role FROM tracks WHERE id=?");row.bind(1,p.at("id").get<std::int64_t>());
+        if(!row.executeStep()){err="no such track";return false;}
+        Payload previous=nullptr;if(!row.getColumn(0).isNull())previous=row.getColumn(0).getString();
+        if(!knownRole(previous)){err="unrecognized stored track role retained";return false;}
+        inverse={{"id",p.at("id")},{"role",previous}};return true;
+    }catch(const std::exception& exception){err=exception.what();return false;}
+}
+
 bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         // The id comes from the payload, never from SQLite (ADR-0021 §7.3):
@@ -1007,6 +1053,7 @@ constexpr Field kFProjectName[] = {{"name", FieldType::Text, true}};
 constexpr Field kFSummingEnabled[] = {{"id", FieldType::Int, true}, {"enabled", FieldType::Bool, true}};
 constexpr Field kFSummingFlavor[] = {{"id", FieldType::Int, true}, {"flavor", FieldType::Text, true}};
 constexpr Field kFSummingDrive[] = {{"id", FieldType::Int, true}, {"db", FieldType::Real, true}};
+constexpr Field kFTrackRole[] = {{"id", FieldType::Int, true}, {"role", FieldType::Text, false}};
 constexpr Field kFTrackCreate[] = {{"id", FieldType::Int, true},
                                    {"kind", FieldType::Text, true},
                                    {"name", FieldType::Text, false},
@@ -1914,6 +1961,8 @@ const OpDescriptor kHandWritten[] = {
 
     {"track.create", "Create a track", Scope::Edit, EngineImpact::GraphRebuild,
      kFTrackCreate, false, false, trackCreateApply, trackCreateInverse, "track.delete"},
+    {"track.setRole", "Set an anchor role", Scope::Edit, EngineImpact::GraphRebuild,
+     kFTrackRole, false, false, trackRoleApply, trackRoleInverse, ""},
     {"track.delete", "Delete a track", Scope::Edit, EngineImpact::GraphRebuild,
      kFId, false, false, trackDeleteApply, trackDeleteInverse, "track.create"},
     {"track.setParent", "Move a track into or out of a group", Scope::Edit,

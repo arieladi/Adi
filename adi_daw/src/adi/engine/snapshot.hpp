@@ -77,6 +77,7 @@ struct TrackNode {
     std::int64_t parent = 0;      // 0 at the top of the tree
     std::int64_t indexInParent = 0;
     std::string kind;
+    std::optional<std::string> role; // nullable native tracks.role; absent on older schemas
     std::optional<std::int64_t> color; // absent is distinct from explicit zero
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;

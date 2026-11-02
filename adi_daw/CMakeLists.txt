@@ -751,6 +751,10 @@ add_executable(adi_param_ops_tests tests/test_param_ops.cpp)
 target_link_libraries(adi_param_ops_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
 
+add_executable(adi_track_role_tests tests/test_track_roles.cpp)
+target_link_libraries(adi_track_role_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_track_role_tests COMMAND adi_track_role_tests)
+
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)

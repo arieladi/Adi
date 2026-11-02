@@ -351,6 +351,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `track.setParent` | e | G | sym | P1 |
 | `track.rename` | e | N | sym | P0 |
 | `track.setColor` | e | N | sym | P1 |
+| `track.setRole` | e | G | sym | P1 |
 | `track.setMute` | e | S | sym | P0 |
 | `track.setSolo` | e | S | sym | P0 |
 | `track.setSoloDefeat` | e | S | sym | P2 |
@@ -368,6 +369,18 @@ silent truncation in JSON, a non-issue in CBOR.
 | `lane.rename` | e | N | sym | P1 |
 | `lane.setMute` | e | S | sym | P1 |
 | `lane.setCompTarget` | e | S | sym | P1 |
+
+`track.setRole {id, role?}` assigns `kick`, `bass`, `vocal` or `reference`;
+omission or explicit null clears it. It targets an audio/MIDI/instrument/group/
+return track, never Main or a metadata-only track. A reference assignment refuses
+when another reference exists; a single batch can clear the old role then assign
+the new one. No implicit extra ids enter the payload. Its symmetric inverse
+captures the nullable old role; an unknown stored future role refuses overwrite
+so undo never loses it. Graph rebuild makes the N23 cue backend re-read the role.
+This op requires win's native `tracks.role` format/migration. Until that lands,
+it refuses atomically with a format-unavailable error; it never changes the
+schema. The snapshot reads null on older schemas and preserves native role text
+(including unknown future values) for display/sharing.
 
 ### 9.3 Clips
 
@@ -650,7 +663,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**173 ops** — 66 P0, 55 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
