@@ -444,7 +444,10 @@ juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
     return {53, mixerTop() + 6, 11, std::max(0, getHeight() - mixerTop() - 10 - (tall ? 15 : 0))};
 }
-bool MixerStrip::showsSends() const noexcept { return panel_.root.state().sends; }
+bool MixerStrip::showsSends() const noexcept {
+    // The Mixer View's own Sends (Live 12's Mixer Controls), apart from the track controls'.
+    return panel_.vertical() ? panel_.root.state().mixerSends : panel_.root.state().sends;
+}
 bool MixerStrip::showsInOut() const noexcept {
     // Shown when the View menu's In/Out is on (§42.1) and the panel is wide enough.
     return !panel_.vertical() && panel_.root.state().inOut &&
