@@ -13,6 +13,34 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N22 ready; continuing to N23
+
+**PR requested** (ADR-0210 d4): `engine/snapshot-track-delay` at **`673c51c`**
+→ `main` (base `dff5b41`). Title: **Expose track delay in immutable snapshots (N22)**.
+
+PR body: The window can read `TrackNode::delaySamples`, a signed int64 stored at
+`Snapshot::sampleRate` (project rate); display milliseconds as
+`1000.0 * delaySamples / sampleRate`. Missing strips read zero. The field
+participates in structural sharing, so delay-only edits replace that track's node
+and retain siblings. Existing `mixer.setDelay {id,samples}` and its undo are the
+write path; this changes no schema, op or audio processing. Raw stored values are
+exposed, including values the runtime may clamp/name as a problem.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9823 checks / 106 suites**,
+validators clean. Engine suite **128**, also Clang Werror; Clang project-view14
+passes. Nine checks cover both signs, project-rate units, missing/removed strips,
+undo, changed-node identity and unchanged sharing. A compiled plant omitting delay
+from `same` fails three checks. N19-only stale test binary excluded. Remote CI,
+MSVC/JUCE and Live measurements unobserved; win opens/reviews/merges.
+
+Continuing to **N23**, cue path, Solo in Place and exclusive reference. It needs
+N19's metronome routing, so the new branch will stand on `engine/transport-loop-metronome`
+(two deep), named explicitly in its PR. The N38 role-format placement still needs
+win's migration/ADR mechanism for changing `tracks` (ADR-0144 d3); the cue backend
+will accept an explicit reference track id, so that integration does not stall it.
+No director question or gate has been reached.
+
+
 ## 2026-11-02 — N19 ready; continuing to N22
 
 **PR requested** (ADR-0210 d4): `engine/transport-loop-metronome` at **`e42fd56`**
