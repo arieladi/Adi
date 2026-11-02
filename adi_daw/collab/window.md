@@ -73,6 +73,20 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the lanes scroll under a drag [#349](https://github.com/arieladi/Adi/pull/349) `window/drag-scroll`, on #348
+
+**Built: scrolling at the lanes' edge while dragging** (parity 7.3 rows 27, 33, 36; #347's open
+item). `ArrangementView::edgeScroll`: within 16 points of the lanes' top or foot they scroll up or
+down, near the canvas's sides sideways, faster the farther in. A track's title, a clip's bar or end
+and a time selection call it as they are dragged; `beginDragAutoRepeat` keeps a held mouse going. A
+held click that has not moved scrolls nothing. The track controls are re-placed as the lanes scroll.
+
+**Open:** Live's edge zone and speed are not measured.
+
+**Tests.** shell 725; `test_all.sh` PASS (9945 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — Insert Track in its place [#348](https://github.com/arieladi/Adi/pull/348) `window/insert-place`, on #347
 
 **Fixed: where Insert Audio/MIDI Track lands** (parity 7.3 row 15). The new track took the selected
