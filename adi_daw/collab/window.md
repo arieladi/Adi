@@ -73,6 +73,19 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the Arrangement Position field [#368](https://github.com/arieladi/Adi/pull/368) `window/position-field`, on #367
+
+**Built: the position field typed and stepped** (parity 7.2-shell new row 31; Live 12 manual 6.1).
+A position typed (bar.beat.sixteenth, the later ones 1 when left out) puts the insert marker and the
+playhead there in the project's meters (`tickOf`, `parsePosition`); a beat the bar lacks is refused
+with the reason. Up and down step a bar from the play position. Neither is an undo step. Live's three
+separate fields and dragging are open. Under `--no-audio` the app can't show the move (no engine
+takes the locate), so the shell test drains the mailbox into a transport.
+
+**Tests.** seams 387, shell 839; `test_all.sh` PASS (10072 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — Tap Tempo [#367](https://github.com/arieladi/Adi/pull/367) `window/tap-tempo`, on #366
 
 **Built: the Tap button** (parity 7.2-shell new row 30; Live 12 manual 9.1.2). It acts on its
