@@ -125,6 +125,22 @@ else()
     target_compile_options(adi_pffft PRIVATE -Wno-unused-function -Wno-unused-parameter)
 endif()
 
+# ADR-0061 / ADR-0188: upstream portable single-file R3 build, prepared off
+# the callback. Keep vendor warnings separate from ADI's strict own-code target.
+if(NOT EXISTS "${ADI_THIRD_PARTY}/rubberband/single/RubberBandSingle.cpp")
+    message(FATAL_ERROR "Missing rubberband; run tools/fetch_external.sh --build-only")
+endif()
+add_library(adi_rubberband STATIC "${ADI_THIRD_PARTY}/rubberband/single/RubberBandSingle.cpp")
+set_target_properties(adi_rubberband PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(adi_rubberband SYSTEM PUBLIC "${ADI_THIRD_PARTY}/rubberband")
+if(WIN32)
+    target_compile_definitions(adi_rubberband PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+endif()
+if(APPLE)
+    find_library(ADI_ACCELERATE_FRAMEWORK Accelerate REQUIRED)
+    target_link_libraries(adi_rubberband PUBLIC "${ADI_ACCELERATE_FRAMEWORK}")
+endif()
+
 # ---------------------------------------------------------------------------
 # Warnings. The whole value of choosing C++ here is that layout and lifetime
 # mistakes become compile errors, so the warnings that catch them matter.
@@ -262,6 +278,8 @@ add_library(adi_core STATIC
     src/adi/textproj_store.cpp
     "${ADI_SCHEMA_HPP}"
 )
+target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cpp src/adi/audio/transients.cpp)
+target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
   src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
   src/adi/material_commands.cpp)
@@ -1264,6 +1282,10 @@ target_link_libraries(adi_core PRIVATE samplerate)
 add_executable(adi_edit_rows_tests tests/test_edit_rows.cpp)
 target_link_libraries(adi_edit_rows_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_edit_rows_tests COMMAND adi_edit_rows_tests)
+
+add_executable(adi_warp_tests tests/test_warp.cpp)
+target_link_libraries(adi_warp_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_warp_tests COMMAND adi_warp_tests)
 
 add_executable(adi_time_edit_tests tests/test_time_edit.cpp)
 target_link_libraries(adi_time_edit_tests PRIVATE adi_core adi_warnings)

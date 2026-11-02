@@ -508,6 +508,16 @@ with musical ticks. Both DAWs' models fit: Ableton's always-on warp with a marke
 grid, and Cubase's AudioWarp with hitpoint-derived markers, are the same data
 with different UI over it.
 
+AWRP v1 records are 16 bytes: an i64 source_frame at offset 0 and an i64
+tick at offset 8, both little-endian. Frames are relative to the audio source
+window, at its file's sample rate; ticks are source musical coordinates, not
+absolute project positions. Canonical prepared maps begin at frame/tick zero,
+end at src_len_frames and strictly increase in both coordinates. Bar markers
+are ordinary map points. Header bit 1 (nanoseconds) is invalid for this stream.
+Readers stride by rec_size, retaining future record tails and stream trailer
+bytes in the original BLOB; a producer that needs to rewrite unknown fields
+must refuse rather than discard them.
+
 ### 6.5 There is no Session View
 
 ADI is a **linear, arrangement-timeline DAW**. There is no clip-launching matrix,
