@@ -9,7 +9,7 @@
 int main() {
     adi::test::TempDirectory scratch("play_render", "channels");
     adi::StoreError error{};
-    auto store=adi::Store::create(scratch.path()/"render.adi",error);
+    auto store=adi::Store::createEmpty(scratch.path()/"render.adi",error);
     if(!store)return 1;
     store->db().exec("INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Tone'),(2,'master','Master')");
     for(int channels : {1,4,6}) {

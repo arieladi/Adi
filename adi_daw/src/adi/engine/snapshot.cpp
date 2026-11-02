@@ -11,6 +11,11 @@
 
 namespace adi::engine {
 namespace {
+bool same(const SendRoute& a, const SendRoute& b) {
+    return a.id==b.id && a.sourceKind==b.sourceKind && a.destinationKind==b.destinationKind &&
+        a.sourceId==b.sourceId && a.destinationId==b.destinationId && a.order==b.order &&
+        a.gainDb==b.gainDb && a.pan==b.pan && a.preFader==b.preFader && a.enabled==b.enabled;
+}
 
 constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 
@@ -123,6 +128,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
     std::map<std::int64_t, std::shared_ptr<const ClipNode>> prevClips;
+    std::map<std::int64_t, std::shared_ptr<const SendRoute>> prevSends;
+    for (const auto& send : previous.sends) prevSends[send->id] = send;
     for (const auto& t : previous.tracks) {
         prevTracks[t->id] = t;
         for (const auto& c : t->clips) prevClips[c->id] = c;
@@ -131,7 +138,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         snap->sampleRate = db.execAndGet("SELECT sample_rate FROM project WHERE id=1").getInt();
     } catch (const std::exception&) {
-        snap->sampleRate = 48000;
+        snap->sampleRate = 44100;
     }
 
     // --- tempo -----------------------------------------------------------------
@@ -230,6 +237,27 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    // --- sends ------------------------------------------------------------------
+    // Snapshot construction is off the audio thread; every control value is
+    // captured once for this rebuild, including muted/disabled send controls.
+    try {
+        SQLite::Statement st(db,
+            "SELECT id,src_kind,src_id,dst_kind,dst_id,ord,gain_db,pan,pre_fader,enabled "
+            "FROM routing WHERE kind='send' ORDER BY id");
+        while (st.executeStep()) {
+            SendRoute send;
+            send.id=st.getColumn(0).getInt64();
+            send.sourceKind=st.getColumn(1).getString();send.sourceId=st.getColumn(2).getInt64();
+            send.destinationKind=st.getColumn(3).getString();send.destinationId=st.getColumn(4).getInt64();
+            send.order=st.getColumn(5).getInt64();send.gainDb=st.getColumn(6).getDouble();
+            send.pan=st.getColumn(7).getDouble();send.preFader=st.getColumn(8).getInt()!=0;
+            send.enabled=st.getColumn(9).getInt()!=0;
+            const auto prior=prevSends.find(send.id);
+            if(prior!=prevSends.end() && same(*prior->second,send))snap->sends.push_back(prior->second);
+            else snap->sends.push_back(std::make_shared<const SendRoute>(std::move(send)));
+        }
+    } catch (const std::exception&) {
+    }
     return snap;
 }
 
@@ -248,6 +276,8 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
                 }
         }
     }
+    for (const auto& sa : a.sends)
+        if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
     return shared;
 }
 

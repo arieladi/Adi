@@ -16849,3 +16849,284 @@ second Codex seat and a second Claude seat take ADI work he does not have to tou
 | ADR-0207 d1 | three lanes become five; the engine lane's items 3 (the Pd adapter) and 8 (the window) move (d1) |
 | ADR-0204 d1, ADR-0205 d3 | the clones gain ADI-C (d2) |
 | `docs/LANES.md` | §1, §3, §4 rewritten for five lanes (d1, d3) |
+
+## ADR-0209 — The Mix View (F4): every channel's ADI-Q, ADI-L and sidechain slot in one detachable window; anchor roles and the CTZ hierarchy as a template; Quick Kick Sidechain with RMSC, ADI Spacer and ADI Fuser; the ★ Reference track on Shift+R, tap or hold; the analyser tabs from the existing analyser — `DECIDED` (2026-11-01) — **GEMINI'S DRAFT, HANDED OVER BY THE DIRECTOR AND RECORDED IN FULL WITH WIN'S CRITIQUE (§1 TO §9); RULED BY HIM THE SAME DAY (§10): WIN'S FOUR RECOMMENDATIONS TAKEN, THE NAME MIX VIEW KEPT. EXTENDS ADR-0204 d1, ADR-0183, ADR-0167/ADR-0175, ADR-0166, ADR-0195 d4, ADR-0203 d14, ADR-0112; AMENDS ADR-0203 d6 (F4 AND Shift+R JOIN THE KEYS); LEAVES ADR-0203 d12 ALONE (Ctrl+R STAYS RENAME)**
+
+**Where this comes from.** On 1 November the director handed over a specification: "We are adding a
+major new first-class surface to ADI: the MIX View (F4), along with docked mini-analyzer modes in
+the Info View and Device Chain Strip, a Timeline-Synced + Momentary-Hold Reference System (Ctrl+R,
+hidden by default in the Bitwig view filter), 1-Click Kick Sidechaining, and first-class support
+for my Clip-to-Zero (CTZ) Group Hierarchy", unifying the one EQ window of ADR-0204 d1, the Scope
+(ADR-0167, ADR-0175), the analyser's big window (ADR-0183), Auto Gain Stage (ADR-0195 d4), the
+Loudness Drive dial (ADR-0203 d14) and RMSC (ADR-0166) with measurement clones of **Voxengo
+SPAN**, **Big Z Bluprint**, **s(M)exoscope**, **Tritik VISU**, **Mastering The Mix FUSER** and
+**Wavesfactory Trackspacer** (ADR-0204 d3). He then said the text was **written by Gemini** and
+that "we might wanna go through them before [we] make a final decision". So this entry records
+the draft in full (§1 to §8, Gemini's content in the document's words), then win's critique and
+the questions he has to answer (§9), then his ruling of the same evening (§10). He asked for the
+number 0208; that was used on 27 October, so this is ADR-0209.
+
+### The draft, recorded (§1 to §8 as handed over; §10 cuts and corrects it)
+
+1. **Every channel is already in the MIX View; a slot never touched costs nothing.**
+   - Every track and group appears in the MIX View without inserting anything, because ADI-Q, ADI-L
+     and a new **sidechain slot** (RMSC / ADI Spacer / ADI Fuser, §3) would be built into every
+     channel and group strip, present but off (ADR-0204 d1 would gain its third slot).
+   - A slot not yet engaged is **drawn dimmed, as a flat line**, its live background spectrum drawn
+     only while its row is on screen; under the hood it is not calculated (ADR-0203 d4).
+   - **Wake-up from the window:** a click, a double-click or a drag ("EQ Sketch") on a dimmed
+     channel's graph engages that slot at once, lit in the track's colour, with a 5 ms click-free
+     ramp (ADR-0163's ramp); bypass or reset dims it back.
+   - **Delta on every slot:** ADI-Q, ADI-L and the sidechain slot each carry a Delta (difference
+     solo) toggle, global and per slot.
+
+2. **Anchor roles and the CTZ hierarchy as first-class.**
+   - **Roles:** a track or group marked **★ Kick**, **★ Bass** or **★ Vocal** (right-click, the
+     header badge, or the template); **★ Reference** the fourth (§4). ★ Kick is the project's
+     timing and phase reference and the default key of Quick Kick Sidechain (§3).
+   - **The CTZ hierarchy as ADI's default project structure:** `Master` (the final ADI-L, the
+     Loudness Drive, LUFS and true peak) → `PreMaster` group (everything else; console summing and
+     the PreMaster ADI-L) → `Kick Bass & Percussions` group (holding `Kick & Bass`, with ★ Kick and
+     ★ Bass, and `Percussions`), `FX` group, `Instruments` group.
+   - **The CTZ Bus Dynamics Navigator**, the MIX View's header: a block tree `PreMaster → (Kick
+     Bass & Percussions [Kick & Bass | Percussions], FX, Instruments)`; each block with live peak,
+     RMS and LUFS, the crest factor, an **ADI-L shaving bar** and a **sidechain breathing meter**;
+     a click filters the view below to that group; `Kick Bass & Percussions` compares its two
+     children and their sum; Shift+click on two blocks locks a 1 v 1 comparison.
+   - Top left, the view-filter button (ADR-0112) with a **Link to Arrangement** toggle; on the
+     right edge a searchable **track minimap** in Pro-Q 4's manner for head-to-head comparisons.
+
+3. **Quick Kick Sidechain, and three sidechain and conflict modes.**
+   - A **[⚡ Kick]** button on every row and strip, a draggable **⚡ Kick SC** pill in the header:
+     one click or one drop wakes the target's sidechain slot and wires a delay-compensated edge
+     from ★ Kick, **Pre FX by default**, switchable to Post FX or Post Mixer (ADR-0203 d3's taps,
+     ADR-0058's edge). Dragging track A onto track B wires A as B's key.
+   - The modes, each a measurement clone under the director's name: **RMSC** (the default; ADI RMSC
+     of ADR-0166 made native), **ADI Spacer** (the Trackspacer class: 32-band dynamic spectral
+     unmasking, high and low cut, attack and release, L/R or Mid/Side), **ADI Fuser** (the FUSER
+     class: Mid/Side dynamic spectral ducking, a loudness-match pointer, Resolve Conflicts, and
+     **Phase Optimize / Phase Rotate**, ±180° all-pass).
+   - With two tracks compared, Ctrl+Alt while dragging an ADI-Q band creates the complementary
+     inverse dynamic band on the target, keyed from the priority track.
+
+4. **The ★ Reference track, timeline-synced, momentary or latched, exclusive.**
+   - Every project has a ★ Reference track on the timeline (reference clips imported Warp off,
+     ADR-0132 d6), **hidden by default** in the project view filter (ADR-0112) with a
+     **[👁 Reference Track]** toggle, and **mirrored in the MIX View** as a Reference Timeline Strip.
+   - **Exclusive, the Master bypassed:** it routes straight to the monitor output and Cue Out, past
+     `PreMaster`, `Master`, the Loudness Drive and the ADI-L cascade; engaging it is a 5 ms swap
+     that mutes the project's Master and solos the reference.
+   - **Ctrl+R / Cmd+R and the [REF] button:** held over 200 ms, momentary; tapped under 200 ms,
+     latched. **Alt+hold** on the reference waveform or a saved cue plays that spot exclusively,
+     independent of the playhead. **Rename Track would move to F2 and Ctrl+Shift+R**; **F4** would
+     open the MIX View.
+   - With it: auto LUFS matching, Bluprint's tonal-balance curve and volume placement guides, an
+     optional four-stem split of the reference (ADR-0203 d8), phone translation over the LAN audio
+     node (ADR-0204 d5) and ADI Mobile (ADR-0200).
+
+5. **Five tabs** (F4 and a top-bar button; docked in the centre or detached, ADR-0063, ADR-0180 d3;
+   split screen; a one-click **Kick & Bass Lab** split): **OVERVIEW** (the SPAN class overlay plus
+   Bluprint's matcher, tonal balance, guides, a vectorscope, LUFS and true peak), **STACK** (the
+   instance list: every channel of the selected group or filter, dormant ones dimmed, the hovered
+   row zoomed for ADI-Q with drawers for the sidechain slot and ADI-L; this would be the "one
+   window" of ADR-0204 d1), **SCOPE & PHASE** (the Scope and the s(M)exoscope clone: eight tracks,
+   overlay, stacked, sum, difference, PDC-aligned, triggered, `bestOffset()`, one-click Track Delay,
+   polarity, Fuser's phase rotate), **SPECTROGRAM** (the VISU class on the PerceptoMap base,
+   ADR-0183 d3, d6, pre against post, frequency solo, "send node to ADI-Q"), **CTZ CASCADE** (the
+   hierarchy full screen with Auto Gain Stage headroom, the Loudness Drive dial, ADI-L's shaving per
+   tier, a sidechain matrix).
+
+6. **The AI Mix Radar** (P2): a strip fed by the taps and `analyze.masking`, `analyze.loudness`,
+   `analyze.spectrum`, `analyze.headroom` (Master Reference 14.3), flagging masking, destructive
+   correlation, sub-bass build-up against the reference, true-peak overs (BS.1770-4) and crushed
+   dynamics per CTZ group; a click isolates the channels and offers **[Propose Fix]**, a
+   single-undo Propose changeset (ADR-0003, ADR-0168).
+
+7. **The two docks and the Stream Deck:** the Info View's header switcher `Info | SPAN | Scope |
+   VISU | Bluprint | CTZ | AI Radar` (a click in a mini-graph opens the MIX View there); the device
+   strip's optional pinned right-hand analyser slot through ADR-0184's upward resizer; the Stream
+   Deck + XL following the hovered channel or group, with a Ctrl+R key and a ⚡ Kick SC dial.
+
+8. **Priorities and lanes as drafted:** P1 the shell, the roles and hierarchy, [⚡ SC: Kick] with
+   RMSC, the ★ Reference track, OVERVIEW, STACK, SCOPE & PHASE, CTZ CASCADE, the Info View switcher;
+   P2 the Bluprint matcher with the stem split, ADI Spacer, ADI Fuser, the VISU spectrogram, the AI
+   Mix Radar. The clones lane the six clones; the engine lane the slots, the ★ Kick helper, the
+   reference routing, the group metadata, tap batching; the draft also listed `MixViewPanel` and
+   the two docks under the engine lane.
+
+### 9. win's critique, and the questions only the director can answer
+
+Rule: Live's way unless Live lacks the ability, additions first-class (ADR-0203 d1, d2); other
+models' proposals are challenged, not copied. Read against that and against the queues:
+
+| # | Where the draft is wrong or costly | win's recommendation | Needs |
+|---|---|---|---|
+| Q1 | **Ctrl+R is Live's Rename** (manual 41.4.1). Taking it for the Reference breaks a habit used a hundred times a day for a key used in mastering sessions, against rule 1 ("don't do differently what Live does"). | Keep Rename on Ctrl+R. Put the Reference on the [REF] button and one free key (win's placement: **Ctrl+Shift+R**, tap and hold as drafted; or a key of his choosing). F4 for the MIX View is fine: F4 is free in ADI's function-key scheme (ADR-0203 d6). | his ruling |
+| Q2 | **The CTZ hierarchy as the default new project** changes Live's default Set (two audio, two MIDI tracks) for every user. | Ship it as a bundled **template** named CTZ, one click away in the New dialog and the browser's Templates; the default new project stays Live's. The roles and the navigator work on any project that has the groups. | his ruling |
+| Q3 | **Scale.** The P1 set is the shell, four tabs, roles, the navigator, the sidechain slot with RMSC, the reference route and keys, the switcher: months of window and engine work, queued in front of the first usable window. | **P1 only the shell with the STACK tab (the "one window" ADR-0204 d1 already owes) and the ★ Reference track; everything else P2**, after the first-window gate (LANES §5). The engine's slots (the window's need N16) are already P1 and serve STACK. | his ruling |
+| Q4 | **Six more clones** (SPAN, Bluprint, s(M)exoscope, VISU, FUSER, Trackspacer) on a clones lane that still owes ADI-Q, ADI-L, ADI-C, Still, Prism and FilmCraft. The analyser of ADR-0183 already has the spectrum, the sMexoscope scope and a VISU-style spectrogram. | OVERVIEW, SCOPE & PHASE and SPECTROGRAM are built from **the existing analyser and Scope**; the SPAN, VISU and s(M)exoscope clones become parity passes on them, not new plug-ins. Trackspacer and FUSER (Spacer, Fuser) are real new DSP: P2, after ADI-C. Bluprint's matcher P2. | his ruling |
+| Q5 | **"0 % CPU" with a live background spectrum on every visible dormant row** is not 0 %: each visible row needs a tap and a copy, like the strip scope of ADR-0203 d14. True for the DSP, not for the drawing. | Say it as it is: the slot's DSP costs nothing while off; the drawing costs one tap per visible row, drawn only while on screen, as the strip's scope already does. | none, a wording |
+| Q6 | **Ownership:** the draft put `MixViewPanel` and the two docks under the engine lane. | They are the window lane's (ADR-0208 d3). The engine serves them through the snapshot and the taps. | none, win's correction |
+| Q7 | **The ★ Reference's route** straight to the monitor past the Master is Live's Cue path in all but name (Cue Out, Solo/Cue), which the window already asked for (N23). The "mutes the Master" swap is an addition Live has not; exclusive it should be. | One engine item: the cue path and the exclusive reference solo together. No separate "reference bus". | none |
+| Q8 | **Format:** the draft reserves nothing. | win's placements: `tracks.role` (null, `kick`, `bass`, `vocal`, `reference`); the sidechain slot's rows beside ADR-0204 d1's slot rows with a `mode` and the key's tap; the MIX View's tab, filter and comparison pair in `ui_view`; the template is a project template. | to strike if wrong |
+| Q9 | **The 200 ms tap/hold threshold** and the **5 ms ramp** are fine as fixed values; no setting (ADR-0203 d2). The **Delta** on ADI-L and the sidechain slot, the **inverse-linked band**, the **Kick & Bass Lab split**, the **AI Mix Radar** at P2, the **Stream Deck** keys: nothing to object to. | adopt as drafted when he rules | none |
+
+**(Written before the ruling; superseded by §10 the same day.)** Until he rules: the window lane's queue lists the MIX View after the first-window gate and
+after his answers (LANES §3b item 2); the engine's slots (N16) and the cue path (N23) are already
+queued as the window's needs; the clones lane's queue lists the six clones last, "after the ruling
+on ADR-0209 Q4". FEATURES rows for the above carry "proposed"; the Master Reference v1.3 records
+the draft as a direction with these questions.
+
+### 10. The director's ruling (1 November 2026, the same evening)
+
+"Agree on all 4, keep Mix View, make it decided." He also asked that the Master Reference describe
+the Mix View and all its abilities with reference pictures of the products the draft names, and gave
+the sources: Voxengo SPAN (voxengo.com/product/span), Big Z Bluprint (bigzstudios.com/bluprint),
+s(M)exoscope (github.com/bdejong/smartelectronix), Tritik VISU (tritik.com/product/visu), Wavesfactory
+Trackspacer (wavesfactory.com/audio-plugins/trackspacer), RMSC with Polarity Music's "Ringmod
+Sidechain" video (youtube.com/watch?v=7LV4LZQOad8), FabFilter Pro-Q's instance list
+(fabfilter.com/help/pro-q/using/instance-list) and Mastering The Mix FUSER. Recorded in v1.3's 3.9
+and its Appendix E.
+
+- **d9 (Q1, the keys).** Ctrl+R stays Live's Rename; Rename does not move. **F4** opens and closes
+  the Mix View (the function keys do functions, ADR-0203 d6, which this amends by one key). The
+  ★ Reference is the **[REF] button** and one key, tapped under 200 ms to latch, held to audition.
+  win recommended Ctrl+Shift+R and was wrong: that is Live's Export Audio/Video (manual ch. 41);
+  Ctrl+Alt+R is Live's Hide/Show Return Tracks and R alone reverses a clip. The key is therefore
+  **Shift+R**, free in Live 12's list and beside Live's Rename: win's placement, to strike if he
+  prefers another (F5 is the free function key). The Stream Deck key maps to the same command.
+- **d10 (Q2, the hierarchy).** The CTZ hierarchy ships as a **bundled template named CTZ**, one
+  click away in the New dialog and the browser's Templates; Live's default Set (two audio, two MIDI
+  tracks) stays the default. The roles and the navigator work on any project that has the groups.
+- **d11 (Q3, the P1 set).** P1 is **the shell** (F4 and the top-bar button, docked in the centre or
+  detached), **the STACK tab** (the "one window" ADR-0204 d1 already owes: every channel of the
+  selected group or filter, dormant slots dimmed, the hovered row zoomed for ADI-Q, drawers for the
+  sidechain slot and ADI-L) and **the ★ Reference track** (hidden by default, the [👁 Reference
+  Track] toggle, the strip in the Mix View, exclusive with the Master bypassed on the cue path, tap
+  or hold). The engine's three present-but-off slots in the snapshot stay P1 as the window's need
+  N16; the `reference` role and the exclusive route are P1 with N23. **Everything else is P2, after
+  the first-window gate (LANES §5):** ★ Kick, ★ Bass and ★ Vocal with the navigator and the CTZ
+  CASCADE tab, [⚡ Kick] and the RMSC slot mode, OVERVIEW, SCOPE & PHASE, SPECTROGRAM, the Info View
+  switcher and the device strip's pinned slot, the Stream Deck, Bluprint's matcher and the stem
+  split, ADI Spacer, ADI Fuser, the AI Mix Radar.
+- **d12 (Q4, the clones).** OVERVIEW, SCOPE & PHASE and SPECTROGRAM are built from **the existing
+  analyser (ADR-0183) and the Scope (ADR-0167, ADR-0175)**; SPAN, s(M)exoscope and VISU are
+  **parity passes** on them (the window lane draws, the engine publishes what is missing), not new
+  plug-ins. **ADI Spacer** (the Trackspacer class) and **ADI Fuser** (the FUSER class) are the only
+  new DSP: the clones lane, P2, after ADI-C. Bluprint's matcher is P2 on the analyser.
+- **d13 (the name).** **Mix View**, written as Live writes its views (Session View, Arrangement
+  View, Mix View), never in capitals; the tab names stay as drafted. The title of this entry and
+  every document follow.
+- **Q5 to Q9** as win wrote them: the slot's DSP costs nothing while off and the drawing costs one
+  tap per visible row; `MixViewPanel`, the switcher and the pinned slot are the window lane's; the
+  reference route is the cue path (N23), no separate bus; the format placements of Q8 stand until
+  struck; the 200 ms and the 5 ms are fixed values, no setting.
+
+**Consequences.** FEATURES rows lose "proposed" and take d11's priorities; in LANES the engine's
+item 2 and the window's item 2 are live (the P1 parts first) and the clones' item 7 is Spacer and
+Fuser after ADI-C; UI-ARCHITECTURE §12 is decided with d9's keys; the standing prompts of
+1 November are corrected in place; the Master Reference v1.3 describes the Mix View in 3.9 with the
+reference pictures. ADR-0203 d6 is amended (F4, Shift+R); ADR-0204 d1's one window is the STACK tab.
+
+## ADR-0210 — Nobody waits: the window's needs table is the head of the engine lane's queue; a seat without the GitHub API pushes and logs; win merges whenever the lanes push — `DECIDED` (2026-11-01) — **DIRECTOR'S DECISION; AMENDS ADR-0207 d1 AND ADR-0208 d1, `docs/LANES.md` §3, §3b, §6**
+
+**The director's words.** "Window lane and engine lane stopped at some point; window lane was
+waiting for engine lane and so I found myself again unable to continue without you … give me
+again two prompts … so they can work forever until we actually [are] done; if [the] engine lane
+need[s] to finish first before [the] window lane then let's make them all work on [the] engine
+lane separately and make it done. I don't feel as if we are proceeding to the goal like that; we
+need a better plan."
+
+**What actually happened (win's reading of the logs).** Between 27 October and 1 November the
+window lane opened forty-five PRs and the engine lane fifteen, all green, and win merged none of
+them until today; the window lane kept a needs table of thirty-five rows the engine never saw as
+its queue; the engine seat (Codex, in a sandbox) could push branches but not open PRs, so the
+window lane relayed for it through the director. Two seats were not blocked on each other's
+code; they were blocked on the merge and on the message path, both of which ran through him.
+
+### Decisions
+
+1. **Not "all on the engine".** The window lane's queue has months of work that needs nothing
+   from the engine (the MIX View's shell, the Settings pages, the parity passes, phase C's window
+   parts), and two seats editing `src/adi/engine/**` at once would conflict on every file. The two
+   lanes stay. What changes is the order and the rule below.
+2. **The window's needs table (`collab/window.md`) is the head of the engine lane's queue.** Each
+   engine session takes the oldest open need it owns before anything of LANES §3; the window
+   strikes the row the day the PR merges. The engine lane's own items (ADR-0209 d8, the export
+   queue's rest, freeze, history) follow.
+3. **The window lane never waits.** A missing engine field is a row in the table and a stub
+   provider in the UI, replaced when the field arrives; the item ships with the stub and the row.
+   A missing decision is Live's behaviour, recorded in the log.
+4. **A seat without the GitHub API pushes the branch and writes the PR title and body into its
+   log under "PR requested"**; win (or the window lane, which has the API) opens the PR. Nothing
+   goes through the director.
+5. **win merges whenever the lanes push, not weekly.** A lane PR green on CI is merged the same
+   day in stack order; conflicts of one hunk between lanes win resolves by merging main into the
+   lane branch (a merge commit, never a rewrite) and says so in `collab/win.md`. A stack deeper
+   than two is allowed only when each PR body names the one it stands on.
+6. **The director's one job stays "continue"** on a seat that stopped, and the gates of LANES §5.
+   The first window on his PC is win's to hand him: win builds main on Windows after each merge
+   day and tells him the path.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0207 d1, ADR-0208 d1 | the lanes' order of work: the window's needs first for the engine (d2); no lane waits (d3) |
+| `docs/LANES.md` §2, §3, §3b, §6 | the rules above; the prompts of 1 November replace those of 25 and 27 October |
+| `collab/prompts/2026-11-01-engine-lane.md`, `2026-11-01-window-lane.md` | the standing prompts |
+
+## ADR-0211 — What a colour column holds: an index into Live's palette, never an RGB value; NULL is "no colour of its own" — `DECIDED` (2026-11-01) — **WIN'S RULING UNDER ADR-0203 d1 (LIVE'S WAY), ANSWERING THE WINDOW LANE'S NEED N36; THE DIRECTOR MAY STRIKE IT**
+
+**The question (the window lane, `collab/window.md` N36, 1 November).** `docs/format` gives
+`tracks.color` only as an INTEGER. Live stores a palette index, one of its colours; ADI's window
+draws `0xRRGGBB` (`adi::ui::TrackRow::colour`, "0 when the project gives none"). Which is it?
+
+**What Live does.** A track, clip, scene, chain or marker is coloured from *the* colour palette,
+the one grid in every colour context menu (Live 12 manual 2.3.2, 8.1.1.3, 7.1, 24.1); a user never
+types an RGB value. The palette's look belongs to the theme: Theme & Colors sets a warm, cool or
+neutral *tone to the colour palette*, colour intensity and hue (manual 2.3.2), so the same Set shows
+different RGB values under a different theme, and nothing in the Set changes. A new track takes the
+previous track's colour plus one when auto-assigning is on, or the default colour (manual 2.3.2;
+ADR-0203 d11's rows: "Live's one switch and a default colour"); a new clip takes its track's colour,
+or a random one (manual 8.1.1.3, 2.3.2). Assign Track Color to Clips and to Grouped Tracks and Clips
+copy a colour down (manual 8.1.1.3).
+
+### Decisions
+
+1. **Every `color` column (`tracks`, `clips`, `markers`, `arranger_sections`, `macros`) holds an
+   index into the colour palette: `0` to `69`, row-major as Live's chooser lays it out (five rows of
+   fourteen; index = row × 14 + column).** Never an RGB value. The theme turns the index into a
+   colour at draw time, as Live does, so a Set keeps its colours when the theme, its tone, intensity
+   or hue changes. The schema does not change: the column was and stays `INTEGER`; the `1.9`
+   bytes of #306 and #307 are untouched. The text projection prints the index as it is.
+2. **`NULL` is "no colour of its own".** A track with `NULL` shows the auto-colour
+   (`lookfeel.autoTrackColor` on: the previous track's palette index plus one, modulo 70; off:
+   the default colour, `lookfeel.trackColor.<kind>` when set, else the theme's) and a clip with
+   `NULL` shows its track's colour (`lookfeel.clipColor` = `track`) or the random colour it was
+   given at creation (`random`: the op writes the index; the file never holds "random"). Live's
+   Set stores the resolved index for new tracks and clips; ADI does the same through the ops: a
+   creation op may write the resolved index, and `NULL` is what a converter or an old file leaves.
+   The window draws `NULL` as it draws today, by place; nothing is red.
+3. **The RGB table is the theme's, the window lane's to measure.** `look::trackColour(position)`
+   (fourteen Live 11 colours, read off the director's Live 11.2.7) becomes
+   `look::paletteColour(index)` over the seventy, measured from Live 12's chooser on the director's
+   Mac in the default theme, with the palette tone, intensity and hue applied as ADR-0203 d11's
+   Theme & Colors rows say. Until the seventy are measured the fourteen stand in, `index % 14`.
+4. **Assign Track Color to Clips, Assign Track Color to Grouped Tracks and Clips, and the chooser
+   itself are `track.setColor` and `clip.setColor` batches (one undo step), the window's to build
+   when it reaches the colour context menus; no new op.** If the catalogue lacks a set-colour op
+   for a table that has a `color` column, that is an engine need, logged as usual.
+5. **An RGB colour of the user's own is not ruled.** Live's palette has none; ADI's accent colour
+   and default colour per kind (ADR-0203 d11) are settings, not file columns. If an addition wants
+   arbitrary colours per track, it comes to the director as its own proposal; nothing here forbids
+   it, and the index leaves room (a later ADR could reserve values above the palette).
+
+### Consequences
+
+- Answers N36; the window strikes the row when this merges. The `TrackRow::colour` comment and
+  the arrangement's `colourFor` read the index through `look::paletteColour`.
+- `docs/format/SPEC.md` §6.1 gains the paragraph; `schema.sql` is not touched (its bytes are
+  the frozen DDL).
+- No change to any op, the catalogue, OPS.md, the validator or the Master Reference's text
+  beyond a line in 3.x's track colour sentence at the next build.
