@@ -12,6 +12,39 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+
+## 2026-11-02 — N30 ready; continuing to N9
+
+**PR requested** (API unavailable; ADR-0210 d4). Head `engine/collect-project` at
+`3722d72`, base **`engine/save-project`** (N3, `7cc1ffc`). Two deep; merge N3 first.
+Title: **Collect current and history media into portable projects (N30)**.
+
+PR body: The File menu can call `Store::collectAllAndSave()` and
+`Store::collectAndExport(zip)` off the audio thread, alongside N3's `saveCopy` and
+`saveAs`. Collection verifies and copies one file per hash into local `audio/`,
+then saves relative paths in the current pool and both sides of captured media
+ops on every history branch, including unlinked assets. Refresh the view/session
+after in-place collection. Undo, redo and branch changes retain their media when
+the folder moves. No musical edit or new history step is added. Matching existing
+files are reused, different contents/symlinks refused, and copy/SQL failures remove
+only newly published files and roll back all path changes. The ZIP exporter now
+uses the same collector on a private SQLite backup and preserves its live source;
+read-only ZIP sources and legacy extraction remain supported. SPEC §3.8 documents
+the location-maintenance contract. This branch depends on N3.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9897 checks / 107 suites**,
+all validators clean. Collection suite **102**, project-files **44**, both pass
+Clang Werror. Tests cover inactive branches, undo-only assets, relink inverses,
+physical folder moves, existing-target verification, missing-media and SQL
+rollback, read-only/export restrictions and source preservation. Corrected N3's
+branch-selection fixture to select the abandoned branch and assert its relink path.
+Two separately compiled plants were caught: skipped captured paths (9 failures)
+and omitted failed-file cleanup (2). Local MSVC/JUCE/Live measurements unrun;
+remote CI not observable here. Win opens/reviews/merges.
+
+N16 remains integration-blocked as recorded below. N3/N30 are pushed; continuing
+with **N9**, from current main, without waiting for PR opening.
+
 ## 2026-11-02 — N3 Save As ready; chaining into N30
 
 ### PR requested — N3
