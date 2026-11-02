@@ -13,6 +13,33 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N10: Learn a control directly, with no automation lane
+
+**PR requested:** engine/controller-targets -> main, head **2e61936**.
+**Title:** Learn MIDI controller targets without creating automation lanes
+**Body:** N10: window calls learnControllerTarget(bindingId, kind, targetId,
+paramRef, CC, observedValues, policy, error) for a mixer control without an
+automation lane. It returns a captured controller.bind request, creates no
+lane and reads no project or app policy. Existing learnController resolves a
+lane's owner/param_ref and calls that same producer. Both apply Remote/Focus
+reservation, source/channel/CC checks, absolute/relative detection and takeover.
+Direct addresses require a known target kind, positive IDs and nonempty param;
+commit also checks the actual target still exists. No schema/opcode/payload
+change. The asynchronous UI retains its document-generation/expected-head
+guards. OPS.md describes the call and captured-policy/replay behavior.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS **9897/106**, all validators
+clean. GCC+Clang19 controller56/catalogue106/replay63 pass; controller source/test
+shadow/Werror syntax passes. New cases cover no lane or writes, exact Pan target,
+equivalence to lane Learn, raw-binding equality on replay despite later policy,
+undo to absence, relative takeover, Focus/Remote/input errors and atomic refusal
+of a missing target. Compiled plants: lost target1 failure, ignored reservation2,
+wrong relative takeover2; restored tests pass. No remote CI/MSVC/hardware claim.
+Next **N24**, Delay Compensation and Track Delay disabled with it, then the rest.
+
+---
+
+
 ## 2026-11-02 — N31: per-track recording choices, snapshot and root inheritance
 
 **PR requested:** engine/track-recording-options -> main, head **11786be**.
