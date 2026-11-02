@@ -73,6 +73,18 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — Tap Tempo [#367](https://github.com/arieladi/Adi/pull/367) `window/tap-tempo`, on #366
+
+**Built: the Tap button** (parity 7.2-shell new row 30; Live 12 manual 9.1.2). It acts on its
+press; from a run's second tap the tempo follows the mean of the run's last sixteen intervals
+(`TapTempo`), through #366's edit. A run is one step ("Tap Tempo"), each tap replacing the run's
+step while it is the latest. A two-second pause starts a new run (provisional, to measure). Key Map,
+MIDI Map and Start Playback with Tap Tempo are open.
+
+**Tests.** seams 366, shell 831; `test_all.sh` PASS (10051 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — the control bar's Tempo field [#366](https://github.com/arieladi/Adi/pull/366) `window/tempo-field`, on #365
 
 **Built: the Tempo field typed** (parity 7.2-shell new row 29; Live 12 manual 9.1.1). 20 to 999
