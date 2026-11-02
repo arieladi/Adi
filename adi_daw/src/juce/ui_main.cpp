@@ -3,7 +3,6 @@
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
 #include "app_audio_page.hpp"
-#include "ui_channel_eq.hpp"
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
@@ -272,20 +271,6 @@ class AdiApplication final : public juce::JUCEApplication,
             return detachMixView(*floating_, *root_, !root_->state().mixViewDetached);
         if (id == AppCommands::ToggleMixView)
             return toggleMixViewWindow(*floating_, *root_);
-        if (id == AppCommands::ShowChannelEq) {
-            // ADI's Channel EQ window (ADR-0204 d1), floating, one for the project.
-            const std::string key = "Channel EQ";
-            if (floating_->content(key) == nullptr) {
-                auto view = std::make_unique<ChannelEqView>(*root_);
-                auto *raw = view.get();
-                if (!floating_->openView(key, 0, std::move(view),
-                                         [raw](const SnapshotReader &reader) { raw->frame(reader); }))
-                    return false;
-            }
-            if (auto *view = dynamic_cast<ChannelEqView *>(floating_->content(key)))
-                view->focus(root_->arrangement.geometry.selection.track);
-            return true;
-        }
         if (id == AppCommands::Settings) {
             // Live's Settings window (ADR-0203 d11): its Audio page holds the device
             // chooser of STEP-7-PLAN §3.0, unless this run has no audio device.

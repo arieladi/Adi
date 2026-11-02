@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-#include "../src/juce/ui_channel_eq.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
@@ -330,7 +329,9 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     };
     render("adi-parity.png");
     if (folder.isNotEmpty()) {
-        ChannelEqView eqView(root);
+        StubMixViewProvider stub;
+        StackTab eqView(root, stub);
+        eqView.setSize(900, 460);
         SnapshotReader eqReader(view.current());
         eqView.frame(eqReader);
         eqView.focus(4);
@@ -341,7 +342,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
             g.addTransform(juce::AffineTransform::scale(2.f));
             eqView.paintEntireComponent(g, true);
         }
-        const auto file = juce::File(folder).getChildFile("adi-channel-eq.png");
+        const auto file = juce::File(folder).getChildFile("adi-stack.png");
         file.deleteFile();
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
@@ -747,6 +748,29 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         refresh();
         check(order() == tree, "the tree as it was");
     }
+    // The Mix View's STACK lists every channel the window's project view shows: the group chosen,
+    // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").
+    {
+        check(root.command(AppCommands::ToggleMixView), "the Mix View opens on the groups");
+        root.frame();
+        auto stackIds = [&root] {
+            std::vector<std::int64_t> out;
+            for (const auto &r : root.mixViewPanel.stack.rows())
+                out.push_back(r->track());
+            return out;
+        };
+        check(stackIds() == std::vector<std::int64_t>{10, 11, 12, 13, 14, 15, 16, 17, 18, 1},
+              "every channel, in the arrangement's order");
+        root.arrangement.chooseView(13);
+        root.frame();
+        check(stackIds() == std::vector<std::int64_t>{13, 14, 15, 16, 17, 18, 1} &&
+                  root.mixViewPanel.stack.scope() == "Body",
+              "Body chosen in the project view: Body, what it holds, and Main");
+        root.arrangement.chooseView(0);
+        root.frame();
+        check(stackIds().size() == 10 && root.command(AppCommands::ToggleMixView), "the whole project again; closed");
+        root.frame();
+    }
     lanes.selection.track = 15;
     // Two changes of signature, for the picture of the ruler and its markers.
     for (const auto &[pos, num, den] : {std::tuple{8 * textproj::kPPQ, 3, 4}, std::tuple{14 * textproj::kPPQ, 7, 8}}) {
@@ -1081,6 +1105,70 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
     check(submitter.submit(std::move(pad)).ok, "a new track");
     root.frame();
     check(panel.stack.rows().size() == 5, "and STACK has a row for it at the next frame");
+    // STACK (ADR-0209 d11; Pro-Q's instance list): the row under the mouse opens, dormant slots are
+    // flat dimmed lines, a slot says what it waits for, and the window's group decides the rows.
+    {
+        auto &stack = panel.stack;
+        auto rowOf = [&stack](std::int64_t id) -> StackRow * {
+            for (const auto &r : stack.rows())
+                if (r->track() == id)
+                    return r.get();
+            return nullptr;
+        };
+        auto *kick = rowOf(10), *bass = rowOf(11);
+        check(kick != nullptr && bass != nullptr && kick->getHeight() == StackRow::kHeight &&
+                  bass->getY() == kick->getBottom(),
+              "rows of one height, one under another");
+        kick->mouseEnter(pressAt(*kick, {40.f, 10.f}));
+        check(stack.hovered() == 10 && kick->zoomed() && kick->getHeight() == StackRow::kZoomedHeight &&
+                  bass->getY() == kick->getBottom(),
+              "the row under the mouse opens, the rows below move down");
+        check(kick->eqArea().getHeight() > 120 && kick->sidechainArea().getRight() < kick->limiterArea().getX() &&
+                  kick->eqArea().getRight() < kick->sidechainArea().getX(),
+              "ADI-Q's graph to edit, the sidechain slot and ADI-L as drawers beside it");
+        kick->mouseExit(pressAt(*kick, {40.f, 10.f}));
+        check(stack.hovered() == 0 && kick->getHeight() == StackRow::kHeight, "and closes when the mouse leaves");
+        // Dormant: the 0 dB line dimmed, never the track's colour.
+        auto pixelAt = [](juce::Component &c, juce::Point<int> at) {
+            juce::Image image(juce::Image::ARGB, c.getWidth(), c.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                c.paintEntireComponent(g, true);
+            }
+            return image.getPixelAt(at.x, at.y);
+        };
+        const auto flat = juce::Point<int>(kick->eqArea().getCentreX(), kick->eqArea().getCentreY());
+        const auto kickColour = root.arrangement.colourFor(0);
+        check(pixelAt(*kick, flat) != kickColour && !stack.provider().live(), "a dormant ADI-Q: a flat line, dimmed");
+        // Engaged, as the engine's slots will report: the line in the track's colour, the drawer lit.
+        struct Engaged final : MixViewProvider {
+            ChannelSlots slots(const engine::TrackNode &t) const noexcept override {
+                ChannelSlots s;
+                s.eq = t.id == 10;
+                s.sidechain = t.id == 10 ? SidechainMode::Rmsc : SidechainMode::Off;
+                return s;
+            }
+            bool live() const noexcept override { return true; }
+        } engaged;
+        const auto &own = stack.provider(); // the panel's stub, which outlives this block
+        stack.setProvider(engaged);
+        const auto lit = kick->sidechainArea().getTopLeft() + juce::Point<int>(2, 2);
+        check(pixelAt(*kick, flat) == kickColour && pixelAt(*kick, lit) != pixelAt(*bass, lit),
+              "engaged: Kick's line in its colour, its sidechain drawer lit, Bass's not");
+        stack.setProvider(own);
+        // A slot says what it waits for; elsewhere a click selects the channel's track.
+        bass->mouseDown(pressAt(*bass, bass->sidechainArea().getCentre().toFloat()));
+        check(stack.focused() == 11 && root.error().find("sidechain") != std::string::npos,
+              "a click on the sidechain slot focuses Bass and says it waits for the engine's slots");
+        bass->mouseDown(pressAt(*bass, {40.f, 10.f}));
+        check(root.arrangement.geometry.selection.track == 11, "a click on its name selects Bass's track");
+        // The View menu's Channel EQ, and a track row's Q, open STACK on the selected track.
+        check(root.chooseMixViewTab(0), "on another tab");
+        root.arrangement.geometry.selection.track = 12;
+        check(root.command(AppCommands::ShowChannelEq) && root.state().mixViewTab == 1 && stack.focused() == 12,
+              "Channel EQ opens STACK, Lead's row focused (ADR-0204 d1's one window)");
+        check(stack.scope() == "Project", "the rows: the whole project, the project view showing it");
+    }
     // A second window keeps its own.
     AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "mix-other");
     other.setSize(1200, 720);
@@ -1173,6 +1261,8 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
         root.command(AppCommands::ToggleMixView);
         root.mark(DirtySet::All);
         root.frame();
+        // STACK with Bass's row open under the mouse, for the picture.
+        root.mixViewPanel.stack.hover(11);
         juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {
             juce::Graphics g(image);
@@ -3027,6 +3117,7 @@ int main(int argc, char **argv) {
             row->solo.onClick();
             const auto opsBefore =
                 document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            const bool mixOpen = integrated.state().mixView;
             row->eq.onClick();
             row->limiter.onClick();
             check(!row->eq.getToggleState() && !row->limiter.getToggleState() &&
@@ -3034,6 +3125,10 @@ int main(int argc, char **argv) {
                       document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
                           opsBefore,
                   "the ADI-Q and ADI-L slots are on every strip, present and off");
+            check(integrated.state().mixView && integrated.mixViewPanel.stack.focused() == 2,
+                  "and a slot opens the Mix View's STACK on its channel (ADR-0204 d1, ADR-0209 d11)");
+            if (!mixOpen)
+                integrated.command(AppCommands::ToggleMixView);
         }
         for (int i = 0; i < 30; ++i)
             check(integrated.command(AppCommands::InsertAudioTrack), "many tracks");
@@ -3055,16 +3150,19 @@ int main(int argc, char **argv) {
         audit = false;
         check(allocations == 0, "a steady mixer frame, meters included, allocates zero");
         // Live's Mixer View (manual 6.1 p. 162, 18.1; §41.1): vertical strips, left to right.
-        // ADI's Channel EQ window (ADR-0204 d1): every channel's ADI-Q and ADI-L in one view.
+        // ADI's one channel window (ADR-0204 d1), the Mix View's STACK (ADR-0209 d11): every
+        // channel's ADI-Q, sidechain slot and ADI-L in one view.
         {
-            ChannelEqView eqView(integrated);
+            StubMixViewProvider stub;
+            StackTab eqView(integrated, stub);
+            eqView.setSize(900, 460);
             SnapshotReader eqReader(document->view().current());
             eqView.frame(eqReader);
             const auto all = laneOrder(integrated);
             bool ordered = !all.empty() && eqView.rows().size() == all.size();
             for (std::size_t i = 0; ordered && i < all.size(); ++i)
                 ordered = eqView.rows()[i]->track() == all[i];
-            check(ordered, "the Channel EQ window lists every channel, in the arrangement's order");
+            check(ordered, "STACK lists every channel, in the arrangement's order");
             bool modes = !eqView.rows().empty();
             for (const auto &eqRow : eqView.rows())
                 modes = modes && std::string(eqRow->mode()) == (eqRow->track() == 1 ? "Full" : "Light");
@@ -3076,10 +3174,10 @@ int main(int argc, char **argv) {
             check(allocations == 0, "a frame that changes no channel builds nothing");
             if (eqView.rows().size() >= 2) {
                 auto &second = *eqView.rows()[1];
-                second.eq.onClick();
+                second.mouseDown(pressAt(second, second.eqArea().getCentre().toFloat()));
                 check(eqView.focused() == second.track() && !integrated.error().empty() &&
-                          !second.eq.getToggleState(),
-                      "a slot's switch focuses its channel, says what it waits for and stays off");
+                          !stub.slots(*integrated.reader().findTrack(second.track())).eq,
+                      "a click on a slot focuses its channel, says what it waits for, and the slot stays off");
             }
             MixerStrip *strip = nullptr;
             for (const auto &s : mixer.strips())
@@ -3087,10 +3185,14 @@ int main(int argc, char **argv) {
                     strip = s.get();
             if (strip) {
                 const auto selectedBefore = integrated.arrangement.geometry.selection.track;
+                const bool mixWas = integrated.state().mixView;
                 strip->eq.onClick();
                 check(integrated.arrangement.geometry.selection.track == strip->track() &&
-                          !integrated.error().empty(),
-                      "a channel row's Q selects its track and opens the window, or says why it cannot");
+                          integrated.state().mixView && integrated.state().mixViewTab == 1 &&
+                          integrated.mixViewPanel.stack.focused() == strip->track(),
+                      "a channel row's Q selects its track and opens the Mix View on STACK, on its row");
+                if (!mixWas)
+                    integrated.command(AppCommands::ToggleMixView);
                 integrated.arrangement.geometry.selection.track = selectedBefore;
                 integrated.publishSelection();
             }

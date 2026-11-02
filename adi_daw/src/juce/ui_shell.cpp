@@ -1032,13 +1032,12 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
-    // The application's own: files, Settings, and the floating Channel EQ window.
+    // The application's own: files and Settings.
     // In a window of its own, the Mix View is the application's to open and close (its floating
     // host); docked, the root's.
     if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
         return applicationCommand && applicationCommand(id);
-    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::ShowChannelEq ||
-        id == AppCommands::Quit)
+    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -1103,6 +1102,19 @@ bool AdiRootComponent::command(int id) {
             state_.mixerView = !state_.mixerView;
             return fail(error_);
         }
+        break;
+    case AppCommands::ShowChannelEq:
+        // ADR-0204 d1's one window is the Mix View's STACK (ADR-0209 d11): opened there, wherever
+        // it opens, on the selected track's row.
+        if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
+            return false;
+        if (!state_.mixView) {
+            if (state_.mixViewDetached ? !(applicationCommand && applicationCommand(AppCommands::ToggleMixView))
+                                       : !setMixView(true, false))
+                return false;
+        }
+        mixViewPanel.frame(reader());
+        mixViewPanel.stack.focus(arrangement.geometry.selection.track);
         break;
     case AppCommands::ToggleMixView:
         state_.mixView = !state_.mixView;
