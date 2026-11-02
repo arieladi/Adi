@@ -109,7 +109,11 @@ void insertAutomationTime(Store& store,RowEdits& plan,clip_edit::CopyIds& ids,co
                         detail::signedInteger(previous->second.at("id"));
                     leftRange=previous==ranges.end()?makeRange(leftId,static_cast<std::int64_t>(first-1),slice.begin,split):previous->second;
                     (*leftRange)["progress_end"]=split;
-                    rightRange=makeRange(ids.next("automation_segment_ranges"),static_cast<std::int64_t>(first+1),split,slice.end);
+                    if(previous==ranges.end())rightRange=makeRange(ids.next("automation_segment_ranges"),static_cast<std::int64_t>(first+1),split,slice.end);
+                    else {
+                        rightRange=previous->second;(*rightRange)["id"]=ids.next("automation_segment_ranges");
+                        (*rightRange)["record_index"]=static_cast<std::int64_t>(first+1);(*rightRange)["progress_begin"]=split;
+                    }
                 }
             }
         }
@@ -136,6 +140,106 @@ void insertAutomationTime(Store& store,RowEdits& plan,clip_edit::CopyIds& ids,co
         }
         for(const auto* range:{&leftRange,&rightRange})if(*range)
             plan.set("automation_segment_ranges",detail::signedInteger(range->value().at("id")),range->value());
+    }
+}
+
+void deleteAutomationTime(Store& store,RowEdits& plan,clip_edit::CopyIds& ids,const TimeMap& time,
+                          std::int64_t beginTicks,std::int64_t endTicks,std::int64_t beginNanos,std::int64_t endNanos,double rate) {
+    auto& db=store.db();
+    SQLite::Statement data(db,"SELECT d.id,l.time_base FROM automation_data d JOIN automation_lanes l ON l.id=d.lane_id WHERE d.clip_id IS NULL ORDER BY d.id");
+    while(data.executeStep()) {
+        const auto id=data.getColumn(0).getInt64();const int base=data.getColumn(1).getInt();
+        if(base!=0 && base!=1)throw std::runtime_error("automation has an unknown clock");
+        const auto begin=base==0?beginTicks:beginNanos,end=base==0?endTicks:endNanos,gap=end-begin;
+        auto row=*plan.current("automation_data",id);const auto& binary=row.at("data").get_binary();
+        StreamReader<AutomationPoint> reader({reinterpret_cast<const std::byte*>(binary.data()),binary.size()},FourCC::Automation);
+        if(!reader.ok() || (reader.header().flags & ~(StreamFlags::SortedByTime|StreamFlags::TimeIsNanos))!=0 || ((reader.header().flags & StreamFlags::TimeIsNanos)!=0)!=(base==1))throw std::runtime_error("Delete Time needs readable global automation with its declared clock");
+        std::vector<AutomationPoint> points;std::set<std::uint64_t> used;
+        for(std::uint32_t index=0;index<reader.count();++index) {
+            const auto point=*reader.at(index);
+            if(point.time<0 || (!points.empty() && point.time<points.back().time) || point.curve>5 || point.reserved || !std::isfinite(point.value) || !std::isfinite(point.tension))throw std::runtime_error("Delete Time needs valid sorted automation");
+            points.push_back(point);used.insert(point.point_id);
+        }
+        if(points.empty() || points.back().time<begin)continue;
+        if(points.front().time>=end) {
+            auto output=binary;
+            for(std::size_t index=0;index<points.size();++index){const auto position=points[index].time-gap;std::memcpy(output.data()+sizeof(StreamHeader)+index*reader.header().rec_size,&position,sizeof position);}
+            row["data"]=Payload::binary(std::move(output));plan.set("automation_data",id,row);continue;
+        }
+        if(reader.header().rec_size!=sizeof(AutomationPoint))throw std::runtime_error("Delete Time cannot synthesize a future automation record");
+        std::map<std::size_t,Payload> ranges;
+        SQLite::Statement metadata(db,"SELECT id FROM automation_segment_ranges WHERE data_id=? ORDER BY record_index");metadata.bind(1,id);
+        while(metadata.executeStep()) {
+            auto range=*plan.current("automation_segment_ranges",metadata.getColumn(0).getInt64());const auto index=detail::signedInteger(range.at("record_index"));
+            if(index<0 || static_cast<std::uint64_t>(index)>=points.size() || !range.at("clip_id").is_null())throw std::runtime_error("automation curve range has an invalid owner or record");
+            const double lo=range.at("progress_begin"),hi=range.at("progress_end"),first=range.at("source_first"),last=range.at("source_last");
+            if(!std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(first) || !std::isfinite(last) || lo<0 || hi>1 || lo>=hi)throw std::runtime_error("automation curve range is invalid");
+            ranges.emplace(static_cast<std::size_t>(index),std::move(range));
+        }
+        auto sampleAt=[&](std::int64_t position){return sample(base==0?time.seconds(position):static_cast<double>(position)*1e-9,rate);};
+        auto sliceAt=[&](std::size_t index) {
+            engine::CurveSlice slice{0,1,points[index].value,points[index+1].value};
+            if(const auto found=ranges.find(index);found!=ranges.end())slice={found->second.at("progress_begin"),found->second.at("progress_end"),found->second.at("source_first"),found->second.at("source_last")};
+            return slice;
+        };
+        auto fraction=[&](std::size_t index,std::int64_t position) {
+            const auto first=sampleAt(points[index].time),last=sampleAt(points[index+1].time),at=sampleAt(position);
+            if(last<=first || at<=first || at>=last)throw std::runtime_error("Delete Time boundary is below automation sample precision");
+            return static_cast<double>(at-first)/static_cast<double>(last-first);
+        };
+        std::uint64_t nextId=1;
+        auto freshId=[&]() {
+            while(used.contains(nextId)){if(nextId==std::numeric_limits<std::uint64_t>::max())throw std::runtime_error("automation point ids exhausted");++nextId;}
+            const auto result=nextId;used.insert(result);return result;
+        };
+        const auto left=static_cast<std::size_t>(std::lower_bound(points.begin(),points.end(),begin,[](const AutomationPoint& point,std::int64_t at){return point.time<at;})-points.begin());
+        const auto right=static_cast<std::size_t>(std::lower_bound(points.begin(),points.end(),end,[](const AutomationPoint& point,std::int64_t at){return point.time<at;})-points.begin());
+        const bool exactRight=right<points.size() && points[right].time==end;
+        if(points.size()>std::numeric_limits<std::uint32_t>::max()-2)throw std::runtime_error("automation record count exhausted");
+        std::vector<AutomationPoint> output;std::map<std::size_t,Payload> outgoing;
+        auto rangeAt=[&](std::size_t source,std::size_t destination) {
+            if(const auto found=ranges.find(source);found!=ranges.end()){auto range=found->second;range["record_index"]=static_cast<std::int64_t>(destination);outgoing[destination]=std::move(range);}
+        };
+        for(std::size_t index=0;index<left;++index){rangeAt(index,output.size());output.push_back(points[index]);}
+        auto partialRange=[&](std::size_t source,std::size_t destination,double lo,double hi,bool reuse) {
+            if(!std::isfinite(lo) || !std::isfinite(hi) || lo>=hi)throw std::runtime_error("Delete Time boundary is below curve progress precision");
+            const auto slice=sliceAt(source);const auto old=ranges.find(source);Payload range;
+            if(old!=ranges.end()) {
+                range=old->second;
+                if(!reuse)range["id"]=ids.next("automation_segment_ranges");
+            } else range=defaultRow(db,"automation_segment_ranges",{{"id",ids.next("automation_segment_ranges")},{"data_id",id},{"record_index",static_cast<std::int64_t>(destination)},{"progress_begin",lo},{"progress_end",hi},{"source_first",slice.sourceFirst},{"source_last",slice.sourceLast}});
+            range["record_index"]=static_cast<std::int64_t>(destination);range["progress_begin"]=lo;range["progress_end"]=hi;outgoing[destination]=std::move(range);
+        };
+        AutomationPoint before{};before.time=begin;before.point_id=freshId();before.value=points.front().value;
+        if(left>0) {
+            if(left<points.size() && points[left].time==begin)before.value=points[left].value;
+            else {
+                const auto index=left-1;const auto slice=sliceAt(index);const double at=fraction(index,begin);
+                before.value=engine::curveSliceValue(points[index].value,points[index+1].value,at,points[index].curve,points[index].tension,&slice);
+                if(points[index].curve>1 || ranges.contains(index))partialRange(index,index,slice.begin,slice.begin+(slice.end-slice.begin)*at,true);
+            }
+        }
+        output.push_back(before);
+        if(!exactRight) {
+            AutomationPoint after{};after.time=begin;after.value=points.back().value;
+            if(right<points.size()) {
+                const auto index=right-1;const auto slice=sliceAt(index);const double at=fraction(index,end);
+                after=points[index];after.time=begin;after.flags=0;
+                after.value=engine::curveSliceValue(points[index].value,points[index+1].value,at,points[index].curve,points[index].tension,&slice);
+                if(points[index].curve>1 || ranges.contains(index))partialRange(index,output.size(),slice.begin+(slice.end-slice.begin)*at,slice.end,index>=left);
+            }
+            after.point_id=freshId();
+            output.push_back(after);
+        }
+        for(std::size_t index=right;index<points.size();++index){rangeAt(index,output.size());auto point=points[index];point.time-=gap;output.push_back(point);}
+        auto header=reader.header();header.count=static_cast<std::uint32_t>(output.size());
+        std::vector<std::uint8_t> encoded(sizeof(StreamHeader)+output.size()*sizeof(AutomationPoint));std::memcpy(encoded.data(),&header,sizeof header);
+        for(std::size_t index=0;index<output.size();++index)std::memcpy(encoded.data()+sizeof(StreamHeader)+index*sizeof(AutomationPoint),&output[index],sizeof(AutomationPoint));
+        const auto oldEnd=sizeof(StreamHeader)+points.size()*sizeof(AutomationPoint);encoded.insert(encoded.end(),binary.begin()+static_cast<std::ptrdiff_t>(oldEnd),binary.end());
+        row["data"]=Payload::binary(std::move(encoded));plan.set("automation_data",id,row);
+        std::set<std::int64_t> retained;
+        for(const auto& [index,range]:outgoing){(void)index;const auto key=detail::signedInteger(range.at("id"));retained.insert(key);plan.set("automation_segment_ranges",key,range);}
+        for(const auto& [index,range]:ranges){(void)index;const auto key=detail::signedInteger(range.at("id"));if(!retained.contains(key))plan.set("automation_segment_ranges",key,std::nullopt);}
     }
 }
 } // namespace adi::edit

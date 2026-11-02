@@ -1265,6 +1265,10 @@ add_executable(adi_edit_rows_tests tests/test_edit_rows.cpp)
 target_link_libraries(adi_edit_rows_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_edit_rows_tests COMMAND adi_edit_rows_tests)
 
+add_executable(adi_time_edit_tests tests/test_time_edit.cpp)
+target_link_libraries(adi_time_edit_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_time_edit_tests COMMAND adi_time_edit_tests)
+
 add_executable(adi_clip_edit_tests tests/test_clip_edit.cpp)
 target_link_libraries(adi_clip_edit_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clip_edit_tests COMMAND adi_clip_edit_tests)

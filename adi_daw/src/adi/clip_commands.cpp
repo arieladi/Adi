@@ -380,6 +380,138 @@ PreparedEdit prepareInsertSilence(Store& store,std::int64_t atTicks,std::int64_t
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
+PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate) {
+    PreparedEdit result;
+    try {
+        validRate(referenceRate);
+        if(beginTicks<0 || endTicks<=beginTicks)throw std::runtime_error("Delete Time needs ordered nonnegative endpoints");
+        Read read(store.db());expectedHead(store,result);auto& db=store.db();
+        edit::TimeMap time(db);edit::RowEdits plan(db);CopyIds ids(db);
+        const auto beginNs=time.nanos(beginTicks),endNs=time.nanos(endTicks);
+        if(endNs<=beginNs)throw std::runtime_error("Delete Time is shorter than a nanosecond");
+        auto collapse=[](std::int64_t value,std::int64_t begin,std::int64_t end) {
+            if(value<0)throw std::runtime_error("Delete Time needs nonnegative placement");
+            return value<begin?value:value>=end?value-(end-begin):begin;
+        };
+        std::vector<std::int64_t> tracks;
+        SQLite::Statement trackRows(db,"SELECT id FROM tracks ORDER BY id");
+        while(trackRows.executeStep())tracks.push_back(trackRows.getColumn(0).getInt64());
+        // The same allocator spans trimming and relocation, including newly
+        // created right pieces. No intermediate edit is committed.
+        if(!tracks.empty())eraseRange(store,plan,ids,{tracks,{0,beginTicks},{0,endTicks}},time,referenceRate);
+        std::set<std::int64_t> candidates;
+        SQLite::Statement clips(db,"SELECT id FROM clips ORDER BY id");
+        while(clips.executeStep())candidates.insert(clips.getColumn(0).getInt64());
+        for(const auto& change:plan.changes())if(change.at("table")=="clips" && !change.at("after").is_null())
+            candidates.insert(detail::signedInteger(change.at("id")));
+        const bool properties=db.tableExists("clip_properties");OpContext context{store,db};
+        for(const auto id:candidates) {
+            auto core=plan.current("clips",id);if(!core)continue;
+            const int base=static_cast<int>(detail::signedInteger(core->at("time_base")));
+            if(base!=0 && base!=1)throw std::runtime_error("Delete Time found an unknown clip clock");
+            const char* position=base==0?"pos_ticks":"pos_ns";
+            const char* length=base==0?"length_ticks":"length_ns";
+            if(core->at(length).is_null() || detail::signedInteger(core->at(length))<0)
+                throw std::runtime_error("Delete Time needs finite nonnegative clip extents");
+            const auto first=detail::signedInteger(core->at(position)),begin=base==0?beginTicks:beginNs,end=base==0?endTicks:endNs;
+            if(first<0)throw std::runtime_error("Delete Time needs nonnegative clip placement");
+            if(first>=begin && first<end && detail::signedInteger(core->at(length))==0) {
+                deleteImage(plan,captureDeleted(context,id));continue;
+            }
+            if(first<end)continue;
+            Payload image={{"id",id},{"row",*core},{"children",Payload::object()}};
+            for(const char* child:{"audio_clips","clip_playback_details","clip_properties"}) {
+                image["children"][child]=Payload::array();
+                if(std::string(child)=="clip_properties" && !properties)continue;
+                if(const auto value=plan.current(child,id))image["children"][child].push_back(*value);
+            }
+            // Resolve the old source clock before changing its timeline origin.
+            freezeAudio(store,image,time,referenceRate);
+            image["row"][position]=first-(end-begin);plan.set("clips",id,image.at("row"));
+            if(const auto* clock=playback(image))plan.set("clip_playback_details",id,*clock);
+        }
+        for(const char* table:{"tempo_map","time_signature_map","key_map"}) {
+            std::vector<Payload> points;
+            SQLite::Statement rows(db,"SELECT id FROM "+std::string(table)+" ORDER BY pos_ticks,id");
+            while(rows.executeStep())points.push_back(*plan.current(table,rows.getColumn(0).getInt64()));
+            std::optional<std::int64_t> active;
+            for(const auto& point:points)if(detail::signedInteger(point.at("pos_ticks"))<=endTicks)
+                active=detail::signedInteger(point.at("id"));
+            for(auto point:points) {
+                const auto id=detail::signedInteger(point.at("id")),position=detail::signedInteger(point.at("pos_ticks"));
+                if(position>=beginTicks && position<endTicks && active!=id) {
+                    if(std::string(table)=="key_map") {
+                        SQLite::Statement degrees(db,"SELECT degree FROM key_map_degrees WHERE key_map_id=?");degrees.bind(1,id);
+                        while(degrees.executeStep())plan.setKey("key_map_degrees",{{"key_map_id",id},{"degree",degrees.getColumn(0).getInt64()}},std::nullopt);
+                        if(plan.current("key_map_tunings",id))plan.set("key_map_tunings",id,std::nullopt);
+                    }
+                    plan.set(table,id,std::nullopt);
+                } else if(position>=beginTicks) {
+                    point["pos_ticks"]=collapse(position,beginTicks,endTicks);plan.set(table,id,point);
+                }
+            }
+        }
+        SQLite::Statement markers(db,"SELECT id FROM markers ORDER BY id");
+        while(markers.executeStep()) {
+            const auto id=markers.getColumn(0).getInt64();auto row=*plan.current("markers",id);
+            const auto base=detail::signedInteger(row.at("time_base"));
+            if(base!=0 && base!=1)throw std::runtime_error("Delete Time found an unknown marker clock");
+            const char* position=base==0?"pos_ticks":"pos_ns";const char* length=base==0?"length_ticks":"length_ns";
+            const auto begin=base==0?beginTicks:beginNs,end=base==0?endTicks:endNs,first=detail::signedInteger(row.at(position));
+            bool remove=false;
+            if(row.at(length).is_null())remove=first>=begin && first<end;
+            else {
+                const auto extent=detail::signedInteger(row.at(length));
+                if(extent<0)throw std::runtime_error("Delete Time found a negative marker span");
+                const auto last=edit::addTime(first,extent),mapped=collapse(last,begin,end)-collapse(first,begin,end);
+                remove=mapped==0 && first>=begin && last<=end;
+                row[length]=mapped;
+            }
+            if(remove) {
+                if(db.tableExists("marker_details") && plan.current("marker_details",id))plan.set("marker_details",id,std::nullopt);
+                plan.set("markers",id,std::nullopt);
+            } else {row[position]=collapse(first,begin,end);plan.set("markers",id,row);}
+        }
+        SQLite::Statement sections(db,"SELECT id FROM arranger_sections ORDER BY id");
+        while(sections.executeStep()) {
+            const auto id=sections.getColumn(0).getInt64();auto row=*plan.current("arranger_sections",id);
+            const auto first=collapse(detail::signedInteger(row.at("start_ticks")),beginTicks,endTicks);
+            const auto last=collapse(detail::signedInteger(row.at("end_ticks")),beginTicks,endTicks);
+            if(last<=first) {
+                SQLite::Statement chain(db,"SELECT id FROM arranger_chain WHERE section_id=?");chain.bind(1,id);
+                while(chain.executeStep())plan.set("arranger_chain",chain.getColumn(0).getInt64(),std::nullopt);
+                plan.set("arranger_sections",id,std::nullopt);
+            } else {row["start_ticks"]=first;row["end_ticks"]=last;plan.set("arranger_sections",id,row);}
+        }
+        edit::deleteAutomationTime(store,plan,ids,time,beginTicks,endTicks,beginNs,endNs,referenceRate);
+        if(auto project=plan.current("project",1);project && detail::signedInteger(project->at("length_ticks"))>0) {
+            (*project)["length_ticks"]=collapse(detail::signedInteger(project->at("length_ticks")),beginTicks,endTicks);plan.set("project",1,project);
+        }
+        packet(store,result,"arranger.splice","Delete Time",0,plan);
+        SQLite::Statement loop(db,"SELECT value FROM session_state WHERE key='transport.loop'");
+        if(loop.executeStep()) {
+            const auto before=loop.getColumn(0).getString();auto value=Payload::parse(before);
+            const auto first=detail::signedInteger(value.at("start")),last=detail::signedInteger(value.at("end"));
+            if(!value.at("on").is_boolean() || first<0 || last<=first)throw std::runtime_error("stored loop region is invalid");
+            const auto mappedFirst=collapse(first,beginTicks,endTicks),mappedLast=collapse(last,beginTicks,endTicks);
+            value["start"]=mappedFirst;value["end"]=mappedLast;
+            if(mappedLast<=mappedFirst) {
+                // Until measured against Live: disable a fully removed loop,
+                // retaining a positive bracket so it can be enabled again.
+                value["on"]=false;value["end"]=edit::addTime(mappedFirst,last-first);
+            }
+            if(value!=Payload::parse(before)) {
+                if(result.requests.empty()) {
+                    OpRequest request;request.opType="arranger.splice";request.payload={{"id",0},{"changes",Payload::array()}};
+                    request.label="Delete Time";result.requests.push_back(std::move(request));
+                }
+                result.requests[0].payload["loop"]={{"before",before},{"after",value.dump()}};
+            }
+        }
+    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
+
 RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenceRate) {
     RangeCopy result;result.selection=selection;
     try {

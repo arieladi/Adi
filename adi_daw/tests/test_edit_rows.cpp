@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "temp_directory.hpp"
 #include "adi/edit_rows.hpp"
+#include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <cstdio>
+#include <algorithm>
 #include <array>
 #include <stdexcept>
 
@@ -108,5 +110,63 @@ void defaultsAndRanges() {
     check(p.apply(inserted,error) && p.apply(p.inverse(inserted),error) && p.apply(inserted,error),"parent data restores before curve ranges in both captured orders");
 }
 
+void arrangerReferences() {
+    Project p;auto& db=p.store->db();std::string error;
+    db.exec("INSERT INTO arranger_sections(id,start_ticks,end_ticks) VALUES(20,100,200);"
+        "INSERT INTO arranger_chain(id,ord,section_id,repeats) VALUES(10,0,20,3);"
+        "ALTER TABLE arranger_chain ADD COLUMN future BLOB NOT NULL DEFAULT X'';"
+        "UPDATE arranger_chain SET future=X'0001FF'");
+    const auto before=digestProject(*p.store).text;
+    edit::RowEdits plan(db);plan.set("arranger_sections",20,std::nullopt);plan.set("arranger_chain",10,std::nullopt);
+    const auto changes=plan.changes();
+    check(p.apply(changes,error) && db.execAndGet("SELECT count(*) FROM arranger_chain").getInt()==0,"captured arranger deletion includes its referring playlist row");
+    auto restore=p.inverse(changes);std::reverse(restore.begin(),restore.end());
+    check(p.apply(restore,error) && digestProject(*p.store).text==before,"arranger restoration supplies the section before its full typed reference without deferred foreign keys");
 }
-int main(){try{updatesAndConflicts();mapOrder();linksAndChildren();aliasForest();defaultsAndRanges();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+
+void compositeTuningKeys() {
+    Project p;auto& db=p.store->db();
+    db.exec("INSERT INTO tuning_systems(id,name,source) VALUES(1,'Three','edo');"
+        "INSERT INTO tuning_degrees(tuning_id,degree,cents) VALUES(1,0,0),(1,1,400),(1,2,800);"
+        "INSERT INTO key_map(id,pos_ticks,root) VALUES(31,100,0);INSERT INTO key_map_tunings VALUES(31,1);"
+        "INSERT INTO key_map_degrees VALUES(31,0),(31,1);"
+        "ALTER TABLE key_map_tunings ADD COLUMN future BLOB NOT NULL DEFAULT X'';"
+        "ALTER TABLE key_map_degrees ADD COLUMN future BLOB;"
+        "UPDATE key_map_tunings SET future=X'00ff' WHERE key_map_id=31;"
+        "UPDATE key_map_degrees SET future=CASE degree WHEN 0 THEN X'' ELSE X'0100ff' END WHERE key_map_id=31");
+    const Payload zero={{"key_map_id",31},{"degree",0}},one={{"key_map_id",31},{"degree",1}};
+    const auto before=digestProject(*p.store).text;std::string error;
+    edit::RowEdits unsafe(db);unsafe.set("key_map",31,std::nullopt);
+    check(!p.apply(unsafe.changes(),error) && digestProject(*p.store).text==before,"time edit cannot lose an unrecorded tuning binding or its composite degrees");
+    edit::RowEdits all(db);all.set("key_map",31,std::nullopt);all.set("key_map_tunings",31,std::nullopt);all.setKey("key_map_degrees",zero,std::nullopt);all.setKey("key_map_degrees",one,std::nullopt);
+    const auto removed=all.changes();
+    check(p.apply(removed,error) && db.execAndGet("SELECT count(*) FROM key_map_degrees").getInt()==0,"captured key, tuning and every degree delete as one change");
+    check(p.apply(p.inverse(removed),error) && digestProject(*p.store).text==before,"inverse restores tuning parent before composite children and retains all future bytes");
+    check(db.execAndGet("SELECT typeof(future)='blob' AND length(future)=0 FROM key_map_degrees WHERE key_map_id=31 AND degree=0").getInt()==1,"empty degree metadata remains a BLOB, not NULL");
+    edit::RowEdits create(db);create.set("key_map",32,edit::defaultRow(db,"key_map",{{"id",32},{"pos_ticks",200},{"root",2}}));
+    create.set("key_map_tunings",32,edit::defaultRow(db,"key_map_tunings",{{"key_map_id",32},{"tuning_id",1}}));
+    const Payload two={{"key_map_id",32},{"degree",2}};
+    create.setKey("key_map_degrees",two,edit::defaultRow(db,"key_map_degrees",{{"key_map_id",32},{"degree",2},{"future",Payload::binary({0,255})}}));
+    const auto inserted=create.changes();
+    check(p.apply(inserted,error) && p.apply(p.inverse(inserted),error) && p.apply(inserted,error),"new composite defaults and parent links restore in either captured packet order");
+    edit::RowEdits wrong(db);auto row=*wrong.currentKey("key_map_degrees",two);row["degree"]=1;wrong.setKey("key_map_degrees",two,row);
+    const auto unchanged=digestProject(*p.store).text;
+    check(!p.apply(wrong.changes(),error) && digestProject(*p.store).text==unchanged,"a composite identity cannot change under an existing row target");
+    edit::RowEdits partial(db);partial.setKey("key_map_degrees",zero,std::nullopt);
+    db.exec("CREATE TABLE future_link(id INTEGER PRIMARY KEY,key_map_id INTEGER,degree INTEGER,FOREIGN KEY(key_map_id,degree) REFERENCES key_map_degrees ON DELETE CASCADE) STRICT;"
+        "INSERT INTO future_link VALUES(1,31,1)");
+    const auto packet=partial.changes();
+    check(p.apply(packet,error) && db.execAndGet("SELECT count(*) FROM future_link").getInt()==1,"composite foreign key matches both columns; another degree's child is unaffected");
+    check(p.apply(p.inverse(packet),error),"composite degree deletion restores without disturbing other references");
+    db.exec("INSERT INTO future_link VALUES(2,31,0)");const auto extension=digestProject(*p.store).text;
+    check(!p.apply(packet,error) && error.find("future_link")!=std::string::npos && digestProject(*p.store).text==extension,"an actual unknown composite cascade refuses by name before data loss");
+    edit::RowEdits journalled(db);journalled.setKey("key_map_degrees",two,std::nullopt);OpRequest request;request.opType="arranger.splice";request.payload={{"id",0},{"changes",journalled.changes()}};
+    const auto musical=digestProject(*p.store).text;
+    check(OpJournal(*p.store).commit(request).ok,"arrangement op journals composite row keys as typed CBOR");
+    check(History(*p.store).undo().ok && digestProject(*p.store).text==musical && History(*p.store).redo().ok,"composite packet undo and redo restore exact musical metadata");
+    const auto path=p.store->path();p.store.reset();StoreError reopen{};p.store=Store::open(path,reopen);
+    check(p.store && History(*p.store).undo().ok && digestProject(*p.store).text==musical,"composite keys and BLOB metadata survive journal close/reopen");
+}
+
+}
+int main(){try{updatesAndConflicts();mapOrder();linksAndChildren();aliasForest();defaultsAndRanges();compositeTuningKeys();arrangerReferences();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

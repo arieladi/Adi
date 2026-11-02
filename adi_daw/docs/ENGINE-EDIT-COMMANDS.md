@@ -37,10 +37,17 @@ Available entry points:
   automation. Crossing clips split. Initial tempo/meter/key events at zero stay
   at zero. The inserted duration for linear objects uses the tempo immediately
   before the insertion; an event exactly there moves after the gap.
+- prepareDeleteTime removes a musical span across every track. Linear objects
+  move by the original integrated tempo duration. Crossing clips are trimmed;
+  source and fade clocks remain pinned. The join keeps the old end's tempo,
+  meter and key, including its tuning and degree overrides. Locators, cycles,
+  arranger references, declared end and the saved loop follow the cut. A loop
+  wholly removed is disabled, with its old positive bracket length at the join;
+  this particular Live behavior has not yet been measured.
 - preparePasteRange/prepareDuplicateRange with insertTime=true first insert
   musical time across the Set, then place the captured **material**. They are
   one undo step. The clipboard includes clip envelopes, not global automation
-  or tempo/meter/key events. Full Copy/Cut/Delete Time with a global timeline
+  or tempo/meter/key events. Full Copy/Cut/Paste/Duplicate Time with a global timeline
   clipboard remains open; callers must not label these material-only APIs as
   a complete Copy Time implementation.
 - clip.setFades edits either/both fade handles in one op. Length is ticks;
@@ -48,8 +55,8 @@ Available entry points:
   carries lengths, curve kinds, tensions and retained fade domains. The window
   can use engine/clip_fade.hpp and engine/curves.hpp to draw the same curve.
 
-Insert Silence retains original nonlinear global automation curves through
-automation_segment_ranges, including after repeated insertions. Existing point
+Insert Silence and Delete Time retain original nonlinear global automation curves through
+automation_segment_ranges, including after repeated insertions and deletions. Delete Time uses coincident\nboundary guards to preserve the two original values at the join. Existing point
 IDs (all 64 bits), flags, tension and stream trailer bytes remain unchanged;
 new boundary points have fresh captured IDs. Global point ordering remains by
 raw time, including coincident points. Future record strides requiring unknown

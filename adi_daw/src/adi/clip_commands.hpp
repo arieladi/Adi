@@ -32,6 +32,9 @@ struct ClipCut {ClipCopy copy;PreparedEdit edit;};
 /// Musical length; linear objects move by the held tempo immediately before it.
 [[nodiscard]] PreparedEdit prepareInsertSilence(Store&,std::int64_t atTicks,
                                                std::int64_t ticks,double referenceRate);
+/// Remove time across the Set, preserving the old context at the join.
+[[nodiscard]] PreparedEdit prepareDeleteTime(Store&,std::int64_t beginTicks,
+                                            std::int64_t endTicks,double referenceRate);
 struct RangeSelection {
     std::vector<std::int64_t> tracks; // source order; paste supplies matching destinations
     TimePoint begin,end;

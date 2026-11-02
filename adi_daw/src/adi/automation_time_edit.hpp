@@ -9,4 +9,7 @@ namespace adi::edit {
 void insertAutomationTime(Store&,RowEdits&,clip_edit::CopyIds&,const TimeMap&,
                           std::int64_t atTicks,std::int64_t ticks,
                           std::int64_t atNanos,std::int64_t nanos,double rate);
+void deleteAutomationTime(Store&,RowEdits&,clip_edit::CopyIds&,const TimeMap&,
+                         std::int64_t beginTicks,std::int64_t endTicks,
+                         std::int64_t beginNanos,std::int64_t endNanos,double rate);
 }

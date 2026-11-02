@@ -410,7 +410,13 @@ The arranger.splice op applies arrangement-only captured row deltas; its inverse
 swaps them. Project changes are limited to length_ticks. Before-image mismatch,
 unknown/generated columns or uncaptured foreign-key effects refuse the edit.
 UNIQUE map positions and automation ordinals move in safe order; restore creates
-parents before children. Replay uses captured values without evaluating defaults.
+parents before children, including arranger sections and tuning bindings.
+Composite key_map_degrees targets encode id as {key_map_id,degree}; existing
+single-key packets keep their integer id. Every field of a composite FK is
+matched together. Replay uses captured values without evaluating defaults.
+Delete Time uses the same captured arranger.splice packet, including an
+optional saved-loop before/after pair. Its preparation preserves the old
+end context, full tuning children and both global automation curve domains.
 
 Window callers use clip_commands.hpp and material_commands.hpp, rather
 than assembling row images. Prepared edits carry ADR-0153's expected head,

@@ -214,6 +214,38 @@ void silenceSourceClocks() {
     }
 }
 
+void deleteTimeSourceClocks() {
+    for(const auto sourceRate:{44100u,48000u})for(const auto width:{Precision::Float32,Precision::Float64})for(const bool loop:{false,true}) {
+        Fixture f(sourceRate,2,4000);f.add(1,0,800,0,2000);
+        f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(24024,60)");
+        f.store->db().exec("UPDATE clips SET content_offset_ticks=24024,fade_in_ticks=96096,fade_out_ticks=24024");
+        if(loop)f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048");
+        SessionSpec spec{2,48000,2048};spec.precision=width;f.session.graph().setFadeFrames(0);
+        check(f.session.load(*f.store,{},spec),"load Delete Time source at native precision");
+        auto render=[&](int frames) {
+            f.session.transport().locate(0);f.session.transport().play();
+            if(!f.session.clips()->prime(std::chrono::seconds(2)))throw std::runtime_error("Delete Time prime");
+            std::vector<double> result(static_cast<std::size_t>(frames)*2);
+            std::vector<float> narrow(static_cast<std::size_t>(frames)*2);
+            float* out[]={narrow.data(),narrow.data()+frames};double* out64[]={result.data(),result.data()+frames};
+            AudioIo io;io.numOut=2;io.frames=frames;
+            if(width==Precision::Float64)io.out64=out64;else io.out=out;
+            {audio::CallbackScope callback;f.session.process(io);}
+            if(width==Precision::Float32)std::copy(narrow.begin(),narrow.end(),result.begin());
+            return result;
+        };
+        const auto original=render(1200);
+        const auto prepared=clip_edit::prepareDeleteTime(*f.store,48048,72072,48000);
+        check(prepared.ok && clip_edit::commitPrepared(*f.store,prepared).ok && f.session.refresh(*f.store),"Delete Time trims a resampled source and retained fade domains");
+        const auto after=render(1000);bool exact=true;
+        for(std::size_t channel=0;channel<2;++channel)for(std::size_t position=0;position<1000;++position)
+            exact=exact && after[channel*1000+position]==original[channel*1200+(position<300?position:position+200)];
+        check(exact,"heard samples equal the original with only the selected time removed, both precisions and looping sources");
+        check(History(*f.store).undo().ok && f.session.refresh(*f.store) && render(1200)==original,"Delete Time undo restores the exact rendered PCM");
+        check(History(*f.store).redo().ok && f.session.refresh(*f.store) && render(1000)==after,"Delete Time redo restores the exact captured source clocks");
+    }
+}
+
 void seeksAndStalls() {
     Fixture f;f.add(1,0,90000,0,90000);f.load(4096);(void)f.render(4096);
     f.session.transport().locate(70003);
@@ -552,7 +584,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="properties")properties();
         if(only=="all" || only=="fades")editedFades();
-        if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();silenceSourceClocks();}
+        if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();silenceSourceClocks();deleteTimeSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
