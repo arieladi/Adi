@@ -792,7 +792,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
 // bottom of the lanes, below the drop area, whatever the scroll.
 void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
-    auto store = Store::create(dir / "foot.adi", err);
+    auto store = Store::createEmpty(dir / "foot.adi", err);
     check(store != nullptr, "the foot's project opens");
     if (!store)
         return;
@@ -1023,7 +1023,7 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
-    auto store = Store::create(dir / "mixview.adi", err);
+    auto store = Store::createEmpty(dir / "mixview.adi", err);
     check(store != nullptr, "the Mix View's project opens");
     if (!store)
         return;
