@@ -6,6 +6,31 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-02 (night) — N4 done: each window's interface zoom has its home, `window.zoom`
+
+**N4 (win's, from the window's needs table) is in this PR.** The registry gains a `Table` type
+(numbers keyed by text, each within the row's range) and one row of it, `window.zoom`, on Display &
+Input's Display section under Live's own label, Zoom Display (manual 2.3.1: the zoom "for Live's
+main window, as well a second window"; ADR-0129 d3 goes further: per window, per display). A row of
+the table is `"<window>@<display>"`, the display named by its geometry and DPI exactly as
+`ui_floating.cpp` names the monitors, so the window lane has one identity for both. The store has
+`windowZoom` and `setWindowZoom` (`store.hpp`); a zoom outside Live's 50 % to 200 % is refused and
+nothing changes. The catalogue's "Zoom Display" row moves from absent to answered. The settings row
+for a table is read-only and shows its rows; that is the one touch on the window's
+`ui_settings.cpp`: three `case` lines and a `setReadOnly`, so `/WX` holds with the new enum value.
+
+**What the window does with it:** on a launch, read `windowZoom(settings, "main", display)` for the
+display the window opens on and start there; on Ctrl/Cmd + and -, `setWindowZoom` and save; the
+same for the mixer window, the Mix View detached and each floating window under its own key. The
+window names the windows; win suggests `main`, `mixer`, `mixview` and `floating:<key>`.
+
+**Measured on MSVC in the worktree:** `tools\build.bat werror` clean, `tools/test_all.sh build`
+9906 checks across 106 suites, validators clean; `test_settings` 141 PASS
+with the new section (the registry row, legal and illegal tables, two windows on two displays, a
+relaunch, a display never seen).
+
+---
+
 ## 2026-11-02 (evening) — N14 done: the registry speaks Live's tab names, sections and labels; the director's first remarks are in `collab/director.md`
 
 **N14 (win's, from the window's needs table) is in this PR.** The settings registry
