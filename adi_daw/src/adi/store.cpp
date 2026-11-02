@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/track_recording.hpp"
 
 #include "adi/schema_sql.hpp"  // generated from docs/format/schema.sql
 #include "adi/version.hpp"
@@ -77,6 +78,8 @@ const std::vector<MigrationStep>& migrationSteps() {
         {8, {"tuning_systems", "tuning_degrees", "key_map_tunings", "key_map_degrees"}},
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
+        // 1.10: per-track Rec-Q / Play-Q and monitoring-latency policy.
+        {10, {"track_recording_options"}},
     };
     return steps;
 }
@@ -254,6 +257,13 @@ std::unique_ptr<Store> Store::create(const std::filesystem::path& path, StoreErr
 }
 
 std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path, StoreError& err) {
+    return createNewProject(path,err,"1/16",true);
+}
+std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path, StoreError& err,
+    std::string_view recordChoice,bool keepMonitoringLatency) {
+    std::vector<OpRequest> captured;
+    try {captured=trackRecordingDefaults(0,recordChoice,keepMonitoringLatency);}
+    catch(const std::exception&){err=StoreError::CannotCreate;return nullptr;}
     auto store = create(path, err);
     if (!store) return nullptr;
     try {
@@ -266,6 +276,12 @@ std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path
             "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
             "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
             "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,4,4);");
+        SQLite::Statement recording(store->db(),
+            "INSERT INTO track_recording_options(track_id,record_enabled,record_grid,keep_monitoring_latency) "
+            "SELECT id,?,?,? FROM tracks WHERE id BETWEEN 2 AND 5");
+        recording.bind(1,captured.front().payload.at("on").get<bool>()?1:0);
+        recording.bind(2,captured.front().payload.value("grid",std::string("1/16")));
+        recording.bind(3,keepMonitoringLatency?1:0);recording.exec();
         root.commit();
         return store;
     } catch (const SQLite::Exception&) {

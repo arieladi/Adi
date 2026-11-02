@@ -225,6 +225,8 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
+    src/adi/track_recording.cpp
+    src/adi/row_capture.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -526,6 +528,10 @@ add_test(NAME adi_history_tests COMMAND adi_history_tests)
 add_executable(adi_replay_tests tests/test_replay.cpp)
 target_link_libraries(adi_replay_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_replay_tests COMMAND adi_replay_tests)
+
+add_executable(adi_track_recording_tests tests/test_track_recording.cpp)
+target_link_libraries(adi_track_recording_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_track_recording_tests COMMAND adi_track_recording_tests)
 
 add_executable(adi_catalog_tests tests/test_catalog.cpp)
 target_link_libraries(adi_catalog_tests PRIVATE adi_core adi_warnings)

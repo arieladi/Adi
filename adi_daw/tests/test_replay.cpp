@@ -131,6 +131,11 @@ std::vector<OpRequest> corpus() {
     op("controller.bind", {{"id",81},{"binding",binding}}, "Relearn pan");
     op("controller.unbind", {{"id",81}}, "Unlearn pan");
     op("controller.bind", {{"id",82},{"binding",binding}}, "Keep project binding");
+    op("track.setRecordQuantize", {{"id",10},{"on",false},{"grid","1/8"}}, "Free record");
+    op("track.setPlayQuantize", {{"id",10},{"on",true},{"grid","1/16"},{"forgivenessMs",30.0}}, "Live quantize");
+    op("track.setKeepMonitoringLatency", {{"id",10},{"on",false}}, "Remove monitoring latency");
+    op("track.restoreRecording", {{"id",10}}, "Remove captured recording overrides");
+    op("track.setRecordQuantize", {{"id",10},{"on",true},{"grid","1/32"}}, "Record thirty-seconds");
     op("track.rename", {{"id", 11}, {"name", "Lead Vocal"}}, "Rename Vox");
     op("track.setMute", {{"id", 7}, {"muted", true}}, "Mute Drums");
     op("track.setMute", {{"id", 10}, {"muted", false}}, "Unmute Keys");

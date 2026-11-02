@@ -7,6 +7,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
+#include <map>
 
 namespace adi::rows {
 namespace {
@@ -171,6 +172,18 @@ Model readModel(const Store& store) {
               t.freezeMediaId = optInt(st, 16);
               m.tracks.push_back(std::move(t));
           });
+
+    std::map<std::int64_t,Track*> trackById;
+    for(auto& track:m.tracks)trackById.emplace(track.id,&track);
+    query(m,db,"track_recording_options",
+        "SELECT track_id,record_enabled,record_grid,play_enabled,play_grid,play_forgiveness_ms,keep_monitoring_latency FROM track_recording_options",
+        [&](const SQLite::Statement& statement) {
+            const auto found=trackById.find(statement.getColumn(0).getInt64());if(found==trackById.end())return;
+            auto& options=found->second->recording;
+            options.recordEnabled=flag(statement,1);options.recordGrid=statement.getColumn(2).getString();
+            options.playEnabled=flag(statement,3);options.playGrid=statement.getColumn(4).getString();
+            options.playForgivenessMs=statement.getColumn(5).getDouble();options.keepMonitoringLatency=flag(statement,6);
+        });
 
     query(m, db, "mixer_strip",
           "SELECT track_id, volume_db, pan, pan_law, width, input_gain_db, "

@@ -114,7 +114,9 @@ fs::path buildOld(const fs::path& dir, int minor, bool embeddedMedia = false) {
     SQLite::Database db(p.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
     db.exec("PRAGMA page_size = 4096");
     db.exec(ddl);
-    db.exec("INSERT INTO project(id, name) VALUES (1, 'Old Song')");
+    // Preserve an explicit stored rate across every predecessor, including
+    // 1.9 whose default already changed to 44.1 kHz.
+    db.exec("INSERT INTO project(id, name, sample_rate) VALUES (1, 'Old Song', 48000)");
     db.exec("INSERT INTO tracks(id, kind, name) VALUES (1, 'midi', 'Keys')");
     db.exec("INSERT INTO mixer_strip(track_id) VALUES (1)");
     db.exec("INSERT INTO clips(id, track_id, kind, name, time_base, pos_ticks, length_ticks) "

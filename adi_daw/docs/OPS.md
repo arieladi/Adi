@@ -356,6 +356,10 @@ silent truncation in JSON, a non-issue in CBOR.
 | `track.setSoloDefeat` | e | S | sym | P2 |
 | `track.setArm` | e | G | sym | P0 |
 | `track.setMonitorMode` | e | G | sym | P0 |
+| `track.setRecordQuantize` | e | S | pair `track.restoreRecording` | P1 |
+| `track.setPlayQuantize` | e | S | pair `track.restoreRecording` | P1 |
+| `track.setKeepMonitoringLatency` | e | S | pair `track.restoreRecording` | P1 |
+| `track.restoreRecording` | e | S | cap | P1 |
 | `track.setInput` | e | G | sym | P0 |
 | `track.setTimeBase` | e | S | sym | P0 |
 | `track.setAutomationMode` | e | N | sym | P2 |
@@ -368,6 +372,19 @@ silent truncation in JSON, a non-issue in CBOR.
 | `lane.rename` | e | N | sym | P1 |
 | `lane.setMute` | e | S | sym | P1 |
 | `lane.setCompTarget` | e | S | sym | P1 |
+
+N31 per-track policy (schema 1.10): track.setRecordQuantize {id,on,grid?},
+track.setPlayQuantize {id,on,grid?,forgivenessMs?}, and
+track.setKeepMonitoringLatency {id,on}. Grid is 1/4, 1/8, 1/16 or 1/32;
+omitted/null grid retains the selected grid while on=false selects Free.
+Play-Q forgiveness is explicit 0..1000 ms, initially zero. Each inverse is
+track.restoreRecording {id,row?}: a complete typed prior optional row, including
+unknown fields/BLOBs; omitted/null row restores absence. No coalescing discards
+those captures. Snapshot TrackNode.recording exposes every field. A caller's
+new-track batch appends trackRecordingDefaults(id, record.quantize choice,
+keepMonitoringLatency) with values already read from settings; replay never
+reads app preferences. The recording writer and live Play-Q scheduling are
+separate work, not claimed implemented by these policy ops.
 
 ### 9.3 Clips
 
@@ -650,7 +667,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**176 ops** — 66 P0, 58 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

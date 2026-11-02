@@ -19,6 +19,7 @@
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/track_recording.hpp"
 #include "adi/summing_flavors.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -2039,6 +2040,8 @@ std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
+        const auto recording=trackRecordingOps();
+        v.insert(v.end(),recording.begin(),recording.end());
         return v;
     }();
     return all;

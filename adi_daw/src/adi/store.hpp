@@ -23,6 +23,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace SQLite {
@@ -34,7 +35,7 @@ namespace adi {
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 9;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18)
+inline constexpr int kSchemaMinor = 10;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: track recording options
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {
@@ -74,6 +75,10 @@ public:
     /// history root. No ops or protected UI undo step. Window callers replace
     /// their track.create bootstrap with this single factory.
     static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&);
+    /// Capture the caller's app recording defaults for the four initial
+    /// tracks in the history root. Invalid choices create no file.
+    static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&,
+        std::string_view recordQuantize, bool keepMonitoringLatency);
 
     /// Schema-only creation for converters and low-level fixtures that supply
     /// their own project rows. Application New commands use create().

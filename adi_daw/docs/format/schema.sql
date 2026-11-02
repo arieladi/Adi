@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.0 (DRAFT — see SPEC.md, nothing is frozen)
+--  Normative schema, version 1.10 (prior minors frozen under history/)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1009;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1010;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '9'),
+    ('schema_minor',        '10'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -243,6 +243,19 @@ CREATE TABLE tracks (
     CHECK (id <> parent_id)
 ) STRICT;
 CREATE INDEX idx_tracks_parent ON tracks(parent_id, index_in_parent);
+
+-- Since 1.10: per-track recording choices (ADR-0132 d8/d10, ADR-0133).
+-- Missing rows mean fixed defaults, not a read of application preferences.
+-- A new-track producer captures explicit inherited app preferences in its ops.
+CREATE TABLE track_recording_options (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    record_enabled INTEGER NOT NULL DEFAULT 1 CHECK (record_enabled IN (0,1)),
+    record_grid TEXT NOT NULL DEFAULT '1/16' CHECK (record_grid IN ('1/4','1/8','1/16','1/32')),
+    play_enabled INTEGER NOT NULL DEFAULT 0 CHECK (play_enabled IN (0,1)),
+    play_grid TEXT NOT NULL DEFAULT '1/16' CHECK (play_grid IN ('1/4','1/8','1/16','1/32')),
+    play_forgiveness_ms REAL NOT NULL DEFAULT 0.0 CHECK (play_forgiveness_ms BETWEEN 0.0 AND 1000.0),
+    keep_monitoring_latency INTEGER NOT NULL DEFAULT 1 CHECK (keep_monitoring_latency IN (0,1))
+) STRICT;
 
 -- Take lanes / comping (SPEC §6.2). A comp is clips across lanes with an
 -- active-region selection — the model both Ableton 11+ and Cubase use.

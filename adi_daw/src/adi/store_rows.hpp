@@ -26,6 +26,8 @@
 
 #pragma once
 
+#include "adi/track_recording.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -83,6 +85,7 @@ struct Track {
     std::optional<std::string> inputRef;
     std::int64_t automationMode = 0;
     std::optional<std::int64_t> freezeMediaId;
+    TrackRecordingOptions recording;
 };
 
 /// One row, inlined onto its track by the projection (TEXT-PROJECTION §2): the

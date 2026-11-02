@@ -126,12 +126,13 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 51> kTables{{
+    static constexpr std::array<TableCoverage, 52> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
         {"time_signature_map", Coverage::Projected, ""},
         {"tracks", Coverage::Projected, ""},
+        {"track_recording_options", Coverage::Projected, "inlined on its track; fixed defaults omitted"},
         {"mixer_strip", Coverage::Projected, "inlined on its track"},
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
         {"lanes", Coverage::Projected, ""},
@@ -335,6 +336,12 @@ Tree buildTree(const rows::Model& m) {
         a.num("monitor", tr.monitorMode, 0);
         a.num("automation", tr.automationMode, 0);
         if (tr.inputRef) a.text("input", *tr.inputRef);
+        a.flag("recQuantizeOff",!tr.recording.recordEnabled);
+        a.text("recGrid",tr.recording.recordGrid,"1/16");
+        a.flag("playQuantize",tr.recording.playEnabled);
+        a.text("playGrid",tr.recording.playGrid,"1/16");
+        a.real("playForgivenessMs",tr.recording.playForgivenessMs,0.0);
+        a.flag("discardMonitoringLatency",!tr.recording.keepMonitoringLatency);
 
         if (const auto it = stripOf.find(tr.id); it != stripOf.end()) {
             const rows::MixerStrip& s = *it->second;

@@ -30,7 +30,7 @@ bool same(const ClipNode& a, const ClipNode& b) {
 
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
-        a.kind != b.kind || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
+        a.kind != b.kind || a.recording != b.recording || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
@@ -203,6 +203,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    const auto recording=readTrackRecordingOptions(store);
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -216,6 +217,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         while (st.executeStep()) {
             TrackNode t;
             t.id = st.getColumn(0).getInt64();
+            if(const auto options=recording.find(t.id);options!=recording.end())t.recording=options->second;
             t.name = st.getColumn(1).getString();
             t.muted = st.getColumn(2).getInt() != 0;
             t.soloed = st.getColumn(3).getInt() != 0;

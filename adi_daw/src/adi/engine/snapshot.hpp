@@ -27,6 +27,7 @@
 
 #include "adi/engine/publisher.hpp"
 #include "adi/textproj.hpp"
+#include "adi/track_recording.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -77,6 +78,7 @@ struct TrackNode {
     std::int64_t parent = 0;      // 0 at the top of the tree
     std::int64_t indexInParent = 0;
     std::string kind;
+    TrackRecordingOptions recording;
     std::optional<std::int64_t> color; // absent is distinct from explicit zero
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;
