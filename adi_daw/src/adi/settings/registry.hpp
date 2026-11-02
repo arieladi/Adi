@@ -37,7 +37,10 @@ struct Setting {
     std::string key;        // "audio.bufferSize" -- permanent, like an op name
     Type type = Type::Bool;
     Scope scope = Scope::App;
-    std::string page;       // "Audio", "Look & Feel": the left-hand list (R-01)
+    std::string page;       // the left-hand list (R-01): Live's ten tab names for Live's
+                            // tabs ("Display & Input" .. "Licenses & Updates"), ADI's own after
+    std::string section;    // Live's section within the tab ("Audio Device", "Latency");
+                            // empty: the tab's own group. ADI's pages have none.
     std::string label;      // what the page shows
     std::string help;       // what the Find box searches with the label (R-02)
     Value defaultValue;
@@ -58,7 +61,8 @@ struct Setting {
 [[nodiscard]] const std::vector<Setting>& registry();
 [[nodiscard]] const Setting* find(std::string_view key);
 
-/// The pages, in the order the Settings window lists them (R-01).
+/// The pages, in the order the Settings window lists them (R-01): Live's ten tabs in
+/// Live's order, then ADI's own in the registry's order (ADR-0203 d11).
 [[nodiscard]] std::vector<std::string> pages();
 
 /// R-02: every setting whose label, help text or key contains each word of

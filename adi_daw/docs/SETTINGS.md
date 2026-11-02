@@ -12,7 +12,12 @@ One typed table of every setting:
 - **key**, e.g. `audio.bufferSize`. Permanent, like an op name.
 - **type**: bool, int, real, text, choice, path or path list.
 - **scope** (R-03 badge): App, Project or Device.
-- **page**: the left-hand list (R-01).
+- **page**: the left-hand list (R-01). Live's ten tab names for the settings Live has
+  (ADR-0203 d11; Live 12 manual 2.3), in Live's order, then ADI's own pages.
+- **section**: Live's section within the tab ("Audio Device", "Latency", "Plug-In
+  Windows"); empty for the tab's own group. A setting of ADI's on a Live tab has a
+  section only where win placed it beside Live's nearest thing (marked in
+  `liveSections`, to strike).
 - **label** and **help**, which the Find box searches (R-02). Every word of the
   query must match somewhere in the label, help, key or page, ignoring case.
 - **default**, the legal **choices** or **range**, the **op** for a Project
@@ -31,13 +36,13 @@ unknown key from a caller.
 
 | Key | Page | Default | Ruling |
 |---|---|---|---|
-| `lookfeel.zoomOnSelection` | Look & Feel | on | d2 as amended by ADR-0203: Ctrl/Cmd + wheel zooms around the selection, as Live does; off zooms around the cursor |
+| `lookfeel.zoomOnSelection` | Display & Input | on | d2 as amended by ADR-0203: Ctrl/Cmd + wheel zooms around the selection, as Live does; off zooms around the cursor |
 | `audio.silentResampling` | Audio | off | d3: resample without the mismatch bar |
 | `audio.bufferSize` | Audio | 512 | d5: 64, 128, 256, 512, 1024, 2048 or 4096. No 32 and no automatic switching |
 | `audio.driverType` | Audio | system default | d5: ASIO is one choice, opened through JUCE's wrapper. No raw bypass is offered |
 | `audio.linuxBackend` | Audio | PipeWire/JACK | d4: ALSA or PipeWire/JACK |
 | `audio.jackTransportSync` | Audio | off | d4 |
-| `plugins.clapFolders`, `plugins.lv2Folders` | Plug-ins | none | d4: custom folders on Linux |
+| `plugins.clapFolders`, `plugins.lv2Folders` | Plug-Ins | none | d4: custom folders on Linux |
 
 ADR-0145 names the sizes offered, not the default. The default is 512, a
 ruling (ADR-0203); it was 256 before. The tracking sizes (64 and 128) are two
@@ -85,7 +90,7 @@ agent changes an application setting (ADR-0125 d1):
   tooltip delay, follow playhead, Info View, meter peak hold, Zoom on
   Selection, modifier keys, snap.
 - **A structural "never" that no mark overrides** (`agentForbidden`): any path,
-  anything on the Audio, Plug-ins, Privacy or AI pages, and anything not App
+  anything on the Audio, Engine, Plug-Ins or AI pages or in the Privacy section, and anything not App
   scope. The test checks that no whitelisted setting is one of these.
 - Every accepted change is logged (§3).
 
@@ -151,31 +156,32 @@ A row is named `<section> / <setting>`: the section as the catalogue heads it,
 and the setting cell up to its first ` (`. Two settings, PTP and AudioGridder
 servers, appear in two sections each, so the section is part of the name.
 
-**226 settings on 21 pages:**
+**226 settings on 22 pages**, Live's ten tabs first (ADR-0203 d11; N14 of the window log):
 
 | Page | Settings | Notes |
 |---|---|---|
-| Look & Feel | 48 | Live's Display & Input and Theme & Colors |
-| Audio | 27 | 2 Device scope |
-| Record | 18 | |
-| MIDI | 25 | 8 Device scope (per port) |
-| Editing | 20 | |
-| Plug-ins | 11 | 2 Device scope (per plug-in) |
+| Display & Input | 19 | Live's sections Display, Display Options, Navigation and Keyboard, Mouse and Pen Input |
+| Theme & Colors | 29 | Theme, Customization, Track and Clip Colors; the waveform, fade and meter looks are ADI's, unsectioned |
+| Audio | 26 | Audio Device, Sample Rate, Latency, Test; 2 Device scope |
+| Link | 9 | Live's two switches under Link; PTP; the LAN audio node, labelled as not Link Audio |
+| Tempo & MIDI | 25 | Control Surface, MIDI Ports (8 Device scope, per port); the chase and filter switches are ADI's |
+| File & Folder | 12 | Sample Editor, Decoding Cache |
 | Library | 5 | |
-| Privacy | 4 | |
+| Plug-Ins | 12 | Plug-In Sources, Plug-In Windows; 2 Device scope (per plug-in); AudioGridder discovery |
+| Record, Warp & Launch | 19 | Record, Warp/Fades, Launch; Keep Monitoring Latency in Recorded Audio lives here, as Live's |
+| Licenses & Updates | 6 | the two update settings; Privacy is its section |
+| Editing | 20 | |
 | AI | 6 | |
-| File & Folder | 12 | |
 | Export | 7 | the export dialog's defaults (A7-03 c, ADR-0203) |
 | Mixing | 4 | |
 | Transport | 5 | |
-| Sync | 13 | |
+| Sync | 3 | the sync source and tempo responsiveness (Bitwig); Link's own settings are on Link |
 | Engine | 1 | |
-| Updates | 2 | |
 | Windows | 3 | |
 | Devices | 4 | |
 | Music | 5 | |
 | Shortcuts | 2 | |
-| Project | 4 | |
+| Project | 4 | `project.sampleRate` is drawn on Audio's Sample Rate section |
 
 **The sample rate.** `project.sampleRate` and `audio.sampleRate` are choices
 from ADR-0157's ladder: 44.1 / 48, 88.2 / 96, 176.4 / 192, 352.8 / 384 and

@@ -187,7 +187,7 @@ bool agentForbidden(const Setting& s) {
     // virtual device), plug-in folders and scanning, privacy, the agent's
     // own settings, and anything that is not an App setting at all.
     return s.scope != Scope::App || s.type == Type::Path || s.type == Type::PathList ||
-           s.page == "Audio" || s.page == "Engine" || s.page == "Plug-ins" || s.page == "Privacy" ||
+           s.page == "Audio" || s.page == "Engine" || s.page == "Plug-Ins" || s.section == "Privacy" ||
            s.page == "AI";
 }
 

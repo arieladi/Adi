@@ -57,101 +57,222 @@ Setting device(std::string key, Type type, std::string page, std::string label, 
     return s;
 }
 
+// Live's sections within its tabs (Live 12 manual 2.3; the Audio sections as Live 11 shows them,
+// collab/window/parity-settings.md row 4). A setting Live has sits in Live's section; the three
+// placements marked "win's" are ADI's settings on a Live tab, put where Live keeps the nearest
+// thing, for the director to strike. A key not listed has no section: the tab's own group.
+void liveSections(std::vector<Setting>& r) {
+    static const std::vector<std::pair<const char*, const char*>> table = {
+        // Display & Input
+        {"lookfeel.language", "Display"},
+        {"lookfeel.zoomOnSelection", "Display"},  // win's: Live's Zoom Display sits here
+        {"lookfeel.focusOutline", "Display Options"},
+        {"lookfeel.scrollBars", "Display Options"},
+        {"lookfeel.followMode", "Display Options"},
+        {"lookfeel.followPlayhead", "Display Options"},
+        {"lookfeel.showLabels", "Display Options"},
+        {"lookfeel.showTooltips", "Display Options"},  // win's: Live's tooltips switch is here
+        {"lookfeel.tooltipDelayMs", "Display Options"},
+        {"lookfeel.showInfoView", "Display Options"},
+        {"lookfeel.tabMovesFocus", "Navigation and Keyboard"},
+        {"lookfeel.wrapTabNavigation", "Navigation and Keyboard"},
+        {"editing.arrowKeysMoveClips", "Navigation and Keyboard"},
+        {"lookfeel.penTabletMode", "Mouse and Pen Input"},
+        {"lookfeel.permanentScrubAreas", "Mouse and Pen Input"},
+        {"lookfeel.knobMode", "Mouse and Pen Input"},  // win's: the knob, slider and value-box modes
+        {"lookfeel.sliderMode", "Mouse and Pen Input"},
+        {"lookfeel.valueBoxMode", "Mouse and Pen Input"},
+        {"lookfeel.wheelChangesParameters", "Mouse and Pen Input"},
+        // Theme & Colors
+        {"lookfeel.theme", "Theme"},
+        {"lookfeel.paletteTone", "Theme"},
+        {"lookfeel.contrast", "Theme"},
+        {"lookfeel.gridIntensity", "Customization"},
+        {"lookfeel.brightness", "Customization"},
+        {"lookfeel.colorIntensity", "Customization"},
+        {"lookfeel.hue", "Customization"},
+        {"lookfeel.autoTrackColor", "Track and Clip Colors"},
+        {"lookfeel.clipColor", "Track and Clip Colors"},
+        {"lookfeel.accentColor", "Track and Clip Colors"},
+        // Audio
+        {"audio.driverType", "Audio Device"},
+        {"audio.inputDevice", "Audio Device"},
+        {"audio.outputDevice", "Audio Device"},
+        {"audio.channelConfig", "Audio Device"},
+        {"audio.outputRoles", "Audio Device"},
+        {"audio.sampleRate", "Sample Rate"},
+        {"project.sampleRate", "Sample Rate"},
+        {"audio.srcQuality", "Sample Rate"},
+        {"audio.silentResampling", "Sample Rate"},
+        {"audio.bufferSize", "Latency"},
+        {"audio.driverErrorCompensationMs", "Latency"},
+        {"audio.testTone", "Test"},
+        {"audio.testToneVolumeDb", "Test"},
+        {"audio.testToneFrequencyHz", "Test"},
+        {"audio.cpuSimulatorPercent", "Test"},
+        // Link (ADR-0203 d11: PTP beside Link; the LAN audio node, named as not Link Audio)
+        {"sync.showLinkToggle", "Link"},
+        {"sync.linkStartStopSync", "Link"},
+        {"sync.ptpEnabled", "PTP"},
+        {"sync.ptpDomain", "PTP"},
+        {"sync.ptpAdapters", "PTP"},
+        {"sync.ptpGrandmasters", "PTP"},
+        {"sync.lanJitterBufferMs", "LAN Audio (not Link Audio)"},
+        {"sync.lanCodec", "LAN Audio (not Link Audio)"},
+        {"sync.lanBitrateKbps", "LAN Audio (not Link Audio)"},
+        // Tempo & MIDI
+        {"midi.controlSurfaceScripts", "Control Surface"},
+        {"midi.autoAddControllers", "Control Surface"},
+        {"midi.takeoverMode", "Control Surface"},
+        // File & Folder
+        {"files.sampleEditor", "Sample Editor"},
+        {"files.sampleEditorOpens", "Sample Editor"},
+        {"cache.maxSizeMb", "Decoding Cache"},
+        {"cache.minFreeSpaceMb", "Decoding Cache"},
+        {"cache.folder", "Decoding Cache"},
+        // Plug-Ins
+        {"plugins.useVst3SystemFolders", "Plug-In Sources"},
+        {"plugins.vst3Folders", "Plug-In Sources"},
+        {"plugins.clapFolders", "Plug-In Sources"},
+        {"plugins.lv2Folders", "Plug-In Sources"},
+        {"plugins.preferClap", "Plug-In Sources"},
+        {"plugins.autoOpenWindows", "Plug-In Windows"},
+        {"plugins.multipleWindows", "Plug-In Windows"},
+        {"plugins.autoHideWindows", "Plug-In Windows"},
+        {"plugins.editorsAlwaysOnTop", "Plug-In Windows"},
+        {"plugins.windowScale", "Plug-In Windows"},
+        // Record, Warp & Launch
+        {"record.writeBext", "Record"},
+        {"record.writeIxml", "Record"},
+        {"record.exclusiveArm", "Record"},
+        {"record.exclusiveSolo", "Record"},
+        {"record.clipUpdateRate", "Record"},
+        {"record.quantize", "Record"},
+        {"record.retrospectiveSeconds", "Record"},
+        {"record.autoArmOnSelect", "Record"},
+        {"record.discardIncompleteTakes", "Record"},
+        {"record.completeTakePercent", "Record"},
+        {"record.snapMidiPartsToBars", "Record"},
+        {"audio.keepMonitoringLatency", "Record"},
+        {"record.shortSampleMode", "Warp/Fades"},
+        {"record.importAutoWarp", "Warp/Fades"},
+        {"record.defaultWarpMode", "Warp/Fades"},
+        {"record.importEdgeFades", "Warp/Fades"},
+        {"record.warpDetectTempoChanges", "Warp/Fades"},
+        {"record.warpInsertFrom", "Warp/Fades"},
+        {"record.startPlaybackWithRecord", "Launch"},
+        // Licenses & Updates (ADR-0203 d11: Privacy is a group of it)
+        {"privacy.diagnosticLog", "Privacy"},
+        {"privacy.crashReports", "Privacy"},
+        {"privacy.usageStatistics", "Privacy"},
+        {"settings.logChanges", "Privacy"},
+    };
+    for (auto& s : r) {
+        if (s.key.rfind("midi.port.", 0) == 0) s.section = "MIDI Ports";
+        if (s.key.rfind("lookfeel.trackColor.", 0) == 0) s.section = "Track and Clip Colors";
+    }
+    for (const auto& [key, section] : table) {
+        const auto at = std::find_if(r.begin(), r.end(), [key = key](const Setting& s) { return s.key == key; });
+        if (at != r.end()) at->section = section;
+    }
+}
+
 // ADR-0156: every row of docs/SETTINGS-CATALOGUE.md that is a setting ADI has.
 // catalogue.cpp says which row each key answers, and why the others are absent.
 void catalogueSettings(std::vector<Setting>& r) {
-    const std::string lf = "Look & Feel";
+    const std::string di = "Display & Input";
+    const std::string tc = "Theme & Colors";
     // --- Display & Input (catalogue II §1) ----------------------------------------------------
-    r.push_back(make("lookfeel.focusOutline", Type::Bool, lf, "Outline view in focus",
+    r.push_back(make("lookfeel.focusOutline", Type::Bool, di, "Outline View in Focus",
                      "Outline the view that has keyboard focus, with the view indicator of ADR-0112.", true));
-    r.push_back(choice("lookfeel.scrollBars", lf, "Scroll bars", "Show scroll bars always, or only on hover.",
+    r.push_back(choice("lookfeel.scrollBars", di, "Scroll bars", "Show scroll bars always, or only on hover.",
                        {"always", "hover"}, "always"));
-    r.push_back(choice("lookfeel.followMode", lf, "Follow behaviour",
+    r.push_back(choice("lookfeel.followMode", di, "Follow Behavior",
                        "How a view follows the playhead: by page or by scrolling, per view "
                        "(Bitwig's playhead follow mode).",
                        {"page", "scroll"}, "page"));
-    r.push_back(make("lookfeel.showLabels", Type::Bool, lf, "Show interface labels",
+    r.push_back(make("lookfeel.showLabels", Type::Bool, di, "Show User Interface Labels",
                      "Show the labels beside controls.", true));
-    r.push_back(make("lookfeel.tabMovesFocus", Type::Bool, lf, "Tab key moves focus",
+    r.push_back(make("lookfeel.tabMovesFocus", Type::Bool, di, "Use Tab Key to Move Focus",
                      "The Tab key moves keyboard focus between controls.", false));
-    r.push_back(make("lookfeel.wrapTabNavigation", Type::Bool, lf, "Wrap Tab navigation",
+    r.push_back(make("lookfeel.wrapTabNavigation", Type::Bool, di, "Wrap Tab Navigation",
                      "Tab from the last control returns to the first.", true));
-    r.push_back(make("editing.arrowKeysMoveClips", Type::Bool, lf, "Move clips with arrow keys",
+    r.push_back(make("editing.arrowKeysMoveClips", Type::Bool, di, "Move Clips with Arrow Keys",
                      "The arrow keys move the selected clips, not only the selection.", true));
-    r.push_back(make("lookfeel.penTabletMode", Type::Bool, lf, "Pen tablet mode",
+    r.push_back(make("lookfeel.penTabletMode", Type::Bool, di, "Pen Tablet Mode",
                      "Absolute pen input; the cursor is not repositioned while a knob moves "
                      "(REAPER's pen-safe mode, folded in).",
                      false));
-    r.push_back(make("lookfeel.permanentScrubAreas", Type::Bool, lf, "Permanent scrub areas",
+    r.push_back(make("lookfeel.permanentScrubAreas", Type::Bool, di, "Permanent Scrub Areas",
                      "Clicking in the scrub area above a track always scrubs.", true));
-    r.push_back(choice("lookfeel.valueBoxMode", lf, "Value box",
+    r.push_back(choice("lookfeel.valueBoxMode", di, "Value box",
                        "A value box edits by dragging, or opens its text on click (R-09). Live's is drag.",
                        {"drag", "text"}, "drag"));
-    r.push_back(choice("lookfeel.sliderMode", lf, "Slider mode",
+    r.push_back(choice("lookfeel.sliderMode", di, "Slider mode",
                        "How a slider takes a click: jump to it, touch, ramp or relative (R-09).",
                        {"jump", "touch", "ramp", "relative"}, "jump"));
-    r.push_back(choice("lookfeel.wheelChangesParameters", lf, "Mouse wheel changes parameters",
+    r.push_back(choice("lookfeel.wheelChangesParameters", di, "Mouse wheel changes parameters",
                        "Whether the mouse wheel moves a control under it. Never, as Live: the "
                        "wheel only scrolls (ADR-0203). Cubase's three-way choice stays: not in "
                        "scrollable areas, or always.",
                        {"never", "notInScrollableAreas", "always"}, "never"));
-    r.push_back(make("lookfeel.showTooltips", Type::Bool, lf, "Floating tooltips",
+    r.push_back(make("lookfeel.showTooltips", Type::Bool, di, "Floating tooltips",
                      "Show floating tooltips after the delay; the Info View is instant (ADR-0131).", true));
 
     // --- Theme & Colors (catalogue II §2) -----------------------------------------------------
-    r.push_back(choice("lookfeel.paletteTone", lf, "Palette tone", "The theme's tone.",
+    r.push_back(choice("lookfeel.paletteTone", tc, "Palette tone", "The theme's tone.",
                        {"neutral", "cool", "warm"}, "neutral"));
-    r.push_back(ranged("lookfeel.contrast", Type::Int, lf, "Contrast",
+    r.push_back(ranged("lookfeel.contrast", Type::Int, tc, "Contrast",
                        "Interface contrast, a slider rather than a high-contrast switch (Bitwig).",
                        0, 0, 100));
-    r.push_back(ranged("lookfeel.gridIntensity", Type::Int, lf, "Grid line intensity",
+    r.push_back(ranged("lookfeel.gridIntensity", Type::Int, tc, "Grid Line Intensity",
                        "How strongly grid lines are drawn.", 50, 0, 100));
-    r.push_back(ranged("lookfeel.brightness", Type::Int, lf, "Brightness", "Interface brightness.", 50, 0, 100));
-    r.push_back(ranged("lookfeel.colorIntensity", Type::Int, lf, "Colour intensity",
+    r.push_back(ranged("lookfeel.brightness", Type::Int, tc, "Brightness", "Interface brightness.", 50, 0, 100));
+    r.push_back(ranged("lookfeel.colorIntensity", Type::Int, tc, "Color Intensity",
                        "Saturation of track and clip colours.", 50, 0, 100));
-    r.push_back(ranged("lookfeel.hue", Type::Int, lf, "Hue", "Rotates the theme's hues, in degrees.", 0, -180, 180));
-    r.push_back(make("lookfeel.autoTrackColor", Type::Bool, lf, "Auto-assign track colours",
+    r.push_back(ranged("lookfeel.hue", Type::Int, tc, "Hue", "Rotates the theme's hues, in degrees.", 0, -180, 180));
+    r.push_back(make("lookfeel.autoTrackColor", Type::Bool, tc, "Auto-Assign Track Colors",
                      "Live's switch: a new track takes the previous track's colour plus one; off: "
                      "the default colour (ADR-0203).",
                      true));
-    r.push_back(choice("lookfeel.clipColor", lf, "Clip colour", "New clips take the track's colour, or a random one.",
+    r.push_back(choice("lookfeel.clipColor", tc, "Clip Color", "New clips take the track's colour, or a random one.",
                        {"track", "random"}, "track"));
-    r.push_back(make("lookfeel.accentColor", Type::Text, lf, "Accent colour",
+    r.push_back(make("lookfeel.accentColor", Type::Text, tc, "Accent colour",
                      "One colour that marks the selection (Cubase). Empty: the theme's own.", ""));
     for (const char* kind : {"audio", "midi", "instrument", "group", "return", "master", "vca"})
-        r.push_back(make(std::string("lookfeel.trackColor.") + kind, Type::Text, lf,
+        r.push_back(make(std::string("lookfeel.trackColor.") + kind, Type::Text, tc,
                          std::string("Default colour: ") + kind + " tracks",
                          "The colour a new track of this kind gets (Cubase). Empty: the theme's.", ""));
-    r.push_back(make("lookfeel.waveformPerceptual", Type::Bool, lf, "Perceptual waveforms",
+    r.push_back(make("lookfeel.waveformPerceptual", Type::Bool, tc, "Perceptual waveforms",
                      "Draw waveforms on a perceptual scale (Bitwig).", false));
-    r.push_back(ranged("lookfeel.waveformBrightness", Type::Int, lf, "Waveform brightness",
+    r.push_back(ranged("lookfeel.waveformBrightness", Type::Int, tc, "Waveform brightness",
                        "Brightness of waveforms in clips (Cubase).", 50, 0, 100));
-    r.push_back(choice("lookfeel.showVolumeCurves", lf, "Event volume curves",
+    r.push_back(choice("lookfeel.showVolumeCurves", tc, "Event volume curves",
                        "Show a clip's volume curve always or on hover (ADR-0115).", {"always", "hover"}, "hover"));
-    r.push_back(choice("lookfeel.showFades", lf, "Fades", "Show clip fades always or on hover (ADR-0115).",
+    r.push_back(choice("lookfeel.showFades", tc, "Fades", "Show clip fades always or on hover (ADR-0115).",
                        {"always", "hover"}, "always"));
-    r.push_back(choice("lookfeel.volumeHandle", lf, "Clip volume handle",
+    r.push_back(choice("lookfeel.volumeHandle", tc, "Clip volume handle",
                        "Show the clip volume handle always, never or on hover (ADR-0115).",
                        {"always", "never", "hover"}, "hover"));
-    r.push_back(ranged("lookfeel.meterPeakHoldMs", Type::Int, lf, "Meter peak hold time",
+    r.push_back(ranged("lookfeel.meterPeakHoldMs", Type::Int, tc, "Meter peak hold time",
                        "Milliseconds a peak is held (R-10).", 1500, 0, 30000));
-    r.push_back(ranged("lookfeel.meterDecayDbPerSecond", Type::Real, lf, "Meter fall-back rate",
+    r.push_back(ranged("lookfeel.meterDecayDbPerSecond", Type::Real, tc, "Meter fall-back rate",
                        "How fast a meter falls, in dB per second (R-10).", 20.0, 1, 200));
-    r.push_back(make("lookfeel.meterStickyClip", Type::Bool, lf, "Sticky clip indicators",
+    r.push_back(make("lookfeel.meterStickyClip", Type::Bool, tc, "Sticky clip indicators",
                      "A clip light stays on until clicked (R-10).", true));
-    r.push_back(ranged("lookfeel.meterFloorDb", Type::Int, lf, "Meter floor",
+    r.push_back(ranged("lookfeel.meterFloorDb", Type::Int, tc, "Meter floor",
                        "The lowest level a meter shows, in dB (R-10).", -70, -144, -20));
-    r.push_back(make("lookfeel.hiDpi", Type::Bool, lf, "HiDPI",
+    r.push_back(make("lookfeel.hiDpi", Type::Bool, tc, "HiDPI",
                      "Draw at the display's full resolution (REAPER's HiDPI mode).", true));
-    r.push_back(choice("lookfeel.dialogPosition", lf, "Dialog position",
+    r.push_back(choice("lookfeel.dialogPosition", tc, "Dialog position",
                        "Where dialogs open: centred on the window, or at the mouse.", {"center", "mouse"}, "center"));
 
     // --- Audio (catalogue II §3) ----------------------------------------------------------------
-    r.push_back(make("audio.inputDevice", Type::Text, "Audio", "Audio input device",
+    r.push_back(make("audio.inputDevice", Type::Text, "Audio", "Audio Input Device",
                      "The input device. Empty: use the system device.", ""));
-    r.push_back(make("audio.outputDevice", Type::Text, "Audio", "Audio output device",
+    r.push_back(make("audio.outputDevice", Type::Text, "Audio", "Audio Output Device",
                      "The output device. Empty: use the system device.", ""));
-    r.push_back(device("audio.channelConfig", Type::Text, "Audio", "Channel configuration",
+    r.push_back(device("audio.channelConfig", Type::Text, "Audio", "Channel Configuration",
                        "The device's enabled inputs and outputs and their names (Live's Input and "
                        "Output Config). Stored with the device.",
                        ""));
@@ -159,22 +280,22 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "Each output pair's role: speakers, headphones or output (Bitwig). The cue "
                        "bus plays to the headphones (R-11). Stored with the device.",
                        ""));
-    r.push_back(choice("audio.sampleRate", "Audio", "Sample rate",
+    r.push_back(choice("audio.sampleRate", "Audio", "In/Out Sample Rate",
                        "The rate the device is opened at: 44.1 to 768 kHz, nothing lower "
                        "(ADR-0157). Default 44.1 kHz (ADR-0203). A project at another rate "
                        "raises the mismatch bar.",
                        sampleRateLadder(), 44100));
-    r.push_back(choice("audio.srcQuality", "Audio", "Sample-rate conversion",
+    r.push_back(choice("audio.srcQuality", "Audio", "Default SR & Pitch Conversion",
                        "Default quality of sample-rate and pitch conversion, as Live.", {"normal", "high"}, "high"));
-    r.push_back(ranged("audio.driverErrorCompensationMs", Type::Real, "Audio", "Driver error compensation",
+    r.push_back(ranged("audio.driverErrorCompensationMs", Type::Real, "Audio", "Driver Error Compensation",
                        "Milliseconds added to what the driver reports; Measure round trip fills it in.",
                        0.0, -100, 100));
-    r.push_back(make("audio.testTone", Type::Bool, "Audio", "Test tone", "Play a sine tone to the output.", false));
-    r.push_back(ranged("audio.testToneVolumeDb", Type::Real, "Audio", "Tone volume",
+    r.push_back(make("audio.testTone", Type::Bool, "Audio", "Test Tone", "Play a sine tone to the output.", false));
+    r.push_back(ranged("audio.testToneVolumeDb", Type::Real, "Audio", "Tone Volume",
                        "The test tone's level, in dB.", -36.0, -70, 0));
-    r.push_back(ranged("audio.testToneFrequencyHz", Type::Int, "Audio", "Tone frequency",
+    r.push_back(ranged("audio.testToneFrequencyHz", Type::Int, "Audio", "Tone Frequency",
                        "The test tone's frequency, in Hz.", 440, 20, 20000));
-    r.push_back(ranged("audio.cpuSimulatorPercent", Type::Int, "Audio", "CPU usage simulator",
+    r.push_back(ranged("audio.cpuSimulatorPercent", Type::Int, "Audio", "CPU Usage Simulator",
                        "A synthetic load, the benchmark's (BENCHMARKS.md), to test how far the "
                        "buffer holds.",
                        0, 0, 100));
@@ -208,20 +329,20 @@ void catalogueSettings(std::vector<Setting>& r) {
 
     // --- File & Folder (catalogue II §6) ----------------------------------------------------------
     const std::string ff = "File & Folder";
-    r.push_back(make("files.sampleEditor", Type::Path, ff, "Sample editor",
+    r.push_back(make("files.sampleEditor", Type::Path, ff, "Sample Editor",
                      "The external editor Edit opens a sample in.", ""));
     r.push_back(choice("files.sampleEditorOpens", ff, "Sample editor opens",
                        "Open a copy of the sample, or the file in place.", {"copy", "inPlace"}, "copy"));
-    r.push_back(ranged("cache.maxSizeMb", Type::Int, ff, "Maximum cache size",
+    r.push_back(ranged("cache.maxSizeMb", Type::Int, ff, "Maximum Cache Size",
                        "Decoding cache: decoded audio, analysis and peaks. The least recently "
                        "used goes first, never a file in use (ADR-0156). In MB; default 20 GB "
                        "(ADR-0203).",
                        20480, 0, 16777216));
-    r.push_back(ranged("cache.minFreeSpaceMb", Type::Int, ff, "Minimum free space",
+    r.push_back(ranged("cache.minFreeSpaceMb", Type::Int, ff, "Minimum Free Space",
                        "Decoding cache: the free space kept on its disk; files are evicted to "
                        "keep it (ADR-0156). In MB.",
                        2048, 0, 16777216));
-    r.push_back(make("cache.folder", Type::Path, ff, "Cache folder",
+    r.push_back(make("cache.folder", Type::Path, ff, "Cache Folder",
                      "Where the decoding cache lives. Empty: the application cache folder (ADR-0149).", ""));
     r.push_back(make("files.projectsFolder", Type::Path, ff, "Default projects folder",
                      "Where new projects are saved (REAPER).", ""));
@@ -272,7 +393,7 @@ void catalogueSettings(std::vector<Setting>& r) {
                        -1.0, -12, 0));
 
     // --- Library (catalogue II §7) ---------------------------------------------------------------
-    r.push_back(choice("library.collectOnExport", "Library", "Collect files on export",
+    r.push_back(choice("library.collectOnExport", "Library", "Collect Files on Export",
                        "Same three, same wording as Live.", {"always", "ask", "never"}, "ask"));
     r.push_back(make("library.backgroundIndexing", Type::Bool, "Library", "Index content folders in the background",
                      "Keep the browser's index current while ADI runs.", true));
@@ -281,108 +402,108 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "nothing Live would show is hidden; ADR-0203).",
                        0, 0, 1000000));
 
-    // --- Plug-ins (catalogue II §8) --------------------------------------------------------------
-    r.push_back(make("plugins.useVst3SystemFolders", Type::Bool, "Plug-ins", "Use VST3 system folders",
+    // --- Plug-Ins (catalogue II §8) --------------------------------------------------------------
+    r.push_back(make("plugins.useVst3SystemFolders", Type::Bool, "Plug-Ins", "Use VST3 Plug-In System Folders",
                      "Scan the format's default locations, as well as the custom folders.", true));
-    r.push_back(make("plugins.autoOpenWindows", Type::Bool, "Plug-ins", "Auto-open plug-in windows",
+    r.push_back(make("plugins.autoOpenWindows", Type::Bool, "Plug-Ins", "Auto-Open Plug-In Windows",
                      "Open a plug-in's window when it is added.", true));
-    r.push_back(make("plugins.multipleWindows", Type::Bool, "Plug-ins", "Multiple plug-in windows",
+    r.push_back(make("plugins.multipleWindows", Type::Bool, "Plug-Ins", "Multiple Plug-In Windows",
                      "Allow more than one plug-in window open at once.", false));
-    r.push_back(make("plugins.autoHideWindows", Type::Bool, "Plug-ins", "Auto-hide plug-in windows",
+    r.push_back(make("plugins.autoHideWindows", Type::Bool, "Plug-Ins", "Auto-Hide Plug-In Windows",
                      "Show only the selected track's plug-in windows.", true));
-    r.push_back(make("plugins.editorsAlwaysOnTop", Type::Bool, "Plug-ins", "Plug-in windows always on top",
+    r.push_back(make("plugins.editorsAlwaysOnTop", Type::Bool, "Plug-Ins", "Plug-in windows always on top",
                      "Third-party plug-in windows float above ADI (ADR-0076).", true));
-    r.push_back(device("plugins.windowScale", Type::Choice, "Plug-ins", "Plug-in window scaling",
+    r.push_back(device("plugins.windowScale", Type::Choice, "Plug-Ins", "Plug-in window scaling",
                        "An override for the one plug-in that draws wrong on HiDPI: 100, 150 or "
                        "200 %. Stored with the device.",
                        "auto", {"auto", 100, 150, 200}));
-    r.push_back(device("plugins.ignoreBroadcasts", Type::Bool, "Plug-ins", "Ignore parameter broadcasts",
+    r.push_back(device("plugins.ignoreBroadcasts", Type::Bool, "Plug-Ins", "Ignore parameter broadcasts",
                        "For the plug-in that floods: its unsolicited parameter changes are "
                        "dropped instead of becoming ops (ADR-0110). Stored with the device.",
                        false));
 
     // --- Record, Warp & Launch (catalogue II §9) ----------------------------------------------------
-    r.push_back(make("record.writeBext", Type::Bool, "Record", "Broadcast Wave (bext)",
+    r.push_back(make("record.writeBext", Type::Bool, "Record, Warp & Launch", "Broadcast Wave (bext)",
                      "Write timecode, description and originator into recordings (ADR-0132 d2).", false));
-    r.push_back(make("record.writeIxml", Type::Bool, "Record", "iXML", "Write an iXML chunk into recordings.", false));
-    r.push_back(make("record.exclusiveArm", Type::Bool, "Record", "Exclusive arm",
+    r.push_back(make("record.writeIxml", Type::Bool, "Record, Warp & Launch", "iXML", "Write an iXML chunk into recordings.", false));
+    r.push_back(make("record.exclusiveArm", Type::Bool, "Record, Warp & Launch", "Exclusive Arm",
                      "Arming a track disarms the others.", true));
-    r.push_back(make("record.exclusiveSolo", Type::Bool, "Record", "Exclusive solo",
+    r.push_back(make("record.exclusiveSolo", Type::Bool, "Record, Warp & Launch", "Exclusive Solo",
                      "Soloing a track unsolos the others.", true));
-    r.push_back(choice("record.clipUpdateRate", "Record", "Clip update rate",
+    r.push_back(choice("record.clipUpdateRate", "Record, Warp & Launch", "Clip Update Rate",
                        "How often changes to a playing clip take effect.",
                        {"none", "1/32", "1/16", "1/8", "1/4", "1/2", "1 bar"}, "1/16"));
-    r.push_back(make("record.startPlaybackWithRecord", Type::Bool, "Record", "Start playback with record",
+    r.push_back(make("record.startPlaybackWithRecord", Type::Bool, "Record, Warp & Launch", "Start Playback with Record",
                      "Pressing Record also starts playback.", true));
-    r.push_back(choice("record.shortSampleMode", "Record", "Loop/warp short samples",
+    r.push_back(choice("record.shortSampleMode", "Record, Warp & Launch", "Loop/Warp Short Samples",
                        "Whether a short sample imports looped and warped.", {"auto", "on", "off"}, "auto"));
-    r.push_back(choice("record.defaultWarpMode", "Record", "Default warp mode",
+    r.push_back(choice("record.defaultWarpMode", "Record, Warp & Launch", "Default Warp Mode",
                        "The warp mode new clips get. ADI's stretch is its own (ADR-0061); the "
                        "names follow Live.",
                        {"beats", "tones", "texture", "re-pitch", "complex", "complexPro"}, "beats"));
-    r.push_back(make("record.warpDetectTempoChanges", Type::Bool, "Record", "Warp: detect tempo changes",
+    r.push_back(make("record.warpDetectTempoChanges", Type::Bool, "Record, Warp & Launch", "Warp: detect tempo changes",
                      "On: Live's Auto-Warp places a marker on the first beat of each bar (Live "
                      "12 manual 9.2.3). Off: Warp From Here (Straight) (ADR-0132 d7, ADR-0203).",
                      true));
-    r.push_back(choice("record.warpInsertFrom", "Record", "Warp: insert from",
+    r.push_back(choice("record.warpInsertFrom", "Record, Warp & Launch", "Warp: insert from",
                        "When Warp runs, 1.1.1 goes on the first beat or at the sample start (ADR-0132 d7).",
                        {"firstBeat", "sampleStart"}, "firstBeat"));
-    r.push_back(choice("record.autoArmOnSelect", "Record", "Auto-arm on select",
+    r.push_back(choice("record.autoArmOnSelect", "Record, Warp & Launch", "Auto-arm on select",
                        "Which tracks arm when selected (Bitwig).", {"none", "instrumentAndMidi", "all"},
                        "instrumentAndMidi"));
-    r.push_back(make("record.discardIncompleteTakes", Type::Bool, "Record", "Discard incomplete takes",
+    r.push_back(make("record.discardIncompleteTakes", Type::Bool, "Record, Warp & Launch", "Discard incomplete takes",
                      "In loop recording, drop a first or last take shorter than the threshold "
                      "(REAPER). Off, as Live keeps every loop-recording pass (ADR-0203).",
                      false));
-    r.push_back(ranged("record.completeTakePercent", Type::Int, "Record", "Complete take threshold",
+    r.push_back(ranged("record.completeTakePercent", Type::Int, "Record, Warp & Launch", "Complete take threshold",
                        "The share of the loop a take must cover to be kept, in percent.", 50, 0, 100));
-    r.push_back(make("record.snapMidiPartsToBars", Type::Bool, "Record", "Snap MIDI clips to bars",
+    r.push_back(make("record.snapMidiPartsToBars", Type::Bool, "Record, Warp & Launch", "Snap MIDI clips to bars",
                      "A recorded MIDI clip starts and ends on bars, as Live's do (Cubase).", true));
 
-    // --- MIDI (catalogue II §5) ------------------------------------------------------------------
-    r.push_back(make("midi.controlSurfaceScripts", Type::PathList, "MIDI", "Controller script folders",
+    // --- Tempo & MIDI (catalogue II §5) ------------------------------------------------------------------
+    r.push_back(make("midi.controlSurfaceScripts", Type::PathList, "Tempo & MIDI", "Controller script folders",
                      "Folders of controller extensions, Bitwig's model (R-14).", Value::array()));
-    r.push_back(choice("midi.takeoverMode", "MIDI", "Takeover mode",
+    r.push_back(choice("midi.takeoverMode", "Tempo & MIDI", "Takeover Mode",
                        "How a controller takes over a value it does not match; overridable per controller.",
                        {"none", "pickup", "valueScaling"}, "pickup"));
-    r.push_back(make("midi.focusDialPort", Type::Text, "MIDI", "Master focus dial: port",
+    r.push_back(make("midi.focusDialPort", Type::Text, "Tempo & MIDI", "Master focus dial: port",
                      "The port of the one encoder that controls whatever is under the mouse, or "
                      "the last touched plug-in parameter (ADR-0130). Empty: not bound.",
                      ""));
-    r.push_back(ranged("midi.focusDialChannel", Type::Int, "MIDI", "Master focus dial: channel",
+    r.push_back(ranged("midi.focusDialChannel", Type::Int, "Tempo & MIDI", "Master focus dial: channel",
                        "The encoder's MIDI channel (ADR-0130).", 1, 1, 16));
-    r.push_back(ranged("midi.focusDialCc", Type::Int, "MIDI", "Master focus dial: CC",
+    r.push_back(ranged("midi.focusDialCc", Type::Int, "Tempo & MIDI", "Master focus dial: CC",
                        "The encoder's controller number (ADR-0130).", 0, 0, 127));
-    r.push_back(choice("midi.focusDialMode", "MIDI", "Master focus dial: encoder mode",
+    r.push_back(choice("midi.focusDialMode", "Tempo & MIDI", "Master focus dial: encoder mode",
                        "How the encoder encodes a turn (ADR-0130).",
                        {"absolute", "relativeTwosComplement", "relativeBinaryOffset", "relativeSignBit"},
                        "relativeTwosComplement"));
-    r.push_back(device("midi.port.track", Type::Bool, "MIDI", "Port: Track",
+    r.push_back(device("midi.port.track", Type::Bool, "Tempo & MIDI", "Track",
                        "The port feeds tracks. Stored per port.", false));
-    r.push_back(device("midi.port.sync", Type::Bool, "MIDI", "Port: Sync", "The port sends or takes sync. Stored per port.", false));
-    r.push_back(device("midi.port.remote", Type::Bool, "MIDI", "Port: Remote",
+    r.push_back(device("midi.port.sync", Type::Bool, "Tempo & MIDI", "Sync", "The port sends or takes sync. Stored per port.", false));
+    r.push_back(device("midi.port.remote", Type::Bool, "Tempo & MIDI", "Remote",
                        "The port may be MIDI-mapped. Stored per port.", false));
-    r.push_back(device("midi.port.mpe", Type::Bool, "MIDI", "Port: MPE",
+    r.push_back(device("midi.port.mpe", Type::Bool, "Tempo & MIDI", "MPE",
                        "The port carries MPE. The route per plug-in is ADR-0134 d7's. Stored per port.", false));
-    r.push_back(device("midi.port.clockSyncDelayMs", Type::Real, "MIDI", "Port: clock sync delay",
+    r.push_back(device("midi.port.clockSyncDelayMs", Type::Real, "Tempo & MIDI", "MIDI Clock Sync Delay",
                        "Milliseconds of clock offset, in and out (Bitwig). Stored per port.", 0.0));
-    r.push_back(device("midi.port.syncType", Type::Choice, "MIDI", "Port: sync type",
+    r.push_back(device("midi.port.syncType", Type::Choice, "Tempo & MIDI", "Sync Type",
                        "MIDI clock or MIDI timecode. Stored per port.", "clock", {"clock", "mtc"}));
-    r.push_back(device("midi.port.mtcFrameRate", Type::Choice, "MIDI", "Port: MTC frame rate",
+    r.push_back(device("midi.port.mtcFrameRate", Type::Choice, "Tempo & MIDI", "MTC Frame Rate",
                        "Stored per port.", "25", {"24", "25", "29.97df", "30"}));
-    r.push_back(device("midi.port.mtcStartOffset", Type::Text, "MIDI", "Port: MTC start offset",
+    r.push_back(device("midi.port.mtcStartOffset", Type::Text, "Tempo & MIDI", "MTC Start Offset",
                        "Timecode at the song start, hh:mm:ss:ff. Stored per port.", "00:00:00:00"));
-    r.push_back(make("midi.resetOnStop", Type::Bool, "MIDI", "Reset on stop",
+    r.push_back(make("midi.resetOnStop", Type::Bool, "Tempo & MIDI", "Reset on stop",
                      "Send reset events when the transport stops (Cubase).", true));
-    r.push_back(make("midi.insertResetAfterRecord", Type::Bool, "MIDI", "Insert reset events after record",
+    r.push_back(make("midi.insertResetAfterRecord", Type::Bool, "Tempo & MIDI", "Insert reset events after record",
                      "End a recording with reset events, so a held pedal does not stick (Cubase).", true));
-    r.push_back(make("midi.recordFilter", Type::Text, "MIDI", "MIDI filter: record",
+    r.push_back(make("midi.recordFilter", Type::Text, "Tempo & MIDI", "MIDI filter: record",
                      "Message types and channels never recorded, comma-separated (Cubase).", ""));
-    r.push_back(make("midi.thruFilter", Type::Text, "MIDI", "MIDI filter: thru",
+    r.push_back(make("midi.thruFilter", Type::Text, "Tempo & MIDI", "MIDI filter: thru",
                      "Message types and channels never echoed, comma-separated (Cubase).", ""));
-    r.push_back(make("midi.extendEarlyNotes", Type::Bool, "MIDI", "Play notes that start before the clip",
+    r.push_back(make("midi.extendEarlyNotes", Type::Bool, "Tempo & MIDI", "Play notes that start before the clip",
                      "A note a few ticks before a clip starts still sounds (Cubase).", true));
-    r.push_back(make("midi.envelopeAutoReset", Type::Bool, "MIDI", "MIDI Envelope Auto-Reset",
+    r.push_back(make("midi.envelopeAutoReset", Type::Bool, "Tempo & MIDI", "MIDI Envelope Auto-Reset",
                      "Resets certain MIDI control messages at the start of a new clip, as Live's "
                      "Options entry (Live 12 manual 26.1; ADR-0203).",
                      true));
@@ -454,32 +575,33 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("transport.commitFieldsAfterPause", Type::Bool, "Transport", "Commit fields after a pause",
                      "A transport field commits one second after typing stops (REAPER).", true));
 
-    // --- Sync (catalogue II §4, IV §2) ---------------------------------------------------------
+    // --- Link (catalogue II §4) and Sync (IV §2): Live's Link tab holds Show Link Toggle, Start
+    // Stop Sync, PTP and the LAN audio node (ADR-0203 d11); the rest of sync is ADI's Sync page ---------------------------------------------------------
     r.push_back(make("sync.linkEnabled", Type::Bool, "Sync", "Link", "Join an Ableton Link session.", false));
-    r.push_back(make("sync.showLinkToggle", Type::Bool, "Sync", "Show Link toggle",
-                     "Show the Link switch in the control bar.", false));
-    r.push_back(make("sync.linkStartStopSync", Type::Bool, "Sync", "Link start/stop sync",
+    r.push_back(make("sync.showLinkToggle", Type::Bool, "Link", "Show Link Toggle",
+                     "Show the Link switch in the control bar, as Live does (ADR-0203 d11).", true));
+    r.push_back(make("sync.linkStartStopSync", Type::Bool, "Link", "Start Stop Sync",
                      "Share start and stop with Link peers.", false));
     r.push_back(choice("sync.clockSource", "Sync", "Sync in", "Where tempo and position come from (Bitwig).",
                        {"internal", "midiClock", "link"}, "internal"));
     r.push_back(ranged("sync.tempoResponsiveness", Type::Int, "Sync", "Incoming tempo responsiveness",
                        "How quickly the tempo follows incoming MIDI clock (Bitwig).", 50, 0, 100));
-    r.push_back(ranged("sync.lanJitterBufferMs", Type::Int, "Sync", "LAN audio: jitter buffer",
+    r.push_back(ranged("sync.lanJitterBufferMs", Type::Int, "Link", "LAN audio: jitter buffer",
                        "Default for new LAN audio nodes (ADR-0126); each node keeps its own.", 40, 5, 500));
-    r.push_back(choice("sync.lanCodec", "Sync", "LAN audio: codec", "Default for new LAN audio nodes (ADR-0126).",
+    r.push_back(choice("sync.lanCodec", "Link", "LAN audio: codec", "Default for new LAN audio nodes (ADR-0126).",
                        {"pcm", "opus"}, "opus"));
-    r.push_back(ranged("sync.lanBitrateKbps", Type::Int, "Sync", "LAN audio: bitrate",
+    r.push_back(ranged("sync.lanBitrateKbps", Type::Int, "Link", "LAN audio: bitrate",
                        "Default for new LAN audio nodes, in kbit/s (ADR-0126).", 256, 32, 1536));
-    r.push_back(make("sync.ptpEnabled", Type::Bool, "Sync", "PTP",
+    r.push_back(make("sync.ptpEnabled", Type::Bool, "Link", "PTP",
                      "PTP as a shared timebase and a measurement across AudioGridder servers (ADR-0107).", false));
-    r.push_back(ranged("sync.ptpDomain", Type::Int, "Sync", "PTP domain", "The PTP domain listened to.", 0, 0, 127));
-    r.push_back(make("sync.ptpAdapters", Type::Text, "Sync", "PTP network adapters",
+    r.push_back(ranged("sync.ptpDomain", Type::Int, "Link", "PTP domain", "The PTP domain listened to.", 0, 0, 127));
+    r.push_back(make("sync.ptpAdapters", Type::Text, "Link", "PTP network adapters",
                      "The adapters PTP runs on, comma-separated. Empty: none.", ""));
-    r.push_back(make("sync.ptpGrandmasters", Type::Text, "Sync", "PTP grandmasters",
+    r.push_back(make("sync.ptpGrandmasters", Type::Text, "Link", "PTP grandmasters",
                      "The grandmasters allowed, by IP and MAC address, comma-separated. "
                      "Announcements from anything else are ignored (ADR-0145 d7).",
                      ""));
-    r.push_back(make("sync.audioGridderDiscovery", Type::Bool, "Sync", "Find AudioGridder servers",
+    r.push_back(make("sync.audioGridderDiscovery", Type::Bool, "Plug-Ins", "Find AudioGridder servers",
                      "Find remote plug-in servers by mDNS/Bonjour (ADR-0053, ADR-0145 d6).", true));
 
     // --- Engine (catalogue IV §1) ------------------------------------------------------------------
@@ -488,14 +610,14 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "and not a rebuild (ADR-0088). Advanced.",
                        8192, 512, 65536));
 
-    // --- Updates (catalogue II §10) ----------------------------------------------------------------
-    r.push_back(make("updates.checkOnLaunch", Type::Bool, "Updates", "Check for updates",
+    // --- Licenses & Updates (catalogue II §10): Updates, then Privacy as its section ----------------------------------------------------------------
+    r.push_back(make("updates.checkOnLaunch", Type::Bool, "Licenses & Updates", "Check for updates",
                      "Check on launch and show the release notes; the download is manual.", true));
-    r.push_back(choice("updates.channel", "Updates", "Release channel", "Stable, or beta releases too (Bitwig).",
+    r.push_back(choice("updates.channel", "Licenses & Updates", "Release channel", "Stable, or beta releases too (Bitwig).",
                        {"stable", "beta"}, "stable"));
-    r.push_back(make("privacy.diagnosticLog", Type::Bool, "Privacy", "Write a diagnostic log",
+    r.push_back(make("privacy.diagnosticLog", Type::Bool, "Licenses & Updates", "Write a diagnostic log",
                      "A local log for support; nothing is sent (R-20).", false));
-    r.push_back(make("settings.logChanges", Type::Bool, "Privacy", "Log settings changes",
+    r.push_back(make("settings.logChanges", Type::Bool, "Licenses & Updates", "Log settings changes",
                      "Settings changes are logged, with the time and the old and new value "
                      "(A6-20, ADR-0203). Off: a person's changes are not logged; the agent's "
                      "always are (ADR-0125 d3).",
@@ -561,43 +683,43 @@ void catalogueSettings(std::vector<Setting>& r) {
 
 std::vector<Setting> build() {
     std::vector<Setting> r;
-    // --- Look & Feel: the agent's whitelist lives mostly here (ADR-0125 d2) --
-    r.push_back(choice("lookfeel.theme", "Look & Feel", "Theme",
+    // --- Display & Input and Theme & Colors: the agent's whitelist lives mostly here (ADR-0125 d2) --
+    r.push_back(choice("lookfeel.theme", "Theme & Colors", "Theme",
                        "Colour theme of the whole application; by default it follows the "
                        "operating system. Themes are files, so one can be shared.",
                        {"os", "dark", "light"}, "os", true));
-    r.push_back(choice("lookfeel.language", "Look & Feel", "Language",
+    r.push_back(choice("lookfeel.language", "Display & Input", "Language",
                        "Interface language. Hebrew runs right to left in text containers only "
                        "(ADR-0125 d4).",
                        {"en", "he"}, "en"));
-    r.push_back(make("lookfeel.zoomOnSelection", Type::Bool, "Look & Feel", "Zoom on Selection",
+    r.push_back(make("lookfeel.zoomOnSelection", Type::Bool, "Display & Input", "Zoom on Selection",
                      "On, as Live: Ctrl/Cmd + wheel zooms around the current selection (Live 12 "
                      "manual 6.2). Off: it zooms around the cursor (ADR-0145 d2 as amended by "
                      "ADR-0203).",
                      true, true));
-    r.push_back(choice("lookfeel.knobMode", "Look & Feel", "Knob drag mode",
+    r.push_back(choice("lookfeel.knobMode", "Display & Input", "Knob drag mode",
                        "How a knob follows the mouse. Vertical is Live's (R-09).",
                        {"vertical", "horizontal", "rotary"}, "vertical", true));
-    r.push_back(ranged("lookfeel.tooltipDelayMs", Type::Int, "Look & Feel", "Tooltip delay",
+    r.push_back(ranged("lookfeel.tooltipDelayMs", Type::Int, "Display & Input", "Tooltip delay",
                        "Milliseconds before a floating tooltip appears, 500 to 800 "
                        "(ADR-0131 d1).",
                        600, 500, 800, true));
-    r.push_back(make("lookfeel.followPlayhead", Type::Bool, "Look & Feel", "Follow playhead",
+    r.push_back(make("lookfeel.followPlayhead", Type::Bool, "Display & Input", "Follow playhead",
                      "Scroll the arrangement to keep the playhead in view.", true, true));
-    r.push_back(make("lookfeel.showInfoView", Type::Bool, "Look & Feel", "Info View",
+    r.push_back(make("lookfeel.showInfoView", Type::Bool, "Display & Input", "Info View",
                      "Show the docked Info View, which describes what the mouse is over "
                      "(ADR-0131 d1).",
                      true, true));
-    r.push_back(make("lookfeel.showMeterPeakHold", Type::Bool, "Look & Feel", "Meter peak hold",
+    r.push_back(make("lookfeel.showMeterPeakHold", Type::Bool, "Theme & Colors", "Meter peak hold",
                      "Hold the highest meter level for a moment (R-10).", true, true));
 
     // --- Audio: never the agent's (ADR-0125 d2) -----------------------------
-    r.push_back(choice("audio.driverType", "Audio", "Driver type",
+    r.push_back(choice("audio.driverType", "Audio", "Driver Type",
                        "The audio driver. ASIO is opened only through JUCE's wrapper; there is "
                        "no raw bypass (ADR-0145 d5). Empty means the system default.",
                        {"", "ASIO", "WASAPI", "DirectSound", "CoreAudio", "ALSA", "PipeWire/JACK"},
                        ""));
-    r.push_back(choice("audio.bufferSize", "Audio", "Buffer size",
+    r.push_back(choice("audio.bufferSize", "Audio", "Buffer Size",
                        "Samples per block, chosen by hand: 64 to 4096. There is no 32 and no "
                        "automatic switching; a driver that grants less still runs and is shown "
                        "as granted (ADR-0145 d5). Default 512 (ADR-0203).",
@@ -613,8 +735,8 @@ std::vector<Setting> build() {
                      "When the project and the hardware disagree on sample rate, resample "
                      "without showing the mismatch bar (ADR-0145 d3).",
                      false));
-    r.push_back(make("audio.keepMonitoringLatency", Type::Bool, "Audio",
-                     "Keep monitoring latency in recordings",
+    r.push_back(make("audio.keepMonitoringLatency", Type::Bool, "Record, Warp & Launch",
+                     "Keep Monitoring Latency in Recorded Audio",
                      "Record what you heard, latency included, as Live does (ADR-0132 d10).",
                      true));
     r.push_back(make("audio.reducedLatencyWhenMonitoring", Type::Bool, "Audio",
@@ -629,34 +751,34 @@ std::vector<Setting> build() {
     r.push_back(make("audio.jackTransportSync", Type::Bool, "Audio", "JACK transport sync",
                      "Follow and drive the JACK transport (ADR-0145 d4).", false));
 
-    // --- Record ----------------------------------------------------------------
-    r.push_back(choice("record.quantize", "Record", "Record quantize",
+    // --- Record, Warp & Launch ----------------------------------------------------------------
+    r.push_back(choice("record.quantize", "Record, Warp & Launch", "Record quantize",
                        "The quantize new recordings get, inherited by new tracks "
                        "(ADR-0132 d8).",
                        {"off", "1/4", "1/8", "1/16", "1/32"}, "1/16"));
-    r.push_back(ranged("record.retrospectiveSeconds", Type::Int, "Record",
+    r.push_back(ranged("record.retrospectiveSeconds", Type::Int, "Record, Warp & Launch",
                        "Retrospective capture length",
                        "Seconds of armed or monitored input kept for Capture (ADR-0132 d9).",
                        30, 1, 600));
-    r.push_back(make("record.importAutoWarp", Type::Bool, "Record", "Warp imported audio",
+    r.push_back(make("record.importAutoWarp", Type::Bool, "Record, Warp & Launch", "Auto-Warp Long Samples",
                      "Warp audio on import. Off by default: warp when you ask (ADR-0132 d6).",
                      false));
-    r.push_back(make("record.importEdgeFades", Type::Bool, "Record", "Fade clip edges on import",
+    r.push_back(make("record.importEdgeFades", Type::Bool, "Record, Warp & Launch", "Create Fades on Clip Edges",
                      "Add short fades to imported clips. Off by default (ADR-0132 d6).", false));
 
-    // --- MIDI and controllers ------------------------------------------------------------
-    r.push_back(make("midi.chaseNotes", Type::Bool, "MIDI", "Chase MIDI Notes",
+    // --- Tempo & MIDI, and controllers ------------------------------------------------------------
+    r.push_back(make("midi.chaseNotes", Type::Bool, "Tempo & MIDI", "Chase MIDI Notes",
                      "Notes already sounding at the point playback starts are played, as Live's "
                      "Options > Chase MIDI Notes. Amends ADR-0155 d3 (ADR-0203).",
                      true));
-    r.push_back(make("midi.chaseControllers", Type::Bool, "MIDI", "Chase controllers",
+    r.push_back(make("midi.chaseControllers", Type::Bool, "Tempo & MIDI", "Chase controllers",
                      "Send the controller values in effect when playback starts mid-song (R-15).",
                      true));
-    r.push_back(make("midi.chasePitchBend", Type::Bool, "MIDI", "Chase pitch bend",
+    r.push_back(make("midi.chasePitchBend", Type::Bool, "Tempo & MIDI", "Chase pitch bend",
                      "Send the pitch bend in effect when playback starts mid-song (R-15).", true));
-    r.push_back(make("midi.chaseProgramChange", Type::Bool, "MIDI", "Chase program change",
+    r.push_back(make("midi.chaseProgramChange", Type::Bool, "Tempo & MIDI", "Chase program change",
                      "Send the program in effect when playback starts mid-song (R-15).", true));
-    r.push_back(make("midi.autoAddControllers", Type::Bool, "MIDI", "Add controllers automatically",
+    r.push_back(make("midi.autoAddControllers", Type::Bool, "Tempo & MIDI", "Add controllers automatically",
                      "Recognise a connected control surface and set it up (R-14).", true));
 
     // --- Editing ------------------------------------------------------------------------
@@ -666,32 +788,32 @@ std::vector<Setting> build() {
     r.push_back(make("editing.snapToGrid", Type::Bool, "Editing", "Snap to grid",
                      "Moves and resizes snap to the grid by default.", true, true));
 
-    // --- Plug-ins: paths and scanning are never the agent's. The scan always runs
+    // --- Plug-Ins: paths and scanning are never the agent's. The scan always runs
     // out of process, with quarantine and a blocklist (R-17); there is no switch
     // (D-03 / A6-37, ADR-0203).
-    r.push_back(make("plugins.preferClap", Type::Bool, "Plug-ins", "Prefer CLAP",
+    r.push_back(make("plugins.preferClap", Type::Bool, "Plug-Ins", "Prefer CLAP",
                      "When a plug-in exists as CLAP and VST3, load the CLAP (R-18).", true));
-    r.push_back(make("plugins.vst3Folders", Type::PathList, "Plug-ins", "VST3 folders",
+    r.push_back(make("plugins.vst3Folders", Type::PathList, "Plug-Ins", "VST3 folders",
                      "Extra folders scanned for VST3 plug-ins.", Value::array()));
-    r.push_back(make("plugins.clapFolders", Type::PathList, "Plug-ins", "CLAP folders",
+    r.push_back(make("plugins.clapFolders", Type::PathList, "Plug-Ins", "CLAP folders",
                      "Extra folders scanned for CLAP plug-ins, custom folders on Linux included "
                      "(ADR-0145 d4).",
                      Value::array()));
-    r.push_back(make("plugins.lv2Folders", Type::PathList, "Plug-ins", "LV2 folders",
+    r.push_back(make("plugins.lv2Folders", Type::PathList, "Plug-Ins", "LV2 folders",
                      "Extra folders scanned for LV2 plug-ins on Linux (ADR-0145 d4).",
                      Value::array()));
 
     // --- Library: paths are roles in a bundle (R-05) -------------------------------------
-    r.push_back(make("library.userLibrary", Type::Path, "Library", "User library",
+    r.push_back(make("library.userLibrary", Type::Path, "Library", "User Library",
                      "Your own presets, samples and clips.", ""));
     r.push_back(make("library.contentFolders", Type::PathList, "Library", "Content folders",
                      "Sample and content folders the browser shows.", Value::array()));
     // The default record folder is files.recordFolder, on File & Folder (ADR-0203).
 
-    // --- Privacy: opt-in, off (R-20) ---------------------------------------------------------
-    r.push_back(make("privacy.crashReports", Type::Bool, "Privacy", "Send crash reports",
+    // --- Privacy (a section of Licenses & Updates): opt-in, off (R-20) ---------------------------------------------------------
+    r.push_back(make("privacy.crashReports", Type::Bool, "Licenses & Updates", "Send crash reports",
                      "Opt in to sending crash reports. Off by default (R-20).", false));
-    r.push_back(make("privacy.usageStatistics", Type::Bool, "Privacy", "Send usage statistics",
+    r.push_back(make("privacy.usageStatistics", Type::Bool, "Licenses & Updates", "Send usage statistics",
                      "Opt in to anonymous usage statistics. Off by default (R-20).", false));
 
     // --- AI -----------------------------------------------------------------------------------------
@@ -721,6 +843,7 @@ std::vector<Setting> build() {
     r.push_back(project("project.timecodeOrigin", Type::Int, "Timecode origin",
                         "Nanoseconds of timecode at the project's start.", 0,
                         "project.setTimecodeOrigin"));
+    liveSections(r);
     return r;
 }
 
@@ -770,7 +893,16 @@ const Setting* find(std::string_view key) {
 }
 
 std::vector<std::string> pages() {
+    // ADR-0203 d11: Live's ten tabs in Live's order (Live 12 manual 2.3), then ADI's own.
+    static const char* const live[] = {"Display & Input", "Theme & Colors", "Audio",
+                                       "Link",            "Tempo & MIDI",   "File & Folder",
+                                       "Library",         "Plug-Ins",       "Record, Warp & Launch",
+                                       "Licenses & Updates"};
     std::vector<std::string> out;
+    for (const char* tab : live)
+        if (std::find_if(registry().begin(), registry().end(), [tab](const Setting& s) { return s.page == tab; }) !=
+            registry().end())
+            out.push_back(tab);
     for (const auto& s : registry())
         if (std::find(out.begin(), out.end(), s.page) == out.end()) out.push_back(s.page);
     return out;

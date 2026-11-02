@@ -78,8 +78,47 @@ void testRegistry() {
     check(unique, "every key is unique");
     check(defaultsLegal, "every default is a legal value of its own setting");
     check(pageKnown, "every setting has a page, a label and help text (R-01, R-02)");
-    check(pages().front() == "Look & Feel" && pages().back() == "Project",
-          "pages are listed in window order");
+    const std::vector<std::string> liveTabs = {"Display & Input", "Theme & Colors", "Audio",
+                                               "Link",            "Tempo & MIDI",   "File & Folder",
+                                               "Library",         "Plug-Ins",       "Record, Warp & Launch",
+                                               "Licenses & Updates"};
+    const auto pageList = pages();
+    check(pageList.size() > liveTabs.size() &&
+              std::equal(liveTabs.begin(), liveTabs.end(), pageList.begin()) && pageList.back() == "Project",
+          "pages are Live's ten tabs in Live's order, then ADI's own, Project last (ADR-0203 d11; N14)");
+    // N14: a setting Live has is on the tab where Live has it: its catalogue row's Part II tab.
+    std::string offTab;
+    std::size_t onLiveTabs = 0;
+    for (const auto& a : answeredRows()) {
+        const auto dot = a.row.find(". ");
+        const auto slash = a.row.find(" / ");
+        if (dot == std::string::npos || slash == std::string::npos) continue;
+        const auto tab = a.row.substr(dot + 2, slash - dot - 2);
+        if (std::find(liveTabs.begin(), liveTabs.end(), tab) == liveTabs.end()) continue;
+        for (const auto& key : a.keys) {
+            const auto* s = find(key);
+            if (!s || s->scope == Scope::Project) continue;  // project.sampleRate stays on Project
+            ++onLiveTabs;
+            if (s->page != tab) offTab += "\n        " + key + " on " + s->page + ", Live: " + tab;
+        }
+    }
+    check(onLiveTabs > 120 && offTab.empty(),
+          "every setting Live has sits on Live's tab (" + std::to_string(onLiveTabs) + " checked):" + offTab);
+    std::string strayedSection;
+    for (const auto& s : registry())
+        if (!s.section.empty() && std::find(liveTabs.begin(), liveTabs.end(), s.page) == liveTabs.end() &&
+            s.page != "Project")
+            strayedSection += "\n        " + s.key;
+    check(strayedSection.empty(), "sections are Live's, on Live's tabs only:" + strayedSection);
+    const auto* linkToggle = find("sync.showLinkToggle");
+    check(linkToggle && linkToggle->page == "Link" && linkToggle->section == "Link" &&
+              linkToggle->label == "Show Link Toggle" && linkToggle->defaultValue == true,
+          "Show Link Toggle: on the Link tab under Link, on, as Live shows Link's switch (ADR-0203 d11)");
+    const auto* bufferSize = find("audio.bufferSize");
+    const auto* keepLatency = find("audio.keepMonitoringLatency");
+    check(bufferSize && bufferSize->section == "Latency" && bufferSize->label == "Buffer Size" && keepLatency &&
+              keepLatency->page == "Record, Warp & Launch" && keepLatency->section == "Record",
+          "Buffer Size under Audio's Latency; Keep Monitoring Latency in Recorded Audio on Record, Warp & Launch");
 
     // Project settings are rows changed by ops (R-03): each names one the
     // catalogue actually lists.
@@ -97,8 +136,8 @@ void testRegistry() {
     // ADR-0145's settings.
     const auto* zoom = find("lookfeel.zoomOnSelection");
     check(zoom && zoom->type == Type::Bool && zoom->defaultValue == true && zoom->scope == Scope::App &&
-              zoom->page == "Look & Feel",
-          "Zoom on Selection: an [App] switch under Look & Feel, on as Live (ADR-0145 d2 amended by ADR-0203)");
+              zoom->page == "Display & Input",
+          "Zoom on Selection: an [App] switch under Display & Input, on as Live (ADR-0145 d2 amended by ADR-0203)");
     const auto* resample = find("audio.silentResampling");
     check(resample && resample->type == Type::Bool && resample->page == "Audio" &&
               resample->defaultValue == false,
@@ -189,8 +228,8 @@ void testRulings() {
         const auto* s = find(key);
         return s && s->type == Type::Bool && s->page == page && s->defaultValue == v && s->scope == Scope::App;
     };
-    check(onPage("midi.chaseNotes", "MIDI", true) && onPage("midi.envelopeAutoReset", "MIDI", true),
-          "Chase MIDI Notes and MIDI Envelope Auto-Reset: MIDI switches, on as Live's Options");
+    check(onPage("midi.chaseNotes", "Tempo & MIDI", true) && onPage("midi.envelopeAutoReset", "Tempo & MIDI", true),
+          "Chase MIDI Notes and MIDI Envelope Auto-Reset: Tempo & MIDI switches, on as Live's Options");
     check(onPage("audio.reducedLatencyWhenMonitoring", "Audio", false) &&
               onPage("audio.recordPdcThresholdEnabled", "Audio", false),
           "reduced latency when monitoring, and the PDC bypass when recording: Audio switches, off");
@@ -201,7 +240,8 @@ void testRulings() {
     }
     check(enabledAt + 1 == thresholdAt && dflt("audio.recordPdcThresholdMs") == 10.0,
           "the switch sits right before the 10 ms threshold");
-    check(onPage("settings.logChanges", "Privacy", true), "settings.logChanges: a Privacy switch, on (A6-20)");
+    check(onPage("settings.logChanges", "Licenses & Updates", true) && find("settings.logChanges")->section == "Privacy",
+          "settings.logChanges: a Privacy switch on Licenses & Updates, on (A6-20)");
     // ADR-0207 d2: the Processing Precision switch, Live's scheme by default.
     const auto* precision = find("audio.processingPrecision");
     check(precision && precision->page == "Audio" && precision->type == Type::Choice &&
@@ -426,7 +466,7 @@ void testPartialPreset() {
     std::string why;
     s.set("lookfeel.theme", "light", kUser, why);
     s.set("lookfeel.tooltipDelayMs", 700, kUser, why);
-    const Preset look = makePreset(s, "My look", {"Look & Feel"});
+    const Preset look = makePreset(s, "My look", {"Display & Input", "Theme & Colors"});
     check(look.values.contains("lookfeel.theme") && !look.values.contains("audio.bufferSize"),
           "a Look & Feel preset holds that page's settings only");
 
@@ -485,7 +525,7 @@ void testBundles() {
     from.set("library.contentFolders", Value::array({"/data/samples", "/data/loops"}), kUser, why);
     from.set("files.recordFolder", "/home/ana/Music/ADI/Recordings", kUser, why);
     from.set("plugins.vst3Folders", Value::array({"/opt/vst3"}), kUser, why);
-    const Preset look = makePreset(from, "Light", {"Look & Feel"});
+    const Preset look = makePreset(from, "Light", {"Display & Input", "Theme & Colors"});
 
     const auto zip = temp.path() / "settings-bundle.zip";
     const auto rep = exportBundle(from, {look}, zip);
