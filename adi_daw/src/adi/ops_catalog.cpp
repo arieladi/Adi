@@ -19,6 +19,7 @@
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/track_image.hpp"
 #include "adi/summing_flavors.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -328,6 +329,10 @@ bool setProjectNameInverse(OpContext& c, const Payload&, Payload& inv, std::stri
 
 bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        if(p.contains("contents")) {
+            detail::restoreTrack(c.db,p.at("id").get<std::int64_t>(),p.at("contents"));
+            return true;
+        }
         // The id comes from the payload, never from SQLite (ADR-0021 §7.3):
         // undo a create, redo it, and the object must return with the SAME id
         // or every later op referencing it points at nothing.
@@ -362,15 +367,13 @@ bool trackCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string&
 
 bool trackDeleteApply(OpContext& c, const Payload& p, std::string& err) {
     try {
-        SQLite::Statement st(c.db, "DELETE FROM tracks WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such track"; return false; }
+        detail::deleteTrack(c.db,p.at("id").get<std::int64_t>());
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 bool trackDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     // State capture (OPS.md §6.2/§6.3). Media is never captured -- deleting a
-    // track unlinks media_files rows, it does not delete audio -- so the inverse
+    // track unlinks media references, it does not delete audio -- so the inverse
     // of a 40-clip audio track is metadata, not gigabytes.
     try {
         SQLite::Statement st(c.db,
@@ -384,6 +387,7 @@ bool trackDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::strin
         if (st.getColumn(2).isNull()) inv["parent"] = nullptr;
         else inv["parent"] = st.getColumn(2).getInt64();
         inv["index"] = st.getColumn(3).getInt64();
+        inv["contents"] = detail::captureTrack(c.db,p.at("id").get<std::int64_t>());
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1011,7 +1015,8 @@ constexpr Field kFTrackCreate[] = {{"id", FieldType::Int, true},
                                    {"kind", FieldType::Text, true},
                                    {"name", FieldType::Text, false},
                                    {"parent", FieldType::Int, false},
-                                   {"index", FieldType::Int, false}};
+                                   {"index", FieldType::Int, false},
+                                   {"contents", FieldType::Object, false}};
 constexpr Field kFId[] = {{"id", FieldType::Int, true}};
 constexpr Field kFClipCreate[] = {{"id", FieldType::Int, true},
                                   {"track", FieldType::Int, true},

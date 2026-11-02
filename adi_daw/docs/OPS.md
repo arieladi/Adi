@@ -170,10 +170,33 @@ produce a correct inverse, the op does not commit.
 
 ### 6.3 What state capture costs, and why it is bounded
 
-**Media is never captured.** Deleting a track unlinks `media_files` rows; it does
+**Media is never captured.** Deleting a track unlinks its media references; it does
 not delete audio. The inverse of "delete a 40-clip audio track" is the track row,
 its clips and its device state — a few hundred KB — not gigabytes. The
 content-addressed media pool (ADR-0005) is what makes this true.
+
+`track.delete {id}` captures all columns and SQLite storage types of the deleted
+track subtree and its transitive foreign-key children: clips and streams, lanes,
+mixer/summing rows, nested device chains, parameters, state hashes and panels.
+It also removes internal routing edges, automation owned by a deleted
+track/clip/device/edge, and their controller bindings. External hardware port ids
+remain hardware ids even when numerically equal to a deleted object. Surviving
+rows changed by `ON DELETE SET NULL` (for example aliases or VCA membership) are
+captured as before/after images. Media pool, shared state blobs and plug-in refs
+stay in place; the inverse carries references, not their bytes. Weak remark
+anchors remain, and can be shown as orphaned remarks.
+
+The paired inverse is `track.create` with the legacy descriptive fields plus an
+optional `contents` object (version 1, root id, ordered typed row images). Ordinary
+create and old captured inverses without `contents` remain supported. The full
+restore validates expected current rows and identities before writing, refuses
+collisions or changed surviving rows, restores under the journal transaction,
+and verifies the causal image and foreign keys. Composite keys and future keyed
+foreign-key children are included. Affected tables with triggers, generated
+columns, no declared primary key, or an affected `SET DEFAULT` reference refuse
+atomically until their effects have an explicit safe capture path; they are not
+silently dropped. Unknown extension/session rows without ownership foreign keys
+remain untouched. All capture and restoration runs on the owner thread.
 
 Where an inverse would still exceed a threshold (proposed: 4 MB), the op is
 marked `lossy_undo` and the user is told **before** it commits. Silently dropping

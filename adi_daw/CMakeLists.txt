@@ -225,6 +225,8 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
+    src/adi/row_capture.cpp
+    src/adi/track_image.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -515,6 +517,10 @@ add_test(NAME adi_project_bootstrap_tests COMMAND adi_project_bootstrap_tests)
 add_executable(adi_ops_tests tests/test_ops.cpp)
 target_link_libraries(adi_ops_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ops_tests COMMAND adi_ops_tests)
+
+add_executable(adi_track_delete_tests tests/test_track_delete.cpp)
+target_link_libraries(adi_track_delete_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_track_delete_tests COMMAND adi_track_delete_tests)
 
 add_executable(adi_history_tests tests/test_history.cpp)
 target_link_libraries(adi_history_tests PRIVATE adi_core adi_warnings)
