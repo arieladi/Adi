@@ -73,6 +73,22 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — a group's strip [#341](https://github.com/arieladi/Adi/pull/341) `window/group-strip`, on #340
+
+**Built: a group's strip as Live 12's figure** (manual 18.3; parity 7.6 row 20): no Arm on a group;
+its Solo half coloured, corner to corner, while a track inside it is soloed (`holdsSoloed`); the
+empty chooser under a return's or group's Audio To in the Mixer's In/Out.
+
+**Measure on Live:** a MIDI track's Arm glyph (Live 12's figures draw a note stem in the dot; the
+director's Live 11.2.7 capture is the look's reference for rows, so ADI keeps the dot).
+
+**Tests.** seams 223, shell 659; `test_all.sh` PASS (9907 checks, 106 suites). No golden moved.
+
+**Next:** Live's colour chooser in a track header's menu, and a group's Assign Track Color to
+Grouped Tracks and Clips (parity 7.3 row 34) (`window/colour-chooser`).
+
+---
+
 ## 2026-11-02, cloud, continued — a group's row [#340](https://github.com/arieladi/Adi/pull/340) `window/group-rows`, on #339
 
 **Built: a group's row as Live's** (manual 18.3 and its figure of a group's Mixer strip; parity 7.6
