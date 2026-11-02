@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
+#include <optional>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -122,10 +124,41 @@ inline TrackEdit deactivateClips(const SnapshotTracks &tracks, const std::vector
             edit.ops.push_back(track_edits_detail::op("clip.setMute", {{"id", c->id}, {"muted", !allOff}}, label));
     return edit;
 }
+// Where the selected clips land when dragged `rows` rows down the lanes (negative: up), as Live
+// drags several selected clips across tracks: each clip's track's place among `lanes` (the shown
+// tracks, in the lanes' order) plus `rows`, as (clip, track) for each clip that changes track.
+// Empty, and none moves across, when any would leave the lanes or land on a track that can't take
+// it (`canTakeClip`: MIDI to MIDI, audio to audio).
+using ClipTracks = std::vector<std::pair<std::int64_t, std::int64_t>>;
+inline std::optional<ClipTracks> clipsAcross(const SnapshotTracks &tracks, const std::vector<std::int64_t> &lanes,
+                                             const std::vector<std::int64_t> &ids, std::int64_t rows) {
+    ClipTracks out;
+    for (const auto id : ids)
+        for (const auto &t : tracks)
+            if (t)
+                for (const auto &c : t->clips)
+                    if (c && c->id == id) {
+                        const auto at = std::find(lanes.begin(), lanes.end(), t->id);
+                        if (at == lanes.end())
+                            return std::nullopt;
+                        const auto place = (at - lanes.begin()) + rows;
+                        if (place < 0 || place >= static_cast<std::ptrdiff_t>(lanes.size()))
+                            return std::nullopt;
+                        const auto target = lanes[static_cast<std::size_t>(place)];
+                        const auto *to = track_edits_detail::find(tracks, target);
+                        if (to == nullptr || !canTakeClip(*to, *t))
+                            return std::nullopt;
+                        if (target != t->id)
+                            out.emplace_back(id, target);
+                    }
+    return out;
+}
 // The selected clips moved together by `delta` ticks, as Live drags several selected clips (§6.7):
-// each keeps its track; none goes before the arrangement's start, so the offset stops where the
-// earliest one reaches it. One batch, "Move Clip" or "Move Clips"; no ops when nothing moves.
-inline TrackEdit moveClips(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t delta) {
+// each keeps its track, or goes to the one `across` names (clipsAcross); none goes before the
+// arrangement's start, so the offset stops where the earliest one reaches it. One batch, "Move
+// Clip" or "Move Clips"; no ops when nothing moves.
+inline TrackEdit moveClips(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t delta,
+                           const ClipTracks &across = {}) {
     TrackEdit edit;
     std::vector<std::pair<const engine::ClipNode *, std::int64_t>> clips;
     for (const auto id : ids)
@@ -140,12 +173,17 @@ inline TrackEdit moveClips(const SnapshotTracks &tracks, const std::vector<std::
     }
     for (const auto &[c, track] : clips)
         delta = std::max(delta, -c->posTicks);
-    if (delta == 0)
+    if (delta == 0 && across.empty())
         return edit;
     const char *label = clips.size() == 1 ? "Move Clip" : "Move Clips";
-    for (const auto &[c, track] : clips)
+    for (const auto &[c, track] : clips) {
+        auto to = track;
+        for (const auto &[id, target] : across)
+            if (id == c->id)
+                to = target;
         edit.ops.push_back(
-            track_edits_detail::op("clip.move", {{"id", c->id}, {"to", c->posTicks + delta}, {"track", track}}, label));
+            track_edits_detail::op("clip.move", {{"id", c->id}, {"to", c->posTicks + delta}, {"track", to}}, label));
+    }
     return edit;
 }
 // What the Status Bar says after a range edit that left clips crossing its edges; empty when none did.

@@ -2134,6 +2134,53 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
         canvas.mouseUp(pressAt(canvas, grab));
         check(geo.selection.clip == 13 && geo.selection.pickedClips.empty(),
               "a press on a picked clip's bar without a drag selects that clip alone");
+        // Across tracks, each by the same rows: track 1's and 2's dragged a row down by track 2's bar.
+        clickClip(1);
+        clickClip(2, pick);
+        const juce::Point<float> grab2(x(bar) + 10, static_cast<float>(laneTop(root, 2) + 4));
+        const juce::Point<float> below(x(bar) + 10, static_cast<float>(laneTop(root, 3) + 4));
+        canvas.mouseDown(pressAt(canvas, grab2));
+        canvas.mouseDrag(dragAt(canvas, grab2, below));
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+            juce::Image shot(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(shot);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile("adi-picked-clips-across.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
+        }
+        canvas.mouseUp(dragAt(canvas, grab2, below));
+        root.frame();
+        auto onTrack = [&root](std::int64_t track) {
+            std::vector<std::int64_t> out;
+            for (const auto &c : root.reader().findTrack(track)->clips)
+                out.push_back(c->id);
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        check(onTrack(1).empty() && onTrack(2) == std::vector<std::int64_t>{11} && onTrack(3) == std::vector<std::int64_t>{12, 13} &&
+                  submitter.nextUndo()->label == "Move Clips" && geo.selection.track == 3,
+              "both a row down: track 1's on track 2, track 2's on track 3, one step; the selection follows the one dragged");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(onTrack(1) == std::vector<std::int64_t>{11} && onTrack(2) == std::vector<std::int64_t>{12}, "puts them back");
+        // A row up, track 1's would leave the lanes: they keep their tracks, and move in time.
+        clickClip(1);
+        clickClip(2, pick);
+        const juce::Point<float> above(x(2 * bar) + 10, static_cast<float>(laneTop(root, 1) + 4));
+        canvas.mouseDown(pressAt(canvas, grab2));
+        canvas.mouseDrag(dragAt(canvas, grab2, above));
+        canvas.mouseUp(dragAt(canvas, grab2, above));
+        root.frame();
+        check(onTrack(1) == std::vector<std::int64_t>{11} && onTrack(2) == std::vector<std::int64_t>{12} &&
+                  clipOf(1)->posTicks == 2 * bar,
+              "a row up, track 1's would leave the lanes: they keep their tracks and move in time");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
         clickClip(4);
     }
     // Live's Ctrl/Cmd+click on track titles picks tracks apart from one another; Solo and Group Tracks
