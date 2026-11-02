@@ -181,13 +181,14 @@ int main(int argc, char **argv) {
     }
     {
         // A dropped audio file (#308, N5): the document reads it and captures its pool row without
-        // writing anything; the window's batch adds the clip; one commit, one undo step.
+        // writing anything; the window's batch adds the clip; one commit, one undo step. New makes
+        // Live's default Set (#307), tracks 1 to 5, so the drop's audio track is a sixth.
         auto dropped = ui::ProjectDocument::open(temp.path() / "drop.adi", true, {}, error);
         check(dropped != nullptr, "a project for the drop");
         if (dropped) {
             OpRequest audioTrack;
             audioTrack.opType = "track.create";
-            audioTrack.payload = {{"id", 2}, {"kind", "audio"}, {"name", "Drums"}};
+            audioTrack.payload = {{"id", 6}, {"kind", "audio"}, {"name", "Drums"}};
             check(dropped->ops().submit(audioTrack).ok && dropped->synchronise(), "an audio track");
             const auto wav = temp.path() / "kick.wav";
             {
@@ -204,11 +205,11 @@ int main(int argc, char **argv) {
                       dropped->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeDrop &&
                       dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
                   "prepareImport reads the file and captures its row, writing nothing");
-            auto edit = ui::dropAudio(*dropped->view().current(), 2, 0, "kick", import);
+            auto edit = ui::dropAudio(*dropped->view().current(), 6, 0, "kick", import);
             check(edit.refusal.empty() && edit.ops.size() == 3 && dropped->ops().submit(std::move(edit.ops)).ok &&
                       dropped->synchronise(),
                   "the pool row, the clip and its audio commit together");
-            const auto *track = dropped->view().current()->findTrack(2);
+            const auto *track = dropped->view().current()->findTrack(6);
             check(track != nullptr && track->clips.size() == 1 && track->clips[0]->name == "kick" &&
                       dropped->ops().nextUndo() && dropped->ops().nextUndo()->opCount == 3 &&
                       dropped->ops().nextUndo()->label == "Insert Audio Clip",
@@ -234,7 +235,7 @@ int main(int argc, char **argv) {
             check(heard, "and it plays");
             dropped->release();
             check(dropped->ops().undo().ok && dropped->synchronise() &&
-                      dropped->view().current()->findTrack(2)->clips.empty() &&
+                      dropped->view().current()->findTrack(6)->clips.empty() &&
                       dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
                   "one undo removes the clip, its audio and the new pool row");
             ui::AudioImport none;
