@@ -11,6 +11,7 @@
 namespace adi::ui {
 class AdiRootComponent;
 class MixerPanel;
+struct DevicePanelData; // adi/ui/parameter_feed.hpp
 // Live's Arm switch: a box with its dot.
 class ArmButton final : public juce::TextButton {
   public:
@@ -66,6 +67,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     }
     // The track's kind, as the snapshot gives it: Live draws a return's row and Main's their own way.
     const std::string &kind() const noexcept { return kind_; }
+    // A MIDI track (its In/Out column shows All Ins and All Channels), and whether the track has an
+    // audio mixer: a MIDI track holding no instrument has no volume, pan or sends, as Live's.
+    bool isMidi() const noexcept { return midi_; }
+    bool hasAudio() const noexcept { return audio_; }
     // Main's strip in the Mixer View: each return's Pre/Post switch in its Sends section, as Live's.
     const std::vector<std::unique_ptr<juce::TextButton>> &returnSwitches() const noexcept { return returnSwitches_; }
     // One send per return, the returns in the arrangement's order (ADR-0203 d3): Live's value
@@ -93,8 +98,11 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void panMenu();
     void sendMenu(std::size_t index);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
-    // One knob per return, made or dropped when the returns change; then laid out.
-    void syncSends();
+    // Live's MIDI meter on a track with no instrument, at the head of the meter's column.
+    void paintMidiMeter(juce::Graphics &, juce::Rectangle<int>) const;
+    // One knob per return, made or dropped when the returns or the track's devices change; then
+    // laid out. `devices` is the window's device publication, or null.
+    void syncSends(const std::vector<DevicePanelData> *devices);
     std::unique_ptr<juce::Slider> makeSend(std::size_t index);
     // The sends' rows in the track controls: three to a row, from the row under volume and pan.
     int sendRows() const noexcept { return static_cast<int>((sends_.size() + 2) / 3); }
@@ -114,6 +122,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     std::vector<std::unique_ptr<juce::Slider>> sends_;
     std::vector<std::unique_ptr<juce::TextButton>> returnSwitches_;
     std::string kind_;
+    bool midi_ = false, audio_ = true;
+    const void *devices_ = nullptr; // the device publication the strip last read
     int label_ = 0; // what the activator shows: a track's number, or -1 - a return's place
     // Throws a return's Pre/Post switch: every send into it moved, one undo step.
     void throwPrePost(std::int64_t ret);

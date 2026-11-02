@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixer.hpp"
 #include "ui_shell.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
 #include <algorithm>
 #include <cmath>
@@ -212,8 +213,12 @@ void MixerStrip::bind(std::int64_t id) {
 }
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
-    if (changed)
-        syncSends();
+    // A device put on a MIDI track or taken off it may give it an audio mixer or take it away.
+    const auto devices = panel_.root.devices.publication ? panel_.root.devices.publication() : nullptr;
+    if (changed || devices.get() != devices_) {
+        devices_ = devices.get();
+        syncSends(devices.get());
+    }
     if (changed) {
         // The Track Activator shows the track's number, its place in the arrangement's order,
         // as Live's (and as a # in its name does); the text changes only when it moves.
@@ -326,6 +331,10 @@ void MixerStrip::resized() {
         solo.setVisible(kind_ != "master");
         arm.setVisible(kind_ != "master" && kind_ != "return");
         prePost.setVisible(false);
+        // A MIDI track with no instrument has no mixer but its switches and its MIDI meter.
+        volume.setVisible(audio_);
+        pan.setVisible(audio_);
+        peakHold.setVisible(audio_);
         const int top = mixerTop(), bottom = getHeight();
         eq.setBounds(4, 22, 29, 13);
         limiter.setBounds(37, 22, 29, 13);
@@ -370,6 +379,11 @@ void MixerStrip::resized() {
         }
         place(volume, 1, {x + 4, 20, 35, 13});
         place(pan, 1, {x + 54, 20, 45, 13});
+        // A MIDI track with no instrument: no volume or pan, as Live's.
+        if (!audio_) {
+            volume.setVisible(false);
+            pan.setVisible(false);
+        }
     }
     // Live's sends on the rows under volume and pan, its 29 pt boxes three to a row; ADI's slots
     // on the row after them, or under volume and pan while the sends are hidden.
@@ -380,7 +394,7 @@ void MixerStrip::resized() {
         if (!sends)
             sends_[i]->setVisible(false);
     }
-    const int slots = 2 + (sends ? sendRows() : 0);
+    const int slots = (audio_ ? 2 : 1) + (sends ? sendRows() : 0);
     place(eq, slots, {x + 4, 3 + 17 * slots, 29, 13});
     place(limiter, slots, {x + 37, 3 + 17 * slots, 29, 13});
 }
@@ -413,11 +427,13 @@ void MixerStrip::paint(juce::Graphics &g) {
         g.fillRect(0, kMixerTop - 2, w, 2);
         if (shown_ > 0) {
             // Live's Sends section: its title at the right, each knob lettered as its return in the
-            // ring's open foot; a rule under it.
+            // ring's open foot; a rule under it. A strip with neither knobs nor switches keeps the
+            // section's room, untitled, so the mixers line up.
             g.fillRect(0, mixerTop() - 2, w, 2);
             g.setColour(look::text);
             g.setFont(look::font(11.5f));
-            g.drawText("Sends", 46, kMixerTop + 6, w - 50, 15, juce::Justification::centredRight);
+            if (!sends_.empty() || !returnSwitches_.empty())
+                g.drawText("Sends", 46, kMixerTop + 6, w - 50, 15, juce::Justification::centredRight);
             for (std::size_t i = 0; i < std::min(shown_, sends_.size()); ++i) {
                 const auto b = sendBounds(i);
                 g.setColour(look::text.withAlpha(sendOn_[i] != 0 ? 1.f : .45f));
@@ -441,7 +457,10 @@ void MixerStrip::paint(juce::Graphics &g) {
                            17, juce::Justification::centredLeft);
             }
         }
-        paintMeter(g, meterArea());
+        if (audio_)
+            paintMeter(g, meterArea());
+        else
+            paintMidiMeter(g, meterArea());
         return;
     }
     // Live's columns: grey, lighter for the selected track, a dark rule between them
@@ -455,7 +474,16 @@ void MixerStrip::paint(juce::Graphics &g) {
         g.fillRect(x - 1, 0, 1, getHeight());
         paintInOut(g, 2);
     }
-    paintMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+    if (audio_)
+        paintMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+    else
+        paintMidiMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+}
+void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
+    // Live's MIDI meter: a dot that lights while notes play. ADI has no note activity to show it
+    // yet, so it stays dark.
+    g.setColour(look::display);
+    g.fillRect(area.withHeight(std::min(area.getHeight(), area.getWidth())));
 }
 void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     // The In/Out column as Live draws an audio track's: where it records from, the
@@ -470,7 +498,8 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
         look::box(g, r, look::chooser);
         g.setColour(enabled ? look::text : look::textDim);
         g.setFont(look::font(11.5f));
-        g.drawText(label, r.withTrimmedLeft(3).withTrimmedRight(12), juce::Justification::centredLeft);
+        // Cut at the box's edge with no ellipsis, as Live cuts "All Channe" (Live 12 manual, Figure 6.1).
+        g.drawText(label, r.withTrimmedLeft(3).withTrimmedRight(12), juce::Justification::centredLeft, false);
         if (*label != 0)
             look::triangle(g, {r.getRight() - 10, r.getY() + 4, 7, 5}, juce::MathConstants<float>::halfPi,
                            enabled ? look::text : look::textDim);
@@ -485,8 +514,9 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
         chooser(0, "Master", true);
         return;
     }
-    chooser(0, "Ext. In", true);
-    chooser(1, "1/2", false);
+    // A MIDI track records from All Ins on All Channels, as Live's; an audio track from Ext. In.
+    chooser(0, midi_ ? "All Ins" : "Ext. In", true);
+    chooser(1, midi_ ? "All Channels" : "1/2", midi_);
     if (rows > 2) {
         const std::array<std::pair<const char *, int>, 3> monitor{{{"In", 16}, {"Auto", 23}, {"Off", 19}}};
         float bx = static_cast<float>(x + 3);
@@ -500,7 +530,8 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
             bx += static_cast<float>(width) + 6;
         }
     }
-    chooser(3, "Master", true);
+    // A MIDI track with no instrument plays nothing to Main: No Output, as Live's.
+    chooser(3, audio_ ? "Master" : "No Output", true);
     chooser(4, "", false);
 }
 void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
@@ -564,19 +595,24 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     else
         panel_.contextMenu(e.getScreenPosition());
 }
-void MixerStrip::syncSends() {
+void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     const auto &reader = panel_.root.reader();
     const auto *t = reader.findTrack(track_);
     returnsInOrder(reader.tracks(), order_);
     static const std::string none;
     const std::string &kind = t != nullptr ? t->kind : none;
-    // A send knob per return on every track but Main; on Main's Mixer View strip, each return's
-    // Pre/Post switch instead (Live's Mixer).
-    const auto knobs = t != nullptr && hasSends(*t) ? order_.size() : 0;
+    const bool midi = t != nullptr && isMidiTrack(*t);
+    const bool audio = t == nullptr || hasAudioMixer(*t, devices);
+    // A send knob per return on every track with an audio mixer but Main; on Main's Mixer View
+    // strip, each return's Pre/Post switch instead (Live's Mixer).
+    const auto knobs = t != nullptr && hasSends(*t) && audio ? order_.size() : 0;
     const auto switches = kind == "master" && panel_.vertical() ? order_.size() : 0;
-    if (order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size())
+    if (order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size() &&
+        midi == midi_ && audio == audio_)
         return;
     kind_ = kind;
+    midi_ = midi;
+    audio_ = audio;
     returns_ = order_;
     returnCount_ = returns_.size();
     sends_.resize(std::min(sends_.size(), knobs));
