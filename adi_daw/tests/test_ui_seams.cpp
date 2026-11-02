@@ -21,6 +21,7 @@
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/ui/op_submitter.hpp"
+#include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -635,6 +636,49 @@ void groupAndUngroupAsBatches() {
           "what the menu offers follows the same rules");
 }
 
+void returnsStandBeforeMain() {
+    section("the returns after the tracks, Main last: Live's foot (manual 6.1)");
+    adi::test::TempDirectory temp("ui_seams", "returns");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    bool made = true;
+    for (const auto& [id, kind, parent, index] :
+         {std::tuple{1, "master", 0, 0}, std::tuple{2, "return", 0, 0}, std::tuple{3, "audio", 0, 0},
+          std::tuple{4, "group", 0, 1}, std::tuple{5, "audio", 4, 0}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", "t"}, {"index", index}};
+        if (parent != 0) r.payload["parent"] = parent;
+        r.label = "Create track";
+        made = sub.submit(std::move(r)).ok && made;
+    }
+    check(made, "Main and a return at index 0, a track, a group holding one");
+    const ui::SnapshotReader reader(view.current());
+    std::vector<ui::TrackRow> rows;
+    ui::rowsFromSnapshot(reader, rows);
+    ui::TrackOrder order;
+    order.build(reader, rows);
+    std::vector<std::int64_t> ids;
+    for (const auto& p : order.places()) ids.push_back(p.id);
+    check((ids == std::vector<std::int64_t>{3, 4, 5, 2, 1}), "the tracks and the group, then the return, then Main");
+    check(order.places()[3].ret && order.places()[3].foot() && order.places()[4].foot() && !order.places()[2].foot(),
+          "the return and Main make the foot");
+    ui::ArrangementGeometry geometry;
+    geometry.order = order;
+    const auto all = geometry.rows(reader);
+    check(geometry.footStart(all) == 3 && geometry.footTop(reader) == 3 * geometry.height,
+          "without its view, the foot follows the tracks");
+    geometry.lanesHeight = 1000;
+    check(geometry.footTop(reader) == 1000 - 2 * geometry.height &&
+              geometry.rowTop(reader, 1) == 1000 - geometry.height && geometry.rowTop(reader, 3) == 0,
+          "with its view, it stands at the bottom of the lanes");
+    check(ui::groupTrack(view.current()->tracks, 2).refusal == "Main and return tracks can't be grouped.",
+          "a return can't be grouped");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -654,6 +698,7 @@ int main() {
     projectViewRowsFromTheSnapshot();
     metersCountBars();
     groupAndUngroupAsBatches();
+    returnsStandBeforeMain();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

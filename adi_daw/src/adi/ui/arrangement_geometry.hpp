@@ -42,10 +42,15 @@ inline std::string gridLabel(double quarters, bool triplet) {
 // View-only coordinates and selection. No committed project state is copied here.
 //
 // Every track the snapshot holds is a row, in the arrangement's order (TrackOrder): each group
-// followed by what it holds, Main last.
+// followed by what it holds, then the returns, then Main. The returns and Main are Live's foot:
+// pinned at the bottom of the lanes, whatever the scroll, with the drop area between them and the
+// tracks above (Live 12 manual 6.1, its demo arrangement; parity-7.3 row 17).
 struct ArrangementGeometry {
     double left = 0, scale = 48; // quarter notes at the left edge; pixels per quarter
     int height = 88, scrollY = 0;
+    // The lanes' height as the view shows them, which the foot stands at the bottom of. Zero for a
+    // geometry used without its view: the foot then follows the tracks.
+    int lanesHeight = 0;
     std::map<std::int64_t, int> heights;
     // Bitwig's Use Large Track Height (Master Reference 10, Figure 33): off, every track shows
     // at half its height, never below the smallest. The heights kept are the large ones.
@@ -246,18 +251,72 @@ struct ArrangementGeometry {
             scale = v.scale;
         }
     }
+    // The first row of the foot: the returns and Main at the end of the rows, or the rows' size
+    // when there are none (or no order, as for a geometry used without its view).
+    std::size_t footStart(const Rows &all) const noexcept {
+        auto i = all.size();
+        while (i > 0 && all[i - 1].place.foot())
+            --i;
+        return i;
+    }
+    // The foot's height, and the tracks' above it, as shown.
+    int footHeight(const SnapshotReader &r) const noexcept {
+        const auto all = rows(r);
+        int total = 0;
+        for (auto i = footStart(all); i < all.size(); ++i)
+            total += heightFor(all[i].track->id);
+        return total;
+    }
+    int tracksHeight(const SnapshotReader &r) const noexcept {
+        const auto all = rows(r);
+        const auto foot = footStart(all);
+        int total = 0;
+        for (std::size_t i = 0; i < foot; ++i)
+            total += heightFor(all[i].track->id);
+        return total;
+    }
+    // Where the foot begins in the lanes: at their bottom, whatever the scroll; right after the
+    // tracks for a geometry without its view. A foot taller than the lanes leaves the tracks one
+    // row of the smallest height, and is cut off at the bottom.
+    int footTop(const SnapshotReader &r) const noexcept {
+        if (lanesHeight <= 0)
+            return tracksHeight(r) - scrollY;
+        return std::max(std::min(kMinTrackHeight, lanesHeight), lanesHeight - footHeight(r));
+    }
+    // Where a track's row begins in the lanes; -1 when it has none. A walk down the rows does the
+    // same: from -scrollY, and at the foot's first row, from footTop.
+    int rowTop(const SnapshotReader &r, std::int64_t id) const noexcept {
+        const auto all = rows(r);
+        const auto foot = footStart(all);
+        int y = -scrollY;
+        for (std::size_t i = 0; i < all.size(); ++i) {
+            if (i == foot)
+                y = footTop(r);
+            if (all[i].track->id == id)
+                return heightFor(id) > 0 ? y : -1;
+            y += heightFor(all[i].track->id);
+        }
+        return -1;
+    }
+    // The most the tracks scroll: the foot never scrolls, and the last track keeps a sliver in
+    // sight.
+    int maxScroll(const SnapshotReader &r) const noexcept { return std::max(0, tracksHeight(r) - kMinTrackHeight); }
     const engine::TrackNode *trackAt(const SnapshotReader &r, int y) const noexcept {
         const auto all = rows(r);
         const auto i = rowAt(r, y);
         return i < all.size() ? all[i].track : nullptr;
     }
     // The row at `y`, or the rows' size when there is none; `top` gets where it begins.
+    // The foot stands over the tracks scrolled under it, so a point there is the foot's.
     std::size_t rowAt(const SnapshotReader &r, int y, int *top = nullptr) const noexcept {
         const auto all = rows(r);
         if (y < 0)
             return all.size();
-        int at = -scrollY;
-        for (std::size_t i = 0; i < all.size(); ++i) {
+        const auto foot = footStart(all);
+        const int footY = footTop(r);
+        const bool inFoot = foot < all.size() && y >= footY;
+        int at = inFoot ? footY : -scrollY;
+        for (std::size_t i = inFoot ? foot : 0; i < (inFoot ? all.size() : foot); ++i) {
             const int h = heightFor(all[i].track->id);
             if (y >= at && y < at + h) {
                 if (top != nullptr)
@@ -267,12 +326,6 @@ struct ArrangementGeometry {
             at += h;
         }
         return all.size();
-    }
-    int contentHeight(const SnapshotReader &r) const noexcept {
-        int total = 0;
-        for (const auto &t : r.tracks())
-            total += heightFor(t->id);
-        return total;
     }
     const engine::ClipNode *hit(const engine::TrackNode &t, std::int64_t at) const noexcept {
         // SnapshotBuilder orders by position/id. Upper bound excludes future clips;

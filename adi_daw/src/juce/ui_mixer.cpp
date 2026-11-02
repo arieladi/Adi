@@ -468,11 +468,15 @@ void MixerPanel::reveal(std::size_t index) {
         placeColumns();
         return;
     }
+    // The returns and Main stand at the foot, always in sight.
+    const auto foot = geometry.footStart(tracks);
+    if (index >= foot)
+        return;
     int top = 0;
     for (std::size_t i = 0; i < index; ++i)
         top += geometry.heightFor(tracks[i].track->id);
     const int bottom = top + geometry.heightFor(tracks[index].track->id);
-    const int view = std::max(0, getHeight() - root.arrangement.topHeight());
+    const int view = std::max(0, geometry.footTop(root.reader()));
     if (top >= geometry.scrollY && bottom <= geometry.scrollY + view)
         return;
     geometry.scrollY = top < geometry.scrollY ? top : std::min(top, bottom - view);
@@ -569,15 +573,21 @@ void MixerPanel::place() {
     const auto &geometry = root.arrangement.geometry;
     const auto tracks = geometry.rows(root.reader());
     const int bodyTop = root.arrangement.topHeight(); // level with the lanes
+    // The returns and Main at the foot, whatever the scroll; a track scrolled under it is out of
+    // sight.
+    const auto foot = geometry.footStart(tracks);
+    const int footY = bodyTop + geometry.footTop(root.reader());
+    auto inSight = [&](std::size_t i, int y, int h) {
+        return h > 0 && y + h > bodyTop && y < (i < foot ? std::min(footY, getHeight()) : getHeight());
+    };
     std::size_t wanted = 0;
     int y = bodyTop - geometry.scrollY;
-    std::size_t first = tracks.size();
     for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (i == foot)
+            y = footY;
         const int h = geometry.heightFor(tracks[i].track->id);
-        if (h > 0 && y + h > bodyTop && y < getHeight()) {
-            first = std::min(first, i);
+        if (inSight(i, y, h))
             ++wanted;
-        }
         y += h;
     }
     while (strips_.size() < wanted) {
@@ -588,14 +598,19 @@ void MixerPanel::place() {
     y = bodyTop - geometry.scrollY;
     std::size_t used = 0;
     for (std::size_t i = 0; i < tracks.size(); ++i) {
+        if (i == foot)
+            y = footY;
         const auto id = tracks[i].track->id;
         const int h = geometry.heightFor(id);
-        if (h > 0 && i >= first && used < wanted) {
+        if (inSight(i, y, h) && used < wanted) {
             auto &s = *strips_[used++];
             if (s.track() != id && !s.dragging())
                 s.bind(id);
             s.setBounds(0, y, getWidth(), h);
             s.setVisible(true);
+            // The foot's strips stand in front of a track's partly scrolled under them.
+            if (i >= foot)
+                s.toFront(false);
         }
         y += h;
     }
@@ -620,10 +635,11 @@ void MixerPanel::paint(juce::Graphics &g) {
     // strip down the outer edge is the root's SideStrip.
     g.fillAll(look::band);
     const int top = root.arrangement.topHeight();
-    int bottom = top - root.arrangement.geometry.scrollY;
-    for (const auto &t : root.reader().tracks())
-        bottom += root.arrangement.geometry.heightFor(t->id);
-    bottom = std::clamp(bottom, top, getHeight());
+    const auto &geometry = root.arrangement.geometry;
+    // Under the last track down to the foot, or to the bottom without one.
+    const int footY = top + geometry.footTop(root.reader());
+    int bottom = top - geometry.scrollY + geometry.tracksHeight(root.reader());
+    bottom = std::clamp(bottom, top, std::min(footY, getHeight()));
     g.setColour(look::panel);
     g.fillRect(0, bottom, getWidth(), std::max(0, getHeight() - bottom - ArrangementView::kTimeRulerHeight));
     g.setColour(look::separator);

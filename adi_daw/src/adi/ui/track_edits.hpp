@@ -34,7 +34,9 @@ inline const engine::TrackNode *find(const Tracks &tracks, std::int64_t id) noex
             return t.get();
     return nullptr;
 }
-// What `parent` holds, in the arrangement's order (TrackOrder's): Main after the rest, then by
+// Where TrackOrder puts a track among what its parent holds: the returns after the rest, Main last.
+inline int rank(const engine::TrackNode &t) noexcept { return t.kind == "master" ? 2 : t.kind == "return" ? 1 : 0; }
+// What `parent` holds, in the arrangement's order (TrackOrder's): by rank, then by
 // index_in_parent, then by place in the snapshot.
 inline std::vector<const engine::TrackNode *> children(const Tracks &tracks, std::int64_t parent) {
     std::vector<std::pair<std::size_t, const engine::TrackNode *>> held;
@@ -42,9 +44,8 @@ inline std::vector<const engine::TrackNode *> children(const Tracks &tracks, std
         if (tracks[i] && tracks[i]->parent == parent)
             held.emplace_back(i, tracks[i].get());
     std::sort(held.begin(), held.end(), [](const auto &a, const auto &b) {
-        const bool am = a.second->kind == "master", bm = b.second->kind == "master";
-        if (am != bm)
-            return bm;
+        if (rank(*a.second) != rank(*b.second))
+            return rank(*a.second) < rank(*b.second);
         if (a.second->indexInParent != b.second->indexInParent)
             return a.second->indexInParent < b.second->indexInParent;
         return a.first < b.first;

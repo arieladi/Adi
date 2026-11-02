@@ -191,12 +191,18 @@ in the mixer by default; that is what the group/stem focus view state is for.
 *Built (window lane, 2026-10-29): Live's group tracks (manual 18.3).* The model is
 `adi::ui::TrackOrder` (`src/adi/ui/track_order.hpp`), held by `ArrangementGeometry`
 and built again in place for each new snapshot: each group followed by what it
-holds, by `index_in_parent` then id, at any depth; Main last, as Live draws it. Every
-walk down the tracks reads it through `ArrangementGeometry::rows` (the lanes, the
-names, the track controls, the Mixer View, the Overview, the Channel EQ window, the
-keys, the Status Bar's number), so no panel orders tracks itself. The snapshot's own
-order (`index_in_parent, id`) mixes one group's tracks with another's and is not
-used for display.
+holds, by `index_in_parent` then id, at any depth; then the returns, then Main, as
+Live draws them. Every walk down the tracks reads it through `ArrangementGeometry::rows`
+(the lanes, the names, the track controls, the Mixer View, the Overview, the Channel EQ
+window, the keys, the Status Bar's number), so no panel orders tracks itself. The
+snapshot's own order (`index_in_parent, id`) mixes one group's tracks with another's
+and is not used for display.
+
+*Built (window lane, 2026-11-01): Live's foot.* The returns and Main are pinned at the
+bottom of the lanes, below the drop area, whatever the scroll (`ArrangementGeometry::
+footStart`, `footTop`). A walk down the rows starts at `-scrollY` and jumps to
+`footTop` at the foot's first row; `rowAt` gives a point in the foot to the foot, never
+to a track scrolled under it; the track controls' foot strips stand in front.
 
 A group's title shows Live 12's group switch (three lines, the top one out while
 open); a track in a group sits past a band in the group's colour for each group it
