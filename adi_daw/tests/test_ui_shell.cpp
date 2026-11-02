@@ -2988,11 +2988,15 @@ int main(int argc, char **argv) {
         if (auto *row = rowFor(projectSetting))
             check(!row->control->isEnabled(), "a project's setting is shown with its mark, changed by its op");
         const auto pageBefore = panel.page();
+        // The editor posts its change as a message, which nothing dispatches here: run what it runs.
+        // (Until now this check passed by chance: the page it was on held as many settings as match.)
         panel.search.setText("buffer", true);
+        panel.search.onTextChange();
         check(panel.finding() && !panel.rows().empty() &&
                   panel.rows().size() == settings::search("buffer").size(),
               "the Find box lists every matching setting, from every page");
         panel.search.setText({}, true);
+        panel.search.onTextChange();
         check(!panel.finding() && panel.page() == pageBefore, "clearing it goes back to the page");
         panel.showPage(pages.front());
         const auto ctrl = juce::ModifierKeys::ctrlModifier;
