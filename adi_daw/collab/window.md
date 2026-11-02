@@ -71,6 +71,25 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — Select All [#331](https://github.com/arieladi/Adi/pull/331) `window/select-all`, on #329
+
+**Built: Live's Select All** (§42.5; parity 7.3 row 36).
+- Ctrl/Cmd+A, in the Edit menu after Rename.
+- In the Arrangement it selects all the material, from the earliest clip's start to the latest
+  one's end across every track holding clips; Delete and 0 then act on all of it.
+- One clip alone is selected as that clip. With none, the Status Bar says there is nothing to
+  select. A text field keeps its own Ctrl/Cmd+A.
+
+**Measure on Live:** whether Select All starts at the earliest clip or at 1.1.1, and whether it
+reaches the returns.
+
+**Tests.** shell 612; `test_all.sh` PASS. #325's macOS GUI shell fix (`e2f22ee`) is green.
+
+**Next:** queue item 4, the parity passes, starting with Main's row in the track controls
+(Live's has the output chooser and the cue volume).
+
+---
+
 ## 2026-11-02, cloud, continued — win merged #324 and the engine's #307; New is the store's root [#330](https://github.com/arieladi/Adi/pull/330) `window/new-project-root`
 
 **Merged by win:**
