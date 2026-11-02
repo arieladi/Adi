@@ -73,6 +73,18 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — time signature markers moved [#363](https://github.com/arieladi/Adi/pull/363) `window/meter-move`, on #362
+
+**Built: markers moved by the mouse and the arrow keys** (parity 7.3 row 11; Live 12 manual 6.5).
+A marker dragged follows the mouse to the nearest grid line (Alt, Cmd on the Mac, frees it), drawn
+where it lands, never before the first grid line; left and right move a selected marker a grid
+line. Each move is one step that keeps the value (`moveMeter`: remove, then insert). Onto another
+marker or the start it stays, with the reason.
+
+**Tests.** seams 331, shell 809; `test_all.sh` PASS (10016 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — time signature markers from the window [#362](https://github.com/arieladi/Adi/pull/362) `window/meter-markers`, on #361
 
 **Built: Live's time signature markers inserted, edited and deleted** (parity 7.3 row 11; Live 12
