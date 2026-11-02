@@ -73,6 +73,27 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — a MIDI track's row and strip [#336](https://github.com/arieladi/Adi/pull/336) `window/midi-rows`, on #335
+
+**Built: a MIDI track as Live draws it** (look-live11 difference row 3, parity 7.6 row 18).
+- All Ins and All Channels in its In/Out column, cut as Live cuts "All Channe".
+- With no instrument plug-in on it: no volume, pan or sends, No Output, and Live's MIDI meter, a
+  column of dark dots (Live 12 manual, the Mixer in Arrangement View); an instrument brings the
+  mixer back. What the track holds decides, not its kind's hint (ADR-0045).
+- ParameterFeed (`src/adi/ui`) marks instruments from `plugin_refs.subtype`; the rule is headless
+  in `midi_tracks.hpp`.
+
+**Measure on Live:** a MIDI track's Arm icon. The MIDI meter's dots stay dark (no note activity
+reaches the window); an instrument rack does not count (a rack's kind has no values in the format).
+
+**Tests.** seams 215, shell 635; `test_all.sh` PASS (9898 checks, 106 suites). Goldens
+`arrangement`, `devices`, `mixer`, `mixer-view`, `live-parity` re-recorded for the MIDI rows.
+
+**Next:** the Mixer View's In/Out section and Live 12's Mixer View Control options menu
+(`window/mixer-options`).
+
+---
+
 ## 2026-11-02, cloud, continued — Hide/Show Sends and the strip's selectors [#335](https://github.com/arieladi/Adi/pull/335) `window/view-selectors`, on #334
 
 **Built: Live's Hide/Show Sends** (Ctrl/Cmd+Alt+S, the View menu after In/Out; §42.1; parity 7.2
