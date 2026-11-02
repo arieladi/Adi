@@ -13,6 +13,50 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N32 ready; continuing to N33
+
+**PR requested** (ADR-0210 d4): `engine/clip-details` at **`93f2e35`** →
+`main` (base `dff5b41`). Title: **Expose clip properties and exact note identities for Clip View (N32)**.
+
+PR body / window handoff: the row allows an owner-thread read API rather than
+inflating every arrangement snapshot with notes. Call
+`engine::readClipDetails(store, clipId)` after journal movement, outside its
+mutation transaction. The owned result has kind/name/optional palette colour,
+track/lane/alias identity, original tick/ns placement/length, all common clip
+fields, source start/end markers, loop switch/window, inherited signature/scale
+at the clip's start (including native tuning id/degrees), and every original
+ANOT note id and property, including inactive notes. Address edits with
+`{clip:clipId,note:note.id}`; display order is not identity. Values remain stable
+while held. Invalid streams/notes are named without a partial curve or losing
+clip metadata. Legacy zero/duplicate ids stay exact with a problem; refuse
+ambiguous edits rather than inventing row-index identities. Future note extents
+and encoded bytes remain available. Read targets one stream, no op/playback.
+A missing clip or SQL failure is explicit. See `docs/ENGINE-CLIP-DETAILS.md`.
+
+No schema/op change here. The reader understands N33's optional additive
+`clip_properties` table when present: local end marker, signature and 12-TET
+scale with explicit local flags, NULL/absence means inheritance. Compatibility
+is tested with a synthetic table, not claimed as a native migration. N33 supplies
+writes/playback; N34 supplies note active writes. Until then Start is the stored
+content offset and End derives from source offset plus visible duration, through
+the step tempo map for a linear clip. Raw stored units always remain readable;
+unrepresentable derivations and tempo ramps are named.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9843 checks / 107 suites**,
+validators clean. New suite **29**; five Clang Werror suites pass: clip details29,
+MIDI clips165, catalog106, ops130, project view14. Covers a real note move using a
+returned full-width id, reorder/undo and retained values; all common properties;
+NULL versus zero; inherited/local meter and scale; linear tempo-change context;
+range guards; inactive/ambiguous/corrupt/future notes and read-only reopen.
+Three compiled plants fail: lost identity (4), reversed active bit (1), ignored
+local properties (1). Remote CI, MSVC/JUCE and measured Live parity unobserved.
+Win/window opens; win reviews/merges. Continuing to **N33** from N25's
+`engine/markers-locators` (two deep), so its additive format is 1.11 after N25's
+1.10. N32's read API is compatible but not a build dependency. N34 follows.
+No director gate reached.
+
+
+
 ## 2026-11-02 — N29 ready; continuing to N32
 
 **PR requested** (ADR-0210 d4): `engine/history-list` at **`de77bf3`** →
