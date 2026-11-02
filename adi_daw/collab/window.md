@@ -73,6 +73,23 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — Insert Track in its place [#348](https://github.com/arieladi/Adi/pull/348) `window/insert-place`, on #347
+
+**Fixed: where Insert Audio/MIDI Track lands** (parity 7.3 row 15). The new track took the selected
+one's place in the snapshot's order, plus one, outside any group, and `track.create` moves no
+other track, so with a grouped track selected the new one went to the top level, and in the middle
+of a list its index tied with the next track's. A headless `insertTrack` in `track_edits.hpp` now
+puts it in the selected track's group, right after it, and moves the tracks after it down one, in
+the same undo step; with nothing, Main or a return selected, after the last track. Found while
+building #347.
+
+**Goldens.** `mixer.png` and `mixer-view.png` move: their scene inserts thirty audio tracks with
+Track selected, and they now follow Track instead of landing after the MIDI track.
+
+**Tests.** seams 261, shell 716; `test_all.sh` PASS (9945 checks, 106 suites).
+
+---
+
 ## 2026-11-02, cloud, continued — tracks dragged by their titles [#347](https://github.com/arieladi/Adi/pull/347) `window/track-move`, on #346
 
 **Built: Live's track drag** (parity 7.3 rows 7 and 33). A drag on a track's title moves the track
