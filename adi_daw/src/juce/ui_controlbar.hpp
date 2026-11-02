@@ -41,6 +41,9 @@ class BarItem final : public juce::Button {
     juce::String text;
     Glyph glyph;
     bool boxed, dropdown;
+    // Live's automation LED in a field's upper left corner (manual 6.5: the time signature fields
+    // show one "when the Arrangement contains time signature changes").
+    bool automationLed = false;
 
   private:
     bool ring_ = false;
@@ -58,6 +61,11 @@ class TransportBar final : public juce::Component {
     void refresh();
     // Navigate's Control Bar (§41.4.1.1): the focus returns to the control that last had it.
     void focus();
+    // Live's Time Signature field (manual 6.5): a click opens a field over it holding the signature
+    // shown; Enter changes the signature at the play location (a value refused keeps it open, the
+    // Status Bar saying why), Esc or a click elsewhere closes it.
+    void beginSignatureEdit();
+    juce::TextEditor signatureEditor;
     BarItem link{"Link"}, tap{"Tap"}, tempo{"120.00"},
         nudgeDown{{}, BarItem::Glyph::NudgeDown}, nudgeUp{{}, BarItem::Glyph::NudgeUp},
         signature{"4 / 4"}, metronome{{}, BarItem::Glyph::Metronome, true, true},

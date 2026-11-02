@@ -157,6 +157,37 @@ inline MeterEdit moveMeter(const std::vector<textproj::Meter> &meters, std::int6
     edit.ops.push_back(meter_edits_detail::insert(to, value, "Move Time Signature Change"));
     return edit;
 }
+// The control bar's Time Signature field (manual 6.5): "This will change the time signature at the
+// current play location". Where a marker is in force there, it is that marker's edit. At the start,
+// the project's first signature: replaced where the project stores one (`startStored`), else
+// inserted. The snapshot shows an implicit 4/4 when none is stored, so a 4/4 there may be either;
+// `startStored` says what the caller knows or tries (`startSurelyStored`).
+inline MeterEdit setMeterAt(const std::vector<textproj::Meter> &meters, std::int64_t at, std::string_view text,
+                            bool startStored) {
+    std::size_t in = 0;
+    for (std::size_t i = 1; i < meters.size(); ++i)
+        if (meters[i].start_ticks <= at)
+            in = i;
+    if (in != 0)
+        return editMeter(meters, meters[in].start_ticks, text);
+    MeterEdit edit;
+    const auto value = parseMeter(text);
+    if (!value) {
+        edit.refusal = meter_edits_detail::kTypeOne;
+        return edit;
+    }
+    const MeterValue now = meters.empty() ? MeterValue{} : MeterValue{meters[0].numerator, meters[0].denominator};
+    if (*value == now)
+        return edit;
+    if (startStored)
+        edit.ops.push_back(meter_edits_detail::remove(0, "Edit Time Signature"));
+    edit.ops.push_back(meter_edits_detail::insert(0, *value, "Edit Time Signature"));
+    return edit;
+}
+// The start's signature is surely stored when it is not the implicit 4/4.
+inline bool startSurelyStored(const std::vector<textproj::Meter> &meters) noexcept {
+    return !meters.empty() && meters[0].start_ticks == 0 && !(meters[0].numerator == 4 && meters[0].denominator == 4);
+}
 // Delete on a selected marker.
 inline MeterEdit deleteMeter(const std::vector<textproj::Meter> &meters, std::int64_t pos) {
     MeterEdit edit;
