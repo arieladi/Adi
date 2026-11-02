@@ -136,6 +136,25 @@ void ScrubArea::paint(juce::Graphics &g) {
     // with a dark edge, a notch at its top left, the signature in it. The first signature is the
     // control bar's and has none. The selected one is lit (its colour to be measured on Live).
     const auto &meters = view.reader().meters();
+    // Live's fragmentary bars (manual 6.5, its figure): a crosshatched band in the markers' row, from
+    // the bar line before a change placed too early to the change.
+    forEachFragmentaryBar(meters, [&](std::int64_t start, std::int64_t end) {
+        const float x0 = static_cast<float>(view.geometry.x(start)), x1 = static_cast<float>(view.geometry.x(end));
+        if (x1 < 0 || x0 > static_cast<float>(getWidth()))
+            return;
+        const juce::Rectangle<float> band(x0, 3.f, x1 - x0, 15.f);
+        g.setColour(juce::Colour(0xffb4b4b4));
+        g.fillRect(band);
+        {
+            juce::Graphics::ScopedSaveState clip(g);
+            g.reduceClipRegion(band.getSmallestIntegerContainer());
+            g.setColour(juce::Colour(0xff6e6e6e));
+            for (float x = x0 - band.getHeight(); x < x1; x += 6.f)
+                g.drawLine(x, band.getBottom(), x + band.getHeight(), band.getY(), 1.5f);
+        }
+        g.setColour(look::separator);
+        g.drawRect(band, 1.5f);
+    });
     g.setFont(look::font(11.5f));
     for (std::size_t i = 1; i < meters.size(); ++i) {
         auto m = meters[i];
@@ -175,7 +194,8 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         repaint();
     }
     if (e.mods.isPopupMenu()) {
-        menu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+        menu(view.geometry.tick(e.position.x))
+            .showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
         return;
     }
     if (marker >= 0)
@@ -203,7 +223,7 @@ void ScrubArea::mouseUp(const juce::MouseEvent &) {
         view.root.moveMeter(from, to);
     repaint();
 }
-juce::PopupMenu ScrubArea::menu() {
+juce::PopupMenu ScrubArea::menu(std::int64_t at) {
     // Live's scrub area menu (manual 6.5): Insert Time Signature Change at the insert marker; on a
     // marker, Edit Time Signature and Delete (the Edit menu's Rename and Delete, which act on the
     // selected marker).
@@ -215,6 +235,16 @@ juce::PopupMenu ScrubArea::menu() {
         out.addSeparator();
         out.addCommandItem(&commands.manager, AppCommands::RenameTrack);
         out.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+    }
+    // On a fragmentary bar, Live's two ways to make it whole (manual 6.5, its figure). Both delete or
+    // insert time across every track, which waits for the time ops (the …Time commands' kind, N17);
+    // the Status Bar says so.
+    if (at >= 0 && fragmentAt(at, view.reader().meters()).first >= 0) {
+        out.addSeparator();
+        out.addItem(juce::PopupMenu::Item("Delete Fragmentary Bar Time").setEnabled(false));
+        out.addItem(juce::PopupMenu::Item("Complete Fragmentary Bar (Insert Time)").setEnabled(false));
+        view.root.say("Deleting or completing a fragmentary bar inserts or deletes time across the tracks, "
+                      "which waits for the time ops.");
     }
     return out;
 }

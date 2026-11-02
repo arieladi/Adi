@@ -1313,6 +1313,28 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(meterOf(bar3) == "5/4" && submitter.nextUndo()->txnId == stepsBefore,
           "four undos (the two refused moves made none): back at bar 3");
+    // Live's fragmentary bar (manual 6.5): 5/4 from bar 3 makes bars of five quarters, so the 7/8 on
+    // quarter 14 cuts the second short, from quarter 13; its menu holds Live's two commands, which
+    // wait for the time ops.
+    auto names = [](const juce::PopupMenu &menu) {
+        std::vector<std::pair<std::string, bool>> out;
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (!it.getItem().isSeparator)
+                out.emplace_back(it.getItem().text.toStdString(), it.getItem().isEnabled);
+        return out;
+    };
+    root.arrangement.selectedMeter = -1;
+    const auto inFragment = names(scrub.menu(13 * q + q / 2));
+    check(inFragment.size() == 3 && inFragment[1] == std::pair<std::string, bool>{"Delete Fragmentary Bar Time", false} &&
+              inFragment[2] == std::pair<std::string, bool>{"Complete Fragmentary Bar (Insert Time)", false} &&
+              root.error().find("time ops") != std::string::npos,
+          "the menu on the fragment: Live's two commands, dimmed, and the Status Bar says why");
+    check(names(scrub.menu(10 * q)).size() == 1, "elsewhere: Insert Time Signature Change alone");
+    lanes.left = 7;
+    root.mark(DirtySet::All);
+    root.frame();
+    render("adi-fragmentary-bar.png");
+    lanes.left = 0;
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.

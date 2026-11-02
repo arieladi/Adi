@@ -58,7 +58,8 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
     // cancels. A value refused keeps the field open, and the Status Bar says why.
     bool beginMeterEdit(std::int64_t pos, bool inserting);
     std::int64_t meterEditing() const noexcept { return editing_; }
-    juce::PopupMenu menu();
+    // The scrub area's menu at `at` (a tick): Live's two commands on a fragmentary bar join it there.
+    juce::PopupMenu menu(std::int64_t at = -1);
     RenameEditor editor;
 
   private:

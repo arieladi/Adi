@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/textproj.hpp"
 #include <cstdint>
+#include <utility>
 #include <vector>
 namespace adi::ui {
 // Bars, beats and sixteenths in the project's meters (Live 12 manual 6.1, 6.2): the numbers the
@@ -106,5 +107,28 @@ void forEachBar(std::int64_t from, std::int64_t to, const std::vector<textproj::
         meter = &meters[next];
         ++next;
     }
+}
+// Live's fragmentary bars (Live 12 manual 6.5): a change placed before the previous bar is complete
+// cuts that bar short, "represented in the scrub area by a crosshatched region". `visit(start, end)`
+// for each, from the bar line before the change to the change, in order.
+template <class Visit>
+void forEachFragmentaryBar(const std::vector<textproj::Meter> &meters, Visit &&visit) {
+    for (std::size_t i = 1; i < meters.size(); ++i) {
+        const auto &before = meters[i - 1];
+        const auto barTicks = before.barTicks();
+        if (barTicks <= 0 || meters[i].start_ticks <= before.start_ticks)
+            continue;
+        if (const auto into = (meters[i].start_ticks - before.start_ticks) % barTicks; into != 0)
+            visit(meters[i].start_ticks - into, meters[i].start_ticks);
+    }
+}
+// The fragmentary bar holding `tick`, as {start, end}; {-1, -1} when it falls in none.
+inline std::pair<std::int64_t, std::int64_t> fragmentAt(std::int64_t tick, const std::vector<textproj::Meter> &meters) {
+    std::pair<std::int64_t, std::int64_t> found{-1, -1};
+    forEachFragmentaryBar(meters, [&](std::int64_t start, std::int64_t end) {
+        if (tick >= start && tick < end)
+            found = {start, end};
+    });
+    return found;
 }
 } // namespace adi::ui
