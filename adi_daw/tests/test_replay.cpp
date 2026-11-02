@@ -89,7 +89,7 @@ void seedStateBlob(Store& s) {
 /// corpus runner never touches.
 std::unique_ptr<Store> blank(const fs::path& p) {
     StoreError e = StoreError::Ok;
-    auto s = Store::create(p, e);
+    auto s = Store::createEmpty(p, e);
     if (s) seedStateBlob(*s);
     return s;
 }

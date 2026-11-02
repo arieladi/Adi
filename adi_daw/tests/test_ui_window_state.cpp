@@ -21,7 +21,7 @@ void check(bool ok, const char *what) {
 int main() {
     test::TempDirectory temp("ui_state", "roundtrip");
     StoreError err{};
-    auto store = Store::create(temp.path() / "p.adi", err);
+    auto store = Store::createEmpty(temp.path() / "p.adi", err);
     if (!store)
         return 2;
     store->db().exec("INSERT INTO project(id,name) VALUES(1,'UI test')");

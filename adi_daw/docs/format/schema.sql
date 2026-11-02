@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1008;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1009;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '8'),
+    ('schema_minor',        '9'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -67,7 +67,7 @@ CREATE TABLE session_lock (
 CREATE TABLE project (
     id                  INTEGER PRIMARY KEY CHECK (id = 1),
     name                TEXT    NOT NULL DEFAULT '',
-    sample_rate         INTEGER NOT NULL DEFAULT 48000,
+    sample_rate         INTEGER NOT NULL DEFAULT 44100,
     ppq                 INTEGER NOT NULL DEFAULT 5765760,  -- SPEC §4.2; informational
     length_ticks        INTEGER NOT NULL DEFAULT 0,
     -- Timecode origin for linear-time / video work.
