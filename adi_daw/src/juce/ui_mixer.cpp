@@ -648,6 +648,7 @@ void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
         return;
     panel_.root.arrangement.geometry.selection.track = track_;
     panel_.root.arrangement.geometry.selection.toTrack = 0;
+    panel_.root.arrangement.geometry.selection.picked.clear();
     panel_.root.publishSelection();
     panel_.root.showDeviceView();
 }
