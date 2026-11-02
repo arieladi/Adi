@@ -69,7 +69,7 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
-## 2026-11-02, cloud, continued — the send knobs [#325](https://github.com/arieladi/Adi/pull/325) `window/send-knobs`, on #323
+## 2026-11-02, cloud, continued — the send knobs [#325](https://github.com/arieladi/Adi/pull/325) `window/send-knobs`, on #323; the volume's -inf [#326](https://github.com/arieladi/Adi/pull/326)
 
 **Built: parity 7.6 row 9, the sends as ADR-0203 d3 rules.**
 - One send per return on every track, group and return, the returns in the arrangement's order;
@@ -92,9 +92,10 @@ the highest send's. A main, sidechain, VCA or cue row with that id would refuse 
 **Not built yet** (parity row 9): each return's Pre/Post switch, Enable All Sends, Insert Return
 Track, and the view menu's show or hide of returns and sends.
 
-**Found on the way, the next small item (`window/volume-floor`).** The volume fader's bottom stop
-reads "-inf" but writes -70 dB. The format calls that audible; silence is at or below -150 dB
-(SPEC §6.9). Live's -inf is silent.
+**Found on the way, fixed in [#326](https://github.com/arieladi/Adi/pull/326)
+(`window/volume-floor`, on #325).** The volume fader's bottom stop read "-inf" but wrote -70 dB.
+The format calls that audible; silence is at or below -150 dB (SPEC §6.9), and Live's -inf is
+silent. It now writes -150 dB, as the send knobs do. Shell 581; `test_all.sh` PASS.
 
 **Tests.** seams 177, shell 579; `test_all.sh` PASS, 9825 checks across 105 suites; the shadow
 and clang sweeps are clean; the goldens are unchanged. Locally `adi_audio_probe` does not build
