@@ -107,6 +107,12 @@ const TrackNode* Snapshot::findTrack(std::int64_t id) const noexcept {
     return nullptr;
 }
 
+const MarkerNode* Snapshot::findMarker(std::int64_t id) const noexcept {
+    for (const auto& marker : markers)
+        if (marker->id == id) return marker.get();
+    return nullptr;
+}
+
 bool Snapshot::anySoloed() const noexcept {
     for (const auto& t : tracks)
         if (t->soloed) return true;
@@ -176,6 +182,30 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         // Match textproj_store: a late first event must not reset bar numbering.
         if (snap->meters.empty() || snap->meters.front().start_ticks != 0)
             snap->meters.insert(snap->meters.begin(), {0, 4, 4});
+    }
+
+    // --- marker/locator metadata ------------------------------------------------
+    {
+        std::map<std::int64_t, std::shared_ptr<const MarkerNode>> prior;
+        for (const auto& marker : previous.markers) prior[marker->id] = marker;
+        SQLite::Statement q(db, "SELECT m.id,m.time_base,m.pos_ticks,m.pos_ns,m.length_ticks,m.length_ns,m.name,m.color,m.kind,"
+            "COALESCE(d.note,''),COALESCE(d.prompt,'') FROM markers m LEFT JOIN marker_details d ON d.marker_id=m.id ORDER BY m.id");
+        while (q.executeStep()) {
+            MarkerNode marker;
+            marker.id = q.getColumn(0).getInt64(); marker.timeBase = q.getColumn(1).getInt64();
+            auto integer = [&](int column) -> std::optional<std::int64_t> {
+                if (q.getColumn(column).isNull()) return std::nullopt;
+                return q.getColumn(column).getInt64();
+            };
+            marker.posTicks = integer(2); marker.posNs = integer(3);
+            marker.lengthTicks = integer(4); marker.lengthNs = integer(5);
+            marker.name = q.getColumn(6).getString(); marker.color = integer(7);
+            marker.kind = q.getColumn(8).getString(); marker.note = q.getColumn(9).getString();
+            marker.prompt = q.getColumn(10).getString();
+            const auto found = prior.find(marker.id);
+            if (found != prior.end() && *found->second == marker) snap->markers.push_back(found->second);
+            else snap->markers.push_back(std::make_shared<const MarkerNode>(std::move(marker)));
+        }
     }
 
     // --- clips, grouped by track -------------------------------------------------
@@ -278,6 +308,8 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
     }
     for (const auto& sa : a.sends)
         if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
+    for (const auto& marker : a.markers)
+        if (std::find(b.markers.begin(), b.markers.end(), marker) != b.markers.end()) ++shared;
     return shared;
 }
 

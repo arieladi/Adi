@@ -97,12 +97,22 @@ struct SendRoute {
     bool preFader = false, enabled = true;
 };
 
+/// Locator/cycle metadata. Positions and lengths retain their stored units;
+/// only the matching time-base columns are present. Notes/prompts are literal.
+struct MarkerNode {
+    std::int64_t id = 0, timeBase = 0;
+    std::optional<std::int64_t> posTicks, posNs, lengthTicks, lengthNs, color;
+    std::string name, kind, note, prompt;
+    friend bool operator==(const MarkerNode&, const MarkerNode&) = default;
+};
+
 /// What the audio thread sees. Derives from Sequenced so the publisher can
 /// stamp it; nothing else touches `seq`.
 struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
     int sampleRate = 44100;
+    std::vector<std::shared_ptr<const MarkerNode>> markers; // id order, not a mixed-units display order
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.
     std::vector<textproj::Meter> meters;
@@ -112,6 +122,7 @@ struct Snapshot : Sequenced {
 
     [[nodiscard]] const TrackNode* findTrack(std::int64_t id) const noexcept;
     [[nodiscard]] bool anySoloed() const noexcept;
+    [[nodiscard]] const MarkerNode* findMarker(std::int64_t id) const noexcept;
 };
 
 /// Builds snapshots, reusing nodes from the previous one.

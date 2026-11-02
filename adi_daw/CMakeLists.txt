@@ -224,6 +224,8 @@ add_library(adi_core STATIC
     src/juce/pd_declarations.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
+    src/adi/row_capture.cpp
+    src/adi/marker_ops.cpp
     src/adi/ops_catalog.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
@@ -539,6 +541,12 @@ add_test(NAME adi_check_tests COMMAND adi_check_tests)
 add_executable(adi_remarks_tests tests/test_remarks.cpp)
 target_link_libraries(adi_remarks_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_remarks_tests COMMAND adi_remarks_tests)
+
+add_executable(adi_marker_tests tests/test_markers.cpp)
+target_link_libraries(adi_marker_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_marker_tests PRIVATE
+    ADI_MARKER_HISTORY_FILE="${CMAKE_CURRENT_SOURCE_DIR}/docs/format/history/schema-1.9.sql")
+add_test(NAME adi_marker_tests COMMAND adi_marker_tests)
 
 # History snapshots (ADR-0128): revert never discards, across branches too.
 add_executable(adi_snapshots_tests tests/test_snapshots.cpp)

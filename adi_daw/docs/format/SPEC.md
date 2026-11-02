@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1009;          -- schema 1.9
+PRAGMA user_version   = 1010;          -- schema 1.10
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -697,6 +697,24 @@ The rules:
   together with `key_map`'s own ops (ADR-0178 d4).
 
 ---
+
+### Marker notes and prompts (schema 1.10, N25)
+
+`markers` retains its original position/cycle fields and both time bases.
+`marker_details(marker_id, note, prompt)` is an additive child table with a
+cascading foreign key to the marker. A missing row means empty note/prompt.
+Strings are literal UTF-8; prompt execution is outside the format and these ops.
+Existing markers are not rewritten on upgrade. Frozen 1.9 plus this table gives
+the current schema; read-only older files see the usual empty TEMP table.
+
+The marker ops capture enough state for undo, including details and unknown
+columns. In-place edits restore columns in place rather than deleting marker
+rows and cascading children. Empty details rows are permitted; undo preserves
+the difference between an absent row and an empty row. The text projection
+inlines note/prompt (omitting empty values), including linear cycle lengths.
+The window reads immutable `Snapshot::markers` by stable id. Positions/lengths
+retain their optional tick/nanosecond columns; id order is not display order.
+Every field participates in comparison/sharing, including literal note/prompt.
 
 ## 7. Layer 2 — plugin state
 

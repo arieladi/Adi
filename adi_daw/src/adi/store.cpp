@@ -77,6 +77,8 @@ const std::vector<MigrationStep>& migrationSteps() {
         {8, {"tuning_systems", "tuning_degrees", "key_map_tunings", "key_map_degrees"}},
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
+        // 1.10 (N25): literal marker notes/prompts.
+        {10, {"marker_details"}},
     };
     return steps;
 }

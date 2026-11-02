@@ -19,6 +19,7 @@
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/marker_ops.hpp"
 #include "adi/summing_flavors.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1137,6 +1138,16 @@ constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
                                      {"start", FieldType::Int, false},
                                      {"end", FieldType::Int, false}};
 
+constexpr Field kFMarkerCreate[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true},{"time_base",FieldType::Int,false},
+    {"name",FieldType::Text,false},{"kind",FieldType::Text,false},{"length",FieldType::Int,false},{"color",FieldType::Int,false},
+    {"note",FieldType::Text,false},{"prompt",FieldType::Text,false}};
+constexpr Field kFMarkerId[]={{"id",FieldType::Int,true}};
+constexpr Field kFMarkerMove[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true}};
+constexpr Field kFMarkerName[]={{"id",FieldType::Int,true},{"name",FieldType::Text,true}};
+constexpr Field kFMarkerColor[]={{"id",FieldType::Int,true},{"color",FieldType::Int,false}};
+constexpr Field kFMarkerText[]={{"id",FieldType::Int,true},{"text",FieldType::Text,true}};
+constexpr Field kFMarkerLength[]={{"id",FieldType::Int,true},{"length",FieldType::Int,true}};
+
 // --- track.setParent: the first op that is not a function of one row -------
 //
 // ADR-0044 requires that parenting a track into a group route it to that
@@ -2015,6 +2026,15 @@ const OpDescriptor kHandWritten[] = {
     {"remark.resolve", "Mark a remark resolved, or reopen it", Scope::Edit,
      EngineImpact::None, kFRemarkResolve, false, false,
      remarkResolveApply, remarkResolveInverse, ""},
+
+    {"marker.create","Create a locator or cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerCreate,false,false,marker::create,marker::createInverse,"marker.delete"},
+    {"marker.delete","Delete a marker and its text",Scope::Edit,EngineImpact::Snapshot,kFMarkerId,false,false,marker::erase,marker::eraseInverse,"marker.create"},
+    {"marker.move","Move a marker in its own time base",Scope::Edit,EngineImpact::Snapshot,kFMarkerMove,true,false,marker::move,marker::moveInverse,""},
+    {"marker.rename","Rename a marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerName,false,false,marker::rename,marker::renameInverse,""},
+    {"marker.setColor","Set or clear a marker palette colour",Scope::Edit,EngineImpact::Snapshot,kFMarkerColor,false,false,marker::color,marker::rowInverse,""},
+    {"marker.resize","Resize a cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerLength,false,false,marker::resize,marker::rowInverse,""},
+    {"marker.setNote","Set a marker's note",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::note,marker::detailsInverse,""},
+    {"marker.setPrompt","Set a marker's literal prompt",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::prompt,marker::detailsInverse,""},
 
     // Ephemeral: performance, not editing. No inverse, and undo skips them.
     {"transport.play", "Start playback", Scope::Transport, EngineImpact::None,
