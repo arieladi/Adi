@@ -1149,6 +1149,16 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         }
         y += h;
     }
+    // Where the dragged tracks would land: a line at their depth, or the group they would go into.
+    if (moving_) {
+        g.setColour(look::text);
+        const int x = nameLeft(drop_.depth);
+        if (drop_.into != 0)
+            g.drawRect(x, view.geometry.rowTop(view.reader(), drop_.into), getWidth() - x,
+                       view.geometry.heightFor(drop_.into) - 2, 2);
+        else
+            g.fillRect(x, drop_.y - 1, getWidth() - x, 2);
+    }
 }
 void TrackHeaderList::resized() {
     if (renaming_ != 0)
@@ -1215,10 +1225,23 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         view.toggleFold(rows[at].track->id);
         return;
     }
+    resizeId = 0;
+    moveId_ = 0;
+    moving_ = selectOnUp_ = false;
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
+        // The split line at the row's foot resizes it; the rest of the title moves it, Main and
+        // the returns aside.
+        const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
+        const bool split = e.y >= top + view.geometry.heightFor(t->id) - kSplitLine;
+        const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !e.mods.isPopupMenu();
         // Ctrl/Cmd+click picks a track apart from the others, or lets it go again (Live: non-adjacent
         // tracks); Shift+click on another header reaches the selection across the tracks between.
-        if (e.mods.isCommandDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu()) {
+        // A plain press on one of several selected tracks keeps them for a drag; released
+        // without one, it selects that track alone.
+        if (plain && !split && view.geometry.inSelection(view.reader(), t->id) &&
+            view.geometry.selectedTracks(view.reader()).size() > 1)
+            selectOnUp_ = true;
+        else if (e.mods.isCommandDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu()) {
             auto &picked = view.geometry.selection.picked;
             if (t->id != view.geometry.selection.track) {
                 if (const auto at = std::find(picked.begin(), picked.end(), t->id); at != picked.end())
@@ -1233,14 +1256,91 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
         }
-        resizeId = t->id;
+        if (split)
+            resizeId = t->id;
+        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.foot())
+            moveId_ = t->id;
         initialHeight = view.geometry.heightFor(t->id);
         view.changed();
     }
     if (e.mods.isPopupMenu()) {
-        resizeId = 0;
+        resizeId = moveId_ = 0;
         view.contextMenu(e.getScreenPosition(), true);
     }
+}
+void TrackHeaderList::mouseMove(const juce::MouseEvent &e) {
+    // The split line shows the resize cursor, as Live's.
+    int top = 0;
+    const auto rows = view.geometry.rows(view.reader());
+    const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
+    const bool split = at < rows.size() && e.y >= top + view.geometry.heightFor(rows[at].track->id) - kSplitLine;
+    setMouseCursor(split ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+}
+TrackHeaderList::Drop TrackHeaderList::dropAt(int y) const {
+    const auto &reader = view.reader();
+    const auto rows = view.geometry.rows(reader);
+    const auto foot = view.geometry.footStart(rows);
+    Drop drop;
+    int top = 0;
+    const auto at = view.geometry.rowAt(reader, y, &top);
+    if (at >= foot) {
+        // Below the tracks, or over the returns and Main: after the last track at the top.
+        drop.y = -view.geometry.scrollY;
+        for (std::size_t i = 0; i < foot; ++i)
+            drop.y += view.geometry.heightFor(rows[i].track->id);
+        if (foot < rows.size())
+            drop.y = std::min(drop.y, view.geometry.footTop(reader) - 2);
+        return drop;
+    }
+    const auto row = rows[at];
+    const auto &place = row.place;
+    const auto id = row.track->id;
+    const int h = view.geometry.heightFor(id);
+    const int down = y - top;
+    // What follows the row in what holds it, past everything it holds; 0 at the end.
+    auto next = [&] {
+        auto j = at + 1;
+        while (j < foot && rows[j].place.depth > place.depth)
+            ++j;
+        return j < foot && rows[j].place.parent == place.parent ? rows[j].track->id : 0;
+    };
+    auto above = [&] {
+        drop.to = {place.parent, id};
+        drop.y = top;
+        drop.depth = place.depth;
+    };
+    auto below = [&] {
+        drop.to = {place.parent, next()};
+        drop.y = top + h;
+        drop.depth = place.depth;
+    };
+    if (!place.group) {
+        // A track: above it in its upper half, below it in its lower.
+        if (down * 2 < h)
+            above();
+        else
+            below();
+        return drop;
+    }
+    // A group: above it in its top quarter. Open and holding tracks, under it, at the top of what
+    // it holds; folded or empty, into it (at the end of what it holds), or below it in its last
+    // quarter.
+    const bool open = view.root.state().foldedGroups.count(id) == 0;
+    const bool holds = at + 1 < foot && rows[at + 1].place.parent == id;
+    if (down * 4 < h)
+        above();
+    else if (open && holds) {
+        drop.to = {id, rows[at + 1].track->id};
+        drop.y = top + h;
+        drop.depth = place.depth + 1;
+    } else if (down * 4 < h * 3) {
+        drop.to = {id, 0};
+        drop.y = top;
+        drop.depth = place.depth;
+        drop.into = id;
+    } else
+        below();
+    return drop;
 }
 void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
@@ -1260,11 +1360,32 @@ void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
         view.geometry.resizeTrack(resizeId, initialHeight + e.getDistanceFromDragStartY(),
                                   e.mods.isAltDown());
         view.frame(true);
+    } else if (moveId_ != 0 && (moving_ || std::abs(e.getDistanceFromDragStartY()) > 4)) {
+        // Live: "Tracks can be reordered by selecting and dragging them above or below other
+        // tracks"; the line shows where they would land.
+        moving_ = true;
+        selectOnUp_ = false;
+        drop_ = dropAt(e.y);
+        repaint();
     }
 }
-void TrackHeaderList::mouseUp(const juce::MouseEvent &) {
-    resizeId = 0;
+void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
+    const auto dragged = moveId_;
+    const bool moved = moving_;
+    resizeId = moveId_ = 0;
+    moving_ = false;
+    if (selectOnUp_ && !moved && dragged != 0) {
+        view.geometry.selection.track = dragged;
+        view.geometry.selection.toTrack = 0;
+        view.geometry.selection.picked.clear();
+    }
+    selectOnUp_ = false;
     view.changed();
+    // After the window's state is kept, which clears the Status Bar: a refusal stays on it.
+    if (moved) {
+        repaint();
+        view.root.moveTracks(dragged, dropAt(e.y).to);
+    }
 }
 void TrackHeaderList::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
