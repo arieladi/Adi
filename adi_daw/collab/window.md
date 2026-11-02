@@ -73,6 +73,22 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the colour chooser [#342](https://github.com/arieladi/Adi/pull/342) `window/colour-chooser`, on #341
+
+**Built: Live's colour chooser in a track's menu** (manual 2.3.2; parity 7.3 row 34): swatches of
+the palette's measured row (ADR-0211 d3), the track's own outlined; a pick colours every selected
+track, one step. On a group, Assign Track Color to Grouped Tracks and Clips (manual 18.3), the
+group's colour read from the CURRENT cell.
+
+**Measure on Live:** the palette's other four rows; where in the menu the chooser stands.
+
+**Tests.** seams 228, shell 668; `test_all.sh` PASS (9912 checks, 106 suites). No golden moved.
+
+**Next:** Live's Solo rules: Exclusive Solo, Ctrl/Cmd for several, the selected tracks together, the S
+key (parity 7.6 row 7) (`window/solo-rules`).
+
+---
+
 ## 2026-11-02, cloud, continued — a group's strip [#341](https://github.com/arieladi/Adi/pull/341) `window/group-strip`, on #340
 
 **Built: a group's strip as Live 12's figure** (manual 18.3; parity 7.6 row 20): no Arm on a group;
