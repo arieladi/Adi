@@ -13,6 +13,45 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N19 ready; continuing to N22
+
+**PR requested** (ADR-0210 d4): `engine/transport-loop-metronome` at **`e42fd56`**
+→ `main` (base `dff5b41`). Title: **Save and play loop and metronome controls (N19)**.
+
+PR body: The window commits `transport.setMetronome {on}` and
+`transport.setLoop {on,start?,end?}` (musical ticks), then refreshes ProjectView
+and Session. Snapshot `transport` exposes metronome/loopEnabled/loopStartTicks/
+loopEndTicks; missing keys default off with a four-bar 4/4 region at zero.
+They remain ephemeral/audited, outside undo: saved session metadata and op rows
+commit atomically. Loop toggles retain bounds, invalid windows fail, and malformed
+metadata defaults safely. The audio driver applies changed loops at a callback
+boundary using the tempo map; unchanged rebuilds preserve position/revision and
+sub-sample windows play one frame. Original synthesized clicks follow tempo and
+signature with bar accents, stop when parked, and align to actual rendered graph
+latency through loop wraps (including delays longer than a loop). Both output
+widths work. Clicks bypass Main devices/fader on the current default stereo pair;
+N23 adds Cue Out/volume. Export queue and gain-stage offline sessions opt out of
+performance controls, preserving file renders. OPS and format/session metadata
+contracts are updated; see `docs/ENGINE-TRANSPORT-PERFORMANCE.md`.
+
+**Merge with N13:** keep `mainLoudness_.process(block)` immediately after graph
+processing, before `renderMetronome`; a click is a cue signal. These independent
+branches both touch Session::process. Win merges/reconciles, no engine merge.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9864 checks / 107 suites**,
+all validators clean. New transport/settings suite **49**, Clang Werror also;
+Clang export queue197, session214 and history-snapshots65 pass. Tests cover each
+snapshot field, undo exclusion, batch rollback, reopen, live toggles, changing
+tempo, 3/8 grid/accent, float/double dual outputs, delayed click/loop alignment,
+one-frame loops and export isolation. Compiled plants ignore click compensation
+(2 failures/49) and restore saved monitoring during export (2/197). Original click
+sound/level parity with Live, MSVC/JUCE and remote CI are unmeasured here.
+
+N3/N30/N9/N13/N19 are pushed, with PR requests in this log; no matching PR head
+refs found yet via Git, API remains unavailable. Continuing to **N22** from main.
+N16 integration dependency remains as below; no director gate is reached.
+
+
 ## 2026-11-02 — N13 ready; continuing to N19
 
 **PR requested** (ADR-0210 d4): `engine/main-loudness` at **`0e4c3cc`** → `main`
