@@ -13,6 +13,56 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N23 ready; continuing to N25
+
+**PR requested** (ADR-0210 d4): `engine/cue-reference` at **`1466c85`** →
+**`engine/transport-loop-metronome`** (`e42fd56`, N19). Two deep; merge N19 first.
+Title: **Route Cue and exclusive reference past Main (N23)**.
+
+PR body / window handoff: `Snapshot::cue` exposes mode, selected track ids,
+output pair, volume, Solo in Place and reference selection/state. In Cue mode
+row buttons emit `cue.setTrack {id,on}` and read `selectedTracks`, keeping stored
+solo flags separate; `cue.setMode {on}` switches their behavior, and
+`mixer.setSoloInPlace {on}` controls returns. Use `cue.setOutput {first}` (even,
+zero-based stereo pair 0..62), `cue.setVolume {db}` (-150..+6), and
+`cue.setReference {on,id?}` for the tap/hold latch. All are saved transport-scope
+performance ops, audited/outside undo. Refresh ProjectView and Session. Cue is
+Post FX/PFL, including muted tracks. Reference keeps its source fader/pan and
+volume/pan automation, bypasses Main/parent processing and uses a complementary
+5 ms Main/reference swap to both monitor and Cue Out. Other cue signals/clicks
+are excluded while reference is exclusive. Shared Main/Cue pairs get reference
+once; selection and volume changes ramp. Fresh reference feeds fill their delay
+before Main fades, preventing a cold-start dip/click. Monitoring reuses rendered
+audio: devices run once, private graph sinks align to Main/track delay, stable
+edge keys preserve history, and lane ownership has its own audio publication.
+Offline renders ignore Cue/audition/mode changes and preserve musical solo/mute.
+
+**N38 integration:** no role DDL/version/migration is invented here. If
+`tracks.role` exists, its native reference is excluded from Main/sends and
+supplies the default audition target. `projectReferenceTrack`/`referenceFromRole`
+expose that derivation; preference edits do not pin a previous role. On today's
+schema an explicit id already auditions past Main; selecting an ordinary track
+as a performance target alone does not alter its Main route while off. The role
+format/snapshot/op need remains with win/engine as N38, not claimed closed.
+The synthetic role column test proves reading only. API details:
+`docs/ENGINE-CUE-MONITOR.md`; OPS and format/session contracts updated.
+
+**Merge with N13:** meter Main after graph processing, before `cueMonitor_.process`.
+The monitor mixer now hosts N19's click on Cue Out/volume.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9960 checks / 108 suites**,
+validators clean. Cue suite **96**, also Clang Werror. Six other Clang suites:
+mixer337, transport/settings49, host124, realize105, precision108, export197 pass.
+Checks include 5 ms enter/leave/shared-pair levels, Main FX/fader bypass, PFL mute,
+SIP/returns, output widths, compensation/history, cold activation, automation
+values/lifetime, no callback allocation and offline isolation. Four separately
+compiled plants fail: Main audio in cue (23), wrong clock (3), missing lane owner
+(1), skipped cold delay wait (2). MSVC/JUCE, hardware routing and measured Live
+sound/level parity remain platform gates; no remote CI result observed here.
+Win opens/reviews/merges. Continuing to **N25**, marker/locator ops and snapshot,
+from current main. No director gate has been reached.
+
+
 ## 2026-11-02 — N22 ready; continuing to N23
 
 **PR requested** (ADR-0210 d4): `engine/snapshot-track-delay` at **`673c51c`**
