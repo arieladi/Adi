@@ -13,6 +13,95 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N17 captured editing and material actions; N17 stays open for the rest of Time and Warp/video
+
+**PR requested** (ADR-0210 d4): **engine/phase-c-editing**, head
+**f6e9613ee03affe8ac522de8555d93ee6ed8f789**, to **main** (cut from dff5b41;
+main fetched as add5102 during this work). Title:
+**Add captured range edits, fades, Insert Silence and import/bounce actions (N17)**.
+
+PR body / window handoff: use src/adi/clip_commands.hpp for copyClip,
+prepareCutClip, preparePaste, prepareDuplicate, prepareSplit, copyRange,
+prepareCutRange, prepareDeleteRange, preparePasteRange, prepareDuplicateRange
+and prepareInsertSilence. Pass explicit ticks/ns and the actual
+SessionSpec.sampleRate. Cut captures clipboard/deletion under one read
+snapshot. A range edit splits crossing clips and retains outside material.
+Paste maps selected tracks explicitly; a different destination clears the
+source comp lane. Commit through commitPrepared so the captured expected
+journal head, including a null root, is checked in the transaction. Keep the
+document generation with asynchronous results. IDs and typed row values,
+including native opaque children, future BLOB columns and external alias
+links, are captured before apply. Undo/redo neither allocate IDs nor evaluate
+defaults. Uncaptured FK effects and generated columns refuse by name.
+
+clip.setFades edits both handles in one step, with lengths/curve and optional
+continuous tension; no automatic internal edge fades. Snapshots/projection
+carry all fade fields and optional source/fade clocks, each in sharing.
+Source windows stay unchanged, including SRC phase; tick/ns placements retain
+their declared domain. Splitting through either active fade preserves its
+original envelope at both widths. Insert Silence shifts clips, maps,
+locators/cycles, arranger sections, project end and the saved transport loop
+(including exact JSON undo/future fields). Initial map events at zero stay.
+Global automation holds at the gap and retains original nonlinear curve
+domains on both sides, including repeated cuts. Original full-width point IDs,
+flags, tension and trailer bytes remain; new boundary IDs are captured.
+Direct blob replacement refuses data with retained curve ranges.
+
+Use src/adi/material_commands.hpp for ImportOptions and BounceOptions:
+prepareImportAudio/prepareBounce return a MaterialEdit; commitMaterial
+publishes owned files without clobbering immediately before SQL COMMIT.
+Import captures dimensions/hash, deduplicates, attaches a playing clip and
+honors explicit copy-in/edge-fade choices, in one undo step. Defaults off.
+Bounce captures a private SQLite/WAL backup, renders an independent Session
+through the existing source/tap/range/encoding runner, then attaches the result.
+An explicit replace selection gives Bounce in Place. Host thread contracts
+remain the caller's. Cancellation, stale head, target collision and late SQL
+failure leave no partial clip/media/publication. Undo retains media for redo;
+reusing an already committed result cannot remove its successful file.
+See docs/ENGINE-EDIT-COMMANDS.md for the exact interface and limits.
+
+**N17 is not struck.** This PR's insertTime flag inserts musical time then
+pastes/duplicates the captured material; its clipboard includes clip envelopes,
+not a full global tempo/meter/key/automation clipboard. Full Copy/Cut/Delete
+Time remains engine work. Auto-Warp tempo/bar-marker detection and the warp
+renderer, playable video attachment, arbitrary join/consolidation and alias
+playback are not supplied. Warped-source edits, aliases requiring split, future
+AAUT strides requiring unknown boundary fields, Warp-on-import and video
+return explicit refusals rather than writing an unplayable audio clip. Clip
+envelopes are preserved, not newly played. No Live parity or backend completion
+is claimed for those gaps. Keep them queued while the usable API reaches the
+window; continue the oldest independent needs instead of making it wait.
+
+**Win integration:** schema 1.10 adds clip_playback_details and
+automation_segment_ranges; frozen 1.9 is byte-identical to the base. Standalone
+has **53 tables**. Reconcile the minor/migration numbering with N25 marker1.10,
+N33 clip1.11 and N12 pan1.10 when merging. A tree containing just all four
+additions has 56 tables. Do not leave an already-current file missing a sibling
+table. README counts stay win's. The N33 optional-clock invalidation and N26
+curve-domain snapshot compatibility follow-ups are next, on their existing
+branches. At merge, retain N17's complete clip image/FK guard, the N33 properties
+ops, and the combined End marker/source-clock reader.
+
+Validation: GCC14 Debug/Werror, libpd on/JUCE off: **all 109 C++ suites pass,
+10119 checks**. Full test_all is **not green** only because validate_schema
+reports README's 51 tables versus this branch's 53. Every other validator
+passes, including the OPS count, layout, frozen history and migration/additivity.
+Clang19 Werror: clip-edit167, playback159, row-edits22, material24,
+automation39, curves48, catalogue106, migration162, projection212 (939 checks).
+All 11 new C++ sources additionally pass Clang -Wshadow/-Werror syntax checks.
+Compiled plants fail: refitted automation8, lost fade domains6, lost expected
+head1, leaked publication1; restored checks pass. Renders cover SRC at 44.1/48 kHz,
+loop phase, tempo changes, partial fades at native32/64, exact PCM before/after
+split, Insert Silence and undo/redo. Import/bounce checks cover deferred SQL
+commit failure cleanup, cancellation, mutation during render, the next clip-ID
+collision in Bounce in Place, repeat commit and cross-track lane ownership.
+Remote CI, MSVC, linked JUCE, hardware and measured Live behavior are unobserved.
+Win/window opens this PR and win merges. Continuing through the queue.
+
+---
+
+
+
 ## 2026-11-02 — N12 ready; continuing to N17
 
 **PR requested** (ADR-0210 d4): `engine/split-stereo-pan` at **`c3ab3a9`** →
