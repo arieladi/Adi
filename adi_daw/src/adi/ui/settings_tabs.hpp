@@ -22,7 +22,8 @@ namespace adi::ui {
 //  - a setting that answers one of the catalogue's Part II rows (Live 12's ten tabs, setting by
 //    setting) sits on that row's tab, in the catalogue's order, which is Live's order on the tab;
 //  - any other setting on a page Live has goes on Live's tab for that page, after Live's own;
-//  - the rest keep their pages, ADI's own, after the ten, in the registry's order.
+//  - the rest keep their pages, ADI's own, after the ten, in the registry's order; but the LAN
+//    audio node's defaults go on the Link tab, as ADR-0203 d11 places them.
 // When the registry takes Live's names, the second rule maps each page to itself and nothing here
 // changes.
 inline constexpr std::array<const char *, 10> kLiveTabs{"Display & Input",  "Theme & Colors", "Audio",
@@ -71,9 +72,19 @@ inline int tabForRow(std::string_view row) noexcept {
             return static_cast<int>(i);
     return kNone;
 }
-// Updates and Privacy become Licenses & Updates, with a Privacy group (ADR-0203 d11).
+// The LAN audio node's defaults sit on the Link tab, labelled plainly as not Link Audio (ADR-0203
+// d11, which comes after the catalogue's "the Sync page's LAN row").
+inline bool lanAudio(const settings::Setting &s) noexcept { return s.key.rfind("sync.lan", 0) == 0; }
+// A tab's groups: its own first, as Live heads a page with its name; then PTP beside Link (ADR-0145
+// d7), the LAN audio node, and Privacy on Licenses & Updates (ADR-0203 d11).
 inline std::string groupFor(const settings::Setting &s, const std::string &tab) {
-    return s.page == "Privacy" ? std::string("Privacy") : tab;
+    if (s.page == "Privacy")
+        return "Privacy";
+    if (s.key.rfind("sync.ptp", 0) == 0)
+        return "PTP";
+    if (lanAudio(s))
+        return "LAN Audio (not Link Audio)";
+    return tab;
 }
 inline std::vector<SettingsTab> build() {
     // Where Live has each setting: the first Part II row it answers, and that row's place.
@@ -112,10 +123,11 @@ inline std::vector<SettingsTab> build() {
     }
     // Then the rest of each page Live has, on its tab; ADI's own pages after the ten.
     for (const auto &page : settings::pages()) {
-        const int tab = tabForPage(page);
+        const int pageTab = tabForPage(page);
         for (const auto &s : settings::registry()) {
             if (s.page != page || live.count(s.key) != 0)
                 continue;
+            const int tab = lanAudio(s) ? 3 : pageTab;
             if (tab != kNone) {
                 auto &onto = tabs[static_cast<std::size_t>(tab)];
                 add(onto, groupFor(s, onto.name), &s);

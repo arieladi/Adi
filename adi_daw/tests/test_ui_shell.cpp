@@ -2898,6 +2898,11 @@ int main(int argc, char **argv) {
                   onTab("sync.ptpEnabled") == "Link" && onTab("project.sampleRate") == "Audio" &&
                   onTab("audio.keepMonitoringLatency") == "Record, Warp & Launch",
               "a setting Live has sits on the tab where Live has it: Look & Feel split, Link's own");
+        const auto *linkTab = settingsTab("Link");
+        check(linkTab != nullptr && linkTab->groups.size() == 3 && linkTab->groups[0].heading == "Link" &&
+                  linkTab->groups[0].settings.size() == 2 && linkTab->groups[1].heading == "PTP" &&
+                  linkTab->groups[2].heading == "LAN Audio (not Link Audio)" && onTab("sync.lanCodec") == "Link",
+              "the Link tab: Live's two settings under Link, then PTP, then the LAN audio node, labelled as not Link Audio");
         const auto *licenses = settingsTab("Licenses & Updates");
         check(licenses != nullptr && licenses->groups.size() == 2 && licenses->groups[0].heading == "Licenses & Updates" &&
                   licenses->groups[1].heading == "Privacy",
@@ -3013,13 +3018,13 @@ int main(int argc, char **argv) {
         panel.onClose = [&closed] { closed = true; };
         check(panel.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && closed, "Esc closes the window");
         // Restore Defaults puts the open tab back, settings moved onto it from other pages included.
-        if (const auto *link = settings::find("sync.showLinkToggle")) {
+        if (const auto *toggle = settings::find("sync.showLinkToggle")) {
             panel.showPage("Link");
-            const auto was = settings.get(link->key);
-            panel.change(*link, !link->defaultValue.get<bool>());
+            const auto was = settings.get(toggle->key);
+            panel.change(*toggle, !toggle->defaultValue.get<bool>());
             panel.defaults.onClick();
-            check(settings.get(link->key) == link->defaultValue, "Restore Defaults puts the open tab back");
-            panel.change(*link, was);
+            check(settings.get(toggle->key) == toggle->defaultValue, "Restore Defaults puts the open tab back");
+            panel.change(*toggle, was);
         }
         // Taller than the window, the tab column scrolls; the open tab is kept in view.
         panel.pageList.resized();
@@ -3097,6 +3102,20 @@ int main(int argc, char **argv) {
             file.deleteFile();
             if (auto stream = file.createOutputStream())
                 juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            // Live 12's manual shows its Settings on the Link tab: ADI's, for the picture beside it.
+            panel.showPage("Link");
+            panel.setHelp({});
+            juce::Image linkImage(juce::Image::ARGB, 2 * panel.getWidth(), 2 * panel.getHeight(), true,
+                                  juce::SoftwareImageType{});
+            {
+                juce::Graphics g(linkImage);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                panel.paintEntireComponent(g, true);
+            }
+            const auto linkFile = juce::File(folder).getChildFile("adi-settings-link.png");
+            linkFile.deleteFile();
+            if (auto stream = linkFile.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
     liveParity(commands, temp.path(), write);
