@@ -66,3 +66,8 @@ adi_daw/build-*/
 # py_compile syntax check; it is generated, platform- and version-specific.
 __pycache__/
 *.pyc
+
+# The device tests (tests/test_*_pd.cpp, test_redux*) write their renders into the
+# directory they run from, so a full tools/test_all.sh run leaves them in adi_daw/
+# (window lane need N35). Nothing reads them back.
+adi_daw/*-render.wav
