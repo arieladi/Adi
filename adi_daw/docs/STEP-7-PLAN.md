@@ -123,9 +123,10 @@ Of the six changes this section listed for that day, five are done:
   allocates nothing);
 - the seams test reads the snapshot's rows.
 
-The sixth, a track's own colour, waits on the format: `tracks.color` is an INTEGER whose meaning
-`docs/format` does not give (a Live palette index or an RGB value), so the window keeps its colour
-by place (window log, N36).
+The sixth, a track's own colour, waited on the format until ADR-0211 ruled (1 November, answering
+the window log's N36): `tracks.color` holds an index into Live's palette, NULL for none. The window
+draws it through `look::paletteColour` and keeps the colour by place for a track with none
+(`window/track-colour`).
 
 ### 2.3 `MainSplit` is a panel→slot map, not a `StretchableLayoutManager` — APPROVED
 
