@@ -124,6 +124,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const Snapshot& previous) {
     auto snap = std::make_unique<Snapshot>();
     snap->transport=readTransportSettings(store);
+    snap->cue=readCueSettings(store);
     auto& db = const_cast<SQLite::Database&>(store.db());
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.

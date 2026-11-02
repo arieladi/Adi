@@ -48,6 +48,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/engine/cue_monitor.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
@@ -310,6 +311,8 @@ private:
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
     };
     SnapshotPublisher<TimingView> timing_;
+    CueSettings cueSettings_;
+    CueMonitor cueMonitor_;
     TransportSettings transportSettings_; // message thread, copied into TimingView
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;

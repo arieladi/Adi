@@ -396,6 +396,7 @@ void Session::attach() {
         }
         return nodes;
     };
+    rs.monitors=cueMonitor_.points([this](std::int64_t id,Tap tap){return tapFor(id,tap);});
     devices_.attachHost(graph_, std::move(rs));
 }
 
@@ -519,15 +520,19 @@ bool Session::rebuild() {
         }
     }
     strips_.setFormat(spec_.channels, spec_.maxFrames);    // a return's loop, for the graph built here
-    strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
+    HearingFlags hearingFlags;hearingFlags.soloInPlace=cueSettings_.soloInPlace;
+    hearingFlags.soloIsCue=spec_.performanceState && cueSettings_.cueMode;hearingFlags.referenceTrack=cueSettings_.projectReferenceTrack;
+    strips_.sync(model_, &transport_, stripAutomation_,hearingFlags);   // ADR-0163: before the graph names them
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
+    cueMonitor_.configure(model_,cueSettings_,&transport_,stripAutomation_,spec_.performanceState);
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
     else {
         timing_.publish(std::move(timing));
+        cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
         live_ = true;
     }
     attachTaps();   // ADR-0175: the new graph's latencies
@@ -567,6 +572,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     stats_ = Stats{};
     model_ = rows::readModel(store);
     transportSettings_=readTransportSettings(store);
+    cueSettings_=readCueSettings(store);
     clipProject_ = readClipProject(store, model_);
     loaded_ = true;
     resolveNewRows(store);
@@ -606,6 +612,7 @@ bool Session::refresh(const Store& store) {
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     model_ = rows::readModel(store);
     transportSettings_=readTransportSettings(store);
+    cueSettings_=readCueSettings(store);
     // ADR-0162: an automated strip value that changed is overridden. Compared
     // BEFORE the rebuild, so the new graph already plays the manual value.
     if (stripAutomation_) {
@@ -766,6 +773,7 @@ bool Session::reenableAutomation(std::int64_t laneId) {
 
 bool Session::tick(std::int64_t nowMs) {
     timing_.collect();
+    cueMonitor_.collect();
     return devices_.tick(nowMs);
 }
 
@@ -850,7 +858,17 @@ void Session::process(const AudioIo& io) noexcept {
     AudioIo block = io;
     block.transport = &info;
     graph_.process(block);
-    if(timing.valid())renderMetronome(*timing.get(),block);
+    struct ClickContext {Session* session;const TimingView* timing;};
+    ClickContext click{this,timing.get()};
+    CueMonitor::Click renderClick;
+    if(timing.valid() && timing->settings.metronome && transport_.playing()) {
+        renderClick.context=&click;
+        renderClick.render=[](void* context,const AudioIo& cueIo) noexcept {
+            const auto& call=*static_cast<ClickContext*>(context);call.session->renderMetronome(*call.timing,cueIo);
+        };
+    }
+    else if(timing.valid())renderMetronome(*timing.get(),AudioIo{});
+    cueMonitor_.process(graph_,block,renderClick);
     transport_.advance(io.frames);
 }
 

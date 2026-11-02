@@ -102,6 +102,9 @@ public:
     [[nodiscard]] Graph* currentGraph() const noexcept;
     /// Audio thread, after process: latency of the graph that actually ran.
     [[nodiscard]] std::int32_t renderedLatency() const noexcept;
+    /// Audio owner after process, before the next process: protected by its
+    /// current publication. Copies already rendered samples, never runs DSP.
+    [[nodiscard]] bool copyRenderedOutput(const Node&, const AudioIo&) const noexcept;
 
     /// The realised graph behind it, for callers that need a track's chain
     /// head or tail -- a clip reader pushing into `inputFor`, or a device

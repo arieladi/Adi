@@ -19,6 +19,7 @@
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/cue_settings.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/summing_flavors.hpp"
 
@@ -1154,6 +1155,11 @@ constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
                                      {"start", FieldType::Int, false},
                                      {"end", FieldType::Int, false}};
 
+constexpr Field kFCueFirst[]={{"first",FieldType::Int,true}};
+constexpr Field kFCueDb[]={{"db",FieldType::Real,true}};
+constexpr Field kFCueTrack[]={{"id",FieldType::Int,true},{"on",FieldType::Bool,true}};
+constexpr Field kFCueReference[]={{"on",FieldType::Bool,true},{"id",FieldType::Int,false}};
+
 // --- track.setParent: the first op that is not a function of one row -------
 //
 // ADR-0044 requires that parenting a track into a group route it to that
@@ -2032,6 +2038,19 @@ const OpDescriptor kHandWritten[] = {
     {"remark.resolve", "Mark a remark resolved, or reopen it", Scope::Edit,
      EngineImpact::None, kFRemarkResolve, false, false,
      remarkResolveApply, remarkResolveInverse, ""},
+
+    {"cue.setMode", "Use solo buttons as Cue", Scope::Transport, EngineImpact::GraphRebuild,
+     kFTransportFlag,false,true,cueModeApply,nullptr,""},
+    {"cue.setOutput", "Select the stereo Cue Out pair", Scope::Transport, EngineImpact::Snapshot,
+     kFCueFirst,false,true,cueOutputApply,nullptr,""},
+    {"cue.setVolume", "Set Cue Volume", Scope::Transport, EngineImpact::Snapshot,
+     kFCueDb,false,true,cueVolumeApply,nullptr,""},
+    {"cue.setTrack", "Cue a track without changing its solo", Scope::Transport, EngineImpact::GraphRebuild,
+     kFCueTrack,false,true,cueTrackApply,nullptr,""},
+    {"cue.setReference", "Select and audition the exclusive reference", Scope::Transport, EngineImpact::GraphRebuild,
+     kFCueReference,false,true,cueReferenceApply,nullptr,""},
+    {"mixer.setSoloInPlace", "Keep a soloed track's returns audible", Scope::Transport, EngineImpact::GraphRebuild,
+     kFTransportFlag,false,true,soloInPlaceApply,nullptr,""},
 
     // Ephemeral: performance, not editing. No inverse, and undo skips them.
     {"transport.play", "Start playback", Scope::Transport, EngineImpact::None,

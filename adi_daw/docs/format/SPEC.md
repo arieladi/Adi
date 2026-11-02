@@ -917,6 +917,20 @@ sharing mutable driver state. Loop bounds stay in ticks and are converted throug
 the tempo map at the session rate; no fixed-tempo sample count is persisted.
 
 
+`cue.controls` stores JSON performance controls: `cue` (mode, default false),
+`sip` (Solo in Place, default true), `first` (even stereo-pair index 0..62,
+default 0), `db` (Cue Volume -150..+6, default 0), `reference` (audition track id,
+0 for none/default role), `reference_on` (default false), and `selected` (sorted,
+unique positive Cue track ids, default empty). Missing/malformed values use
+defaults. Cue selection is independent of a track's musical solo flag. These
+commands are ephemeral and transport-scoped, saved atomically with audit rows,
+excluded from undo and musical digests. `Snapshot::cue` exposes the settings.
+Its `projectReferenceTrack` is derived from the optional native role column,
+never serialized into this metadata. `referenceFromRole` distinguishes a zero
+(default-role) preference from an explicit audition target, so changing the native
+role still takes effect after a Cue Volume/output edit. Reference designation belongs to project
+format N38; an explicit performance audition target is not a substitute role.
+
 The monitor identity matters: restoring a plugin window to `x=3200` on a machine
 that no longer has a second monitor puts it offscreen. Readers MUST clamp
 restored windows to the currently available display arrangement.

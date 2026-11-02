@@ -597,6 +597,12 @@ commands do not invent schema migrations or rewrite historical op payloads.
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
+| `cue.setMode` | t | G | — | P1 |
+| `cue.setOutput` | t | S | — | P1 |
+| `cue.setVolume` | t | S | — | P1 |
+| `cue.setTrack` | t | G | — | P1 |
+| `cue.setReference` | t | G | — | P1 |
+| `mixer.setSoloInPlace` | t | G | — | P1 |
 | `transport.play` | t | N | — | P0 |
 | `transport.stop` | t | N | — | P0 |
 | `transport.seek` | t | N | — | P0 |
@@ -612,6 +618,25 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `extension.write` | e | N | cap | P1 |
 | `extension.delete` | e | N | cap | P1 |
 
+Cue controls are saved performance commands in Transport scope, not undo steps:
+`cue.setMode {on}` selects Solo/Cue; `cue.setTrack {id,on}` changes the Cue selection
+without editing a track's stored solo flag. `cue.setOutput {first}` selects a
+zero-based stereo pair (even 0..62); `cue.setVolume {db}` accepts -150..+6 dB.
+`cue.setReference {on,id?}` selects/engages exclusive reference audition. Omitted
+id retains the target (or the native reference role when present). Invalid or
+non-audio/Main targets fail. `mixer.setSoloInPlace {on}` controls return audibility
+in Solo mode. The caller refreshes ProjectView and Session after success.
+
+Cue is Post FX / pre-fader listening, including muted tracks. Reference audition
+keeps its source's volume/pan automation, ignores its Main mute, and bypasses Main
+and parent effects/faders with a 5 ms complementary swap. It reaches monitor and
+Cue Out; normal Cue selections and clicks are suppressed during the exclusive
+swap. Cue Volume scales both. Declaring an audition target alone does not change
+its ordinary Main route: the native `tracks.role='reference'` designates the
+permanently excluded project reference, once that format field exists (N38).
+Offline `performanceState=false` ignores Cue/selection/swap but retains native
+project-role exclusion and normal stored solo/mute behavior.
+
 `transport.setLoop` stores `{on, start?, end?}` in the session layer. Bounds
 are musical ticks, nonnegative start and end strictly after start. Omitted bounds
 retain the last window (initially four 4/4 bars from zero). `transport.setMetronome`
@@ -622,7 +647,7 @@ to refresh ProjectView and Session after commit. Snapshot `transport` carries th
 saved values; Session applies loop changes on the driver at the next callback,
 and renders the metronome only while playing, aligned to the graph's actual
 compensated output latency, including loop wraps. Default output is the first stereo
-pair, outside Main's device/fader chain; Cue Out selection follows N23. Offline
+pair, outside Main's device/fader chain; N23 routes it through Cue Out/volume. Offline
 export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
 loop/click choices do not change rendered material.
 
@@ -664,7 +689,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**178 ops** — 66 P0, 60 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
@@ -677,7 +702,9 @@ state, and appending them to undo history would bury the last real edit under
 navigation.
 
 ADR-0037 removed the four `session.*` launch ops along with Session View, so the
-transport scope is now the whole of this category.
+transport scope is the whole of this category, including Cue/monitor commands
+that save performance controls in the session layer. These do not reintroduce
+Session View or launching.
 
 They still go through the registry — same validation, same scopes, same
 attribution — and still emit an op row, tagged `ephemeral`. Undo skips ephemeral
