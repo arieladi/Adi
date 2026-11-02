@@ -13,6 +13,40 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N15: catalogue, native built-in project loader and one-step insertion
+
+**PR requested:** engine/library-devices -> main, head **71d7921**.
+**Title:** Expose the built-in device catalogue and project loader
+**Body:** N15: the browser can read builtinCatalog() (UID/category/folder/name/availability),
+then prepareBuiltinInsert(store, uid, track, beforeDevice) and commitBuiltinInsert
+for one undo step creating/reusing the internal reference and chain. Preparation
+is read-only, captures all IDs/typed reference defaults and expected head, and
+normalizes legacy tied/large ordinals with exact inverses. The native project
+loader and JuceDeviceLoader now host the 17 existing canonical effects, with
+real parameter descriptors, atomic intent, transport/MIDI, latency and CBOR
+state; unknown fields survive save. Uses the existing device factory, no DSP or
+UI production changes. Existing app-scoped library::Index already supplies file
+browsing/pending hashes/preset files; ENGINE-BUILTINS.md documents that seam and
+the installed plug-in registry separately. No schema addition. New invertible
+pluginRef.register/unregister ops capture complete typed rows, including future
+columns/BLOBs, and have replay corpus coverage. Hybrid Reverb remains listed
+unavailable because its native factory entry does not exist; builds without PD
+retain the catalogue and placeholders. Sample assignment is N28, next.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS, **9986 checks / 107 suites**,
+all validators/migrations/layout clean. Clang19/Werror built-ins99, catalogue106,
+replay65, library48 and Session214 pass. GCC shadow/Werror syntax covers new
+sources/tests and PD-disabled branches; GCC + Clang JUCE loader syntax passes
+against JUCE9.0.2 (linked GUI development libraries unavailable). Compiled plants
+removing parameter delivery, expected-head validation and ordering each cause
+one failure; restored tests pass. Callback allocation checks cover all17.
+No remote CI/MSVC, linked JUCE, hardware or Live parity claim. README counts are
+win's. Window can consume the interfaces above; Hybrid/instrument backends and
+parity remain the devices lane's needs, not falsely advertised as available.
+
+---
+
+
 ## 2026-11-02 — N17/N18 clipboard identity follow-ups; N15 precedes N28 as its loader dependency
 
 **Existing PR requests updated, no new stacks:**
