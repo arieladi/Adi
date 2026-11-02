@@ -128,7 +128,7 @@ fs::path buildOld(const fs::path& dir, int minor, bool embeddedMedia = false) {
 
 std::set<Object> freshObjects(const fs::path& dir) {
     StoreError e = StoreError::Ok;
-    auto s = Store::create(dir / "fresh.adi", e);
+    auto s = Store::createEmpty(dir / "fresh.adi", e);
     if (!s) return {};
     return objectsOf(s->db());
 }
@@ -171,6 +171,8 @@ void testUpgradeEachMinor() {
                                     describeDiff(got, fresh));
             check(s->db().execAndGet("SELECT name FROM tracks WHERE id = 1").getString() == "Keys",
                   v + ": the existing data is untouched");
+            check(s->db().execAndGet("SELECT sample_rate FROM project").getInt() == 48000,
+                  v + ": the stored 48 kHz is preserved despite the new 44.1 kHz default");
 
             check(addRemark(*s), v + ": remark.add works");
             History h(*s);
@@ -241,7 +243,7 @@ void testNewerMinorUntouched() {
     const auto p = temp.path() / "newer.adi";
     {
         StoreError e = StoreError::Ok;
-        auto s = Store::create(p, e);
+        auto s = Store::createEmpty(p, e);
         if (!s) return;
         s->db().exec("CREATE TABLE future_things(id INTEGER PRIMARY KEY, x TEXT) STRICT");
         s->db().exec("INSERT INTO future_things VALUES (1, 'from 1." +
@@ -283,6 +285,56 @@ void testFailureLeavesTheOldFile() {
           "adi_meta still says 1");
     check(db.execAndGet("SELECT theirs FROM history_snapshots").getString() == "keep me",
           "and the other writer's table is untouched");
+}
+
+void testProjectDefaultMigration() {
+    section("1.9 changes the default, preserving project values and extension indexes/triggers");
+    adi::test::TempDirectory temp("migrate", "project-default");
+    const auto p = buildOld(temp.path(), 8);
+    {
+        SQLite::Database db(p.string(), SQLite::OPEN_READWRITE);
+        db.exec("UPDATE project SET sample_rate=96000, ppq=123456, length_ticks=700, "
+                "timecode_origin_ns=800, frame_rate_num=30000,frame_rate_den=1001,"
+                "render_bit_depth=16,author='Author',notes='Notes';"
+                "CREATE INDEX project_author ON project(author);"
+                "CREATE TABLE project_audit(n INTEGER);"
+                "CREATE TRIGGER project_insert AFTER INSERT ON project BEGIN "
+                "INSERT INTO project_audit VALUES(1); END;");
+    }
+    StoreError error{};
+    auto s = Store::open(p, error);
+    check(s && error == StoreError::Ok, "the default migration opens a 1.8 project");
+    if (!s) return;
+    auto& db = s->db();
+    check(db.execAndGet("SELECT count(*) FROM project WHERE id=1 AND name='Old Song' "
+        "AND sample_rate=96000 AND ppq=123456 AND length_ticks=700 AND timecode_origin_ns=800 "
+        "AND frame_rate_num=30000 AND frame_rate_den=1001 AND render_bit_depth=16 "
+        "AND author='Author' AND notes='Notes'").getInt() == 1, "every stored project value is preserved");
+    check(db.execAndGet("SELECT count(*) FROM sqlite_master WHERE name IN ('project_author','project_insert')").getInt() == 2 &&
+          db.execAndGet("SELECT count(*) FROM project_audit").getInt() == 0,
+          "extension indexes and triggers survive, without running an insert trigger during migration");
+    db.exec("DELETE FROM project; INSERT INTO project(id,name) VALUES(1,'Again');");
+    check(db.execAndGet("SELECT sample_rate FROM project").getInt() == 44100 &&
+          db.execAndGet("SELECT count(*) FROM project_audit").getInt() == 1,
+          "an omitted rate really defaults to 44100 and the restored trigger works");
+}
+
+void testProjectMigrationRefusesDataLoss() {
+    for (const bool foreignKey : {false, true}) {
+        adi::test::TempDirectory temp("migrate", foreignKey ? "project-fk" : "project-column");
+        const auto p = buildOld(temp.path(), 8);
+        {
+            SQLite::Database db(p.string(), SQLite::OPEN_READWRITE);
+            if (foreignKey) db.exec("CREATE TABLE project_child(id INTEGER REFERENCES PrOjEcT(id) ON DELETE CASCADE);"
+                                    "INSERT INTO project_child VALUES(1)");
+            else db.exec("ALTER TABLE project ADD COLUMN custom TEXT DEFAULT 'keep me'");
+        }
+        const auto before = readFile(p);
+        StoreError error{};
+        const auto s = Store::open(p, error);
+        check(!s && error == StoreError::MigrationFailed && readFile(p) == before,
+              "an unsafe extension causes an unchanged-file failure instead of data loss");
+    }
 }
 
 // --- how it runs -------------------------------------------------------------------
@@ -340,6 +392,8 @@ int runAll() {
     testReadOnlyNeverWrites();
     testNewerMinorUntouched();
     testFailureLeavesTheOldFile();
+    testProjectDefaultMigration();
+    testProjectMigrationRefusesDataLoss();
     testOrder();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,
                 g_failures);

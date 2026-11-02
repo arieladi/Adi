@@ -179,7 +179,7 @@ void outlivesItsOwner() {
 
 std::unique_ptr<Store> freshProject(const fs::path& p) {
     StoreError err = StoreError::Ok;
-    auto st = Store::create(p, err);
+    auto st = Store::createEmpty(p, err);
     if (st) st->db().exec("INSERT INTO project(id,name) VALUES (1,'Untitled')");
     return st;
 }

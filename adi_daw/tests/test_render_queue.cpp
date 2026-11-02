@@ -31,7 +31,7 @@ struct Fixture {
     std::unique_ptr<Store> store;
     Fixture() {
         StoreError error{};
-        store = Store::create(dir.path()/"project.adi", error);
+        store = Store::createEmpty(dir.path()/"project.adi", error);
         if (!store) throw std::runtime_error("fixture store");
         store->db().exec("INSERT INTO project(id,name,sample_rate) VALUES(1,'Before',48000);"
             "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"

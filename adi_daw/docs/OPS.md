@@ -4,7 +4,7 @@
 `src/adi/ops.{hpp,cpp}`, catalogue in `src/adi/ops_catalog.cpp`, undo in
 `src/adi/history.{hpp,cpp}`.
 
-**50 of the 160 are wired up** with handlers and inverses, covering most of the
+The implemented ops have handlers and inverses, covering most of the
 P0 editing surface. `adi_tool ops` lists them. Roughly half are generated from a
 table rather than hand-written: most of P0 is "set one column, the inverse is the
 old value", and 24 textually identical handlers is 24 chances to get a `WHERE`
@@ -375,6 +375,8 @@ silent truncation in JSON, a non-issue in CBOR.
 |---|---|---|---|---|
 | `clip.create` | e | S | pair `clip.delete` | P0 |
 | `clip.delete` | e | S | cap | P0 |
+| `clip.attachAudio` | e | G | pair `clip.detachAudio` | P0 |
+| `clip.detachAudio` | e | G | cap | P0 |
 | `clip.move` | e | S | sym | P0 |
 | `clip.resize` | e | S | sym | P0 |
 | `clip.split` | e | S | pair `clip.join` | P0 |
@@ -535,13 +537,48 @@ silent truncation in JSON, a non-issue in CBOR.
 the journal handlers never re-read files on undo, redo or replay. Duplicate
 content returns the existing media id without logging a duplicate import.
 
+**Import-to-clip (N5).** Call `media::prepareImport(store, path, mediaId,
+importedUtc, request)` off the audio thread. It captures without changing project
+rows/history. `result.audio` supplies source `sampleRate`, `channels`, `frames`,
+including for deduplicated media. Append the captured request when its
+`opType` is nonempty, and use `result.mediaId`. A reused id (`existing=true`)
+usually needs no op; missing/stale paths instead produce a captured
+`media.relink` so the imported clip can play from the matching file.
+Append `clip.create` and `clip.attachAudio`, then commit the entire request list
+once. A failure rolls back media, clip and attachment together. Undo removes
+these rows in reverse order; Redo uses captured payloads without reading files.
+Existing deduplicated rows keep their stored metadata; capture still supplies
+current source dimensions to the caller.
+
+`clip.attachAudio {id, media, frames}` attaches source frames `[0,frames)` to
+an existing audio clip, with Warp off and all audio properties at defaults.
+`frames` must be positive and within the media's frame count when known. Missing
+media/clip, a non-audio clip or an existing attachment is refused.
+`clip.detachAudio {id}` captures the attachment as its inverse. It refuses
+edited source windows, warp, pitch/formant, reverse or channel mode so removal
+cannot lose those edits. Neither op reads a file. The UI supplies explicit clip
+position/length through `clip.create`; attachment frames are at the immutable
+source rate, not the project rate (SPEC §4.3).
+
+`clip.delete` now captures an existing audio attachment in the optional `audio`
+object of its inverse `clip.create` payload. That object contains exactly the
+`audio_clips` columns other than `clip_id`, including nullable warp-marker bytes
+as an array. Recreating the clip restores that row in the same transaction;
+deleting and undoing an imported clip therefore preserves its playable content.
+The optional decode-cache argument to `prepareImport` lets a worker supply its
+configured cache; otherwise the process cache is used. A temporary pin is
+released when metadata capture ends.
+
 - `media.import`: `{id, row}`. `row` contains exactly `hash_blake3`, `orig_name`,
   `rel_path`, `abs_path_hint`, `sample_rate`, `channels`, `frames`, `duration_ns`,
   `format`, `bit_depth`, `size_bytes`, `missing`, `imported_utc`, `peaks`.
   Hash is 64 lowercase hexadecimal digits. Text: hash/name/format (non-null),
   paths (nullable). Integer metadata is nullable except `missing` (0 or 1).
   Peaks is a nullable byte array. Fresh import captures file size and the
-  caller's timestamp, leaves undecoded metadata null and format empty.
+  caller's timestamp. Recognized audio also captures source rate, channels,
+  decoded frame count, duration and detected format; native PCM/Float32 WAVs
+  also capture bit depth. Non-audio retains nullable audio metadata and an empty
+  format. Known corrupt/unsupported audio fails capture.
   `embedded` is always 0 and cannot be supplied. Inverse: `media.unlink {id}`.
 - `media.unlink`: `{id}`. Captures every above column, including nulls and
   peaks, into its inverse `media.import`. Never deletes a disk file. Refuses
@@ -613,7 +650,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**170 ops** — 64 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

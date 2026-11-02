@@ -177,7 +177,7 @@ struct Mix {
     std::vector<float> l, r;
     explicit Mix(const char* name) : temp("mixer", name) {
         StoreError e = StoreError::Ok;
-        store = Store::create(temp.path() / "p.adi", e);
+        store = Store::createEmpty(temp.path() / "p.adi", e);
         if (!store) throw std::runtime_error("create");
     }
     void track(std::int64_t id, const char* kind, const char* name, float tone = 0.0f) {
