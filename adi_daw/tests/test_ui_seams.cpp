@@ -29,6 +29,7 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
+#include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
@@ -1219,6 +1220,32 @@ void referenceTapAndHold() {
     check(!ref.on(), "latched, then held and let go: off");
 }
 
+void momentaryLatch() {
+    section("momentary latching: a key held 500 ms or more goes back on release (Live 42.25)");
+    ui::MomentaryLatch latch;
+    check(!latch.held() && !latch.release('s', 0), "nothing held: an up changes nothing");
+    check(latch.press('s', 7, 1000) && latch.held() && latch.key() == 's', "down: the first press acts");
+    check(!latch.press('s', 7, 1030) && !latch.press('s', 7, 1400), "a repeat while held does nothing");
+    latch.made(42);
+    check(!latch.release('s', 1499) && !latch.held(), "up within 500 ms: a tap stays");
+    check(latch.press('s', 7, 2000), "down again: it acts again");
+    latch.made(43);
+    const auto back = latch.release('s', 2500);
+    check(back && back->command == 7 && back->step == 43 && !latch.held(),
+          "up after 500 ms: back from the command and the step it made");
+    check(latch.press('z', 9, 3000) && !latch.release('s', 4000) && latch.held(),
+          "another key's up lets nothing go");
+    check(latch.press(1, 11, 3100) && latch.key() == 1, "another key's press takes over");
+    const auto zoom = latch.release(1, 3700);
+    check(zoom && zoom->command == 11 && zoom->step == 0, "a press that made no step goes back with none");
+    check(!latch.release('z', 3800), "the first key, taken over, stays as it is");
+    latch.press('s', 7, 5000);
+    latch.made(44);
+    latch.letGo();
+    check(!latch.held() && !latch.release('s', 6000) && latch.press('s', 7, 6000),
+          "let go unseen: nothing goes back, and the next press acts");
+}
+
 // Live's MIDI track: no audio mixer until it holds an instrument (look-live11 difference row 3); what
 // it holds decides, not its kind's hint alone (ADR-0045).
 void midiTrackMixer() {
@@ -1336,6 +1363,7 @@ int main() {
     audioDropAsOneStep();
     rangeEditsAsBatches();
     referenceTapAndHold();
+    momentaryLatch();
     midiTrackMixer();
     soloRules();
 

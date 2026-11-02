@@ -4,9 +4,17 @@
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <vector>
 namespace adi::ui {
 namespace {
+// A letter's key is down whichever case its code names.
+bool keyIsDown(int code) {
+    return juce::KeyPress::isKeyCurrentlyDown(code) ||
+           (code > 0 && code < 128 && std::isalpha(code) &&
+            (juce::KeyPress::isKeyCurrentlyDown(std::toupper(code)) ||
+             juce::KeyPress::isKeyCurrentlyDown(std::tolower(code))));
+}
 // Live's measures, in points at 100 % (ui_look.hpp): the control bar, the Status Bar,
 // the AI tab, the Info View's width and the browser's preview strip.
 constexpr int kTransportHeight = look::controlBarHeight, kStatusHeight = look::statusBarHeight,
@@ -400,6 +408,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
+    // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
+    // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
+    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {
+        if (root.latch().held() && !keyIsDown(root.latch().key()))
+            root.letGoUnseen();
+        return root.latchKey(id, key.getKeyCode(), true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    }
     return manager.getKeyMappings()->keyPressed(key, &root);
 }
 void AppCommands::activate(AdiRootComponent &root) {
@@ -950,10 +965,45 @@ bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
     return true;
 }
 bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
+    const auto now = static_cast<std::int64_t>(juce::Time::getMillisecondCounter());
+    // A latching key let go: after a hold, the window goes back (Live 42.25).
+    bool handled = false;
+    if (latch_.held() && !keyIsDown(latch_.key()))
+        handled = latchKey(0, latch_.key(), false, now);
     // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
-    if (reference_.held() && !juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
-        return referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
-    return juce::Component::keyStateChanged(isKeyDown);
+    if (reference_.held() && !keyIsDown('r'))
+        return referenceKey(false, now) || handled;
+    return handled || juce::Component::keyStateChanged(isKeyDown);
+}
+bool AdiRootComponent::latches(int command) noexcept {
+    return command == AppCommands::SoloSelected || command == AppCommands::ZoomToSelection ||
+           (command >= AppCommands::ActivateTrack1 && command <= AppCommands::ActivateTrack8);
+}
+bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t nowMs) {
+    if (down) {
+        // The first press acts; a repeat while the key is held does nothing.
+        if (!latch_.press(keyCode, id, nowMs))
+            return true;
+        const auto before = submitter_.nextUndo();
+        const bool done = command(id);
+        if (const auto after = submitter_.nextUndo(); after && (!before || after->txnId != before->txnId))
+            latch_.made(after->txnId);
+        return done;
+    }
+    const auto back = latch_.release(keyCode, nowMs);
+    if (!back)
+        return false;
+    if (back->command == AppCommands::ZoomToSelection)
+        return command(AppCommands::ZoomBack);
+    // Only the step the press made, while it is still the latest: an edit since then stays, and so
+    // does what the press made under it. Going back pauses no Follow, as an undo from the menu does.
+    const auto last = submitter_.nextUndo();
+    if (back->step == 0 || !last || last->txnId != back->step)
+        return false;
+    const bool paused = arrangement.followPaused;
+    const bool done = command(AppCommands::Undo);
+    arrangement.followPaused = paused;
+    return done;
 }
 bool AdiRootComponent::setMixView(bool open, bool detached) {
     const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
@@ -1744,5 +1794,9 @@ bool AdiWindow::keyPressed(const juce::KeyPress &key, juce::Component *) {
     }
 #endif
     return commands_.key(key, *root_);
+}
+bool AdiWindow::keyStateChanged(bool isKeyDown, juce::Component *) {
+    // A held key comes up wherever the focus is: the root lets it go.
+    return root_->keyStateChanged(isKeyDown);
 }
 } // namespace adi::ui
