@@ -13,6 +13,33 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — MSVC mixer timeout: separate group/send console sweeps
+
+**PR requested:** engine/mixer-test-runtime -> main, head **834d26f**.
+**Title:** Separate group console sweeps from mixer tests for MSVC Debug
+**Body:** Window reports #350's MS STL Debug mixer ctest exceeding its existing
+600-second limit. That suite still combines ordinary mixer checks and the group
+console/send-level sweeps, after master-console tests were split earlier. Add
+adi_group_summing_tests and dispatch the existing two heavy functions there;
+ordinary mixer and master-console binaries remain separate. No render length,
+assertion, oracle, production code or timeout changes. All functions remain
+referenced in the common dispatcher for strict unused-function diagnostics.
+Current main's mixer337 + master98 = **435 checks**; the split is mixer233 +
+group/send104 + master98 = **435**. (The old hand-off's 428 predates current main.)
+The window has no new interface to consume; this is the engine's CI repair.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS **9885 checks / 107 suites**,
+all validators/migrations/layout clean. Clang19/Werror all3 suites pass the same
+435 checks. Local GCC elapsed mixer2.47s/group1.73s/master1.14s; Clang
+2.71s/1.76s/0.97s, concurrent local work present. GCC shadow/Werror syntax passes.
+No MSVC/remote CI timing claim; please let the existing seven-ABI CI validate
+its checked-iterator workload. Timeout stays unchanged. No extra tests or plants
+for this test-dispatch-only change; the original complete renders are the oracle.
+README counts remain win's. Next **N31**, then continue the needs queue.
+
+---
+
+
 ## 2026-11-02 — N28: undoable Color Cab sample assignment and missing-file snapshot
 
 **PR requested:** engine/sample-slots -> engine/library-devices, head **34259fe**.
