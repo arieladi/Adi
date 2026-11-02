@@ -151,6 +151,10 @@ class ArrangementCanvas final : public juce::Component,
     std::int64_t clipEdge(std::int64_t tick, bool forward) const;
     // Deletes or switches the selected clip: one op, through the root.
     bool clipEdit(const char *op, Payload payload, const char *label);
+    // Shift+click: the selection from its anchor to the point clicked, across tracks too (§6.9).
+    void extendTo(int x, int y, bool snapToGrid);
+    // Delete or 0 on a time selection, on every selected track, as one undo step.
+    bool rangeEdit(bool deactivate);
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0;
     std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     bool keyResize_ = false;
@@ -185,8 +189,8 @@ class ArrangementView final : public juce::Component {
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
     void paint(juce::Graphics &) override;
-    // A track's colour by its place, as Live's auto-assigned colours (the format does not yet
-    // say what a track's own colour holds: window log, N36).
+    // The colour of the track at `position` down the rows: its own, an index into Live's palette
+    // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
     void changed();
@@ -268,16 +272,17 @@ class ArrangementView final : public juce::Component {
     // Shows `group`, everything inside it and Main; 0 for the whole project. Kept per window; a
     // selected track left out gives the selection to the first track shown.
     void chooseView(std::int64_t group);
-    // The button's menu: the project, then its groups as a tree, as Bitwig's.
+    // The button's menu: the project, then its groups as a tree, as Bitwig's, then the ★ Reference
+    // track's toggle.
     juce::PopupMenu projectViewMenu();
+    // A selected track left out gives the selection to the first track shown.
+    void firstShownIfHidden();
 
   private:
     void refreshTree();
     TrackRows trackRows_;
     // What the chosen view and the folded groups leave out, from the tree as it is.
     void leaveOut();
-    // A selected track left out gives the selection to the first track shown.
-    void firstShownIfHidden();
     TrackTree tree_;
     // The menu's own look, Bitwig's; a menu keeps only a weak reference to it.
     std::unique_ptr<juce::LookAndFeel_V4> menuLook_;

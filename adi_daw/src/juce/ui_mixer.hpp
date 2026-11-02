@@ -29,9 +29,9 @@ double meterDepth(double db) noexcept;
 double meterLevel(double depth) noexcept;
 // One track's mixer controls in the track's own row, as Live's Arrangement Track
 // Controls (manual 18.1), laid out as Live 11 draws them (measured 2026-10-27): the
-// In/Out column, then the Track Activator, Solo and Arm; volume and pan; ADI's
-// channel slots for ADI-Q and ADI-L (ADR-0204 d1) on the row where Live shows the
-// sends; the meter.
+// In/Out column, then the Track Activator, Solo and Arm; volume and pan; one send per
+// return on the rows under them (ADR-0203 d3); ADI's channel slots for ADI-Q and ADI-L
+// (ADR-0204 d1) on the row after the sends; the meter.
 class MixerStrip final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit MixerStrip(MixerPanel &);
@@ -41,6 +41,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
+    bool hitTest(int x, int y) override;
     std::int64_t track() const noexcept { return track_; }
     bool dragging() const noexcept { return dragging_; }
     float peak() const noexcept { return peak_; }
@@ -54,17 +56,53 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm,
     // then ADI-Q and ADI-L. A click on one does not take the focus.
     std::array<juce::Button *, 5> switches() noexcept { return {&active, &solo, &arm, &eq, &limiter}; }
+    // One send per return, the returns in the arrangement's order (ADR-0203 d3): Live's value
+    // boxes, three to a row, in the track controls; Live's knobs under "Sends", each lettered as
+    // its return, in the Mixer View. Main has none. A return's own are off until Enable Send.
+    const std::vector<std::unique_ptr<juce::Slider>> &sendKnobs() const noexcept { return sends_; }
+    // The return the send at `index` goes to.
+    std::int64_t sendsTo(std::size_t index) const noexcept { return returns_[index]; }
+    bool sendOn(std::size_t index) const noexcept { return sendOn_[index] != 0; }
+    // How many rows of the Sends section the Mixer View strip has room for, one per return: on
+    // Main's strip too, which has no knobs, so the mixers line up.
+    std::size_t sendsShown() const noexcept { return shown_; }
+    // Commits the send at `index` at its knob's value, as one undo step; a new send writes its
+    // row first. What a knob's drag and a typed value do.
+    void commitSend(std::size_t index);
+    // Live's Enable Send on the send at `index`, or its undoing.
+    void enableSend(std::size_t index, bool on);
 
   private:
     void paintInOut(juce::Graphics &, int x) const;
     // The Mixer View strip's meter, under its fader.
     juce::Rectangle<int> meterArea() const noexcept;
     void panMenu();
+    void sendMenu(std::size_t index);
     void paintMeter(juce::Graphics &, juce::Rectangle<int>) const;
+    // One knob per return, made or dropped when the returns change; then laid out.
+    void syncSends();
+    std::unique_ptr<juce::Slider> makeSend(std::size_t index);
+    // The sends' rows in the track controls: three to a row, from the row under volume and pan.
+    int sendRows() const noexcept { return static_cast<int>((sends_.size() + 2) / 3); }
+    // A Mixer View strip's sends: Live's two columns, each knob 22 pt under the one before.
+    int sendsHeight(std::size_t count) const noexcept {
+        return count == 0 ? 0 : 28 + 22 * static_cast<int>(count);
+    }
+    juce::Rectangle<int> sendBounds(std::size_t index) const noexcept;
     MixerPanel &panel_;
     std::int64_t track_ = 0;
-    // Where a Mixer View strip's mixer begins, under the name and the slots.
+    // Where a Mixer View strip's mixer begins, under the name, the slots and the sends.
     static constexpr int kMixerTop = 40;
+    // What a Mixer View strip's mixer keeps under its sends: the peak level above pan, the
+    // activator, Solo and Arm.
+    static constexpr int kMixerRoom = 110;
+    int mixerTop() const noexcept { return kMixerTop + sendsHeight(shown_); }
+    std::vector<std::unique_ptr<juce::Slider>> sends_;
+    // The return each send goes to; the snapshot's returns, refilled on each change; whether each
+    // send is on.
+    std::vector<std::int64_t> returns_, order_;
+    std::vector<char> sendOn_;
+    std::size_t shown_ = 0, returnCount_ = 0;
     std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
@@ -89,9 +127,14 @@ class MixerPanel final : public juce::Component {
     void frame(bool changed) noexcept;
     void resized() override;
     void paint(juce::Graphics &) override;
+    // The frame above and below the lanes stands in front of a row scrolled past either edge.
+    void paintOverChildren(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     void contextMenu(juce::Point<int>);
+    // Where the track controls' rows show, level with the arrangement's lanes, in this panel's
+    // coordinates; the whole height for the Mixer View.
+    juce::Range<int> rowsBand() const noexcept;
     // Fetch every bound row's tap again: after the audio device changes, the taps do.
     void retap();
     // Move Focus to Mixer (§42.16): the Track Activator of the track's strip, else of the
@@ -117,6 +160,8 @@ class MixerPanel final : public juce::Component {
   private:
     void place();
     void placeColumns();
+    // Live's frame above the rows: the band, and H and W beside the Overview's end.
+    void paintTop(juce::Graphics &) const;
     bool vertical_;
     int scrollX_ = 0;
     std::vector<std::unique_ptr<MixerStrip>> strips_;

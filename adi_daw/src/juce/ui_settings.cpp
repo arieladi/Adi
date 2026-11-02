@@ -248,16 +248,48 @@ juce::StringArray SettingsPageList::lines(const std::string &page) {
     return out;
 }
 std::vector<juce::Rectangle<int>> SettingsPageList::tabs() const {
-    // Live's tabs: 19 units for a line and 15 for each more, 7 between them.
+    // Live's tabs: 19 units for a line and 15 for each more, 7 between them; a wider gap after
+    // Live's ten, before ADI's own pages.
     std::vector<juce::Rectangle<int>> out;
-    int y = 6;
-    for (const auto &name : panel_.pageNames()) {
-        const int height = 19 + 15 * std::max(0, lines(name).size() - 1);
+    int y = 6 - scroll_;
+    const auto &names = panel_.pageNames();
+    for (std::size_t i = 0; i < names.size(); ++i) {
+        if (i == kLiveTabs.size())
+            y += kOwnGap;
+        const int height = 19 + 15 * std::max(0, lines(names[i]).size() - 1);
         out.emplace_back(7, y, getWidth() - 7, height);
         y += height + 7;
     }
     return out;
 }
+int SettingsPageList::contentHeight() const {
+    const auto rects = tabs();
+    return rects.empty() ? 0 : rects.back().getBottom() + scroll_ + 6;
+}
+void SettingsPageList::scrollTo(int y) {
+    const int clamped = std::clamp(y, 0, std::max(0, contentHeight() - getHeight()));
+    if (clamped != scroll_) {
+        scroll_ = clamped;
+        repaint();
+    }
+}
+void SettingsPageList::reveal() {
+    // The open tab in view, as the keyboard moves through the pages.
+    const auto &names = panel_.pageNames();
+    const auto at = std::find(names.begin(), names.end(), panel_.page());
+    if (at == names.end())
+        return;
+    const auto r = tabs()[static_cast<std::size_t>(at - names.begin())];
+    if (r.getY() < 0)
+        scrollTo(scroll_ + r.getY() - 6);
+    else if (r.getBottom() > getHeight())
+        scrollTo(scroll_ + r.getBottom() - getHeight() + 6);
+}
+void SettingsPageList::mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &wheel) {
+    // When the tabs are taller than the window, the wheel scrolls them.
+    scrollTo(scroll_ - juce::roundToInt(wheel.deltaY * 120.f));
+}
+void SettingsPageList::resized() { scrollTo(scroll_); }
 void SettingsPageList::paint(juce::Graphics &g) {
     const auto rects = tabs();
     const auto &names = panel_.pageNames();
@@ -302,7 +334,9 @@ bool SettingsPageList::keyPressed(const juce::KeyPress &k) {
 }
 SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
                              std::function<std::unique_ptr<juce::Component>()> audioDevices)
-    : store(settingsStore), pageNames_(settings::pages()), makeAudio_(std::move(audioDevices)) {
+    : store(settingsStore), makeAudio_(std::move(audioDevices)) {
+    for (const auto &tab : settingsTabs())
+        pageNames_.push_back(tab.name);
     setLookAndFeel(&look::liveLook());
     setTitle("Settings");
     setWantsKeyboardFocus(true);
@@ -315,10 +349,18 @@ SettingsPanel::SettingsPanel(settings::AppSettings &settingsStore,
         if (onClose)
             onClose();
     };
-    defaults.setTooltip("Puts every setting on this page back to its default.");
+    defaults.setTooltip("Puts every setting on this tab back to its default.");
     defaults.setColour(juce::TextButton::buttonColourId, look::button);
     defaults.onClick = [this] {
-        store.resetPage(page_, {settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000});
+        // The tab's own settings, the application's (a project's are its ops', a device's its own).
+        const settings::ChangeContext who{settings::Actor::User, {}, juce::Time::currentTimeMillis() * 1000};
+        if (const auto *tab = settingsTab(page_))
+            for (const auto &group : tab->groups)
+                for (const auto *setting : group.settings)
+                    if (setting->scope == settings::Scope::App) {
+                        std::string ignored;
+                        store.reset(setting->key, who, ignored);
+                    }
         if (onChange)
             onChange();
         std::string why;
@@ -353,25 +395,29 @@ void SettingsPanel::showPage(const std::string &name) {
         if (name == "Audio")
             order_.push_back(audio_.get());
     }
-    // One heading over the page's settings until the registry carries Live's sections.
-    headings_.push_back(std::make_unique<SettingsHeading>(juce::String::fromUTF8(name.c_str())));
-    content_.addAndMakeVisible(*headings_.back());
-    order_.push_back(headings_.back().get());
-    for (const auto &s : settings::registry()) {
-        if (s.page != name)
-            continue;
-        // What the device chooser shows is not listed twice under it.
-        if (audio_ && name == "Audio" &&
-            (s.key == "audio.driverType" || s.key == "audio.inputDevice" || s.key == "audio.outputDevice" ||
-             s.key == "audio.sampleRate" || s.key == "audio.bufferSize"))
-            continue;
-        rows_.push_back(std::make_unique<SettingRow>(*this, s));
-        content_.addAndMakeVisible(*rows_.back());
-        order_.push_back(rows_.back().get());
-    }
+    // The tab's groups, each under its heading: Live's settings first, in Live's order, then ADI's
+    // on the same tab (settings_tabs.hpp).
+    if (const auto *tab = settingsTab(name))
+        for (const auto &group : tab->groups) {
+            headings_.push_back(std::make_unique<SettingsHeading>(juce::String::fromUTF8(group.heading.c_str())));
+            content_.addAndMakeVisible(*headings_.back());
+            order_.push_back(headings_.back().get());
+            for (const auto *s : group.settings) {
+                // What the device chooser shows is not listed twice under it.
+                if (audio_ && name == "Audio" &&
+                    (s->key == "audio.driverType" || s->key == "audio.inputDevice" ||
+                     s->key == "audio.outputDevice" || s->key == "audio.sampleRate" ||
+                     s->key == "audio.bufferSize"))
+                    continue;
+                rows_.push_back(std::make_unique<SettingRow>(*this, *s));
+                content_.addAndMakeVisible(*rows_.back());
+                order_.push_back(rows_.back().get());
+            }
+        }
     defaults.setEnabled(true);
     scroll_.setViewPosition(0, 0);
     layoutRows();
+    pageList.reveal();
     pageList.repaint();
 }
 void SettingsPanel::find(const juce::String &query) {
@@ -382,18 +428,24 @@ void SettingsPanel::find(const juce::String &query) {
     rows_.clear();
     headings_.clear();
     order_.clear();
-    // The matches under their pages' headings, in the pages' order.
-    std::string under;
-    for (const auto *s : settings::search(query.toStdString())) {
-        if (s->page != under) {
-            under = s->page;
-            headings_.push_back(std::make_unique<SettingsHeading>(juce::String::fromUTF8(under.c_str())));
-            content_.addAndMakeVisible(*headings_.back());
-            order_.push_back(headings_.back().get());
-        }
-        rows_.push_back(std::make_unique<SettingRow>(*this, *s));
-        content_.addAndMakeVisible(*rows_.back());
-        order_.push_back(rows_.back().get());
+    // The matches under their tabs' names, in the tabs' order and each tab's.
+    const auto hits = settings::search(query.toStdString());
+    for (const auto &tab : settingsTabs()) {
+        bool headed = false;
+        for (const auto &group : tab.groups)
+            for (const auto *s : group.settings) {
+                if (std::find(hits.begin(), hits.end(), s) == hits.end())
+                    continue;
+                if (!headed) {
+                    headed = true;
+                    headings_.push_back(std::make_unique<SettingsHeading>(juce::String::fromUTF8(tab.name.c_str())));
+                    content_.addAndMakeVisible(*headings_.back());
+                    order_.push_back(headings_.back().get());
+                }
+                rows_.push_back(std::make_unique<SettingRow>(*this, *s));
+                content_.addAndMakeVisible(*rows_.back());
+                order_.push_back(rows_.back().get());
+            }
     }
     if (audio_)
         audio_->setVisible(false);

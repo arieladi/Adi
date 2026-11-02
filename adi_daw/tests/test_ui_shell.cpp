@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-#include "../src/juce/ui_channel_eq.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
+#include "adi/audio/wav_file.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/send_edits.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <new>
 #include <thread>
 #include <tuple>
@@ -330,7 +333,8 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     };
     render("adi-parity.png");
     if (folder.isNotEmpty()) {
-        ChannelEqView eqView(root);
+        StackTab eqView(root);
+        eqView.setSize(900, 460);
         SnapshotReader eqReader(view.current());
         eqView.frame(eqReader);
         eqView.focus(4);
@@ -341,7 +345,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
             g.addTransform(juce::AffineTransform::scale(2.f));
             eqView.paintEntireComponent(g, true);
         }
-        const auto file = juce::File(folder).getChildFile("adi-channel-eq.png");
+        const auto file = juce::File(folder).getChildFile("adi-stack.png");
         file.deleteFile();
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
@@ -385,9 +389,11 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
         return out;
     };
     const auto before = items();
-    check(before.size() == 3 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
+    check(before.size() == 5 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
               before[2].first == "Fx" && !before[2].second && !root.arrangement.projectView.getToggleState(),
           "the project view's menu: the whole project, ticked, then its groups as a tree");
+    check(before[4].first == "Reference Track" && !before[4].second,
+          "and, after them, the Reference track's toggle, off (ADR-0209 d11: hidden by default)");
     auto &lanes = root.arrangement.geometry;
     lanes.selection.track = 2;
     choose("Fx");
@@ -747,6 +753,29 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         refresh();
         check(order() == tree, "the tree as it was");
     }
+    // The Mix View's STACK lists every channel the window's project view shows: the group chosen,
+    // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").
+    {
+        check(root.command(AppCommands::ToggleMixView), "the Mix View opens on the groups");
+        root.frame();
+        auto stackIds = [&root] {
+            std::vector<std::int64_t> out;
+            for (const auto &r : root.mixViewPanel.stack.rows())
+                out.push_back(r->track());
+            return out;
+        };
+        check(stackIds() == std::vector<std::int64_t>{10, 11, 12, 13, 14, 15, 16, 17, 18, 1},
+              "every channel, in the arrangement's order");
+        root.arrangement.chooseView(13);
+        root.frame();
+        check(stackIds() == std::vector<std::int64_t>{13, 14, 15, 16, 17, 18, 1} &&
+                  root.mixViewPanel.stack.scope() == "Body",
+              "Body chosen in the project view: Body, what it holds, and Main");
+        root.arrangement.chooseView(0);
+        root.frame();
+        check(stackIds().size() == 10 && root.command(AppCommands::ToggleMixView), "the whole project again; closed");
+        root.frame();
+    }
     lanes.selection.track = 15;
     // Two changes of signature, for the picture of the ruler and its markers.
     for (const auto &[pos, num, den] : {std::tuple{8 * textproj::kPPQ, 3, 4}, std::tuple{14 * textproj::kPPQ, 7, 8}}) {
@@ -763,23 +792,325 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.toggleFold(10);
     render("adi-groups-folded.png");
 }
-// New, in the window: Live's default Set as the store makes it (#307, ADR-0209 §10 d10), the
-// tracks then Main, and nothing to undo.
-void newProject(AppCommands &commands, const std::filesystem::path &dir) {
-    std::string error;
-    auto document = ProjectDocument::open(dir / "new.adi", true, {}, error);
-    check(document != nullptr, "New opens a project");
-    if (!document)
+// The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
+// value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
+void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "sends.adi", err);
+    check(store != nullptr, "the sends' project opens");
+    if (!store)
         return;
-    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
-                          document->sessionState(), "new");
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Sends')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    bool madeAll = true;
+    auto make = [&submitter, &madeAll](std::int64_t id, const char *kind, const char *name, std::int64_t index) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    };
+    make(1, "midi", "# MIDI", 0);
+    make(2, "midi", "# MIDI", 1);
+    make(3, "audio", "# Audio", 2);
+    make(4, "audio", "# Audio", 3);
+    make(5, "return", "A Reverb", 4);
+    make(6, "return", "B Delay", 5);
+    make(7, "master", "Main", 6);
+    check(madeAll, "Live's default set: two MIDI tracks, two audio tracks, two returns and Main");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "sends");
     root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 3;
     root.frame();
     root.frame();
-    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 1} &&
-              root.reader().findTrack(2)->name == "1 MIDI" && root.reader().findTrack(5)->name == "4 Audio",
-          "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, then Main");
-    check(!root.canUndo(false) && root.undoTitle(false) == "Undo", "and has nothing to undo, as Live");
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+    auto render = [&root, folder](const char *name) {
+        if (folder.isEmpty())
+            return;
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                          juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile(name);
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    };
+    auto rowOf = [](MixerPanel &panel, std::int64_t track) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->isVisible() && strip->track() == track)
+                return strip.get();
+        return nullptr;
+    };
+    auto *audio = rowOf(root.mixer, 3);
+    check(audio != nullptr && audio->sendKnobs().size() == 2 && audio->sendsTo(0) == 5 && audio->sendsTo(1) == 6,
+          "3 Audio has a send for each return, A then B");
+    if (audio == nullptr || audio->sendKnobs().size() != 2)
+        return;
+    auto &a = *audio->sendKnobs()[0];
+    auto &b = *audio->sendKnobs()[1];
+    auto takesClicks = [](juce::Component &c) {
+        bool self = false, children = false;
+        c.getInterceptsMouseClicks(self, children);
+        return self;
+    };
+    const int x = audio->showsInOut() ? MixerPanel::kInOutWidth : 0;
+    check(a.isVisible() && a.getBounds() == juce::Rectangle<int>(x + 4, 37, 29, 13) &&
+              b.getBounds() == juce::Rectangle<int>(x + 37, 37, 29, 13) && a.getTextFromValue(a.getValue()) == "-inf" &&
+              a.getTitle() == "Send A" && b.getTitle() == "Send B",
+          "Live's two -inf boxes on the row under volume and pan, as its capture");
+    check(audio->eq.getY() == 54 && audio->limiter.getY() == 54, "ADI-Q and ADI-L on the row after the sends");
+    auto *main = rowOf(root.mixer, 7);
+    auto *reverb = rowOf(root.mixer, 5);
+    check(main != nullptr && main->sendKnobs().empty(), "Main has no sends");
+    check(reverb != nullptr && reverb->sendKnobs().size() == 2 && !reverb->sendOn(0) && !reverb->sendOn(1) &&
+              !takesClicks(*reverb->sendKnobs()[1]) && reverb->sendKnobs()[1]->getAlpha() < 1.f &&
+              audio->sendOn(0) && takesClicks(a),
+          "a return's sends are off until Enable Send; a track's are on");
+
+    // A typed value commits at once: the row and its level, one undo step.
+    audio->sendKnobs()[0]->setValue(-12, juce::sendNotificationSync);
+    root.frame();
+    const auto *route = findSend(root.reader().sends(), 3, 5);
+    // A typed value passes the knob's 0.01 dB step from its -70 dB foot, which an FMA rounds once
+    // (Apple Clang on arm64) and two roundings do not: -12 within a hair, not to the bit.
+    check(route != nullptr && std::abs(route->gainDb + 12.0) < 1.e-9 && a.getTextFromValue(a.getValue()) == "-12" &&
+              submitter.nextUndo() && submitter.nextUndo()->label == "Change Send Level" &&
+              submitter.nextUndo()->opCount == 2,
+          "3 Audio's send A at -12 dB: a new row and its level, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(findSend(root.reader().sends(), 3, 5) == nullptr && a.getTextFromValue(a.getValue()) == "-inf",
+          "the send is gone and its box reads -inf again");
+    check(root.command(AppCommands::Redo), "redo");
+    root.frame();
+    check(a.getTextFromValue(a.getValue()) == "-12", "and back at -12 dB");
+
+    // Enable Send on A Reverb's send B: on, at full alpha, taking clicks.
+    reverb->enableSend(1, true);
+    root.frame();
+    check(reverb->sendOn(1) && !reverb->sendOn(0) && takesClicks(*reverb->sendKnobs()[1]) &&
+              findSend(root.reader().sends(), 5, 6) != nullptr && findSend(root.reader().sends(), 5, 6)->enabled,
+          "Enable Send: A Reverb feeds B Delay, fully down until turned up");
+    reverb->enableSend(1, true);
+    check(root.error() == "The send is on already.", "enabling it again only says so");
+
+    render("adi-sends-rows.png");
+    // The Mixer View: Live's knobs under "Sends", A on the left and B lower on the right; the mixer
+    // under them.
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(320);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto *column = rowOf(root.mixerView, 3);
+    check(column != nullptr && column->sendKnobs().size() == 2 && column->sendsShown() == 2,
+          "3 Audio's strip shows both sends");
+    if (column != nullptr && column->sendsShown() == 2) {
+        const auto ka = column->sendKnobs()[0]->getBounds(), kb = column->sendKnobs()[1]->getBounds();
+        check(ka == juce::Rectangle<int>(10, 46, 32, 32) && kb == juce::Rectangle<int>(51, 68, 32, 32) &&
+                  column->sendKnobs()[0]->getSliderStyle() == juce::Slider::RotaryHorizontalVerticalDrag,
+              "knob A on the left, B to its right and 22 pt lower, as Live's");
+        check(column->volume.getY() == 40 + 72 + 6 && column->peakHold.getY() == 40 + 72 + 5,
+              "the mixer begins under the sends");
+        check(std::abs(column->sendKnobs()[0]->getValue() + 12.0) < 1.e-9,
+              "and send A reads the same row as the track controls");
+        auto *mainColumn = rowOf(root.mixerView, 7);
+        check(mainColumn != nullptr && mainColumn->sendKnobs().empty() && mainColumn->sendsShown() == 2 &&
+                  mainColumn->volume.getY() == column->volume.getY(),
+              "Main has no knobs, but keeps the Sends section's room: the mixers line up");
+    }
+    // A short Mixer View keeps the mixer's room and leaves out the sends that do not fit.
+    root.resizeMixerView(200);
+    root.mark(DirtySet::All);
+    root.frame();
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && column->sendsShown() < 2 && !column->sendKnobs()[1]->isVisible() &&
+              column->getHeight() - column->peakHold.getY() + 5 >= 110,
+          "short, the strip shows fewer sends and keeps its mixer");
+    root.resizeMixerView(320);
+    root.mark(DirtySet::All);
+    root.frame();
+    render("adi-sends.png");
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+}
+// Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
+// after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
+// makes a new audio track. Each drop is one undo step (#308).
+void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "drop.adi", err);
+    check(store != nullptr, "the drop's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Drop')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    bool madeAll = true;
+    for (const auto &[id, kind, name] : {std::tuple{1, "audio", "Drums"}, std::tuple{2, "midi", "Keys"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    check(madeAll, "an audio track and a MIDI track");
+    // One second at 48 kHz: two beats at the default 120 BPM.
+    const auto wav = dir / "Kick 808.wav";
+    {
+        std::vector<float> samples(48000, .25f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "drop");
+    // What the document does (ProjectDocument::prepareImport), on this scene's store.
+    root.importAudio = [&store](const std::string &path, AudioImport &out, std::string &why) {
+        OpRequest captured;
+        const auto id = store->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+        const auto r = media::prepareImport(*store, media::pathFromUtf8(path), id, 1, captured);
+        if (!r.ok || !r.audio) {
+            why = r.ok ? "not audio" : r.error;
+            return false;
+        }
+        out.mediaId = r.mediaId;
+        out.sampleRate = r.audio->sampleRate;
+        out.frames = r.audio->frames;
+        out.media = std::move(captured);
+        return true;
+    };
+    root.setSize(1200, 720);
+    root.frame();
+    root.frame();
+    auto &geometry = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const auto path = juce::String(wav.string());
+    // A little past bar 2: the clip starts on its line.
+    const auto bar2 = textproj::kWhole;
+    const int x = static_cast<int>(geometry.x(bar2) + 3);
+    canvas.filesDropped(juce::StringArray{path}, x, laneTop(root, 1) + 10);
+    root.frame();
+    const auto *drums = root.reader().findTrack(1);
+    check(drums != nullptr && drums->clips.size() == 1 && drums->clips[0]->name == "Kick 808" &&
+              drums->clips[0]->posTicks == bar2 && std::abs(drums->clips[0]->lengthTicks - 2 * textproj::kPPQ) <= 1,
+          "dropped on Drums near bar 2: a clip named after the file, on bar 2, two beats long");
+    check(geometry.selection.track == 1 && geometry.selection.clip == drums->clips[0]->id &&
+              submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip" &&
+              submitter.nextUndo()->opCount == 3,
+          "the clip is selected; one undo step");
+    canvas.filesDropped(juce::StringArray{path}, x, laneTop(root, 2) + 10);
+    root.frame();
+    check(root.reader().findTrack(2)->clips.empty() && root.error().find("audio track") != std::string::npos,
+          "on the MIDI track: refused, and the Status Bar says where it goes");
+    // Below the tracks, the drop area: a new audio track holding the clip; the pool row is reused.
+    const int below = laneTop(root, 2) + geometry.heightFor(2) + 20;
+    check(geometry.trackAt(root.reader(), below) == nullptr, "below the tracks is the drop area");
+    canvas.filesDropped(juce::StringArray{path}, x, below);
+    root.frame();
+    const auto *added = root.reader().findTrack(3);
+    check(added != nullptr && added->kind == "audio" && added->clips.size() == 1 && geometry.selection.track == 3 &&
+              store->db().execAndGet("SELECT count(*) FROM media_files").getInt() == 1,
+          "the drop area: a new audio track with the clip, selected; the file pooled once");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                          juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-audio-drop.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    }
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(root.reader().findTrack(3) == nullptr && root.reader().findTrack(1)->clips.size() == 1,
+          "takes the new track away; the first clip stays");
+    // A file that is not audio is refused with the reason.
+    const auto text = dir / "notes.txt";
+    {
+        std::ofstream(text) << "not audio";
+    }
+    canvas.filesDropped(juce::StringArray{juce::String(text.string())}, x, laneTop(root, 1) + 10);
+    root.frame();
+    check(root.reader().findTrack(1)->clips.size() == 1 && !root.error().empty(), "a text file is refused, with the reason");
+}
+// Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
+// Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
+// the clips inside it on all of them, as one undo step each.
+void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "range.adi", err);
+    check(store != nullptr, "the range's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Range')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole;
+    bool madeAll = true;
+    for (std::int64_t id = 1; id <= 4; ++id) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "midi"}, {"name", "# MIDI"}, {"index", id - 1}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    // A clip in bar 2 on each of the first three tracks; the fourth's runs on past bar 3.
+    for (std::int64_t id = 1; id <= 4; ++id) {
+        OpRequest r;
+        r.opType = "clip.create";
+        r.payload = {{"id", 10 + id}, {"track", id}, {"kind", "midi"}, {"pos", bar}, {"length", id == 4 ? 2 * bar : bar}};
+        r.label = "Create clip";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    check(madeAll, "four MIDI tracks, a clip on each");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "range");
+    root.setSize(1200, 720);
+    for (std::int64_t id = 1; id <= 4; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
+    // From bar 1 on track 1, dragged to bar 3 on track 3: bars 1 to 3 on tracks 1, 2 and 3. A forward
+    // selection snaps up to the next grid line, so the mouse lets go just short of bar 3's.
+    canvas.mouseDown(pressAt(canvas, {x(0) + 1, lane(1)}));
+    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    canvas.mouseUp(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    root.frame();
+    check(geo.selection.track == 1 && geo.selection.toTrack == 3 && geo.selection.start == 0 &&
+              geo.selection.end == 2 * bar && geo.inSelection(root.reader(), 2) && !geo.inSelection(root.reader(), 4),
+          "dragged across lanes, the selection reaches every track between");
+    // Drawn on every selected lane, not on the fourth.
+    juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        canvas.paintEntireComponent(g, true);
+    }
+    const int px = static_cast<int>(x(bar / 2));
+    const auto lit = image.getPixelAt(px, static_cast<int>(lane(2))), unlit = image.getPixelAt(px, static_cast<int>(lane(4)));
+    check(lit != unlit && image.getPixelAt(px, static_cast<int>(lane(1))) == lit &&
+              image.getPixelAt(px, static_cast<int>(lane(3))) == lit,
+          "the time selection is drawn on each selected track's lane, as Live's");
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {
@@ -787,12 +1118,49 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
             g.addTransform(juce::AffineTransform::scale(2.f));
             root.paintEntireComponent(g, true);
         }
-        const auto file = juce::File(folder).getChildFile("adi-new.png");
+        const auto file = juce::File(folder).getChildFile("adi-range.png");
         file.deleteFile();
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
     }
-    document->release();
+    // 0 deactivates the three clips inside; the fourth track is not selected.
+    check(canvas.keyPressed(juce::KeyPress('0')), "0");
+    root.frame();
+    auto clipOf = [&root](std::int64_t track) { return root.reader().findTrack(track)->clips.front(); };
+    check(clipOf(1)->muted && clipOf(2)->muted && clipOf(3)->muted && !clipOf(4)->muted &&
+              submitter.nextUndo()->label == "Deactivate Clips" && submitter.nextUndo()->opCount == 3,
+          "0 deactivates the material on every selected track, one undo step");
+    // Shift+Down reaches the fourth track; its clip crosses the end, so 0 leaves it and says why.
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey, juce::ModifierKeys::shiftModifier, 0)) &&
+              geo.selection.toTrack == 4 && geo.selection.track == 1,
+          "Shift+Down reaches one track further");
+    check(canvas.keyPressed(juce::KeyPress('0')), "0 again");
+    root.frame();
+    check(!clipOf(1)->muted && !clipOf(4)->muted && root.error().find("1 clip crosses") != std::string::npos,
+          "the three inside are activated; the one across the edge stays, and the Status Bar says why");
+    // Shift+click on track 2 at bar 2 pulls the selection back to tracks 1 and 2, bars 1 to 2.
+    canvas.mouseDown(pressAt(canvas, {x(bar) - 1, lane(2)}, juce::ModifierKeys::shiftModifier));
+    canvas.mouseUp(pressAt(canvas, {x(bar) - 1, lane(2)}, juce::ModifierKeys::shiftModifier));
+    check(geo.selection.track == 1 && geo.selection.toTrack == 2 && geo.selection.end == bar,
+          "Shift+click extends or shortens the selection, across tracks too");
+    // Delete on bars 1 to 3 of tracks 1 to 3: their clips go, as one step.
+    canvas.mouseDown(pressAt(canvas, {x(0) + 1, lane(1)}));
+    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    canvas.mouseUp(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete");
+    root.frame();
+    check(root.reader().findTrack(1)->clips.empty() && root.reader().findTrack(3)->clips.empty() &&
+              root.reader().findTrack(4)->clips.size() == 1 && submitter.nextUndo()->label == "Delete Clips",
+          "Delete removes the material on every selected track");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(root.reader().findTrack(1)->clips.size() == 1 && root.reader().findTrack(2)->clips.size() == 1,
+          "brings it all back");
+    // A plain click starts over: one track.
+    canvas.mouseDown(pressAt(canvas, {x(bar) + 1, lane(4)}));
+    canvas.mouseUp(pressAt(canvas, {x(bar) + 1, lane(4)}));
+    check(geo.selection.track == 4 && geo.selection.toTrack == 0 && !geo.inSelection(root.reader(), 1),
+          "a plain click selects in one track again");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
@@ -852,6 +1220,33 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(laneTop(root, 10) == -200 && laneTop(root, 1) == footY + 96 && laneTop(root, 2) == footY,
           "scrolled, the tracks move and the foot stays");
+    // A row scrolled partly above the lanes: its track controls show no more than its lane does,
+    // and take no click above the lanes (window/controls-clip).
+    {
+        lanes.scrollY = 24;
+        root.arrangement.changed();
+        root.frame();
+        const int top = root.arrangement.topHeight();
+        const MixerStrip *first = nullptr;
+        for (const auto &strip : root.mixer.strips())
+            if (strip->isVisible() && strip->track() == 10)
+                first = strip.get();
+        auto &panel = root.mixer;
+        check(first != nullptr && first->getY() == top - 24 && panel.rowsBand().getStart() == top,
+              "Track 1's controls half above the lanes, as its lane is");
+        auto *strip = const_cast<MixerStrip *>(first);
+        check(strip != nullptr && !strip->hitTest(20, 10) && strip->hitTest(20, 30) &&
+                  panel.getComponentAt(20, top - 14) != strip,
+              "above the lanes a click is not the row's; level with them it is");
+        juce::Image image(juce::Image::ARGB, panel.getWidth(), panel.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            panel.paintEntireComponent(g, true);
+        }
+        check(image.getPixelAt(20, top - 10) == image.getPixelAt(20, 2) &&
+                  image.getPixelAt(20, top + 10) != image.getPixelAt(20, 2),
+              "the frame's band stands in front of the row above the lanes; the row shows below");
+    }
     lanes.scrollY = 100000;
     check(lanes.maxScroll(root.reader()) == 12 * 48 - ArrangementGeometry::kMinTrackHeight,
           "the tracks scroll no further than their last sliver");
@@ -880,6 +1275,88 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.changed();
     root.frame();
     check(laneTop(root, 2) == footY, "and the foot is where it was");
+    // A track's own colour (ADR-0211): an index into Live's palette, drawn on its title, its lane's
+    // clips and its track controls; without one, or outside the palette, the colour of its place.
+    {
+        auto headerPixel = [&root](std::int64_t id) {
+            auto &headers = root.arrangement.headers;
+            juce::Image image(juce::Image::ARGB, headers.getWidth(), headers.getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                headers.paintEntireComponent(g, true);
+            }
+            return image.getPixelAt(headers.nameLeft(0) + 1, laneTop(root, id) + 30);
+        };
+        lanes.scrollY = 0;
+        root.arrangement.changed();
+        root.frame();
+        const auto byPlace = root.arrangement.colourFor(1);
+        check(byPlace == juce::Colour(0xffeb4cce) && headerPixel(11) == byPlace,
+              "Track 2 has no colour of its own: the colour of its place");
+        check(root.submitEdit("track.setColor", {{"id", 11}, {"color", 26}}, "Recolour Track"), "Track 2 recoloured");
+        root.arrangement.changed();
+        root.frame();
+        // Until the seventy are measured, index 26 stands in as the fourteen's 26 % 14 = 12th.
+        const juce::Colour own(0xff92a7ff);
+        check(root.arrangement.colourFor(1) == own && headerPixel(11) == own,
+              "its own colour, index 26 of Live's palette, on its title");
+        check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+        root.resizeMixerView(220);
+        root.mark(DirtySet::All);
+        root.frame();
+        MixerStrip *column = nullptr;
+        for (const auto &strip : root.mixerView.strips())
+            if (strip->isVisible() && strip->track() == 11)
+                column = strip.get();
+        juce::Colour nameBar;
+        if (column != nullptr) {
+            juce::Image image(juce::Image::ARGB, column->getWidth(), column->getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                column->paintEntireComponent(g, true);
+            }
+            nameBar = image.getPixelAt(column->getWidth() - 6, 10);
+        }
+        check(column != nullptr && nameBar == own, "and on its strip's name in the Mixer View");
+        check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+        check(root.submitEdit("track.setColor", {{"id", 11}, {"color", 0xff0000}}, "Recolour Track"),
+              "a value outside the palette, as an RGB colour would be");
+        root.arrangement.changed();
+        root.frame();
+        check(root.arrangement.colourFor(1) == byPlace, "is not a colour of the palette: the colour of its place");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+        root.arrangement.changed();
+        root.frame();
+        check(root.arrangement.colourFor(1) == byPlace && headerPixel(11) == byPlace, "and it has no colour of its own again");
+        const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+        if (folder.isNotEmpty()) {
+            // Four tracks in colours of their own, the rest by place, for the picture.
+            int edits = 0;
+            for (const auto &[id, index] : {std::pair{10, 7}, std::pair{11, 26}, std::pair{13, 47}, std::pair{14, 3}})
+                edits += root.submitEdit("track.setColor", {{"id", id}, {"color", index}}, "Recolour Track") ? 1 : 0;
+            lanes.selection.track = 11;
+            root.arrangement.changed();
+            root.mark(DirtySet::All);
+            root.frame();
+            juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-track-colour.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            for (int k = 0; k < edits; ++k)
+                root.command(AppCommands::Undo);
+            root.arrangement.changed();
+            root.frame();
+        }
+    }
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (folder.isNotEmpty()) {
         // The last tracks, the drop area under them, and the foot, as Live's figure.
@@ -898,6 +1375,407 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
         file.deleteFile();
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        // Half a row scrolled above the lanes: the names, the lanes and the track controls cut
+        // at the same line.
+        lanes.scrollY = 24;
+        root.arrangement.changed();
+        root.mark(DirtySet::All);
+        root.frame();
+        juce::Image cut(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(cut);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto cutFile = juce::File(folder).getChildFile("adi-controls-clip.png");
+        cutFile.deleteFile();
+        if (auto stream = cutFile.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(cut, *stream);
+    }
+}
+// New, in the window: Live's default Set as the store makes it (#307, ADR-0209 §10 d10), the
+// tracks then Main, and nothing to undo.
+void newProject(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "new.adi", true, {}, error);
+    check(document != nullptr, "New opens a project");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "new");
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 1} &&
+              root.reader().findTrack(2)->name == "1 MIDI" && root.reader().findTrack(5)->name == "4 Audio",
+          "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, then Main");
+    check(!root.canUndo(false) && root.undoTitle(false) == "Undo", "and has nothing to undo, as Live");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-new.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    document->release();
+}
+// The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
+// of the arrangement; its tabs in the draft's order, STACK first; kept per window.
+void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "mixview.adi", err);
+    check(store != nullptr, "the Mix View's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Mix')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    bool madeAll = true;
+    std::int64_t index = 0;
+    for (const auto &[id, kind, name] : {std::tuple{1, "master", "Main"}, std::tuple{10, "audio", "Kick"},
+                                         std::tuple{11, "audio", "Bass"}, std::tuple{12, "midi", "Lead"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", index++}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    check(madeAll, "Kick, Bass, Lead and Main");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "mix");
+    root.setSize(1440, 900);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &panel = root.mixViewPanel;
+    const auto lanes = root.arrangement.getBounds();
+    const auto controls = root.mixerArea();
+    check(!panel.isVisible() && root.arrangement.isVisible() && !root.state().mixView,
+          "closed by default: the arrangement as Live's");
+    commands.activate(root);
+    juce::ApplicationCommandInfo info(AppCommands::ToggleMixView);
+    commands.getCommandInfo(AppCommands::ToggleMixView, info);
+    check(info.shortName == "Mix View" && info.defaultKeypresses.size() == 1 &&
+              info.defaultKeypresses[0] == juce::KeyPress(juce::KeyPress::F4Key) &&
+              (info.flags & juce::ApplicationCommandInfo::isTicked) == 0,
+          "the View menu's Mix View, on F4 (ADR-0209 d9)");
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)), "F4 opens it");
+    root.frame();
+    check(root.state().mixView && panel.isVisible() && !root.arrangement.isVisible() && !root.mixer.isVisible() &&
+              panel.getBounds() == lanes.getUnion(controls),
+          "in place of the arrangement and its track controls");
+    check(root.browser.isVisible() && root.strip.isVisible() && root.devices.isVisible(),
+          "the browser, the strip down the edge and the Detail View stay");
+    check(root.transport.mix.getToggleState(), "the control bar's Mix button is lit");
+    commands.getCommandInfo(AppCommands::ToggleMixView, info);
+    check((info.flags & juce::ApplicationCommandInfo::isTicked) != 0, "and the menu's item ticked");
+    // The tabs: the draft's five, in its order and names; STACK shown first, P1's only tab.
+    bool named = true;
+    for (int i = 0; i < MixViewPanel::kTabCount; ++i)
+        named = named && panel.tabs[static_cast<std::size_t>(i)]->getButtonText() ==
+                             MixViewPanel::kTabNames[static_cast<std::size_t>(i)];
+    check(named && panel.tabs[1]->getButtonText() == "STACK", "OVERVIEW, STACK, SCOPE & PHASE, SPECTROGRAM, CTZ CASCADE");
+    check(panel.tab() == MixViewPanel::Tab::Stack && panel.tabs[1]->getToggleState() && panel.stack.isVisible() &&
+              panel.stack.rows().size() == 4,
+          "STACK shows, lit, with a row for each channel");
+    check(panel.stack.getBounds() == panel.body() && panel.body().getY() >= MixViewPanel::kHeaderHeight,
+          "under the tabs");
+    panel.tabs[0]->onClick();
+    root.frame();
+    check(root.state().mixViewTab == 0 && panel.tab() == MixViewPanel::Tab::Overview && !panel.stack.isVisible() &&
+              panel.tabs[0]->getToggleState() && !panel.tabs[1]->getToggleState(),
+          "a click on OVERVIEW shows it, drawn empty until after the first window (d11)");
+    check(persistence.load("mix", {}).mixViewTab == 0 && persistence.load("mix", {}).mixView,
+          "the tab and the view are kept with the window's view (ui_view)");
+    check(root.chooseMixViewTab(1), "back to STACK");
+    root.frame();
+    // A steady frame with the Mix View open builds nothing.
+    root.frame();
+    allocations = 0;
+    audit = true;
+    root.frame();
+    audit = false;
+    check(allocations == 0, "a steady frame with the Mix View open allocates zero");
+    // The rows follow the tracks.
+    OpRequest pad;
+    pad.opType = "track.create";
+    pad.payload = {{"id", 13}, {"kind", "midi"}, {"name", "Pad"}, {"index", 3}};
+    pad.label = "Create track";
+    check(submitter.submit(std::move(pad)).ok, "a new track");
+    root.frame();
+    check(panel.stack.rows().size() == 5, "and STACK has a row for it at the next frame");
+    // STACK (ADR-0209 d11; Pro-Q's instance list): the row under the mouse opens, dormant slots are
+    // flat dimmed lines, a slot says what it waits for, and the window's group decides the rows.
+    {
+        auto &stack = panel.stack;
+        auto rowOf = [&stack](std::int64_t id) -> StackRow * {
+            for (const auto &r : stack.rows())
+                if (r->track() == id)
+                    return r.get();
+            return nullptr;
+        };
+        auto *kick = rowOf(10), *bass = rowOf(11);
+        check(kick != nullptr && bass != nullptr && kick->getHeight() == StackRow::kHeight &&
+                  bass->getY() == kick->getBottom(),
+              "rows of one height, one under another");
+        kick->mouseEnter(pressAt(*kick, {40.f, 10.f}));
+        check(stack.hovered() == 10 && kick->zoomed() && kick->getHeight() == StackRow::kZoomedHeight &&
+                  bass->getY() == kick->getBottom(),
+              "the row under the mouse opens, the rows below move down");
+        check(kick->eqArea().getHeight() > 120 && kick->sidechainArea().getRight() < kick->limiterArea().getX() &&
+                  kick->eqArea().getRight() < kick->sidechainArea().getX(),
+              "ADI-Q's graph to edit, the sidechain slot and ADI-L as drawers beside it");
+        kick->mouseExit(pressAt(*kick, {40.f, 10.f}));
+        check(stack.hovered() == 0 && kick->getHeight() == StackRow::kHeight, "and closes when the mouse leaves");
+        // Dormant: the 0 dB line dimmed, never the track's colour.
+        auto pixelAt = [](juce::Component &c, juce::Point<int> at) {
+            juce::Image image(juce::Image::ARGB, c.getWidth(), c.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                c.paintEntireComponent(g, true);
+            }
+            return image.getPixelAt(at.x, at.y);
+        };
+        const auto flat = juce::Point<int>(kick->eqArea().getCentreX(), kick->eqArea().getCentreY());
+        const auto kickColour = root.arrangement.colourFor(0);
+        check(pixelAt(*kick, flat) != kickColour && !stack.provider().live(), "a dormant ADI-Q: a flat line, dimmed");
+        // Engaged, as the engine's slots will report: the line in the track's colour, the drawer lit.
+        struct Engaged final : MixViewProvider {
+            ChannelSlots slots(const engine::TrackNode &t) const noexcept override {
+                ChannelSlots s;
+                s.eq = t.id == 10;
+                s.sidechain = t.id == 10 ? SidechainMode::Rmsc : SidechainMode::Off;
+                return s;
+            }
+            bool live() const noexcept override { return true; }
+        } engaged;
+        const auto &own = root.mixProvider(); // the root's stub, which outlives this block
+        root.setMixProvider(engaged);
+        const auto lit = kick->sidechainArea().getTopLeft() + juce::Point<int>(2, 2);
+        check(pixelAt(*kick, flat) == kickColour && pixelAt(*kick, lit) != pixelAt(*bass, lit),
+              "engaged: Kick's line in its colour, its sidechain drawer lit, Bass's not");
+        root.setMixProvider(own);
+        // A slot says what it waits for; elsewhere a click selects the channel's track.
+        bass->mouseDown(pressAt(*bass, bass->sidechainArea().getCentre().toFloat()));
+        check(stack.focused() == 11 && root.error().find("sidechain") != std::string::npos,
+              "a click on the sidechain slot focuses Bass and says it waits for the engine's slots");
+        bass->mouseDown(pressAt(*bass, {40.f, 10.f}));
+        check(root.arrangement.geometry.selection.track == 11, "a click on its name selects Bass's track");
+        // The View menu's Channel EQ, and a track row's Q, open STACK on the selected track.
+        check(root.chooseMixViewTab(0), "on another tab");
+        root.arrangement.geometry.selection.track = 12;
+        check(root.command(AppCommands::ShowChannelEq) && root.state().mixViewTab == 1 && stack.focused() == 12,
+              "Channel EQ opens STACK, Lead's row focused (ADR-0204 d1's one window)");
+        check(stack.scope() == "Project", "the rows: the whole project, the project view showing it");
+    }
+    // The ★ Reference (ADR-0209 §4, d9, d11): its strip in the Mix View, hidden from the project view
+    // until [Reference Track] shows it, [REF] and Shift+R, a tap to latch, a hold to audition.
+    {
+        commands.activate(root);
+        juce::ApplicationCommandInfo refInfo(AppCommands::PlayReference);
+        commands.getCommandInfo(AppCommands::PlayReference, refInfo);
+        juce::ApplicationCommandInfo renameInfo(AppCommands::RenameTrack);
+        commands.getCommandInfo(AppCommands::RenameTrack, renameInfo);
+        check(refInfo.defaultKeypresses.size() == 1 &&
+                  refInfo.defaultKeypresses[0] == juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0) &&
+                  renameInfo.defaultKeypresses[0] == juce::KeyPress('r', juce::ModifierKeys::commandModifier, 0),
+              "Play Reference on Shift+R; Ctrl/Cmd+R stays Live's Rename (d9)");
+        check(root.referenceTrack() == 0 && panel.referenceText() == "None yet",
+              "the stub names no Reference track until the format carries a track's role (N38)");
+        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) &&
+                  root.error().find("No track is the Reference") != std::string::npos,
+              "Shift+R with none says so");
+        root.referenceKey(true, 0);
+        root.referenceKey(false, 50);
+        // A provider that names Lead, as the snapshot's will once tracks carry their role.
+        struct Named final : MixViewProvider {
+            ChannelSlots slots(const engine::TrackNode &) const noexcept override { return {}; }
+            bool live() const noexcept override { return false; }
+            std::int64_t reference(const std::vector<std::shared_ptr<const engine::TrackNode>> &tracks) const noexcept override {
+                for (const auto &t : tracks)
+                    if (t->id == 12)
+                        return 12;
+                return 0;
+            }
+        } leadIsReference;
+        const auto &own = root.mixProvider();
+        root.setMixProvider(leadIsReference);
+        root.frame();
+        auto inStack = [&panel](std::int64_t id) {
+            for (const auto &r : panel.stack.rows())
+                if (r->track() == id)
+                    return true;
+            return false;
+        };
+        check(root.referenceTrack() == 12 && panel.referenceText() == "Lead" && !root.arrangement.geometry.inView(12) &&
+                  !inStack(12) && inStack(11),
+              "Lead the Reference: named in the strip, hidden from the project view and from STACK's rows");
+        panel.eye.onClick();
+        root.frame();
+        check(root.state().showReference && root.arrangement.geometry.inView(12) && panel.eye.getToggleState() &&
+                  persistence.load("mix", {}).showReference,
+              "[Reference Track] shows it, lit, kept with the window's view");
+        check(root.command(AppCommands::ToggleReferenceTrack) && !root.arrangement.geometry.inView(12),
+              "and hides it again");
+        // [REF] and Shift+R: a tap latches, a second tap lets go, a hold auditions.
+        check(root.referenceKey(true, 1000) && root.reference().on() && root.reference().held(), "down: it plays");
+        check(!root.referenceKey(false, 1100) && root.reference().latched() &&
+                  root.error().find("cue path") != std::string::npos,
+              "a tap under 200 ms latches it; the Status Bar says it waits for the cue path (N23)");
+        root.frame();
+        check(panel.ref.getToggleState(), "[REF] lit while it is on");
+        if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); out.isNotEmpty()) {
+            // Lead with two clips, the Reference latched, for the picture; undone after.
+            int made = 0;
+            for (const auto &[clipId, pos, length] : {std::tuple{900, 0, 8}, std::tuple{901, 10, 6}}) {
+                OpRequest clip;
+                clip.opType = "clip.create";
+                clip.payload = {{"id", clipId}, {"track", 12}, {"kind", "audio"}, {"name", "Reference mix"},
+                                {"pos", pos * textproj::kPPQ}, {"length", length * textproj::kPPQ}};
+                clip.label = "Create clip";
+                made += submitter.submit(std::move(clip)).ok ? 1 : 0;
+            }
+            root.mark(DirtySet::All);
+            root.frame();
+            juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(out).getChildFile("adi-mix-view-reference.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            for (int k = 0; k < made; ++k)
+                root.command(AppCommands::Undo);
+            root.frame();
+        }
+        check(!root.referenceKey(true, 2000) && root.referenceKey(false, 2050) && !root.reference().on(),
+              "a second tap lets it go");
+        check(root.referenceKey(true, 3000) && root.referenceKey(false, 3400) && !root.reference().on(),
+              "a hold auditions it only while held");
+        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) && root.reference().latched(),
+              "Shift+R from the keyboard, let go at once: a tap, latched");
+        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) && !root.reference().on(),
+              "and again, off");
+        root.setMixProvider(own);
+        root.frame();
+        check(root.referenceTrack() == 0 && root.arrangement.geometry.inView(12), "back to the stub: Lead shows");
+    }
+    // A second window keeps its own.
+    AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "mix-other");
+    other.setSize(1200, 720);
+    other.frame();
+    check(!other.mixViewPanel.isVisible() && other.arrangement.isVisible(), "a second window keeps its own view");
+    root.transport.mix.onClick();
+    root.frame();
+    check(!root.state().mixView && !panel.isVisible() && root.arrangement.isVisible() && root.mixer.isVisible() &&
+              root.arrangement.getBounds() == lanes && !root.transport.mix.getToggleState(),
+          "the Mix button closes it: the arrangement and its track controls where they were");
+    // In a window of its own, onto any display (ADR-0209 d11, ADR-0180 d3): the same panel moves
+    // into the floating host's window and back.
+    {
+        FloatingHost host(root, commands, persistence, view, [](std::int64_t) { return true; }, false);
+        root.applicationCommand = [&host, &root](int id) {
+            if (id == AppCommands::DetachMixView)
+                return detachMixView(host, root, !root.state().mixViewDetached);
+            if (id == AppCommands::ToggleMixView)
+                return toggleMixViewWindow(host, root);
+            return false;
+        };
+        check(root.command(AppCommands::ToggleMixView) && panel.isVisible() && panel.getParentComponent() == &root,
+              "F4: docked first");
+        panel.floating.onClick();
+        root.frame();
+        check(root.state().mixView && root.state().mixViewDetached && host.content("Mix View") == &panel &&
+                  panel.getParentComponent() != &root && root.arrangement.isVisible() && root.mixer.isVisible(),
+              "its window button moves it into a window; the arrangement comes back in the centre");
+        host.frame("Mix View");
+        check(panel.floating.getToggleState() && root.transport.mix.getToggleState(),
+              "the window button is lit while it is in a window, and so is the Mix field");
+        commands.getCommandInfo(AppCommands::DetachMixView, info);
+        check(info.shortName == "Mix View in a Window" && (info.flags & juce::ApplicationCommandInfo::isTicked) != 0,
+              "the View menu's Mix View in a Window, ticked");
+        OpRequest keys;
+        keys.opType = "track.create";
+        keys.payload = {{"id", 14}, {"kind", "midi"}, {"name", "Keys"}, {"index", 4}};
+        keys.label = "Create track";
+        check(submitter.submit(std::move(keys)).ok, "another track");
+        host.frame("Mix View");
+        check(panel.stack.rows().size() == 6 && host.drains("Mix View") == 2, "the window's own clock frames it");
+        root.frame();
+        check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && host.count() == 0 &&
+                  panel.getParentComponent() == &root && !panel.isVisible() && !root.state().mixView &&
+                  root.state().mixViewDetached,
+              "F4 closes its window; it will open there again");
+        check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && host.content("Mix View") == &panel,
+              "and F4 opens it there again");
+        // Its own close button: the host collects the window, and the Mix View is closed.
+        host.close("Mix View");
+        syncMixView(host, root);
+        check(!root.state().mixView && root.state().mixViewDetached && !panel.isVisible(),
+              "a window closed by its own button closes the Mix View");
+        check(root.setMixView(true, true) && host.count() == 0, "kept open in a window, as a project reopens");
+        syncMixView(host, root, true);
+        check(host.content("Mix View") == &panel, "at startup it opens in its window again");
+        check(persistence.load("mix", {}).mixViewDetached, "where it opens is kept with the window's view");
+        if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); out.isNotEmpty()) {
+            // The main window with the arrangement back, and the Mix View's window, for the picture.
+            host.frame("Mix View");
+            root.mark(DirtySet::All);
+            root.frame();
+            auto save = [&out](juce::Component &c, const char *name) {
+                juce::Image image(juce::Image::ARGB, 2 * c.getWidth(), 2 * c.getHeight(), true,
+                                  juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(image);
+                    g.addTransform(juce::AffineTransform::scale(2.f));
+                    c.paintEntireComponent(g, true);
+                }
+                const auto file = juce::File(out).getChildFile(name);
+                file.deleteFile();
+                if (auto stream = file.createOutputStream())
+                    juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            };
+            save(root, "adi-mix-view-main.png");
+            save(panel, "adi-mix-view-window.png");
+        }
+        panel.floating.onClick();
+        root.frame();
+        check(host.count() == 0 && panel.getParentComponent() == &root && panel.isVisible() &&
+                  !root.arrangement.isVisible() && root.state().mixView && !root.state().mixViewDetached &&
+                  panel.getBounds() == lanes.getUnion(controls),
+              "the button again docks it back in the centre");
+        check(root.command(AppCommands::ToggleMixView) && !panel.isVisible() && root.arrangement.isVisible(), "and F4 closes it");
+        root.applicationCommand = nullptr;
+    }
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+    if (folder.isNotEmpty()) {
+        root.command(AppCommands::ToggleMixView);
+        root.mark(DirtySet::All);
+        root.frame();
+        // STACK with Bass's row open under the mouse, for the picture.
+        root.mixViewPanel.stack.hover(11);
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-mix-view.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        root.command(AppCommands::ToggleMixView);
     }
 }
 } // namespace
@@ -1868,11 +2746,13 @@ int main(int argc, char **argv) {
         arrangement.changed();
         const auto opsBeforeDrop =
             document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
-        arrangement.canvas.filesDropped(juce::StringArray{"kick.wav"}, 10, 70);
+        arrangement.canvas.filesDropped(
+            juce::StringArray{juce::File::getCurrentWorkingDirectory().getChildFile("no-such-kick.wav").getFullPathName()},
+            10, 70);
         check(!integrated.error().empty() &&
                   document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
                       opsBeforeDrop,
-              "an audio drop says it waits for the engine and writes nothing");
+              "a drop the window can't import says why and writes nothing");
         {
             UiPeerRoot peerRoot;
             peerRoot.setSize(integrated.getWidth(), integrated.getHeight());
@@ -2738,6 +3618,17 @@ int main(int argc, char **argv) {
                       std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
                   "and undo restores it");
             integrated.frame();
+            // The bottom stop reads -inf and writes silence (-150 dB, SPEC §6.9), not the -70 dB
+            // it stands on, which is quiet but heard.
+            row->volume.setValue(row->volume.getMinimum(), juce::sendNotificationSync);
+            integrated.frame();
+            check(document->view().current()->findTrack(2)->volumeDb <= -150.0 &&
+                      row->volume.getTextFromValue(row->volume.getValue()) == "-inf",
+                  "the fader's bottom stop writes silence and reads -inf");
+            check(integrated.command(AppCommands::Undo) &&
+                      std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
+                  "and undo restores 0 dB");
+            integrated.frame();
             check(row->pan.isDoubleClickReturnEnabled() &&
                       row->pan.getDoubleClickReturnValue() == 0,
                   "a double-click resets the pan to centre");
@@ -2759,6 +3650,7 @@ int main(int argc, char **argv) {
             row->solo.onClick();
             const auto opsBefore =
                 document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            const bool mixOpen = integrated.state().mixView;
             row->eq.onClick();
             row->limiter.onClick();
             check(!row->eq.getToggleState() && !row->limiter.getToggleState() &&
@@ -2766,6 +3658,10 @@ int main(int argc, char **argv) {
                       document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
                           opsBefore,
                   "the ADI-Q and ADI-L slots are on every strip, present and off");
+            check(integrated.state().mixView && integrated.mixViewPanel.stack.focused() == 2,
+                  "and a slot opens the Mix View's STACK on its channel (ADR-0204 d1, ADR-0209 d11)");
+            if (!mixOpen)
+                integrated.command(AppCommands::ToggleMixView);
         }
         for (int i = 0; i < 30; ++i)
             check(integrated.command(AppCommands::InsertAudioTrack), "many tracks");
@@ -2787,16 +3683,18 @@ int main(int argc, char **argv) {
         audit = false;
         check(allocations == 0, "a steady mixer frame, meters included, allocates zero");
         // Live's Mixer View (manual 6.1 p. 162, 18.1; §41.1): vertical strips, left to right.
-        // ADI's Channel EQ window (ADR-0204 d1): every channel's ADI-Q and ADI-L in one view.
+        // ADI's one channel window (ADR-0204 d1), the Mix View's STACK (ADR-0209 d11): every
+        // channel's ADI-Q, sidechain slot and ADI-L in one view.
         {
-            ChannelEqView eqView(integrated);
+            StackTab eqView(integrated);
+            eqView.setSize(900, 460);
             SnapshotReader eqReader(document->view().current());
             eqView.frame(eqReader);
             const auto all = laneOrder(integrated);
             bool ordered = !all.empty() && eqView.rows().size() == all.size();
             for (std::size_t i = 0; ordered && i < all.size(); ++i)
                 ordered = eqView.rows()[i]->track() == all[i];
-            check(ordered, "the Channel EQ window lists every channel, in the arrangement's order");
+            check(ordered, "STACK lists every channel, in the arrangement's order");
             bool modes = !eqView.rows().empty();
             for (const auto &eqRow : eqView.rows())
                 modes = modes && std::string(eqRow->mode()) == (eqRow->track() == 1 ? "Full" : "Light");
@@ -2808,10 +3706,10 @@ int main(int argc, char **argv) {
             check(allocations == 0, "a frame that changes no channel builds nothing");
             if (eqView.rows().size() >= 2) {
                 auto &second = *eqView.rows()[1];
-                second.eq.onClick();
+                second.mouseDown(pressAt(second, second.eqArea().getCentre().toFloat()));
                 check(eqView.focused() == second.track() && !integrated.error().empty() &&
-                          !second.eq.getToggleState(),
-                      "a slot's switch focuses its channel, says what it waits for and stays off");
+                          !integrated.mixProvider().slots(*integrated.reader().findTrack(second.track())).eq,
+                      "a click on a slot focuses its channel, says what it waits for, and the slot stays off");
             }
             MixerStrip *strip = nullptr;
             for (const auto &s : mixer.strips())
@@ -2819,10 +3717,14 @@ int main(int argc, char **argv) {
                     strip = s.get();
             if (strip) {
                 const auto selectedBefore = integrated.arrangement.geometry.selection.track;
+                const bool mixWas = integrated.state().mixView;
                 strip->eq.onClick();
                 check(integrated.arrangement.geometry.selection.track == strip->track() &&
-                          !integrated.error().empty(),
-                      "a channel row's Q selects its track and opens the window, or says why it cannot");
+                          integrated.state().mixView && integrated.state().mixViewTab == 1 &&
+                          integrated.mixViewPanel.stack.focused() == strip->track(),
+                      "a channel row's Q selects its track and opens the Mix View on STACK, on its row");
+                if (!mixWas)
+                    integrated.command(AppCommands::ToggleMixView);
                 integrated.arrangement.geometry.selection.track = selectedBefore;
                 integrated.publishSelection();
             }
@@ -2923,20 +3825,54 @@ int main(int argc, char **argv) {
     {
         SettingsPanel panel(settings);
         panel.setSize(560, 680);
-        const auto pages = settings::pages();
-        check(!pages.empty() && panel.pageNames() == pages && panel.page() == pages.front(),
-              "the Settings window lists the registry's pages in its order and opens on the first");
+        const auto &pages = panel.pageNames();
+        bool liveFirst = pages.size() > kLiveTabs.size();
+        for (std::size_t i = 0; liveFirst && i < kLiveTabs.size(); ++i)
+            liveFirst = pages[i] == kLiveTabs[i];
+        check(liveFirst && panel.page() == "Display & Input",
+              "Live's ten tabs in Live's order, ADI's own pages after them; it opens on Display & Input");
+        // Every setting on exactly one tab; the tabs are the registry's settings, rearranged.
+        std::size_t placed = 0;
+        bool once = true;
+        for (const auto &tab : settingsTabs())
+            for (const auto &group : tab.groups)
+                for (const auto *setting : group.settings) {
+                    ++placed;
+                    once = once && tabOf(*setting) == tab.name;
+                }
+        check(once && placed == settings::registry().size(), "every setting is on one tab, once");
+        auto onTab = [](const char *key) {
+            const auto *setting = settings::find(key);
+            return setting != nullptr ? tabOf(*setting) : std::string{};
+        };
+        check(onTab("lookfeel.language") == "Display & Input" && onTab("lookfeel.theme") == "Theme & Colors" &&
+                  onTab("sync.ptpEnabled") == "Link" && onTab("project.sampleRate") == "Audio" &&
+                  onTab("audio.keepMonitoringLatency") == "Record, Warp & Launch",
+              "a setting Live has sits on the tab where Live has it: Look & Feel split, Link's own");
+        const auto *linkTab = settingsTab("Link");
+        check(linkTab != nullptr && linkTab->groups.size() == 3 && linkTab->groups[0].heading == "Link" &&
+                  linkTab->groups[0].settings.size() == 2 && linkTab->groups[1].heading == "PTP" &&
+                  linkTab->groups[2].heading == "LAN Audio (not Link Audio)" && onTab("sync.lanCodec") == "Link",
+              "the Link tab: Live's two settings under Link, then PTP, then the LAN audio node, labelled as not Link Audio");
+        const auto *licenses = settingsTab("Licenses & Updates");
+        check(licenses != nullptr && licenses->groups.size() == 2 && licenses->groups[0].heading == "Licenses & Updates" &&
+                  licenses->groups[1].heading == "Privacy",
+              "Updates and Privacy become Licenses & Updates, with a Privacy group");
+        const auto *editing = settingsTab("Editing");
+        check(editing != nullptr && !editing->live &&
+                  std::find(pages.begin(), pages.end(), "Editing") - pages.begin() >=
+                      static_cast<std::ptrdiff_t>(kLiveTabs.size()),
+              "ADI's own pages come after the ten");
         std::size_t onAudio = 0;
-        for (const auto &s : settings::registry())
-            if (s.page == "Audio")
-                ++onAudio;
+        for (const auto &group : settingsTab("Audio")->groups)
+            onAudio += group.settings.size();
         panel.showPage("Audio");
         check(panel.page() == "Audio" && panel.rows().size() == onAudio && panel.audioDevices() == nullptr,
-              "one page at a time, every setting on it in the registry's order");
+              "one page at a time, every setting on its tab");
         auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
             if (s == nullptr)
                 return nullptr;
-            panel.showPage(s->page);
+            panel.showPage(tabOf(*s));
             for (const auto &row : panel.rows())
                 if (&row->setting == s)
                     return row.get();
@@ -3008,11 +3944,15 @@ int main(int argc, char **argv) {
         if (auto *row = rowFor(projectSetting))
             check(!row->control->isEnabled(), "a project's setting is shown with its mark, changed by its op");
         const auto pageBefore = panel.page();
+        // The editor posts its change as a message, which nothing dispatches here: run what it runs.
+        // (Until now this check passed by chance: the page it was on held as many settings as match.)
         panel.search.setText("buffer", true);
+        panel.search.onTextChange();
         check(panel.finding() && !panel.rows().empty() &&
                   panel.rows().size() == settings::search("buffer").size(),
               "the Find box lists every matching setting, from every page");
         panel.search.setText({}, true);
+        panel.search.onTextChange();
         check(!panel.finding() && panel.page() == pageBefore, "clearing it goes back to the page");
         panel.showPage(pages.front());
         const auto ctrl = juce::ModifierKeys::ctrlModifier;
@@ -3028,6 +3968,24 @@ int main(int argc, char **argv) {
         bool closed = false;
         panel.onClose = [&closed] { closed = true; };
         check(panel.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && closed, "Esc closes the window");
+        // Restore Defaults puts the open tab back, settings moved onto it from other pages included.
+        if (const auto *toggle = settings::find("sync.showLinkToggle")) {
+            panel.showPage("Link");
+            const auto was = settings.get(toggle->key);
+            panel.change(*toggle, !toggle->defaultValue.get<bool>());
+            panel.defaults.onClick();
+            check(settings.get(toggle->key) == toggle->defaultValue, "Restore Defaults puts the open tab back");
+            panel.change(*toggle, was);
+        }
+        // Taller than the window, the tab column scrolls; the open tab is kept in view.
+        panel.pageList.resized();
+        panel.showPage(pages.back());
+        const auto lastTab = panel.pageList.tabs().back();
+        check(panel.pageList.contentHeight() > panel.pageList.getHeight() && panel.pageList.scroll() > 0 &&
+                  lastTab.getBottom() <= panel.pageList.getHeight(),
+              "the last tab, scrolled into view");
+        panel.showPage(pages.front());
+        check(panel.pageList.scroll() == 0 && panel.pageList.tabs().front().getY() == 6, "and the first, back at the top");
         const settings::Setting *ranged = nullptr;
         for (const auto &s : settings::registry())
             if (!ranged && s.type == settings::Type::Int && s.scope == settings::Scope::App && s.max > s.min)
@@ -3095,12 +4053,30 @@ int main(int argc, char **argv) {
             file.deleteFile();
             if (auto stream = file.createOutputStream())
                 juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            // Live 12's manual shows its Settings on the Link tab: ADI's, for the picture beside it.
+            panel.showPage("Link");
+            panel.setHelp({});
+            juce::Image linkImage(juce::Image::ARGB, 2 * panel.getWidth(), 2 * panel.getHeight(), true,
+                                  juce::SoftwareImageType{});
+            {
+                juce::Graphics g(linkImage);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                panel.paintEntireComponent(g, true);
+            }
+            const auto linkFile = juce::File(folder).getChildFile("adi-settings-link.png");
+            linkFile.deleteFile();
+            if (auto stream = linkFile.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
     liveParity(commands, temp.path(), write);
     groupTracks(commands, temp.path());
     footRows(commands, temp.path());
     newProject(commands, temp.path());
+    sendKnobs(commands, temp.path());
+    audioDrop(commands, temp.path());
+    rangeSelection(commands, temp.path());
+    mixViewShell(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

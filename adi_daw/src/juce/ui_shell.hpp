@@ -2,7 +2,9 @@
 #pragma once
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/audio_drop.hpp"
 #include "adi/ui/op_submitter.hpp"
+#include "adi/ui/reference_audition.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
@@ -11,6 +13,7 @@
 #include "ui_look.hpp"
 #include "ui_devices.hpp"
 #include "ui_mixer.hpp"
+#include "ui_mixview.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
@@ -78,7 +81,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         LargeTracks,
         GroupTracks,
         UngroupTracks,
-        LastId = UngroupTracks
+        ToggleMixView,
+        DetachMixView,
+        ToggleReferenceTrack,
+        PlayReference,
+        LastId = PlayReference
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -144,6 +151,8 @@ class AdiRootComponent final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress &) override;
+    // The ★ Reference's key comes up: a hold ends (ADR-0209 d9).
+    bool keyStateChanged(bool isKeyDown) override;
     bool command(int);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
@@ -166,6 +175,13 @@ class AdiRootComponent final : public juce::Component {
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
+    // Reads a dropped file and captures its media row, writing nothing (the document's
+    // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
+    std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
+    // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
+    // the new clip and its track are selected. A refusal goes to the Status Bar.
+    bool dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const std::string &name);
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
     // own, and the ZoomHost around the root applies it as a transform.
     float interfaceZoom() const noexcept { return interfaceZoom_; }
@@ -197,6 +213,24 @@ class AdiRootComponent final : public juce::Component {
     DockResizer dockResizer;
     MixerPanel mixer;
     MixerPanel mixerView{*this, true};
+    // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
+    MixViewPanel mixViewPanel{*this};
+    juce::Rectangle<int> mixViewArea() const noexcept { return mixViewArea_; }
+    // The Mix View's tab, this window's view state; false only on a write error.
+    bool chooseMixViewTab(int tab);
+    // Opens or closes the Mix View and says where it goes; the application moves the panel into
+    // its floating window or back (ui_floating.hpp, detachMixView). False only on a write error.
+    bool setMixView(bool open, bool detached);
+    // What the Mix View and the arrangement read of what the engine has not written yet: the
+    // channels' slots and the ★ Reference track (UI-ARCHITECTURE §12). The stub until it has.
+    const MixViewProvider &mixProvider() const noexcept { return *mixProvider_; }
+    void setMixProvider(const MixViewProvider &);
+    // The ★ Reference's [REF] and Shift+R, down or up at a time in milliseconds (ADR-0209 d9): a
+    // tap latches, a hold auditions. True when the reference's state changed.
+    bool referenceKey(bool down, std::int64_t nowMs);
+    const ReferenceAudition &reference() const noexcept { return reference_; }
+    // The ★ Reference track, or 0 when no track is it.
+    std::int64_t referenceTrack() const noexcept;
     MixerViewResizer mixerViewResizer{*this};
     // Live's strip down the arrangement's outer edge, with the flip arrows.
     SideStrip strip;
@@ -207,6 +241,9 @@ class AdiRootComponent final : public juce::Component {
     juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
     // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
     bool submitEdit(const std::string &op, Payload payload, const char *label);
+    // Several ops as one undo step (a batch lands whole or not at all); a refusal goes to the
+    // Status Bar.
+    bool submitEdits(std::vector<OpRequest> ops);
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }
@@ -219,6 +256,8 @@ class AdiRootComponent final : public juce::Component {
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
     bool groupTracks(bool ungroup);
+    // After a submit: a refusal to the Status Bar; an edit pauses Follow and repaints.
+    bool edited(const SubmitResult &);
     bool focusView(int);
     bool fail(std::string message);
     bool toggle(Panel);
@@ -243,9 +282,12 @@ class AdiRootComponent final : public juce::Component {
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
     juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
-        mixerViewArea_, stripArea_;
+        mixerViewArea_, stripArea_, mixViewArea_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
+    StubMixViewProvider mixStub_;
+    const MixViewProvider *mixProvider_ = &mixStub_;
+    ReferenceAudition reference_;
 };
 // The interface zoom's steps, 50 % to 200 % (ADR-0129 d3): the next one in or out of
 // `now`, or nothing at either end.

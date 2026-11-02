@@ -96,7 +96,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Overview", "In/Out", "Narrow Grid", "Widen Grid",
                                   "Triplet Grid", "Snap to Grid", "Fixed Grid",
                                   "Wrap Tab Navigation", "Use Large Track Height",
-                                  "Group Tracks", "Ungroup Tracks"};
+                                  "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
+                                  "Reference Track", "Play Reference"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -219,6 +220,21 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case RenameTrack: // §41.5
         info.addDefaultKeypress('r', cmd);
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        break;
+    case ToggleMixView:
+        // ADR-0209 d9: F4 opens and closes the Mix View; the function keys do functions.
+        info.addDefaultKeypress(juce::KeyPress::F4Key, 0);
+        info.setTicked(active_ != nullptr && active_->state().mixView);
+        break;
+    case DetachMixView: // ADR-0209 d11: docked in the centre, or in a window onto any display
+        info.setTicked(active_ != nullptr && active_->state().mixViewDetached);
+        break;
+    case ToggleReferenceTrack: // ADR-0209 §4, d11: the reference track, hidden by default
+        info.setTicked(active_ != nullptr && active_->state().showReference);
+        break;
+    case PlayReference: // ADR-0209 d9: [REF] and Shift+R; Ctrl+R stays Rename
+        info.addDefaultKeypress('r', shift);
+        info.setTicked(active_ != nullptr && active_->reference().on());
         break;
     case GroupTracks: // §41.5; manual 18.3
     case UngroupTracks: {
@@ -445,6 +461,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
     addChildComponent(mixerViewResizer);
+    addChildComponent(mixViewPanel);
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
@@ -520,6 +537,9 @@ void AdiRootComponent::frame() noexcept {
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
+    // In its own window the floating host drives its frame.
+    if (mixViewPanel.isVisible() && mixViewPanel.getParentComponent() == this)
+        mixViewPanel.frame(reader());
     if (lastDrain_ & DirtySet::Transport) {
         transport.refresh();
         transport.repaint();
@@ -705,6 +725,25 @@ void AdiRootComponent::resized() {
     strip.flip.setToggleState(!browserLeft, juce::dontSendNotification);
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
+    // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
+    // View and its track controls, which a lane-less view has no use for. The browser, the strip
+    // down the edge and the Detail View stay.
+    mixViewArea_ = state_.mixView && !state_.mixViewDetached
+                       ? juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_)
+                       : juce::Rectangle<int>();
+    const bool mixing = !mixViewArea_.isEmpty();
+    // In its own window the panel is the window's; docked, it is laid out here.
+    if (mixViewPanel.getParentComponent() == this) {
+        mixViewPanel.setVisible(mixing);
+        mixViewPanel.setBounds(mixViewArea_);
+    }
+    arrangement.setVisible(!mixing);
+    if (mixing) {
+        mixer.setVisible(false);
+        mixerView.setVisible(false);
+        mixerViewResizer.setVisible(false);
+    }
+    transport.mix.setToggleState(state_.mixView, juce::dontSendNotification);
     // The Overview runs from the lanes' left edge to Live's H and W buttons.
     const int overviewX = lanesX + ArrangementView::kLeftMargin;
     const int overviewRight = browserLeft && !mixerArea_.isEmpty()
@@ -712,7 +751,7 @@ void AdiRootComponent::resized() {
                                   : centreX + centreW - 4;
     arrangement.overview.setBounds(overviewX, top + 4, std::max(0, overviewRight - overviewX),
                                    ArrangementView::kOverviewHeight - 4);
-    arrangement.overview.setVisible(state_.overview);
+    arrangement.overview.setVisible(state_.overview && !mixing);
     devices.setVisible(!deviceArea_.isEmpty());
     dockResizer.setVisible(!deviceArea_.isEmpty());
     devices.setBounds(deviceArea_.reduced(look::border));
@@ -795,6 +834,56 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
+    mixProvider_ = &provider;
+    arrangement.applyView();
+    arrangement.firstShownIfHidden();
+    dirty_.mark(DirtySet::All);
+}
+std::int64_t AdiRootComponent::referenceTrack() const noexcept { return mixProvider_->reference(reader().tracks()); }
+bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
+    const bool was = reference_.on();
+    if (down)
+        reference_.press(nowMs);
+    else
+        reference_.release(nowMs);
+    if (reference_.on() == was)
+        return false;
+    // What sounds is the engine's: the reference on the cue path, the Main bypassed (N23).
+    say(!reference_.on()             ? "Reference off."
+        : referenceTrack() == 0     ? "No track is the Reference yet: a track's role arrives with the format (N38)."
+                                    : "Reference on: it plays on the cue path once the engine routes it (N23).");
+    dirty_.mark(DirtySet::Layout);
+    return true;
+}
+bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
+    // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
+    if (reference_.held() && !juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
+        return referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    return juce::Component::keyStateChanged(isKeyDown);
+}
+bool AdiRootComponent::setMixView(bool open, bool detached) {
+    const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
+    state_.mixView = open;
+    state_.mixViewDetached = detached;
+    if (!persist()) {
+        state_.mixView = wasOpen;
+        state_.mixViewDetached = wasDetached;
+        return fail(error_);
+    }
+    resized();
+    return true;
+}
+bool AdiRootComponent::chooseMixViewTab(int tab) {
+    const int was = state_.mixViewTab;
+    state_.mixViewTab = std::clamp(tab, 0, MixViewPanel::kTabCount - 1);
+    if (!persist()) {
+        state_.mixViewTab = was;
+        return fail(error_);
+    }
+    dirty_.mark(DirtySet::Layout);
+    return true;
+}
 void AdiRootComponent::publishSelection() {
     std::string why;
     if (!session_.select(arrangement.geometry.selection, why))
@@ -807,7 +896,15 @@ bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const 
     request.payload = std::move(payload);
     request.label = label;
     request.selBefore = session_.advisory();
-    const auto result = submitter_.submit(std::move(request));
+    return edited(submitter_.submit(std::move(request)));
+}
+bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
+    if (ops.empty())
+        return true;
+    ops.front().selBefore = session_.advisory();
+    return edited(submitter_.submit(std::move(ops)));
+}
+bool AdiRootComponent::edited(const SubmitResult &result) {
     if (!result)
         return fail(result.error);
     arrangement.followPaused = true; // an edit pauses Follow (§6.2)
@@ -913,6 +1010,29 @@ bool AdiRootComponent::deleteTrack() {
     publishSelection();
     return true;
 }
+bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos,
+                                 const std::string &name) {
+    // Where it lands is checked before the file is read; the batch is built from the CURRENT cell.
+    if (!view_.current())
+        return fail("Dropping audio needs an open project.");
+    if (auto refusal = audioDropRefusal(*view_.current(), track); !refusal.empty())
+        return fail(std::move(refusal));
+    if (!importAudio)
+        return fail("Dropping audio needs an open project.");
+    AudioImport import;
+    std::string why;
+    if (!importAudio(utf8Path, import, why))
+        return fail(why.empty() ? "The file could not be imported." : why);
+    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, name, std::move(import));
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.geometry.selection.track = edit.select;
+    arrangement.geometry.selection.clip = edit.clip;
+    publishSelection();
+    return true;
+}
 bool AdiRootComponent::groupTracks(bool ungroup) {
     // From the CURRENT cell, as every action is; the batch is one undo step, labelled as Live's
     // Edit menu names it.
@@ -979,9 +1099,12 @@ bool AdiRootComponent::focusView(int id) {
     }
 }
 bool AdiRootComponent::command(int id) {
-    // The application's own: files, Settings, and the floating Channel EQ window.
-    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::ShowChannelEq ||
-        id == AppCommands::Quit)
+    // The application's own: files and Settings.
+    // In a window of its own, the Mix View is the application's to open and close (its floating
+    // host); docked, the root's.
+    if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
+        return applicationCommand && applicationCommand(id);
+    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit)
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -1044,6 +1167,41 @@ bool AdiRootComponent::command(int id) {
         state_.mixerView = !state_.mixerView;
         if (!persist()) {
             state_.mixerView = !state_.mixerView;
+            return fail(error_);
+        }
+        break;
+    case AppCommands::ShowChannelEq:
+        // ADR-0204 d1's one window is the Mix View's STACK (ADR-0209 d11): opened there, wherever
+        // it opens, on the selected track's row.
+        if (!chooseMixViewTab(static_cast<int>(MixViewPanel::Tab::Stack)))
+            return false;
+        if (!state_.mixView) {
+            if (state_.mixViewDetached ? !(applicationCommand && applicationCommand(AppCommands::ToggleMixView))
+                                       : !setMixView(true, false))
+                return false;
+        }
+        mixViewPanel.frame(reader());
+        mixViewPanel.stack.focus(arrangement.geometry.selection.track);
+        break;
+    case AppCommands::ToggleReferenceTrack:
+        state_.showReference = !state_.showReference;
+        if (!persist()) {
+            state_.showReference = !state_.showReference;
+            return fail(error_);
+        }
+        arrangement.applyView();
+        arrangement.firstShownIfHidden();
+        break;
+    case AppCommands::PlayReference:
+        // The key goes down; keyStateChanged lets it go. From a menu, a tap.
+        referenceKey(true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        if (!juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
+            referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        return true;
+    case AppCommands::ToggleMixView:
+        state_.mixView = !state_.mixView;
+        if (!persist()) {
+            state_.mixView = !state_.mixView;
             return fail(error_);
         }
         break;
@@ -1183,7 +1341,8 @@ const std::vector<MenuEntries> &menuBar() {
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut,
-          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixer, C::ToggleDeviceView,
+          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
+          C::PlayReference, C::ToggleMixer, C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},

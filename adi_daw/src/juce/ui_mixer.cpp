@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixer.hpp"
 #include "ui_shell.hpp"
+#include "adi/ui/send_edits.hpp"
 #include <algorithm>
 #include <cmath>
 #include <string_view>
 namespace adi::ui {
 namespace {
-// Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf.
-constexpr double kFloorDb = -70, kTopDb = 6;
+// Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
+// silence as the format defines it, at or below -150 dB (SPEC §6.9), never the -70 dB it stands
+// on: -70 dB is quiet, not silent.
+constexpr double kFloorDb = -70, kTopDb = 6, kSilenceDb = -150;
+double writtenVolume(double db) noexcept { return db <= kFloorDb ? kSilenceDb : db; }
 // Live 11's meter, measured: +6 dB at the top, then 0, -12, -24, -36, -48 and -60 dB
 // at these depths; the scale is wider near 0 dB, as Live's.
 constexpr std::array<std::pair<double, double>, 7> kScale{
@@ -117,7 +121,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     // double-click changes commit at once.
     volume.onDragEnd = [this] {
         dragging_ = false;
-        panel_.submit("mixer.setVolume", {{"id", track_}, {"db", volume.getValue()}},
+        panel_.submit("mixer.setVolume", {{"id", track_}, {"db", writtenVolume(volume.getValue())}},
                       "Change Track Volume");
     };
     pan.onDragEnd = [this] {
@@ -127,7 +131,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     };
     volume.onValueChange = [this] {
         if (!dragging_)
-            panel_.submit("mixer.setVolume", {{"id", track_}, {"db", volume.getValue()}},
+            panel_.submit("mixer.setVolume", {{"id", track_}, {"db", writtenVolume(volume.getValue())}},
                           "Change Track Volume");
     };
     pan.onValueChange = [this] {
@@ -170,13 +174,13 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
     // Present but off: the slots exist on every strip; what fills them is ADI-Q and
     // ADI-L from the clones lane, in the engine's channel slots (LANES §3 item 7).
-    // A slot opens the Channel EQ window on its track, where every channel's EQ and
-    // limiter are seen together (ADR-0204 d1).
+    // A slot opens the Mix View's STACK on its track, where every channel's EQ and limiter
+    // are seen together (ADR-0204 d1's one window, ADR-0209 d11), and says what it waits for.
     auto open = [this](const char *why) {
         panel_.root.arrangement.geometry.selection.track = track_;
         panel_.root.publishSelection();
-        if (!panel_.root.command(AppCommands::ShowChannelEq))
-            panel_.root.say(why);
+        panel_.root.command(AppCommands::ShowChannelEq);
+        panel_.root.say(why);
     };
     eq.onClick = [open] { open("The channel EQ slot is off until ADI-Q is handed over."); };
     limiter.onClick = [open] { open("The channel limiter slot is off until ADI-L is handed over."); };
@@ -196,6 +200,8 @@ void MixerStrip::bind(std::int64_t id) {
 }
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
+    if (changed)
+        syncSends();
     if (changed) {
         // The Track Activator shows the track's number, its place in the arrangement's order,
         // as Live's (and as a # in its name does); the text changes only when it moves.
@@ -213,8 +219,8 @@ void MixerStrip::frame(bool changed) noexcept {
             }
         }
     }
-    // The selected track's controls are lighter, as Live's.
-    const bool selected = track_ != 0 && panel_.root.arrangement.geometry.selection.track == track_;
+    // The selected tracks' controls are lighter, as Live's, a selection across tracks lighting each.
+    const bool selected = track_ != 0 && panel_.root.arrangement.geometry.inSelection(panel_.root.reader(), track_);
     if (selected != selected_) {
         selected_ = selected;
         repaint();
@@ -225,6 +231,17 @@ void MixerStrip::frame(bool changed) noexcept {
         pan.setValue(t->pan, juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
         solo.setToggleState(t->soloed, juce::dontSendNotification);
+        // Each send at its row's level, fully down without one; an off one dimmed, and its clicks
+        // go to the strip, which offers Enable Send.
+        const auto &rows = panel_.root.reader().sends();
+        for (std::size_t i = 0; i < sends_.size(); ++i) {
+            const auto *route = findSend(rows, track_, returns_[i]);
+            sends_[i]->setValue(std::clamp(sendLevel(route), kSendFloorDb, kSendTopDb), juce::dontSendNotification);
+            const bool on = adi::ui::sendOn(*t, route);
+            sendOn_[i] = static_cast<char>(on ? 1 : 0);
+            sends_[i]->setAlpha(on ? 1.f : .45f);
+            sends_[i]->setInterceptsMouseClicks(on, false);
+        }
         repaint();
     }
     // The meter reads the newest frames of the track's tap: wait-free, no allocation.
@@ -256,7 +273,17 @@ void MixerStrip::resized() {
         // Live 11's strip, measured: the name, ADI's slots where Live has the sends, then
         // the mixer: the peak level at its head; pan, the activator, Solo and Arm down
         // to its foot; the meter with the fader beside them.
-        const int top = kMixerTop, bottom = getHeight();
+        // A row of the Sends section for each return, on every strip, Main's too, so the mixers
+        // line up as Live's; as many as leave the mixer its room. Live scrolls the rest, ADI leaves
+        // them out.
+        shown_ = returnCount_;
+        while (shown_ > 0 && getHeight() - kMixerTop - sendsHeight(shown_) < kMixerRoom)
+            --shown_;
+        for (std::size_t i = 0; i < sends_.size(); ++i) {
+            sends_[i]->setVisible(i < shown_);
+            sends_[i]->setBounds(sendBounds(i));
+        }
+        const int top = mixerTop(), bottom = getHeight();
         eq.setBounds(4, 22, 29, 13);
         limiter.setBounds(37, 22, 29, 13);
         peakHold.setBounds(11, top + 5, 35, 12);
@@ -286,13 +313,26 @@ void MixerStrip::resized() {
     place(arm, 0, {x + 78, 3, 21, 13});
     place(volume, 1, {x + 4, 20, 35, 13});
     place(pan, 1, {x + 54, 20, 45, 13});
-    place(eq, 2, {x + 4, 37, 29, 13});
-    place(limiter, 2, {x + 37, 37, 29, 13});
+    // Live's sends on the rows under volume and pan, its 29 pt boxes three to a row; ADI's slots
+    // on the row after them.
+    for (std::size_t i = 0; i < sends_.size(); ++i) {
+        const int row = 2 + static_cast<int>(i / 3), column = static_cast<int>(i % 3);
+        place(*sends_[i], row, {x + 4 + 33 * column, 3 + 17 * row, 29, 13});
+    }
+    const int slots = 2 + sendRows();
+    place(eq, slots, {x + 4, 3 + 17 * slots, 29, 13});
+    place(limiter, slots, {x + 37, 3 + 17 * slots, 29, 13});
+}
+juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
+    // Live's Mixer View sends: A on the left, B to its right and lower, C under A, each 22 pt under
+    // the one before; the knobs a little larger than pan's.
+    const int i = static_cast<int>(index);
+    return {(i % 2 == 0) ? 10 : 51, kMixerTop + 6 + 22 * i, 32, 32};
 }
 juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     // Under a tall strip's numeric field, the meter stops short of the foot.
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
-    return {53, kMixerTop + 6, 11, std::max(0, getHeight() - kMixerTop - 10 - (tall ? 15 : 0))};
+    return {53, mixerTop() + 6, 11, std::max(0, getHeight() - mixerTop() - 10 - (tall ? 15 : 0))};
 }
 bool MixerStrip::showsInOut() const noexcept {
     // Shown when the View menu's In/Out is on (§42.1) and the panel is wide enough.
@@ -309,6 +349,20 @@ void MixerStrip::paint(juce::Graphics &g) {
         g.fillRect(w, 0, 2, getHeight());
         g.fillRect(0, 17, w, 2);
         g.fillRect(0, kMixerTop - 2, w, 2);
+        if (shown_ > 0) {
+            // Live's Sends section: its title at the right, each knob lettered as its return in the
+            // ring's open foot; a rule under it.
+            g.fillRect(0, mixerTop() - 2, w, 2);
+            g.setColour(look::text);
+            g.setFont(look::font(11.5f));
+            g.drawText("Sends", 46, kMixerTop + 6, w - 50, 15, juce::Justification::centredRight);
+            for (std::size_t i = 0; i < std::min(shown_, sends_.size()); ++i) {
+                const auto b = sendBounds(i);
+                g.setColour(look::text.withAlpha(sendOn_[i] != 0 ? 1.f : .45f));
+                g.drawText(juce::String::charToString(static_cast<juce::juce_wchar>('A' + i % 26)), b.getX(),
+                           b.getBottom() - 9, b.getWidth(), 12, juce::Justification::centred);
+            }
+        }
         if (position_ > 0) {
             g.setColour(panel_.root.arrangement.colourFor(position_ - 1));
             g.fillRect(0, 0, w, 17);
@@ -411,13 +465,117 @@ void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const 
                        juce::Justification::centredLeft);
     }
 }
+bool MixerStrip::hitTest(int x, int y) {
+    // Above or below the lanes the panel's frame stands in front (MixerPanel::paintOverChildren),
+    // so a click there is not this row's, nor any of its controls'.
+    if (!panel_.rowsBand().contains(getY() + y))
+        return false;
+    return juce::Component::hitTest(x, y);
+}
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
+    // A send's own clicks, and an off send's, which reach the strip: its menu, or what it waits for.
+    for (std::size_t i = 0; i < sends_.size(); ++i) {
+        auto &knob = *sends_[i];
+        const bool own = e.eventComponent == &knob;
+        if (!own && !(e.eventComponent == this && knob.isVisible() && knob.getBounds().contains(e.getPosition())))
+            continue;
+        if (e.mods.isPopupMenu())
+            sendMenu(i);
+        else if (!own)
+            panel_.root.say("This send is off. Right-click it for Enable Send.");
+        return;
+    }
     if (!e.mods.isPopupMenu())
         return;
     if (e.eventComponent == &pan)
         panMenu();
     else
         panel_.contextMenu(e.getScreenPosition());
+}
+void MixerStrip::syncSends() {
+    const auto &reader = panel_.root.reader();
+    const auto *t = reader.findTrack(track_);
+    returnsInOrder(reader.tracks(), order_);
+    const auto returns = order_.size();
+    if (t == nullptr || !hasSends(*t))
+        order_.clear();
+    if (order_ == returns_ && returns == returnCount_)
+        return;
+    returnCount_ = returns;
+    returns_ = order_;
+    sends_.resize(std::min(sends_.size(), returns_.size()));
+    while (sends_.size() < returns_.size())
+        sends_.push_back(makeSend(sends_.size()));
+    sendOn_.assign(returns_.size(), 1);
+    resized();
+    repaint();
+}
+std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
+    auto knob = std::make_unique<juce::Slider>();
+    if (panel_.vertical()) {
+        knob->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
+        knob->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    } else {
+        // Live's send box: the number in it, filled in blue as the volume's.
+        knob->setSliderStyle(juce::Slider::LinearBar);
+        knob->setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
+        knob->setSliderSnapsToMousePosition(false);
+        knob->setColour(juce::Slider::textBoxTextColourId, look::text);
+    }
+    knob->setRange(kSendFloorDb, kSendTopDb, .01);
+    // As the volume's: the top of the travel finer than the foot.
+    knob->setSkewFactor(2.27);
+    knob->textFromValueFunction = [](double v) {
+        if (v <= kSendFloorDb)
+            return juce::String("-inf");
+        return std::abs(v - std::round(v)) < .005 ? juce::String(static_cast<int>(std::lround(v)))
+                                                  : juce::String(v, 1);
+    };
+    knob->setValue(kSendFloorDb, juce::dontSendNotification);
+    knob->updateText();
+    const auto letter = juce::String::charToString(static_cast<juce::juce_wchar>('A' + index % 26));
+    knob->setTitle("Send " + letter);
+    knob->setTooltip("Sets how much of the track goes to return track " + letter + ".");
+    knob->setScrollWheelEnabled(false);
+    // A drag is one undo step: it commits when the mouse lets go. A typed value commits at once.
+    knob->onDragStart = [this] { dragging_ = true; };
+    knob->onDragEnd = [this, index] {
+        dragging_ = false;
+        commitSend(index);
+    };
+    knob->onValueChange = [this, index] {
+        if (!dragging_)
+            commitSend(index);
+    };
+    knob->addMouseListener(this, false);
+    addAndMakeVisible(*knob);
+    return knob;
+}
+void MixerStrip::commitSend(std::size_t index) {
+    // From the CURRENT cell, as every action is (ADR-0201).
+    const auto current = panel_.root.current();
+    if (!current || index >= sends_.size())
+        return;
+    auto edit = setSend(current->sends, track_, returns_[index], sends_[index]->getValue());
+    panel_.root.submitEdits(std::move(edit.ops));
+}
+void MixerStrip::enableSend(std::size_t index, bool on) {
+    const auto current = panel_.root.current();
+    if (!current || index >= sends_.size())
+        return;
+    auto edit = adi::ui::enableSend(current->sends, track_, returns_[index], on);
+    if (!edit.refusal.empty())
+        panel_.root.say(edit.refusal);
+    else
+        panel_.root.submitEdits(std::move(edit.ops));
+}
+void MixerStrip::sendMenu(std::size_t index) {
+    // Live's Enable Send, ticked while the send is on. A track's sends are on from the start; a
+    // return's are off until it is chosen (ADR-0203 d3).
+    juce::PopupMenu m;
+    const bool on = sendOn(index);
+    m.addItem("Enable Send", true, on, [this, index, on] { enableSend(index, !on); });
+    m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
 }
 void MixerStrip::panMenu() {
     juce::PopupMenu m;
@@ -577,8 +735,9 @@ void MixerPanel::place() {
     // sight.
     const auto foot = geometry.footStart(tracks);
     const int footY = bodyTop + geometry.footTop(root.reader());
+    const int bandEnd = rowsBand().getEnd();
     auto inSight = [&](std::size_t i, int y, int h) {
-        return h > 0 && y + h > bodyTop && y < (i < foot ? std::min(footY, getHeight()) : getHeight());
+        return h > 0 && y + h > bodyTop && y < (i < foot ? std::min(footY, bandEnd) : bandEnd);
     };
     std::size_t wanted = 0;
     int y = bodyTop - geometry.scrollY;
@@ -644,6 +803,11 @@ void MixerPanel::paint(juce::Graphics &g) {
     g.fillRect(0, bottom, getWidth(), std::max(0, getHeight() - bottom - ArrangementView::kTimeRulerHeight));
     g.setColour(look::separator);
     g.fillRect(0, bottom, 2, getHeight() - bottom);
+    paintTop(g);
+}
+void MixerPanel::paintTop(juce::Graphics &g) const {
+    g.setColour(look::band);
+    g.fillRect(0, 0, getWidth(), rowsBand().getStart());
     // H and W, Live's Optimize Arrangement Height and Width, beside the Overview's end.
     g.setFont(look::font(12.f));
     for (const auto &[label, x] : {std::pair{"H", getWidth() - 43}, std::pair{"W", getWidth() - 21}}) {
@@ -652,6 +816,29 @@ void MixerPanel::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.drawText(label, r, juce::Justification::centred);
     }
+}
+juce::Range<int> MixerPanel::rowsBand() const noexcept {
+    if (vertical_)
+        return {0, getHeight()};
+    const int top = root.arrangement.topHeight();
+    const int lanes = root.arrangement.geometry.lanesHeight;
+    return {top, lanes > 0 ? std::min(getHeight(), top + lanes) : getHeight()};
+}
+void MixerPanel::paintOverChildren(juce::Graphics &g) {
+    // The rows scroll with the lanes; above and below them, Live's frame stays in front: a row
+    // scrolled partly above the lanes shows no more than the lanes do (UI-ARCHITECTURE §4).
+    if (vertical_)
+        return;
+    const int bottom = rowsBand().getEnd();
+    paintTop(g);
+    // Below the lanes, as paint() leaves it: the columns' grey, the frame's band at the foot.
+    const int ruler = getHeight() - ArrangementView::kTimeRulerHeight;
+    g.setColour(look::panel);
+    g.fillRect(0, bottom, getWidth(), std::max(0, ruler - bottom));
+    g.setColour(look::band);
+    g.fillRect(0, std::max(bottom, ruler), getWidth(), getHeight() - std::max(bottom, ruler));
+    g.setColour(look::separator);
+    g.fillRect(0, bottom, 2, getHeight() - bottom);
 }
 FlipButton::FlipButton() : juce::Button("Flip Sides") {
     setTitle("Flip Sides");
