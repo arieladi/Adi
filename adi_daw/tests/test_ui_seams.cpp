@@ -1223,6 +1223,43 @@ void referenceTapAndHold() {
     check(!ref.on(), "latched, then held and let go: off");
 }
 
+void meterGrid() {
+    section("the editing grid in the project's meters: from each bar line, bars of the meter (Live 12 manual 6.10)");
+    const auto q = textproj::kPPQ;
+    ui::ArrangementGeometry geo;
+    geo.scale = 60;
+    geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 4; // 1 Bar
+    check(geo.snap(5 * q, false) == 4 * q && geo.snap(5 * q, true) == 8 * q, "no meters: 1 Bar is four quarters");
+    const std::vector<textproj::Meter> plain{{0, 4, 4}};
+    geo.meters = &plain;
+    check(!geo.metered() && geo.snap(5 * q, true) == 8 * q, "4/4 throughout: the same");
+    const std::vector<textproj::Meter> threeFour{{0, 3, 4}};
+    geo.meters = &threeFour;
+    check(geo.metered() && geo.snap(4 * q, false) == 3 * q && geo.snap(4 * q, true) == 6 * q && geo.snap(6 * q, true) == 6 * q,
+          "3/4: 1 Bar is three quarters");
+    geo.grid.fixedQuarters = 2; // 1/2
+    check(geo.snap(5 * q / 2, false) == 2 * q && geo.snap(5 * q / 2, true) == 3 * q && geo.snap(4 * q, true) == 5 * q,
+          "a half in 3/4 runs from each bar line: 0, 2, 3, 5, 6");
+    std::vector<std::int64_t> lines;
+    geo.forEachGridLine(0, 6 * q, [&](std::int64_t t) { lines.push_back(t); });
+    check(lines == std::vector<std::int64_t>{0, 2 * q, 3 * q, 5 * q, 6 * q}, "the lines drawn are the same");
+    check(geo.nextGridLine(3 * q, true) == 5 * q && geo.nextGridLine(3 * q, false) == 2 * q, "the arrows step by them");
+    geo.grid.fixedQuarters = 8; // 2 Bars
+    check(geo.snap(4 * q, true) == 6 * q && geo.snap(7 * q, false) == 6 * q && geo.snap(7 * q, true) == 12 * q,
+          "2 Bars in 3/4: every second bar line from bar 1");
+    geo.grid.fixedQuarters = 4;
+    geo.grid.triplet = true;
+    check(geo.snap(q, true) == 2 * q && geo.snap(5 * q, false) == 4 * q, "1 Bar triplet in 3/4: two thirds of a bar, two quarters");
+    geo.grid.triplet = false;
+    const std::vector<textproj::Meter> changing{{0, 4, 4}, {6 * q, 3, 4}};
+    geo.meters = &changing;
+    check(geo.snap(5 * q, true) == 6 * q && geo.snap(7 * q, true) == 9 * q && geo.snap(10 * q, false) == 9 * q,
+          "a change part-way through bar 2 ends it there, and 3/4's bars run on from it");
+    check(geo.barHolding(5 * q).index == 1 && geo.barHolding(5 * q).end == 6 * q && geo.barHolding(7 * q).index == 2,
+          "bar 2 is cut short; the next is bar 3");
+}
+
 void positionsTyped() {
     section("Arrangement Position fields: a typed position in the project's meters (Live 12 manual 6.1)");
     const auto q = textproj::kPPQ;
@@ -1548,6 +1585,7 @@ int main() {
     rangeEditsAsBatches();
     referenceTapAndHold();
     momentaryLatch();
+    meterGrid();
     positionsTyped();
     fragmentaryBars();
     tapTempo();

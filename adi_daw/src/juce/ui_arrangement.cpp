@@ -28,11 +28,24 @@ void paintLanes(juce::Graphics &g, const ArrangementGeometry &geo, int width, in
         g.setColour(lane);
         g.fillRect(static_cast<float>(x0), static_cast<float>(top), static_cast<float>(x1 - x0),
                    static_cast<float>(height));
+        if (geo.metered())
+            continue;
         g.setColour(lane.darker(0.33f));
         for (double line = q; line < q + group && line < geo.left + width / geo.scale; line += grid)
             if (line >= geo.left)
                 g.fillRect(static_cast<int>((line - geo.left) * geo.scale), top, 1, height);
     }
+    // In the project's meters the lines run from each bar line (manual 6.10), each a quarter darker
+    // than the lane under it.
+    if (geo.metered())
+        geo.forEachGridLine(geo.tick(0.), geo.tick(static_cast<double>(width)), [&](std::int64_t line) {
+            const double q = static_cast<double>(line) / textproj::kPPQ;
+            const bool alt = static_cast<std::int64_t>(std::floor(q / group)) % 2 != 0;
+            const auto lane = selected ? (alt ? look::laneSelectedAlt : look::laneSelected)
+                                       : (alt ? look::laneAlt : look::lane);
+            g.setColour(lane.darker(0.33f));
+            g.fillRect(static_cast<int>(geo.x(line)), top, 1, height);
+        });
 }
 } // namespace
 std::int64_t ArrangementOverview::span() const noexcept {
@@ -593,6 +606,8 @@ void ArrangementView::refreshTree() {
     geometry.order.build(reader(), tree_.rows());
 }
 void ArrangementView::applyView() {
+    // The grid follows the project's meters (manual 6.10), from this snapshot's.
+    geometry.meters = &reader().meters();
     refreshTree();
     leaveOut();
     // A title being renamed stays on its track, wherever the new rows put it.
