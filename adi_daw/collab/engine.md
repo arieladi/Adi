@@ -13,6 +13,59 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N12 ready; continuing to N17
+
+**PR requested** (ADR-0210 d4): `engine/split-stereo-pan` at **`c3ab3a9`** →
+`main` (base `dff5b41`). Title: **Add persistent Split Stereo Pan with independent panners (N12)**.
+
+PR body / window handoff: commit `mixer.setPanMode {id,mode:"stereo"|"split"}`,
+`mixer.setPanLeft {id,pan}` and `mixer.setPanRight {id,pan}` (finite -1..+1),
+then refresh Session and Snapshot. `id` is the existing mixer strip's track id.
+TrackNode now exposes panMode/panLeft/panRight, all in same(); other tracks and
+unchanged settings stay shared. Both split positions persist while in stereo;
+the original pan persists while dormant in split. Left/right edits are
+coalescable. Defaults are stereo, left -1/right +1. Independent real-unit track
+lanes panLeft/panRight bind, override separately and use Re-Enable normally.
+
+The native-width matrix independently positions each source. Default hard-L/R
+is exact unity; a swap exchanges sources, either side can sum both. Live's split
+mono panners use constant power without its ordinary stereo sqrt(2) boost;
+other selected laws retain their formulas. Fader/mute, five-ms coefficient
+ramps, silence landing, precision handover and source Post sends include the
+crossfeeds. Both inputs are captured before either output for in-place safety.
+Pre sends retain unity and mute; extra channels retain fader-only behavior.
+No callback allocation/lock/log. Width/phase remain Utility's placement.
+
+Schema **1.10**, frozen 1.9: additive optional mixer_pan_settings keyed to
+mixer_strip, no altered frozen core columns. Fresh/migrated/read-only TEMP
+reads and projection expose it. First-touch inverse restores row absence;
+later inverses update only their column, preserving dormant controls and
+future fields. Unknown future mode reads/names as stereo and can be restored
+verbatim by undo. OPS and `docs/ENGINE-SPLIT-PAN.md` define the seam. Full
+track deletion capture is still **N37**; add this cascade table to its child set.
+
+**Win merge work:** this is independent of N25's marker1.10 and N33's clip1.11.
+Reconcile minor numbers/migration history in merge order before publishing the
+combined format; do not leave an already-current file missing a new table.
+Its standalone schema has **52 tables**, so README line57's 51 must become 52
+for this branch's CI; the combined N25/N33/N12 tree has 54. README stays win's.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off, **all 107 test binaries pass,
+9898 checks**. test_all is **not green** solely for the current schema validator's
+README 51-vs-52 table count. OPS catalogue totals/version validator metadata are
+updated and revalidated; all other validators pass. All migrations/additivity
+checks pass. Six Clang Werror suites pass: split69, mixer337, engine119,
+Session214, migrate162, projection209. Covers native32/64 matrix, exact unity /
+swap / collapse / center, in-place reads, extra/mono channels, fader/mute,
+Post/Pre sends, segment invariance, ramp/width handoff, independent automation,
+ops/undo/redo/future columns/future mode, all snapshot fields, projection,
+reopen/refusal, read-only unchanged schema and writable migration. Four compiled
+regressions fail: missing crossfeed21, overwritten source19, missing mode
+sharing1, missing first-touch absence2. Remote CI/MSVC/JUCE and measured Live
+parity unobserved. Win/window opens; win merges. Continuing to **N17**, phase-C
+editing ops and prompt actions. No director gate reached.
+
+
 ## 2026-11-02 — N8 ready; continuing to N12
 
 **PR requested** (ADR-0210 d4): `engine/plugin-editors` at **`ac17ea1`** →
