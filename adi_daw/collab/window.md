@@ -73,6 +73,19 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — a track title's double-click [#345](https://github.com/arieladi/Adi/pull/345) `window/title-double-click`, on #344
+
+**Built: Live's double-click on a track's title** (Live 12 manual, Live Concepts; parity 7.3 row
+37): in the arrangement or on a Mixer View strip's title, it selects the track and brings up the
+Device View if it is hidden.
+
+**Tests.** shell 691; `test_all.sh` PASS (9923 checks, 106 suites). No golden moved.
+
+**CI on the stack (14:00 UTC):** no failed check on #318 to #344; #318 to #328 and #330 fully
+green, the rest waiting only on macOS runners. Main unchanged (dff5b41).
+
+---
+
 ## 2026-11-02, cloud, continued — the Track Activator's rules [#344](https://github.com/arieladi/Adi/pull/344) `window/activator-rules`, on #343
 
 **Built: Live's Track Activator rules** (manual 18.1, §42.19; parity 7.6 row 6): the selected tracks
