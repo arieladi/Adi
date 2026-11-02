@@ -192,6 +192,13 @@ class ArrangementCanvas final : public juce::Component,
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
     std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     bool keyResize_ = false;
+    // A plain press on the bar of one of several selected clips keeps them for the drag; released
+    // without one, it selects that clip alone, from where it was pressed.
+    bool selectOnUp_ = false;
+    juce::Point<int> pressedAt_;
+    // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
+    // of them reaches the arrangement's start.
+    std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }
     // The clip's bar under a point, and whether the point is on its right edge.
     const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
     // A group's lane, row `at`: Live's overview of the clips of what it holds.

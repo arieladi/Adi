@@ -1533,7 +1533,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         auto drawClip = [&](const engine::ClipNode &clip) {
             const auto *c = &clip;
             // A clip being moved by its bar is drawn where it would land.
-            const auto pos = c->id == moving_ ? movingTo_ : c->posTicks;
+            const bool along = moving_ != 0 && !geo.selection.pickedClips.empty() && geo.clipSelected(c->id);
+            const auto pos = c->id == moving_ ? movingTo_ : along ? c->posTicks + movingDelta() : c->posTicks;
             const auto length = c->id == resizing_ ? resizeLength_ : c->lengthTicks;
             const double x = geo.x(pos), end = geo.x(pos + length);
             if (end < 0 || x > getWidth())
@@ -1682,6 +1683,19 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
                     view.changed();
                     return;
                 }
+        // A plain press on the bar of one of several selected clips keeps them all for the drag,
+        // which moves them together; released without a drag, it selects that clip alone.
+        selectOnUp_ = false;
+        if (!e.mods.isShiftDown() && !view.geometry.selection.pickedClips.empty())
+            if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && view.geometry.clipSelected(c->id)) {
+                moving_ = c->id;
+                movingFrom_ = movingTo_ = c->posTicks;
+                movingSource_ = movingTrack_ = track;
+                grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
+                selectOnUp_ = true;
+                pressedAt_ = e.getPosition();
+                return;
+            }
         // Shift extends the selection, in the same track or across tracks (Live 12 manual 6.9).
         if (e.mods.isShiftDown() && view.geometry.selection.marked) {
             extendTo(e.x, e.y, view.snaps(e.mods));
@@ -1753,13 +1767,27 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         // track follows the lane under it when that track can take it (Live 12 manual 6.7);
         // over one that cannot, it stays on the last that could. At the lanes' edge they scroll.
         const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true);
-        if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
+        if (e.mouseWasDraggedSinceMouseDown())
+            selectOnUp_ = false;
+        // Several selected clips move in time together and keep their tracks; moving them across
+        // tracks, each by the same rows, waits.
+        const bool several = !view.geometry.selection.pickedClips.empty();
+        if (const auto *over = view.geometry.trackAt(view.reader(), e.y); over != nullptr && !several)
             if (const auto *source = view.reader().findTrack(movingSource_);
                 source != nullptr && over->id != movingTrack_ && canTakeClip(*over, *source))
                 movingTrack_ = over->id;
         const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
+        if (several) {
+            // None of them goes before the arrangement's start.
+            std::int64_t earliest = movingFrom_;
+            for (const auto &t : view.reader().tracks())
+                for (const auto &c : t->clips)
+                    if (view.geometry.clipSelected(c->id))
+                        earliest = std::min(earliest, c->posTicks);
+            movingTo_ = std::max(movingTo_, movingFrom_ - earliest);
+        }
         if (scrolled)
             view.frame(true);
         repaint();
@@ -1793,6 +1821,27 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
         if (length != resizeFrom_ &&
             clipEdit("clip.resize", {{"id", clip}, {"pos", resizeStart_}, {"length", length}}, "Resize Clip"))
             sel.end = resizeStart_ + length;
+        repaint();
+    }
+    if (moving_ != 0 && !view.geometry.selection.pickedClips.empty()) {
+        // Several selected clips: one drag moves them all by the same offset, one undo step; a
+        // press without a drag selects the clip pressed alone.
+        const auto delta = movingDelta();
+        moving_ = 0;
+        auto &sel = view.geometry.selection;
+        if (delta != 0) {
+            if (const auto current = view.root.current()) {
+                auto edit = moveClips(current->tracks, view.geometry.selectedClips(), delta);
+                if (!edit.refusal.empty())
+                    view.root.say(edit.refusal);
+                else if (!edit.ops.empty() && view.root.submitEdits(std::move(edit.ops))) {
+                    sel.start += delta;
+                    sel.end += delta;
+                }
+            }
+        } else if (selectOnUp_)
+            view.select(pressedAt_.x, pressedAt_.y, view.snaps(juce::ModifierKeys::currentModifiers));
+        selectOnUp_ = false;
         repaint();
     }
     if (moving_ != 0) {
