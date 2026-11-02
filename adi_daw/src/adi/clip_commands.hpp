@@ -52,6 +52,21 @@ struct RangeCut {RangeCopy copy;PreparedEdit edit;};
 [[nodiscard]] PreparedEdit preparePasteRange(Store&,const RangeCopy&,const std::vector<std::int64_t>& tracks,
                                             TimePoint at,double referenceRate,bool insertTime=false);
 [[nodiscard]] PreparedEdit prepareDuplicateRange(Store&,const RangeSelection&,double referenceRate,bool insertTime=false);
+/// Whole-Set clipboard, including global maps and automation. Owner-thread
+/// value; its media/tuning/lane identities are rechecked during preparation.
+struct TimeCopy {
+    bool ok=false;
+    std::string error;
+    RangeCopy material;
+    std::int64_t ticks=0,nanos=0;
+    double referenceRate=0;
+    Payload timeline;
+};
+struct TimeCut {TimeCopy copy;PreparedEdit edit;};
+[[nodiscard]] TimeCopy copyTime(Store&,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate);
+[[nodiscard]] TimeCut prepareCutTime(Store&,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate);
+[[nodiscard]] PreparedEdit preparePasteTime(Store&,const TimeCopy&,std::int64_t atTicks,double referenceRate);
+[[nodiscard]] PreparedEdit prepareDuplicateTime(Store&,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate);
 /// Preserves ADR-0153's expected head, including a captured null head.
 [[nodiscard]] CommitResult commitPrepared(Store&,const PreparedEdit&,Actor=Actor::User);
 } // namespace adi::clip_edit

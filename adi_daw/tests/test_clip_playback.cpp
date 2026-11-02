@@ -246,6 +246,44 @@ void deleteTimeSourceClocks() {
     }
 }
 
+void timeClipboardSourceClocks() {
+    for(const auto sourceRate:{44100u,48000u})for(const auto width:{Precision::Float32,Precision::Float64})for(const bool loop:{false,true}) {
+        Fixture f(sourceRate,2,4000);f.add(1,0,800,0,2000);f.add(2,1100,200,2000,500);
+        f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(24024,60),(96096,240)");
+        f.store->db().exec("UPDATE clips SET fade_in_ticks=48048,fade_out_ticks=12012 WHERE id=1");
+        if(loop)f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048 WHERE id=1");
+        SessionSpec spec{2,48000,2048};spec.precision=width;f.session.graph().setFadeFrames(0);
+        check(f.session.load(*f.store,{},spec),"load whole-Time clipboard sources at native precision");
+        auto render=[&](int frames) {
+            f.session.transport().locate(0);f.session.transport().play();
+            if(!f.session.clips()->prime(std::chrono::seconds(2)))throw std::runtime_error("Time clipboard prime");
+            std::vector<double> result(static_cast<std::size_t>(frames)*2);std::vector<float> narrow(static_cast<std::size_t>(frames)*2);
+            float* out[]={narrow.data(),narrow.data()+frames};double* out64[]={result.data(),result.data()+frames};
+            AudioIo io;io.numOut=2;io.frames=frames;if(width==Precision::Float64)io.out64=out64;else io.out=out;
+            {audio::CallbackScope callback;f.session.process(io);}
+            if(width==Precision::Float32)std::copy(narrow.begin(),narrow.end(),result.begin());
+            return result;
+        };
+        const auto original=render(1600);const auto copy=clip_edit::copyTime(*f.store,24024,72072,48000);
+        check(copy.ok && copy.nanos==8333334,"copy physical duration at source tempo");
+        const auto paste=clip_edit::preparePasteTime(*f.store,copy,144144,48000);
+        const auto committed=clip_edit::commitPrepared(*f.store,paste);
+        const bool refreshed=committed.ok && f.session.refresh(*f.store);
+        if(!paste.ok)std::printf("Time clipboard prepare: %s\n",paste.error.c_str());
+        if(!committed.ok)std::printf("Time clipboard commit: %s\n",committed.error.c_str());
+        if(committed.ok && !refreshed)std::printf("Time clipboard refresh: %s\n",f.session.error().c_str());
+        check(paste.ok && committed.ok && refreshed,"paste source tempo, faded material and global context as one step");
+        const auto after=render(2000);bool exact=true;
+        for(std::size_t channel=0;channel<2;++channel)for(std::size_t position=0;position<2000;++position) {
+            const auto source=position<800?position:position<1200?position-800+100:position-400;
+            exact=exact && after[channel*2000+position]==original[channel*1600+source];
+        }
+        check(exact,"heard Paste Time uses 400 copied frames rather than 100 target-tempo frames, with exact faded/resampled/looped PCM");
+        check(History(*f.store).undo().ok && f.session.refresh(*f.store) && render(1600)==original,"Time paste undo restores original heard bytes");
+        check(History(*f.store).redo().ok && f.session.refresh(*f.store) && render(2000)==after,"Time paste redo restores captured source clocks and map context");
+    }
+}
+
 void seeksAndStalls() {
     Fixture f;f.add(1,0,90000,0,90000);f.load(4096);(void)f.render(4096);
     f.session.transport().locate(70003);
@@ -584,7 +622,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="properties")properties();
         if(only=="all" || only=="fades")editedFades();
-        if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();silenceSourceClocks();deleteTimeSourceClocks();}
+        if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();

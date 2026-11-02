@@ -47,16 +47,33 @@ Available entry points:
 - preparePasteRange/prepareDuplicateRange with insertTime=true first insert
   musical time across the Set, then place the captured **material**. They are
   one undo step. The clipboard includes clip envelopes, not global automation
-  or tempo/meter/key events. Full Copy/Cut/Paste/Duplicate Time with a global timeline
-  clipboard remains open; callers must not label these material-only APIs as
-  a complete Copy Time implementation.
+  or tempo/meter/key events. These remain material-only APIs.
+- copyTime, prepareCutTime, preparePasteTime and prepareDuplicateTime operate on
+  the whole Set, including its global timeline. TimeCopy owns clipped material,
+  each map's carry/interior events, tuned-key bindings/degree overrides,
+  locators/cycles, clipped arranger sections and every global automation lane.
+  Cut captures the clipboard and deletion under one read snapshot; Duplicate
+  pastes at the source selection's end. Paste inserts the copied musical span
+  with its original integrated physical duration, then restores the target's
+  tempo/meter/key and automation at the far join. It also works at tick zero.
+  Existing arranger playlist references follow the insertion; copied sections
+  do not duplicate that playback playlist.
+  These clipboards currently target the same project and captured track ids;
+  missing tracks or changed kinds refuse. Media and tuning content identities,
+  the full automation lane contract and the reference render rate are checked.
+  A changed lane contract or render rate requires a fresh copy. Cross-project
+  lane/track mapping is not implicit. All native ids/defaults are captured in
+  the one resulting arranger.splice packet; unchanged outside automation keeps
+  its point ids/flags/curve domains/trailer, while pasted points get fresh ids.
 - clip.setFades edits either/both fade handles in one op. Length is ticks;
   tension is nullable [-1,1]. NULL selects legacy arithmetic. The snapshot
   carries lengths, curve kinds, tensions and retained fade domains. The window
   can use engine/clip_fade.hpp and engine/curves.hpp to draw the same curve.
 
-Insert Silence and Delete Time retain original nonlinear global automation curves through
-automation_segment_ranges, including after repeated insertions and deletions. Delete Time uses coincident\nboundary guards to preserve the two original values at the join. Existing point
+Insert Silence, Delete Time and the whole-Set clipboard retain nonlinear global
+automation curves through automation_segment_ranges, including after repeated
+edits. Delete Time uses coincident boundary guards to preserve the two original
+values at the join. Existing point
 IDs (all 64 bits), flags, tension and stream trailer bytes remain unchanged;
 new boundary points have fresh captured IDs. Global point ordering remains by
 raw time, including coincident points. Future record strides requiring unknown

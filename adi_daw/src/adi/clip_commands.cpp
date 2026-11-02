@@ -2,6 +2,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/automation_time_edit.hpp"
+#include "adi/automation_clipboard.hpp"
 #include "adi/edit_time.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
@@ -295,7 +296,8 @@ PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t rightI
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
-PreparedEdit prepareInsertSilence(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate) {
+namespace {
+PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate,std::optional<std::int64_t> exactNanos) {
     PreparedEdit result;
     try {
         validRate(referenceRate);
@@ -304,7 +306,7 @@ PreparedEdit prepareInsertSilence(Store& store,std::int64_t atTicks,std::int64_t
         Read read(store.db());expectedHead(store,result);auto& db=store.db();
         edit::TimeMap time(db);edit::RowEdits plan(db);CopyIds ids(db);OpContext context{store,db};
         const auto atNs=time.nanos(atTicks);
-        const auto gapNs=edit::nanosFromSeconds(static_cast<double>(ticks)/textproj::kPPQ*60/time.bpmBefore(atTicks));
+        const auto gapNs=exactNanos?*exactNanos:edit::nanosFromSeconds(static_cast<double>(ticks)/textproj::kPPQ*60/time.bpmBefore(atTicks));
         if(gapNs<=0)throw std::runtime_error("Insert Silence is shorter than a nanosecond");
         SQLite::Statement clips(db,"SELECT id FROM clips ORDER BY id");
         while(clips.executeStep()) {
@@ -380,6 +382,11 @@ PreparedEdit prepareInsertSilence(Store& store,std::int64_t atTicks,std::int64_t
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
+} // namespace
+PreparedEdit prepareInsertSilence(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate) {
+    return prepareInsertion(store,atTicks,ticks,referenceRate,std::nullopt);
+}
+
 PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate) {
     PreparedEdit result;
     try {
@@ -583,6 +590,9 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
                 if(!change.at("after").is_null() && std::string(edit::rowSpec(table).key)=="id")ids.reserve(table,id);
             }
         } else eraseRange(store,plan,ids,destination,time,referenceRate);
+        // Range clipping can assign an identity above every stored clip.
+        // Reserve those clipboard identities as well as live/insertion ids.
+        for(const auto& image:copy.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
         for(const auto& original:copy.images) {
             verifyMediaKeys(store,original);
             auto image=cloneImage(original,ids.next("clips"),ids);
@@ -607,6 +617,210 @@ PreparedEdit prepareDuplicateRange(Store& store,const RangeSelection& selection,
         return result;
     } catch(const std::exception& exception){PreparedEdit result;result.error=exception.what();return result;}
 }
+namespace {
+Payload mapImage(Store& store,const char* table,const Payload& row,bool exists=true) {
+    Payload result={{"table",table},{"row",row},{"tuning",nullptr},{"degrees",Payload::array()}};
+    if(std::string(table)!="key_map" || !exists)return result;
+    const auto id=detail::signedInteger(row.at("id"));
+    if(auto tuning=edit::row(store.db(),"key_map_tunings",id)) {
+        result["tuning"]=*tuning;
+        SQLite::Statement degrees(store.db(),"SELECT degree FROM key_map_degrees WHERE key_map_id=? ORDER BY degree");degrees.bind(1,id);
+        while(degrees.executeStep())result["degrees"].push_back(*edit::rowKey(store.db(),"key_map_degrees",{{"key_map_id",id},{"degree",degrees.getColumn(0).getInt64()}}));
+    }
+    return result;
+}
+Payload mapContext(Store& store,const char* table,std::int64_t position) {
+    SQLite::Statement context(store.db(),"SELECT id FROM "+std::string(table)+" WHERE pos_ticks<=? ORDER BY pos_ticks DESC,id DESC LIMIT 1");context.bind(1,position);
+    if(context.executeStep())return mapImage(store,table,*edit::row(store.db(),table,context.getColumn(0).getInt64()));
+    Payload defaults={{"id",1},{"pos_ticks",0}};
+    if(std::string(table)=="tempo_map")defaults["bpm"]=120.0;
+    else if(std::string(table)=="time_signature_map"){defaults["numerator"]=4;defaults["denominator"]=4;}
+    else defaults["root"]=0;
+    return mapImage(store,table,edit::defaultRow(store.db(),table,defaults),false);
+}
+Payload tuningKey(Store& store,std::int64_t id) {
+    auto row=detail::captureRow(store.db(),"tuning_systems","id",id);
+    if(!row)throw std::runtime_error("copied time has a missing tuning");
+    Payload key={{"row",*row},{"degrees",Payload::array()}};
+    SQLite::Statement degrees(store.db(),"SELECT degree FROM tuning_degrees WHERE tuning_id=? ORDER BY degree");degrees.bind(1,id);
+    while(degrees.executeStep())key["degrees"].push_back(*detail::captureRowKey(store.db(),"tuning_degrees",{{"tuning_id",id},{"degree",degrees.getColumn(0).getInt64()}}));
+    return key;
+}
+void clearKeyBinding(Store& store,edit::RowEdits& plan,std::int64_t id) {
+    SQLite::Statement degrees(store.db(),"SELECT degree FROM key_map_degrees WHERE key_map_id=?");degrees.bind(1,id);
+    while(degrees.executeStep())plan.setKey("key_map_degrees",{{"key_map_id",id},{"degree",degrees.getColumn(0).getInt64()}},std::nullopt);
+    if(plan.current("key_map_tunings",id))plan.set("key_map_tunings",id,std::nullopt);
+}
+void placeMap(edit::RowEdits& plan,const Payload& image,std::int64_t id,std::int64_t position) {
+    const auto table=image.at("table").get<std::string>();auto row=image.at("row");row["id"]=id;row["pos_ticks"]=position;
+    plan.set(table,id,row);
+    if(table=="key_map" && !image.at("tuning").is_null()) {
+        auto binding=image.at("tuning");binding["key_map_id"]=id;plan.set("key_map_tunings",id,binding);
+        for(auto degree:image.at("degrees")) {
+            degree["key_map_id"]=id;plan.setKey("key_map_degrees",{{"key_map_id",id},{"degree",degree.at("degree")}},degree);
+        }
+    }
+}
+void mergePrepared(edit::RowEdits& plan,CopyIds& ids,const PreparedEdit& prepared,std::optional<Payload>& loop) {
+    if(!prepared.ok)throw std::runtime_error(prepared.error);
+    for(const auto& request:prepared.requests) {
+        if(request.payload.contains("loop"))loop=request.payload.at("loop");
+        for(const auto& change:request.payload.at("changes")) {
+            const auto table=change.at("table").get<std::string>();const auto& key=change.at("id");const auto& value=change.at("after");
+            const std::optional<Payload> after=value.is_null()?std::optional<Payload>{}:std::optional<Payload>{value};
+            if(key.is_object())plan.setKey(table,key,after);else plan.set(table,detail::signedInteger(key),after);
+            if(after && std::string(edit::rowSpec(table).key)=="id")ids.reserve(table,detail::signedInteger(after->at("id")));
+        }
+    }
+}
+}
+TimeCopy copyTime(Store& store,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate) {
+    TimeCopy result;
+    try {
+        validRate(referenceRate);if(beginTicks<0 || endTicks<=beginTicks)throw std::runtime_error("Copy Time needs ordered nonnegative endpoints");
+        Read read(store.db());auto& db=store.db();edit::TimeMap time(db);
+        const auto beginNs=time.nanos(beginTicks),endNs=time.nanos(endTicks);
+        result.ticks=endTicks-beginTicks;result.nanos=endNs-beginNs;result.referenceRate=referenceRate;
+        if(result.nanos<=0)throw std::runtime_error("Copy Time is shorter than a nanosecond");
+        std::vector<std::int64_t> tracks;
+        SQLite::Statement rows(db,"SELECT id FROM tracks ORDER BY id");while(rows.executeStep())tracks.push_back(rows.getColumn(0).getInt64());
+        if(!tracks.empty())result.material=copyRange(store,{tracks,{0,beginTicks},{0,endTicks}},referenceRate);
+        else {result.material.ok=true;result.material.sourceFile=filename(store);result.material.selection={{},{0,beginTicks},{0,endTicks}};}
+        if(!result.material.ok)throw std::runtime_error(result.material.error);
+        auto& timeline=result.timeline;timeline={{"maps",Payload::array()},{"tuningKeys",Payload::array()},{"markers",Payload::array()},{"sections",Payload::array()},{"tracks",Payload::array()}};
+        for(const auto id:tracks) {
+            const auto row=detail::captureRow(db,"tracks","id",id);timeline["tracks"].push_back({{"id",id},{"kind",row->at("kind")}});
+        }
+        std::set<std::int64_t> tunings;
+        auto appendMap=[&](Payload image,std::int64_t position) {
+            image["row"]["pos_ticks"]=position;
+            if(!image.at("tuning").is_null())tunings.insert(detail::signedInteger(image.at("tuning").at("tuning_id")));
+            timeline["maps"].push_back(std::move(image));
+        };
+        for(const char* table:{"tempo_map","time_signature_map","key_map"}) {
+            appendMap(mapContext(store,table,beginTicks),0);
+            SQLite::Statement points(db,"SELECT id FROM "+std::string(table)+" WHERE pos_ticks>? AND pos_ticks<? ORDER BY pos_ticks,id");points.bind(1,beginTicks);points.bind(2,endTicks);
+            while(points.executeStep()) {
+                auto image=mapImage(store,table,*edit::row(db,table,points.getColumn(0).getInt64()));
+                const auto position=detail::signedInteger(image.at("row").at("pos_ticks"));appendMap(std::move(image),position-beginTicks);
+            }
+        }
+        for(const auto id:tunings)timeline["tuningKeys"].push_back(tuningKey(store,id));
+        SQLite::Statement markers(db,"SELECT id FROM markers ORDER BY id");
+        while(markers.executeStep()) {
+            const auto id=markers.getColumn(0).getInt64();auto row=*edit::row(db,"markers",id);
+            const auto base=detail::signedInteger(row.at("time_base"));if(base!=0 && base!=1)throw std::runtime_error("copied marker has an unknown clock");
+            const char* position=base==0?"pos_ticks":"pos_ns";const char* length=base==0?"length_ticks":"length_ns";
+            const auto begin=base==0?beginTicks:beginNs,end=base==0?endTicks:endNs,first=detail::signedInteger(row.at(position));
+            if(first<0)throw std::runtime_error("copied marker needs nonnegative placement");
+            if(row.at(length).is_null()){if(first<begin || first>=end)continue;row[position]=first-begin;}
+            else {
+                const auto extent=detail::signedInteger(row.at(length));if(extent<0)throw std::runtime_error("copied marker needs a nonnegative span");
+                const auto last=edit::addTime(first,extent);if(last<=begin || first>=end)continue;
+                const auto clipped=std::max(first,begin);row[position]=clipped-begin;row[length]=std::min(last,end)-clipped;
+            }
+            std::optional<Payload> details;if(db.tableExists("marker_details"))details=edit::row(db,"marker_details",id);
+            timeline["markers"].push_back({{"row",row},{"details",details.value_or(Payload{})}});
+        }
+        SQLite::Statement sections(db,"SELECT id FROM arranger_sections WHERE start_ticks<? AND end_ticks>? ORDER BY start_ticks,id");sections.bind(1,endTicks);sections.bind(2,beginTicks);
+        while(sections.executeStep()) {
+            auto row=*edit::row(db,"arranger_sections",sections.getColumn(0).getInt64());
+            row["start_ticks"]=std::max(beginTicks,detail::signedInteger(row.at("start_ticks")))-beginTicks;
+            row["end_ticks"]=std::min(endTicks,detail::signedInteger(row.at("end_ticks")))-beginTicks;timeline["sections"].push_back(std::move(row));
+        }
+        timeline["automation"]=edit::copyAutomationTime(store,time,beginTicks,endTicks,beginNs,endNs,referenceRate);
+        result.ok=true;
+    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
+TimeCut prepareCutTime(Store& store,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate) {
+    TimeCut result;
+    try {
+        Read read(store.db());result.copy=copyTime(store,beginTicks,endTicks,referenceRate);
+        if(!result.copy.ok)throw std::runtime_error(result.copy.error);
+        result.edit=prepareDeleteTime(store,beginTicks,endTicks,referenceRate);
+        for(auto& request:result.edit.requests)request.label="Cut Time";
+    } catch(const std::exception& exception){result.edit.ok=false;result.edit.error=exception.what();}
+    return result;
+}
+PreparedEdit preparePasteTime(Store& store,const TimeCopy& copy,std::int64_t atTicks,double referenceRate) {
+    PreparedEdit result;
+    try {
+        if(!copy.ok)throw std::runtime_error(copy.error);
+        validRate(referenceRate);
+        if(atTicks<0 || copy.ticks<=0 || copy.nanos<=0 || referenceRate!=copy.referenceRate)
+            throw std::runtime_error("Paste Time needs a valid span and the clipboard's reference render rate");
+        const auto endTicks=edit::addTime(atTicks,copy.ticks);
+        Read read(store.db());expectedHead(store,result);auto& db=store.db();
+        if(copy.material.sourceFile!=filename(store))throw std::runtime_error("time clipboard belongs to a different project");
+        for(const auto& track:copy.timeline.at("tracks")) {
+            const auto current=detail::captureRow(db,"tracks","id",detail::signedInteger(track.at("id")));
+            if(!current || current->at("kind")!=track.at("kind"))throw std::runtime_error("time clipboard track no longer has its captured kind");
+        }
+        for(const auto& key:copy.timeline.at("tuningKeys"))
+            if(tuningKey(store,detail::signedInteger(key.at("row").at("id")))!=key)throw std::runtime_error("time clipboard tuning identity changed");
+        edit::TimeMap time(db);const auto atNs=time.nanos(atTicks);(void)edit::addTime(atNs,copy.nanos);
+        edit::RowEdits plan(db);CopyIds ids(db);std::optional<Payload> loop;
+        mergePrepared(plan,ids,prepareInsertion(store,atTicks,copy.ticks,referenceRate,copy.nanos),loop);
+        for(const auto& image:copy.material.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
+        for(const auto& original:copy.material.images) {
+            verifyMediaKeys(store,original);
+            const auto track=original.at("trackIndex").get<std::size_t>();if(track>=copy.material.selection.tracks.size())throw std::runtime_error("clipboard track index differs");
+            auto image=cloneImage(original,ids.next("clips"),ids);auto& core=image["row"];
+            const auto base=detail::signedInteger(core.at("time_base"));if(base!=0 && base!=1)throw std::runtime_error("copied clip has an unknown clock");
+            const char* position=base==0?"pos_ticks":"pos_ns";
+            core[position]=edit::addTime(base==0?atTicks:atNs,detail::signedInteger(core.at(position)));
+            core["track_id"]=copy.material.selection.tracks[track];core["lane_id"]=nullptr;createImage(plan,image);
+        }
+        for(const char* table:{"tempo_map","time_signature_map","key_map"}) {
+            const auto target=mapContext(store,table,atTicks);bool restored=false;
+            // A real boundary event (except the protected root) moved to the
+            // far join. Its original binding already restores the destination.
+            SQLite::Statement boundary(db,"SELECT id FROM "+std::string(table)+" WHERE pos_ticks=? AND pos_ticks<>0");boundary.bind(1,atTicks);restored=boundary.executeStep();
+            for(const auto& image:copy.timeline.at("maps"))if(image.at("table")==table) {
+                const auto relative=detail::signedInteger(image.at("row").at("pos_ticks"));
+                if(relative<0 || relative>=copy.ticks)throw std::runtime_error("copied map point exceeds the clipboard span");
+                std::optional<std::int64_t> id;
+                if(atTicks==0 && relative==0) {
+                    SQLite::Statement root(db,"SELECT id FROM "+std::string(table)+" WHERE pos_ticks=0");
+                    if(root.executeStep())id=root.getColumn(0).getInt64();
+                }
+                if(!id)id=ids.next(table);else if(std::string(table)=="key_map")clearKeyBinding(store,plan,*id);
+                placeMap(plan,image,*id,edit::addTime(atTicks,relative));
+            }
+            if(!restored)placeMap(plan,target,ids.next(table),endTicks);
+        }
+        for(const auto& marker:copy.timeline.at("markers")) {
+            const auto id=ids.next("markers");auto row=marker.at("row");
+            const auto base=detail::signedInteger(row.at("time_base"));
+            const char* position=base==0?"pos_ticks":"pos_ns";row["id"]=id;
+            row[position]=edit::addTime(base==0?atTicks:atNs,detail::signedInteger(row.at(position)));plan.set("markers",id,row);
+            if(!marker.at("details").is_null()){auto details=marker.at("details");details["marker_id"]=id;plan.set("marker_details",id,details);}
+        }
+        for(auto row:copy.timeline.at("sections")) {
+            const auto id=ids.next("arranger_sections");row["id"]=id;
+            row["start_ticks"]=edit::addTime(atTicks,detail::signedInteger(row.at("start_ticks")));
+            row["end_ticks"]=edit::addTime(atTicks,detail::signedInteger(row.at("end_ticks")));plan.set("arranger_sections",id,row);
+        }
+        edit::pasteAutomationTime(store,plan,ids,copy.timeline.at("automation"),atTicks,copy.ticks,atNs,copy.nanos,referenceRate);
+        if(auto project=plan.current("project",1);project && detail::signedInteger(project->at("length_ticks"))>0 &&
+           detail::signedInteger(project->at("length_ticks"))<endTicks) {
+            (*project)["length_ticks"]=endTicks;plan.set("project",1,project);
+        }
+        packet(store,result,"arranger.splice","Paste Time",0,plan);
+        if(loop && !result.requests.empty())result.requests[0].payload["loop"]=*loop;
+    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
+PreparedEdit prepareDuplicateTime(Store& store,std::int64_t beginTicks,std::int64_t endTicks,double referenceRate) {
+    try {
+        Read read(store.db());const auto copy=copyTime(store,beginTicks,endTicks,referenceRate);
+        auto result=preparePasteTime(store,copy,endTicks,referenceRate);
+        for(auto& request:result.requests)request.label="Duplicate Time";
+        return result;
+    } catch(const std::exception& exception){PreparedEdit result;result.error=exception.what();return result;}
+}
+
 CommitResult commitPrepared(Store& store,const PreparedEdit& prepared,Actor actor) {
     CommitResult result;
     if(!prepared.ok){result.error=prepared.error;return result;}

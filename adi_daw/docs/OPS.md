@@ -417,6 +417,14 @@ matched together. Replay uses captured values without evaluating defaults.
 Delete Time uses the same captured arranger.splice packet, including an
 optional saved-loop before/after pair. Its preparation preserves the old
 end context, full tuning children and both global automation curve domains.
+Whole-Set Copy Time captures a value without journaling. Cut/Paste/Duplicate
+Time use arranger.splice with source-relative timeline data remapped to captured
+native ids. Paste inserts the source tempo integral for linear objects, carries
+source map/automation context into the gap and restores the destination context
+at its end. Root map events may be overwritten at zero with exact typed undo.
+Clipboard tuning/lane/media contracts and the captured journal head are checked.
+These commands add no opcode; their recorded requests replay independently of
+clipboard or window state.
 
 Window callers use clip_commands.hpp and material_commands.hpp, rather
 than assembling row images. Prepared edits carry ADR-0153's expected head,

@@ -173,5 +173,146 @@ void guardsAndCollapsedLoops() {
     check(zero.commit(clip_edit::prepareDeleteTime(*zero.store,0,2*q,48000)) &&
           zero.integer("SELECT count(*) FROM tempo_map")==1 && zero.integer("SELECT pos_ticks FROM tempo_map WHERE id=12")==0,"deletion from zero retains the end context as the new root event");
 }
+void timeClipboards() {
+    for(int base=0;base<=1;++base)for(int curve=0;curve<=5;++curve) {
+        Project p;auto& db=p.store->db();
+        db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(7,21,'midi',0,46126080);"
+            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(8,22,'midi',1,500000000,1000000000)");
+        {
+            SQLite::Statement lane(db,"INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,time_base) VALUES(91,'track',21,'pan','real',?)");lane.bind(1,base);lane.exec();
+        }
+        AutomationPoint a{},b{};a.time=0;a.value=-1;a.curve=static_cast<std::uint8_t>(curve);a.tension=-0.6f;a.point_id=std::numeric_limits<std::uint64_t>::max();a.flags=3;
+        b.time=base==0?8*q:4000000000;b.value=1;b.point_id=17;b.flags=5;
+        auto bytes=writeStream<AutomationPoint>(FourCC::Automation,std::vector<AutomationPoint>{a,b},1,StreamFlags::SortedByTime|(base==1?StreamFlags::TimeIsNanos:0));
+        bytes.push_back(std::byte{0xff});
+        check(p.store->putAutomationData(91,{},bytes),"write global envelope for whole-Set clipboard");
+        engine::AutomationProgram original(rows::readModel(*p.store),48000);const auto before=digestProject(*p.store).text;
+        const auto copied=clip_edit::copyTime(*p.store,q,3*q,48000);
+        if(!copied.ok)std::printf("copy: %s\n",copied.error.c_str());
+        check(copied.ok && copied.material.images.size()==2 && copied.ticks==2*q && copied.nanos==1000000000 &&
+              digestProject(*p.store).text==before,"Copy Time captures both material clocks and global context without writing");
+        const auto pasted=clip_edit::preparePasteTime(*p.store,copied,4*q,48000);
+        check(pasted.ok && pasted.requests.size()==1 && p.commit(pasted),"Paste Time is one whole-Set native edit");
+        engine::AutomationProgram next(rows::readModel(*p.store),48000);bool same=next.problems().empty();
+        for(std::int64_t position=0;position<240000 && same;position+=11) {
+            const auto old=position<96000?position:position<144000?position-96000+24000:position-48000;
+            same=std::abs(engine::valueAt(*original.lane(91),old)-engine::valueAt(*next.lane(91),position))<3e-12;
+        }
+        check(same,"Paste Time copies every source curve and returns to the unchanged destination on both joins");
+        const auto after=digestProject(*p.store).text;
+        check(History(*p.store).undo().ok && digestProject(*p.store).text==before,"Paste Time undo restores maps, global data and all original clip identities");
+        check(History(*p.store).redo().ok && digestProject(*p.store).text==after,"Paste Time redo uses captured native values");
+        check(History(*p.store).undo().ok,"restore source before Cut Time");
+        const auto cut=clip_edit::prepareCutTime(*p.store,q,3*q,48000);
+        check(cut.copy.ok && cut.edit.ok && p.commit(cut.edit),"Cut Time captures its complete clipboard and removal under one read snapshot");
+        check(History(*p.store).undo().ok && digestProject(*p.store).text==before,"Cut Time undo restores the exact original Set");
+        check(p.commit(clip_edit::prepareDuplicateTime(*p.store,q,3*q,48000)),"Duplicate Time copies the whole context at the selection's end");
+        engine::AutomationProgram duplicate(rows::readModel(*p.store),48000);same=duplicate.problems().empty();
+        for(std::int64_t position=0;position<240000 && same;position+=13) {
+            const auto old=position<72000?position:position<120000?position-72000+24000:position-48000;
+            same=std::abs(engine::valueAt(*original.lane(91),old)-engine::valueAt(*duplicate.lane(91),position))<3e-12;
+        }
+        check(same,"Duplicate Time preserves source and destination curve domains in either clock");
+    }
 }
-int main(){try{compoundDeletion();automationCurves();boundaryClustersAndMetadata();guardsAndCollapsedLoops();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+void copiedTempoAndTuning() {
+    Project p;auto& db=p.store->db();
+    db.exec("DELETE FROM tempo_map;INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(10,0,120),(11,11531520,60),(12,23063040,240);"
+        "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(21,5765760,3,4),(22,11531520,7,8),(23,23063040,5,4);"
+        "INSERT INTO key_map(id,pos_ticks,root) VALUES(31,5765760,1),(32,11531520,2),(33,23063040,3);"
+        "INSERT INTO tuning_systems(id,name,source) VALUES(1,'Three','edo');"
+        "INSERT INTO tuning_degrees(tuning_id,degree,cents) VALUES(1,0,0),(1,1,400);"
+        "INSERT INTO key_map_tunings VALUES(31,1),(32,1);INSERT INTO key_map_degrees VALUES(31,0),(32,1);"
+        "ALTER TABLE key_map_degrees ADD COLUMN future BLOB NOT NULL DEFAULT X'';UPDATE key_map_degrees SET future=X'0001FF';"
+        "INSERT INTO markers(id,pos_ticks,length_ticks,kind) VALUES(41,0,23063040,'cycle'),(42,11531520,NULL,'position');"
+        "INSERT INTO arranger_sections(id,start_ticks,end_ticks) VALUES(51,0,23063040);"
+        "INSERT INTO arranger_chain(id,ord,section_id) VALUES(61,0,51);"
+        "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(7,21,'midi',1,4000000000,1000000000)");
+    const auto before=digestProject(*p.store).text;const auto copy=clip_edit::copyTime(*p.store,q,3*q,48000);
+    check(copy.ok && copy.nanos==1500000000,"Copy Time captures the source tempo integral across an interior event");
+    check(p.commit(clip_edit::preparePasteTime(*p.store,copy,5*q,48000)),"Paste Time at a different target tempo");
+    check(p.integer("SELECT pos_ns FROM clips WHERE id=7")==5500000000,"linear objects move by copied 1.5 seconds rather than the target tempo's 0.5 seconds");
+    check(p.integer("SELECT CAST(bpm AS INTEGER) FROM tempo_map WHERE pos_ticks=28828800")==120 &&
+          p.integer("SELECT CAST(bpm AS INTEGER) FROM tempo_map WHERE pos_ticks=34594560")==60 &&
+          p.integer("SELECT CAST(bpm AS INTEGER) FROM tempo_map WHERE pos_ticks=40360320")==240,"copied carry/interior tempo points and target end context are explicit");
+    check(p.integer("SELECT numerator FROM time_signature_map WHERE pos_ticks=28828800")==3 &&
+          p.integer("SELECT numerator FROM time_signature_map WHERE pos_ticks=34594560")==7 &&
+          p.integer("SELECT numerator FROM time_signature_map WHERE pos_ticks=40360320")==5,"meter context follows the copied interval and then restores the destination");
+    check(p.integer("SELECT count(*) FROM key_map_degrees d JOIN key_map k ON k.id=d.key_map_id WHERE k.pos_ticks IN(28828800,34594560) AND hex(d.future)='0001FF'")==2,"pasted tuned keys retain composite degree metadata");
+    check(p.integer("SELECT count(*) FROM arranger_chain")==1 && p.integer("SELECT count(*) FROM arranger_sections")==2,"copied section boundaries leave the existing playback playlist unchanged");
+    const auto after=digestProject(*p.store).text;
+    check(History(*p.store).undo().ok && digestProject(*p.store).text==before &&
+          History(*p.store).redo().ok && digestProject(*p.store).text==after,"compound map/tuning/marker paste has exact undo and redo");
+    check(History(*p.store).undo().ok,"restore source for tuning identity check");
+    db.exec("UPDATE tuning_degrees SET cents=450 WHERE tuning_id=1 AND degree=1");
+    const auto changed=digestProject(*p.store).text;const auto refused=clip_edit::preparePasteTime(*p.store,copy,0,48000);
+    check(!refused.ok && refused.error.find("tuning identity")!=std::string::npos && digestProject(*p.store).text==changed,"a reused or changed tuning cannot reinterpret an old clipboard");
+    db.exec("UPDATE tuning_degrees SET cents=400 WHERE tuning_id=1 AND degree=1");
+    check(p.commit(clip_edit::preparePasteTime(*p.store,copy,0,48000)),"paste at the protected zero root");
+    check(p.integer("SELECT CAST(bpm AS INTEGER) FROM tempo_map WHERE pos_ticks=11531520")==120 &&
+          p.integer("SELECT root FROM key_map WHERE pos_ticks=0")==1,"zero insertion replaces the root and restores old context at the far join");
+    check(History(*p.store).undo().ok && digestProject(*p.store).text==before,"zero-root paste restores exact original root bindings and absence");
+}
+
+void timeClipboardEnvelopeEdges() {
+    for(int scenario=0;scenario<4;++scenario) {
+        Project p;auto& db=p.store->db();
+        db.exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain,default_value) VALUES(91,'track',21,'pan','real',0.25)");
+        auto write=[&](std::int64_t first,std::int64_t last,double low,double high) {
+            AutomationPoint a{},b{};a.time=first;a.value=low;a.curve=3;a.tension=0.4f;a.point_id=9;b.time=last;b.value=high;b.point_id=10;
+            auto blob=writeStream<AutomationPoint>(FourCC::Automation,std::vector<AutomationPoint>{a,b});blob.push_back(std::byte{0xff});
+            if(!p.store->putAutomationData(91,{},blob))throw std::runtime_error("write clipboard edge");
+        };
+        if(scenario!=3)write(0,8*q,-1,1);
+        engine::AutomationProgram source(rows::readModel(*p.store),48000);
+        const auto copy=clip_edit::copyTime(*p.store,q,3*q,48000);
+        db.exec("DELETE FROM automation_data");
+        if(scenario==0)write(7*q,8*q,0.3,0.9);
+        else if(scenario==1)write(0,q,0.3,0.9);
+        else if(scenario==3)write(0,8*q,0.3,0.9);
+        engine::AutomationProgram target(rows::readModel(*p.store),48000);const auto before=digestProject(*p.store).text;
+        check(copy.ok && p.commit(clip_edit::preparePasteTime(*p.store,copy,4*q,48000)),"paste handles before-first, after-last, absent target and absent source envelopes");
+        engine::AutomationProgram next(rows::readModel(*p.store),48000);bool same=next.problems().empty();
+        for(std::int64_t position=0;position<264000 && same;position+=17) {
+            const auto expected=position<96000?engine::valueAt(*target.lane(91),position):
+                position<144000?engine::valueAt(*source.lane(91),position-96000+24000):
+                    engine::valueAt(*target.lane(91),position-48000);
+            same=std::abs(engine::valueAt(*next.lane(91),position)-expected)<3e-12;
+        }
+        check(same,"held/default values restore exactly at both clipboard joins without inventing a ramp");
+        check(p.store->getAutomationData(91,{})->back()==std::byte{0xff},"target stream trailers survive merging and a newly created stream retains the source trailer");
+        const auto after=digestProject(*p.store).text;
+        p.store.reset();StoreError error{};p.store=Store::open(p.temporary.path()/"song.adi",error);
+        check(p.store && digestProject(*p.store).text==after && History(*p.store).undo().ok &&
+              digestProject(*p.store).text==before,"reopened Time clipboard history preserves absent automation and exact native state");
+    }
+}
+void timeClipboardGuards() {
+    Project p;auto& db=p.store->db();
+    db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(7,21,'midi',0,17297280)");
+    const auto material=clip_edit::copyRange(*p.store,{{21},{0,q},{0,2*q}},48000);
+    check(material.ok && p.commit(clip_edit::preparePasteRange(*p.store,material,{21},{0,7*q},48000)),"material paste reserves the synthetic identity of a clip trimmed only in the clipboard");
+    check(History(*p.store).undo().ok,"restore source after material identity regression");
+    db.exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain) VALUES(91,'track',21,'pan','real')");
+    const auto copy=clip_edit::copyTime(*p.store,q,2*q,48000);
+    const auto stale=clip_edit::preparePasteTime(*p.store,copy,4*q,48000);
+    OpRequest rename;rename.opType="track.rename";rename.payload={{"id",21},{"name","Changed"}};
+    check(OpJournal(*p.store).commit(rename).ok,"intervening native edit changes the clipboard preparation's expected head");
+    const auto before=digestProject(*p.store).text;
+    check(!clip_edit::commitPrepared(*p.store,stale).ok && digestProject(*p.store).text==before,"stale Paste Time refuses every material/map/automation write atomically");
+    db.exec("UPDATE automation_lanes SET param_ref='volume' WHERE id=91");
+    const auto ownerChanged=digestProject(*p.store).text;const auto refused=clip_edit::preparePasteTime(*p.store,copy,4*q,48000);
+    check(!refused.ok && refused.error.find("lane changed")!=std::string::npos && digestProject(*p.store).text==ownerChanged,"copied automation cannot silently bind to a reused lane or another parameter");
+    db.exec("UPDATE automation_lanes SET param_ref='pan' WHERE id=91");
+    auto late=clip_edit::preparePasteTime(*p.store,copy,4*q,48000);
+    for(auto& change:late.requests[0].payload["changes"])if(change.at("table")=="clips" && change.at("before").is_null())change["after"]["track_id"]=999;
+    const auto unchanged=digestProject(*p.store).text;
+    check(!p.commit(late) && digestProject(*p.store).text==unchanged,"late Time paste constraint failure rolls back created maps, curves and material");
+    Project other;
+    check(!clip_edit::preparePasteTime(*other.store,copy,0,48000).ok &&
+          !clip_edit::preparePasteTime(*p.store,copy,0,44100).ok &&
+          !clip_edit::copyTime(*p.store,2*q,q,48000).ok,"cross-project implicit mapping, changed render rate and inverted Time selections refuse");
+}
+
+}
+int main(){try{compoundDeletion();automationCurves();boundaryClustersAndMetadata();guardsAndCollapsedLoops();timeClipboards();copiedTempoAndTuning();timeClipboardEnvelopeEdges();timeClipboardGuards();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

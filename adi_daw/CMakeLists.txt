@@ -263,7 +263,7 @@ add_library(adi_core STATIC
     "${ADI_SCHEMA_HPP}"
 )
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
-  src/adi/automation_time_edit.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
+  src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
   src/adi/material_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(adi_core PUBLIC
