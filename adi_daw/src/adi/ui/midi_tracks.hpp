@@ -20,4 +20,13 @@ template <class Devices> bool hasAudioMixer(const engine::TrackNode &t, const De
                 return true;
     return false;
 }
+// Whether a clip on track `from` may be dragged onto track `to` (Live 12 manual 6.7, "to another
+// song position or track"): a track that plays clips (an audio or a MIDI track, never a group, a
+// return or Main) of its own track's family, audio to audio and MIDI to MIDI, as Live keeps audio
+// clips on audio tracks. The snapshot carries no clip's kind, so its track's stands in (ADR-0045:
+// a MIDI clip on an audio track is legal, and moves among audio tracks).
+inline bool canTakeClip(const engine::TrackNode &to, const engine::TrackNode &from) noexcept {
+    const bool plays = to.kind == "audio" || isMidiTrack(to);
+    return plays && isMidiTrack(to) == isMidiTrack(from);
+}
 } // namespace adi::ui

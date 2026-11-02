@@ -1216,6 +1216,95 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
 // the clips inside it on all of them, as one undo step each.
+// Live's clip drag across tracks (Live 12 manual 6.7, "to another song position or track"): a clip
+// dragged by its bar follows the lane under the mouse when that track can take it, MIDI to MIDI and
+// audio to audio, and lands there as one undo step; over a track that cannot, it stays on the last
+// that could.
+void clipToTrack(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-to-track.adi", err);
+    check(store != nullptr, "the clip drag's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip To Track')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole;
+    bool madeAll = true;
+    for (const auto &[id, kind] : {std::pair<std::int64_t, const char *>{1, "midi"}, {2, "midi"}, {3, "audio"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", kind == std::string("midi") ? "# MIDI" : "# Audio"}, {"index", id - 1}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"pos", bar}, {"length", bar}};
+    clip.label = "Create clip";
+    madeAll = submitter.submit(std::move(clip)).ok && madeAll;
+    check(madeAll, "two MIDI tracks and an audio track; a MIDI clip in bar 2 of the first");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-to-track");
+    root.setSize(1200, 720);
+    for (std::int64_t id = 1; id <= 3; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const auto barOf = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 5); };
+    const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
+    auto trackOf = [&root](std::int64_t clipId) -> std::int64_t {
+        for (const auto &t : root.reader().tracks())
+            for (const auto &c : t->clips)
+                if (c->id == clipId)
+                    return t->id;
+        return 0;
+    };
+    // Its bar picked, then dragged down onto 2 MIDI's lane: drawn there while dragging, landing there
+    // on release, at the same place in time.
+    canvas.mouseDown(pressAt(canvas, {x(bar) + 6, barOf(1)}));
+    canvas.mouseUp(pressAt(canvas, {x(bar) + 6, barOf(1)}));
+    canvas.mouseDown(pressAt(canvas, {x(bar) + 6, barOf(1)}));
+    canvas.mouseDrag(pressAt(canvas, {x(bar) + 6, lane(2)}));
+    check(canvas.movingClip() == 11 && canvas.movingTrack() == 2, "dragged over 2 MIDI, the clip would land there");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-clip-to-track.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    // Over the audio track it stays on 2 MIDI: Live keeps MIDI clips on MIDI tracks.
+    canvas.mouseDrag(pressAt(canvas, {x(bar) + 6, lane(3)}));
+    check(canvas.movingTrack() == 2, "over the audio track it stays on the last MIDI track");
+    canvas.mouseUp(pressAt(canvas, {x(bar) + 6, lane(3)}));
+    root.frame();
+    check(trackOf(11) == 2 && root.reader().findTrack(2)->clips.front()->posTicks == bar &&
+              submitter.nextUndo()->label == "Move Clip" && submitter.nextUndo()->opCount == 1 &&
+              geo.selection.track == 2 && geo.selection.clip == 11,
+          "released, the clip is on 2 MIDI at bar 2, one undo step, and the selection follows it");
+    // Back up to 1 MIDI and a bar later: track and time in one step.
+    canvas.mouseDown(pressAt(canvas, {x(bar) + 6, barOf(2)}));
+    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) + 6, barOf(1)}));
+    canvas.mouseUp(pressAt(canvas, {x(2 * bar) + 6, barOf(1)}));
+    root.frame();
+    check(trackOf(11) == 1 && root.reader().findTrack(1)->clips.front()->posTicks == 2 * bar,
+          "dragged up and a bar on, it moves track and time in one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(trackOf(11) == 2 && root.reader().findTrack(2)->clips.front()->posTicks == bar, "and undo puts it back");
+}
 void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "range.adi", err);
@@ -4155,6 +4244,7 @@ int main(int argc, char **argv) {
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     rangeSelection(commands, temp.path());
+    clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

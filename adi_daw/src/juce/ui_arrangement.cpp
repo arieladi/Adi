@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
 #include "ui_shell.hpp"
 namespace adi::ui {
@@ -1193,13 +1194,14 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const auto colour = view.colourFor(row.position);
         if (row.place.group)
             paintGroupLane(g, i, y, h, colour);
-        for (const auto &c : t->clips) {
+        auto drawClip = [&](const engine::ClipNode &clip) {
+            const auto *c = &clip;
             // A clip being moved by its bar is drawn where it would land.
             const auto pos = c->id == moving_ ? movingTo_ : c->posTicks;
             const auto length = c->id == resizing_ ? resizeLength_ : c->lengthTicks;
             const double x = geo.x(pos), end = geo.x(pos + length);
             if (end < 0 || x > getWidth())
-                continue;
+                return;
             const float left = static_cast<float>(std::max(-1., x)),
                         right = static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
             const bool picked = c->id == geo.selection.clip;
@@ -1234,7 +1236,16 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                                static_cast<float>(std::max(0, h - 4 - kClipBarHeight)));
                 }
             }
-        }
+        };
+        // A clip dragged onto another track is drawn on that track's lane, in its colour.
+        for (const auto &c : t->clips)
+            if (c->id != moving_ || movingTrack_ == t->id)
+                drawClip(*c);
+        if (moving_ != 0 && movingTrack_ == t->id && movingSource_ != t->id)
+            if (const auto *source = view.reader().findTrack(movingSource_))
+                for (const auto &c : source->clips)
+                    if (c->id == moving_)
+                        drawClip(*c);
         y += h;
     }
     if (foot == rows.size())
@@ -1326,6 +1337,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && c->id == view.geometry.selection.clip) {
             moving_ = c->id;
             movingFrom_ = movingTo_ = c->posTicks;
+            movingSource_ = movingTrack_ = track;
             grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
         }
     }
@@ -1380,9 +1392,13 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         return;
     }
     if (moving_ != 0) {
-        // The clip's start follows the mouse, to the nearest grid line while snapping;
-        // it stays on its own track until the snapshot says which tracks can take it (a clip's
-        // kind, window log N32).
+        // The clip's start follows the mouse, to the nearest grid line while snapping, and its
+        // track follows the lane under it when that track can take it (Live 12 manual 6.7);
+        // over one that cannot, it stays on the last that could.
+        if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
+            if (const auto *source = view.reader().findTrack(movingSource_);
+                source != nullptr && over->id != movingTrack_ && canTakeClip(*over, *source))
+                movingTrack_ = over->id;
         const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
@@ -1417,15 +1433,19 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
         repaint();
     }
     if (moving_ != 0) {
-        const auto clip = moving_, to = movingTo_, from = movingFrom_;
+        const auto clip = moving_, to = movingTo_, from = movingFrom_, track = movingTrack_;
+        const bool across = movingTrack_ != movingSource_;
         moving_ = 0;
-        // One drag, one undo step (§6.7); the selection follows the clip.
-        if (to != from) {
+        // One drag, one undo step (§6.7), in time and to another track at once; the selection
+        // follows the clip.
+        if (to != from || across) {
             auto &sel = view.geometry.selection;
             const auto length = sel.end - sel.start;
-            if (clipEdit("clip.move", {{"id", clip}, {"to", to}, {"track", sel.track}}, "Move Clip")) {
+            if (clipEdit("clip.move", {{"id", clip}, {"to", to}, {"track", track}}, "Move Clip")) {
                 sel.start = to;
                 sel.end = to + length;
+                sel.track = track;
+                sel.toTrack = 0;
             }
         }
         repaint();
