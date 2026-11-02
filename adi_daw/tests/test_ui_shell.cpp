@@ -5,6 +5,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/send_edits.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -787,6 +788,155 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.toggleFold(16);
     root.arrangement.toggleFold(10);
     render("adi-groups-folded.png");
+}
+// The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
+// value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
+void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "sends.adi", err);
+    check(store != nullptr, "the sends' project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Sends')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    bool madeAll = true;
+    auto make = [&submitter, &madeAll](std::int64_t id, const char *kind, const char *name, std::int64_t index) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    };
+    make(1, "midi", "# MIDI", 0);
+    make(2, "midi", "# MIDI", 1);
+    make(3, "audio", "# Audio", 2);
+    make(4, "audio", "# Audio", 3);
+    make(5, "return", "A Reverb", 4);
+    make(6, "return", "B Delay", 5);
+    make(7, "master", "Main", 6);
+    check(madeAll, "Live's default set: two MIDI tracks, two audio tracks, two returns and Main");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "sends");
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 3;
+    root.frame();
+    root.frame();
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+    auto render = [&root, folder](const char *name) {
+        if (folder.isEmpty())
+            return;
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                          juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile(name);
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    };
+    auto rowOf = [](MixerPanel &panel, std::int64_t track) -> MixerStrip * {
+        for (const auto &strip : panel.strips())
+            if (strip->isVisible() && strip->track() == track)
+                return strip.get();
+        return nullptr;
+    };
+    auto *audio = rowOf(root.mixer, 3);
+    check(audio != nullptr && audio->sendKnobs().size() == 2 && audio->sendsTo(0) == 5 && audio->sendsTo(1) == 6,
+          "3 Audio has a send for each return, A then B");
+    if (audio == nullptr || audio->sendKnobs().size() != 2)
+        return;
+    auto &a = *audio->sendKnobs()[0];
+    auto &b = *audio->sendKnobs()[1];
+    auto takesClicks = [](juce::Component &c) {
+        bool self = false, children = false;
+        c.getInterceptsMouseClicks(self, children);
+        return self;
+    };
+    const int x = audio->showsInOut() ? MixerPanel::kInOutWidth : 0;
+    check(a.isVisible() && a.getBounds() == juce::Rectangle<int>(x + 4, 37, 29, 13) &&
+              b.getBounds() == juce::Rectangle<int>(x + 37, 37, 29, 13) && a.getTextFromValue(a.getValue()) == "-inf" &&
+              a.getTitle() == "Send A" && b.getTitle() == "Send B",
+          "Live's two -inf boxes on the row under volume and pan, as its capture");
+    check(audio->eq.getY() == 54 && audio->limiter.getY() == 54, "ADI-Q and ADI-L on the row after the sends");
+    auto *main = rowOf(root.mixer, 7);
+    auto *reverb = rowOf(root.mixer, 5);
+    check(main != nullptr && main->sendKnobs().empty(), "Main has no sends");
+    check(reverb != nullptr && reverb->sendKnobs().size() == 2 && !reverb->sendOn(0) && !reverb->sendOn(1) &&
+              !takesClicks(*reverb->sendKnobs()[1]) && reverb->sendKnobs()[1]->getAlpha() < 1.f &&
+              audio->sendOn(0) && takesClicks(a),
+          "a return's sends are off until Enable Send; a track's are on");
+
+    // A typed value commits at once: the row and its level, one undo step.
+    audio->sendKnobs()[0]->setValue(-12, juce::sendNotificationSync);
+    root.frame();
+    const auto *route = findSend(root.reader().sends(), 3, 5);
+    // A typed value passes the knob's 0.01 dB step from its -70 dB foot, which an FMA rounds once
+    // (Apple Clang on arm64) and two roundings do not: -12 within a hair, not to the bit.
+    check(route != nullptr && std::abs(route->gainDb + 12.0) < 1.e-9 && a.getTextFromValue(a.getValue()) == "-12" &&
+              submitter.nextUndo() && submitter.nextUndo()->label == "Change Send Level" &&
+              submitter.nextUndo()->opCount == 2,
+          "3 Audio's send A at -12 dB: a new row and its level, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(findSend(root.reader().sends(), 3, 5) == nullptr && a.getTextFromValue(a.getValue()) == "-inf",
+          "the send is gone and its box reads -inf again");
+    check(root.command(AppCommands::Redo), "redo");
+    root.frame();
+    check(a.getTextFromValue(a.getValue()) == "-12", "and back at -12 dB");
+
+    // Enable Send on A Reverb's send B: on, at full alpha, taking clicks.
+    reverb->enableSend(1, true);
+    root.frame();
+    check(reverb->sendOn(1) && !reverb->sendOn(0) && takesClicks(*reverb->sendKnobs()[1]) &&
+              findSend(root.reader().sends(), 5, 6) != nullptr && findSend(root.reader().sends(), 5, 6)->enabled,
+          "Enable Send: A Reverb feeds B Delay, fully down until turned up");
+    reverb->enableSend(1, true);
+    check(root.error() == "The send is on already.", "enabling it again only says so");
+
+    render("adi-sends-rows.png");
+    // The Mixer View: Live's knobs under "Sends", A on the left and B lower on the right; the mixer
+    // under them.
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(320);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto *column = rowOf(root.mixerView, 3);
+    check(column != nullptr && column->sendKnobs().size() == 2 && column->sendsShown() == 2,
+          "3 Audio's strip shows both sends");
+    if (column != nullptr && column->sendsShown() == 2) {
+        const auto ka = column->sendKnobs()[0]->getBounds(), kb = column->sendKnobs()[1]->getBounds();
+        check(ka == juce::Rectangle<int>(10, 46, 32, 32) && kb == juce::Rectangle<int>(51, 68, 32, 32) &&
+                  column->sendKnobs()[0]->getSliderStyle() == juce::Slider::RotaryHorizontalVerticalDrag,
+              "knob A on the left, B to its right and 22 pt lower, as Live's");
+        check(column->volume.getY() == 40 + 72 + 6 && column->peakHold.getY() == 40 + 72 + 5,
+              "the mixer begins under the sends");
+        check(std::abs(column->sendKnobs()[0]->getValue() + 12.0) < 1.e-9,
+              "and send A reads the same row as the track controls");
+        auto *mainColumn = rowOf(root.mixerView, 7);
+        check(mainColumn != nullptr && mainColumn->sendKnobs().empty() && mainColumn->sendsShown() == 2 &&
+                  mainColumn->volume.getY() == column->volume.getY(),
+              "Main has no knobs, but keeps the Sends section's room: the mixers line up");
+    }
+    // A short Mixer View keeps the mixer's room and leaves out the sends that do not fit.
+    root.resizeMixerView(200);
+    root.mark(DirtySet::All);
+    root.frame();
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && column->sendsShown() < 2 && !column->sendKnobs()[1]->isVisible() &&
+              column->getHeight() - column->peakHold.getY() + 5 >= 110,
+          "short, the strip shows fewer sends and keeps its mixer");
+    root.resizeMixerView(320);
+    root.mark(DirtySet::All);
+    root.frame();
+    render("adi-sends.png");
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
@@ -3566,6 +3716,7 @@ int main(int argc, char **argv) {
     liveParity(commands, temp.path(), write);
     groupTracks(commands, temp.path());
     footRows(commands, temp.path());
+    sendKnobs(commands, temp.path());
     mixViewShell(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

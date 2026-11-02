@@ -896,7 +896,15 @@ bool AdiRootComponent::submitEdit(const std::string &op, Payload payload, const 
     request.payload = std::move(payload);
     request.label = label;
     request.selBefore = session_.advisory();
-    const auto result = submitter_.submit(std::move(request));
+    return edited(submitter_.submit(std::move(request)));
+}
+bool AdiRootComponent::submitEdits(std::vector<OpRequest> ops) {
+    if (ops.empty())
+        return true;
+    ops.front().selBefore = session_.advisory();
+    return edited(submitter_.submit(std::move(ops)));
+}
+bool AdiRootComponent::edited(const SubmitResult &result) {
     if (!result)
         return fail(result.error);
     arrangement.followPaused = true; // an edit pauses Follow (§6.2)
