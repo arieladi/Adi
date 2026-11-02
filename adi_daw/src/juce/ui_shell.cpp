@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/ui/meters.hpp"
 #include <algorithm>
 #include <array>
 #include <vector>
@@ -811,11 +812,12 @@ void AdiRootComponent::say(std::string message) {
 }
 juce::String AdiRootComponent::selectionText() const {
     // Live's Status Bar: the insert marker with its time, or the time selection.
+    // Positions and lengths in the project's meters (#299).
     const auto &s = arrangement.geometry.selection;
-    auto where = [](std::int64_t tick) {
-        const auto sixteenths = tick / (textproj::kPPQ / 4);
-        return juce::String(sixteenths / 16 + 1) + "." + juce::String(sixteenths / 4 % 4 + 1) +
-               "." + juce::String(sixteenths % 4 + 1);
+    const auto &meters = reader_->meters();
+    auto where = [&meters](std::int64_t tick) {
+        const auto at = barPosition(tick, meters);
+        return juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth);
     };
     auto seconds = [this](std::int64_t tick) {
         const auto *tempo = reader_->tempo();
@@ -824,10 +826,10 @@ juce::String AdiRootComponent::selectionText() const {
     };
     if (s.start != s.end) {
         const auto a = std::min(s.start, s.end), b = std::max(s.start, s.end);
-        const auto beats = (b - a) / (textproj::kPPQ / 4);
+        const auto length = barSpan(a, b - a, meters);
         return "Time Selection   Start: " + where(a) + "   End: " + where(b) + "   Length: " +
-               juce::String(beats / 16) + "." + juce::String(beats / 4 % 4) + "." +
-               juce::String(beats % 4) + "   (Duration: " + seconds(b - a) + ")";
+               juce::String(length.bar) + "." + juce::String(length.beat) + "." +
+               juce::String(length.sixteenth) + "   (Duration: " + seconds(b - a) + ")";
     }
     return "Insert Mark " + where(s.marked ? s.insert : 0) + " (Time: " +
            seconds(s.marked ? s.insert : 0) + ")";

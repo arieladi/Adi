@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <new>
 #include <thread>
+#include <tuple>
 #include <vector>
 namespace {
 thread_local bool audit = false;
@@ -672,7 +673,17 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
     };
     lanes.selection.track = 15;
+    // Two changes of signature, for the picture of the ruler and its markers.
+    for (const auto &[pos, num, den] : {std::tuple{8 * textproj::kPPQ, 3, 4}, std::tuple{14 * textproj::kPPQ, 7, 8}}) {
+        OpRequest sig;
+        sig.opType = "project.insertTimeSignature";
+        sig.payload = {{"pos", pos}, {"num", num}, {"den", den}};
+        sig.label = "Insert Time Signature";
+        submitter.submit(std::move(sig));
+    }
+    lanes.scale = 60;
     render("adi-groups.png");
+    lanes.scale = 3.92;
     root.arrangement.toggleFold(16);
     root.arrangement.toggleFold(10);
     render("adi-groups-folded.png");
@@ -1535,6 +1546,34 @@ int main(int argc, char **argv) {
         check(shown == 0, "a clip scrolled off screen has no accessible child");
         arrangement.geometry.left = 0;
         arrangement.changed();
+        // Bars in the project's meters (#299): with 3/4 from the start, the control bar shows it and
+        // the Status Bar counts in it; undo puts 4/4 back.
+        {
+            OpRequest sig;
+            sig.opType = "project.insertTimeSignature";
+            sig.payload = {{"pos", 0}, {"num", 3}, {"den", 4}};
+            sig.label = "Insert Time Signature";
+            check(document->ops().submit(sig).ok, "3/4 from the start");
+            integrated.mark(DirtySet::All);
+            integrated.frame();
+            auto &sel = arrangement.geometry.selection;
+            const auto selWas = sel;
+            sel.clip = 0;
+            sel.marked = true;
+            sel.insert = sel.start = sel.end = 7 * textproj::kPPQ + textproj::kPPQ / 2;
+            const auto mark = integrated.selectionText();
+            sel.start = 0;
+            sel.end = 4 * textproj::kPPQ;
+            const auto span = integrated.selectionText();
+            check(integrated.transport.signature.text == "3 / 4" && mark.contains("Insert Mark 3.2.3") &&
+                      span.contains("Length: 1.1.0"),
+                  "the signature and the positions in the project's meters: 3/4 makes seven and a half quarters 3.2.3");
+            sel = selWas;
+            check(integrated.command(AppCommands::Undo), "undo the signature");
+            integrated.mark(DirtySet::All);
+            integrated.frame();
+            check(integrated.transport.signature.text == "4 / 4", "and the control bar shows 4/4 again");
+        }
         check(arrangement.headers.getX() > arrangement.canvas.getX() &&
                   arrangement.headers.getRight() == arrangement.getWidth() &&
                   arrangement.canvas.getX() == ArrangementView::kLeftMargin,

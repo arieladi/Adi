@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
+#include "adi/ui/meters.hpp"
 #include "ui_shell.hpp"
 namespace adi::ui {
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
@@ -97,6 +98,30 @@ void ScrubArea::paint(juce::Graphics &g) {
     // Live's locator band: the lanes' grey and grid, where the loop brace and the
     // locators sit.
     paintLanes(g, view.geometry, getWidth(), 0, getHeight(), false);
+    // A marker at each change of time signature (Live 12 manual 6.4.1, its figure): a grey box
+    // with a dark edge, a notch at its top left, the signature in it. The first signature is the
+    // control bar's and has none.
+    const auto &meters = view.reader().meters();
+    g.setFont(look::font(11.5f));
+    for (std::size_t i = 1; i < meters.size(); ++i) {
+        const auto &m = meters[i];
+        const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
+        const float x = static_cast<float>(view.geometry.x(m.start_ticks));
+        const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
+        if (x + w < 0 || x > static_cast<float>(getWidth()))
+            continue;
+        const juce::Rectangle<float> box(x, 3.f, w, 15.f);
+        g.setColour(juce::Colour(0xffb4b4b4));
+        g.fillRect(box);
+        g.setColour(look::separator);
+        g.drawRect(box, 1.5f);
+        juce::Path notch;
+        notch.addTriangle(x + 2.f, box.getBottom() - 3.f, x + 2.f, 5.f, x + 10.f, 5.f);
+        g.setColour(juce::Colour(0xffe8e8e8));
+        g.fillPath(notch);
+        g.setColour(look::text);
+        g.drawText(text, box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
+    }
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
@@ -108,9 +133,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
-    // The snapshot carries no time signatures yet (collab/window.md, N6).
-    setTooltip("Drag sideways to scroll, up or down to zoom; double-click to zoom to the "
-               "selection. Bars are counted in 4/4 until the project's meters reach the view.");
+    setTooltip("Drag sideways to scroll, up or down to zoom; double-click to zoom to the selection.");
 }
 bool RenameEditor::keyPressed(const juce::KeyPress &k) {
     if (k == juce::KeyPress::returnKey) {
@@ -222,14 +245,14 @@ juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clip
         for (const auto &c : t->clips) {
             if (c->id != clipId)
                 continue;
-            // Bars and beats in 4/4 until the snapshot carries the meters (window log, N6).
-            const auto beat = c->posTicks / textproj::kPPQ;
+            // Bar and beat in the project's meters (#299).
+            const auto at = barPosition(c->posTicks, view.reader().meters());
             const auto beats = static_cast<double>(c->lengthTicks) / textproj::kPPQ;
             // The clip's name when it has one: "2 Audio, Verse, at bar 9 beat 1, 16.00 beats".
             const auto clip = c->name.empty() ? juce::String("clip") : juce::String::fromUTF8(c->name.c_str()) + ",";
             return juce::String::fromUTF8(displayName(t->name, i + 1).c_str()) + ", " + clip +
-                   " at bar " + juce::String(beat / 4 + 1) + " beat " +
-                   juce::String(beat % 4 + 1) + ", " + juce::String(beats, 2) + " beats" +
+                   " at bar " + juce::String(at.bar) + " beat " + juce::String(at.beat) + ", " +
+                   juce::String(beats, 2) + " beats" +
                    (c->muted ? ", muted" : "");
         }
     }
@@ -829,34 +852,52 @@ void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDet
     changed();
 }
 void TimelineRuler::paint(juce::Graphics &g) {
-    // Live's beat-time ruler: bar numbers along its foot in light grey on the dark
-    // band, each after its hook; a dot at the bars between them. In 4/4 until the
-    // snapshot carries the meters (window log, N6).
+    // Live's beat-time ruler: bar numbers along its foot in light grey on the dark band, each after
+    // its hook; a dot at every bar. In the project's meters (#299): a signature change starts a new
+    // bar where it falls, and a bar's beats are its signature's (Live 12 manual 6.1).
     g.fillAll(look::band);
     const auto &geo = view.geometry;
-    double stepQ = 4; // quarters between labels
-    while (stepQ * geo.scale < 56)
-        stepQ *= 2;
-    while (stepQ > 1 && stepQ / 2 * geo.scale >= 56)
-        stepQ /= 2;
+    const auto &meters = view.reader().meters();
+    const auto from = geo.tick(0.), to = geo.tick(static_cast<double>(getWidth()));
+    // The spacing from the signature at the left edge: every beat, or every few beats, while they
+    // are 56 points apart; else every bar, every second, every fourth and so on.
+    const auto &first = meterAt(from, meters);
+    const double beatPx = 4. / std::max<double>(1, first.denominator) * geo.scale;
+    std::int64_t beatStep = 1;
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+        beatStep *= 2;
+    const bool beats = beatStep < first.numerator;
+    std::int64_t barStep = 1;
+    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+        barStep *= 2;
     const int foot = getHeight();
     g.setFont(look::font(12.f, true));
-    for (double q = std::floor(geo.left / stepQ) * stepQ; q < geo.left + getWidth() / geo.scale; q += stepQ) {
-        const int x = static_cast<int>((q - geo.left) * geo.scale);
-        const auto quarter = static_cast<std::int64_t>(std::llround(q));
-        const auto bar = quarter / 4 + 1, beat = quarter % 4 + 1;
+    auto label = [&](std::int64_t tick, const juce::String &text) {
+        const int x = static_cast<int>(geo.x(tick));
         g.setColour(juce::Colour(0xff7d7d7d));
         g.fillRect(x, foot - 11, 1, 8);
         g.fillRect(x, foot - 11, 3, 1);
         g.setColour(look::textOnBand);
-        g.drawText(beat == 1 ? juce::String(bar) : juce::String(bar) + "." + juce::String(beat), x + 5,
-                   foot - 15, 60, 14, juce::Justification::centredLeft);
-    }
-    if (4 * geo.scale >= 8) {
-        g.setColour(juce::Colour(0xff7d7d7d));
-        for (double q = std::floor(geo.left / 4) * 4; q < geo.left + getWidth() / geo.scale; q += 4)
-            g.fillRect(static_cast<int>((q - geo.left) * geo.scale), foot - 2, 1, 1);
-    }
+        g.drawText(text, x + 5, foot - 15, 60, 14, juce::Justification::centredLeft);
+    };
+    const bool dots = beatPx * first.numerator >= 8;
+    // From a bar before the left edge, so a bar's later beats still show.
+    forEachBar(from - first.barTicks(), to, meters, [&](std::int64_t tick, std::int64_t bar) {
+        if (dots) {
+            g.setColour(juce::Colour(0xff7d7d7d));
+            g.fillRect(static_cast<int>(geo.x(tick)), foot - 2, 1, 1);
+        }
+        if (!beats) {
+            if ((bar - 1) % barStep == 0)
+                label(tick, juce::String(bar));
+            return;
+        }
+        label(tick, juce::String(bar));
+        const auto &m = meterAt(tick, meters);
+        const auto beatTicks = textproj::kWhole / std::max<std::int64_t>(1, m.denominator);
+        for (std::int64_t b = beatStep; b < m.numerator; b += beatStep)
+            label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
+    });
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
     last = e.position;
@@ -1215,7 +1256,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     }
     if (moving_ != 0) {
         // The clip's start follows the mouse, to the nearest grid line while snapping;
-        // it stays on its own track until the snapshot says which tracks can take it (N6).
+        // it stays on its own track until the snapshot says which tracks can take it (a clip's
+        // kind, window log N32).
         const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);

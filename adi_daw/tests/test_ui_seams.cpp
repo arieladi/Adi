@@ -21,6 +21,7 @@
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/ui/op_submitter.hpp"
+#include "adi/ui/meters.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_order.hpp"
 #include "adi/ui/track_tree.hpp"
@@ -519,6 +520,45 @@ void projectViewRowsFromTheSnapshot() {
     check(sameRows, "refilled from the same snapshot, the rows are the same, names included");
 }
 
+void metersCountBars() {
+    section("bars, beats and sixteenths in the project's meters (#299; Live 12 manual 6.1)");
+    using textproj::Meter;
+    constexpr std::int64_t q = textproj::kPPQ;
+    // 4/4 from zero, 3/4 from bar 3 (eight quarters), then 6/8 a quarter into a bar of 3/4.
+    const std::vector<Meter> meters{{0, 4, 4}, {8 * q, 3, 4}, {15 * q, 6, 8}};
+    check(ui::barPosition(0, meters) == ui::BarPosition{1, 1, 1} &&
+              ui::barPosition(9 * q + q / 4, meters) == ui::BarPosition{3, 2, 2},
+          "4/4 then 3/4: bar 3 begins at the change, its second beat a sixteenth in");
+    // Bar 4 of 3/4 is 11 to 14 quarters; the change at 15 cuts bar 5 after one quarter, and that
+    // short bar still counts, so 6/8 begins bar 6. A beat of 6/8 is an eighth: two sixteenths.
+    check(ui::barPosition(15 * q, meters) == ui::BarPosition{6, 1, 1} &&
+              ui::barPosition(15 * q + q / 2 + q / 4, meters) == ui::BarPosition{6, 2, 2},
+          "a change part-way through a bar starts a new one; a beat of 6/8 holds two sixteenths");
+    bool agrees = true;
+    for (std::int64_t t = 0; t < 24 * q; t += q / 4) {
+        const auto at = ui::barPosition(t, meters);
+        const auto text = textproj::renderPosition(t, meters);
+        agrees = agrees && text.rfind(std::to_string(at.bar) + "|" + std::to_string(at.beat) + "|", 0) == 0;
+    }
+    check(agrees, "every sixteenth agrees with the text projection's bar and beat");
+    check(ui::barPosition(5 * q, {}) == ui::BarPosition{2, 2, 1} && ui::meterAt(5 * q, {}).numerator == 4,
+          "without meters, 4/4 throughout");
+    check(ui::meterAt(10 * q, meters).numerator == 3 && ui::meterAt(20 * q, meters).denominator == 8,
+          "the signature in force at a tick");
+    check(ui::barSpan(8 * q, 4 * q + q / 4, meters) == ui::BarPosition{1, 1, 1} &&
+              ui::barSpan(0, 6 * q, meters) == ui::BarPosition{1, 2, 0},
+          "a length in the start's signature: 3/4 makes four quarters and a sixteenth 1.1.1");
+    std::vector<std::pair<std::int64_t, std::int64_t>> bars;
+    ui::forEachBar(0, 18 * q, meters, [&bars](std::int64_t tick, std::int64_t bar) { bars.emplace_back(tick, bar); });
+    const std::vector<std::pair<std::int64_t, std::int64_t>> expected{
+        {0, 1}, {4 * q, 2}, {8 * q, 3}, {11 * q, 4}, {14 * q, 5}, {15 * q, 6}, {18 * q, 7}};
+    check(bars == expected, "every bar line, numbered, across both changes");
+    bars.clear();
+    ui::forEachBar(10 * q, 16 * q, meters, [&bars](std::int64_t tick, std::int64_t bar) { bars.emplace_back(tick, bar); });
+    check((bars == std::vector<std::pair<std::int64_t, std::int64_t>>{{11 * q, 4}, {14 * q, 5}, {15 * q, 6}}),
+          "only the bars in the range, still numbered from the start");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -536,6 +576,7 @@ int main() {
     aFrameKeepsItsSnapshot();
     projectViewTree();
     projectViewRowsFromTheSnapshot();
+    metersCountBars();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
