@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/range_edits.hpp"
 #include "ui_shell.hpp"
 namespace adi::ui {
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
@@ -759,6 +760,7 @@ void ArrangementView::locate() { root.locate(geometry.selection.insert); }
 void ArrangementView::select(int x, int y, bool snapToGrid) {
     if (const auto *t = geometry.trackAt(reader(), y)) {
         geometry.selection.track = t->id;
+        geometry.selection.toTrack = 0;
         const auto at = geometry.tick(x);
         // The clip under the mouse is hit where it is; the insert marker snaps (§6.10).
         const auto *c = geometry.hit(*t, at);
@@ -788,6 +790,7 @@ void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
     for (const auto &c : t->clips)
         if (c->id == clip) {
             geometry.selection.track = track;
+            geometry.selection.toTrack = 0;
             geometry.selection.clip = clip;
             geometry.selection.start = c->posTicks;
             geometry.selection.end = c->posTicks + c->lengthTicks;
@@ -1071,7 +1074,13 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
-        view.geometry.selection.track = t->id;
+        // Shift+click on another header reaches the selection across the tracks between.
+        if (e.mods.isShiftDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu())
+            view.geometry.selection.toTrack = t->id == view.geometry.selection.track ? 0 : t->id;
+        else {
+            view.geometry.selection.track = t->id;
+            view.geometry.selection.toTrack = 0;
+        }
         resizeId = t->id;
         initialHeight = view.geometry.heightFor(t->id);
         view.changed();
@@ -1131,11 +1140,12 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         const int h = geo.heightFor(t->id);
         if (h == 0)
             continue; // left out by the project view, or folded away: no room
-        const bool selected = t->id == geo.selection.track;
+        // Every track the selection covers is lit, as Live lights a selection across tracks.
+        const bool selected = geo.inSelection(view.reader(), t->id);
         lanes(y, h - 2, selected);
         g.setColour(look::separator);
         g.fillRect(0, y + h - 2, getWidth(), 2);
-        // The time selection lights the selected track's lanes, as Live's.
+        // The time selection lights the selected tracks' lanes, as Live's.
         if (selected && geo.selection.start != geo.selection.end) {
             const float x0 = static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end)));
             const float x1 = static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end)));
@@ -1175,6 +1185,17 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.setColour(clipColour.darker(0.5f));
             g.drawRect(left, static_cast<float>(y + 1), std::max(1.f, right - left),
                        static_cast<float>(h - 4), 1.f);
+            // Live tints the selected part of a clip's body, under its title strip (the manual's Cut
+            // Time and Consolidate figures).
+            if (selected && geo.selection.start != geo.selection.end) {
+                const float s0 = std::max(left, static_cast<float>(geo.x(std::min(geo.selection.start, geo.selection.end))));
+                const float s1 = std::min(right, static_cast<float>(geo.x(std::max(geo.selection.start, geo.selection.end))));
+                if (s1 > s0) {
+                    g.setColour(look::selection.withAlpha(0.85f));
+                    g.fillRect(s0, static_cast<float>(y + 1 + kClipBarHeight), s1 - s0,
+                               static_cast<float>(std::max(0, h - 4 - kClipBarHeight)));
+                }
+            }
         }
         y += h;
     }
@@ -1248,6 +1269,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         bool edge = false;
         if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && edge) {
             view.geometry.selection.track = track;
+            view.geometry.selection.toTrack = 0;
             view.geometry.selection.clip = c->id;
             view.geometry.selection.start = c->posTicks;
             view.geometry.selection.end = c->posTicks + c->lengthTicks;
@@ -1255,6 +1277,11 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             resizeStart_ = c->posTicks;
             resizeFrom_ = resizeLength_ = c->lengthTicks;
             view.changed();
+            return;
+        }
+        // Shift extends the selection, in the same track or across tracks (Live 12 manual 6.9).
+        if (e.mods.isShiftDown() && view.geometry.selection.marked) {
+            extendTo(e.x, e.y, view.snaps(e.mods));
             return;
         }
         view.select(e.x, e.y, view.snaps(e.mods));
@@ -1330,6 +1357,9 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
                                            view.geometry.maxScroll(view.reader()));
         last = e.position;
     } else {
+        // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9).
+        if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
+            view.geometry.selection.toTrack = over->id == view.geometry.selection.track ? 0 : over->id;
         // A time selection covers whole grid cells while snapping (§6.10).
         const auto at = view.geometry.tick(e.x);
         view.geometry.selection.end =
@@ -1366,6 +1396,43 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
 }
 bool ArrangementCanvas::clipEdit(const char *op, Payload payload, const char *label) {
     return view.root.submitEdit(op, std::move(payload), label);
+}
+void ArrangementCanvas::extendTo(int x, int y, bool snapToGrid) {
+    // From the selection's anchor, or the insert marker, to the point clicked: its time, and its
+    // track when it is another one.
+    auto &geo = view.geometry;
+    auto &sel = geo.selection;
+    if (sel.start == sel.end)
+        sel.start = sel.end = sel.insert;
+    const auto at = std::max<std::int64_t>(0, geo.tick(x));
+    sel.end = snapToGrid ? geo.snap(at, at >= sel.start) : at;
+    if (const auto *t = geo.trackAt(view.reader(), y))
+        sel.toTrack = t->id == sel.track ? 0 : t->id;
+    sel.clip = 0;
+    view.changed();
+    announce(view.root.selectionText());
+}
+bool ArrangementCanvas::rangeEdit(bool deactivate) {
+    // From the CURRENT cell, as every action is (ADR-0201).
+    const auto current = view.root.current();
+    if (!current)
+        return false;
+    const auto &sel = view.geometry.selection;
+    const auto selected = view.geometry.selectedTracks(view.reader());
+    const auto note = rangeNote(current->tracks, selected, sel.start, sel.end);
+    auto edit = deactivate ? deactivateRange(current->tracks, selected, sel.start, sel.end)
+                           : deleteRange(current->tracks, selected, sel.start, sel.end);
+    if (!edit.refusal.empty()) {
+        view.root.say(edit.refusal);
+        return false;
+    }
+    if (!view.root.submitEdits(std::move(edit.ops)))
+        return false;
+    // After the view is told: locating the playhead to the selection clears the Status Bar.
+    view.changed();
+    if (!note.empty())
+        view.root.say(note);
+    return true;
 }
 void ArrangementCanvas::mouseWheelMove(const juce::MouseEvent &e,
                                        const juce::MouseWheelDetails &w) {
@@ -1430,8 +1497,10 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     if (code == juce::KeyPress::upKey || code == juce::KeyPress::downKey) {
         // Between the tracks shown, in the lanes' order: those the project view leaves out or a
         // folded group holds are passed over. At either end the selection stays; with none, it
-        // goes to the first track shown.
-        const auto at = tracks.find(sel.track);
+        // goes to the first track shown. With Shift, the selection's far track moves instead, so the
+        // selection reaches across tracks (Live 12 manual 6.9).
+        const bool extend = mods.isShiftDown() && sel.track != 0;
+        const auto at = tracks.find(extend && sel.toTrack != 0 ? sel.toTrack : sel.track);
         std::size_t to = tracks.size();
         if (at == tracks.size()) {
             for (std::size_t i = 0; i < tracks.size() && to == tracks.size(); ++i)
@@ -1450,7 +1519,18 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             to = at;
         if (to == tracks.size())
             return true;
+        if (extend) {
+            if (sel.start == sel.end)
+                sel.start = sel.end = sel.insert;
+            const auto far = tracks[to].track->id;
+            sel.toTrack = far == sel.track ? 0 : far;
+            sel.clip = 0;
+            view.changed();
+            announce(view.root.selectionText());
+            return true;
+        }
         sel.track = tracks[to].track->id;
+        sel.toTrack = 0;
         sel.clip = 0;
         view.changed();
         return true;
@@ -1482,6 +1562,13 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
                     return true;
                 }
         }
+    // Live's Delete, and 0 to deactivate (§6.9), on a time selection: every selected track's
+    // material, as one undo step.
+    if (sel.clip == 0 && sel.start != sel.end &&
+        (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey || k == juce::KeyPress('0'))) {
+        rangeEdit(k == juce::KeyPress('0'));
+        return true;
+    }
     // Live's Delete, and 0 to deactivate (§6.9), on the selected clip.
     if (const auto clip = view.geometry.selection.clip; clip != 0) {
         if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) {
