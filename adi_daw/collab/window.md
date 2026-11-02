@@ -73,6 +73,18 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — picked clips across tracks [#358](https://github.com/arieladi/Adi/pull/358) `window/picked-clips-across`, on #357
+
+**Built: several selected clips dragged across tracks, each by the same rows** (parity 7.3 rows
+27, 29; #357's open item). `clipsAcross` (`range_edits.hpp`) maps each clip to the track that many
+shown lanes from its own, or none across when any would leave the lanes or land on a track that
+can't take it; the canvas draws each on its new lane while dragging; `moveClips` lands them with
+their new tracks in one step; the selection follows the clip dragged.
+
+**Tests.** seams 285, shell 761; `test_all.sh` PASS (9970 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — picked clips dragged together [#357](https://github.com/arieladi/Adi/pull/357) `window/picked-clips-drag`, on #356
 
 **Built: several selected clips dragged together** (parity 7.3 rows 27, 29; #356's open item). With
