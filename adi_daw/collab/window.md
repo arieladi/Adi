@@ -73,6 +73,21 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — a clip dragged onto another track [#338](https://github.com/arieladi/Adi/pull/338) `window/clip-to-track`, on #337
+
+**Built: Live's clip drag across tracks** (manual 6.7; parity 7.3 row 27, which waited on N6). A clip
+dragged by its bar follows the lane under the mouse when that track can take it (MIDI to MIDI,
+audio to audio, never a group, a return or Main), drawn there; released, one `clip.move` with its new
+time and track, one undo step. The snapshot has no clip kind, so its track's stands in (ADR-0045).
+
+**Measure on Live:** what a clip does over a track that cannot take it.
+
+**Tests.** seams 218, shell 649; `test_all.sh` PASS (9902 checks, 106 suites). No golden moved.
+
+**Next:** Group Tracks on every selected track (parity 7.3 row 33) (`window/group-selected`).
+
+---
+
 ## 2026-11-02, cloud, continued — the Mixer View's options and In/Out [#337](https://github.com/arieladi/Adi/pull/337) `window/mixer-options`, on #336
 
 **Built: Live 12's Mixer View Control options and the Mixer's In/Out section** (manual 18.1; the
