@@ -1405,6 +1405,27 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(std::abs(root.bpm() - 120) < 1e-9 && submitter.nextUndo()->txnId == beforeField,
           "three undos: 120 again, as before");
+    // Tap Tempo (manual 9.1.2): from the second tap the tempo follows; a run is one step.
+    check(root.tapTempo(1000), "a first tap");
+    root.frame();
+    check(std::abs(root.bpm() - 120) < 1e-9 && submitter.nextUndo()->txnId == beforeField, "one tap changes nothing");
+    root.tapTempo(1600);
+    root.frame();
+    check(std::abs(root.bpm() - 100) < 1e-9 && submitter.nextUndo()->label == "Tap Tempo", "a second 0.6 s on: 100 BPM");
+    const auto runStep = submitter.nextUndo()->txnId;
+    root.tapTempo(2200);
+    root.tapTempo(2700);
+    root.frame();
+    render("adi-tap-tempo.png");
+    check(std::abs(root.bpm() - 105.88) < 1e-9 && submitter.nextUndo()->label == "Tap Tempo",
+          "two more: 1.7 s over three beats, 105.88, the run's step replaced");
+    bar.tap.onClick();
+    root.frame();
+    check(root.taps().taps() == 1, "the Tap button taps (a new run, so long after)");
+    root.command(AppCommands::Undo);
+    root.frame();
+    check(std::abs(root.bpm() - 120) < 1e-9 && submitter.nextUndo()->txnId == beforeField && runStep != beforeField,
+          "one undo takes the whole run back: 120");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
