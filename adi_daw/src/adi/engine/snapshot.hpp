@@ -83,6 +83,7 @@ struct TrackNode {
     bool soloed = false;
     float volumeDb = 0.0f;
     float pan = 0.0f;
+    std::int64_t delaySamples = 0; // stored samples at Snapshot::sampleRate; ms = 1000 * samples / rate
     std::vector<std::shared_ptr<const ClipNode>> clips;
 };
 
