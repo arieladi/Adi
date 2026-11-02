@@ -1042,6 +1042,127 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         root.frame();
         check(order() == tree, "undo removes it");
     }
+    // Live scrolls the lanes while a track, a clip or a selection is dragged to their edge, and a
+    // mouse held there keeps them going (each repeated drag is one more step).
+    {
+        auto &headers = root.arrangement.headers;
+        auto &canvas = root.arrangement.canvas;
+        lanes.resizeTrack(0, 120, true);
+        lanes.scrollY = 0;
+        root.mark(DirtySet::All);
+        root.frame();
+        const int bottom = lanes.footTop(root.reader());
+        check(lanes.maxScroll(root.reader()) > 0, "the tracks made taller than the lanes");
+        auto positionOf = [&order](std::int64_t id) {
+            const auto rows = order();
+            for (std::size_t i = 0; i < rows.size(); ++i)
+                if (rows[i].first == id)
+                    return i;
+            return rows.size();
+        };
+        // A track's title held at the foot: the lanes scroll, step by step, and it lands below.
+        const juce::Point<float> from(60.f, static_cast<float>(topOf(11) + 16));
+        const juce::Point<float> foot(60.f, static_cast<float>(bottom - 4));
+        // The window at twice its size, for the PR's picture (ADI_UI_PARITY).
+        auto shot = [&root](const char *name) {
+            const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+            if (pictures.isEmpty())
+                return;
+            root.frame();
+            juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile(name);
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        };
+        headers.mouseDown(pressAt(headers, from));
+        headers.mouseDrag(dragAt(headers, from, foot));
+        shot("adi-drag-scroll-start.png");
+        const int once = lanes.scrollY;
+        for (int i = 0; i < 9; ++i)
+            headers.mouseDrag(dragAt(headers, from, foot));
+        const int held = lanes.scrollY;
+        shot("adi-drag-scroll-held.png");
+        // The track controls follow the lanes as they scroll: Hats & Percs' row stands level with its lane.
+        root.frame();
+        bool level = false;
+        const int laneY = root.getLocalArea(&canvas, juce::Rectangle<int>(0, laneTop(root, 12), 1, 1)).getY();
+        for (const auto &strip : root.mixer.strips())
+            if (strip->track() == 12 && strip->isVisible())
+                level = std::abs(root.getLocalArea(strip.get(), strip->getLocalBounds()).getY() - laneY) <= 2;
+        check(level, "the track controls follow the lanes while a drag scrolls them");
+        headers.mouseUp(dragAt(headers, from, foot));
+        root.frame();
+        check(once > 0 && held > once && positionOf(11) > 2,
+              "Clap/Snare/Rimshot's title held at the foot: the lanes scroll on with each repeat, and it lands further down");
+        root.command(AppCommands::Undo);
+        root.frame();
+        check(order() == tree, "undo");
+        // Back at the top: a title held above the lanes scrolls them back.
+        const auto top = lanes.scrollY;
+        const juce::Point<float> start(60.f, static_cast<float>(lanes.footTop(root.reader()) / 2));
+        headers.mouseDown(pressAt(headers, start));
+        for (int i = 0; i < 5; ++i)
+            headers.mouseDrag(dragAt(headers, start, {60.f, -10.f}));
+        const int back = lanes.scrollY;
+        headers.mouseUp(dragAt(headers, start, {60.f, -10.f}));
+        root.frame();
+        check(back < top, "a title held above the lanes scrolls them back up");
+        if (order() != tree) {
+            root.command(AppCommands::Undo);
+            root.frame();
+        }
+        check(order() == tree, "and undo, if it moved");
+        // A clip held at the lanes' right edge: they scroll on, and it lands later.
+        lanes.scrollY = 0;
+        root.frame();
+        const auto *claps = root.reader().findTrack(11)->clips.front().get();
+        const auto pos = claps->posTicks;
+        const juce::Point<float> bar(static_cast<float>(lanes.x(pos)) + 6.f, static_cast<float>(laneTop(root, 11) + 4));
+        const juce::Point<float> right(static_cast<float>(canvas.getWidth() - 2), bar.y);
+        const double left = lanes.left;
+        canvas.mouseDown(pressAt(canvas, bar));
+        for (int i = 0; i < 5; ++i)
+            canvas.mouseDrag(dragAt(canvas, bar, right));
+        const double panned = lanes.left;
+        canvas.mouseUp(dragAt(canvas, bar, right));
+        root.frame();
+        check(panned > left && root.reader().findTrack(11)->clips.front()->posTicks > pos,
+              "Claps' bar held at the lanes' right edge: they scroll on, and the clip lands later");
+        root.command(AppCommands::Undo);
+        root.frame();
+        // A time selection dragged to the right edge reaches on as the lanes scroll.
+        lanes.left = 0;
+        root.frame();
+        const juce::Point<float> body(40.f, static_cast<float>(laneTop(root, 12) + 60));
+        const juce::Point<float> edge(static_cast<float>(canvas.getWidth() + 10), body.y);
+        canvas.mouseDown(pressAt(canvas, body));
+        canvas.mouseDrag(dragAt(canvas, body, edge));
+        const auto first = lanes.selection.end;
+        for (int i = 0; i < 4; ++i)
+            canvas.mouseDrag(dragAt(canvas, body, edge));
+        canvas.mouseUp(dragAt(canvas, body, edge));
+        check(lanes.left > 0 && lanes.selection.end > first,
+              "a time selection dragged past the right edge: the lanes scroll on, and it reaches further");
+        // A held click that has not moved scrolls nothing, at the edge or not.
+        lanes.left = 0;
+        lanes.scrollY = 0;
+        root.frame();
+        const juce::Point<float> rim(static_cast<float>(canvas.getWidth() - 2), static_cast<float>(laneTop(root, 12) + 60));
+        canvas.mouseDown(pressAt(canvas, rim));
+        canvas.mouseDrag(pressAt(canvas, rim));
+        canvas.mouseUp(pressAt(canvas, rim));
+        check(lanes.left == 0 && lanes.scrollY == 0, "a held click at the edge that has not moved scrolls nothing");
+        lanes.resizeTrack(0, 40, true);
+        lanes.left = 0;
+        lanes.scrollY = 0;
+        root.frame();
+    }
     lanes.selection.track = 15;
     // Two changes of signature, for the picture of the ruler and its markers.
     for (const auto &[pos, num, den] : {std::tuple{8 * textproj::kPPQ, 3, 4}, std::tuple{14 * textproj::kPPQ, 7, 8}}) {
