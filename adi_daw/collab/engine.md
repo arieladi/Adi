@@ -13,6 +13,33 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N39 all routing identities in the snapshot
+
+**PR requested:** engine/snapshot-routing-ids -> main, head **dd62a03**.
+**Title:** Expose highest routing identity across every connection kind
+**Body:** N39: Snapshot.maxRoutingId observes the highest positive routing row id
+across main/send/sidechain/VCA/cue, disabled rows and hardware endpoints. It is
+zero with no positive ids and preserves full signed 64-bit width including
+INT64_MAX. Endpoint numbers never enter the maximum. The window can use one past
+this value for its new send after guarding overflow, reserving ids for its
+pending batch and checking document/head freshness at commit. It is an
+observation, not a concurrent allocator; routing.connect still receives its id
+from the literal payload. A root metadata change shares unchanged send/track
+nodes and keeps old frames immutable. A borrowed/deferred read transaction
+(the same seam as N27/N38) keeps the maximum coherent with the frame's send list
+under a concurrent WAL writer. No SQL write/schema/opcode/UI production change.
+ENGINE-SNAPSHOT-ROUTING-IDS.md gives the window's call and guard requirements.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9901 / 107**,
+all validators clean. GCC + Clang 19 routing identities **16**, engine **119**,
+catalog **106**. Strict GCC shadow checks pass. Compiled defects caught:
+send-filtered maximum (12 failures), 32-bit truncation (2), incoherent WAL read
+(1). No MSVC/remote CI claim; API still CONNECT 403, win/window opens above.
+Continuing N40 source windows and off-thread waveform peaks; no director gate.
+
+---
+
+
 ## 2026-11-02 — N38 engine role reader/op supplied; win's format remains
 
 **PR requested:** engine/track-roles -> main, head **58ca080**.
