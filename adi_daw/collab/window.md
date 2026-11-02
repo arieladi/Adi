@@ -73,6 +73,24 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the View menu's two submenus [#351](https://github.com/arieladi/Adi/pull/351) `window/view-submenus`, on #350
+
+**Built: Live 12's Arrangement Track Controls and Mixer Controls submenus** (parity 7.2 rows 6 and
+26, 7.6 row 9). Arrangement Track Controls: Hide/Show Track Controls (the side panel, which the View
+menu held as "Arrangement Track Controls"), the track controls' In/Out and Sends with their keys,
+Volume and Track Options dimmed. Mixer Controls: the Mixer View Control's options (#337). The Mixer
+View's sends are its own now (`WindowState::mixerSends`, `ToggleMixerSends`), apart from the track
+controls' (Ctrl/Cmd+Alt+S). The menu bar takes submenus by two sentinel ids.
+
+**To measure:** Live 12's figure shows ⌥⌘I and ⌥⌘S beside the Mixer View Control's In/Out and
+Sends; ADI keeps them on the track controls, as In/Out's (7.6 row 19). Live's full Arrangement Track
+Controls list.
+
+**Tests.** window state 62, shell 732; `test_all.sh` PASS (9953 checks, 106 suites). No golden
+moved.
+
+---
+
 ## 2026-11-02, cloud, continued — the returns reordered by dragging [#350](https://github.com/arieladi/Adi/pull/350) `window/return-move`, on #349
 
 **Built: Live's return drag** (parity 7.3 row 33). A return's title dragged among the returns moves
