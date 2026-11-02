@@ -13,6 +13,34 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N9 ready; continuing to N13
+
+**PR requested** (ADR-0210 d4): `engine/strip-meters` at **`fa09375`** → `main`
+(base `dff5b41`). Title: **Publish scalar post-fader meters for every strip (N9)**.
+
+PR body: The window can read `session.strips().stripFor(trackId)->meter()` through
+a const Session and load `peak`/`rms` with relaxed ordering. Both are lock-free
+linear floats per persistent strip, including groups and Main; peak is the largest
+channel magnitude and RMS the mean across channel samples. No scope subscription,
+SQL read, op or snapshot rebuild is needed. Values cover the current callback
+(prefix while a callback is segmented), reset on its next offset-zero segment,
+and clear when suspended or the driver stops. UI ballistics/holds stay with the
+window. Float/double audio is measured at its native width, after gain/pan/mute,
+without changing output samples. Nonfinite/oversized device output cannot put
+NaN/Inf into the readout. Rebuild preparation preserves live values and meter
+addresses. The earlier #205 StripMeter seam is retained, extended for current
+64-bit and segmented graph processing; no UI/device-tier production edits.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9842 checks / 107 suites**,
+validators clean. New meter suite **28**, also Clang Werror; broader Clang mixer
+337, master98 and precision108 pass. A separately compiled plant resetting every
+segment fails the two split-callback checks. Stale N3-only binaries were removed
+from test discovery before this independent-main run. No MSVC/JUCE/Live parity or
+remote CI success claimed; win opens/reviews/merges.
+
+N3/N30 and N9 are pushed. Continuing to **N13**, Main LUFS/true peak, from main.
+
+
 ## 2026-11-02 — N30 ready; continuing to N9
 
 **PR requested** (API unavailable; ADR-0210 d4). Head `engine/collect-project` at
