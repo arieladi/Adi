@@ -1008,6 +1008,10 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
               submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip" &&
               submitter.nextUndo()->opCount == 3,
           "the clip is selected; one undo step");
+    geometry.selection.clip = 0;
+    check(root.command(AppCommands::SelectAll) && geometry.selection.clip == drums->clips[0]->id &&
+              geometry.selection.toTrack == 0 && geometry.selection.start == bar2,
+          "Select All with one clip selects that clip");
     canvas.filesDropped(juce::StringArray{path}, x, laneTop(root, 2) + 10);
     root.frame();
     check(root.reader().findTrack(2)->clips.empty() && root.error().find("audio track") != std::string::npos,
@@ -1156,6 +1160,30 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(root.reader().findTrack(1)->clips.size() == 1 && root.reader().findTrack(2)->clips.size() == 1,
           "brings it all back");
+    // Select All (Ctrl/Cmd+A, §42.5): all the material, every track holding clips, from the earliest
+    // clip's start to the latest's end; a text field with the focus keeps its own Ctrl/Cmd+A.
+    check(root.keyPressed(juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0)) && geo.selection.track == 1 &&
+              geo.selection.toTrack == 4 && geo.selection.start == bar && geo.selection.end == 3 * bar &&
+              geo.selection.clip == 0 && geo.inSelection(root.reader(), 3),
+          "Select All selects every track's material, bar 2 to the fourth track's end");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        root.frame();
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-select-all.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    check(canvas.keyPressed(juce::KeyPress('0')), "0 on all of it");
+    root.frame();
+    check(clipOf(1)->muted && clipOf(4)->muted && submitter.nextUndo()->opCount == 4, "deactivates every clip, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
     // A plain click starts over: one track.
     canvas.mouseDown(pressAt(canvas, {x(bar) + 1, lane(4)}));
     canvas.mouseUp(pressAt(canvas, {x(bar) + 1, lane(4)}));
@@ -1194,6 +1222,9 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     check(madeAll, "twelve tracks, two returns and Main");
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "foot");
     root.setSize(1200, 720);
+    root.frame();
+    check(!root.command(AppCommands::SelectAll) && root.error() == "There is nothing to select.",
+          "Select All with no clips says there is nothing to select");
     root.arrangement.geometry.resizeTrack(0, 48, true);
     root.mark(DirtySet::All);
     root.frame();
@@ -2346,8 +2377,9 @@ int main(int argc, char **argv) {
               "the Options menu: Follow (§6.2), the grid (§6.10), then Settings off the Mac (§2.3)");
 #endif
         check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
-                                                C::RenameTrack, 0, C::GroupTracks, C::UngroupTracks},
-              "the Edit menu deletes the selected track, before Rename (§18.2), then Group and Ungroup Tracks");
+                                                C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks},
+              "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Group and "
+              "Ungroup Tracks");
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack},
               "the Create menu inserts tracks");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,

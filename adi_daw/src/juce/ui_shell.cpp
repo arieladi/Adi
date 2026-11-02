@@ -97,7 +97,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Triplet Grid", "Snap to Grid", "Fixed Grid",
                                   "Wrap Tab Navigation", "Use Large Track Height",
                                   "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
-                                  "Reference Track", "Play Reference"};
+                                  "Reference Track", "Play Reference", "Select All"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -235,6 +235,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case PlayReference: // ADR-0209 d9: [REF] and Shift+R; Ctrl+R stays Rename
         info.addDefaultKeypress('r', shift);
         info.setTicked(active_ != nullptr && active_->reference().on());
+        break;
+    case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
+        info.addDefaultKeypress('a', cmd);
+        info.setActive(active_ != nullptr);
         break;
     case GroupTracks: // §41.5; manual 18.3
     case UngroupTracks: {
@@ -1278,6 +1282,10 @@ bool AdiRootComponent::command(int id) {
         if (!groupTracks(id == AppCommands::UngroupTracks))
             return false;
         break;
+    case AppCommands::SelectAll:
+        if (!arrangement.selectAll())
+            return false;
+        break;
     case AppCommands::RenameTrack:
         // Rename acts on the selection: the device with the focus, else the selected track.
         // The edit itself is its own op when the name is committed.
@@ -1336,7 +1344,7 @@ const std::vector<MenuEntries> &menuBar() {
 #endif
         // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
         // Paste and Duplicate; those wait for their ops.
-        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, 0, C::GroupTracks, C::UngroupTracks}},
+        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks}},
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
