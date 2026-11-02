@@ -73,6 +73,20 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — Group Tracks on every selected track [#339](https://github.com/arieladi/Adi/pull/339) `window/group-selected`, on #338
+
+**Built: Live's Group Tracks on the selection** (manual 18.3; parity 7.3 row 33). `groupTracks`
+takes every selected track (Shift+click on the headers, or a selection across tracks), in their
+order, into one group at the first one's place; a track selected with its group goes with it;
+tracks in different groups are refused, with the reason. One step.
+
+**Tests.** seams 221, shell 653; `test_all.sh` PASS (9905 checks, 106 suites). No golden moved.
+
+**Next:** a group's row as Live's: its output only, and a grouped track's Audio To its group
+(`window/group-rows`).
+
+---
+
 ## 2026-11-02, cloud, continued — a clip dragged onto another track [#338](https://github.com/arieladi/Adi/pull/338) `window/clip-to-track`, on #337
 
 **Built: Live's clip drag across tracks** (manual 6.7; parity 7.3 row 27, which waited on N6). A clip
