@@ -398,6 +398,13 @@ silent truncation in JSON, a non-issue in CBOR.
 | `clip.setTimeSignature` | e | S | cap | P1 |
 | `clip.setScale` | e | S | cap | P1 |
 
+N17 compatibility: when the optional clip_playback_details table is present,
+Start clears its content offset and retained fade domains, End clears its
+physical source limit, and a loop-window edit clears both physical loop
+endpoints. A switch-only loop edit retains the dormant window. Inverses capture
+the full typed details row, including future fields or row absence; undo and
+redo restore it. This optional SQL seam adds no dependency on N17's schema.
+
 N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
 `clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).
 Start precedes End. Moving Start pins the old default End; placement/length

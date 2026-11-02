@@ -77,6 +77,16 @@ void setProperties(OpContext& context, std::int64_t clipId, const Payload& colum
     }
     query.exec();
 }
+bool present(SQLite::Database& db,const char* table) {
+    SQLite::Statement query(db,"SELECT 1 FROM sqlite_master WHERE type='table' AND name=? UNION ALL "
+        "SELECT 1 FROM sqlite_temp_master WHERE type='table' AND name=?");
+    query.bind(1,table);query.bind(2,table);return query.executeStep();
+}
+void clearClocks(OpContext& context,std::int64_t clipId,const char* assignments) {
+    if(!present(context.db,"clip_playback_details"))return;
+    SQLite::Statement update(context.db,std::string("UPDATE clip_playback_details SET ")+assignments+" WHERE clip_id=?");
+    update.bind(1,clipId);update.exec();
+}
 bool restore(OpContext& context, const Payload& payload) {
     if (!payload.contains("row")) return false;
     const auto clipId = id(payload);
@@ -91,17 +101,30 @@ bool restore(OpContext& context, const Payload& payload) {
         if (signedInteger(properties.at("clip_id")) != clipId) throw std::runtime_error("captured properties id differs");
         detail::restoreRow(context.db,"clip_properties",properties,"clip_id");
     }
+    if(payload.contains("playback")) {
+        if(!present(context.db,"clip_playback_details"))throw std::runtime_error("captured playback details table is missing");
+        const auto& playback=payload.at("playback");
+        if(playback.is_null()) {
+            SQLite::Statement erase(context.db,"DELETE FROM clip_playback_details WHERE clip_id=?");erase.bind(1,clipId);erase.exec();
+        } else {
+            if(signedInteger(playback.at("clip_id"))!=clipId)throw std::runtime_error("captured playback owner differs");
+            const auto exists=detail::captureRow(context.db,"clip_playback_details","clip_id",clipId).has_value();
+            detail::restoreRow(context.db,"clip_playback_details",playback,exists?"clip_id":"");
+        }
+    }
     return true;
 }
 struct Child { const char* table; const char* key; };
-constexpr std::array<Child,5> children = {{{"event_streams","id"},{"note_expression","id"},
-    {"audio_clips","clip_id"},{"automation_data","id"},{"clip_properties","clip_id"}}};
+constexpr std::array<Child,7> children = {{{"event_streams","id"},{"note_expression","id"},
+    {"audio_clips","clip_id"},{"automation_data","id"},{"automation_segment_ranges","id"},{"clip_properties","clip_id"},{"clip_playback_details","clip_id"}}};
 } // namespace
 
 bool inverse(OpContext& context, const Payload& payload, Payload& captured, std::string& error) {
     try {
         captured = {{"id",id(payload)},{"row",core(context,id(payload))},
             {"properties",detail::captureRow(context.db,"clip_properties","clip_id",id(payload)).value_or(Payload(nullptr))}};
+        if(present(context.db,"clip_playback_details"))
+            captured["playback"]=detail::captureRow(context.db,"clip_playback_details","clip_id",id(payload)).value_or(Payload(nullptr));
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -115,6 +138,7 @@ bool start(OpContext& context, const Payload& payload, std::string& error) {
         setProperties(context,id(payload),{{"end_marker_ticks",finish}}); // pin End while Start moves
         SQLite::Statement update(context.db,"UPDATE clips SET content_offset_ticks=? WHERE id=?");
         update.bind(1,value); update.bind(2,id(payload)); update.exec();
+        clearClocks(context,id(payload),"content_offset_ns=NULL,in_begin_ns=NULL,in_end_ns=NULL,out_begin_ns=NULL,out_end_ns=NULL");
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -125,6 +149,7 @@ bool end(OpContext& context, const Payload& payload, std::string& error) {
         validTick(value);
         if (value <= signedInteger(row.at("content_offset_ticks"))) throw std::runtime_error("End must follow Start");
         setProperties(context,id(payload),{{"end_marker_ticks",value}});
+        clearClocks(context,id(payload),"source_end_ns=NULL");
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -146,6 +171,8 @@ bool loop(OpContext& context, const Payload& payload, std::string& error) {
         update.bind(1,on ? 1 : 0); update.bind(2,begin);
         if (length) update.bind(3,*length); else update.bind(3);
         update.bind(4,id(payload)); update.exec();
+        if(payload.contains("start") || payload.contains("length"))
+            clearClocks(context,id(payload),"loop_begin_ns=NULL,loop_end_ns=NULL");
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
@@ -185,6 +212,7 @@ Payload captureDeleted(OpContext& context, std::int64_t clipId) {
     Payload result = {{"id",clipId},{"row",core(context,clipId)},{"children",Payload::object()},{"alias_links",Payload::array()}};
     for (const auto& child : children) {
         auto& records = result["children"][child.table]; records = Payload::array();
+        if(!present(context.db,child.table))continue;
         SQLite::Statement query(context.db,"SELECT " + std::string(child.key) + " FROM " + child.table + " WHERE clip_id=? ORDER BY " + child.key);
         query.bind(1,clipId);
         while (query.executeStep()) records.push_back(*detail::captureRow(context.db,child.table,child.key,query.getColumn(0).getInt64()));
@@ -197,11 +225,13 @@ void restoreDeleted(OpContext& context, const Payload& payload) {
     const auto clipId = id(payload);
     if (signedInteger(payload.at("row").at("id")) != clipId) throw std::runtime_error("captured clip id differs");
     detail::restoreRow(context.db,"clips",payload.at("row")); // never overwrite another id
-    for (const auto& child : children)
+    for (const auto& child : children) {
+        if(!payload.at("children").contains(child.table))continue; // old captured images
         for (const auto& record : payload.at("children").at(child.table)) {
             if (signedInteger(record.at("clip_id")) != clipId) throw std::runtime_error("captured child clip differs");
             detail::restoreRow(context.db,child.table,record);
         }
+    }
     for (const auto& link : payload.at("alias_links")) {
         SQLite::Statement update(context.db,"UPDATE clips SET alias_of=? WHERE id=?");
         update.bind(1,clipId); update.bind(2,signedInteger(link));

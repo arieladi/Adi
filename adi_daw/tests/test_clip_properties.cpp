@@ -184,9 +184,36 @@ void migrationAndLinear() {
     store.reset();store=Store::open(path,error);
     check(store && rows::readModel(*store).clips[0].signatureNumerator==5,"upgraded clip properties persist");
 }
+void retainedClocks() {
+    Fixture f("retained");auto& db=f.db();
+    // N17 is an independent schema branch. Exercise the SQL seam without
+    // stacking or merging it, including future typed columns.
+    db.exec("CREATE TABLE clip_playback_details(clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,"
+        "content_offset_ns INTEGER,source_end_ns INTEGER,loop_begin_ns INTEGER,loop_end_ns INTEGER,"
+        "in_begin_ns INTEGER,in_end_ns INTEGER,out_begin_ns INTEGER,out_end_ns INTEGER,future BLOB NOT NULL DEFAULT X'00FF') STRICT");
+    db.exec("INSERT INTO clip_playback_details VALUES(1,123,999,111,555,0,22,33,44,X'01FF00')");
+    const auto exact=db.execAndGet("SELECT hex(future) FROM clip_playback_details").getString();
+    check(edit(*f.store,"clip.setStartMarker",{{"id",1},{"ticks",17}}),"Start edits through optional source clock seam");
+    check(db.execAndGet("SELECT content_offset_ns IS NULL AND in_begin_ns IS NULL AND in_end_ns IS NULL AND out_begin_ns IS NULL AND out_end_ns IS NULL AND source_end_ns=999 AND loop_begin_ns=111 FROM clip_playback_details").getInt()==1,"Start clears its source offset and local fade domains, retaining End/loop");
+    check(History(*f.store).undo().ok && db.execAndGet("SELECT content_offset_ns=123 AND in_end_ns=22 FROM clip_playback_details").getInt()==1 &&
+          db.execAndGet("SELECT hex(future) FROM clip_playback_details").getString()==exact,"Start undo restores full typed clock row including future BLOB");
+    check(edit(*f.store,"clip.setEndMarker",{{"id",1},{"ticks",100}}) &&
+          db.execAndGet("SELECT source_end_ns IS NULL AND content_offset_ns=123 FROM clip_playback_details").getInt()==1,"End clears only its retained source limit");
+    check(History(*f.store).undo().ok && db.execAndGet("SELECT source_end_ns FROM clip_playback_details").getInt64()==999,"End undo restores retained source limit");
+    check(edit(*f.store,"clip.setLoop",{{"id",1},{"on",true},{"start",20},{"length",50}}) &&
+          db.execAndGet("SELECT loop_begin_ns IS NULL AND loop_end_ns IS NULL AND content_offset_ns=123 FROM clip_playback_details").getInt()==1,"loop window edits clear both pinned endpoints");
+    check(History(*f.store).undo().ok && db.execAndGet("SELECT loop_begin_ns=111 AND loop_end_ns=555 FROM clip_playback_details").getInt()==1,"loop undo restores both physical endpoints");
+    check(edit(*f.store,"clip.setLoop",{{"id",1},{"on",false}}) &&
+          db.execAndGet("SELECT loop_begin_ns=111 AND loop_end_ns=555 FROM clip_playback_details").getInt()==1,"a loop switch alone retains its dormant pinned window");
+    check(History(*f.store).undo().ok,"undo loop switch");
+    check(edit(*f.store,"clip.delete",{{"id",1}}) && History(*f.store).undo().ok &&
+          db.execAndGet("SELECT content_offset_ns FROM clip_playback_details").getInt64()==123 &&
+          db.execAndGet("SELECT hex(future) FROM clip_playback_details").getString()==exact,"clip deletion inverse carries optional playback details exactly");
+}
+
 } // namespace
 int main() {
-    try { valuesAndUndo();validation();extensionsAndDelete();migrationAndLinear(); }
+    try { valuesAndUndo();validation();extensionsAndDelete();migrationAndLinear();retainedClocks(); }
     catch(const std::exception& error){check(false,std::string("exception: ")+error.what());}
     std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;
 }
