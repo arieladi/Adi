@@ -13,6 +13,42 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N41 New includes A Reverb and B Delay
+
+**PR requested:** engine/default-returns -> engine/library-devices, head **8e4c6a5**.
+**Title:** Seed default Reverb and Delay returns with wet-only effects
+**Body:** N41: Store::createNewProject creates two MIDI/two audio tracks, A Reverb,
+B Delay and Main, in that root order. Main keeps id 1, regular tracks 2 to 5,
+returns 6/7; each has a mixer strip. All four regular tracks have enabled Post
+sends to both returns at the -150 dB minus-infinity floor; no return feedback
+edges are added. The returns contain compiled native Reverb and Delay identities,
+chains/devices and saved 100-percent-wet Mix controls (canonical ids 31/25),
+with the other native controls at their defaults. All rows are initialized in
+one root transaction, with no ops or UI undo protection. The first edit remains
+undoable and New survives snapshot/fork/revert/reopen. Window callers keep the
+same factory and model/snapshot APIs; new tracks reserve ids above existing
+tracks. No schema/opcode/UI production change. ENGINE-DEFAULT-RETURNS.md describes
+the root and loader. Missing-native builds keep normal placeholder identities.
+**Stack:** stands on N15 engine/library-devices (71d7921), depth two, for actual
+native factory loading; win merges N15 first. N31's independent New overload can
+retain its recording preferences on the four regular tracks (2 to 5) when win
+combines the factory edits; no own merge/rebase was performed. Native preset/
+render measurements remain the devices/parity lane, not a claim of measured
+Live sound from this initializer.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9992 / 107**,
+all validators clean. GCC + Clang 19 bootstrap **30**, built-ins **99**, catalog
+**106**, Session **214**. The actual Session loads both native effects on the
+correct chains with Mix=100, renders initial silence, and preserves root data
+through undo/redo/fork/snapshot/reopen. Strict GCC shadow and PD-off syntax pass
+for initializer/test sources. Compiled defects caught: wrong return kind (2
+failures), audible default send (1), dry return (2). No full PD-off runtime,
+MSVC or remote CI claim. API remains CONNECT 403; win/window opens above.
+Continuing N42 return-owned persistent Pre/Post; no LANES section 5 gate.
+
+---
+
+
 ## 2026-11-02 — N40 source windows and waveform data for the window
 
 **PR requested:** engine/snapshot-audio-peaks -> main, head **4a64819**.
