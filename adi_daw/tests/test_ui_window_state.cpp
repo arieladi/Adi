@@ -42,6 +42,7 @@ int main() {
     state.mixView = true;
     state.mixViewTab = 3;
     state.mixViewDetached = true;
+    state.showReference = true;
     state.gridSnap = false;
     state.gridFixed = true;
     state.gridTriplet = true;
@@ -63,6 +64,8 @@ int main() {
           "the Mix View and its tab are kept per window: closed, on STACK, until opened (ADR-0209)");
     check(restored.mixViewDetached && !views.load("other").mixViewDetached,
           "and where it opens: docked until moved into a window of its own");
+    check(restored.showReference && !views.load("other").showReference,
+          "the Reference track's toggle is kept per window: hidden until shown (ADR-0209 d11)");
     check(!restored.gridSnap && restored.gridFixed && restored.gridTriplet && restored.gridNarrow == 2 &&
               restored.gridFixedQuarters == .125 && views.load("other").gridSnap && !views.load("other").gridFixed,
           "the editing grid is kept per window, snapping and adaptive until changed");

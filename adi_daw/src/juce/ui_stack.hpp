@@ -36,10 +36,11 @@ class StackRow final : public juce::Component, public juce::SettableTooltipClien
 // The Mix View's STACK tab, ADR-0204 d1's one window (ADR-0209 d11): every channel the window's
 // project view shows (its group, or the whole project), in the arrangement's order, under one
 // display where every engaged ADI-Q's curve is drawn in its track's colour. The slots are read
-// through a MixViewProvider: the stub until the engine writes them (window log, N16).
+// through the root's MixViewProvider: the stub until the engine writes them (window log, N16).
+// The ★ Reference track is the Mix View's strip's, not a row of STACK's.
 class StackTab final : public juce::Component {
   public:
-    StackTab(AdiRootComponent &, const MixViewProvider &);
+    explicit StackTab(AdiRootComponent &);
     // Rows follow the shown channels; a frame that changes none of them builds nothing.
     void frame(const SnapshotReader &);
     void paint(juce::Graphics &) override;
@@ -53,8 +54,8 @@ class StackTab final : public juce::Component {
     const std::vector<std::unique_ptr<StackRow>> &rows() const noexcept { return rows_; }
     // The shared display above the rows.
     juce::Rectangle<int> display() const noexcept;
-    void setProvider(const MixViewProvider &p) noexcept { provider_ = &p; }
-    const MixViewProvider &provider() const noexcept { return *provider_; }
+    // The slots, through the root's provider (AdiRootComponent::mixProvider).
+    const MixViewProvider &provider() const noexcept;
     // What the rows show: "Project", or the name of the group the project view shows.
     juce::String scope() const;
     AdiRootComponent &root;
@@ -62,7 +63,6 @@ class StackTab final : public juce::Component {
 
   private:
     void layoutRows();
-    const MixViewProvider *provider_;
     std::vector<std::unique_ptr<StackRow>> rows_;
     std::vector<std::int64_t> wanted_; // the shown channels, refilled in place each frame
     std::uint64_t shown_ = 0;          // the snapshot generation the rows were built from

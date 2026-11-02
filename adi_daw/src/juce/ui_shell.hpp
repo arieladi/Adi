@@ -3,6 +3,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/op_submitter.hpp"
+#include "adi/ui/reference_audition.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
@@ -81,7 +82,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         UngroupTracks,
         ToggleMixView,
         DetachMixView,
-        LastId = DetachMixView
+        ToggleReferenceTrack,
+        PlayReference,
+        LastId = PlayReference
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -147,6 +150,8 @@ class AdiRootComponent final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress &) override;
+    // The ★ Reference's key comes up: a hold ends (ADR-0209 d9).
+    bool keyStateChanged(bool isKeyDown) override;
     bool command(int);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
     const SnapshotReader &reader() const noexcept { return *reader_; }
@@ -208,6 +213,16 @@ class AdiRootComponent final : public juce::Component {
     // Opens or closes the Mix View and says where it goes; the application moves the panel into
     // its floating window or back (ui_floating.hpp, detachMixView). False only on a write error.
     bool setMixView(bool open, bool detached);
+    // What the Mix View and the arrangement read of what the engine has not written yet: the
+    // channels' slots and the ★ Reference track (UI-ARCHITECTURE §12). The stub until it has.
+    const MixViewProvider &mixProvider() const noexcept { return *mixProvider_; }
+    void setMixProvider(const MixViewProvider &);
+    // The ★ Reference's [REF] and Shift+R, down or up at a time in milliseconds (ADR-0209 d9): a
+    // tap latches, a hold auditions. True when the reference's state changed.
+    bool referenceKey(bool down, std::int64_t nowMs);
+    const ReferenceAudition &reference() const noexcept { return reference_; }
+    // The ★ Reference track, or 0 when no track is it.
+    std::int64_t referenceTrack() const noexcept;
     MixerViewResizer mixerViewResizer{*this};
     // Live's strip down the arrangement's outer edge, with the flip arrows.
     SideStrip strip;
@@ -257,6 +272,9 @@ class AdiRootComponent final : public juce::Component {
         mixerViewArea_, stripArea_, mixViewArea_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
+    StubMixViewProvider mixStub_;
+    const MixViewProvider *mixProvider_ = &mixStub_;
+    ReferenceAudition reference_;
 };
 // The interface zoom's steps, 50 % to 200 % (ADR-0129 d3): the next one in or out of
 // `now`, or nothing at either end.

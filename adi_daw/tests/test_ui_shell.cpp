@@ -329,8 +329,7 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     };
     render("adi-parity.png");
     if (folder.isNotEmpty()) {
-        StubMixViewProvider stub;
-        StackTab eqView(root, stub);
+        StackTab eqView(root);
         eqView.setSize(900, 460);
         SnapshotReader eqReader(view.current());
         eqView.frame(eqReader);
@@ -386,9 +385,11 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
         return out;
     };
     const auto before = items();
-    check(before.size() == 3 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
+    check(before.size() == 5 && before[0].first == "Project" && before[0].second && before[1].first == "Body" &&
               before[2].first == "Fx" && !before[2].second && !root.arrangement.projectView.getToggleState(),
           "the project view's menu: the whole project, ticked, then its groups as a tree");
+    check(before[4].first == "Reference Track" && !before[4].second,
+          "and, after them, the Reference track's toggle, off (ADR-0209 d11: hidden by default)");
     auto &lanes = root.arrangement.geometry;
     lanes.selection.track = 2;
     choose("Fx");
@@ -1150,12 +1151,12 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
             }
             bool live() const noexcept override { return true; }
         } engaged;
-        const auto &own = stack.provider(); // the panel's stub, which outlives this block
-        stack.setProvider(engaged);
+        const auto &own = root.mixProvider(); // the root's stub, which outlives this block
+        root.setMixProvider(engaged);
         const auto lit = kick->sidechainArea().getTopLeft() + juce::Point<int>(2, 2);
         check(pixelAt(*kick, flat) == kickColour && pixelAt(*kick, lit) != pixelAt(*bass, lit),
               "engaged: Kick's line in its colour, its sidechain drawer lit, Bass's not");
-        stack.setProvider(own);
+        root.setMixProvider(own);
         // A slot says what it waits for; elsewhere a click selects the channel's track.
         bass->mouseDown(pressAt(*bass, bass->sidechainArea().getCentre().toFloat()));
         check(stack.focused() == 11 && root.error().find("sidechain") != std::string::npos,
@@ -1168,6 +1169,102 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.command(AppCommands::ShowChannelEq) && root.state().mixViewTab == 1 && stack.focused() == 12,
               "Channel EQ opens STACK, Lead's row focused (ADR-0204 d1's one window)");
         check(stack.scope() == "Project", "the rows: the whole project, the project view showing it");
+    }
+    // The ★ Reference (ADR-0209 §4, d9, d11): its strip in the Mix View, hidden from the project view
+    // until [Reference Track] shows it, [REF] and Shift+R, a tap to latch, a hold to audition.
+    {
+        commands.activate(root);
+        juce::ApplicationCommandInfo refInfo(AppCommands::PlayReference);
+        commands.getCommandInfo(AppCommands::PlayReference, refInfo);
+        juce::ApplicationCommandInfo renameInfo(AppCommands::RenameTrack);
+        commands.getCommandInfo(AppCommands::RenameTrack, renameInfo);
+        check(refInfo.defaultKeypresses.size() == 1 &&
+                  refInfo.defaultKeypresses[0] == juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0) &&
+                  renameInfo.defaultKeypresses[0] == juce::KeyPress('r', juce::ModifierKeys::commandModifier, 0),
+              "Play Reference on Shift+R; Ctrl/Cmd+R stays Live's Rename (d9)");
+        check(root.referenceTrack() == 0 && panel.referenceText() == "None yet",
+              "the stub names no Reference track until the format carries a track's role (N38)");
+        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) &&
+                  root.error().find("No track is the Reference") != std::string::npos,
+              "Shift+R with none says so");
+        root.referenceKey(true, 0);
+        root.referenceKey(false, 50);
+        // A provider that names Lead, as the snapshot's will once tracks carry their role.
+        struct Named final : MixViewProvider {
+            ChannelSlots slots(const engine::TrackNode &) const noexcept override { return {}; }
+            bool live() const noexcept override { return false; }
+            std::int64_t reference(const std::vector<std::shared_ptr<const engine::TrackNode>> &tracks) const noexcept override {
+                for (const auto &t : tracks)
+                    if (t->id == 12)
+                        return 12;
+                return 0;
+            }
+        } leadIsReference;
+        const auto &own = root.mixProvider();
+        root.setMixProvider(leadIsReference);
+        root.frame();
+        auto inStack = [&panel](std::int64_t id) {
+            for (const auto &r : panel.stack.rows())
+                if (r->track() == id)
+                    return true;
+            return false;
+        };
+        check(root.referenceTrack() == 12 && panel.referenceText() == "Lead" && !root.arrangement.geometry.inView(12) &&
+                  !inStack(12) && inStack(11),
+              "Lead the Reference: named in the strip, hidden from the project view and from STACK's rows");
+        panel.eye.onClick();
+        root.frame();
+        check(root.state().showReference && root.arrangement.geometry.inView(12) && panel.eye.getToggleState() &&
+                  persistence.load("mix", {}).showReference,
+              "[Reference Track] shows it, lit, kept with the window's view");
+        check(root.command(AppCommands::ToggleReferenceTrack) && !root.arrangement.geometry.inView(12),
+              "and hides it again");
+        // [REF] and Shift+R: a tap latches, a second tap lets go, a hold auditions.
+        check(root.referenceKey(true, 1000) && root.reference().on() && root.reference().held(), "down: it plays");
+        check(!root.referenceKey(false, 1100) && root.reference().latched() &&
+                  root.error().find("cue path") != std::string::npos,
+              "a tap under 200 ms latches it; the Status Bar says it waits for the cue path (N23)");
+        root.frame();
+        check(panel.ref.getToggleState(), "[REF] lit while it is on");
+        if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); out.isNotEmpty()) {
+            // Lead with two clips, the Reference latched, for the picture; undone after.
+            int made = 0;
+            for (const auto &[clipId, pos, length] : {std::tuple{900, 0, 8}, std::tuple{901, 10, 6}}) {
+                OpRequest clip;
+                clip.opType = "clip.create";
+                clip.payload = {{"id", clipId}, {"track", 12}, {"kind", "audio"}, {"name", "Reference mix"},
+                                {"pos", pos * textproj::kPPQ}, {"length", length * textproj::kPPQ}};
+                clip.label = "Create clip";
+                made += submitter.submit(std::move(clip)).ok ? 1 : 0;
+            }
+            root.mark(DirtySet::All);
+            root.frame();
+            juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                              juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(out).getChildFile("adi-mix-view-reference.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            for (int k = 0; k < made; ++k)
+                root.command(AppCommands::Undo);
+            root.frame();
+        }
+        check(!root.referenceKey(true, 2000) && root.referenceKey(false, 2050) && !root.reference().on(),
+              "a second tap lets it go");
+        check(root.referenceKey(true, 3000) && root.referenceKey(false, 3400) && !root.reference().on(),
+              "a hold auditions it only while held");
+        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) && root.reference().latched(),
+              "Shift+R from the keyboard, let go at once: a tap, latched");
+        check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::shiftModifier, 0)) && !root.reference().on(),
+              "and again, off");
+        root.setMixProvider(own);
+        root.frame();
+        check(root.referenceTrack() == 0 && root.arrangement.geometry.inView(12), "back to the stub: Lead shows");
     }
     // A second window keeps its own.
     AdiRootComponent other(view, submitter, mailbox, commands, persistence, session, "mix-other");
@@ -3153,8 +3250,7 @@ int main(int argc, char **argv) {
         // ADI's one channel window (ADR-0204 d1), the Mix View's STACK (ADR-0209 d11): every
         // channel's ADI-Q, sidechain slot and ADI-L in one view.
         {
-            StubMixViewProvider stub;
-            StackTab eqView(integrated, stub);
+            StackTab eqView(integrated);
             eqView.setSize(900, 460);
             SnapshotReader eqReader(document->view().current());
             eqView.frame(eqReader);
@@ -3176,7 +3272,7 @@ int main(int argc, char **argv) {
                 auto &second = *eqView.rows()[1];
                 second.mouseDown(pressAt(second, second.eqArea().getCentre().toFloat()));
                 check(eqView.focused() == second.track() && !integrated.error().empty() &&
-                          !stub.slots(*integrated.reader().findTrack(second.track())).eq,
+                          !integrated.mixProvider().slots(*integrated.reader().findTrack(second.track())).eq,
                       "a click on a slot focuses its channel, says what it waits for, and the slot stays off");
             }
             MixerStrip *strip = nullptr;

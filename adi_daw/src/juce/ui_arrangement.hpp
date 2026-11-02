@@ -268,16 +268,17 @@ class ArrangementView final : public juce::Component {
     // Shows `group`, everything inside it and Main; 0 for the whole project. Kept per window; a
     // selected track left out gives the selection to the first track shown.
     void chooseView(std::int64_t group);
-    // The button's menu: the project, then its groups as a tree, as Bitwig's.
+    // The button's menu: the project, then its groups as a tree, as Bitwig's, then the ★ Reference
+    // track's toggle.
     juce::PopupMenu projectViewMenu();
+    // A selected track left out gives the selection to the first track shown.
+    void firstShownIfHidden();
 
   private:
     void refreshTree();
     TrackRows trackRows_;
     // What the chosen view and the folded groups leave out, from the tree as it is.
     void leaveOut();
-    // A selected track left out gives the selection to the first track shown.
-    void firstShownIfHidden();
     TrackTree tree_;
     // The menu's own look, Bitwig's; a menu keeps only a weak reference to it.
     std::unique_ptr<juce::LookAndFeel_V4> menuLook_;

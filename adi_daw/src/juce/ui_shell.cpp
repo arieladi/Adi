@@ -96,7 +96,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Overview", "In/Out", "Narrow Grid", "Widen Grid",
                                   "Triplet Grid", "Snap to Grid", "Fixed Grid",
                                   "Wrap Tab Navigation", "Use Large Track Height",
-                                  "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window"};
+                                  "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
+                                  "Reference Track", "Play Reference"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -227,6 +228,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case DetachMixView: // ADR-0209 d11: docked in the centre, or in a window onto any display
         info.setTicked(active_ != nullptr && active_->state().mixViewDetached);
+        break;
+    case ToggleReferenceTrack: // ADR-0209 §4, d11: the reference track, hidden by default
+        info.setTicked(active_ != nullptr && active_->state().showReference);
+        break;
+    case PlayReference: // ADR-0209 d9: [REF] and Shift+R; Ctrl+R stays Rename
+        info.addDefaultKeypress('r', shift);
+        info.setTicked(active_ != nullptr && active_->reference().on());
         break;
     case GroupTracks: // §41.5; manual 18.3
     case UngroupTracks: {
@@ -826,6 +834,34 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
+    mixProvider_ = &provider;
+    arrangement.applyView();
+    arrangement.firstShownIfHidden();
+    dirty_.mark(DirtySet::All);
+}
+std::int64_t AdiRootComponent::referenceTrack() const noexcept { return mixProvider_->reference(reader().tracks()); }
+bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
+    const bool was = reference_.on();
+    if (down)
+        reference_.press(nowMs);
+    else
+        reference_.release(nowMs);
+    if (reference_.on() == was)
+        return false;
+    // What sounds is the engine's: the reference on the cue path, the Main bypassed (N23).
+    say(!reference_.on()             ? "Reference off."
+        : referenceTrack() == 0     ? "No track is the Reference yet: a track's role arrives with the format (N38)."
+                                    : "Reference on: it plays on the cue path once the engine routes it (N23).");
+    dirty_.mark(DirtySet::Layout);
+    return true;
+}
+bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
+    // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
+    if (reference_.held() && !juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
+        return referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    return juce::Component::keyStateChanged(isKeyDown);
+}
 bool AdiRootComponent::setMixView(bool open, bool detached) {
     const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
     state_.mixView = open;
@@ -1116,6 +1152,21 @@ bool AdiRootComponent::command(int id) {
         mixViewPanel.frame(reader());
         mixViewPanel.stack.focus(arrangement.geometry.selection.track);
         break;
+    case AppCommands::ToggleReferenceTrack:
+        state_.showReference = !state_.showReference;
+        if (!persist()) {
+            state_.showReference = !state_.showReference;
+            return fail(error_);
+        }
+        arrangement.applyView();
+        arrangement.firstShownIfHidden();
+        break;
+    case AppCommands::PlayReference:
+        // The key goes down; keyStateChanged lets it go. From a menu, a tap.
+        referenceKey(true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        if (!juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
+            referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+        return true;
     case AppCommands::ToggleMixView:
         state_.mixView = !state_.mixView;
         if (!persist()) {
@@ -1259,8 +1310,8 @@ const std::vector<MenuEntries> &menuBar() {
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut,
-          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleMixer,
-          C::ToggleDeviceView,
+          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
+          C::PlayReference, C::ToggleMixer, C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},

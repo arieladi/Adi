@@ -49,6 +49,9 @@ struct WindowState {
     // Where it opens: docked in the centre, or in a window of its own onto any display (ADR-0209
     // d11, ADR-0180 d3); the window's place is kept as every floating window's.
     bool mixViewDetached = false;
+    // The ★ Reference track (ADR-0209 §4, d11): hidden from the project view until its
+    // [Reference Track] toggle shows it.
+    bool showReference = false;
     // Live's Follow (manual §6.2): the arrangement keeps the playhead on screen while it plays.
     bool follow = false;
     // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out.

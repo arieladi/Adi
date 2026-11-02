@@ -414,8 +414,14 @@ void ArrangementView::leaveOut() {
             for (const auto &row : tree_.rows())
                 if (!tree_.shows(group, row))
                     geometry.hidden.push_back(row.id);
-        std::sort(geometry.hidden.begin(), geometry.hidden.end());
     }
+    // The ★ Reference track, hidden until the project view's [Reference Track] shows it (ADR-0209
+    // §4, d11); its strip in the Mix View shows it either way.
+    if (const auto reference = root.referenceTrack(); reference != 0 && !root.state().showReference &&
+                                                      std::find(geometry.hidden.begin(), geometry.hidden.end(),
+                                                                reference) == geometry.hidden.end())
+        geometry.hidden.push_back(reference);
+    std::sort(geometry.hidden.begin(), geometry.hidden.end());
     projectView.setToggleState(group != 0, juce::dontSendNotification);
     // Live's folded groups: what each holds, at any depth, down to the next row as shallow as
     // it. A group the project view leaves out folds nothing, so a view inside it still shows.
@@ -501,6 +507,9 @@ juce::PopupMenu ArrangementView::projectViewMenu() {
             add(row.track->id, static_cast<int>(row.place.depth) + 1,
                 juce::String::fromUTF8(displayName(name, row.position + 1).c_str()), colourFor(row.position));
         }
+    // The ★ Reference track's toggle (ADR-0209 §4, d11), hidden by default.
+    menu.addSeparator();
+    menu.addCommandItem(&root.commands().manager, AppCommands::ToggleReferenceTrack);
     return menu;
 }
 const SnapshotReader &ArrangementView::reader() const { return root.reader(); }
