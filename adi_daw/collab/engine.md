@@ -13,6 +13,53 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N31: per-track recording choices, snapshot and root inheritance
+
+**PR requested:** engine/track-recording-options -> main, head **11786be**.
+**Title:** Persist per-track Rec-Q, Play-Q and monitoring-latency choices
+**Body:** N31: TrackNode.recording carries recordEnabled/recordGrid,
+playEnabled/playGrid/playForgivenessMs and keepMonitoringLatency, all compared
+for sharing. track.setRecordQuantize {id,on,grid?}, track.setPlayQuantize
+{id,on,grid?,forgivenessMs?}, and track.setKeepMonitoringLatency {id,on} are
+undoable; track.restoreRecording restores the complete typed prior optional
+row, including future BLOBs and exact absence. Grid choices are 1/4,1/8,1/16,1/32,
+disabling retains the grid, explicit forgiveness is 0..1000ms (default zero).
+Missing policy defaults to Rec-Q on 1/16, Play-Q off, Keep Monitoring Latency on.
+Window appends trackRecordingDefaults(newId, record.quantize choice, keep)
+to a new-track batch. For New, createNewProject(path,error,choice,keep) captures
+the app defaults for all four initial tracks at the history root, no extra undo;
+the old overload keeps fixed defaults. Invalid choices create no file. Callers
+capture settings values, never a handler. Row-model and text projections expose
+all policy values and omit fixed defaults. Additive schema1.10 adds only
+track_recording_options and freezes exact1.9; no existing native DDL changes.
+Win must reconcile this additive minor with the other unmerged format PRs.
+ENGINE-TRACK-RECORDING.md gives the window call path. N31 supplies policy/ops;
+recording writer, post-take quantize and live Play-Q pending-list scheduling
+remain separate engine work, not claimed implemented by these switches.
+N37's full track inverse must include the new cascade child as well.
+
+**Validation:** all **107 C++ suites / 9936 checks pass** under GCC14 Debug/Werror.
+The full runner fails **only** validate_schema's win-owned README table count,
+51 versus52; CI/OPS/Pd/layout validators and frozen1.0..1.9 migrations pass.
+README unchanged. GCC+Clang19 focused recording33, text projection209,
+Session214/replay66/bootstrap24 pass; migrate162/catalogue106/engine119 pass.
+Strict shadow syntax covers changed sources/tests (migration fixture uses its
+normal target history-path define). Plants against the final33-check suite:
+restore-defaults-instead-of-absence2 failures, ignore-policy-sharing4, interpret
+future monitoring-op fields1. Restored tests pass. Migration fixture now stores
+48k explicitly, so its preservation assertion still tests the same property
+when the predecessor is1.9 with a44.1k default. Full coverage manifest includes
+the new table, no ignored projection gap. No remote CI/MSVC/hardware/parity claim.
+
+Environment refresh retained files and active compilers. Reusable start_skill
+was updated with the current workflow/ownership/queue, preserving install and
+network settings. API still fails CONNECT403 after restart despite saved allow
+rule and a GH_TOKEN binding name; no credential values inspected. Continue the
+push/log PR-request route. Next **N10**, then N24/N27 and the remaining needs.
+
+---
+
+
 ## 2026-11-02 — MSVC mixer timeout: separate group/send console sweeps
 
 **PR requested:** engine/mixer-test-runtime -> main, head **834d26f**.
