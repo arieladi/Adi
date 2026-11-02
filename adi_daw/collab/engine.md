@@ -13,6 +13,42 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N24 engine backend: alignment switch, Track Delay suspended
+
+**PR requested:** engine/delay-compensation-switch -> main, head **5af5a8e**.
+**Title:** Add the delay compensation switch backend and suspend Track Delay
+**Body:** N24's engine side: SessionSpec.delayCompensation (default true) and
+Session::setDelayCompensation(bool) accept the app choice. A changed choice
+publishes a new graph without reloading devices; the same value is a no-op.
+Graph/GraphHost expose the same build/publication policy. Off means zero main
+and sidechain alignment rings/headroom, including retap and escalation paths.
+Intrinsic latency, physical MIDI forwarding delay and delayed dry bypass remain;
+bypass delay can still grow independently. Scope input stamps show heard global
+time off; diagnostic latency remains maximum physical path latency, not a claim
+that unaligned paths coincide. MixerStrips suspends Track Delay with the same
+flag, including sends/feedback, without changing SQL/model values. Re-enabling
+uses the latest saved value, even after edits/refreshes while off. No schema/opcode,
+registry or UI production changes. ENGINE-DELAY-COMPENSATION.md gives the call.
+**Win/window part remains:** add/feed the app's Options/registry choice (proposed
+audio.delayCompensation=true) into SessionSpec/setter. This PR supplies the
+backend; it does not falsely claim the app row/window control has landed.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS **9996 checks / 107 suites**,
+all validators clean. New111-check suite passes GCC and Clang19 at both widths:
+heard main/sidechain impulses, exact MIDI frames, scope clocks, physical bypass,
+latency retap/growth, signed Track Delay off/on/latest edit, preserved SQL,
+no-op choice, zero callback allocation/IO. Clang graph200/retap334/bypass107/
+Session214/mixer337(including sends)/precision108 pass. Strict shadow syntax
+passes changed engine sources/tests. Final compiled plants: alignment left on18
+failures, retap re-enabled6, bypass delay lost2, Track Delay leaked6, escalation
+still considering disabled rings6. Restored tests pass. The final audit fixed
+that escalation path explicitly; its new test grows only the physical dry ring,
+without spurious ringless alignment failures. No remote CI/MSVC/hardware/Live
+parity timing claim; README count remains win's. Next **N27** (snapshot remarks).
+
+---
+
+
 ## 2026-11-02 — N10: Learn a control directly, with no automation lane
 
 **PR requested:** engine/controller-targets -> main, head **2e61936**.
