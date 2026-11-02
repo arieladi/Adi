@@ -13,6 +13,56 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N8 ready; continuing to N12
+
+**PR requested** (ADR-0210 d4): `engine/plugin-editors` at **`ac17ea1`** →
+`main` (base `dff5b41`). Title: **Expose VST3 and CLAP editors with safe floating host content (N8)**.
+
+PR body / window handoff: include `juce/editor_host_component.hpp`, compile
+`editor_host_component.cpp` in the JUCE window target, and call
+`createEditorComponent(device,error)`. Move its result into FloatingHost::openView,
+using the component's own size. Call PluginEditorComponent::frame() on that
+window's existing clock. The bridge owns the editor lease; duplicate wrappers
+are refused. The exact VST3 editor uses JUCE 9's createEditorAndMakeActive,
+constrainer/resize notifications and editorBeingDeleted. CLAP Hosted mode
+creates and parents a native child inside the floating host, exposes size and
+resize hints, adjusts host sizes, and respects physical/logical API pixels.
+Report bridge.error() if native parenting/show fails. No editor is inline.
+
+`DeviceInstance::createEditor(EditorMode,error)` also exposes a shared protocol
+lease directly. Close is idempotent; removing a device closes its GUI before
+its processor/library is destroyed, leaving retained handles safe and invalid.
+CLAP's host GUI callbacks use fixed atomic mailboxes; the existing DeviceHost
+message-thread pump or editor.poll() drains them. No callback GUI work,
+allocation, lock or new timer. closed(true) receives its required destroy
+acknowledgment without hiding a disconnected window. Failed create, dimensions,
+show/hide/parent and resize are reported honestly. Native floating CLAP mode
+also supports title/transient owner and window-owned geometry (0/0 if not exposed).
+
+**Win review, not a director gate:** N8 asks for component content on the newer
+FloatingHost seam (ADR-0180); ADR-0076 specifically describes CLAP create(true).
+Both modes are implemented explicitly. Choose native Floating if retaining that
+older route; it needs no second JUCE wrapper window. Hosted is the N8 component
+route and never means an inline strip GUI. No ADR changed. Details and exact
+ownership/frame contract: `docs/ENGINE-PLUGIN-EDITORS.md`. No schema/op change.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9862 checks / 107 suites**,
+validators clean. Five Clang Werror suites pass: editor48, CLAP486, device44,
+model71, host60. The protocol fake covers creation rollback, size/mode/API
+refusal, shared leases, floating/hosted parent distinction, visibility/refusal,
+resize hints, worker notifications, no resize echo, closed acknowledgment,
+reopen and destruction order/retained handles. Three compiled regressions fail:
+late device GUI close (2), ignored plugin close (10), show before parent (2).
+Pinned JUCE 9.0.2 headers: GCC and Clang syntax checks with Werror/Wall/Wextra/
+conversion/sign-conversion/shadow pass for the hosts, bridge and JUCE fixture.
+The existing JUCE probe now includes 16 ownership/constrainer/component checks
+for its macOS/Windows jobs. They are **not run locally**: a linked JUCE Linux
+configuration failed for missing GUI development libraries (freetype etc.).
+Native real-plugin drawing/parenting, monitor/DPI and measured Live parity,
+MSVC and remote CI remain unobserved. Win/window opens; win merges.
+Continuing to **N12**, Split Stereo Pan. No director gate reached.
+
+
 ## 2026-11-02 — N7 ready; continuing to N8
 
 **PR requested** (ADR-0210 d4): `engine/ui-param-capture` at **`7d5e1f7`** →
