@@ -76,6 +76,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.follow = j.value("follow", false);
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
+        state.sends = j.value("sends", true);
         state.largeTracks = j.value("largeTracks", true);
         state.viewGroup = j.value("viewGroup", std::int64_t{0});
         state.gridSnap = j.value("gridSnap", true);
@@ -145,6 +146,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"follow", state.follow},
                             {"overview", state.overview},
                             {"inOut", state.inOut},
+                            {"sends", state.sends},
                             {"largeTracks", state.largeTracks},
                             {"viewGroup", state.viewGroup},
                             {"gridSnap", state.gridSnap},

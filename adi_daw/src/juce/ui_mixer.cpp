@@ -308,7 +308,7 @@ void MixerStrip::resized() {
         // A row of the Sends section for each return, on every strip, Main's too, so the mixers
         // line up as Live's; as many as leave the mixer its room. Live scrolls the rest, ADI leaves
         // them out.
-        shown_ = returnCount_;
+        shown_ = showsSends() ? returnCount_ : 0;
         while (shown_ > 0 && getHeight() - kMixerTop - sendsHeight(shown_) < kMixerRoom)
             --shown_;
         for (std::size_t i = 0; i < sends_.size(); ++i) {
@@ -372,12 +372,15 @@ void MixerStrip::resized() {
         place(pan, 1, {x + 54, 20, 45, 13});
     }
     // Live's sends on the rows under volume and pan, its 29 pt boxes three to a row; ADI's slots
-    // on the row after them.
+    // on the row after them, or under volume and pan while the sends are hidden.
+    const bool sends = showsSends();
     for (std::size_t i = 0; i < sends_.size(); ++i) {
         const int row = 2 + static_cast<int>(i / 3), column = static_cast<int>(i % 3);
         place(*sends_[i], row, {x + 4 + 33 * column, 3 + 17 * row, 29, 13});
+        if (!sends)
+            sends_[i]->setVisible(false);
     }
-    const int slots = 2 + sendRows();
+    const int slots = 2 + (sends ? sendRows() : 0);
     place(eq, slots, {x + 4, 3 + 17 * slots, 29, 13});
     place(limiter, slots, {x + 37, 3 + 17 * slots, 29, 13});
 }
@@ -392,6 +395,7 @@ juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
     return {53, mixerTop() + 6, 11, std::max(0, getHeight() - mixerTop() - 10 - (tall ? 15 : 0))};
 }
+bool MixerStrip::showsSends() const noexcept { return panel_.root.state().sends; }
 bool MixerStrip::showsInOut() const noexcept {
     // Shown when the View menu's In/Out is on (§42.1) and the panel is wide enough.
     return !panel_.vertical() && panel_.root.state().inOut &&
@@ -993,14 +997,43 @@ void TrackHeightButton::paintButton(juce::Graphics &g, bool over, bool down) {
             g.fillRect(r.getX() + static_cast<float>(column) * (w + 2.f), r.getY() + static_cast<float>(bar) * pitch, w,
                        std::max(1.f, pitch - 1.5f));
 }
+SelectorButton::SelectorButton(const juce::String &letters, const juce::String &tooltip) : juce::Button(letters) {
+    setTooltip(tooltip);
+    setClickingTogglesState(false);
+    setMouseClickGrabsKeyboardFocus(false);
+    setWantsKeyboardFocus(false);
+}
+void SelectorButton::paintButton(juce::Graphics &g, bool, bool) {
+    const auto r = getLocalBounds().toFloat();
+    const bool on = getToggleState();
+    g.setColour(on ? look::accent : juce::Colour(0xff0a0a0a));
+    g.fillEllipse(r);
+    g.setColour(on ? look::text : look::textOnBand);
+    g.setFont(look::font(getButtonText().length() > 1 ? 7.f : 9.f, true));
+    g.drawText(getButtonText(), r, juce::Justification::centred);
+}
 SideStrip::SideStrip() {
     addAndMakeVisible(flip);
     addAndMakeVisible(tracks);
+    for (auto *s : {&inOut, &returns, &mixer, &delay})
+        addAndMakeVisible(*s);
+    inOut.setToggleState(true, juce::dontSendNotification);
+    returns.setToggleState(true, juce::dontSendNotification);
+    mixer.setToggleState(true, juce::dontSendNotification);
+    // Mixer and Delay only show their state: neither has a toggle to switch yet.
+    mixer.setInterceptsMouseClicks(false, false);
+    delay.setInterceptsMouseClicks(false, false);
 }
 void SideStrip::resized() {
-    // Under the two view switches: the flip arrows, then the track height.
+    // Under the two view switches: the flip arrows, then the track height. At the foot, over the
+    // time ruler's band: In/Out, Returns, Mixer, Delay.
     flip.setBounds(4, 47, 19, 15);
     tracks.setBounds(4, 64, 19, 14);
+    int y = getHeight() - ArrangementView::kTimeRulerHeight - 4 * 19;
+    for (auto *s : {&inOut, &returns, &mixer, &delay}) {
+        s->setBounds(7, y, 15, 15);
+        y += 19;
+    }
 }
 void SideStrip::paint(juce::Graphics &g) {
     g.fillAll(look::band);
@@ -1016,19 +1049,6 @@ void SideStrip::paint(juce::Graphics &g) {
                 g.fillRect(r.getX() + 5, r.getY() + 6 + 3.f * static_cast<float>(line), 9.f, 1.6f);
             else
                 g.fillRect(r.getX() + 6 + 3.f * static_cast<float>(line), r.getY() + 5, 1.6f, 9.f);
-    }
-    // The strip's round switches at its foot: In/Out, Returns, Mixer, Delay.
-    const std::array<std::pair<const char *, bool>, 4> switches{
-        {{"I-O", true}, {"R", true}, {"M", true}, {"D", false}}};
-    float y = static_cast<float>(getHeight() - ArrangementView::kTimeRulerHeight) - 4 * 19.f;
-    for (const auto &[label, on] : switches) {
-        const juce::Rectangle<float> r(7.f, y, 15, 15);
-        g.setColour(on ? look::accent : juce::Colour(0xff0a0a0a));
-        g.fillEllipse(r);
-        g.setColour(on ? look::text : look::textOnBand);
-        g.setFont(look::font(std::string_view(label).size() > 1 ? 7.f : 9.f, true));
-        g.drawText(label, r, juce::Justification::centred);
-        y += 19;
     }
 }
 void MixerPanel::mouseDown(const juce::MouseEvent &e) {

@@ -88,7 +88,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         SelectAll,
         InsertReturnTrack,
         ToggleReturnTracks,
-        LastId = ToggleReturnTracks
+        ToggleSends,
+        LastId = ToggleSends
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

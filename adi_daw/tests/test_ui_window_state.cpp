@@ -36,6 +36,7 @@ int main() {
     state.follow = true;
     state.overview = false;
     state.inOut = false;
+    state.sends = false;
     state.largeTracks = false;
     state.viewGroup = 42;
     state.foldedGroups = {7, 13};
@@ -54,6 +55,7 @@ int main() {
     check(restored.follow && !views.load("other").follow, "Follow is kept per window, off until switched on");
     check(!restored.overview && !restored.inOut && views.load("other").overview && views.load("other").inOut,
           "the Overview and In/Out are kept per window, shown until hidden");
+    check(!restored.sends && views.load("other").sends, "so are the sends (Hide/Show Sends, §42.1)");
     check(!restored.largeTracks && views.load("other").largeTracks,
           "Use Large Track Height is kept per window, on until switched off");
     check(restored.viewGroup == 42 && views.load("other").viewGroup == 0,

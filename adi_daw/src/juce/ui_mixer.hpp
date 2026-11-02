@@ -57,6 +57,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     PeakHold peakHold; // the Mixer View's only
     // Whether the row shows its In/Out column: when the panel is wide enough.
     bool showsInOut() const noexcept;
+    // Whether the sends show, in the row and in the Mixer View: the View menu's Sends (§42.1).
+    bool showsSends() const noexcept;
     // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm,
     // then ADI-Q and ADI-L. A click on one does not take the focus.
     std::array<juce::Button *, 5> switches() noexcept {
@@ -198,10 +200,19 @@ class TrackHeightButton final : public juce::Button {
     TrackHeightButton();
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+// One of Live's round selectors at the strip's foot (manual 18.1: "the Mixer Section selectors ...
+// duplicate the View Menu commands"): its letters in a disc, lit while its part shows.
+class SelectorButton final : public juce::Button {
+  public:
+    SelectorButton(const juce::String &letters, const juce::String &tooltip);
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // Live's strip down the arrangement's outer edge (Live 11, measured 2026-10-27): its switches
 // between Arrangement and Session View at its head, the flip arrows and the track height
-// under them, the In/Out, Returns, Mixer and Delay switches at its foot. Flipped, it moves to
+// under them, the In/Out, Returns, Mixer and Delay selectors at its foot. Flipped, it moves to
 // the window's left edge, so the track controls meet the lanes (the director, 28 October 2026).
+// In/Out and Returns switch their View menu toggles; Mixer stays lit, and Delay unlit until
+// Track Delay is built (window log, N22).
 class SideStrip final : public juce::Component {
   public:
     SideStrip();
@@ -209,6 +220,9 @@ class SideStrip final : public juce::Component {
     void resized() override;
     FlipButton flip;
     TrackHeightButton tracks;
+    SelectorButton inOut{"I-O", "In/Out: show or hide the track controls' In/Out (Ctrl/Cmd+Alt+I)."},
+        returns{"R", "Return Tracks: show or hide the return tracks (Ctrl/Cmd+Alt+R)."},
+        mixer{"M", "Mixer: the track controls' mixer."}, delay{"D", "Track Delay: not built yet."};
 };
 // The Mixer View's top edge: drag it up for taller strips.
 class MixerViewResizer final : public juce::Component {

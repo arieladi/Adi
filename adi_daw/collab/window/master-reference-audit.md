@@ -58,7 +58,7 @@ MR § is the Master Reference's section.
 | Item | MR § | Window today |
 |---|---|---|
 | Volume, pan, Track Activator, solo, arm; In/Out with monitoring In / Auto / Off | 8.1 | Built |
-| One send knob per return on every track and group; return strips after the tracks; Insert Return Track; show and hide returns and sends from the mixer's view menu | 3.2, 8.2, 10 (ADR-0203 d3) | Built: the knobs (#325), the returns at the foot (#315), Insert Return Track and Hide/Show Return Tracks (`window/return-commands`); the Sends toggle waits on the View menu's submenus |
+| One send knob per return on every track and group; return strips after the tracks; Insert Return Track; show and hide returns and sends from the mixer's view menu | 3.2, 8.2, 10 (ADR-0203 d3) | Built: the knobs (#325), the returns at the foot (#315), Insert Return Track and Hide/Show Return Tracks (`window/return-commands`), Hide/Show Sends and the strip's I-O and R selectors (`window/view-selectors`) |
 | Pre/Post as one switch on each return; a return's own sends off until Enable Send / Enable All Sends | 8.2 | Built: Pre/Post (#333; held while no send reaches the return waits on N42), Enable Send (#325), Enable All Sends (`window/return-commands`) |
 | A send into any track, and a pan on a send, made from the send slot | 1.3, 8.2 | Waits (N11) |
 | Sends Only in the output menu | 8.2 | Waits (N11) |

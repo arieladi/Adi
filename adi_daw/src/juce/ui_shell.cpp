@@ -98,7 +98,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Wrap Tab Navigation", "Use Large Track Height",
                                   "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
                                   "Reference Track", "Play Reference", "Select All", "Insert Return Track",
-                                  "Return Tracks"};
+                                  "Return Tracks", "Sends"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -243,6 +243,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ToggleReturnTracks: // §18.4, §42.1: Hide/Show Return Tracks, Ctrl/Cmd+Alt+R
         info.addDefaultKeypress('r', cmd | juce::ModifierKeys::altModifier);
         info.setTicked(active_ != nullptr && !active_->state().hideReturns);
+        break;
+    case ToggleSends: // §42.1: Hide/Show Sends, Ctrl/Cmd+Alt+S
+        info.addDefaultKeypress('s', cmd | juce::ModifierKeys::altModifier);
+        info.setTicked(active_ != nullptr && active_->state().sends);
         break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
@@ -469,6 +473,9 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(strip);
     strip.flip.onClick = [this] { command(AppCommands::SwapPanels); };
     strip.tracks.onClick = [this] { command(AppCommands::LargeTracks); };
+    // Live's selectors at the strip's foot repeat the View menu's toggles (manual 18.1).
+    strip.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
+    strip.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
@@ -736,6 +743,8 @@ void AdiRootComponent::resized() {
     status.mixerToggle.setToggleState(state_.mixerView, juce::dontSendNotification);
     strip.flip.setToggleState(!browserLeft, juce::dontSendNotification);
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
+    strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
+    strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
     // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
     // View and its track controls, which a lane-less view has no use for. The browser, the strip
@@ -1033,6 +1042,7 @@ bool AdiRootComponent::insertReturnTrack() {
     if (state_.hideReturns) {
         state_.hideReturns = false;
         persist();
+        strip.returns.setToggleState(true, juce::dontSendNotification);
     }
     arrangement.geometry.selection.track = id;
     arrangement.geometry.selection.toTrack = 0;
@@ -1272,20 +1282,26 @@ bool AdiRootComponent::command(int id) {
         arrangement.followPaused = false;
         break;
     case AppCommands::ToggleOverview:
-    case AppCommands::ToggleInOut: {
-        auto &shown = id == AppCommands::ToggleOverview ? state_.overview : state_.inOut;
+    case AppCommands::ToggleInOut:
+    case AppCommands::ToggleSends: {
+        auto &shown = id == AppCommands::ToggleOverview ? state_.overview
+                      : id == AppCommands::ToggleInOut  ? state_.inOut
+                                                        : state_.sends;
         shown = !shown;
         if (!persist()) {
             shown = !shown;
             return fail(error_);
         }
         // The lanes, and the track controls' rows level with them, move with the Overview;
-        // each row lays its controls out again with or without In/Out.
+        // each row, and each Mixer View strip, lays its controls out again with or without In/Out
+        // and the sends.
         arrangement.resized();
-        for (const auto &row : mixer.strips()) {
-            row->resized();
-            row->repaint();
-        }
+        for (const auto *panel : {&mixer, &mixerView})
+            for (const auto &row : panel->strips()) {
+                row->resized();
+                row->repaint();
+            }
+        strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
         break;
     }
     case AppCommands::FullScreen: {
@@ -1345,6 +1361,7 @@ bool AdiRootComponent::command(int id) {
         }
         arrangement.applyView();
         arrangement.firstShownIfHidden();
+        strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
         break;
     case AppCommands::RenameTrack:
         // Rename acts on the selection: the device with the focus, else the selected track.
@@ -1408,7 +1425,7 @@ const std::vector<MenuEntries> &menuBar() {
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
-         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut, C::ToggleReturnTracks,
+         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut, C::ToggleSends, C::ToggleReturnTracks,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
           C::PlayReference, C::ToggleMixer, C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
