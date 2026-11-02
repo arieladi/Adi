@@ -70,6 +70,41 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the Settings window in Live's ten tabs [#328](https://github.com/arieladi/Adi/pull/328) `window/settings-tabs`, on #324
+
+**Built: queue item 3, parity-settings row 3 (ADR-0203 d11).**
+- Live's ten tabs in Live's order: Display & Input, Theme & Colors, Audio, Link, Tempo & MIDI,
+  File & Folder, Library, Plug-Ins, Record, Warp & Launch, Licenses & Updates. ADI's own pages
+  come after them, in the registry's order.
+- The registry still names its pages its own way (N14), so the window maps them itself
+  (`adi/ui/settings_tabs.hpp`):
+  - a setting answering a catalogue Part II row goes on that row's tab, in Live's order (149
+    of 226);
+  - the rest of a page Live has follows on Live's tab;
+  - everything else keeps its page, as ADI's own.
+- Look & Feel splits in two. Link has Live's two settings, then PTP, then the LAN audio node
+  ("LAN Audio (not Link Audio)"). Licenses & Updates has a Privacy group.
+- Restore Defaults resets the open tab; Find groups its hits by tab; the tab column scrolls when
+  it is taller than the window.
+- The Find box test never ran the Find: `TextEditor` posts its change as a message, and the
+  check passed by chance. It now runs the callback.
+
+**N14 narrowed** to win's part: the registry's page names, Live's labels and sections, and Show
+Link Toggle on by default.
+
+**Stacked on #324**, main's fix for the Foot scene, so the shell suite runs to the end. It is
+independent of #318 to #327.
+
+**Tests.** shell 487; `test_all.sh` PASS, 9790 checks across 105 suites; the sweeps are clean.
+Locally four JUCE console targets (`adi_audio_probe`, `adi_vst3_probe`, `adi_play`,
+`adi_play_render_tests`) do not build with this container's GCC: JUCE's own code under
+`-Wconversion`. CI builds them.
+
+**Next** (queue item 3 goes on): the window parts of phase C. Those are range selection, the fade
+handles, Insert Silence, and the import and bounce prompts.
+
+---
+
 ## 2026-11-02, cloud, continued — dropping audio makes a clip that plays [#327](https://github.com/arieladi/Adi/pull/327) `window/audio-drop`, on #326
 
 **Built: parity 7.3 row 19, STEP-7-PLAN §3.0's headline gesture, on the engine's #308 (N5).**
