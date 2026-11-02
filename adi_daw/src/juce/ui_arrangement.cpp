@@ -786,6 +786,9 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
         menu.addSeparator();
         menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
         menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+        menu.addSeparator();
+        menu.addCommandItem(&commands.manager, AppCommands::GroupTracks);
+        menu.addCommandItem(&commands.manager, AppCommands::UngroupTracks);
     }
     if (!header) {
         // The lanes' menu sets the grid as well (§6.10).

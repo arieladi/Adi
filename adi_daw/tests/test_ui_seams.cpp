@@ -23,6 +23,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
 #include "adi/ui/track_tree.hpp"
 
@@ -32,6 +33,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -559,6 +561,80 @@ void metersCountBars() {
           "only the bars in the range, still numbered from the start");
 }
 
+void groupAndUngroupAsBatches() {
+    section("Group Tracks and Ungroup Tracks: one batch each, from the snapshot (Live 12 manual 18.3)");
+    adi::test::TempDirectory temp("ui_seams", "groups");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    // Every index 0, as a file from before index_in_parent was kept: the order falls to the ids.
+    bool made = true;
+    for (const auto& [id, kind, name] : {std::tuple{1, "master", "Main"}, std::tuple{2, "audio", "Kick"},
+                                         std::tuple{3, "audio", "Snare"}, std::tuple{4, "midi", "Bass"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        r.label = "Create track";
+        made = sub.submit(std::move(r)).ok && made;
+    }
+    check(made, "Main, Kick, Snare and Bass, all at index 0");
+    auto order = [&view] {
+        const ui::SnapshotReader reader(view.current());
+        std::vector<ui::TrackRow> rows;
+        ui::rowsFromSnapshot(reader, rows);
+        ui::TrackOrder built;
+        built.build(reader, rows);
+        std::vector<std::pair<std::int64_t, std::uint32_t>> out;
+        for (const auto& p : built.places()) out.emplace_back(p.id, p.depth);
+        return out;
+    };
+    using Order = std::vector<std::pair<std::int64_t, std::uint32_t>>;
+    const Order flat{{2, 0}, {3, 0}, {4, 0}, {1, 0}};
+    check(order() == flat, "Kick, Snare, Bass, then Main");
+
+    auto edit = ui::groupTrack(view.current()->tracks, 3);
+    check(edit.refusal.empty() && edit.select == 5 && edit.ops.size() == 3 && edit.ops[0].opType == "track.create" &&
+              edit.ops[0].payload["index"] == 1 && edit.ops[0].payload["parent"].is_null() &&
+              edit.ops[1].opType == "track.setParent" && edit.ops[2].opType == "track.reorder" &&
+              edit.ops[2].payload["id"] == 4 && edit.ops[2].payload["index"] == 2,
+          "Snare grouped: the group at Snare's place, Snare into it, Bass's index put after it; Main untouched");
+    const auto groupOps = static_cast<int>(edit.ops.size());
+    check(sub.submit(std::move(edit.ops)).ok && sub.nextUndo() && sub.nextUndo()->opCount == groupOps &&
+              sub.nextUndo()->label == "Group Tracks",
+          "one undo step, named as Live's Edit menu names it");
+    check(order() == Order{{2, 0}, {5, 0}, {3, 1}, {4, 0}, {1, 0}}, "Kick, the group holding Snare, Bass, Main");
+    check(sub.undo().ok && order() == flat, "undo puts it back");
+    check(sub.redo().ok, "redo");
+
+    auto undo = ui::ungroupTrack(view.current()->tracks, 5);
+    check(undo.refusal.empty() && undo.select == 3 && undo.ops.back().opType == "track.delete",
+          "Ungroup: Snare out, then the group removed, last");
+    const auto ungroupOps = static_cast<int>(undo.ops.size());
+    check(sub.submit(std::move(undo.ops)).ok && order() == flat && sub.nextUndo()->opCount == ungroupOps &&
+              sub.nextUndo()->label == "Ungroup Tracks",
+          "Snare back where the group stood; one more step");
+    check(sub.undo().ok && order() == Order{{2, 0}, {5, 0}, {3, 1}, {4, 0}, {1, 0}}, "undo brings the group back");
+
+    // A group inside a group: Ungroup puts its tracks in the outer one, where it stood.
+    auto nested = ui::groupTrack(view.current()->tracks, 5);
+    check(nested.select == 6 && sub.submit(std::move(nested.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {5, 1}, {3, 2}, {4, 0}, {1, 0}},
+          "the group grouped: groups nest");
+    auto inner = ui::ungroupTrack(view.current()->tracks, 5);
+    check(sub.submit(std::move(inner.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}},
+          "the inner group ungrouped: Snare in the outer one");
+
+    check(ui::groupTrack(view.current()->tracks, 1).refusal == "Main and return tracks can't be grouped." &&
+              ui::groupTrack(view.current()->tracks, 99).refusal == "Select a track to group." &&
+              ui::ungroupTrack(view.current()->tracks, 2).refusal == "Select a group track to ungroup.",
+          "Main, a missing track and a track that is not a group are refused, with the reason");
+    check(ui::canGroup(view.current()->tracks, 4) && !ui::canGroup(view.current()->tracks, 1) &&
+              ui::canUngroup(view.current()->tracks, 6) && !ui::canUngroup(view.current()->tracks, 4),
+          "what the menu offers follows the same rules");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -577,6 +653,7 @@ int main() {
     projectViewTree();
     projectViewRowsFromTheSnapshot();
     metersCountBars();
+    groupAndUngroupAsBatches();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -672,6 +672,80 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
     };
+    // Live's Group Tracks and Ungroup Tracks (manual 18.3; Ctrl/Cmd+G, Ctrl/Cmd+Shift+G, §41.5):
+    // each one batch of ops, one undo step, the tracks where they stood.
+    {
+        const auto cmd = juce::ModifierKeys::commandModifier, shift = juce::ModifierKeys::shiftModifier;
+        auto enabled = [&commands, &root](int id) {
+            commands.activate(root);
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            return (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0;
+        };
+        auto refresh = [&root] {
+            root.mark(DirtySet::All);
+            root.frame();
+        };
+        auto trackNamed = [&root](std::int64_t id) -> const engine::TrackNode * {
+            for (const auto &t : root.reader().tracks())
+                if (t->id == id)
+                    return t.get();
+            return nullptr;
+        };
+        lanes.selection.track = 15;
+        check(enabled(AppCommands::GroupTracks) && !enabled(AppCommands::UngroupTracks),
+              "on Synths, Group Tracks is offered and Ungroup Tracks is not");
+        check(root.keyPressed(juce::KeyPress('g', cmd, 0)), "Ctrl/Cmd+G groups the selected track");
+        refresh();
+        const std::vector<std::pair<std::int64_t, std::uint32_t>> grouped{
+            {10, 0}, {11, 1}, {12, 1}, {13, 0}, {14, 1}, {19, 1}, {15, 2}, {16, 1}, {17, 2}, {18, 2}, {1, 0}};
+        const auto *newGroup = trackNamed(19);
+        check(order() == grouped && newGroup != nullptr && newGroup->kind == "group" && newGroup->name == "# Group" &&
+                  newGroup->parent == 13,
+              "a new group stands where Synths stood in Body, with Synths in it");
+        check(lanes.selection.track == 19 && root.undoTitle(false) == "Undo Group Tracks",
+              "the new group is selected, and the Edit menu names the step");
+        check(enabled(AppCommands::UngroupTracks), "on a group, Ungroup Tracks is offered");
+        check(root.command(AppCommands::Undo), "undo");
+        refresh();
+        check(order() == tree && trackNamed(19) == nullptr, "one undo step puts everything back");
+        check(root.command(AppCommands::Redo), "redo");
+        refresh();
+        check(order() == grouped, "and redo groups it again");
+        lanes.selection.track = 19;
+        check(root.keyPressed(juce::KeyPress('g', cmd | shift, 0)), "Ctrl/Cmd+Shift+G ungroups the selected group");
+        refresh();
+        check(order() == tree && trackNamed(19) == nullptr && lanes.selection.track == 15 &&
+                  root.undoTitle(false) == "Undo Ungroup Tracks",
+              "Synths is back in Body where the group stood, and selected; the group is gone");
+        // Body ungrouped: what it held takes its place at the top, in its order.
+        lanes.selection.track = 13;
+        check(root.command(AppCommands::UngroupTracks), "Ungroup Tracks on Body");
+        refresh();
+        check(order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {11, 1}, {12, 1}, {14, 0}, {15, 0},
+                                                                               {16, 0}, {17, 1}, {18, 1}, {1, 0}} &&
+                  lanes.selection.track == 14,
+              "Bass, Synths and Fx And Hits stand where Body stood, Fx And Hits still a group");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo),
+              "three undos");
+        refresh();
+        const auto *body = trackNamed(13);
+        check(order() == tree && body != nullptr && body->name == "Body" && body->kind == "group",
+              "Body comes back, by name, holding what it held");
+        lanes.selection.track = 1;
+        check(!enabled(AppCommands::GroupTracks) && !root.command(AppCommands::GroupTracks) &&
+                  root.error() == "Main and return tracks can't be grouped." && order() == tree,
+              "Main can't be grouped, and the Status Bar says so");
+        lanes.selection.track = 0;
+        check(!root.command(AppCommands::UngroupTracks) && root.error() == "Select a group track to ungroup.",
+              "Ungroup Tracks with nothing selected says what it needs");
+        lanes.selection.track = 15;
+        check(root.keyPressed(juce::KeyPress('g', cmd, 0)), "Synths grouped again, for the picture");
+        render("adi-group-tracks.png");
+        check(root.command(AppCommands::Undo), "and put back");
+        refresh();
+        check(order() == tree, "the tree as it was");
+    }
     lanes.selection.track = 15;
     // Two changes of signature, for the picture of the ruler and its markers.
     for (const auto &[pos, num, den] : {std::tuple{8 * textproj::kPPQ, 3, 4}, std::tuple{14 * textproj::kPPQ, 7, 8}}) {
@@ -1287,8 +1361,8 @@ int main(int argc, char **argv) {
               "the Options menu: Follow (§6.2), the grid (§6.10), then Settings off the Mac (§2.3)");
 #endif
         check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
-                                                C::RenameTrack},
-              "the Edit menu deletes the selected track, before Rename (§18.2)");
+                                                C::RenameTrack, 0, C::GroupTracks, C::UngroupTracks},
+              "the Edit menu deletes the selected track, before Rename (§18.2), then Group and Ungroup Tracks");
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack},
               "the Create menu inserts tracks");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
