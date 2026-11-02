@@ -5,11 +5,12 @@
 
 namespace adi::engine {
 
-std::uint64_t ProjectView::refresh(const Store& store) {
+std::uint64_t ProjectView::refresh(const Store& store, const std::set<std::int64_t>& overridden) {
     // Build the next one from the previous so unchanged tracks are shared by
     // pointer, then swap. A frame still holding the previous snapshot keeps it.
     std::shared_ptr<const Snapshot> next =
-        current_ ? SnapshotBuilder::fromStore(store, *current_) : SnapshotBuilder::fromStore(store);
+        current_ ? SnapshotBuilder::fromStore(store, *current_, overridden)
+                 : SnapshotBuilder::fromStore(store, overridden);
     current_ = std::move(next);
     return ++generation_;
 }

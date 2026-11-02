@@ -113,17 +113,27 @@ bool Snapshot::anySoloed() const noexcept {
     return false;
 }
 
+const AutomationLaneNode* Snapshot::findAutomationLane(std::int64_t id) const noexcept {
+    for (const auto& lane : automationLanes)
+        if (lane->id == id) return lane.get();
+    return nullptr;
+}
+
 // --- building --------------------------------------------------------------------
 
-std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store) {
+std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
+                                                    const std::set<std::int64_t>& overridden) {
     Snapshot empty;
-    return fromStore(store, empty);
+    return fromStore(store, empty, overridden);
 }
 
 std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
-                                                     const Snapshot& previous) {
+                                                     const Snapshot& previous,
+                                                     const std::set<std::int64_t>& overridden) {
     auto snap = std::make_unique<Snapshot>();
     auto& db = const_cast<SQLite::Database&>(store.db());
+    snap->automationLanes = detail::readAutomationSnapshot(db, previous.automationLanes, overridden);
+    snap->automationOverridden = !overridden.empty();
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -278,6 +288,13 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
     }
     for (const auto& sa : a.sends)
         if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
+    for (const auto& lane : a.automationLanes) {
+        const auto* other = b.findAutomationLane(lane->id);
+        if (!other) continue;
+        if (other == lane.get()) ++shared;
+        for (const auto& envelope : lane->envelopes)
+            if (std::find(other->envelopes.begin(), other->envelopes.end(), envelope) != other->envelopes.end()) ++shared;
+    }
     return shared;
 }
 

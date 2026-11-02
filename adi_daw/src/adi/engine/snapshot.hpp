@@ -26,6 +26,7 @@
 #pragma once
 
 #include "adi/engine/publisher.hpp"
+#include "adi/engine/automation_snapshot.hpp"
 #include "adi/textproj.hpp"
 
 #include <cstdint>
@@ -103,6 +104,8 @@ struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
     int sampleRate = 44100;
+    std::vector<std::shared_ptr<const AutomationLaneNode>> automationLanes; // lane id order
+    bool automationOverridden = false; // session state supplied at rebuild, never saved
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.
     std::vector<textproj::Meter> meters;
@@ -112,6 +115,7 @@ struct Snapshot : Sequenced {
 
     [[nodiscard]] const TrackNode* findTrack(std::int64_t id) const noexcept;
     [[nodiscard]] bool anySoloed() const noexcept;
+    [[nodiscard]] const AutomationLaneNode* findAutomationLane(std::int64_t id) const noexcept;
 };
 
 /// Builds snapshots, reusing nodes from the previous one.
@@ -124,11 +128,12 @@ class SnapshotBuilder {
 public:
     /// Reads the whole project. Use for the first snapshot, or after a change
     /// too broad to describe.
-    static std::unique_ptr<Snapshot> fromStore(const Store&);
+    static std::unique_ptr<Snapshot> fromStore(const Store&, const std::set<std::int64_t>& overridden = {});
 
     /// Reads the project but reuses every node from `previous` that is
     /// unchanged. Returns a snapshot sharing structure with it.
-    static std::unique_ptr<Snapshot> fromStore(const Store&, const Snapshot& previous);
+    static std::unique_ptr<Snapshot> fromStore(const Store&, const Snapshot& previous,
+                                              const std::set<std::int64_t>& overridden = {});
 
     /// How many nodes the two snapshots share by pointer. For tests: the sharing
     /// claim above is checkable, so it is checked.
