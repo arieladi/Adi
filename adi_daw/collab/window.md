@@ -73,6 +73,20 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the control bar's Time Signature field [#365](https://github.com/arieladi/Adi/pull/365) `window/signature-field`, on #364
+
+**Built: the Time Signature field typed** (parity 7.2-shell new row 28; Live 12 manual 6.5). A
+click opens a field; the value typed changes the signature in force at the play location, one
+step: a marker's, else the start's. The snapshot can't tell a stored 4/4 at the start from its
+implicit one, so the window tries the insert first; the store's refusal changes nothing, and the
+replace follows (`setMeterAt`, `startSurelyStored`). The field's automation LED lights while the
+arrangement holds changes. Live's separate numerator and denominator fields, and dragging, are
+open.
+
+**Tests.** seams 342, shell 820; `test_all.sh` PASS (10027 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — fragmentary bars [#364](https://github.com/arieladi/Adi/pull/364) `window/fragmentary-bar`, on #363
 
 **Built: Live's fragmentary bar** (parity 7.3 row 11; Live 12 manual 6.5). A change placed before
