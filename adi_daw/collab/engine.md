@@ -13,6 +13,38 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N13 ready; continuing to N19
+
+**PR requested** (ADR-0210 d4): `engine/main-loudness` at **`0e4c3cc`** → `main`
+(base `dff5b41`). Title: **Meter Main loudness and true peak in real time (N13)**.
+
+PR body: The window can load `session.mainLoudness().readout()`'s atomic floats
+`momentaryLufs`, `shortTermLufs`, `integratedLufs` and `truePeakDb` with relaxed
+ordering and call `requestReset()` for the next callback. Silence/unwarmed windows
+are negative infinity. Session measures its actual post-Main output at native
+float/double width, without changing audio. K-weighted 400 ms and 3 s windows
+update at 10 Hz; integrated uses -70 LUFS / -10 LU gates and a bounded 0.1 LU
+histogram (gate quantisation, not a certified EBU claim). True peak uses the
+existing Kaiser-sinc design in double, 4x/2x/sample peak by rate, holding until
+reset. Same-format rebuilds retain history; new formats publish fresh DSP state
+and tick reclaims retired state off audio. No callback allocation, lock, I/O or
+store access. Mono/stereo weights are one; standalone API accepts explicit roles
+(front1, surround1.41, LFE0). Until channel roles arrive, Session treats channels
+as full-range rather than guessing LFE. See `docs/ENGINE-MAIN-LOUDNESS.md`.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9858 checks / 107 suites**,
+validators clean. New suite **44**, also Clang Werror; Clang session214, mixer337,
+master98 and precision108 pass. An allocation counter covers processing, gates
+and reset; independent complex filter-response calibration, both loudness gates,
+known intersample crests, format/reset lifetime and post-Main gain are exercised.
+Two compiled plants are caught: no K-weighting (11 failures) and no interpolation
+(2). N9-only stale binary excluded before discovery. MSVC/JUCE/Live measurements
+and remote CI unobserved; win opens/reviews/merges.
+
+Continuing to **N19**, metronome and loop, from main. N16 remains integration
+blocked as below. No director gate has been reached.
+
+
 ## 2026-11-02 — N9 ready; continuing to N13
 
 **PR requested** (ADR-0210 d4): `engine/strip-meters` at **`fa09375`** → `main`
