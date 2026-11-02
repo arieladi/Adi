@@ -28,6 +28,8 @@
 #include <cstring>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <limits>
 #include <vector>
 
 namespace adi {
@@ -386,6 +388,44 @@ bool trackDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::strin
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
+constexpr const char* audioColumns[] = {"media_id","src_start_frames","src_len_frames",
+    "warp_enabled","warp_mode","warp_markers","transpose_semis","formant_shift","reverse","channel_mode"};
+std::string audioColumnList() {
+    std::string names;
+    for (const auto* name:audioColumns) {if(!names.empty())names+=',';names+=name;}
+    return names;
+}
+void restoreClipAudio(SQLite::Database& db, std::int64_t clip, const Payload& row) {
+    if(!row.is_object() || row.size()!=10)throw std::runtime_error("invalid captured audio row");
+    SQLite::Statement q(db,"INSERT INTO audio_clips(clip_id,"+audioColumnList()+") VALUES(?,?,?,?,?,?,?,?,?,?,?)");
+    q.bind(1,clip);
+    int column=2;
+    for(const auto* name:audioColumns) {
+        const auto& value=row.at(name);
+        if(std::string_view(name)=="warp_markers") {
+            if(value.is_null())q.bind(column);
+            else {
+                if(!value.is_array())throw std::runtime_error("invalid captured warp markers");
+                std::vector<unsigned char> bytes;
+                for(const auto& b:value) {
+                    if(!b.is_number_integer() || b.get<std::int64_t>()<0 || b.get<std::int64_t>()>255)
+                        throw std::runtime_error("invalid captured warp byte");
+                    bytes.push_back(b.get<unsigned char>());
+                }
+                if(bytes.size()>static_cast<std::size_t>(std::numeric_limits<int>::max()))throw std::runtime_error("warp markers too large");
+                const unsigned char empty=0;
+                q.bind(column,bytes.empty()?&empty:bytes.data(),static_cast<int>(bytes.size()));
+            }
+        } else if(std::string_view(name)=="warp_mode")q.bind(column,value.get<std::string>());
+        else if(std::string_view(name)=="transpose_semis" || std::string_view(name)=="formant_shift")q.bind(column,value.get<double>());
+        else {
+            if(!value.is_number_integer())throw std::runtime_error("invalid captured audio integer");
+            q.bind(column,value.get<std::int64_t>());
+        }
+        ++column;
+    }
+    q.exec();
+}
 bool clipCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
         SQLite::Statement st(c.db,
@@ -398,6 +438,10 @@ bool clipCreateApply(OpContext& c, const Payload& p, std::string& err) {
         st.bind(5, p.at("pos").get<std::int64_t>());
         st.bind(6, p.at("length").get<std::int64_t>());
         st.exec();
+        if(p.contains("audio")) {
+            if(p.at("kind")!="audio")throw std::runtime_error("captured audio needs an audio clip");
+            restoreClipAudio(c.db,p.at("id").get<std::int64_t>(),p.at("audio"));
+        }
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -429,8 +473,57 @@ bool clipDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string
         inv["name"] = st.getColumn(2).getString();
         inv["pos"] = st.getColumn(3).getInt64();
         inv["length"] = st.getColumn(4).getInt64();
+        SQLite::Statement attachment(c.db,"SELECT "+audioColumnList()+" FROM audio_clips WHERE clip_id=?");
+        attachment.bind(1,p.at("id").get<std::int64_t>());
+        if(attachment.executeStep()) {
+            Payload row=Payload::object();
+            int i=0;
+            for(const auto* name:audioColumns) {
+                const auto value=attachment.getColumn(i++);
+                if(value.isNull())row[name]=nullptr;
+                else if(std::string_view(name)=="warp_markers") {
+                    row[name]=Payload::array();
+                    const auto* bytes=static_cast<const unsigned char*>(value.getBlob());
+                    for(int n=0;n<value.getBytes();++n)row[name].push_back(bytes[n]);
+                } else if(std::string_view(name)=="warp_mode")row[name]=value.getString();
+                else if(std::string_view(name)=="transpose_semis" || std::string_view(name)=="formant_shift")row[name]=value.getDouble();
+                else row[name]=value.getInt64();
+            }
+            inv["audio"]=std::move(row);
+        }
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+bool audioAttachApply(OpContext& c, const Payload& p, std::string& err) {
+    try {
+        SQLite::Statement clip(c.db, "SELECT kind FROM clips WHERE id=?");
+        clip.bind(1,p.at("id").get<std::int64_t>());
+        if (!clip.executeStep() || clip.getColumn(0).getString() != "audio") { err="audio attachment needs an audio clip"; return false; }
+        const auto frames=p.at("frames").get<std::int64_t>();
+        if(frames<=0) { err="audio attachment needs positive frames"; return false; }
+        SQLite::Statement mediaBounds(c.db,"SELECT frames FROM media_files WHERE id=?");
+        mediaBounds.bind(1,p.at("media").get<std::int64_t>());
+        if(!mediaBounds.executeStep() || (!mediaBounds.getColumn(0).isNull() && frames>mediaBounds.getColumn(0).getInt64())) {
+            err="audio attachment exceeds its media or media is missing";return false;
+        }
+        SQLite::Statement q(c.db,"INSERT INTO audio_clips(clip_id,media_id,src_len_frames) VALUES(?,?,?)");
+        q.bind(1,p.at("id").get<std::int64_t>()); q.bind(2,p.at("media").get<std::int64_t>());q.bind(3,frames);q.exec();return true;
+    } catch(const std::exception& e){err=e.what();return false;}
+}
+bool audioDetachApply(OpContext& c, const Payload& p, std::string& err) {
+    try { SQLite::Statement q(c.db,"DELETE FROM audio_clips WHERE clip_id=?");q.bind(1,p.at("id").get<std::int64_t>());
+        if(q.exec()!=1){err="no audio attachment";return false;} return true;
+    } catch(const std::exception& e){err=e.what();return false;}
+}
+bool audioDetachInverse(OpContext& c,const Payload& p,Payload& inv,std::string& err) {
+    try {
+        // Refuse lossy removal: this simple pair owns only untouched attachments.
+        SQLite::Statement q(c.db,"SELECT media_id,src_len_frames FROM audio_clips WHERE clip_id=? AND src_start_frames=0 AND warp_enabled=0 AND warp_mode='none' AND warp_markers IS NULL AND transpose_semis=0 AND formant_shift=0 AND reverse=0 AND channel_mode=0");
+        q.bind(1,p.at("id").get<std::int64_t>());
+        if(!q.executeStep()){err="audio attachment has edits or is missing";return false;}
+        inv={{"id",p.at("id")},{"media",q.getColumn(0).getInt64()},{"frames",q.getColumn(1).getInt64()}};return true;
+    } catch(const std::exception& e){err=e.what();return false;}
 }
 
 bool clipMoveApply(OpContext& c, const Payload& p, std::string& err) {
@@ -925,7 +1018,9 @@ constexpr Field kFClipCreate[] = {{"id", FieldType::Int, true},
                                   {"kind", FieldType::Text, true},
                                   {"name", FieldType::Text, false},
                                   {"pos", FieldType::Int, true},
-                                  {"length", FieldType::Int, true}};
+                                  {"length", FieldType::Int, true},
+                                  {"audio", FieldType::Object, false}};
+constexpr Field kFAudioAttach[] = {{"id",FieldType::Int,true},{"media",FieldType::Int,true},{"frames",FieldType::Int,true}};
 constexpr Field kFClipMove[] = {{"id", FieldType::Int, true},
                                 {"to", FieldType::Int, true},
                                 {"track", FieldType::Int, true}};
@@ -1829,6 +1924,10 @@ const OpDescriptor kHandWritten[] = {
      kFClipCreate, false, false, clipCreateApply, clipCreateInverse, "clip.delete"},
     {"clip.delete", "Delete a clip", Scope::Edit, EngineImpact::Snapshot,
      kFId, false, false, clipDeleteApply, clipDeleteInverse, "clip.create"},
+    {"clip.attachAudio", "Attach audio to a clip", Scope::Edit, EngineImpact::GraphRebuild,
+     kFAudioAttach, false, false, audioAttachApply, clipCreateInverse, "clip.detachAudio"},
+    {"clip.detachAudio", "Detach unedited audio", Scope::Edit, EngineImpact::GraphRebuild,
+     kFId, false, false, audioDetachApply, audioDetachInverse, "clip.attachAudio"},
     {"clip.move", "Move a clip in time, and optionally to another track",
      Scope::Edit, EngineImpact::Snapshot, kFClipMove, false, false,
      clipMoveApply, clipMoveInverse, ""},

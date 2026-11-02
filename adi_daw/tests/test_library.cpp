@@ -146,7 +146,7 @@ void foreignDatabases() {
     auto newer=temp.path()/"newer.sqlite";
     {SQLite::Database db(media::pathUtf8(newer),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);db.exec("PRAGMA application_id=1094994252;PRAGMA user_version=2;");}
     check(!library::Index::open(newer,error),"future version refused");
-    StoreError storeError;auto project=Store::create(temp.path()/"song.adi",storeError);project->close();project.reset();
+    StoreError storeError;auto project=Store::createEmpty(temp.path()/"song.adi",storeError);project->close();project.reset();
     check(!library::Index::open(temp.path()/"song.adi",error),"adi project refused as library");
     check(!library::Index::open({},error),"empty caller path refused");
 }

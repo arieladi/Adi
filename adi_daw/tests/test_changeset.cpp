@@ -57,7 +57,7 @@ struct Fixture {
     std::unique_ptr<Store> store;
     explicit Fixture(const char* n) : temp("changeset", n), path(temp.path() / "p.adi") {
         StoreError e = StoreError::Ok;
-        store = Store::create(path, e);
+        store = Store::createEmpty(path, e);
         if (!store) return;
         store->db().exec("INSERT INTO project(id,name) VALUES (1,'Song')");
         OpJournal j(*store);

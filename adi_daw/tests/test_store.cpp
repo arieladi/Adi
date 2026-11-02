@@ -9,6 +9,9 @@
 
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
+#include "adi/engine/snapshot.hpp"
+#include "adi/history.hpp"
+#include "adi/ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -98,6 +101,47 @@ void testCreateAndOpen() {
           "create() refuses to overwrite an existing file");
 }
 
+void testNewProjectDefaults() {
+    section("N1 -- New has a project row at 44.1 kHz before its first edit");
+    Scratch scratch("defaults");
+    StoreError error{};
+    const auto path = scratch / "new.adi";
+    auto store = Store::create(path, error);
+    check(store && error == StoreError::Ok, "New succeeds");
+    if (!store) return;
+    auto& db = store->db();
+    check(db.execAndGet("SELECT count(*) FROM project WHERE id=1 AND name='Untitled' "
+                        "AND sample_rate=44100 AND ppq=5765760").getInt() == 1,
+          "New has the singleton row, its name, sample rate and exact PPQ");
+    check(engine::SnapshotBuilder::fromStore(*store)->sampleRate == 44100,
+          "the window reads 44.1 kHz from the new project's snapshot");
+    check(db.execAndGet("SELECT count(*) FROM ops").getInt() == 0 &&
+          db.execAndGet("SELECT head_seq IS NULL FROM op_branches WHERE is_current=1").getInt() == 1,
+          "initialization is at the history root, without a rename undo step");
+    OpJournal journal(*store);
+    OpRequest rename;
+    rename.opType = "project.setName";
+    rename.payload = {{"name", "Renamed"}};
+    check(journal.commit(rename).ok && db.execAndGet("SELECT name FROM project").getString() == "Renamed",
+          "project.setName changes a freshly created file");
+    History history(*store);
+    check(history.undo().ok && db.execAndGet("SELECT name FROM project").getString() == "Untitled",
+          "undo of the first edit returns to the initialized row");
+    check(!history.undo().ok && db.execAndGet("SELECT sample_rate FROM project").getInt() == 44100,
+          "undo cannot remove the initial project row or its rate");
+    check(history.redo().ok, "the first edit can be redone");
+    store.reset();
+    store = Store::open(path, error);
+    check(store && store->db().execAndGet("SELECT name FROM project").getString() == "Renamed" &&
+          engine::SnapshotBuilder::fromStore(*store)->sampleRate == 44100,
+          "the name and rate survive close and reopen");
+    const auto empty = Store::createEmpty(scratch / "import.adi", error);
+    check(empty && empty->db().execAndGet("SELECT count(*) FROM project").getInt() == 0,
+          "a converter can explicitly create only the schema");
+    check(empty && engine::SnapshotBuilder::fromStore(*empty)->sampleRate == 44100,
+          "the snapshot fallback also follows the new-project default");
+}
+
 // --- SPEC 3.3: the WAL sidecar rule -----------------------------------------
 
 void testWalSidecarRule() {
@@ -106,7 +150,7 @@ void testWalSidecarRule() {
     const auto p = s / "song.adi";
 
     StoreError err = StoreError::Ok;
-    auto st = Store::create(p, err);
+    auto st = Store::createEmpty(p, err);
     check(st != nullptr, "created");
     if (!st) return;
 
@@ -210,7 +254,7 @@ void testBlobRoundTrip() {
     const auto p = s / "song.adi";
 
     StoreError err = StoreError::Ok;
-    auto st = Store::create(p, err);
+    auto st = Store::createEmpty(p, err);
     check(st != nullptr, "created");
     if (!st) return;
 
@@ -276,7 +320,7 @@ void testSchemaMatchesFile() {
     Scratch s("schema");
     const auto p = s / "song.adi";
     StoreError err = StoreError::Ok;
-    auto st = Store::create(p, err);
+    auto st = Store::createEmpty(p, err);
     check(st != nullptr, "created");
     if (!st) return;
 
@@ -306,6 +350,7 @@ int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_store_tests -- SPEC 2, 3, 11 and ADR-0009\n\n");
     testCreateAndOpen();
+    testNewProjectDefaults();
     testWalSidecarRule();
     testIdentityAndVersionGates();
     testBlobRoundTrip();

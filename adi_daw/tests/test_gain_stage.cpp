@@ -36,7 +36,7 @@ struct Fixture {
     std::unique_ptr<Store> store;
     Session session;
     explicit Fixture(int block=512,double amplitude=0.1,bool synth=true,bool silence=false) {
-        StoreError error{}; store=Store::create(dir.path()/"stage.adi",error);
+        StoreError error{}; store=Store::createEmpty(dir.path()/"stage.adi",error);
         if(!store) throw std::runtime_error("store");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
             "(1,'audio','Audio',0),(2,'midi','Instrument',1),(3,'group','Group',2),(9,'master','Master',3);"
