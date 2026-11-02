@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 #include <chrono>
 namespace adi::ui {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
@@ -117,6 +118,27 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     if (!result.ok || !synchronise())
         return false;
     feed_.publish(session_);
+    return true;
+}
+bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
+    // A new pool row takes the next id; a file already in the pool keeps its own (the capture
+    // reuses it by content).
+    const auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    OpRequest captured;
+    const auto result = media::prepareImport(*store_, pathFromUtf8(utf8Path), id, nowUtc, captured);
+    if (!result.ok) {
+        error_ = result.error.empty() ? "The file could not be read." : result.error;
+        return false;
+    }
+    if (!result.audio || result.audio->frames <= 0 || result.audio->sampleRate <= 0) {
+        error_ = "That file holds no audio ADI can play.";
+        return false;
+    }
+    out.mediaId = result.mediaId;
+    out.sampleRate = result.audio->sampleRate;
+    out.frames = result.audio->frames;
+    out.media = std::move(captured);
+    error_.clear();
     return true;
 }
 bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &,

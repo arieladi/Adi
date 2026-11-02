@@ -157,6 +157,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 return ok;
             };
         }
+        root->importAudio = [this](const std::string &path, AudioImport &out, std::string &why) {
+            // The history's clock: microseconds UTC.
+            const auto now = juce::Time::currentTimeMillis() * 1000;
+            if (document_->prepareImport(path, now, out))
+                return true;
+            why = document_->error();
+            return false;
+        };
         root->afterEdit = [this] {
             if (!document_->synchronise())
                 report(document_->error());

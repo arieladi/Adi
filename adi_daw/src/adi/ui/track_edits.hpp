@@ -22,6 +22,7 @@ namespace adi::ui {
 struct TrackEdit {
     std::vector<OpRequest> ops;
     std::int64_t select = 0; // the track to select once the batch lands
+    std::int64_t clip = 0;   // the clip to select with it; 0 for none
     std::string refusal;     // why nothing is done; empty when the ops are ready
 };
 // The snapshot's tracks, as `engine::Snapshot::tracks` holds them.

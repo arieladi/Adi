@@ -1615,9 +1615,18 @@ std::int64_t ArrangementCanvas::clipEdge(std::int64_t tick, bool forward) const 
 bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
     return files.size() == 1;
 }
-void ArrangementCanvas::filesDropped(const juce::StringArray &, int, int) {
-    // There is no undoable path from a file to a clip that plays yet, and step 7
-    // writes no rows of its own (STEP-7-PLAN §3.0; collab/window.md, N5).
-    view.root.say("Dropping audio onto a track waits for the engine's audio-clip op.");
+void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int y) {
+    // Live's drop (manual 6.1): the clip starts where the file was dropped, on the nearest grid
+    // line while snapping; on a track's lane, that track; below the tracks, a new one. The clip is
+    // named after the file, as Live names it.
+    if (files.isEmpty())
+        return;
+    const auto raw = std::max<std::int64_t>(0, view.geometry.tick(x));
+    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+    const auto at = !view.snaps(juce::ModifierKeys::currentModifiers) ? raw : (raw - down <= up - raw ? down : up);
+    const auto *track = view.geometry.trackAt(view.reader(), y);
+    const auto file = juce::File::createFileWithoutCheckingPath(files[0]);
+    view.root.dropAudio(files[0].toStdString(), track != nullptr ? track->id : 0, at,
+                        file.getFileNameWithoutExtension().toStdString());
 }
 } // namespace adi::ui

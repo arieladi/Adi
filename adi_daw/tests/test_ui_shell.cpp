@@ -2,6 +2,8 @@
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
+#include "adi/audio/wav_file.hpp"
+#include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
@@ -12,6 +14,7 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <new>
 #include <thread>
 #include <tuple>
@@ -937,6 +940,112 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     render("adi-sends.png");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+}
+// Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
+// after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
+// makes a new audio track. Each drop is one undo step (#308).
+void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "drop.adi", err);
+    check(store != nullptr, "the drop's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Drop')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    bool madeAll = true;
+    for (const auto &[id, kind, name] : {std::tuple{1, "audio", "Drums"}, std::tuple{2, "midi", "Keys"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    check(madeAll, "an audio track and a MIDI track");
+    // One second at 48 kHz: two beats at the default 120 BPM.
+    const auto wav = dir / "Kick 808.wav";
+    {
+        std::vector<float> samples(48000, .25f);
+        audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "drop");
+    // What the document does (ProjectDocument::prepareImport), on this scene's store.
+    root.importAudio = [&store](const std::string &path, AudioImport &out, std::string &why) {
+        OpRequest captured;
+        const auto id = store->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+        const auto r = media::prepareImport(*store, media::pathFromUtf8(path), id, 1, captured);
+        if (!r.ok || !r.audio) {
+            why = r.ok ? "not audio" : r.error;
+            return false;
+        }
+        out.mediaId = r.mediaId;
+        out.sampleRate = r.audio->sampleRate;
+        out.frames = r.audio->frames;
+        out.media = std::move(captured);
+        return true;
+    };
+    root.setSize(1200, 720);
+    root.frame();
+    root.frame();
+    auto &geometry = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const auto path = juce::String(wav.string());
+    // A little past bar 2: the clip starts on its line.
+    const auto bar2 = textproj::kWhole;
+    const int x = static_cast<int>(geometry.x(bar2) + 3);
+    canvas.filesDropped(juce::StringArray{path}, x, laneTop(root, 1) + 10);
+    root.frame();
+    const auto *drums = root.reader().findTrack(1);
+    check(drums != nullptr && drums->clips.size() == 1 && drums->clips[0]->name == "Kick 808" &&
+              drums->clips[0]->posTicks == bar2 && std::abs(drums->clips[0]->lengthTicks - 2 * textproj::kPPQ) <= 1,
+          "dropped on Drums near bar 2: a clip named after the file, on bar 2, two beats long");
+    check(geometry.selection.track == 1 && geometry.selection.clip == drums->clips[0]->id &&
+              submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip" &&
+              submitter.nextUndo()->opCount == 3,
+          "the clip is selected; one undo step");
+    canvas.filesDropped(juce::StringArray{path}, x, laneTop(root, 2) + 10);
+    root.frame();
+    check(root.reader().findTrack(2)->clips.empty() && root.error().find("audio track") != std::string::npos,
+          "on the MIDI track: refused, and the Status Bar says where it goes");
+    // Below the tracks, the drop area: a new audio track holding the clip; the pool row is reused.
+    const int below = laneTop(root, 2) + geometry.heightFor(2) + 20;
+    check(geometry.trackAt(root.reader(), below) == nullptr, "below the tracks is the drop area");
+    canvas.filesDropped(juce::StringArray{path}, x, below);
+    root.frame();
+    const auto *added = root.reader().findTrack(3);
+    check(added != nullptr && added->kind == "audio" && added->clips.size() == 1 && geometry.selection.track == 3 &&
+              store->db().execAndGet("SELECT count(*) FROM media_files").getInt() == 1,
+          "the drop area: a new audio track with the clip, selected; the file pooled once");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true,
+                          juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-audio-drop.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    }
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(root.reader().findTrack(3) == nullptr && root.reader().findTrack(1)->clips.size() == 1,
+          "takes the new track away; the first clip stays");
+    // A file that is not audio is refused with the reason.
+    const auto text = dir / "notes.txt";
+    {
+        std::ofstream(text) << "not audio";
+    }
+    canvas.filesDropped(juce::StringArray{juce::String(text.string())}, x, laneTop(root, 1) + 10);
+    root.frame();
+    check(root.reader().findTrack(1)->clips.size() == 1 && !root.error().empty(), "a text file is refused, with the reason");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
@@ -2473,11 +2582,13 @@ int main(int argc, char **argv) {
         arrangement.changed();
         const auto opsBeforeDrop =
             document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
-        arrangement.canvas.filesDropped(juce::StringArray{"kick.wav"}, 10, 70);
+        arrangement.canvas.filesDropped(
+            juce::StringArray{juce::File::getCurrentWorkingDirectory().getChildFile("no-such-kick.wav").getFullPathName()},
+            10, 70);
         check(!integrated.error().empty() &&
                   document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
                       opsBeforeDrop,
-              "an audio drop says it waits for the engine and writes nothing");
+              "a drop the window can't import says why and writes nothing");
         {
             UiPeerRoot peerRoot;
             peerRoot.setSize(integrated.getWidth(), integrated.getHeight());
@@ -3728,6 +3839,7 @@ int main(int argc, char **argv) {
     groupTracks(commands, temp.path());
     footRows(commands, temp.path());
     sendKnobs(commands, temp.path());
+    audioDrop(commands, temp.path());
     mixViewShell(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;

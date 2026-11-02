@@ -1010,6 +1010,29 @@ bool AdiRootComponent::deleteTrack() {
     publishSelection();
     return true;
 }
+bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos,
+                                 const std::string &name) {
+    // Where it lands is checked before the file is read; the batch is built from the CURRENT cell.
+    if (!view_.current())
+        return fail("Dropping audio needs an open project.");
+    if (auto refusal = audioDropRefusal(*view_.current(), track); !refusal.empty())
+        return fail(std::move(refusal));
+    if (!importAudio)
+        return fail("Dropping audio needs an open project.");
+    AudioImport import;
+    std::string why;
+    if (!importAudio(utf8Path, import, why))
+        return fail(why.empty() ? "The file could not be imported." : why);
+    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, name, std::move(import));
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.geometry.selection.track = edit.select;
+    arrangement.geometry.selection.clip = edit.clip;
+    publishSelection();
+    return true;
+}
 bool AdiRootComponent::groupTracks(bool ungroup) {
     // From the CURRENT cell, as every action is; the batch is one undo step, labelled as Live's
     // Edit menu names it.
