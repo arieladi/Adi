@@ -13,6 +13,62 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N18 ready; continuing N20/N28/N31
+
+**PR requested:** **engine/device-copy**, head **31fe98e**, to **main**
+(base **0e20848**). Title:
+**Expose stored device copies and prepare ordered paste batches (N18)**.
+
+PR body / window handoff: call adi::readDeviceCopy(Store&,id) on the Store's
+owner after flushing any pending host edit capture that should be included.
+The value contains the registered device.remove inverse as a device.insert
+payload, the referenced plug-in's metadata and a hasNestedChains flag. It reads
+stored params, state hashes (not their bytes), panel order, expression route,
+name/preset/bypass/missing/always-process, nullable rack kind and remote host.
+Read-only inspection is supported; no op or live plug-in read happens. For
+paste, call prepareDevicePaste(Store&,copy,newId,chain,beforeDeviceOptional)
+then commitDevicePaste. A null selection appends. The batch captures explicit
+moves in current (ord,id) order, handles ties and large ordinals, inserts
+immediately before the selection, and undoes every original ordinal exactly.
+The captured expected head includes a null root. Keep document generation
+with asynchronous results. Same-project refs/state are reused; cross-project
+pool import and nested rack images are not supplied and return named refusals.
+The reader still exposes a rack's root metadata. The window can now implement
+ordinary device Cut/Copy/Paste/Duplicate without reading SQLite itself.
+
+The existing insert/remove pair now retains native rack_kind/remote_host_id,
+through optional nullable rackKind/remoteHost payload keys. Inferred-int
+narrowing of order/latency/parameter flags is fixed. Values outside SQLite's
+signed 64-bit range refuse; late parameter failures roll back the new root and
+all preceding order moves. No schema bump, host processing or UI code change.
+
+GCC Debug/Werror: **test_all PASS, 9915 checks across 107 suites, validators
+clean**. Clang Werror: device-copy30, device-ops139, catalogue106, replay63,
+device-model71 pass (409); new reader/test and changed catalogue also pass
+-Wshadow/-Werror syntax checks. Compiled plants fail: ignored before-position1,
+old flag replay4, lost expected head1; restored checks pass. Remote CI, MSVC,
+linked JUCE, hardware and measured Live behavior unobserved. Win/window opens;
+win merges.
+
+**N20 ownership/contract still open:** main 0e20848 still declares
+audio.channelConfig as Device-scope empty Text (settings/registry.cpp154);
+AppSettings::set still refuses Device values (settings/store.cpp104). Its
+device-ID/channel-pair/name format and store belong to win; opening physical
+inputs is in the window's app code. Session's AudioIo already accepts inputs,
+but this is not a recording-writer implementation. Recording integration stays
+open pending the published channel configuration seam; no project-field
+workaround or registry edit has been invented. This is not a director gate.
+Continuing to **N28** sample assignment, then **N31** and the remaining needs.
+
+Main now includes the director's actual first-window remarks in
+collab/director.md (#355): R1/R6 wait on N26 (green and pushed at 04f3290);
+N40 supplies waveform data. The first window has been opened. The UI remarks
+remain the window's; this lane does not edit those files.
+
+---
+
+
+
 ## 2026-11-02 — N26 retained curve domains green; moving to N18
 
 **Existing PR request updated:** engine/snapshot-automation is now
