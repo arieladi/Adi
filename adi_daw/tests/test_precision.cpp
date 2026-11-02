@@ -551,7 +551,7 @@ struct Project {
 
     Project() {
         StoreError error{};
-        store = Store::create(dir.path() / "session.adi", error);
+        store = Store::createEmpty(dir.path() / "session.adi", error);
         if (!store) throw std::runtime_error("create project");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1000,'master','Master',999)");
     }

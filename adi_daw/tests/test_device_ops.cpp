@@ -66,7 +66,7 @@ constexpr const char* kHash2 = "b3bbbb0000000000000000000000bbbb";
 /// test starts where the interesting part begins.
 std::unique_ptr<Store> project(const fs::path& p) {
     StoreError err = StoreError::Ok;
-    auto st = Store::create(p, err);
+    auto st = Store::createEmpty(p, err);
     if (!st) return st;
     st->db().exec("INSERT INTO project(id,name) VALUES (1,'Devices')");
     for (const char* h : {kHash, kHash2}) {

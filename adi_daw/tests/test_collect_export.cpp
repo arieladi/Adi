@@ -24,7 +24,7 @@ struct Fixture {
     adi::test::TempDirectory temp{"collect_export", "project"};
     std::unique_ptr<Store> store;
     Fixture() {
-        StoreError error; store = Store::create(temp.path() / "song.adi", error);
+        StoreError error; store = Store::createEmpty(temp.path() / "song.adi", error);
         if (!store) throw std::runtime_error("fixture create");
         store->db().exec("INSERT INTO project(id,name) VALUES(1,'Export')");
     }

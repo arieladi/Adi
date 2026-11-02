@@ -40,7 +40,7 @@ struct Fixture {
     Session session;
     std::vector<float> media;
     explicit Fixture(std::uint32_t rate=48000,std::uint16_t channels=2,std::uint32_t frames=100000,double hz=0) {
-        StoreError error{};store=Store::create(dir.path()/"session.adi",error);
+        StoreError error{};store=Store::createEmpty(dir.path()/"session.adi",error);
         if(!store)throw std::runtime_error("create project");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'audio','Audio',0),(9,'master','Master',1)");
         media.resize(static_cast<std::size_t>(frames)*channels);
