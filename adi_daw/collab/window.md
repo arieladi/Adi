@@ -73,6 +73,24 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — #318 to #329 merged; #330's conflict; #350's MSVC timeout
+
+**Merged into main** (16:07–16:10 UTC): #318, #319, #320, #321, #322, #323, #325, #326, #327, #328 and
+#329. No open needs row was fulfilled by them, so none is struck. The stack now starts at #331 (on
+`window/range-selection`, merged; a trial merge of main into it is clean).
+
+**#330 (`window/new-project-root`) conflicted with main** in `tests/test_ui_shell.cpp`: main added
+the send knobs, audio drop, range selection and Mix View scenes where #330 added the New scene.
+Merged main into the branch (no rebase): both kept, New after the foot's scene, and #330's
+integrated scene still opens a project as an earlier build made it. Main's own audio drop document test (#327) then failed: it created its audio track as id 2, which New's default Set already holds; it now takes id 6, as #330's other document tests do. `test_all.sh` PASS (9888 checks, 106 suites), shell 619; pushed (10d8b0d, eab4b28).
+
+**#350's `windows x86_64 · msvc · ms stl` failed**: `adi_mixer_tests` (the engine's mixer)
+timed out after the other 104 tests passed. #350 touches window code only, and #351, which carries
+its code, passed the same job. The re-run was refused while the run's macOS jobs are queued; one
+comment on #350 says so, and the re-run waits for the run to finish.
+
+---
+
 ## 2026-11-02, cloud, continued — several files dropped at once [#352](https://github.com/arieladi/Adi/pull/352) `window/multi-drop`, on #351
 
 **Built: several audio files dropped at once** (parity 7.3 row 19). They go one after another on
