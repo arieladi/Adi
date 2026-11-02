@@ -13,6 +13,65 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N17 continuation: Delete Time preserves the whole Set
+
+**Existing PR request updated, not a second N17 PR:** engine/phase-c-editing
+-> main, head **ceeacbc2b143c87667faa7adbd6adf3556d426a9** (after 53556ae).
+**Title:** Add captured range edits, fades, time deletion and import/bounce actions (N17)
+**Body / window handoff:** The existing clip_commands.hpp entry points now also
+include prepareDeleteTime(Store&, beginTicks, endTicks, referenceRate). It
+removes the selected musical time across every track as one guarded
+arranger.splice undo step, trimming crossing clips and moving remaining tick/ns
+clips. Linear objects use the old tempo map's integrated physical duration.
+Unwarped audio source/loop/fade clocks stay pinned before movement; playback
+matches the original with only the selected samples removed, including
+resampling, loops and both native precisions. Global automation preserves its
+original curve domains on both sides of the join, with coincident boundary
+guards, original surviving 64-bit identities/flags/trailer, and fresh captured
+boundary IDs. End-context tempo, meter and key events survive at the join;
+removed key tunings and every composite degree row are captured for undo.
+Locators/cycles in either clock, arranger sections and their playlist references,
+declared project end and saved loop follow the cut. The window uses
+commitPrepared with the captured expected head and its own document generation.
+No UI production change; ENGINE-EDIT-COMMANDS.md and OPS.md describe the API.
+Existing material, fades, import/bounce and Insert Silence APIs remain in this
+same PR, as detailed in the original handoff below.
+
+The row-delta wire format keeps integer ids for every old single-key packet;
+composite key_map_degrees uses {key_map_id,degree}. FK guards group all columns
+of a composite reference. Full typed NULL/empty/future BLOB data is preserved,
+and parent restoration works with arbitrary packet order. Existing Insert
+Silence also keeps future fields when splitting an already retained curve range.
+No new schema/opcode beyond N17's existing 1.10 additions. Fully deleting the
+saved loop provisionally disables it and retains its old positive bracket length
+at the join; this specific Live behavior remains unmeasured, and is documented.
+
+**Validation:** final GCC14 Debug/Werror/PD ON/JUCE OFF full runner has **10423
+checks across 110 C++ suites, all passing**; every binary result line was checked.
+The ONLY failed validator is the already reported win-owned README table count,
+**51 vs 53** for this N17 schema. Win updates that count during integration;
+README was not edited. All other schema/frozen migrations, ops/Pd/CI/layout
+validators pass. GCC + Clang19 time-edit **245**, captured rows **36**, clip edits
+**172**, actual playback **199**; Clang replay **63**. Strict GCC shadow checks
+pass on seven changed sources. Compiled defects caught: wrong join value (4),
+unmoved right pieces (8), lost arranger parent ordering (1), partial composite
+FK matching (2). Tests include exact whole-state undo/redo/reopen, late SQL
+rollback, stale head, future tuning/arranger bytes, all six curves with positive/
+negative tension in both clocks and repeated insert/delete, boundary clusters,
+and exact heard 44.1/48-kHz resampled sources, both widths. No MSVC/remote CI/
+Live-measured claim. Main remains 0cadd72; window/log49b597d adds no new need/CI.
+
+**N17 remains open:** full global Copy/Cut/Paste/Duplicate Time is next (the
+existing insertTime flag still pastes material only), then Auto-Warp detection/
+warp playback and video attachment/general alias/consolidation work. A normalized
+automation clipboard draft is already in progress locally. This is not a
+director gate; continuing the queue as instructed. GitHub API remains blocked;
+win/window updates or opens the existing requested PR, without a director relay.
+
+---
+
+
+
 ## 2026-11-02 — N42 one persistent Pre/Post choice on each return
 
 **PR requested:** engine/return-send-tap -> main, head **bf83f66**.
