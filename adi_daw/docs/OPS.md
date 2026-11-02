@@ -600,7 +600,7 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.play` | t | N | — | P0 |
 | `transport.stop` | t | N | — | P0 |
 | `transport.seek` | t | N | — | P0 |
-| `transport.setLoop` | t | N | — | P0 |
+| `transport.setLoop` | t | S | — | P0 |
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
 | `controller.bind` | e | N | cap | P1 |
@@ -611,6 +611,20 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `controller.setTakeover` | h | N | sym | P2 |
 | `extension.write` | e | N | cap | P1 |
 | `extension.delete` | e | N | cap | P1 |
+
+`transport.setLoop` stores `{on, start?, end?}` in the session layer. Bounds
+are musical ticks, nonnegative start and end strictly after start. Omitted bounds
+retain the last window (initially four 4/4 bars from zero). `transport.setMetronome`
+stores `{on}` there. Both remain ephemeral performance ops: journaled for audit,
+excluded from undo and musical digests. No inverse is built. A failed batch rolls
+back session metadata along with its ops. Their Snapshot impact asks the caller
+to refresh ProjectView and Session after commit. Snapshot `transport` carries the
+saved values; Session applies loop changes on the driver at the next callback,
+and renders the metronome only while playing, aligned to the graph's actual
+compensated output latency, including loop wraps. Default output is the first stereo
+pair, outside Main's device/fader chain; Cue Out selection follows N23. Offline
+export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
+loop/click choices do not change rendered material.
 
 `controller.bind` (ADR-0195 d3) takes `{id, binding}`; binding names all
 14 non-id columns of `controller_maps`, including explicit nulls. It inserts

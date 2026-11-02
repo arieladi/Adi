@@ -222,6 +222,7 @@ add_library(adi_core STATIC
     # which is also why it is built on every ABI including the ones where the
     # runtime below is not.
     src/juce/pd_declarations.cpp
+    src/adi/transport_settings.cpp
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
@@ -710,6 +711,10 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 # device contract at every block size. No JUCE, so it runs on all seven
 # ABIs; the JUCE half (adi_play) only has to prove a device callback
 # reaches it.
+add_executable(adi_transport_settings_tests tests/test_transport_settings.cpp)
+target_link_libraries(adi_transport_settings_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_settings_tests COMMAND adi_transport_settings_tests)
+
 add_executable(adi_session_tests tests/test_session.cpp)
 target_link_libraries(adi_session_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_tests COMMAND adi_session_tests)
