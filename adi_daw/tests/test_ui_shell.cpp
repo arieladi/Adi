@@ -2047,6 +2047,60 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     canvas.mouseUp(pressAt(canvas, {x(bar) + 1, lane(4)}));
     check(geo.selection.track == 4 && geo.selection.toTrack == 0 && !geo.inSelection(root.reader(), 1),
           "a plain click selects in one track again");
+    // Live's "Select Multiple Items" (Ctrl/Cmd+click, §42.5) on clips: picked one by one, apart from
+    // one another; 0 and Delete act on them all, one undo step each; a plain click lets them go.
+    {
+        const auto pick = juce::ModifierKeys::commandModifier;
+        auto clickClip = [&](std::int64_t track, juce::ModifierKeys mods = {}) {
+            const juce::Point<float> at(x(bar) + 10, lane(track));
+            canvas.mouseDown(pressAt(canvas, at, mods));
+            canvas.mouseUp(pressAt(canvas, at, mods));
+        };
+        clickClip(1);
+        clickClip(3, pick);
+        root.frame();
+        check(geo.selection.clip == 11 && geo.selection.pickedClips == std::vector<std::int64_t>{13} &&
+                  geo.clipSelected(13) && !geo.clipSelected(12),
+              "the clip on track 1 clicked, then Ctrl/Cmd+click on track 3's: both selected, track 2's not");
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+            juce::Image shot(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(shot);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile("adi-picked-clips.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
+        }
+        check(canvas.keyPressed(juce::KeyPress('0')), "0");
+        root.frame();
+        check(clipOf(1)->muted && clipOf(3)->muted && !clipOf(2)->muted && submitter.nextUndo()->label == "Deactivate Clips" &&
+                  submitter.nextUndo()->opCount == 2,
+              "0 deactivates both picked clips, one step; the one between stays");
+        check(canvas.keyPressed(juce::KeyPress('0')), "0 again");
+        root.frame();
+        check(!clipOf(1)->muted && !clipOf(3)->muted && submitter.nextUndo()->label == "Activate Clips", "activates them");
+        clickClip(3, pick);
+        check(geo.selection.clip == 11 && geo.selection.pickedClips.empty(), "Ctrl/Cmd+click on track 3's again lets it go");
+        clickClip(2, pick);
+        clickClip(4, pick);
+        check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete");
+        root.frame();
+        check(root.reader().findTrack(1)->clips.empty() && root.reader().findTrack(2)->clips.empty() &&
+                  root.reader().findTrack(4)->clips.empty() && root.reader().findTrack(3)->clips.size() == 1 &&
+                  submitter.nextUndo()->label == "Delete Clips" && geo.selection.clip == 0 && geo.selection.pickedClips.empty(),
+              "Delete removes the three picked, one step; the one left out stays, and nothing is selected");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(root.reader().findTrack(1)->clips.size() == 1 && root.reader().findTrack(2)->clips.size() == 1 &&
+                  root.reader().findTrack(4)->clips.size() == 1,
+              "brings the three back");
+        clickClip(2);
+        check(geo.selection.clip == 12 && geo.selection.pickedClips.empty(), "a plain click selects one clip again");
+        clickClip(4);
+    }
     // Live's Ctrl/Cmd+click on track titles picks tracks apart from one another; Solo and Group Tracks
     // take them all; a plain click lets them go.
     auto &headers = root.arrangement.headers;
