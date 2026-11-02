@@ -24,6 +24,13 @@ juce::String text(const Value &v) {
             parts.add(text(item));
         return parts.joinIntoString("; ");
     }
+    if (v.is_object()) {
+        // A table (window.zoom, N4): its rows, "name = value".
+        juce::StringArray parts;
+        for (const auto &[name, item] : v.items())
+            parts.add(juce::String::fromUTF8(name.c_str()) + " = " + text(item));
+        return parts.joinIntoString("; ");
+    }
     return {};
 }
 // A list typed in the box: one entry per ";", blanks dropped.
@@ -108,10 +115,13 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
         [[fallthrough]];
     case Type::Text:
     case Type::Path:
-    case Type::PathList: {
+    case Type::PathList:
+    case Type::Table: {
         auto editor = std::make_unique<juce::TextEditor>();
         editor->setFont(look::font(12.f));
         editor->setIndents(4, 2);
+        // A table is kept by the windows themselves (window.zoom, N4): shown, not typed.
+        editor->setReadOnly(s.type == Type::Table);
         auto *raw = editor.get();
         auto send = [this, raw] {
             switch (setting.type) {
@@ -123,6 +133,8 @@ SettingRow::SettingRow(SettingsPanel &panel, const settings::Setting &s)
                 break;
             case Type::PathList:
                 commit(list(raw->getText()));
+                break;
+            case Type::Table:
                 break;
             default:
                 commit(raw->getText().toStdString());
@@ -180,6 +192,7 @@ void SettingRow::resized() {
     case Type::Text:
     case Type::Path:
     case Type::PathList:
+    case Type::Table:
         width = std::max(kWide, getWidth() - kControlX - 16);
         break;
     case Type::Choice:

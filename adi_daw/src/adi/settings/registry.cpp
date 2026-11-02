@@ -65,7 +65,8 @@ void liveSections(std::vector<Setting>& r) {
     static const std::vector<std::pair<const char*, const char*>> table = {
         // Display & Input
         {"lookfeel.language", "Display"},
-        {"lookfeel.zoomOnSelection", "Display"},  // win's: Live's Zoom Display sits here
+        {"window.zoom", "Display"},
+        {"lookfeel.zoomOnSelection", "Display"},  // win's: beside Live's Zoom Display
         {"lookfeel.focusOutline", "Display Options"},
         {"lookfeel.scrollBars", "Display Options"},
         {"lookfeel.followMode", "Display Options"},
@@ -697,6 +698,13 @@ std::vector<Setting> build() {
                      "manual 6.2). Off: it zooms around the cursor (ADR-0145 d2 as amended by "
                      "ADR-0203).",
                      true, true));
+    r.push_back(ranged("window.zoom", Type::Table, "Display & Input", "Zoom Display",
+                       "Live's Zoom Display, kept per window and per display (ADR-0129 d3; ADR-0203 "
+                       "d11): each window zooms itself with Ctrl/Cmd + and -, and this table is "
+                       "where the result lives, 1 = 100 %, Live's 50 % to 200 %. A row is "
+                       "\"<window>@<display>\", the display named by its geometry and DPI as the "
+                       "floating windows name theirs (N4).",
+                       Value::object(), 0.5, 2.0));
     r.push_back(choice("lookfeel.knobMode", "Display & Input", "Knob drag mode",
                        "How a knob follows the mouse. Vertical is Live's (R-09).",
                        {"vertical", "horizontal", "rotary"}, "vertical", true));
@@ -864,6 +872,7 @@ const char* toString(Type t) {
         case Type::Choice:   return "choice";
         case Type::Path:     return "path";
         case Type::PathList: return "path list";
+        case Type::Table:    return "table";
     }
     return "?";
 }
@@ -965,6 +974,16 @@ bool validate(const Setting& s, const Value& v, std::string& why) {
                 return true;
             why = s.key + " takes a list of folders";
             return false;
+        case Type::Table:
+            if (!v.is_object()) { why = s.key + " takes a table of numbers keyed by text"; return false; }
+            for (const auto& [name, e] : v.items()) {
+                if (!e.is_number() || !std::isfinite(e.get<double>())) {
+                    why = s.key + "[" + name + "] takes a finite number";
+                    return false;
+                }
+                if (!inRange(e.get<double>())) return false;
+            }
+            return true;
         case Type::Choice:
             if (std::find(s.choices.begin(), s.choices.end(), v) != s.choices.end()) return true;
             why = s.key + " does not offer " + v.dump();

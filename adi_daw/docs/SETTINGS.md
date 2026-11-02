@@ -10,7 +10,8 @@ defaults, ADR-0203 (§8). The decisions this library adds are ADR-0152.
 One typed table of every setting:
 
 - **key**, e.g. `audio.bufferSize`. Permanent, like an op name.
-- **type**: bool, int, real, text, choice, path or path list.
+- **type**: bool, int, real, text, choice, path, path list or table (numbers keyed by
+  text, each within the row's range: `window.zoom`, N4).
 - **scope** (R-03 badge): App, Project or Device.
 - **page**: the left-hand list (R-01). Live's ten tab names for the settings Live has
   (ADR-0203 d11; Live 12 manual 2.3), in Live's order, then ADI's own pages.
@@ -66,6 +67,11 @@ clicks away.
 - **Saves are atomic:** a temporary file beside it, then a rename.
 - **A stored value this build finds illegal** (a 32-sample buffer from an older
   build) reads as the default, and stays in the file until the setting changes.
+- **Interface zoom lives here** (N4; ADR-0129 d3, ADR-0203 d11): `window.zoom` is a
+  table, one row per window per display (`"main@0:0:1920:1080:96": 1.25`), read with
+  `windowZoom` and kept with `setWindowZoom` (`store.hpp`). A window names its display
+  by geometry and DPI, as the floating windows name the monitors. Each window zooms
+  itself with Ctrl/Cmd + and -; the Settings page shows the table and does not edit it.
 
 ## 3. The change log
 
@@ -156,11 +162,11 @@ A row is named `<section> / <setting>`: the section as the catalogue heads it,
 and the setting cell up to its first ` (`. Two settings, PTP and AudioGridder
 servers, appear in two sections each, so the section is part of the name.
 
-**226 settings on 22 pages**, Live's ten tabs first (ADR-0203 d11; N14 of the window log):
+**227 settings on 22 pages**, Live's ten tabs first (ADR-0203 d11; N14 of the window log):
 
 | Page | Settings | Notes |
 |---|---|---|
-| Display & Input | 19 | Live's sections Display, Display Options, Navigation and Keyboard, Mouse and Pen Input |
+| Display & Input | 20 | Live's sections Display, Display Options, Navigation and Keyboard, Mouse and Pen Input; Zoom Display is the table of every window's zoom per display |
 | Theme & Colors | 29 | Theme, Customization, Track and Clip Colors; the waveform, fade and meter looks are ADI's, unsectioned |
 | Audio | 26 | Audio Device, Sample Rate, Latency, Test; 2 Device scope |
 | Link | 9 | Live's two switches under Link; PTP; the LAN audio node, labelled as not Link Audio |

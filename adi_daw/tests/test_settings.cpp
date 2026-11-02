@@ -621,6 +621,43 @@ std::vector<CatalogueRow> readCatalogue() {
     return rows;
 }
 
+void testWindowZoom() {
+    section("interface zoom per window and per display: window.zoom (N4; ADR-0129 d3)");
+    const Setting* z = find("window.zoom");
+    check(z && z->type == Type::Table && z->scope == Scope::App && z->page == "Display & Input" &&
+              z->section == "Display" && z->label == "Zoom Display" && z->defaultValue == Value::object(),
+          "the registry row: a table on Display & Input's Display section, Live's label, empty by default");
+    check(z && !z->agentMayChange, "the agent does not zoom the director's windows");
+    std::string why;
+    check(z && validate(*z, Value::object(), why) &&
+              validate(*z, Value({{"main@0:0:1920:1080:96", 1.25}}), why),
+          "an empty table and a table of zooms are legal: " + why);
+    check(z && !validate(*z, 1.25, why), "a bare number is not a table: " + why);
+    check(z && !validate(*z, Value({{"main@a", "big"}}), why), "a text zoom is refused: " + why);
+    check(z && !validate(*z, Value({{"main@a", 3.0}}), why), "300 % is outside Live's 50 to 200: " + why);
+
+    adi::test::TempDirectory temp("settings", "zoom");
+    const auto file = temp.path() / "settings.json";
+    const std::string first = "0:0:1920:1080:96", second = "1920:0:2560:1440:144";
+    {
+        AppSettings s(appdata::App::Daw, file);
+        check(!windowZoom(s, "main", first), "nothing kept yet: the window starts at 100 %");
+        check(setWindowZoom(s, "main", first, 1.25, kUser, why), "keep the main window at 125 %: " + why);
+        check(setWindowZoom(s, "main", second, 1.5, kUser, why), "and at 150 % on the second display");
+        check(setWindowZoom(s, "mixer", first, 0.75, kUser, why), "the mixer window at 75 % on the first");
+        check(!setWindowZoom(s, "main", first, 4.0, kUser, why), "400 % is refused: " + why);
+        check(windowZoom(s, "main", first) == 1.25, "and the refusal changed nothing");
+        check(windowZoom(s, "main", second) == 1.5 && windowZoom(s, "mixer", first) == 0.75,
+              "each window on each display has its own zoom");
+        check(s.save(why), "saved: " + why);
+    }
+    AppSettings again(appdata::App::Daw, file);
+    check(windowZoom(again, "main", first) == 1.25 && windowZoom(again, "mixer", first) == 0.75,
+          "the zooms come back after a relaunch");
+    check(!windowZoom(again, "main", "0:0:3840:2160:96"), "a display not seen before starts at 100 %");
+    check(again.get("window.zoom").size() == 3, "three rows in the table");
+}
+
 void testCatalogue() {
     section("the catalogue: every row a setting, or deliberately absent with a reason (ADR-0156)");
     const auto rows = readCatalogue();
@@ -726,6 +763,7 @@ int runAll() {
     testCorruptKeptAside();
     testApplicationsNeverShare();
     testChangeLog();
+    testWindowZoom();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();

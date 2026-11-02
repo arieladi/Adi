@@ -27,7 +27,9 @@ namespace adi::settings {
 
 using Value = nlohmann::json;
 
-enum class Type { Bool, Int, Real, Text, Choice, Path, PathList };
+/// Table: numbers keyed by text, each within the row's range when it has one
+/// (`window.zoom`: a window's interface zoom per display, N4).
+enum class Type { Bool, Int, Real, Text, Choice, Path, PathList, Table };
 enum class Scope { App, Project, Device };
 
 [[nodiscard]] const char* toString(Type);
@@ -45,7 +47,7 @@ struct Setting {
     std::string help;       // what the Find box searches with the label (R-02)
     Value defaultValue;
     std::vector<Value> choices;   // Type::Choice: the allowed values, in order
-    double min = 0.0;             // Int and Real: inclusive range, when max > min
+    double min = 0.0;             // Int, Real and each Table value: inclusive range, when max > min
     double max = 0.0;
     std::string op;         // Project scope: the op that sets it (OPS.md 9)
     /// ADR-0125 d2: on the agent's whitelist. Off unless someone set it on
