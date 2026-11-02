@@ -73,6 +73,18 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — fragmentary bars [#364](https://github.com/arieladi/Adi/pull/364) `window/fragmentary-bar`, on #363
+
+**Built: Live's fragmentary bar** (parity 7.3 row 11; Live 12 manual 6.5). A change placed before
+the previous bar is complete is drawn as a crosshatched band in the markers' row, from the bar line
+to the change (`forEachFragmentaryBar`, `fragmentAt` in `meters.hpp`). Its menu lists Delete
+Fragmentary Bar Time and Complete Fragmentary Bar (Insert Time), dimmed until the time ops (N17's
+kind); the Status Bar says so.
+
+**Tests.** seams 335, shell 811; `test_all.sh` PASS (10020 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — time signature markers moved [#363](https://github.com/arieladi/Adi/pull/363) `window/meter-move`, on #362
 
 **Built: markers moved by the mouse and the arrow keys** (parity 7.3 row 11; Live 12 manual 6.5).
