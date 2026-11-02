@@ -480,10 +480,14 @@ void MixerStrip::paint(juce::Graphics &g) {
         paintMidiMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
 }
 void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
-    // Live's MIDI meter: a dot that lights while notes play. ADI has no note activity to show it
-    // yet, so it stays dark.
+    // Live's MIDI meter: a column of dots down the meter's place that light while notes play (Live 12
+    // manual, the Mixer in Arrangement View: 2 MIDI). ADI has no note activity to show yet, so they
+    // stay dark.
+    const float d = std::min(5.5f, static_cast<float>(area.getWidth())), pitch = d + 2.5f;
+    const float x = static_cast<float>(area.getCentreX()) - d / 2;
     g.setColour(look::display);
-    g.fillRect(area.withHeight(std::min(area.getHeight(), area.getWidth())));
+    for (float y = static_cast<float>(area.getY()); y + d <= static_cast<float>(area.getBottom()); y += pitch)
+        g.fillEllipse(x, y, d, d);
 }
 void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     // The In/Out column as Live draws an audio track's: where it records from, the
