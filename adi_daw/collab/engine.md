@@ -13,6 +13,41 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N26 ready; continuing to N29
+
+**PR requested** (ADR-0210 d4): `engine/snapshot-automation` at **`6566d8e`**
+→ `main` (base `dff5b41`). Title: **Expose automation lanes, envelopes and runtime overrides (N26)**.
+
+PR body / window handoff: `Snapshot::automationLanes` / `findAutomationLane(id)`
+expose every stored owner/parameter/domain/unit/default/bounds/enabled/visible/
+height field, with arrangement and clip envelopes identified by data id and
+optional clip id. Point ids are the original uint64, times the original ticks/ns
+(clip-relative for clip envelopes); value, curve, tension and flags are readable.
+Invalid envelopes retain an explicit problem and no partial curve. Future AAUT
+tails and corrupt encoded changes participate in sharing. After refreshing the
+Session, call `ProjectView::refresh(store, session.overriddenLanes())`; repeat
+after Session's existing single/all `reenableAutomation` methods. Root
+`automationOverridden` lights Re-Enable; per-lane `overridden` identifies the
+control. Retained frames keep their own flags. The no-set overload is a view
+without a live session; overrides are not persisted or journaled. Every field
+participates in sharing, with unchanged envelope/sibling reuse, and changed
+bounds/time bases revalidate before reuse. `docs/ENGINE-AUTOMATION-SNAPSHOT.md`
+gives the refresh contract. No schema, op or audio playback policy change.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off, **9882 checks / 107 suites**,
+all validators clean. New suite **68**; five Clang Werror suites pass:
+automation snapshot68, engine119, project view14, automation39, parameter
+automation133. Checks cover metadata and envelope identity/sharing, units,
+full-width point ids, retained override frames from a real Session, Re-Enable,
+corrupt/nonfinite/refused streams, bound revalidation, future tails, deletion.
+Three separately compiled plants fail: missing override (1), skipped bound
+revalidation (1), ignored encoded changes (11). No remote CI, MSVC/JUCE or
+measured Live parity result claimed. Win/window opens; win reviews/merges.
+Continuing to **N29**, the complete transaction-based undo list with branch
+membership and snapshot anchors, from current main. No director gate reached.
+
+
+
 ## 2026-11-02 — N25 pushed; continuing to N26
 
 **PR requested** (ADR-0210 d4): `engine/markers-locators` at **`bb846aa`**
