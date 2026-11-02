@@ -880,7 +880,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     audio->sendKnobs()[0]->setValue(-12, juce::sendNotificationSync);
     root.frame();
     const auto *route = findSend(root.reader().sends(), 3, 5);
-    check(route != nullptr && route->gainDb == -12.0 && a.getTextFromValue(a.getValue()) == "-12" &&
+    // A typed value passes the knob's 0.01 dB step from its -70 dB foot, which an FMA rounds once
+    // (Apple Clang on arm64) and two roundings do not: -12 within a hair, not to the bit.
+    check(route != nullptr && std::abs(route->gainDb + 12.0) < 1.e-9 && a.getTextFromValue(a.getValue()) == "-12" &&
               submitter.nextUndo() && submitter.nextUndo()->label == "Change Send Level" &&
               submitter.nextUndo()->opCount == 2,
           "3 Audio's send A at -12 dB: a new row and its level, one step");
@@ -918,7 +920,8 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               "knob A on the left, B to its right and 22 pt lower, as Live's");
         check(column->volume.getY() == 40 + 72 + 6 && column->peakHold.getY() == 40 + 72 + 5,
               "the mixer begins under the sends");
-        check(column->sendKnobs()[0]->getValue() == -12.0, "and send A reads the same row as the track controls");
+        check(std::abs(column->sendKnobs()[0]->getValue() + 12.0) < 1.e-9,
+              "and send A reads the same row as the track controls");
         auto *mainColumn = rowOf(root.mixerView, 7);
         check(mainColumn != nullptr && mainColumn->sendKnobs().empty() && mainColumn->sendsShown() == 2 &&
                   mainColumn->volume.getY() == column->volume.getY(),
