@@ -13,6 +13,50 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N7 ready; continuing to N8
+
+**PR requested** (ADR-0210 d4): `engine/ui-param-capture` at **`7d5e1f7`** →
+`main` (base `dff5b41`). Title: **Capture device strip parameter gestures as undoable edits (N7)**.
+
+PR body / window handoff: call `ParamOps::uiEvent(dev,param,kind,norm,nowMs,out)`
+on the owner/message thread, using Begin/Value/End and the timer drain's clock.
+Call `attachSession(session)` after load/refresh. It supplies a separate UI
+capture per device, retaining the plug-in's single-producer ring. Accepted
+values sound immediately; End emits one final edit and its first-touch opener.
+Commit every appended request as one transaction, writing pending state blobs
+first just as for timer drain. The bool describes the current input; older
+intervals can append requests even when it returns false. Devices already hold
+accepted values: do not replay own openers. Keyboard values close after 150ms
+quiet. Removed devices, external edits and recalled state cancel stale gestures.
+Backend refusal and invalid targets are reported, not recorded as accepted.
+
+A Session attachment publishes a runtime automation override before End;
+Re-Enable Automation resumes the lane. Refresh N26 with overriddenLanes() when
+that set changes. CLAP control ids remain hex and automation refs decimal per
+ADR-0165. As with existing graph publication, an already-running callback is
+not interrupted; this is not a sample-exact manual/automation arbitration API.
+The CLAP control queue is now bounded SPSC, retains backpressure and failed
+callback values, exposes accepted pending intent, flushes at stop/reactivation,
+and discards older intent only after successful guarded state recall. Delayed
+UI echoes cannot become extra undo steps. Immediate undo supersedes accepted
+intent even if a backend getter lags. No new schema/op name; OPS and
+`docs/ENGINE-UI-PARAM-CAPTURE.md` describe the seam. Window wiring stays window's.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9874 checks / 107 suites**,
+validators clean. Seven focused Clang suites pass: UI47, ParamOps177,
+ParamEdits377, CLAP499, device automation133, Session214, automation39.
+Covers long drags, keyboard intervals, independent concurrent producers,
+first-touch/journal undo/redo, refusal, delayed echoes, asynchronous undo,
+state recall and device retirement, live automation override/re-enable and
+CLAP decimal lookup. CLAP fake additionally exercises queue overflow,
+small-event-list backpressure, retry, stop/format/state boundaries and 8192
+accepted values across concurrent FIFO wraps. Three compiled regressions are
+caught: lost echo history (2), old-audible equality (1), missing override (1).
+Callback allocation/IO guards pass. Remote CI, MSVC/JUCE and measured Live
+parity unobserved. Win/window opens; win merges. Continuing to **N8**,
+plug-in editors through the hosts, from current main. No director gate reached.
+
+
 ## 2026-11-02 — N34 ready; continuing to N7
 
 **PR requested** (ADR-0210 d4): `engine/note-active` at **`2db02a4`** →
