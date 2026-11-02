@@ -506,6 +506,10 @@ add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
 
+add_executable(adi_project_bootstrap_tests tests/test_project_bootstrap.cpp)
+target_link_libraries(adi_project_bootstrap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_bootstrap_tests COMMAND adi_project_bootstrap_tests)
+
 # Separate again, for the same reason: an ops failure and a store failure should
 # be distinguishable from the CI summary without opening the log.
 add_executable(adi_ops_tests tests/test_ops.cpp)
