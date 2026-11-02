@@ -5,6 +5,7 @@
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <map>
@@ -30,7 +31,7 @@ bool same(const ClipNode& a, const ClipNode& b) {
 
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
-        a.kind != b.kind || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
+        a.kind != b.kind || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
@@ -124,6 +125,12 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const Snapshot& previous) {
     auto snap = std::make_unique<Snapshot>();
     auto& db = const_cast<SQLite::Database&>(store.db());
+    // A frame and its anchor owners must come from one WAL state. Reuse a
+    // caller's read/write transaction rather than nesting or committing it.
+    std::optional<SQLite::Transaction> readSnapshot;
+    if(sqlite3_get_autocommit(db.getHandle())!=0)
+        readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
+    const auto returnTaps=readReturnSendTaps(store);
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -224,6 +231,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.parent = st.getColumn(6).getInt64();
             t.indexInParent = st.getColumn(7).getInt64();
             t.kind = st.getColumn(8).getString();
+            if(const auto tap=returnTaps.find(t.id);tap!=returnTaps.end())t.returnSendTap=tap->second;
             if (!st.getColumn(9).isNull()) t.color = st.getColumn(9).getInt64();
             if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
                 t.clips = it->second;
@@ -252,6 +260,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             send.order=st.getColumn(5).getInt64();send.gainDb=st.getColumn(6).getDouble();
             send.pan=st.getColumn(7).getDouble();send.preFader=st.getColumn(8).getInt()!=0;
             send.enabled=st.getColumn(9).getInt()!=0;
+            if(send.destinationKind=="track")if(const auto tap=returnTaps.find(send.destinationId);tap!=returnTaps.end() && tap->second.explicitChoice)send.preFader=tap->second.preFader;
+
             const auto prior=prevSends.find(send.id);
             if(prior!=prevSends.end() && same(*prior->second,send))snap->sends.push_back(prior->second);
             else snap->sends.push_back(std::make_shared<const SendRoute>(std::move(send)));

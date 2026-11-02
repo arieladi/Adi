@@ -25,6 +25,7 @@
 // into node indices. They stop here.
 
 #pragma once
+#include "adi/return_send_tap.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -83,6 +84,7 @@ struct Track {
     std::optional<std::string> inputRef;
     std::int64_t automationMode = 0;
     std::optional<std::int64_t> freezeMediaId;
+    std::optional<ReturnSendTap> returnSendTap{};
 };
 
 /// One row, inlined onto its track by the projection (TEXT-PROJECTION §2): the
@@ -216,6 +218,7 @@ struct Routing {
     /// the difference decides whether re-parenting may rewrite the row, so a
     /// planner that cannot see it cannot honour the rule.
     std::string origin = "user";
+    std::optional<bool> storedPreFader{}; // set when a return policy overrides the raw row
 };
 
 // --- the whole readable project ---------------------------------------------

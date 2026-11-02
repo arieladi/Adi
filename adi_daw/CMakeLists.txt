@@ -225,6 +225,8 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
+    src/adi/row_capture.cpp
+    src/adi/return_send_tap.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -750,6 +752,11 @@ add_test(NAME adi_graph_tests COMMAND adi_graph_tests)
 add_executable(adi_param_ops_tests tests/test_param_ops.cpp)
 target_link_libraries(adi_param_ops_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
+
+add_executable(adi_return_send_tap_tests tests/test_return_send_tap.cpp)
+target_link_libraries(adi_return_send_tap_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_return_send_tap_tests PRIVATE ADI_SCHEMA_HISTORY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs/format/history")
+add_test(NAME adi_return_send_tap_tests COMMAND adi_return_send_tap_tests)
 
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)

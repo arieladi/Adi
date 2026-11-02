@@ -33,6 +33,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include "adi/return_send_tap.hpp"
 
 namespace adi {
 class Store;
@@ -84,6 +85,7 @@ struct TrackNode {
     float volumeDb = 0.0f;
     float pan = 0.0f;
     std::vector<std::shared_ptr<const ClipNode>> clips;
+    std::optional<ReturnSendTap> returnSendTap{};
 };
 
 /// A routing row with kind='send', including disabled rows. Destinations can

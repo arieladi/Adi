@@ -126,7 +126,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 51> kTables{{
+    static constexpr std::array<TableCoverage, 52> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -134,6 +134,7 @@ std::span<const TableCoverage> coverage() {
         {"tracks", Coverage::Projected, ""},
         {"mixer_strip", Coverage::Projected, "inlined on its track"},
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
+        {"return_send_taps", Coverage::Projected, "inlined on its return track (ADR-0203 d3)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
@@ -335,6 +336,7 @@ Tree buildTree(const rows::Model& m) {
         a.num("monitor", tr.monitorMode, 0);
         a.num("automation", tr.automationMode, 0);
         if (tr.inputRef) a.text("input", *tr.inputRef);
+        if(tr.returnSendTap && tr.returnSendTap->explicitChoice)a.text("sendTap",tr.returnSendTap->preFader?"pre":"post");
 
         if (const auto it = stripOf.find(tr.id); it != stripOf.end()) {
             const rows::MixerStrip& s = *it->second;
@@ -603,7 +605,7 @@ Tree buildTree(const rows::Model& m) {
         Attrs a(t.nodes[n].attrs);
         a.real("gain", r.gainDb, 0.0);
         a.real("pan", r.pan, 0.0);
-        a.flag("preFader", r.preFader);
+        a.flag("preFader", r.storedPreFader.value_or(r.preFader));
         a.flag("disabled", !r.enabled);
 
         // A hardware port is not a row and never was (SPEC 6.7). Rendering it

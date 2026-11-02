@@ -482,6 +482,7 @@ silent truncation in JSON, a non-issue in CBOR.
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
+| `return.setSendTap` | e | G | cap | P1 |
 | `routing.connect` | e | G | pair `routing.disconnect` | P0 |
 | `routing.disconnect` | e | G | cap | P0 |
 | `routing.setGain` | e | S | sym, coalescable | P0 |
@@ -500,6 +501,27 @@ silent truncation in JSON, a non-issue in CBOR.
 | `group.setSummingDrive` | e | S | sym, coalescable | P1 |
 | `mixer.setPanLaw` | e | S | sym | P2 |
 | `mixer.setVcaGroup` | e | S | sym | P2 |
+
+`return.setSendTap {id, pre}` is one return-owned Pre/Post choice (ADR-0203 d3).
+It persists with zero sends and changes every incoming send as one undo step.
+Ordinary new routing.connect sends inherit an explicit choice on their return.
+A conflicting new per-edge routing.setPreFader edit refuses; the same value is
+allowed. Historical scalar payloads retain their old apply semantics. Absent
+preferences preserve legacy row taps and expose uniform or mixed state; no
+migration rewrites existing audio. A producer for a new send captures the
+uniform legacy choice as literal ops before creating it.
+
+Its captured inverse uses internal optional restore {current, target}, each with
+nullable choice and ordered incoming {id, pre} values. It checks current flags,
+choice presence and edge set before writing. Restores update only tap columns,
+never replace rows, so unrelated/future metadata remains in place. Undo of a new
+preference restores absence. All writes belong to the journal transaction.
+
+routing.disconnect now captures its full typed row into optional routing.connect
+row metadata, including gain, pan, ordinal, enable, origin, channel-map BLOB and
+future columns. Captured reconnects restore the raw row exactly and bypass tap
+inheritance. Old six-field inverse payloads remain accepted. No UI state or
+application settings enters a payload.
 
 ### 9.9 Markers, arranger, snapshots
 
@@ -650,7 +672,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**173 ops** — 66 P0, 55 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

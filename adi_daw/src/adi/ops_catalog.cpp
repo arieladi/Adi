@@ -19,6 +19,8 @@
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/row_capture.hpp"
+#include "adi/return_send_tap.hpp"
 #include "adi/summing_flavors.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -177,6 +179,9 @@ template <std::size_t I>
 bool scalarInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     constexpr auto& S = kScalars[I];
     try {
+        if constexpr(std::string_view(S.op)=="routing.setPreFader")
+            if(!allowSendEdgeTapEdit(c.db,p.at("id").get<std::int64_t>(),p.at("pre").get<bool>(),err))return false;
+
         SQLite::Statement st(c.db, std::string("SELECT ") + S.col + " FROM " + S.table +
                                        " WHERE " + S.idCol + " = ?");
         st.bind(1, p.at("id").get<std::int64_t>());
@@ -837,15 +842,25 @@ bool sigRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string&
 
 bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        if(p.contains("row")) {
+            const auto& row=p.at("row");
+            if(detail::signedInteger(row.at("id"))!=detail::signedInteger(p.at("id")))throw std::runtime_error("captured routing id differs");
+            detail::restoreRow(c.db,"routing",row);return true;
+        }
+        bool pre=false;
+        if(p.at("kind")=="send" && p.at("dstKind")=="track")
+            if(const auto choice=explicitReturnSendTap(c.db,p.at("dst").get<std::int64_t>()))pre=*choice;
+
         SQLite::Statement st(c.db,
-            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind) "
-            "VALUES (?,?,?,?,?,?)");
+            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, pre_fader) "
+            "VALUES (?,?,?,?,?,?,?)");
         st.bind(1, p.at("id").get<std::int64_t>());
         st.bind(2, p.at("srcKind").get<std::string>());
         st.bind(3, p.at("src").get<std::int64_t>());
         st.bind(4, p.at("dstKind").get<std::string>());
         st.bind(5, p.at("dst").get<std::int64_t>());
         st.bind(6, p.at("kind").get<std::string>());
+        st.bind(7,pre?1:0);
         st.exec();
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
@@ -877,6 +892,7 @@ bool routingDisconnectInverse(OpContext& c, const Payload& p, Payload& inv, std:
         inv["dstKind"] = st.getColumn(2).getString();
         inv["dst"] = st.getColumn(3).getInt64();
         inv["kind"] = st.getColumn(4).getString();
+        inv["row"] = *detail::captureRow(c.db,"routing","id",p.at("id").get<std::int64_t>());
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1061,7 +1077,8 @@ constexpr Field kFRouting[] = {{"id", FieldType::Int, true},
                                {"src", FieldType::Int, true},
                                {"dstKind", FieldType::Text, true},
                                {"dst", FieldType::Int, true},
-                               {"kind", FieldType::Text, true}};
+                               {"kind", FieldType::Text, true},
+                               {"row", FieldType::Object, false}};
 constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},
@@ -2039,6 +2056,7 @@ std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
+        const auto taps=returnSendTapOps();v.insert(v.end(),taps.begin(),taps.end());
         return v;
     }();
     return all;

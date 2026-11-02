@@ -77,6 +77,8 @@ const std::vector<MigrationStep>& migrationSteps() {
         {8, {"tuning_systems", "tuning_degrees", "key_map_tunings", "key_map_degrees"}},
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
+        // 1.10: persistent return-owned send taps (ADR-0203 d3).
+        {10, {"return_send_taps"}},
     };
     return steps;
 }

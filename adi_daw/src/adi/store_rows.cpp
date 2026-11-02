@@ -111,6 +111,8 @@ Model readModel(const Store& store) {
         m.problems.push_back(std::string("read transaction: ") + e.what());
     }
 
+    const auto returnTaps=readReturnSendTaps(store);
+
     query(m, db, "project",
           "SELECT name, sample_rate, ppq, length_ticks, author, notes "
           "FROM project WHERE id = 1",
@@ -169,6 +171,7 @@ Model readModel(const Store& store) {
               t.inputRef = optText(st, 14);
               t.automationMode = st.getColumn(15).getInt64();
               t.freezeMediaId = optInt(st, 16);
+              if(const auto tap=returnTaps.find(t.id);tap!=returnTaps.end())t.returnSendTap=tap->second;
               m.tracks.push_back(std::move(t));
           });
 
@@ -309,6 +312,11 @@ Model readModel(const Store& store) {
               r.preFader = flag(st, 9);
               r.enabled = flag(st, 10);
               r.origin = st.getColumn(11).getString();
+              if(r.kind=="send" && r.dstKind=="track")if(const auto tap=returnTaps.find(r.dstId);tap!=returnTaps.end() && tap->second.explicitChoice) {
+                  if(r.preFader!=tap->second.preFader)r.storedPreFader=r.preFader;
+                  r.preFader=tap->second.preFader;
+              }
+
               m.routing.push_back(std::move(r));
           });
 
