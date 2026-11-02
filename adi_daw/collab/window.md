@@ -28,7 +28,7 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | # | Need | Owner | Why the window needs it | What the window does meanwhile |
 |---|---|---|---|---|
 | N1 | ~~`Store::create` writes no `project` row, so `project.setName` updates nothing on a new file and the snapshot falls back to 48 kHz (ADR-0203 d21 says 44.1 kHz)~~ STRUCK 2026-11-02: merged as #306 | engine (PR #306) | STEP-7-PLAN §3.0, still open on main `a57d47a` | New makes no project row; the Take Snapshot prompt names the project after its file |
-| N2 | A bootstrap for a new project (the project row and the Main track) that is the history's root, not an undo step (Live manual 5.4.2) | engine (PR #307, on #306) | #198 wrote both rows with raw SQL from the UI, which the plan forbids | New makes the Main track through `track.create` and the UI's `OpSubmitter::protectRoot` refuses to undo that step |
+| N2 | ~~A bootstrap for a new project (the project row and the Main track) that is the history's root, not an undo step (Live manual 5.4.2)~~ STRUCK 2026-11-02: merged as #307 (`Store::createNewProject`); the window's New uses it in `window/new-project-root` | engine (PR #307, on #306) | #198 wrote both rows with raw SQL from the UI, which the plan forbids | New makes the Main track through `track.create` and the UI's `OpSubmitter::protectRoot` refuses to undo that step |
 | N3 | Save As, a true one that writes a new `.adi` and carries on in it (ADR-0203 d6, LANES §3 item 6) | engine | Ctrl/Cmd+Shift+S | the key and the menu item exist; the Status Bar says Save As waits for the engine |
 | N4 | An app-scoped home for each window's interface zoom, per window and per display (ADR-0129 d3; ADR-0203 d11 "kept with the application") | win (the settings registry) | Ctrl/Cmd + and - zoom each window, but the zoom is not remembered across launches | held per window for the session |
 | N5 | ~~An undoable path from a file and a track to a clip that plays: `importMedia` that captures without committing (so media and clip are one undo step) and fills `sample_rate`/`channels`/`frames`, and an op pair that attaches an `audio_clips` row (STEP-7-PLAN §3.0). #199's commit `3feee62` has a working version (`prepareImport`, `clip.attachAudio`/`clip.detachAudio`) in `media_ops.*` and `ops_catalog.cpp`, for the engine lane to lift~~ STRUCK 2026-11-02: merged as #308 | engine (PR #308) | dropping audio onto a track, 7.3's headline gesture | the arrangement accepts the drop and the Status Bar says it waits for the engine; nothing is written |
@@ -66,7 +66,28 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N38 | A track's role in the format and the snapshot, and an op to set it: `tracks.role` (null, `kick`, `bass`, `vocal`, `reference`), win's placement in ADR-0209 Q8, to strike if wrong | win (the format); engine (the snapshot, the op) | which track is the ★ Reference (the Mix View's strip, hidden from the project view until shown); later ★ Kick, ★ Bass and ★ Vocal (P2) | `MixViewProvider::reference` and its stub, which names none; the strip says the role waits (`window/mix-view-reference`, #323) |
 | N39 | The highest routing id of any kind in the snapshot (or the routing rows of every kind), so a new send's id cannot collide with a main, sidechain, VCA or cue row: `routing.connect` takes its id from the payload (ADR-0021) and the snapshot holds only the send rows (#309) | engine (`src/adi/engine/snapshot.*`) | a new send from a knob, and Enable Send (`window/send-knobs`, parity-7.6 row 9) | one past the highest send's id; a collision refuses the batch and the Status Bar says why |
 | N40 | A clip's audio in the snapshot (its media id and source window, from `audio_clips`) and the pool's peaks for drawing (`media_files.peaks`, or a peaks reader the window can call off the store) | engine (`src/adi/engine/snapshot.*`, `src/adi/media/*`) | an audio clip draws its waveform, as Live's (parity-7.3 row 35); a dropped file shows what it holds (`window/audio-drop`) | an audio clip is drawn as its colour and its name |
+| N41 | New's default Set without Live's two return tracks: Live's default Set has A Reverb and B Delay after the tracks (look-live11.md, the director's Live 11.2.7 capture; Live 12's Arrangement figure), with their sends; `Store::createNewProject` makes Main and four tracks only (#307) | engine (`src/adi/store.cpp`) | New as Live's default Set (ADR-0209 §10 d10) | New shows the four tracks and Main; the returns come when a project has them (the send knobs, #325) |
 | N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-02, cloud, continued — win merged #324 and the engine's #307; New is the store's root `window/new-project-root`
+
+**Merged by win:**
+- #324, the Foot scene's fix. #328 (the Settings tabs), which stood on it, now targets main.
+- The engine's #307 (N2, struck above): `Store::createNewProject` writes the project row, Main
+  and Live's default Set at the history's root, and asks window callers to use it.
+
+**`window/new-project-root`** (from main) does that:
+- New opens Live's default Set, 1 MIDI, 2 MIDI, 3 Audio and 4 Audio then Main, with nothing to
+  undo. The window's own "New project" step goes.
+- `protectRoot` stays, so a project an earlier build made still stops undo at its first step.
+- The integrated scene opens a project made the earlier way, so its checks and goldens are
+  unchanged. A new scene shows New in the window.
+
+**New need N41** (engine): Live's default Set also has the returns A Reverb and B Delay, which
+`createNewProject` leaves out. Main's row in the track controls is still drawn as a track's,
+where Live's has the output chooser and the cue volume; that is the window's, a parity pass.
 
 ---
 
