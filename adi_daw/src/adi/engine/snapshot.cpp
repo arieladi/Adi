@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <map>
+#include <set>
+#include <sqlite3.h>
 
 namespace adi::engine {
 namespace {
@@ -124,6 +126,11 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const Snapshot& previous) {
     auto snap = std::make_unique<Snapshot>();
     auto& db = const_cast<SQLite::Database&>(store.db());
+    // A frame and its anchor owners must come from one WAL state. Reuse a
+    // caller's read/write transaction rather than nesting or committing it.
+    std::optional<SQLite::Transaction> readSnapshot;
+    if(sqlite3_get_autocommit(db.getHandle())!=0)
+        readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -258,6 +265,59 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch (const std::exception&) {
     }
+    // Most projects have no remarks: avoid reading device ownership at all.
+    try {if(db.execAndGet("SELECT EXISTS(SELECT 1 FROM remarks)").getInt()==0)return snap;}
+    catch(const std::exception&){return snap;}
+    // Resolve weak remark anchors from the same read snapshot. Build small
+    // ownership maps once; no per-device filesystem/host/state queries.
+    std::map<std::int64_t,std::int64_t> clipTrack,deviceChain;
+    struct ChainOwner {std::optional<std::int64_t> track,parentDevice;};
+    std::map<std::int64_t,ChainOwner> chainOwner;
+    try {
+        SQLite::Statement clips(db,"SELECT id,track_id FROM clips");
+        while(clips.executeStep())clipTrack.emplace(clips.getColumn(0).getInt64(),clips.getColumn(1).getInt64());
+        SQLite::Statement devices(db,"SELECT id,chain_id FROM devices");
+        while(devices.executeStep())deviceChain.emplace(devices.getColumn(0).getInt64(),devices.getColumn(1).getInt64());
+        SQLite::Statement chains(db,"SELECT id,track_id,parent_device_id FROM device_chains");
+        while(chains.executeStep()) {
+            ChainOwner owner;
+            if(!chains.getColumn(1).isNull())owner.track=chains.getColumn(1).getInt64();
+            if(!chains.getColumn(2).isNull())owner.parentDevice=chains.getColumn(2).getInt64();
+            chainOwner.emplace(chains.getColumn(0).getInt64(),owner);
+        }
+    }catch(const std::exception&){}
+    const auto deviceTrack=[&](std::int64_t deviceId)->std::optional<std::int64_t> {
+        std::set<std::int64_t> visited;
+        for(;;) {
+            const auto device=deviceChain.find(deviceId);if(device==deviceChain.end())return {};
+            if(!visited.insert(device->second).second)return {};
+            const auto chain=chainOwner.find(device->second);if(chain==chainOwner.end())return {};
+            const auto& owner=chain->second;
+            if(owner.track && !owner.parentDevice)return owner.track;
+            if(owner.track || !owner.parentDevice)return {};
+            deviceId=*owner.parentDevice;
+        }
+    };
+    std::map<std::int64_t,std::shared_ptr<const RemarkNode>> previousRemarks;
+    for(const auto& remark:previous.remarks)previousRemarks.emplace(remark->id,remark);
+    try {
+        SQLite::Statement query(db,"SELECT id,target_kind,target_id,param_id,author,actor_detail,text,created_utc,resolved FROM remarks ORDER BY id");
+        while(query.executeStep()) {
+            RemarkNode remark;remark.id=query.getColumn(0).getInt64();remark.targetKind=query.getColumn(1).getString();
+            remark.targetId=query.getColumn(2).getInt64();if(!query.getColumn(3).isNull())remark.paramId=query.getColumn(3).getString();
+            remark.author=query.getColumn(4).getString();remark.actorDetail=query.getColumn(5).getString();remark.text=query.getColumn(6).getString();
+            remark.createdUtc=query.getColumn(7).getInt64();remark.resolved=query.getColumn(8).getInt()!=0;
+            if(remark.targetKind=="track")remark.trackId=remark.targetId;
+            else if(remark.targetKind=="clip") {
+                const auto owner=clipTrack.find(remark.targetId);if(owner!=clipTrack.end())remark.trackId=owner->second;
+            }else if(remark.targetKind=="device")remark.trackId=deviceTrack(remark.targetId);
+            if(remark.trackId && !snap->findTrack(*remark.trackId))remark.trackId.reset();
+            remark.anchorMissing=!remark.trackId;
+            const auto old=previousRemarks.find(remark.id);
+            if(old!=previousRemarks.end() && *old->second==remark)snap->remarks.push_back(old->second);
+            else snap->remarks.push_back(std::make_shared<const RemarkNode>(std::move(remark)));
+        }
+    }catch(const std::exception&){}
     return snap;
 }
 
@@ -278,6 +338,8 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
     }
     for (const auto& sa : a.sends)
         if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
+    for(const auto& remark:a.remarks)
+        if(std::find(b.remarks.begin(),b.remarks.end(),remark)!=b.remarks.end())++shared;
     return shared;
 }
 

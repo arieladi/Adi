@@ -97,11 +97,25 @@ struct SendRoute {
     bool preFader = false, enabled = true;
 };
 
+/// A remark with its owning track resolved once per rebuild. Orphaned
+/// anchors remain visible; a parameter need not have a plugin_params row.
+struct RemarkNode {
+    std::int64_t id=0,targetId=0,createdUtc=0;
+    std::string targetKind,author,actorDetail,text;
+    std::optional<std::string> paramId;
+    bool resolved=false,anchorMissing=false;
+    std::optional<std::int64_t> trackId;
+    friend bool operator==(const RemarkNode&,const RemarkNode&)=default;
+};
+
 /// What the audio thread sees. Derives from Sequenced so the publisher can
 /// stamp it; nothing else touches `seq`.
 struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
+    // Sorted by persistent id, not a display order. Filter by trackId or the
+    // raw target address; unresolved anchors retain all their text/metadata.
+    std::vector<std::shared_ptr<const RemarkNode>> remarks;
     int sampleRate = 44100;
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.

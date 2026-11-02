@@ -536,6 +536,10 @@ target_link_libraries(adi_check_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_check_tests COMMAND adi_check_tests)
 
 # Remarks (ADR-0131): the table, its four ops, and what they must not read.
+add_executable(adi_snapshot_remarks_tests tests/test_snapshot_remarks.cpp)
+target_link_libraries(adi_snapshot_remarks_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_snapshot_remarks_tests COMMAND adi_snapshot_remarks_tests)
+
 add_executable(adi_remarks_tests tests/test_remarks.cpp)
 target_link_libraries(adi_remarks_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_remarks_tests COMMAND adi_remarks_tests)
