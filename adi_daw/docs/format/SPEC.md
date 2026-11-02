@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1010;          -- schema 1.10
+PRAGMA user_version   = 1011;          -- schema 1.11
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -303,6 +303,25 @@ A clip is `kind ∈ {audio, midi, automation, video, marker}` and carries positi
 length, loop window, fades, gain and mute. Loop fields are separate from position
 and length so that a looping clip is *one* object rather than N repeats — the
 Ableton model, and the correct one.
+
+### Local Main Clip Properties (schema 1.11, N33)
+
+`clip_properties` is an additive optional row keyed by clip id, removed with its
+clip. A NULL end marker derives from content offset plus visible duration.
+Local signature fields are both NULL or both present; local scale fields are
+all NULL or all present. NULL means the project context at the clip's start.
+Start remains `clips.content_offset_ticks`. The op that moves Start pins the
+previous default End, making source markers independent of placement. End gates
+source playback when Loop is off. Loop's existing start/length/switch control
+repeats and ignore End while on. The audio and MIDI readers apply the same rule.
+
+Numerator is 1..255 and denominator a power of two through 128. A local scale is
+12-TET: root 0..11, nonempty id and a root-relative 12-bit mask with the tonic.
+Inherited native project tunings remain available to the window. Local fields
+are projected on their clip; an empty optional row is permitted. Inverses retain
+row presence, unknown columns and SQLite types without a scalar delete/reinsert.
+Deleting a clip captures its whole row, native stream/expression/audio/envelope/
+property child rows and the alias links the foreign key would set NULL.
 
 ### 6.3 Event streams — the BLOB contract
 

@@ -226,6 +226,7 @@ add_library(adi_core STATIC
     src/adi/ops.cpp
     src/adi/row_capture.cpp
     src/adi/marker_ops.cpp
+    src/adi/clip_property_ops.cpp
     src/adi/ops_catalog.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
@@ -547,6 +548,12 @@ target_link_libraries(adi_marker_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_marker_tests PRIVATE
     ADI_MARKER_HISTORY_FILE="${CMAKE_CURRENT_SOURCE_DIR}/docs/format/history/schema-1.9.sql")
 add_test(NAME adi_marker_tests COMMAND adi_marker_tests)
+
+add_executable(adi_clip_properties_tests tests/test_clip_properties.cpp)
+target_link_libraries(adi_clip_properties_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_clip_properties_tests PRIVATE
+    ADI_CLIP_PROPERTIES_HISTORY="${CMAKE_CURRENT_SOURCE_DIR}/docs/format/history/schema-1.10.sql")
+add_test(NAME adi_clip_properties_tests COMMAND adi_clip_properties_tests)
 
 # History snapshots (ADR-0128): revert never discards, across branches too.
 add_executable(adi_snapshots_tests tests/test_snapshots.cpp)

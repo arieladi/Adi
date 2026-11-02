@@ -386,13 +386,34 @@ silent truncation in JSON, a non-issue in CBOR.
 | `clip.setColor` | e | N | sym | P1 |
 | `clip.setMute` | e | S | sym | P0 |
 | `clip.setGain` | e | S | sym, coalescable | P0 |
-| `clip.setLoop` | e | S | sym | P0 |
+| `clip.setLoop` | e | S | cap | P0 |
 | `clip.setContentOffset` | e | S | sym | P1 |
 | `clip.setFade` | e | S | sym | P0 |
 | `clip.setAlias` | e | S | sym | P2 |
 | `clip.makeUnique` | e | S | cap | P2 |
 | `clip.consolidate` | e | S | cap | P2 |
 | `clip.setLane` | e | S | sym | P1 |
+| `clip.setStartMarker` | e | S | cap | P1 |
+| `clip.setEndMarker` | e | S | cap | P1 |
+| `clip.setTimeSignature` | e | S | cap | P1 |
+| `clip.setScale` | e | S | cap | P1 |
+
+N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
+`clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).
+Start precedes End. Moving Start pins the old default End; placement/length
+stay fixed. End bounds non-loop playback; Loop uses its own window.
+`clip.setLoop {id,on,start?,length?}` edits the existing loop columns atomically;
+enabling needs a nonnegative start and positive length. A broken old loop can
+always be disabled without supplying a new window.
+`clip.setTimeSignature {id,num?,den?}` takes both fields (1..255, power-of-two
+1..128), or neither to inherit the project. `clip.setScale {id,root?,scale?,mask?}`
+takes all three fields, or none to inherit: root 0..11, a nonempty scale id and
+root-relative 12-bit mask including the tonic. Fields apply to this clip only.
+These ops capture the full clip and optional property row for exact undo,
+updating in place without cascading children; clearing retains extensions.
+`clip.delete` also captures all native clip cascade rows and external alias
+links. Legacy captured create payloads remain readable. No unknown child-table
+capture is claimed.
 
 ### 9.4 Audio clips and warping
 
@@ -671,7 +692,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**176 ops** — 66 P0, 58 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**180 ops** — 66 P0, 62 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

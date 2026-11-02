@@ -69,7 +69,7 @@ struct Page {
 };
 struct Clip {
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
-    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0;
+    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0, playEnd = 0;
     std::int64_t inCurve = 1, outCurve = 1;
     std::uint64_t sourceStart = 0, sourceLength = 0;
     std::uint32_t sourceRate = 0, rate = 0;
@@ -101,7 +101,7 @@ struct Clip {
         if (time < start || time >= end) return -1;
         auto n = time-start+offset;
         if (loopLength > 0 && n >= loopBegin) n = loopBegin+(n-loopBegin)%loopLength;
-        return n < length ? n : -1;
+        return n < length && n < playEnd ? n : -1;
     }
     float envelope(std::int64_t time) const noexcept {
         float g = gain;
@@ -431,6 +431,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
+            clip->playEnd = clip->length;
             const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.secondsToTicks(static_cast<double>(row.posNs.value_or(0))*1e-9);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
             const double startSeconds=row.timeBase==0?tempo.ticksToSeconds(origin):static_cast<double>(row.posNs.value_or(0))*1e-9;
@@ -455,6 +456,11 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             // Quantise both absolute endpoints once. Rounding a duration and
             // adding it to a rounded start can lose or add a sample.
             clip->end=samples(endSeconds,rate); clip->offset=duration(row.contentOffsetTicks);
+            if (!row.loopEnabled && row.endMarkerTicks) {
+                if (*row.endMarkerTicks <= row.contentOffsetTicks)
+                    throw std::runtime_error("invalid audio clip End marker; silent");
+                clip->playEnd = std::min(clip->length, duration(*row.endMarkerTicks));
+            }
             clip->fadeIn=duration(row.fadeInTicks);
             if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");
             clip->fadeOut=samples(tempo.ticksToSeconds(endTicks)-tempo.ticksToSeconds(endTicks-row.fadeOutTicks),rate);

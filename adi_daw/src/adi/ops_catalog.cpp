@@ -20,6 +20,8 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/marker_ops.hpp"
+#include "adi/clip_property_ops.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/summing_flavors.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -429,6 +431,7 @@ void restoreClipAudio(SQLite::Database& db, std::int64_t clip, const Payload& ro
 }
 bool clipCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        if (p.contains("row")) { clip_properties::restoreDeleted(c,p); return true; }
         SQLite::Statement st(c.db,
             "INSERT INTO clips(id, track_id, kind, name, time_base, pos_ticks, "
             "length_ticks) VALUES (?,?,?,?,0,?,?)");
@@ -462,38 +465,8 @@ bool clipDeleteApply(OpContext& c, const Payload& p, std::string& err) {
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 bool clipDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db,
-            "SELECT track_id, kind, name, pos_ticks, length_ticks FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip to capture"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["track"] = st.getColumn(0).getInt64();
-        inv["kind"] = st.getColumn(1).getString();
-        inv["name"] = st.getColumn(2).getString();
-        inv["pos"] = st.getColumn(3).getInt64();
-        inv["length"] = st.getColumn(4).getInt64();
-        SQLite::Statement attachment(c.db,"SELECT "+audioColumnList()+" FROM audio_clips WHERE clip_id=?");
-        attachment.bind(1,p.at("id").get<std::int64_t>());
-        if(attachment.executeStep()) {
-            Payload row=Payload::object();
-            int i=0;
-            for(const auto* name:audioColumns) {
-                const auto value=attachment.getColumn(i++);
-                if(value.isNull())row[name]=nullptr;
-                else if(std::string_view(name)=="warp_markers") {
-                    row[name]=Payload::array();
-                    const auto* bytes=static_cast<const unsigned char*>(value.getBlob());
-                    for(int n=0;n<value.getBytes();++n)row[name].push_back(bytes[n]);
-                } else if(std::string_view(name)=="warp_mode")row[name]=value.getString();
-                else if(std::string_view(name)=="transpose_semis" || std::string_view(name)=="formant_shift")row[name]=value.getDouble();
-                else row[name]=value.getInt64();
-            }
-            inv["audio"]=std::move(row);
-        }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+    try { inv = clip_properties::captureDeleted(c,detail::signedInteger(p.at("id"))); return true; }
+    catch (const std::exception& e) { err = e.what(); return false; }
 }
 
 bool audioAttachApply(OpContext& c, const Payload& p, std::string& err) {
@@ -1141,6 +1114,12 @@ constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
 constexpr Field kFMarkerCreate[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true},{"time_base",FieldType::Int,false},
     {"name",FieldType::Text,false},{"kind",FieldType::Text,false},{"length",FieldType::Int,false},{"color",FieldType::Int,false},
     {"note",FieldType::Text,false},{"prompt",FieldType::Text,false}};
+constexpr Field kFClipMarker[] = {{"id",FieldType::Int,true},{"ticks",FieldType::Int,true}};
+constexpr Field kFClipLoop[] = {{"id",FieldType::Int,true},{"on",FieldType::Bool,true},
+    {"start",FieldType::Int,false},{"length",FieldType::Int,false}};
+constexpr Field kFClipSignature[] = {{"id",FieldType::Int,true},{"num",FieldType::Int,false},{"den",FieldType::Int,false}};
+constexpr Field kFClipScale[] = {{"id",FieldType::Int,true},{"root",FieldType::Int,false},
+    {"scale",FieldType::Text,false},{"mask",FieldType::Int,false}};
 constexpr Field kFMarkerId[]={{"id",FieldType::Int,true}};
 constexpr Field kFMarkerMove[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true}};
 constexpr Field kFMarkerName[]={{"id",FieldType::Int,true},{"name",FieldType::Text,true}};
@@ -2035,6 +2014,12 @@ const OpDescriptor kHandWritten[] = {
     {"marker.resize","Resize a cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerLength,false,false,marker::resize,marker::rowInverse,""},
     {"marker.setNote","Set a marker's note",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::note,marker::detailsInverse,""},
     {"marker.setPrompt","Set a marker's literal prompt",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::prompt,marker::detailsInverse,""},
+
+    {"clip.setStartMarker","Set the clip source Start marker",Scope::Edit,EngineImpact::Snapshot,kFClipMarker,false,false,clip_properties::start,clip_properties::inverse,""},
+    {"clip.setEndMarker","Set the clip source End marker",Scope::Edit,EngineImpact::Snapshot,kFClipMarker,false,false,clip_properties::end,clip_properties::inverse,""},
+    {"clip.setLoop","Set the clip loop switch and window",Scope::Edit,EngineImpact::Snapshot,kFClipLoop,false,false,clip_properties::loop,clip_properties::inverse,""},
+    {"clip.setTimeSignature","Set or inherit the clip signature",Scope::Edit,EngineImpact::Snapshot,kFClipSignature,false,false,clip_properties::signature,clip_properties::inverse,""},
+    {"clip.setScale","Set or inherit the clip scale",Scope::Edit,EngineImpact::Snapshot,kFClipScale,false,false,clip_properties::scale,clip_properties::inverse,""},
 
     // Ephemeral: performance, not editing. No inverse, and undo skips them.
     {"transport.play", "Start playback", Scope::Transport, EngineImpact::None,

@@ -142,6 +142,10 @@ struct Clip {
     std::int64_t fadeInCurve = 1;
     std::int64_t fadeOutCurve = 1;
     std::optional<std::int64_t> aliasOf;
+    std::optional<std::int64_t> endMarkerTicks = {};
+    std::optional<std::int64_t> signatureNumerator = {}, signatureDenominator = {};
+    std::optional<std::int64_t> scaleRoot = {}, scaleMask = {};
+    std::optional<std::string> scaleId = {};
 };
 
 struct AudioClip {

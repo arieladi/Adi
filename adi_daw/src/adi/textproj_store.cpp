@@ -126,7 +126,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 52> kTables{{
+    static constexpr std::array<TableCoverage, 53> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -136,6 +136,7 @@ std::span<const TableCoverage> coverage() {
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
+        {"clip_properties", Coverage::Projected, "Inlined on its clip; NULL inherits."},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
         {"event_streams", Coverage::Projected, "notes decoded; other stream kinds excluded"},
         {"markers", Coverage::Projected, ""},
@@ -444,6 +445,12 @@ Tree buildTree(const rows::Model& m) {
         if (c.loopLenTicks) a.raw("loopLen " + renderDuration(*c.loopLenTicks));
         if (c.contentOffsetTicks)
             a.raw("offset " + renderDuration(c.contentOffsetTicks));
+        if (c.endMarkerTicks) a.raw("endMarker " + renderDuration(*c.endMarkerTicks));
+        if (c.signatureNumerator) a.raw("signature " + std::to_string(*c.signatureNumerator) + "/" +
+                                      std::to_string(c.signatureDenominator.value_or(0)));
+        if (c.scaleRoot) a.raw("scaleRoot " + std::to_string(*c.scaleRoot));
+        if (c.scaleId) a.text("scale", *c.scaleId);
+        if (c.scaleMask) a.raw("scaleMask " + std::to_string(*c.scaleMask));
 
         if (const auto it = audioOf.find(c.id); it != audioOf.end()) {
             const rows::AudioClip& ac = *it->second;
