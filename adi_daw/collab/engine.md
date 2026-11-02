@@ -12,6 +12,23 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-02 — N3 Save As ready; chaining into N30
+
+### PR requested — N3
+
+**Title:** Save project copies and continue in Save As (N3)
+**Head:** `engine/save-project`, `7cc1ffc`; **base:** `main` at `dff5b41`.
+
+`Store::saveCopy(path)` snapshots committed WAL data into a private stage, relocates media references in rows AND captured media import/relink history on all branches/inverses, folds the copy's WAL and publishes without replacing an existing file. It leaves the source unchanged and supports missing media. `Store::saveAs(path)` then switches the same Store object to the new writable database: existing OpJournal/History references keep working, writer identity/name/UUID/history/session state survive, and future edits reach only the new file. Store filename I/O now passes UTF-8 to SQLite, including Windows Unicode paths. No schema/op or UI implementation changes; SPEC §3.7 documents file-maintenance relocation and failure semantics.
+
+**For the window:** call `document.store().saveAs(selectedPath)` on the Store owner thread after finishing SQL work; require `result.ok`, then refresh ProjectView/Session and the displayed filename. The Store object itself stays put, so OpSubmitter/History need no rebind. `saveCopy` is available for the Copy menu without switching. Calls refuse an existing destination and uncommitted transactions; Save As also refuses live SQL statements. A failed switch reports that the completed copy is retained. A held old reader can produce a nonfatal cleanup warning. An unknown newer major can only be copied verbatim, preserving read-only policy.
+
+**Validation:** GCC Debug/Werror, libpd on/JUCE off: **9858 checks / 107 suites**, all validators clean; project-files44. Four focused Clang Werror suites pass. Actual relocated playback, live WAL, continued journal/history edits, source preservation, Unicode filename, inactive branches, relink inverses, unlink captures through two relocations, missing media, read-only/future-major copies and failure cleanup are tested. Two separately compiled plants (skip captured path relocation; switch path without switching database) each fail2 checks. UI/device/clone production untouched.
+
+Next N30 will reuse this copy/location machinery for Collect All and Save and improve the existing ZIP export's captured-history portability. N16 remains integration-blocked as recorded above; this is not a turn stop or director question.
+
+---
+
 ## 2026-11-02 — chaining the window needs; N16 integration dependency
 
 The director explicitly ordered continuous chaining until the needs table is empty or a LANES §5 question blocks. Fetched main `dff5b41` and current window/log: N1 (#306), N2 (#307), N5 (#308), N11 (#309), N35 (#316), N36 (#317) and N6 (#299) are struck/merged. N37–N41 are added and will be included. API remains Forbidden; PR requests continue through this log without the director relaying.
