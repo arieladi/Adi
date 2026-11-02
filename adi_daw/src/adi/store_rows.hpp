@@ -25,6 +25,7 @@
 // into node indices. They stop here.
 
 #pragma once
+#include <array>
 
 #include <cstddef>
 #include <cstdint>
@@ -142,6 +143,10 @@ struct Clip {
     std::int64_t fadeInCurve = 1;
     std::int64_t fadeOutCurve = 1;
     std::optional<std::int64_t> aliasOf;
+    std::optional<double> fadeInTension, fadeOutTension;
+    std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
+    std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
+    std::optional<std::int64_t> endMarkerTicks; // optional N33 properties, when available
 };
 
 struct AudioClip {
@@ -351,6 +356,13 @@ struct AutomationData {
     std::int64_t laneId = 0;
     std::optional<std::int64_t> clipId;
     std::vector<std::byte> blob;
+    std::int64_t id = 0;
+};
+
+struct AutomationSegmentRange {
+    std::int64_t id=0,dataId=0,recordIndex=0;
+    std::optional<std::int64_t> clipId;
+    double progressBegin=0,progressEnd=1,sourceFirst=0,sourceLast=0;
 };
 
 struct Model {
@@ -377,6 +389,7 @@ struct Model {
     std::vector<Remark> remarks;
     std::vector<AutomationLane> automationLanes;   ///< by id
     std::vector<AutomationData> automationData;    ///< by lane, then clip
+    std::vector<AutomationSegmentRange> automationSegmentRanges;
 
     /// Tables that were present but unreadable — a newer schema that dropped a
     /// column we name, a corrupt blob. Named rather than swallowed, because a

@@ -34,7 +34,7 @@ namespace adi {
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 9;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18)
+inline constexpr int kSchemaMinor = 10;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: captured editing source/fade/automation clocks (N17)
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {
@@ -125,6 +125,7 @@ public:
     [[nodiscard]] std::optional<std::vector<std::byte>>
     getNoteExpression(std::int64_t clipId, std::uint64_t noteId, int dimension) const;
 
+    /// Refuses a replacement when this data has retained curve ranges; use a captured row edit for data and ranges together.
     bool putAutomationData(std::int64_t laneId, std::optional<std::int64_t> clipId,
                            std::span<const std::byte> blob);
     [[nodiscard]] std::optional<std::vector<std::byte>>

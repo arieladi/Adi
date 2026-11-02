@@ -379,9 +379,9 @@ silent truncation in JSON, a non-issue in CBOR.
 | `clip.detachAudio` | e | G | cap | P0 |
 | `clip.move` | e | S | sym | P0 |
 | `clip.resize` | e | S | sym | P0 |
-| `clip.split` | e | S | pair `clip.join` | P0 |
-| `clip.join` | e | S | cap | P1 |
-| `clip.duplicate` | e | S | pair `clip.delete` | P0 |
+| `clip.split` | e | G | pair `clip.join` | P0 |
+| `clip.join` | e | G | cap | P1 |
+| `clip.duplicate` | e | G | pair `clip.delete` | P0 |
 | `clip.setName` | e | N | sym | P1 |
 | `clip.setColor` | e | N | sym | P1 |
 | `clip.setMute` | e | S | sym | P0 |
@@ -389,10 +389,34 @@ silent truncation in JSON, a non-issue in CBOR.
 | `clip.setLoop` | e | S | sym | P0 |
 | `clip.setContentOffset` | e | S | sym | P1 |
 | `clip.setFade` | e | S | sym | P0 |
+| `clip.setFades` | e | S | cap | P0 |
+| `arranger.splice` | e | G | cap | P0 |
 | `clip.setAlias` | e | S | sym | P2 |
 | `clip.makeUnique` | e | S | cap | P2 |
 | `clip.consolidate` | e | S | cap | P2 |
 | `clip.setLane` | e | S | sym | P1 |
+
+The clip.setFades payload is {id,in?:{ticks?,curve?,tension?},out?:{...}}.
+It is audio-only; ticks are nonnegative and no longer than the clip's musical
+span, curve is 0..5, tension is finite [-1,1] or null for legacy arithmetic.
+Each selected side must set at least one known field. Both sides are one edit;
+its inverse captures native fields and the full typed details row or absence.
+
+The clip.split op and its captured inverse clip.join take {id,changes}:
+full typed before/after rows, never ambient ID allocation. The clip.duplicate
+op creates only one captured clip and its children; its inverse is clip.delete.
+Delete captures full native rows, opaque children and external alias links.
+The arranger.splice op applies arrangement-only captured row deltas; its inverse
+swaps them. Project changes are limited to length_ticks. Before-image mismatch,
+unknown/generated columns or uncaptured foreign-key effects refuse the edit.
+UNIQUE map positions and automation ordinals move in safe order; restore creates
+parents before children. Replay uses captured values without evaluating defaults.
+
+Window callers use clip_commands.hpp and material_commands.hpp, rather
+than assembling row images. Prepared edits carry ADR-0153's expected head,
+including the empty root, and must be committed with their captured options.
+See [the editing API](ENGINE-EDIT-COMMANDS.md) for units, thread ownership,
+supported commands and explicit refusals.
 
 ### 9.4 Audio clips and warping
 
@@ -650,7 +674,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**174 ops** — 68 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

@@ -262,6 +262,9 @@ add_library(adi_core STATIC
     src/adi/textproj_store.cpp
     "${ADI_SCHEMA_HPP}"
 )
+target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
+  src/adi/automation_time_edit.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
+  src/adi/material_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(adi_core PUBLIC
     ADI_VERSION_STRING="${PROJECT_VERSION}")
@@ -1258,6 +1261,18 @@ endfunction()
 adi_add_samplerate()
 target_sources(adi_core PRIVATE src/adi/engine/transport.cpp src/adi/engine/clip_playback.cpp)
 target_link_libraries(adi_core PRIVATE samplerate)
+add_executable(adi_edit_rows_tests tests/test_edit_rows.cpp)
+target_link_libraries(adi_edit_rows_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_edit_rows_tests COMMAND adi_edit_rows_tests)
+
+add_executable(adi_clip_edit_tests tests/test_clip_edit.cpp)
+target_link_libraries(adi_clip_edit_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clip_edit_tests COMMAND adi_clip_edit_tests)
+
+add_executable(adi_material_commands_tests tests/test_material_commands.cpp)
+target_link_libraries(adi_material_commands_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_material_commands_tests COMMAND adi_material_commands_tests)
+
 add_executable(adi_clip_playback_tests tests/test_clip_playback.cpp)
 target_link_libraries(adi_clip_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_clip_playback_tests COMMAND adi_clip_playback_tests)

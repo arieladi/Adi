@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1009;          -- schema 1.9
+PRAGMA user_version   = 1010;          -- schema 1.10
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -1018,6 +1018,46 @@ Rule 3 is the one that separates this from every "we'll just ignore what we don'
 know" format. Silent degradation at render time is data loss with extra steps.
 
 ---
+
+### 9.2 Native editing metadata (schema 1.10, N17)
+
+These two core tables are additive; schema 1.9 stays frozen. They carry
+playback semantics, rather than foreign extension data.
+
+The optional clip_playback_details row carries nullable in_tension and
+out_tension in [-1,1]. NULL retains the original curve arithmetic; explicit
+zero uses the shared continuous evaluator. No row and zero fade lengths
+remain Create Fades on Clip Edges off.
+
+Nullable content_offset_ns, loop_begin_ns, loop_end_ns and source_end_ns
+pin unwarped source clocks independently of placement tempo. The loop is
+[begin,end), never a duration rounded separately. Absent clocks retain the
+legacy tick conversions. An explicit End limits nonlooped playback; the
+immutable source window still bounds every read. Editing never changes
+that source window merely to move or split a clip, preserving SRC phase.
+
+Nullable in_begin_ns, in_end_ns, out_begin_ns, out_end_ns retain the original
+fade domain on the unrolled source clock (before loop wrapping). Each pair
+is absent together or has end > begin >= 0. Fade-in progress is
+(unrolled position - begin)/(end - begin); fade-out uses
+(end - one sample - unrolled position)/(end - begin). This preserves a fade
+even when Split cuts through it. A fade handle edit clears that side's retained
+domain and uses its new local length. Snapshots expose all clocks and tensions;
+the projection includes explicit zero. Every field participates in sharing.
+
+The automation_segment_ranges table identifies a native automation_data row
+and its zero-based storage record ordinal, with the same nullable clip owner.
+The unique (data_id,record_index) key carries progress_begin, progress_end in
+[0,1], begin < end, and finite source_first, source_last. Interior evaluation
+uses the outgoing record's original curve/tension at begin + x*(end-begin),
+between the original source values. The stored endpoints remain authoritative
+at x=0 and x=1. It does not refit a nonlinear curve after trimming it. Ordinals
+also work for unassigned/zero point IDs. Copy remaps data/clip IDs; row edits
+remap ordinals and capture inverses. Invalid ranges refuse the entire lane.
+Direct blob replacement refuses data with retained ranges: replace the data
+and its ranges in one captured edit. Clip envelope playback remains a later
+engine item; preserving its bytes does not imply it is played.
+
 
 ## 10. Media
 

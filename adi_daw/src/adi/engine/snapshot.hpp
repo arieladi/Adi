@@ -24,6 +24,7 @@
 // mutating a live snapshot does not compile.
 
 #pragma once
+#include <array>
 
 #include "adi/engine/publisher.hpp"
 #include "adi/textproj.hpp"
@@ -70,6 +71,10 @@ struct ClipNode {
     std::int64_t lengthTicks = 0;
     bool muted = false;
     float gainDb = 0.0f;
+    std::int64_t fadeInTicks=0,fadeOutTicks=0,fadeInCurve=1,fadeOutCurve=1;
+    std::optional<double> fadeInTension,fadeOutTension;
+    std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
+    std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
 };
 
 struct TrackNode {

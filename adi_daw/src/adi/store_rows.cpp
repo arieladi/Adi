@@ -7,6 +7,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
+#include <map>
 
 namespace adi::rows {
 namespace {
@@ -236,6 +237,35 @@ Model readModel(const Store& store) {
               c.aliasOf = optInt(st, 21);
               m.clips.push_back(std::move(c));
           });
+
+    std::map<std::int64_t,Clip*> fadeClipOf;
+    for(auto& clip:m.clips)fadeClipOf[clip.id]=&clip;
+    query(m,db,"clip_playback_details","SELECT clip_id,in_tension,out_tension,content_offset_ns,loop_begin_ns,loop_end_ns,source_end_ns,in_begin_ns,in_end_ns,out_begin_ns,out_end_ns FROM clip_playback_details",
+          [&](const SQLite::Statement& st) {
+              if(const auto it=fadeClipOf.find(st.getColumn(0).getInt64());it!=fadeClipOf.end()) {
+                  if(!st.getColumn(1).isNull())it->second->fadeInTension=st.getColumn(1).getDouble();
+                  if(!st.getColumn(2).isNull())it->second->fadeOutTension=st.getColumn(2).getDouble();
+                  it->second->contentOffsetNs=optInt(st,3);it->second->loopBeginNs=optInt(st,4);
+                  it->second->loopEndNs=optInt(st,5);it->second->sourceEndNs=optInt(st,6);
+                  for(std::size_t side=0;side<4;++side)it->second->fadeClockNs[side]=optInt(st,7+static_cast<int>(side));
+              }
+          });
+
+    // N33 is an independent additive schema branch. Honor a present End
+    // marker when a combined file is read; no properties row means legacy.
+    bool clipPropertiesPresent=false;
+    {
+        SQLite::Statement tables(db,"SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='clip_properties' "
+            "UNION ALL SELECT 1 FROM sqlite_temp_master WHERE type IN ('table','view') AND name='clip_properties'");
+        clipPropertiesPresent=tables.executeStep();
+    }
+    if(clipPropertiesPresent) {
+        query(m,db,"clip_properties","SELECT clip_id,end_marker_ticks FROM clip_properties",
+              [&](const SQLite::Statement& st) {
+                  if(const auto it=fadeClipOf.find(st.getColumn(0).getInt64());it!=fadeClipOf.end())
+                      it->second->endMarkerTicks=optInt(st,1);
+              });
+    }
 
     query(m, db, "audio_clips",
           "SELECT clip_id, media_id, src_start_frames, src_len_frames, warp_enabled, "
@@ -479,11 +509,12 @@ Model readModel(const Store& store) {
           });
     std::vector<AutomationData> keys;
     query(m, db, "automation_data",
-          "SELECT lane_id, clip_id FROM automation_data ORDER BY lane_id, IFNULL(clip_id, -1)",
+          "SELECT lane_id, clip_id, id FROM automation_data ORDER BY lane_id, IFNULL(clip_id, -1)",
           [&](const SQLite::Statement& st) {
               AutomationData d;
               d.laneId = st.getColumn(0).getInt64();
               d.clipId = optInt(st, 1);
+              d.id = st.getColumn(2).getInt64();
               keys.push_back(std::move(d));
           });
     for (AutomationData& d : keys) {
@@ -502,12 +533,23 @@ Model readModel(const Store& store) {
     for (const Clip& c : m.clips)
         if (c.kind == "midi") readNotesFor(m, store, c.id);
 
+    query(m,db,"automation_segment_ranges",
+          "SELECT id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last FROM automation_segment_ranges ORDER BY data_id,record_index",
+          [&](const SQLite::Statement& st) {
+              AutomationSegmentRange range;
+              range.id=st.getColumn(0).getInt64();range.dataId=st.getColumn(1).getInt64();range.clipId=optInt(st,2);
+              range.recordIndex=st.getColumn(3).getInt64();range.progressBegin=st.getColumn(4).getDouble();range.progressEnd=st.getColumn(5).getDouble();
+              range.sourceFirst=st.getColumn(6).getDouble();range.sourceLast=st.getColumn(7).getDouble();
+              m.automationSegmentRanges.push_back(range);
+          });
+
     if (txn) {
         try {
             txn->commit();   // a read transaction: commit and rollback are the same
         } catch (const std::exception&) {
         }
     }
+
     return m;
 }
 

@@ -126,7 +126,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 51> kTables{{
+    static constexpr std::array<TableCoverage, 53> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -136,6 +136,7 @@ std::span<const TableCoverage> coverage() {
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
+        {"clip_playback_details", Coverage::Projected, "inlined onto its clip"},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
         {"event_streams", Coverage::Projected, "notes decoded; other stream kinds excluded"},
         {"markers", Coverage::Projected, ""},
@@ -179,7 +180,8 @@ std::span<const TableCoverage> coverage() {
 
         // --- excluded pending their own ops ---------------------------------
         {"automation_lanes", Coverage::Excluded, "no automation op is implemented"},
-        {"automation_data", Coverage::Excluded, "no automation op is implemented"},
+        {"automation_data", Coverage::Excluded, "automation uses the dedicated snapshot; no point text syntax"},
+        {"automation_segment_ranges", Coverage::Excluded, "curve subranges accompany automation data"},
         {"note_expression", Coverage::Excluded, "no expression op is implemented"},
         {"arranger_sections", Coverage::Excluded, "no op writes it"},
         {"arranger_chain", Coverage::Excluded, "no op writes it"},
@@ -438,6 +440,14 @@ Tree buildTree(const rows::Model& m) {
         if (c.fadeOutTicks) a.raw("fadeOut " + renderDuration(c.fadeOutTicks));
         a.num("fadeInCurve", c.fadeInCurve, 1);
         a.num("fadeOutCurve", c.fadeOutCurve, 1);
+        if(c.fadeInTension)a.real("fadeInTension",*c.fadeInTension,2.0);
+        if(c.fadeOutTension)a.real("fadeOutTension",*c.fadeOutTension,2.0);
+        if(c.contentOffsetNs)a.raw("contentOffsetNs "+std::to_string(*c.contentOffsetNs));
+        if(c.loopBeginNs)a.raw("loopBeginNs "+std::to_string(*c.loopBeginNs));
+        if(c.loopEndNs)a.raw("loopEndNs "+std::to_string(*c.loopEndNs));
+        if(c.sourceEndNs)a.raw("sourceEndNs "+std::to_string(*c.sourceEndNs));
+        constexpr std::array<const char*,4> fadeClockNames={"fadeInBeginNs","fadeInEndNs","fadeOutBeginNs","fadeOutEndNs"};
+        for(std::size_t i=0;i<4;++i)if(c.fadeClockNs[i])a.raw(std::string(fadeClockNames[i])+" "+std::to_string(*c.fadeClockNs[i]));
         a.flag("loop", c.loopEnabled);
         if (c.loopStartTicks) a.raw("loopStart " + renderDuration(c.loopStartTicks));
         if (c.loopLenTicks) a.raw("loopLen " + renderDuration(*c.loopLenTicks));

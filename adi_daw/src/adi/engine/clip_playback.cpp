@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/snapshot.hpp"
+#include "adi/engine/clip_fade.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/store.hpp"
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <thread>
 #include <type_traits>
 #include <stdexcept>
@@ -47,18 +49,6 @@ std::int64_t samples(double seconds, double rate) {
     if (!std::isfinite(n) || n < 0 || n > static_cast<double>(limit)) throw std::runtime_error("time outside supported sample range");
     return static_cast<std::int64_t>(std::llround(n));
 }
-// One curve at either width: float at 32, as always; double at 64 (ADR-0207 d2).
-template <typename T>
-T fade(T x, std::int64_t curve) noexcept {
-    x = std::clamp(x, T{0}, T{1});
-    switch (curve) {
-    case 0: return x >= 1 ? T{1} : T{0};
-    case 2: return x*x;
-    case 3: return std::sqrt(x);
-    case 4: return x*x*(T{3}-T{2}*x);
-    default: return x;
-    }
-}
 struct Page {
     // 0 empty, 1 worker-owned, 2 ready, 3 reader-owned. Both sides must
     // acquire ownership BEFORE reading even the page number; no seqlock over
@@ -71,6 +61,8 @@ struct Clip {
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
     std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0;
     std::int64_t inCurve = 1, outCurve = 1;
+    std::optional<double> inTension,outTension;
+    std::array<std::optional<std::int64_t>,4> fadeClock;
     std::uint64_t sourceStart = 0, sourceLength = 0;
     std::uint32_t sourceRate = 0, rate = 0;
     std::int64_t pageFrames = 8192;
@@ -103,18 +95,16 @@ struct Clip {
         if (loopLength > 0 && n >= loopBegin) n = loopBegin+(n-loopBegin)%loopLength;
         return n < length ? n : -1;
     }
-    float envelope(std::int64_t time) const noexcept {
-        float g = gain;
-        if (fadeIn > 0) g *= fade(static_cast<float>(time-start)/static_cast<float>(fadeIn),inCurve);
-        if (fadeOut > 0) g *= fade(static_cast<float>(end-1-time)/static_cast<float>(fadeOut),outCurve);
-        return g;
+    template<typename V> V shaped(std::int64_t time,V gainValue)const noexcept {
+        const auto local=time-start+offset;
+        if(fadeClock[0])gainValue*=clipFadeShape(static_cast<V>(local-*fadeClock[0])/static_cast<V>(*fadeClock[1]-*fadeClock[0]),inCurve,inTension);
+        else if(fadeIn>0)gainValue*=clipFadeShape(static_cast<V>(time-start)/static_cast<V>(fadeIn),inCurve,inTension);
+        if(fadeClock[2])gainValue*=clipFadeShape(static_cast<V>(*fadeClock[3]-1-local)/static_cast<V>(*fadeClock[3]-*fadeClock[2]),outCurve,outTension);
+        else if(fadeOut>0)gainValue*=clipFadeShape(static_cast<V>(end-1-time)/static_cast<V>(fadeOut),outCurve,outTension);
+        return gainValue;
     }
-    double envelopeWide(std::int64_t time) const noexcept {
-        double g = gainWide;
-        if (fadeIn > 0) g *= fade(static_cast<double>(time-start)/static_cast<double>(fadeIn),inCurve);
-        if (fadeOut > 0) g *= fade(static_cast<double>(end-1-time)/static_cast<double>(fadeOut),outCurve);
-        return g;
-    }
+    float envelope(std::int64_t time)const noexcept {return shaped(time,gain);}
+    double envelopeWide(std::int64_t time)const noexcept {return shaped(time,gainWide);}
     /// One output channel's sample of this clip at `sample` (a frame of the
     /// file), by the clip's channel mode. A fold of the channels is a sum, in
     /// double (ADR-0207 d2), rounded to `V` once.
@@ -454,15 +444,37 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             }
             // Quantise both absolute endpoints once. Rounding a duration and
             // adding it to a rounded start can lose or add a sample.
-            clip->end=samples(endSeconds,rate); clip->offset=duration(row.contentOffsetTicks);
+            clip->end=samples(endSeconds,rate);
+            auto fixedTime=[&](std::int64_t nanos) {
+                if(nanos<0)throw std::runtime_error("negative source clock");
+                return samples(static_cast<double>(nanos)*1e-9,rate);
+            };
+            clip->offset=row.contentOffsetNs?fixedTime(*row.contentOffsetNs):duration(row.contentOffsetTicks);
+            if(!row.loopEnabled) {
+                if(row.sourceEndNs)clip->length=std::min(clip->length,fixedTime(*row.sourceEndNs));
+                else if(row.endMarkerTicks)clip->length=std::min(clip->length,duration(*row.endMarkerTicks));
+            }
+            for(std::size_t i=0;i<4;i+=2) {
+                if(row.fadeClockNs[i].has_value()!=row.fadeClockNs[i+1].has_value())throw std::runtime_error("incomplete fade clock");
+                if(row.fadeClockNs[i]) {
+                    const auto first=fixedTime(*row.fadeClockNs[i]),last=fixedTime(*row.fadeClockNs[i+1]);
+                    if(last<=first)throw std::runtime_error("fade clock has no sample extent");
+                    clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
+                }
+            }
             clip->fadeIn=duration(row.fadeInTicks);
             if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");
             clip->fadeOut=samples(tempo.ticksToSeconds(endTicks)-tempo.ticksToSeconds(endTicks-row.fadeOutTicks),rate);
             clip->inCurve=row.fadeInCurve;clip->outCurve=row.fadeOutCurve;
+            if((row.fadeInTension && (!std::isfinite(*row.fadeInTension) || std::abs(*row.fadeInTension)>1)) ||
+               (row.fadeOutTension && (!std::isfinite(*row.fadeOutTension) || std::abs(*row.fadeOutTension)>1)))
+                throw std::runtime_error("invalid fade tension; silent");
+            clip->inTension=row.fadeInTension;clip->outTension=row.fadeOutTension;
             if(row.loopEnabled) {
                 const auto loopTicks=row.loopLenTicks.value_or(0);
                 if(loopTicks<0 || row.loopStartTicks<0 || row.loopStartTicks>std::numeric_limits<std::int64_t>::max()-loopTicks) throw std::runtime_error("invalid loop ticks");
-                clip->loopBegin=duration(row.loopStartTicks);clip->loopLength=duration(row.loopStartTicks+loopTicks)-clip->loopBegin;
+                clip->loopBegin=row.loopBeginNs?fixedTime(*row.loopBeginNs):duration(row.loopStartTicks);
+                clip->loopLength=row.loopEndNs?fixedTime(*row.loopEndNs)-clip->loopBegin:duration(row.loopStartTicks+loopTicks)-clip->loopBegin;
                 if(clip->loopLength<=0 || clip->loopBegin+clip->loopLength>clip->length) throw std::runtime_error("clip loop outside source window; silent");
             }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");

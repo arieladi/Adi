@@ -14,6 +14,9 @@
 //   OPS.md §6.1  The inverse is built from the state ABOUT TO BE OVERWRITTEN,
 //             before apply, in the same transaction.
 
+#include "adi/clip_image.hpp"
+#include "adi/row_capture.hpp"
+#include "adi/clip_edit_ops.hpp"
 #include "adi/blob.hpp"
 #include "adi/ops.hpp"
 #include "adi/controller_maps.hpp"
@@ -428,6 +431,7 @@ void restoreClipAudio(SQLite::Database& db, std::int64_t clip, const Payload& ro
 }
 bool clipCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        if(p.contains("row")) {clip_edit::restoreDeleted(c,p);return true;}
         SQLite::Statement st(c.db,
             "INSERT INTO clips(id, track_id, kind, name, time_base, pos_ticks, "
             "length_ticks) VALUES (?,?,?,?,0,?,?)");
@@ -454,45 +458,14 @@ bool clipCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string& 
 
 bool clipDeleteApply(OpContext& c, const Payload& p, std::string& err) {
     try {
-        SQLite::Statement st(c.db, "DELETE FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
+        auto image=clip_edit::captureDeleted(c,detail::signedInteger(p.at("id")));
+        edit::RowEdits deletion(c.db);clip_edit::deleteImage(deletion,image);
+        return edit::applyRows(c,{{"changes",deletion.changes()}},err);
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
-bool clipDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db,
-            "SELECT track_id, kind, name, pos_ticks, length_ticks FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip to capture"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["track"] = st.getColumn(0).getInt64();
-        inv["kind"] = st.getColumn(1).getString();
-        inv["name"] = st.getColumn(2).getString();
-        inv["pos"] = st.getColumn(3).getInt64();
-        inv["length"] = st.getColumn(4).getInt64();
-        SQLite::Statement attachment(c.db,"SELECT "+audioColumnList()+" FROM audio_clips WHERE clip_id=?");
-        attachment.bind(1,p.at("id").get<std::int64_t>());
-        if(attachment.executeStep()) {
-            Payload row=Payload::object();
-            int i=0;
-            for(const auto* name:audioColumns) {
-                const auto value=attachment.getColumn(i++);
-                if(value.isNull())row[name]=nullptr;
-                else if(std::string_view(name)=="warp_markers") {
-                    row[name]=Payload::array();
-                    const auto* bytes=static_cast<const unsigned char*>(value.getBlob());
-                    for(int n=0;n<value.getBytes();++n)row[name].push_back(bytes[n]);
-                } else if(std::string_view(name)=="warp_mode")row[name]=value.getString();
-                else if(std::string_view(name)=="transpose_semis" || std::string_view(name)=="formant_shift")row[name]=value.getDouble();
-                else row[name]=value.getInt64();
-            }
-            inv["audio"]=std::move(row);
-        }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+bool clipDeleteInverse(OpContext& c,const Payload& p,Payload& inv,std::string& err) {
+    try {inv=clip_edit::captureDeleted(c,detail::signedInteger(p.at("id")));return true;}
+    catch(const std::exception& exception){err=exception.what();return false;}
 }
 
 bool audioAttachApply(OpContext& c, const Payload& p, std::string& err) {
@@ -2039,6 +2012,7 @@ std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
+        const auto editing=clipEditOps();v.insert(v.end(),editing.begin(),editing.end());
         return v;
     }();
     return all;
