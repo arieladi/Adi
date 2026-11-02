@@ -13,6 +13,45 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N40 source windows and waveform data for the window
+
+**PR requested:** engine/snapshot-audio-peaks -> main, head **4a64819**.
+**Title:** Expose audio sources and worker waveform peaks
+**Body:** N40: ClipNode.audio holds optional AudioClipSource with media id, full
+64-bit source-rate start/length, Warp mode/nullable marker bytes, pitch/formant,
+reverse/channel mode, and optional pool hash/rate/channels/frames/missing flag.
+Every field participates in sharing; missing attachments/pool rows remain
+explicit, old frames immutable. Rebuilds read coherent metadata only, without
+filesystem/decode work or pool peaks BLOBs. The window can use media/peaks.hpp:
+readMediaPeaks reads an optional cache, buildMediaPeaks uses a worker-local
+read-only Store and the playback DecodeCache/WavReader path to stream typed
+per-channel min/max. Content identity/dimensions, bounds, short tail bins,
+nonfinite-to-zero drawing and finite overs are handled. The optional versioned
+APKS v1 LE cache is bounded to one million bin/channel pairs; oversized BLOBs
+are rejected via SQLite length/CASE before materialization. Unknown cache bytes
+are preserved; workers never write the project/cache/op log/history. A valid
+cache can draw with missing original audio, without claiming audio availability.
+All allocating/SQL/file APIs refuse audio-thread misuse first. The worker result
+must match the current document/generation/media hash before painting; the window
+owns drawing and integration. ENGINE-SNAPSHOT-AUDIO.md and format/PEAKS.md give
+the call, source-domain mapping and cache format. No schema/opcode/UI production
+change. Raw source bins do not bake gain/fades/reverse/Warp or claim exact warped
+rendering/Live visual parity. Cancellation is checked per hash/read and around
+DecodeCache; a compressed decode call itself is not interruptible.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9944 / 108**,
+all validators clean. GCC + Clang 19 snapshot audio **26**, peaks **33**, engine
+**119**, decode **56**, media ops **71**. Actual stereo Float32 source and partial
+bin extrema, FLAC-vs-PCM exact bins, fixed LE cache bytes, read-only cached missing
+source, legacy empty mono pool row, malformed/oversized cache, identity changes,
+cancel-before-SQL and callback SQL/file-I/O refusal pass. Strict GCC shadow checks
+pass for four sources; compiled defects caught: stale audio sharing (22 failures),
+swapped channels (2), ignored cache identity (1), late pre-cancel (1). No MSVC or
+remote CI claim. API still CONNECT 403; win/window opens above. Continuing N41.
+
+---
+
+
 ## 2026-11-02 — N39 all routing identities in the snapshot
 
 **PR requested:** engine/snapshot-routing-ids -> main, head **dd62a03**.
