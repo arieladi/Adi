@@ -998,7 +998,7 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
-    auto store = Store::create(dir / "mixview.adi", err);
+    auto store = Store::createEmpty(dir / "mixview.adi", err);
     check(store != nullptr, "the Mix View's project opens");
     if (!store)
         return;
