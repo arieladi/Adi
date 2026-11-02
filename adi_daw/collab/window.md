@@ -73,6 +73,20 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — picked clips dragged together [#357](https://github.com/arieladi/Adi/pull/357) `window/picked-clips-drag`, on #356
+
+**Built: several selected clips dragged together** (parity 7.3 rows 27, 29; #356's open item). With
+clips picked, a plain press on the bar of one of the selected clips keeps them all for the drag;
+it moves them in time by the same offset, each on its own track, none before the start, drawn
+there while dragging, one undo step (`moveClips` in `range_edits.hpp`, "Move Clips"). A press
+without a drag selects that clip alone.
+
+**Open:** several clips moved across tracks, each by the same rows.
+
+**Tests.** seams 281, shell 756; `test_all.sh` PASS (9966 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — clips picked apart [#356](https://github.com/arieladi/Adi/pull/356) `window/picked-clips`, on #352
 
 **Built: Live's "Select Multiple Items" on clips** (Ctrl/Cmd+click, §42.5; parity 7.3 row 29).
