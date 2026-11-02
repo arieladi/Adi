@@ -73,6 +73,19 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the Track Activator's rules [#344](https://github.com/arieladi/Adi/pull/344) `window/activator-rules`, on #343
+
+**Built: Live's Track Activator rules** (manual 18.1, §42.19; parity 7.6 row 6): the selected tracks
+together; 0 (Deactivate Selected Track) when the Arrangement has no clip or time selected; F1 to F8
+on the first eight numbered tracks, each alone (`activateTracks`).
+
+**Tests.** seams 239, shell 682; `test_all.sh` PASS (9923 checks, 106 suites). No golden moved.
+
+**Next:** a double-click on a track's title bar brings up the Device View (Live 12 manual, Live
+Concepts) (`window/title-double-click`).
+
+---
+
 ## 2026-11-02, cloud, continued — Live's Solo rules [#343](https://github.com/arieladi/Adi/pull/343) `window/solo-rules`, on #342
 
 **Built: Live's Solo rules** (manual 18.1, §42.19; parity 7.6 row 7): Exclusive Solo from
