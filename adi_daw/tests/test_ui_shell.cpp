@@ -2874,20 +2874,49 @@ int main(int argc, char **argv) {
     {
         SettingsPanel panel(settings);
         panel.setSize(560, 680);
-        const auto pages = settings::pages();
-        check(!pages.empty() && panel.pageNames() == pages && panel.page() == pages.front(),
-              "the Settings window lists the registry's pages in its order and opens on the first");
+        const auto &pages = panel.pageNames();
+        bool liveFirst = pages.size() > kLiveTabs.size();
+        for (std::size_t i = 0; liveFirst && i < kLiveTabs.size(); ++i)
+            liveFirst = pages[i] == kLiveTabs[i];
+        check(liveFirst && panel.page() == "Display & Input",
+              "Live's ten tabs in Live's order, ADI's own pages after them; it opens on Display & Input");
+        // Every setting on exactly one tab; the tabs are the registry's settings, rearranged.
+        std::size_t placed = 0;
+        bool once = true;
+        for (const auto &tab : settingsTabs())
+            for (const auto &group : tab.groups)
+                for (const auto *setting : group.settings) {
+                    ++placed;
+                    once = once && tabOf(*setting) == tab.name;
+                }
+        check(once && placed == settings::registry().size(), "every setting is on one tab, once");
+        auto onTab = [](const char *key) {
+            const auto *setting = settings::find(key);
+            return setting != nullptr ? tabOf(*setting) : std::string{};
+        };
+        check(onTab("lookfeel.language") == "Display & Input" && onTab("lookfeel.theme") == "Theme & Colors" &&
+                  onTab("sync.ptpEnabled") == "Link" && onTab("project.sampleRate") == "Audio" &&
+                  onTab("audio.keepMonitoringLatency") == "Record, Warp & Launch",
+              "a setting Live has sits on the tab where Live has it: Look & Feel split, Link's own");
+        const auto *licenses = settingsTab("Licenses & Updates");
+        check(licenses != nullptr && licenses->groups.size() == 2 && licenses->groups[0].heading == "Licenses & Updates" &&
+                  licenses->groups[1].heading == "Privacy",
+              "Updates and Privacy become Licenses & Updates, with a Privacy group");
+        const auto *editing = settingsTab("Editing");
+        check(editing != nullptr && !editing->live &&
+                  std::find(pages.begin(), pages.end(), "Editing") - pages.begin() >=
+                      static_cast<std::ptrdiff_t>(kLiveTabs.size()),
+              "ADI's own pages come after the ten");
         std::size_t onAudio = 0;
-        for (const auto &s : settings::registry())
-            if (s.page == "Audio")
-                ++onAudio;
+        for (const auto &group : settingsTab("Audio")->groups)
+            onAudio += group.settings.size();
         panel.showPage("Audio");
         check(panel.page() == "Audio" && panel.rows().size() == onAudio && panel.audioDevices() == nullptr,
-              "one page at a time, every setting on it in the registry's order");
+              "one page at a time, every setting on its tab");
         auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
             if (s == nullptr)
                 return nullptr;
-            panel.showPage(s->page);
+            panel.showPage(tabOf(*s));
             for (const auto &row : panel.rows())
                 if (&row->setting == s)
                     return row.get();
@@ -2979,6 +3008,24 @@ int main(int argc, char **argv) {
         bool closed = false;
         panel.onClose = [&closed] { closed = true; };
         check(panel.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && closed, "Esc closes the window");
+        // Restore Defaults puts the open tab back, settings moved onto it from other pages included.
+        if (const auto *link = settings::find("sync.showLinkToggle")) {
+            panel.showPage("Link");
+            const auto was = settings.get(link->key);
+            panel.change(*link, !link->defaultValue.get<bool>());
+            panel.defaults.onClick();
+            check(settings.get(link->key) == link->defaultValue, "Restore Defaults puts the open tab back");
+            panel.change(*link, was);
+        }
+        // Taller than the window, the tab column scrolls; the open tab is kept in view.
+        panel.pageList.resized();
+        panel.showPage(pages.back());
+        const auto lastTab = panel.pageList.tabs().back();
+        check(panel.pageList.contentHeight() > panel.pageList.getHeight() && panel.pageList.scroll() > 0 &&
+                  lastTab.getBottom() <= panel.pageList.getHeight(),
+              "the last tab, scrolled into view");
+        panel.showPage(pages.front());
+        check(panel.pageList.scroll() == 0 && panel.pageList.tabs().front().getY() == 6, "and the first, back at the top");
         const settings::Setting *ranged = nullptr;
         for (const auto &s : settings::registry())
             if (!ranged && s.type == settings::Type::Int && s.scope == settings::Scope::App && s.max > s.min)
