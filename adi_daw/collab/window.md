@@ -73,6 +73,18 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the control bar's Tempo field [#366](https://github.com/arieladi/Adi/pull/366) `window/tempo-field`, on #365
+
+**Built: the Tempo field typed** (parity 7.2-shell new row 29; Live 12 manual 9.1.1). 20 to 999
+BPM with hundredths; the tempo in force at the play location takes it, one step ("Change Tempo"):
+a tempo change's (its curve kept), else the start's, with #365's insert-then-replace for the
+snapshot's implicit 120 (`submitStartEdit`, shared). One field editor serves both control bar
+fields. Live's drag of the coarse and fine parts, its tempo automation and Tap Tempo are open.
+
+**Tests.** seams 360, shell 825; `test_all.sh` PASS (10045 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — the control bar's Time Signature field [#365](https://github.com/arieladi/Adi/pull/365) `window/signature-field`, on #364
 
 **Built: the Time Signature field typed** (parity 7.2-shell new row 28; Live 12 manual 6.5). A
