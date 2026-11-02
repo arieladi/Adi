@@ -68,6 +68,8 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.laneHeight = j.value("laneHeight", 88);
         state.mixerView = j.value("mixerView", false);
         state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
+        state.mixView = j.value("mixView", false);
+        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 4);
         state.follow = j.value("follow", false);
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
@@ -132,6 +134,8 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"laneHeight", state.laneHeight},
                             {"mixerView", state.mixerView},
                             {"mixerViewHeight", state.mixerViewHeight},
+                            {"mixView", state.mixView},
+                            {"mixViewTab", state.mixViewTab},
                             {"follow", state.follow},
                             {"overview", state.overview},
                             {"inOut", state.inOut},

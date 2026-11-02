@@ -96,7 +96,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Overview", "In/Out", "Narrow Grid", "Widen Grid",
                                   "Triplet Grid", "Snap to Grid", "Fixed Grid",
                                   "Wrap Tab Navigation", "Use Large Track Height",
-                                  "Group Tracks", "Ungroup Tracks"};
+                                  "Group Tracks", "Ungroup Tracks", "Mix View"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -219,6 +219,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case RenameTrack: // §41.5
         info.addDefaultKeypress('r', cmd);
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        break;
+    case ToggleMixView:
+        // ADR-0209 d9: F4 opens and closes the Mix View; the function keys do functions.
+        info.addDefaultKeypress(juce::KeyPress::F4Key, 0);
+        info.setTicked(active_ != nullptr && active_->state().mixView);
         break;
     case GroupTracks: // §41.5; manual 18.3
     case UngroupTracks: {
@@ -445,6 +450,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
     addChildComponent(mixerViewResizer);
+    addChildComponent(mixViewPanel);
     arrangement.geometry.left = state_.timelineLeft;
     arrangement.geometry.scale = state_.pixelsPerQuarter;
     arrangement.geometry.height = state_.laneHeight;
@@ -520,6 +526,8 @@ void AdiRootComponent::frame() noexcept {
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
+    if (mixViewPanel.isVisible())
+        mixViewPanel.frame(reader());
     if (lastDrain_ & DirtySet::Transport) {
         transport.refresh();
         transport.repaint();
@@ -705,6 +713,21 @@ void AdiRootComponent::resized() {
     strip.flip.setToggleState(!browserLeft, juce::dontSendNotification);
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
+    // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
+    // View and its track controls, which a lane-less view has no use for. The browser, the strip
+    // down the edge and the Detail View stay.
+    mixViewArea_ = state_.mixView ? juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_)
+                                  : juce::Rectangle<int>();
+    const bool mixing = !mixViewArea_.isEmpty();
+    mixViewPanel.setVisible(mixing);
+    mixViewPanel.setBounds(mixViewArea_);
+    arrangement.setVisible(!mixing);
+    if (mixing) {
+        mixer.setVisible(false);
+        mixerView.setVisible(false);
+        mixerViewResizer.setVisible(false);
+    }
+    transport.mix.setToggleState(mixing, juce::dontSendNotification);
     // The Overview runs from the lanes' left edge to Live's H and W buttons.
     const int overviewX = lanesX + ArrangementView::kLeftMargin;
     const int overviewRight = browserLeft && !mixerArea_.isEmpty()
@@ -712,7 +735,7 @@ void AdiRootComponent::resized() {
                                   : centreX + centreW - 4;
     arrangement.overview.setBounds(overviewX, top + 4, std::max(0, overviewRight - overviewX),
                                    ArrangementView::kOverviewHeight - 4);
-    arrangement.overview.setVisible(state_.overview);
+    arrangement.overview.setVisible(state_.overview && !mixing);
     devices.setVisible(!deviceArea_.isEmpty());
     dockResizer.setVisible(!deviceArea_.isEmpty());
     devices.setBounds(deviceArea_.reduced(look::border));
@@ -795,6 +818,16 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+bool AdiRootComponent::chooseMixViewTab(int tab) {
+    const int was = state_.mixViewTab;
+    state_.mixViewTab = std::clamp(tab, 0, MixViewPanel::kTabCount - 1);
+    if (!persist()) {
+        state_.mixViewTab = was;
+        return fail(error_);
+    }
+    dirty_.mark(DirtySet::Layout);
+    return true;
+}
 void AdiRootComponent::publishSelection() {
     std::string why;
     if (!session_.select(arrangement.geometry.selection, why))
@@ -1047,6 +1080,13 @@ bool AdiRootComponent::command(int id) {
             return fail(error_);
         }
         break;
+    case AppCommands::ToggleMixView:
+        state_.mixView = !state_.mixView;
+        if (!persist()) {
+            state_.mixView = !state_.mixView;
+            return fail(error_);
+        }
+        break;
     case AppCommands::ToggleDeviceView:
         state_.docked = !state_.docked;
         if (!persist()) {
@@ -1183,7 +1223,7 @@ const std::vector<MenuEntries> &menuBar() {
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut,
-          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixer, C::ToggleDeviceView,
+          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::ToggleMixer, C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},
