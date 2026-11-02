@@ -399,6 +399,7 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
 }
 
 ClapDevice::~ClapDevice() {
+    if(auto editor=editor_.lock())editor->close();
     // Guard each CALL, never the whole body: an early return here would
     // skip destroy() and leak the plugin. The first version of this did
     // exactly that, by being pasted in from prepare().
@@ -696,6 +697,7 @@ void ClapDevice::setAutomationIndication(std::int32_t index, bool automated) {
 }
 
 void ClapDevice::pumpMainThread() {
+    if(auto editor=editor_.lock())editor->poll();
     if (glue_ == nullptr) return;
 
     // 1. Whatever the plugin deferred with `host.request_callback()`.
@@ -1539,6 +1541,7 @@ ClapHostGlue::ClapHostGlue() {
     host_.vendor = "adi";
     host_.url = "https://github.com/arieladi/Adi";
     host_.version = "0.1.0";
+    guiExt_={&ClapHostGlue::guiHints,&ClapHostGlue::guiResize,&ClapHostGlue::guiShow,&ClapHostGlue::guiHide,&ClapHostGlue::guiClosed};
     host_.get_extension = &ClapHostGlue::getExtension;
     host_.request_restart = &ClapHostGlue::requestRestart;
     host_.request_process = &ClapHostGlue::requestProcess;
@@ -1575,6 +1578,7 @@ const void* ClapHostGlue::getExtension(const clap_host_t* h, const char* id) {
     if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0) return &self->portsExt_;
     if (std::strcmp(id, CLAP_EXT_NOTE_PORTS) == 0)  return &self->notePortsExt_;
     if (std::strcmp(id, CLAP_EXT_PARAMS) == 0)      return &self->hostParamsExt_;
+    if (std::strcmp(id, CLAP_EXT_GUI) == 0)         return &self->guiExt_;
     if (std::strcmp(id, CLAP_EXT_STATE) == 0)       return &self->hostStateExt_;
     // Returning nullptr for an unknown id is the contract, and a host that
     // lied here would have plugins calling into functions it does not

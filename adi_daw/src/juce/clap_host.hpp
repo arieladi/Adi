@@ -241,6 +241,8 @@ public:
         return instrument_ ? engine::EventFlow::Consume : engine::EventFlow::Through;
     }
 
+    [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
+
     void prepare(double sampleRate, std::int32_t maxFrames) override;
 
     /// ADR-0207 d2: true when EVERY audio port the plug-in declares says
@@ -333,6 +335,7 @@ public:
     }
 
 private:
+    std::weak_ptr<DeviceEditor> editor_;
     /// What the plugin declares RIGHT NOW, asked rather than remembered.
     /// Used by `prepare` to decide whether reactivating is necessary at all.
     [[nodiscard]] std::vector<std::int32_t> declaredChannels(bool isInput) const;
@@ -670,6 +673,12 @@ public:
     /// plugin simply does less than it was written to do.
     void dispatchMainThread();
 
+    // Callbacks only publish fixed atomic mailboxes; poll() performs GUI work.
+    struct GuiRequests { std::uint64_t size=0; unsigned visibility=0; bool closed=false; bool hints=false; };
+    [[nodiscard]] GuiRequests takeGuiRequests() noexcept;
+    void enableGuiRequests(bool enabled,bool hosted=false) noexcept;
+
+
     /// The plugin this glue serves. Called once, by `ClapHost::makeDevice`,
     /// between `create` and handing the glue to the `ClapDevice` that owns it.
     void registerPlugin(const clap_plugin_t* p);
@@ -685,6 +694,16 @@ public:
     }
 
 private:
+    static void guiHints(const clap_host_t*);
+    static bool guiResize(const clap_host_t*, std::uint32_t, std::uint32_t);
+    static bool guiShow(const clap_host_t*);
+    static bool guiHide(const clap_host_t*);
+    static void guiClosed(const clap_host_t*, bool);
+    clap_host_gui_t guiExt_{};
+    std::atomic<bool> guiEnabled_{false}, guiHosted_{false}, guiClosed_{false}, guiHints_{false};
+    std::atomic<unsigned> guiVisibility_{0};
+    std::atomic<std::uint64_t> guiSize_{0};
+
     static const void* getExtension(const clap_host_t*, const char* id);
     static void latencyChanged(const clap_host_t*);
     static void portsRescan(const clap_host_t*, std::uint32_t flags);

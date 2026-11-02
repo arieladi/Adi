@@ -207,6 +207,7 @@ add_library(adi_core STATIC
     # run on all seven ABIs. VST3 hosting can only ever be exercised in the
     # one job that has a plugin SDK. See src/juce/clap_host.hpp (ADR-0075).
     src/juce/clap_host.cpp
+    src/juce/clap_editor_host.cpp
     src/juce/device_host.cpp
     src/juce/pd_device.cpp
     # The table of compiled-in Pd externals (ADR-0188 d8). No libpd in the
@@ -662,6 +663,10 @@ add_executable(adi_device_host_tests tests/test_device_host.cpp)
 target_link_libraries(adi_device_host_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_host_tests COMMAND adi_device_host_tests)
 
+add_executable(adi_plugin_editor_tests tests/test_plugin_editor.cpp)
+target_link_libraries(adi_plugin_editor_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_plugin_editor_tests COMMAND adi_plugin_editor_tests)
+
 add_executable(adi_clap_tests tests/test_clap.cpp)
 target_link_libraries(adi_clap_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clap_tests COMMAND adi_clap_tests)
@@ -960,7 +965,8 @@ if(ADI_WITH_JUCE)
     juce_add_console_app(adi_vst3_probe PRODUCT_NAME "adi_vst3_probe")
     target_sources(adi_vst3_probe PRIVATE
         src/juce/vst3_probe.cpp
-        src/juce/vst3_host.cpp
+        tests/test_plugin_editor_juce.cpp
+        src/juce/vst3_host.cpp src/juce/editor_host_component.cpp
         src/juce/vst3_events.cpp)
     target_compile_features(adi_vst3_probe PRIVATE cxx_std_20)
     target_compile_definitions(adi_vst3_probe PRIVATE
@@ -1123,7 +1129,7 @@ if(ADI_WITH_JUCE)
     target_sources(adi_play PRIVATE
         src/juce/play.cpp
         src/juce/juce_device_loader.cpp
-        src/juce/vst3_host.cpp
+        src/juce/vst3_host.cpp src/juce/editor_host_component.cpp
         src/juce/vst3_events.cpp)
     target_compile_features(adi_play PRIVATE cxx_std_20)
     target_compile_definitions(adi_play PRIVATE
@@ -1151,7 +1157,7 @@ if(ADI_WITH_JUCE)
     # entry point renamed by the test; never open a hardware driver.
     juce_add_console_app(adi_play_render_tests PRODUCT_NAME "adi_play_render_tests")
     target_sources(adi_play_render_tests PRIVATE tests/test_play_render.cpp
-        src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp)
+        src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/editor_host_component.cpp src/juce/vst3_events.cpp)
     target_compile_features(adi_play_render_tests PRIVATE cxx_std_20)
     get_target_property(_adi_play_defs adi_play COMPILE_DEFINITIONS)
     target_compile_definitions(adi_play_render_tests PRIVATE ${_adi_play_defs})
