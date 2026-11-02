@@ -723,6 +723,10 @@ target_link_libraries(adi_analyser_taps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 
 # ADR-0163: the mixer strip in the graph.
+add_executable(adi_strip_meter_tests tests/test_strip_meter.cpp)
+target_link_libraries(adi_strip_meter_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_strip_meter_tests COMMAND adi_strip_meter_tests)
+
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
