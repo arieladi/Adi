@@ -42,7 +42,7 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N14 | The registry's pages in Live's ten tab names and order, then ADI's own (ADR-0203 d11, Master Reference V.2), with Live's sections within each tab and Live's labels; and `sync.showLinkToggle` on by default, as Live shows Link's switch and ADR-0203 d11 says (the registry's is off) | win (`src/adi/settings/registry.cpp`) | the Settings window's tabs, sections and labels as Live's | the window lays the registry's settings out on Live's ten tabs itself, from the catalogue's Part II rows (`adi::ui::settingsTabs`, `window/settings-tabs`); labels such as "Link start/stop sync" (Live: Start Stop Sync) and Live's own sections within a tab wait here |
 | N15 | ADR-0104's library index (the app-scoped store of samples, presets and devices) and a catalogue of ADI's own devices by category, with a way to insert one (`device.insert` needs a plug-in reference row and the track's chain, neither of which the UI can make) | engine, devices | the browser's list (Live's folders under each category, double-click or drag to load) | the browser shows its sidebar and the list's header; a click on a category says it is not listed yet |
 | N16 | The channel slots for ADI-Q and ADI-L on every channel and group (ADR-0204 d1, LANES §3 item 7): present but off, their on/off and ADI-L's mode in the snapshot, an op to switch each, and the engaged EQ's curve for the window to draw | engine (slots), clones (the plug-ins) | the Channel EQ window's switches and its display; the track rows' Q and L | every slot is shown off; a switch says what it waits for |
-| N17 | The ops of phase C's window parts: clip fades (handles, Create Fades on Clip Edges off, d7), Insert Silence, and the import and bounce prompts' actions (import needs N5; bounce needs the render path) | engine | range selection's commands, fade handles, the two prompts (LANES §3b item 3) | nothing drawn that cannot act; the parts wait for their ops |
+| N17 | The ops of phase C's window parts: a clip split (Live's Split, and what a range edit does to a clip crossing its edge); copy, cut, paste and duplicate of material, and the …Time commands; clip fades (handles, Create Fades on Clip Edges off, d7); Insert Silence; and the import and bounce prompts' actions (Warp on import, edge fades, copying the file in; bounce needs the render path) | engine | range edits on clips crossing the selection's edge, Cut/Copy/Paste/Duplicate, the fade handles, Insert Silence, the two prompts (LANES §3b item 3) | the range selection is built (`window/range-selection`, #329): Delete and 0 act on whole clips inside it and say why one crossing its edge stays; nothing else is drawn that cannot act |
 | N18 | A device's copy the window can read: what `device.remove`'s inverse captures (the plug-in reference, the stored params, the state's hashes, the panel and the route), from the snapshot or a read the UI may call, so a paste is a `device.insert` with a new id in front of the selected device (Live manual §23, p. 443) | engine | Cut, Copy, Paste and Duplicate in a device's menu and the Edit menu (§23.2.1) | the menu lists Delete and Rename; the four wait |
 | N19 | The transport's metronome and loop: `transport.setMetronome` and `transport.setLoop` are in the catalogue but apply nothing (`transportNoop`); the snapshot carries neither the metronome's state nor the loop region, and nothing clicks or loops | engine | the control bar's Metronome and Loop switches, Live's O key (§42.20) and Ctrl/Cmd+L, the loop brace (§6.6, §42.16) | the switches are drawn and say they are not built; nothing is journaled for them |
 | N20 | A home for the channel configuration: `audio.channelConfig` is Device scope, which `AppSettings::set` refuses ("belongs to a device"), and its text has no format; the app also opens the device with no inputs (`initialise(0, 2, ...)`) | win (the store and the registry); engine for recording | Live's Input and Output Config dialogs on the Audio page: which channels are used, mono or stereo pairs, their names per device (online §17.2, Routing and I/O; parity-settings row 7) | nothing built; the dialogs are a new window, so their pictures would go to the director first |
@@ -67,6 +67,33 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N39 | The highest routing id of any kind in the snapshot (or the routing rows of every kind), so a new send's id cannot collide with a main, sidechain, VCA or cue row: `routing.connect` takes its id from the payload (ADR-0021) and the snapshot holds only the send rows (#309) | engine (`src/adi/engine/snapshot.*`) | a new send from a knob, and Enable Send (`window/send-knobs`, parity-7.6 row 9) | one past the highest send's id; a collision refuses the batch and the Status Bar says why |
 | N40 | A clip's audio in the snapshot (its media id and source window, from `audio_clips`) and the pool's peaks for drawing (`media_files.peaks`, or a peaks reader the window can call off the store) | engine (`src/adi/engine/snapshot.*`, `src/adi/media/*`) | an audio clip draws its waveform, as Live's (parity-7.3 row 35); a dropped file shows what it holds (`window/audio-drop`) | an audio clip is drawn as its colour and its name |
 | N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-02, cloud, continued — Live's time selection across tracks [#329](https://github.com/arieladi/Adi/pull/329) `window/range-selection`, on #327
+
+**Built: phase C's first window part** (parity 7.3 rows 28, 29 and 36; Live 12 manual 6.9, read
+from the online manual).
+- The selection keeps its far track (`Selection::toTrack`). A drag across lanes, Shift+click,
+  Shift+Up/Down and Shift+click on a header reach across tracks; a plain click starts over.
+- Every selected lane is lit, and a selected clip's body is tinted under its title strip, as
+  the manual's Cut Time and Consolidate figures show. The selected tracks' mixer controls are
+  lighter.
+- Alt+wheel now sizes only the selected tracks with content in the selection.
+- Delete and 0 act on every clip wholly inside the selection on every selected track, one undo
+  step each. A clip crossing its edge stays as it is, and the Status Bar says why.
+- The arrangement and devices goldens are re-recorded, because a time selection over a clip now
+  tints it.
+
+**N17 restated**: a split op, copy/paste/duplicate and the …Time commands, fades, Insert Silence,
+and the prompts' actions. The rest of phase C's window parts wait for them; nothing is drawn that
+cannot act.
+
+**Tests.** seams 204, shell 606, document 47, window state 58; `test_all.sh` PASS, 9861 checks
+across 105 suites; the sweeps are clean.
+
+**Next:** Select All (Ctrl/Cmd+A) on the arrangement, which needs no op, then queue item 4, the
+parity passes.
 
 ---
 
