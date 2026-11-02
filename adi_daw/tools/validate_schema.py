@@ -38,7 +38,7 @@ Checks, in order:
      no number written while still marked reserved, no burned number
      reused, no number claimed and never spent (ADR-0051).
   9. Every older minor is frozen under docs/format/history/, each minor
-     only ADDS objects, and applying the missing objects to each frozen
+     only ADDS objects except the 1.9 project-default rebuild, and migrating each frozen
      file yields this schema, ignoring order and comments (ADR-0144).
 """
 
@@ -50,7 +50,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1008   # schema 1.8 (tuning systems, ADR-0178); SPEC §3.1 and the DDL say the same
+SPEC_USER_VERSION = 1009   # schema 1.9 (project default, ADR-0203 d18); SPEC §3.1 and the DDL say the same
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -729,6 +729,15 @@ def main() -> int:
                              if n in {n2 for _t2, n2, _b2, _s2 in objs})
             if lost:
                 fail(f"1.{minor} drops objects 1.{previous[0]} had: {lost} -- a minor may only add")
+            # ADR-0203 d18 explicitly changes only project's sample-rate default
+            # in 1.9. Every other DDL change remains forbidden.
+            if minor == 9 and changed == ["project"]:
+                before = next(o for o in previous[1] if o[1] == "project")
+                after = next(o for o in objs if o[1] == "project")
+                if before[:3] == after[:3] and before[3].replace(
+                        "sample_rate INTEGER NOT NULL DEFAULT 48000",
+                        "sample_rate INTEGER NOT NULL DEFAULT 44100") == after[3]:
+                    changed = []
             if changed:
                 fail(f"1.{minor} changes the DDL of {changed} -- a CREATE cannot migrate that")
         if old is not None:
@@ -737,6 +746,13 @@ def main() -> int:
                 for name, sql in cur_rows:
                     if name not in have:
                         old.execute(sql)
+                # The same one-time rebuild as Store's 1.9 migration, with data
+                # copied rather than replaced by the new-project default.
+                old.execute("CREATE TEMP TABLE adi_project_upgrade AS SELECT * FROM project")
+                old.execute("DROP TABLE project")
+                old.execute(next(sql for name, sql in cur_rows if name == "project"))
+                old.execute("INSERT INTO project SELECT * FROM temp.adi_project_upgrade")
+                old.execute("DROP TABLE temp.adi_project_upgrade")
             except sqlite3.Error as exc:
                 fail(f"upgrading a 1.{minor} file failed: {exc}")
             if objects(old) != cur_objects:
@@ -744,7 +760,7 @@ def main() -> int:
                 fail(f"an upgraded 1.{minor} file differs from a fresh one: {diff}")
         previous = (minor, objs)
     if fail.count == before_9:  # type: ignore[attr-defined]
-        ok(f"1.0 to 1.{spec_minor - 1} are frozen, additive, and upgrade to 1.{spec_minor}")
+        ok(f"1.0 to 1.{spec_minor - 1} are frozen and upgrade (including the 1.9 default rebuild) to 1.{spec_minor}")
 
     n = fail.count  # type: ignore[attr-defined]
     print()

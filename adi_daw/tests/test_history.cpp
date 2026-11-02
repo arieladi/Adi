@@ -48,7 +48,7 @@ struct Scratch {
 
 std::unique_ptr<Store> project(const fs::path& p) {
     StoreError e = StoreError::Ok;
-    auto st = Store::create(p, e);
+    auto st = Store::createEmpty(p, e);
     if (st) st->db().exec("INSERT INTO project(id,name) VALUES (1,'Untitled')");
     return st;
 }

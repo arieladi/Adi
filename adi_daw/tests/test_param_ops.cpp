@@ -367,7 +367,7 @@ void testTheWholeLoopThroughTheJournal() {
     const adi::test::TempDirectory scratch("param_ops", "loop");
     section("ADR-0124 -- session, glue, journal, undo: the plugin ends where it started");
     StoreError e = StoreError::Ok;
-    auto store = Store::create(scratch.path() / "p.adi", e);
+    auto store = Store::createEmpty(scratch.path() / "p.adi", e);
     check(store != nullptr, "created");
     if (!store) return;
     {
@@ -732,7 +732,7 @@ void testAnUndoneChunkReseedsTheCapture() {
     const adi::test::TempDirectory scratch("param_ops", "reseed");
     section("ADR-0142 -- an undone preset re-reads the plugin: the next drag starts where the undo put it");
     StoreError e = StoreError::Ok;
-    auto store = Store::create(scratch.path() / "p.adi", e);
+    auto store = Store::createEmpty(scratch.path() / "p.adi", e);
     check(store != nullptr, "created");
     if (!store) return;
     Sampler s;
@@ -796,7 +796,7 @@ void testTheStateLoopThroughTheJournal() {
     const adi::test::TempDirectory scratch("param_ops", "state");
     section("ADR-0142 -- a preset through the journal: reload keeps it, undo reaches the plugin, a row on top survives");
     StoreError e = StoreError::Ok;
-    auto store = Store::create(scratch.path() / "p.adi", e);
+    auto store = Store::createEmpty(scratch.path() / "p.adi", e);
     check(store != nullptr, "created");
     if (!store) return;
     {

@@ -131,7 +131,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         snap->sampleRate = db.execAndGet("SELECT sample_rate FROM project WHERE id=1").getInt();
     } catch (const std::exception&) {
-        snap->sampleRate = 48000;
+        snap->sampleRate = 44100;
     }
 
     // --- tempo -----------------------------------------------------------------

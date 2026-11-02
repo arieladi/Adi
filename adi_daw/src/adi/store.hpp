@@ -34,7 +34,7 @@ namespace adi {
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 8;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178)
+inline constexpr int kSchemaMinor = 9;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18)
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {
@@ -64,9 +64,14 @@ public:
     Store(const Store&) = delete;
     Store& operator=(const Store&) = delete;
 
-    /// Create a new project. Fails if the path exists — overwriting someone's
+    /// Create a new project with its singleton project row at 44.1 kHz,
+    /// before the first undoable edit. Fails if the path exists — overwriting someone's
     /// project is not a thing this function will do quietly.
     static std::unique_ptr<Store> create(const std::filesystem::path&, StoreError&);
+
+    /// Schema-only creation for converters and low-level fixtures that supply
+    /// their own project rows. Application New commands use create().
+    static std::unique_ptr<Store> createEmpty(const std::filesystem::path&, StoreError&);
 
     /// Open an existing project. Verifies `application_id` before trusting any
     /// table, and downgrades to read-only if the file's major schema is newer
@@ -167,7 +172,7 @@ private:
 // the only production caller.
 
 /// One step per minor: the schema objects (tables, indexes, triggers) that
-/// minor added, by name. Their DDL is taken from the embedded schema.sql, so a
+/// minor added, by name. Minor 1.9 also rebuilds project to change its default. Their DDL is taken from the embedded schema.sql, so a
 /// migrated file and a fresh one are built from the same statements.
 struct MigrationStep {
     int toMinor = 0;

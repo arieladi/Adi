@@ -78,11 +78,17 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1008;          -- schema 1.8
+PRAGMA user_version   = 1009;          -- schema 1.9
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 ```
+
+New application projects are initialized by `Store::create` with the singleton
+`project` row (`id=1`, name `Untitled`, sample rate 44,100 Hz, ADR-0203 d18).
+Initialization precedes the first op: it creates no undo step. Converters and
+low-level fixtures that supply their own project data use `Store::createEmpty`.
+The default applies to new rows; opening an existing project preserves its rate.
 
 ### 3.2 Required pragmas while a project is open
 
@@ -1085,8 +1091,8 @@ the moment a column is added, and "silently" is the operative word.
 
 ### 11.1 Upgrading an older minor (ADR-0144)
 
-A minor only **adds** objects (tables, indexes, triggers). It never changes or
-drops one. That is what makes an older file upgradable in place, and
+A minor normally only **adds** objects (tables, indexes, triggers). The explicit
+1.9 default change below is its one exception. That is what makes an older file upgradable in place, and
 `validate_schema.py` check 9 enforces it against the frozen schemas in
 [`history/`](history/).
 
@@ -1095,13 +1101,20 @@ drops one. That is what makes an older file upgradable in place, and
 | **for writing** | Upgrade it before anything else reads or writes it: in **one transaction**, create each later minor's objects in minor order, set `adi_meta.schema_minor`, and set `user_version` **last**. If any step fails, roll back everything: the file stays at its old version and the open fails with a clear error. |
 | **read-only** | Never write. Every table the file lacks reads as **empty**. The reference implementation creates empty `TEMP` tables of the same names on its own connection, in one place (`Store::open`), so every reader is covered. |
 
+Schema 1.9 changes `project.sample_rate`'s default from 48,000 to 44,100 Hz
+(ADR-0203 d18). Its migration rebuilds only `project`, copying every stored value
+and restoring its indexes/triggers in the same transaction. Existing rates are
+not resampled or overwritten. A nonstandard column or incoming extension
+foreign key that prevents a safe copy fails the migration and leaves the file
+unchanged. This is the named exception to additive minor migrations; other
+objects retain their previous definitions.
+
 - Existing rows are never rewritten or dropped. A 1.0 file with embedded media
   is upgraded as it is; the 1.1 triggers refuse only **new** embedded writes, and
   extracting the old media is a separate, explicit operation (ADR-0127 d3).
 - The objects are created from the current `schema.sql`'s own statements, so an
   upgraded file matches a fresh one, ignoring comments inside a `CREATE`
-  (SQLite stores those verbatim, and a migration never rewrites an existing
-  table).
+  (SQLite stores those verbatim). The 1.9 project rebuild is the exception.
 - A **newer** minor is never touched: no upgrade, no downgrade, no rewrite of
   `user_version`. A newer **major** opens read-only, as above.
 

@@ -57,7 +57,7 @@ struct Fixture {
     std::unique_ptr<Store> store;Session session;Instrument* instrument=nullptr;
     double rate;int block;std::int64_t clock=0;
     explicit Fixture(double r=48000,int b=512):rate(r),block(b){
-        StoreError e{};store=Store::create(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
+        StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.midi','Recorder','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Recorder')");
     }
     void clip(int id=1,std::int64_t on=24024,std::int64_t duration=480480,std::int64_t length=5765760){

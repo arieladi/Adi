@@ -69,7 +69,7 @@ struct Scratch {
     explicit Scratch(const char* n)
         : temp("engine", n), dir(temp.path()) {
         StoreError e = StoreError::Ok;
-        store = Store::create(dir / "p.adi", e);
+        store = Store::createEmpty(dir / "p.adi", e);
     }
 };
 
