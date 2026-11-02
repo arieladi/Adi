@@ -13,6 +13,68 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N17 continuation: six prepared warp engines, before project integration
+
+**Existing N17 PR request updated, no second PR/stack:** engine/phase-c-editing
+-> main, head **ee646f4ac82e6132b20c5ddfc5540654144ba9ad** (after db2ec7a).
+The previous captured editing/whole-Set Time/material actions remain on this
+same branch. Add to its body: audio/warp.hpp now provides an off-callback worker
+that prepares private, aligned Float32 PCM for all six ADR-0188 d2 modes:
+native transient-slice Beats, native granular Texture, libsamplerate Re-Pitch,
+and Rubber Band R3 Tones/Complex/Complex Pro. Typed plans capture source/output
+anchors and controls; shared onset detection and canonical AWRP marker reading/
+writing are in audio/transients.hpp and audio/warp_map.hpp. This increment is
+the worker backend, not yet the live project handoff: Warp import and existing
+ClipPlayback still give their prior named refusals. Auto-Warp tempo/bar
+analysis, its edit producer and actual playback integration continue next.
+N17 stays open; the window continues using the preceding completed editing
+APIs and must not store a private prepared file as a media-pool asset path.
+ENGINE-WARP.md describes lifetime, bounds, units and integration status.
+
+Rubber Band is pinned **v4.0.0 / 1d95888bec3ae0a17c0c4af791810d5a63f6bc35**,
+and fetch_external.sh --build-only verifies it. ADR-0061's required exact-commit
+"version 2 ... or ... any later version" header finding is recorded in
+EXTERNAL-CODE.md. Upstream single-file build is unmodified, with vendor warnings
+separate from strict ADI code; Apple uses Accelerate, Windows its portable
+configuration. R3 gets interior key frames only (0->0 would divide by zero),
+exact source/output duration and file-rate-aware pitch/formant correction.
+Complex Pro's preserved envelope is verified with harmonic excitation, not
+just a pure sine that has no unshifted envelope after transposition. Re-Pitch
+keeps continuous sinc-best state and explicit anchor rate changes, with pitch
+tied to tape speed. Native modes share stereo timing/jitter; typed controls
+select transient loop/envelope and seeded grains. Native parameters/sound
+remain unmeasured against Live; the approved R3 Tones/Envelope parity gaps and
+provisional native defaults are documented. No measured-Live claim.
+
+The private PCM owner has a private constructor/owned directory, immutable
+file/metadata and deleted copy; only a newly reserved staging directory can
+be removed by its final off-thread owner, after readers close. Raw WAV reads
+never construct/pin the decoding cache accidentally. Cancellation cleans up
+private outputs, and callback calls refuse before allocation/I/O. AWRP v1 is
+the already-declared stream's 16-byte i64 source-window frame/tick pair; full
+64-bit/future-stride reads retain the original opaque bytes. No SQL schema
+version/table/opcode change in this increment. Prepared offline PCM is aligned
+and adds zero live stretcher latency; future live processing must declare PDC.
+
+**Validation:** final GCC14 Debug/Werror/PD ON/JUCE OFF test_all has **10730
+checks / 111 C++ suites, all passing**, every binary result checked. Sole
+failed validator is the known win-owned **README 51 vs 53 tables** in this
+N17 schema; win updates that count on integration. All other schema/frozen
+migrations, ops/Pd/CI/layout validators pass. GCC + Clang19 warp **91** pass:
+all engines, exact rates/lengths, actual pitch/spectral-envelope/impulse-anchor
+checks across 44.1/48-kHz sources, transient-loop directions, stereo coherence,
+seed repeatability, codec golden/future/full64, cancellation/lifetime and real
+callback allocation/I/O guards. Strict GCC shadow passes for four sources.
+Compiled defects caught: R3 origin division (8), lost formants (6), ignored
+tape rate (4), ignored grain seed (1), wrong future stride (1), unrefined
+onsets (1). No MSVC/remote CI claim. API remains unavailable; win/window updates
+the one existing request. Continuing Auto-Warp/project integration and then
+video, with no LANES section 5 gate blocking implementation.
+
+---
+
+
+
 ## 2026-11-02 — N17 continuation: the whole-Set Time clipboard now acts
 
 **Existing N17 PR request updated, no new PR/stack:** engine/phase-c-editing
