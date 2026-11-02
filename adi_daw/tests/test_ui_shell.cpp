@@ -1287,8 +1287,10 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         strip->mouseDoubleClick(pressAt(*strip, {20.f, 8.f}));
         check(root.state().docked && root.arrangement.geometry.selection.track == 3,
               "a double-click on 3 Audio's strip title selects it and brings up the Device View");
+        check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "hidden once more");
         strip->mouseDoubleClick(pressAt(*strip, {20.f, 200.f}));
-        check(root.state().docked, "below the title, a double-click is the strip's own");
+        check(!root.state().docked, "below the title, a double-click leaves the Device View hidden");
+        check(root.command(AppCommands::ToggleDeviceView) && root.state().docked, "and shown again");
     } else
         check(false, "3 Audio's Mixer View strip");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
