@@ -73,6 +73,23 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the returns reordered by dragging [#350](https://github.com/arieladi/Adi/pull/350) `window/return-move`, on #349
+
+**Built: Live's return drag** (parity 7.3 row 33). A return's title dragged among the returns moves
+it: before or after the return under the mouse, first over the tracks, last over Main. One undo step;
+the returns are renumbered among themselves. Their activators' letters and every row's sends follow
+their places. `moveTracks` refuses a return with tracks or into a group, and Main ("Main stays
+last.").
+
+**Open:** a return's letter is stored in its name ("A Reverb"), so after a move the name keeps its
+old letter while the activator shows the new one; Live 12 shows each return's letter before its
+name, so the letter should come from the place, as '#' does for a track's number. To measure in
+Live whether a move renames.
+
+**Tests.** seams 268, shell 728; `test_all.sh` PASS (9952 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — the lanes scroll under a drag [#349](https://github.com/arieladi/Adi/pull/349) `window/drag-scroll`, on #348
 
 **Built: scrolling at the lanes' edge while dragging** (parity 7.3 rows 27, 33, 36; #347's open
