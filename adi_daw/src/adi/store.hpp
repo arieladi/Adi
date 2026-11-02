@@ -114,6 +114,13 @@ public:
     /// statements. Refresh ProjectView/Session and the window's filename after
     /// success. A failed switch retains the source and a completed copy.
     [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&);
+    /// Copy current and undo/branch media into audio/, verify their hashes and
+    /// save the new locations atomically. Owner thread; no live SQL statements
+    /// or transaction. Refresh readers after success. No undo step is appended.
+    [[nodiscard]] StoreFileResult collectAllAndSave();
+    /// Portable ZIP of a committed snapshot, including undo/branch media.
+    /// The active project is unchanged; the destination must not exist.
+    [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }

@@ -188,6 +188,34 @@ An unknown newer major supports **Save a Copy** verbatim, without interpreting
 or relocating its media paths; it remains read-only. Save As into an editable
 Store refuses that major.
 
+### 3.8 Collect All and Save / Collect and Export
+
+`Store::collectAllAndSave()` copies hash-verified external media into `audio/`
+beside the current project and atomically saves those locations. The collected
+set includes the current pool and media captured by imports, unlinks and relinks
+on **all history branches**, including assets absent from the current pool.
+Each content hash has one local file; names use the full hash and a safe source
+extension. Matching existing files are reused; different contents and symlinks
+are refused. Nothing is overwritten. A failed copy or SQL update rolls back
+all location changes and removes only files published by that call. A crash can
+leave unreferenced files. Legacy embedded media must first be extracted.
+
+This is location maintenance, not an undoable edit: media identity, musical
+state, op/transaction ids, branch heads and snapshot bookmarks remain intact.
+Captured paths on both sides of history ops become local, absolute hints are
+cleared and missing flags reset. Undo/Redo and branch switching keep using the
+collected files after the folder moves. It requires a writable supported Store,
+no live SQL statements and no active transaction, and runs off the audio thread.
+The caller refreshes its view/session after success. Committed WAL data is saved;
+a blocked passive checkpoint is reported as a warning, with success retained.
+
+`Store::collectAndExport(zip)` uses the existing streaming ZIP64 STORE exporter
+on a private SQLite backup, collects that copy by the same rules, checks it,
+folds its WAL and publishes the archive without replacing an existing output.
+The live source and its paths/history stay unchanged. Read-only sources are
+supported. A missing or changed current **or history-only** asset fails export
+without a partial ZIP. `media::collectExport(input, zip)` remains the path-based
+entry point used by `adi_tool collect-export`.
 
 ## 4. The time model
 
