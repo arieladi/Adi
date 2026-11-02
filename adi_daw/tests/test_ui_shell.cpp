@@ -767,7 +767,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
 // bottom of the lanes, below the drop area, whatever the scroll.
 void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
-    auto store = Store::create(dir / "foot.adi", err);
+    auto store = Store::createEmpty(dir / "foot.adi", err);
     check(store != nullptr, "the foot's project opens");
     if (!store)
         return;
