@@ -64,7 +64,44 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N36 | ~~What `tracks.color` holds: `docs/format` gives only an INTEGER (Live stores a palette index, one of its 70 colours; ADI's window draws 0xRRGGBB)~~ STRUCK 2026-11-02: merged as #317 | win (the format); ruled as ADR-0211 in PR #317: an index into Live's palette, NULL for none | a track's own colour on its lane, title, strip and the project view's folder (STEP-7-PLAN §2.2) | built against the ruling in #319 (`window/track-colour`); the row is struck when #317 merges |
 | N37 | `track.delete`'s inverse captures only the track row (kind, name, parent, index), where OPS.md §6.3 says it captures the row, its clips and its device state. Everything that cascades from `tracks` (clips, lanes, the mixer strip, device chains) is not brought back by undo, nor are the colour and the routing rows | engine (`src/adi/ops_catalog.cpp`) | undo of Delete Track and of Ungroup Tracks (`window/group-commands`) should bring the track back as it was, clips and devices included | both commands are built; undo brings the track or the group back empty; parity-7.3 row 33 says so |
 | N38 | A track's role in the format and the snapshot, and an op to set it: `tracks.role` (null, `kick`, `bass`, `vocal`, `reference`), win's placement in ADR-0209 Q8, to strike if wrong | win (the format); engine (the snapshot, the op) | which track is the ★ Reference (the Mix View's strip, hidden from the project view until shown); later ★ Kick, ★ Bass and ★ Vocal (P2) | `MixViewProvider::reference` and its stub, which names none; the strip says the role waits (`window/mix-view-reference`, #323) |
+| N39 | The highest routing id of any kind in the snapshot (or the routing rows of every kind), so a new send's id cannot collide with a main, sidechain, VCA or cue row: `routing.connect` takes its id from the payload (ADR-0021) and the snapshot holds only the send rows (#309) | engine (`src/adi/engine/snapshot.*`) | a new send from a knob, and Enable Send (`window/send-knobs`, parity-7.6 row 9) | one past the highest send's id; a collision refuses the batch and the Status Bar says why |
 | N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-02, cloud, continued — the send knobs [#325](https://github.com/arieladi/Adi/pull/325) `window/send-knobs`, on #323
+
+**Built: parity 7.6 row 9, the sends as ADR-0203 d3 rules.**
+- One send per return on every track, group and return, the returns in the arrangement's order;
+  Main has none. The first UI on the engine's send rows (#309).
+- The track controls: Live's 29-unit boxes on the row under volume and pan, three to a row, as
+  Live 12's Arrangement figure shows them (and Live 11's capture, look-live11 difference row 4,
+  now struck). ADI-Q and ADI-L move to the row after the sends.
+- The Mixer View: Live's knobs under "Sends", A on the left and each next one to the side and
+  22 units lower, lettered as its return. Every strip keeps the section's room, Main's too, so
+  the mixers line up.
+- A knob without a routing row is fully down (ADR-0204 d5). Turning it up writes
+  `routing.connect` then `routing.setGain`, one undo step. The bottom stop writes silence
+  (-150 dB); a click that moves nothing writes nothing.
+- A return's own sends are off until Enable Send, in the send's right-click menu.
+- STEP-7-PLAN no longer lists sends as rejected (ADR-0072 was reversed).
+
+**New need N39** (engine): the snapshot holds only the send rows, so a new send's id is one past
+the highest send's. A main, sidechain, VCA or cue row with that id would refuse the batch.
+
+**Not built yet** (parity row 9): each return's Pre/Post switch, Enable All Sends, Insert Return
+Track, and the view menu's show or hide of returns and sends.
+
+**Found on the way, the next small item (`window/volume-floor`).** The volume fader's bottom stop
+reads "-inf" but writes -70 dB. The format calls that audible; silence is at or below -150 dB
+(SPEC §6.9). Live's -inf is silent.
+
+**Tests.** seams 177, shell 579; `test_all.sh` PASS, 9825 checks across 105 suites; the shadow
+and clang sweeps are clean; the goldens are unchanged. Locally `adi_audio_probe` does not build
+with this container's GCC (`juce_UMPUtils.h`, `-Wconversion`). It is JUCE's code, and the same
+error is in earlier logs; CI builds the probe.
+
+#324 is green on all 22 checks and waits on win.
 
 ---
 
