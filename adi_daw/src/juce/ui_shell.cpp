@@ -1136,26 +1136,58 @@ bool AdiRootComponent::deleteTrack() {
 }
 bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos,
                                  const std::string &name) {
-    // Where it lands is checked before the file is read; the batch is built from the CURRENT cell.
+    return dropAudioFiles({{utf8Path, name}}, track, pos, false);
+}
+bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files,
+                                      std::int64_t track, std::int64_t pos, bool separate) {
+    // Where it lands is checked before the files are read; the batch is built from the CURRENT cell.
     if (!view_.current())
         return fail("Dropping audio needs an open project.");
     if (auto refusal = audioDropRefusal(*view_.current(), track); !refusal.empty())
         return fail(std::move(refusal));
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
-    AudioImport import;
-    std::string why;
-    if (!importAudio(utf8Path, import, why))
-        return fail(why.empty() ? "The file could not be imported." : why);
-    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, name, std::move(import));
+    // Each file captured before the batch lands: a new pool row takes an id past the ones the files
+    // before it took, and a file dropped twice is captured once.
+    std::vector<DroppedAudio> dropped;
+    std::int64_t nextId = 0;
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        const auto &[path, name] = files[i];
+        DroppedAudio file{name, {}};
+        std::size_t seen = 0;
+        while (seen < i && files[seen].first != path)
+            ++seen;
+        if (seen < i) {
+            file.import = dropped[seen].import;
+            file.import.media = {};
+        } else {
+            file.import.firstFreeId = nextId;
+            std::string why;
+            if (!importAudio(path, file.import, why))
+                return fail(why.empty() ? "The file could not be imported." : why);
+            if (!file.import.media.opType.empty())
+                nextId = std::max(nextId, file.import.mediaId + 1);
+        }
+        dropped.push_back(std::move(file));
+    }
+    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate);
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     if (!submitEdits(std::move(edit.ops)))
         return false;
-    arrangement.geometry.selection.track = edit.select;
-    arrangement.geometry.selection.toTrack = 0;
-    arrangement.geometry.selection.picked.clear();
-    arrangement.geometry.selection.clip = edit.clip;
+    // The first clip selected, as a click on it selects it: its track, and its time.
+    auto &sel = arrangement.geometry.selection;
+    sel.track = edit.select;
+    sel.toTrack = 0;
+    sel.picked.clear();
+    sel.clip = edit.clip;
+    if (const auto now = view_.current())
+        if (const auto *t = now->findTrack(edit.select))
+            for (const auto &c : t->clips)
+                if (c->id == edit.clip) {
+                    sel.start = c->posTicks;
+                    sel.end = c->posTicks + c->lengthTicks;
+                }
     publishSelection();
     return true;
 }

@@ -1676,7 +1676,8 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     // What the document does (ProjectDocument::prepareImport), on this scene's store.
     root.importAudio = [&store](const std::string &path, AudioImport &out, std::string &why) {
         OpRequest captured;
-        const auto id = store->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+        const auto id = std::max(out.firstFreeId,
+                                 store->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64());
         const auto r = media::prepareImport(*store, media::pathFromUtf8(path), id, 1, captured);
         if (!r.ok || !r.audio) {
             why = r.ok ? "not audio" : r.error;
@@ -1749,6 +1750,75 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     canvas.filesDropped(juce::StringArray{juce::String(text.string())}, x, laneTop(root, 1) + 10);
     root.frame();
     check(root.reader().findTrack(1)->clips.size() == 1 && !root.error().empty(), "a text file is refused, with the reason");
+    // Several files at once, as Live places them: one after another on the track; with Ctrl/Cmd, each
+    // on a track of its own. One undo step for them all.
+    const auto snare = dir / "Snare 909.wav";
+    {
+        // Half a second: one beat at 120 BPM.
+        std::vector<float> samples(24000, .25f);
+        audio::WavWriter writer(snare, 48000, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    const auto snarePath = juce::String(snare.string());
+    check(canvas.isInterestedInFileDrag(juce::StringArray{path, snarePath}), "the lanes take several files");
+    const auto bar3 = 2 * textproj::kWhole;
+    const int x3 = static_cast<int>(geometry.x(bar3) + 3);
+    auto clipsOn = [&root](std::int64_t track) {
+        std::vector<std::pair<std::string, std::int64_t>> out;
+        if (const auto *t = root.reader().findTrack(track))
+            for (const auto &c : t->clips)
+                out.emplace_back(c->name, c->posTicks);
+        return out;
+    };
+    using Clips = std::vector<std::pair<std::string, std::int64_t>>;
+    // The window at twice its size, for the PR's picture (ADI_UI_PARITY).
+    auto shot = [&root](const char *name) {
+        const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+        if (pictures.isEmpty())
+            return;
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(pictures).getChildFile(name);
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    };
+    canvas.filesDropped(juce::StringArray{path, snarePath}, x3, laneTop(root, 1) + 10);
+    root.frame();
+    shot("adi-multi-drop.png");
+    check(clipsOn(1) == Clips{{"Kick 808", bar2}, {"Kick 808", bar3}, {"Snare 909", bar3 + 2 * textproj::kPPQ}} &&
+              submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip" &&
+              store->db().execAndGet("SELECT count(*) FROM media_files").getInt() == 2 &&
+              geometry.selection.clip == root.reader().findTrack(1)->clips[1]->id && geometry.selection.start == bar3 &&
+              geometry.selection.end == bar3 + 2 * textproj::kPPQ,
+          "Kick and Snare dropped on Drums at bar 3: one after the other, the Snare pooled, the first selected with its "
+          "time, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(clipsOn(1).size() == 1 && store->db().execAndGet("SELECT count(*) FROM media_files").getInt() == 1,
+          "takes both away, and the Snare's pool row");
+    check(root.dropAudioFiles({{path.toStdString(), "Kick 808"}, {snarePath.toStdString(), "Snare 909"}}, 1, bar3, true),
+          "with Ctrl/Cmd held");
+    root.frame();
+    shot("adi-multi-drop-separate.png");
+    const auto *own = root.reader().findTrack(3);
+    check(clipsOn(1) == Clips{{"Kick 808", bar2}, {"Kick 808", bar3}} && own != nullptr && own->kind == "audio" &&
+              clipsOn(3) == Clips{{"Snare 909", bar3}},
+          "Kick on Drums, the Snare on a new audio track of its own, both at bar 3");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // The same file twice below the tracks: one new track, the two one after the other, pooled once.
+    canvas.filesDropped(juce::StringArray{snarePath, snarePath}, x3, below);
+    root.frame();
+    check(clipsOn(3) == Clips{{"Snare 909", bar3}, {"Snare 909", bar3 + textproj::kPPQ}} &&
+              store->db().execAndGet("SELECT count(*) FROM media_files").getInt() == 2,
+          "the Snare dropped twice below the tracks: a new track, one after the other, pooled once");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
