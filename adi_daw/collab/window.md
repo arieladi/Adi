@@ -71,14 +71,14 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
-## 2026-11-02, cloud, continued — win merged #324 and the engine's #307; New is the store's root `window/new-project-root`
+## 2026-11-02, cloud, continued — win merged #324 and the engine's #307; New is the store's root [#330](https://github.com/arieladi/Adi/pull/330) `window/new-project-root`
 
 **Merged by win:**
 - #324, the Foot scene's fix. #328 (the Settings tabs), which stood on it, now targets main.
 - The engine's #307 (N2, struck above): `Store::createNewProject` writes the project row, Main
   and Live's default Set at the history's root, and asks window callers to use it.
 
-**`window/new-project-root`** (from main) does that:
+**`window/new-project-root`** (#330, from main) does that:
 - New opens Live's default Set, 1 MIDI, 2 MIDI, 3 Audio and 4 Audio then Main, with nothing to
   undo. The window's own "New project" step goes.
 - `protectRoot` stays, so a project an earlier build made still stops undo at its first step.
