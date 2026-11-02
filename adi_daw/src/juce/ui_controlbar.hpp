@@ -34,6 +34,9 @@ class BarItem final : public juce::Button {
             bool dropdown = false);
     void paintButton(juce::Graphics &, bool over, bool down) override;
     void focusGained(FocusChangeType) override;
+    // A key on the focused field, for the field's own keys (the position's up and down) first.
+    bool keyPressed(const juce::KeyPress &) override;
+    std::function<bool(const juce::KeyPress &)> onKey;
     void focusLost(FocusChangeType) override;
     void setText(const juce::String &t);
     // Live 12's focus ring: shown where the keyboard put the focus, never after a click.
@@ -67,6 +70,8 @@ class TransportBar final : public juce::Component {
     // open, the Status Bar saying why), Esc or a click elsewhere closes it.
     void beginTempoEdit();
     void beginSignatureEdit();
+    // Live's Arrangement Position fields (manual 6.1): typed, or up and down, a bar at a time.
+    void beginPositionEdit();
     // The field being typed in: the tempo's or the signature's, or none.
     const BarItem *editing() const noexcept { return fieldEditor.isVisible() ? editing_ : nullptr; }
     juce::TextEditor fieldEditor;

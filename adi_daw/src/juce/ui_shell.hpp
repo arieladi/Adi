@@ -307,6 +307,12 @@ class AdiRootComponent final : public juce::Component {
     // tempo follows the taps. A run is one undo step ("Tap Tempo"): each tap replaces the run's step
     // while it is still the latest.
     bool tapTempo(std::int64_t nowMs);
+    // Live's Arrangement Position fields (manual 6.1): "Adjusting the Arrangement Position fields
+    // automatically moves the insert marker". A position typed, bar.beat.sixteenth in the project's
+    // meters, puts the insert marker and the playhead there; up and down step a bar from the play
+    // position (the insert marker while stopped). Neither is an edit, so neither is an undo step.
+    bool setPositionAt(const std::string &text);
+    bool stepPosition(int bars);
     const TapTempo &taps() const noexcept { return tap_; }
     // An edit of the start's tempo or signature, where the snapshot cannot tell a stored value from
     // its own: `tried` (an insert) first; refused, it changed nothing, and `otherwise` (a replace)

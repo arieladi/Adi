@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/textproj.hpp"
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
+#include <optional>
+#include <string_view>
 #include <utility>
 #include <vector>
 namespace adi::ui {
@@ -107,6 +111,76 @@ void forEachBar(std::int64_t from, std::int64_t to, const std::vector<textproj::
         meter = &meters[next];
         ++next;
     }
+}
+// Where a bar, beat and sixteenth falls (the inverse of barPosition), or none when that bar has no
+// such beat or sixteenth: past its signature's beats, past a beat's sixteenths, or past the change
+// that cuts a fragmentary bar short.
+inline std::optional<std::int64_t> tickOf(const BarPosition &at, const std::vector<textproj::Meter> &meters) {
+    if (at.bar < 1 || at.beat < 1 || at.sixteenth < 1)
+        return std::nullopt;
+    const textproj::Meter *meter = meters.empty() ? &meters_detail::defaultMeter() : &meters[0];
+    std::int64_t start = 0, barsBefore = 0;
+    std::size_t next = 1;
+    for (; next < meters.size(); ++next) {
+        const auto barTicks = meter->barTicks();
+        if (barTicks <= 0)
+            return std::nullopt;
+        const auto span = meters[next].start_ticks - start;
+        const auto bars = span / barTicks + (span % barTicks != 0 ? 1 : 0);
+        if (at.bar - 1 < barsBefore + bars)
+            break;
+        barsBefore += bars;
+        start = meters[next].start_ticks;
+        meter = &meters[next];
+    }
+    if (meter->denominator == 0 || meter->barTicks() <= 0)
+        return std::nullopt;
+    const auto beatTicks = textproj::kWhole / static_cast<std::int64_t>(meter->denominator);
+    const auto sixteenthTicks = textproj::kWhole / 16;
+    const auto perBeat = std::max<std::int64_t>(1, beatTicks / sixteenthTicks);
+    if (at.beat > meter->numerator || at.sixteenth > perBeat)
+        return std::nullopt;
+    const auto tick = start + (at.bar - 1 - barsBefore) * meter->barTicks() + (at.beat - 1) * beatTicks +
+                      (at.sixteenth - 1) * sixteenthTicks;
+    if (next < meters.size() && tick >= meters[next].start_ticks)
+        return std::nullopt;
+    return tick;
+}
+// A position typed in Live's Arrangement Position fields (manual 6.1): bar, beat and sixteenth, the
+// later ones 1 when left out, separated by a point, a comma, a colon or spaces.
+inline std::optional<BarPosition> parsePosition(std::string_view text) {
+    BarPosition out;
+    std::int64_t *parts[] = {&out.bar, &out.beat, &out.sixteenth};
+    std::size_t i = 0, n = 0;
+    const auto space = [&] { return i < text.size() && std::isspace(static_cast<unsigned char>(text[i])); };
+    while (space())
+        ++i;
+    while (i < text.size()) {
+        if (n == 3)
+            return std::nullopt;
+        std::int64_t value = 0;
+        const auto from = i;
+        while (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i])) && i - from < 5)
+            value = value * 10 + (text[i++] - '0');
+        if (i == from || value < 1 || (i < text.size() && std::isdigit(static_cast<unsigned char>(text[i]))))
+            return std::nullopt;
+        *parts[n++] = value;
+        const auto beforeGap = i;
+        while (space())
+            ++i;
+        if (i < text.size() && (text[i] == '.' || text[i] == ',' || text[i] == ':')) {
+            ++i;
+            while (space())
+                ++i;
+            if (i == text.size())
+                return std::nullopt; // a delimiter with nothing after it
+        } else if (i < text.size() && i == beforeGap) {
+            return std::nullopt;
+        }
+    }
+    if (n == 0)
+        return std::nullopt;
+    return out;
 }
 // Live's fragmentary bars (Live 12 manual 6.5): a change placed before the previous bar is complete
 // cuts that bar short, "represented in the scrub area by a crosshatched region". `visit(start, end)`
