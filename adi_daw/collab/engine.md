@@ -13,6 +13,39 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N29 ready; continuing to N32
+
+**PR requested** (ADR-0210 d4): `engine/history-list` at **`de77bf3`** →
+`main` (base `dff5b41`). Title: **Expose complete undo transactions with branches and snapshots (N29)**.
+
+PR body / window handoff: call `History(store).readTimeline()` on the message
+thread after history moves or snapshot metadata changes, outside a journal
+mutation. `steps` contains whole undo transactions newest sequence first across
+all branches: txn id, first/last seq, op count, first-op label/actor/detail,
+timestamp and parent; `applied` marks current-head ancestry and `onCurrentLine`
+also marks Ctrl-Y's redo path. `branchIds` names stored-head ancestry, with the
+current branch's redo line included, and `snapshotIds` links anchors. Root
+head/branch and complete branch/snapshot metadata are included; root snapshots
+remain even before any step. Values are owned so a retained frame is consistent.
+One read transaction, no CBOR/inverse/state blobs decoded, no log/head mutation.
+Ephemeral ops excluded; corrupt tables/cycles/partial-transaction heads return a
+named error with no partial data. Existing History APIs perform the actions.
+`docs/ENGINE-HISTORY-LIST.md` defines the statuses. No schema/op change.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9843 checks / 107 suites**,
+validators clean. New list suite **29**; four Clang Werror suites pass:
+list29, history95, snapshots65, ops130. Checks include mixed-actor batches,
+first-op labels, branching/shared ancestry, undo redo-line status, branch switch,
+root/automatic anchors, retained values, backwards timestamps, metadata-only
+reads despite malformed payload bytes, read-only reopen and explicit corruption/
+nested-transaction errors. Two separately compiled plants fail: reversed order
+(2), marking undone steps applied (1). Remote CI, MSVC/JUCE and measured Live
+parity unobserved. Win/window opens; win reviews/merges. Continuing to **N32**,
+the message-thread clip properties/note-identity read API allowed by its row,
+from main. N33 and N34 follow. No director gate reached.
+
+
+
 ## 2026-11-02 — N26 ready; continuing to N29
 
 **PR requested** (ADR-0210 d4): `engine/snapshot-automation` at **`6566d8e`**
