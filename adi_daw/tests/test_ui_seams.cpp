@@ -31,6 +31,7 @@
 #include "adi/ui/range_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/momentary_latch.hpp"
+#include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
@@ -1242,6 +1243,36 @@ void fragmentaryBars() {
     check(found.empty(), "no meters: none");
 }
 
+void tempoField() {
+    section("the control bar's Tempo field: 20 to 999 BPM, at the play location (Live 12 manual 9.1.1)");
+    for (const auto &[text, ok, bpm] :
+         {std::tuple<const char *, bool, double>{"128", true, 128}, {"97.5", true, 97.5}, {" 97.55 ", true, 97.55},
+          {"20", true, 20}, {"999", true, 999}, {"97.555", false, 0}, {"19.99", false, 0}, {"1000", false, 0},
+          {"12a", false, 0}, {".5", false, 0}, {"", false, 0}, {"-120", false, 0}}) {
+        const auto value = ui::parseTempo(text);
+        check(value.has_value() == ok && (!ok || std::abs(*value - bpm) < 1e-9), text);
+    }
+    const auto q = textproj::kPPQ;
+    const std::vector<engine::TempoEvent> plain{{0, 120., 0}};
+    check(!ui::tempoSurelyStored(plain) && ui::tempoSurelyStored({{0, 128., 0}}) && ui::tempoSurelyStored({{0, 120., 1}}),
+          "the start's 120 jump may be the snapshot's own; any other is stored");
+    const auto inserted = ui::setTempoAt(plain, 3 * q, "128", false);
+    check(inserted.ops.size() == 1 && inserted.ops[0].opType == "project.insertTempoEvent" &&
+              inserted.ops[0].payload.at("pos").get<std::int64_t>() == 0 &&
+              std::abs(inserted.ops[0].payload.at("bpm").get<double>() - 128) < 1e-9 && inserted.ops[0].label == "Change Tempo",
+          "none stored: the start's tempo inserted, \"Change Tempo\"");
+    const auto replaced = ui::setTempoAt(plain, 0, "128", true);
+    check(replaced.ops.size() == 2 && replaced.ops[0].opType == "project.removeTempoEvent", "stored: replaced");
+    check(ui::setTempoAt(plain, 0, "120.00", false).ops.empty() && ui::setTempoAt(plain, 0, "120", false).refusal.empty(),
+          "the same tempo: no edit");
+    check(!ui::setTempoAt(plain, 0, "1000", false).refusal.empty(), "out of range: refused with the reason");
+    const std::vector<engine::TempoEvent> ramp{{0, 120., 0}, {8 * q, 140., 1}};
+    const auto later = ui::setTempoAt(ramp, 9 * q, "150", false);
+    check(later.ops.size() == 2 && later.ops[1].payload.at("pos").get<std::int64_t>() == 8 * q &&
+              later.ops[1].payload.at("curve").get<int>() == 1,
+          "past a tempo change: that change takes the value, its curve kept");
+}
+
 void meterMarkers() {
     section("time signature markers: Insert, Edit and Delete, one step each (Live 12 manual 6.5)");
     for (const auto &[text, ok, num, den] :
@@ -1473,6 +1504,7 @@ int main() {
     referenceTapAndHold();
     momentaryLatch();
     fragmentaryBars();
+    tempoField();
     meterMarkers();
     midiTrackMixer();
     soloRules();

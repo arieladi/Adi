@@ -162,7 +162,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     const Info infos[] = {
         {&link, "Link", "Ableton Link: tempo and phase with other applications (P1)."},
         {&tap, "Tap Tempo", "Tap to set the tempo."},
-        {&tempo, "Tempo", "The project's tempo at the playhead, in BPM."},
+        {&tempo, "Tempo", "The tempo at the play location, in BPM. Click to type another, from 20 to 999."},
         {&nudgeDown, "Nudge Down", "Slows playback for as long as it is held."},
         {&nudgeUp, "Nudge Up", "Speeds playback up for as long as it is held."},
         {&signature, "Time Signature", "The time signature at the play location. Click to type another, "
@@ -204,20 +204,20 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
     follow.onClick = [this] { root_.command(AppCommands::Follow); };
     mix.onClick = [this] { root_.command(AppCommands::ToggleMixView); };
+    tempo.onClick = [this] { beginTempoEdit(); };
     signature.onClick = [this] { beginSignatureEdit(); };
-    addChildComponent(signatureEditor);
-    signatureEditor.setTitle("Time Signature");
-    signatureEditor.setJustification(juce::Justification::centred);
-    signatureEditor.onReturnKey = [this] {
-        if (root_.setMeterAtPlay(signatureEditor.getText().toStdString()))
-            signatureEditor.setVisible(false);
+    addChildComponent(fieldEditor);
+    fieldEditor.setJustification(juce::Justification::centred);
+    fieldEditor.onReturnKey = [this] {
+        if (commit_ && commit_(fieldEditor.getText().toStdString()))
+            fieldEditor.setVisible(false);
         else
-            signatureEditor.selectAll();
+            fieldEditor.selectAll();
     };
-    signatureEditor.onEscapeKey = [this] { signatureEditor.setVisible(false); };
-    signatureEditor.onFocusLost = [this] { signatureEditor.setVisible(false); };
+    fieldEditor.onEscapeKey = [this] { fieldEditor.setVisible(false); };
+    fieldEditor.onFocusLost = [this] { fieldEditor.setVisible(false); };
     for (auto *item : items())
-        if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature)
+        if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -302,13 +302,24 @@ void TransportBar::refresh() {
 }
 void TransportBar::paint(juce::Graphics &g) { g.fillAll(look::frame); }
 void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }
+void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
+                                  std::function<bool(const std::string &)> commit) {
+    editing_ = &item;
+    commit_ = std::move(commit);
+    fieldEditor.setTitle(item.getTitle());
+    fieldEditor.setBounds(item.getBounds());
+    fieldEditor.setText(text, false);
+    fieldEditor.setVisible(true);
+    fieldEditor.selectAll();
+    if (fieldEditor.isShowing())
+        fieldEditor.grabKeyboardFocus();
+}
+void TransportBar::beginTempoEdit() {
+    beginFieldEdit(tempo, juce::String(root_.bpm(), 2), [this](const std::string &t) { return root_.setTempoAtPlay(t); });
+}
 void TransportBar::beginSignatureEdit() {
     const auto &meter = meterAt(root_.timelineTick(), root_.reader().meters());
-    signatureEditor.setBounds(signature.getBounds());
-    signatureEditor.setText(juce::String(meter.numerator) + "/" + juce::String(meter.denominator), false);
-    signatureEditor.setVisible(true);
-    signatureEditor.selectAll();
-    if (signatureEditor.isShowing())
-        signatureEditor.grabKeyboardFocus();
+    beginFieldEdit(signature, juce::String(meter.numerator) + "/" + juce::String(meter.denominator),
+                   [this](const std::string &t) { return root_.setMeterAtPlay(t); });
 }
 } // namespace adi::ui

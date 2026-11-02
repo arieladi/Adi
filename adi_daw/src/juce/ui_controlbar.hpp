@@ -3,6 +3,7 @@
 #include "adi/ui/meters.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <string>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
@@ -61,11 +62,14 @@ class TransportBar final : public juce::Component {
     void refresh();
     // Navigate's Control Bar (§41.4.1.1): the focus returns to the control that last had it.
     void focus();
-    // Live's Time Signature field (manual 6.5): a click opens a field over it holding the signature
-    // shown; Enter changes the signature at the play location (a value refused keeps it open, the
-    // Status Bar saying why), Esc or a click elsewhere closes it.
+    // Live's Tempo and Time Signature fields (manual 9.1.1, 6.5): a click opens a field over one,
+    // holding the value shown; Enter sets it at the play location (a value refused keeps the field
+    // open, the Status Bar saying why), Esc or a click elsewhere closes it.
+    void beginTempoEdit();
     void beginSignatureEdit();
-    juce::TextEditor signatureEditor;
+    // The field being typed in: the tempo's or the signature's, or none.
+    const BarItem *editing() const noexcept { return fieldEditor.isVisible() ? editing_ : nullptr; }
+    juce::TextEditor fieldEditor;
     BarItem link{"Link"}, tap{"Tap"}, tempo{"120.00"},
         nudgeDown{{}, BarItem::Glyph::NudgeDown}, nudgeUp{{}, BarItem::Glyph::NudgeUp},
         signature{"4 / 4"}, metronome{{}, BarItem::Glyph::Metronome, true, true},
@@ -87,6 +91,9 @@ class TransportBar final : public juce::Component {
     std::vector<BarItem *> items();
     AdiRootComponent &root_;
     BarItem *lastFocused_ = &link;
+    void beginFieldEdit(BarItem &, const juce::String &text, std::function<bool(const std::string &)> commit);
+    BarItem *editing_ = nullptr;
+    std::function<bool(const std::string &)> commit_;
     // What the fields last showed, so a frame that changes nothing formats nothing.
     double shownBpm_ = -1;
     BarPosition shownPosition_{0, 0, 0};
