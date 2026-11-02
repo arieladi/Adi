@@ -73,6 +73,18 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the grid in the project's meters [#369](https://github.com/arieladi/Adi/pull/369) `window/meter-grid`, on #368
+
+**Built: the editing grid follows the meters** (parity 7.3 row 11; Live 12 manual 6.10, 6.5). In any
+project but a lone 4/4, a step under a bar runs from each bar line, and "1 Bar" and wider count the
+meter's bars (a triplet two thirds of them); snapping, the arrows and the drawn lines follow. 4/4
+is as before by the same drawing path. The geometry takes the snapshot's meters in `applyView`.
+The lanes' alternate shade stays in quarters (open).
+
+**Tests.** seams 397, shell 839; `test_all.sh` PASS (10082 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — the Arrangement Position field [#368](https://github.com/arieladi/Adi/pull/368) `window/position-field`, on #367
 
 **Built: the position field typed and stepped** (parity 7.2-shell new row 31; Live 12 manual 6.1).
