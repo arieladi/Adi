@@ -67,7 +67,34 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N39 | The highest routing id of any kind in the snapshot (or the routing rows of every kind), so a new send's id cannot collide with a main, sidechain, VCA or cue row: `routing.connect` takes its id from the payload (ADR-0021) and the snapshot holds only the send rows (#309) | engine (`src/adi/engine/snapshot.*`) | a new send from a knob, and Enable Send (`window/send-knobs`, parity-7.6 row 9) | one past the highest send's id; a collision refuses the batch and the Status Bar says why |
 | N40 | A clip's audio in the snapshot (its media id and source window, from `audio_clips`) and the pool's peaks for drawing (`media_files.peaks`, or a peaks reader the window can call off the store) | engine (`src/adi/engine/snapshot.*`, `src/adi/media/*`) | an audio clip draws its waveform, as Live's (parity-7.3 row 35); a dropped file shows what it holds (`window/audio-drop`) | an audio clip is drawn as its colour and its name |
 | N41 | New's default Set without Live's two return tracks: Live's default Set has A Reverb and B Delay after the tracks (look-live11.md, the director's Live 11.2.7 capture; Live 12's Arrangement figure), with their sends; `Store::createNewProject` makes Main and four tracks only (#307) | engine (`src/adi/store.cpp`) | New as Live's default Set (ADR-0209 §10 d10) | New shows the four tracks and Main; the returns come when a project has them (the send knobs, #325) |
+| N42 | A return's Pre/Post as one switch of the return's own in the format and an op (ADR-0203 d3: "Pre/Post is one switch on each return, not on each send"), so it holds while no send reaches the return and new sends follow it; today the tap is on each `routing` row (`pre_fader`) | engine (`docs/format`, `src/adi/ops_catalog.cpp`, the snapshot) | the return's Pre/Post on its row and in Main's Sends section (`window/return-main-rows`) | the switch reads Pre when every send into the return does, moves them all in one batch, and a new send follows it; with no send it says there is nothing to switch |
+| N43 | Main's cue volume (Live's Cue Out level) and the Solo/Cue switch in the format, the snapshot and an op, with the cue path of N23 | engine | Main's row and strip as Live's: the cue volume beside its volume, the Solo/Cue switch and the blue cue knob in the Mixer (look-live11 difference row 2, parity-7.6 row 17) | Main shows its volume only |
 | N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-02, cloud, continued — the returns' and Main's rows and strips, each return's Pre/Post [#333](https://github.com/arieladi/Adi/pull/333) `window/return-main-rows`, on #331
+
+**Built: the returns' and Main's rows and strips as Live 12's figures draw them** (manual 6.1,
+6.15; parity 7.6 rows 9 and 17; look-live11 difference row 2).
+- A return's row: its letter on the activator, Solo, and its Pre/Post where a track has Arm; its
+  In/Out column shows its output only.
+- Main's row: no activator, Solo or Arm; its volume first; its output only.
+- The Mixer View: the returns' strips without Arm; Main's Sends section holds each return's
+  Pre/Post, as Live's Mixer.
+- Pre/Post (ADR-0203 d3) moves every send into the return, one undo step ("Change Pre/Post"); a
+  new send into a Pre return taps before the fader.
+
+**New needs:** N42 (a return's Pre/Post as the return's own switch in the format, so it holds
+while no send reaches it), N43 (Main's cue volume and the Solo/Cue switch).
+
+**Measure on Live:** whether the lit state is Post or Pre.
+
+**Tests.** seams 209, shell 617; `test_all.sh` PASS (9890 checks, 106 suites). Goldens
+`arrangement`, `devices`, `mixer`, `mixer-view` re-recorded for Main's row.
+
+**Next:** Live's return-track commands: Insert Return Track, Enable All Sends, Hide/Show Return
+Tracks (`window/return-commands`).
 
 ---
 
