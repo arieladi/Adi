@@ -98,7 +98,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Wrap Tab Navigation", "Use Large Track Height",
                                   "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
                                   "Reference Track", "Play Reference", "Select All", "Insert Return Track",
-                                  "Return Tracks", "Sends"};
+                                  "Return Tracks", "Sends", "Mixer In/Out"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -247,6 +247,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ToggleSends: // §42.1: Hide/Show Sends, Ctrl/Cmd+Alt+S
         info.addDefaultKeypress('s', cmd | juce::ModifierKeys::altModifier);
         info.setTicked(active_ != nullptr && active_->state().sends);
+        break;
+    case ToggleMixerInOut: // Live 12's Mixer Controls In/Out: the Mixer View's own; no key of its own
+        info.setTicked(active_ != nullptr && active_->state().mixerInOut);
         break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
@@ -406,6 +409,13 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
     mixerToggle.setClickingTogglesState(false);
     mixerToggle.onClick = [this] { root_.command(AppCommands::ToggleMixerView); };
+    addAndMakeVisible(mixerOptions);
+    mixerOptions.setTitle("Mixer View options");
+    mixerOptions.setTooltip("Shows or hides the Mixer's In/Out, Sends and Return Tracks.");
+    mixerOptions.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    mixerOptions.onClick = [this] {
+        root_.mixerOptionsMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&mixerOptions));
+    };
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -413,7 +423,8 @@ void StatusBar::resized() {
     const int w = getWidth();
     infoToggle.setBounds(8, 9, 19, 19);
     detailToggle.setBounds(w - 27, 9, 19, 19);
-    mixerToggle.setBounds(w - 86, 11, 44, 16);
+    mixerToggle.setBounds(w - 86, 11, 36, 16);
+    mixerOptions.setBounds(w - 49, 11, 8, 16);
 }
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -426,6 +437,9 @@ void StatusBar::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         g.fillRect(r.reduced(3));
     }
+    // The Mixer View Control's arrow, pointing down to its menu.
+    look::triangle(g, mixerOptions.getBounds().toFloat().withSizeKeepingCentre(7.f, 5.f),
+                   juce::MathConstants<float>::halfPi, look::text);
     // The corner buttons: dark and round, with Live's light triangles.
     for (auto *b : {&infoToggle, &detailToggle}) {
         const auto c = b->getBounds().toFloat();
@@ -855,6 +869,22 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+juce::PopupMenu AdiRootComponent::mixerOptionsMenu() {
+    // Live 12's order (manual 18.1, the Mixer View Control's options menu). Volume always shows in
+    // ADI; Track Options waits on Track Delay (N22), the crossfader and Performance Impact on the
+    // engine.
+    commands_.activate(*this);
+    juce::PopupMenu menu;
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerInOut, "In/Out");
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
+    menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Track Options").setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Crossfader").setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Performance Impact").setEnabled(false));
+    menu.addSeparator();
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleReturnTracks);
+    return menu;
+}
 void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
     mixProvider_ = &provider;
     arrangement.applyView();
@@ -1283,10 +1313,12 @@ bool AdiRootComponent::command(int id) {
         break;
     case AppCommands::ToggleOverview:
     case AppCommands::ToggleInOut:
-    case AppCommands::ToggleSends: {
+    case AppCommands::ToggleSends:
+    case AppCommands::ToggleMixerInOut: {
         auto &shown = id == AppCommands::ToggleOverview ? state_.overview
                       : id == AppCommands::ToggleInOut  ? state_.inOut
-                                                        : state_.sends;
+                      : id == AppCommands::ToggleSends  ? state_.sends
+                                                        : state_.mixerInOut;
         shown = !shown;
         if (!persist()) {
             shown = !shown;

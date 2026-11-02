@@ -83,6 +83,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // How many rows of the Sends section the Mixer View strip has room for, one per return: on
     // Main's strip too, which has no knobs, so the mixers line up.
     std::size_t sendsShown() const noexcept { return shown_; }
+    // Whether the Mixer View strip shows Live 12's In/Out section: when the Mixer Controls show it
+    // and the strip has room for it and the mixer. It stands under the slots, over the sends.
+    bool showsMixerInOut() const noexcept { return io_ > 0; }
+    static constexpr int kInOutHeight = 120;
     // Commits the send at `index` at its knob's value, as one undo step; a new send writes its
     // row first. What a knob's drag and a typed value do.
     void commitSend(std::size_t index);
@@ -93,6 +97,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
 
   private:
     void paintInOut(juce::Graphics &, int x) const;
+    // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
+    void paintMixerInOut(juce::Graphics &) const;
     // The Mixer View strip's meter, under its fader.
     juce::Rectangle<int> meterArea() const noexcept;
     void panMenu();
@@ -118,7 +124,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // What a Mixer View strip's mixer keeps under its sends: the peak level above pan, the
     // activator, Solo and Arm.
     static constexpr int kMixerRoom = 110;
-    int mixerTop() const noexcept { return kMixerTop + sendsHeight(shown_); }
+    int sendsTop() const noexcept { return kMixerTop + io_; }
+    int mixerTop() const noexcept { return sendsTop() + sendsHeight(shown_); }
     std::vector<std::unique_ptr<juce::Slider>> sends_;
     std::vector<std::unique_ptr<juce::TextButton>> returnSwitches_;
     std::string kind_;
@@ -132,6 +139,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     std::vector<std::int64_t> returns_, order_;
     std::vector<char> sendOn_;
     std::size_t shown_ = 0, returnCount_ = 0;
+    int io_ = 0; // the In/Out section's height in the Mixer View, 0 while it is hidden
     std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;

@@ -17,6 +17,30 @@ double writtenVolume(double db) noexcept { return db <= kFloorDb ? kSilenceDb : 
 // at these depths; the scale is wider near 0 dB, as Live's.
 constexpr std::array<std::pair<double, double>, 7> kScale{
     {{6, 0}, {0, .06}, {-12, .28}, {-24, .5}, {-36, .71}, {-48, .87}, {-60, 1}}};
+// One of Live's In/Out choosers: its box, its label cut at the box's edge with no ellipsis, as Live
+// cuts "All Channe" (Live 12 manual, Figure 6.1), and its arrow; an empty one has no arrow.
+void drawChooser(juce::Graphics &g, juce::Rectangle<float> r, const char *label, bool enabled) {
+    look::box(g, r, look::chooser);
+    g.setColour(enabled ? look::text : look::textDim);
+    g.setFont(look::font(11.5f));
+    g.drawText(label, r.withTrimmedLeft(3).withTrimmedRight(12), juce::Justification::centredLeft, false);
+    if (*label != 0)
+        look::triangle(g, {r.getRight() - 10, r.getY() + 4, 7, 5}, juce::MathConstants<float>::halfPi,
+                       enabled ? look::text : look::textDim);
+}
+// Live's monitoring switch: In, Auto (lit) and Off, `gap` apart.
+void drawMonitor(juce::Graphics &g, float x, float y, float gap) {
+    const std::array<std::pair<const char *, int>, 3> monitor{{{"In", 16}, {"Auto", 23}, {"Off", 19}}};
+    for (const auto &[label, width] : monitor) {
+        const juce::Rectangle<float> r(x, y, static_cast<float>(width), 13);
+        const bool on = std::string_view(label) == "Auto";
+        look::box(g, r, on ? look::accent : look::button);
+        g.setColour(look::text);
+        g.setFont(look::font(11.5f));
+        g.drawText(label, r, juce::Justification::centred);
+        x += static_cast<float>(width) + gap;
+    }
+}
 } // namespace
 double meterDepth(double db) noexcept {
     if (db >= kScale.front().first)
@@ -313,8 +337,11 @@ void MixerStrip::resized() {
         // A row of the Sends section for each return, on every strip, Main's too, so the mixers
         // line up as Live's; as many as leave the mixer its room. Live scrolls the rest, ADI leaves
         // them out.
+        // Live 12's In/Out section under ADI's slots, when the Mixer Controls show it and the strip
+        // has room for it and the mixer; then as many rows of sends as leave the mixer its room.
+        io_ = panel_.root.state().mixerInOut && getHeight() - kMixerTop - kInOutHeight >= kMixerRoom ? kInOutHeight : 0;
         shown_ = showsSends() ? returnCount_ : 0;
-        while (shown_ > 0 && getHeight() - kMixerTop - sendsHeight(shown_) < kMixerRoom)
+        while (shown_ > 0 && getHeight() - sendsTop() - sendsHeight(shown_) < kMixerRoom)
             --shown_;
         for (std::size_t i = 0; i < sends_.size(); ++i) {
             sends_[i]->setVisible(i < shown_);
@@ -402,7 +429,7 @@ juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     // Live's Mixer View sends: A on the left, B to its right and lower, C under A, each 22 pt under
     // the one before; the knobs a little larger than pan's.
     const int i = static_cast<int>(index);
-    return {(i % 2 == 0) ? 10 : 51, kMixerTop + 6 + 22 * i, 32, 32};
+    return {(i % 2 == 0) ? 10 : 51, sendsTop() + 6 + 22 * i, 32, 32};
 }
 juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     // Under a tall strip's numeric field, the meter stops short of the foot.
@@ -425,6 +452,11 @@ void MixerStrip::paint(juce::Graphics &g) {
         g.fillRect(w, 0, 2, getHeight());
         g.fillRect(0, 17, w, 2);
         g.fillRect(0, kMixerTop - 2, w, 2);
+        if (io_ > 0) {
+            paintMixerInOut(g);
+            g.setColour(look::separator);
+            g.fillRect(0, sendsTop() - 2, w, 2);
+        }
         if (shown_ > 0) {
             // Live's Sends section: its title at the right, each knob lettered as its return in the
             // ring's open foot; a rule under it. A strip with neither knobs nor switches keeps the
@@ -433,7 +465,7 @@ void MixerStrip::paint(juce::Graphics &g) {
             g.setColour(look::text);
             g.setFont(look::font(11.5f));
             if (!sends_.empty() || !returnSwitches_.empty())
-                g.drawText("Sends", 46, kMixerTop + 6, w - 50, 15, juce::Justification::centredRight);
+                g.drawText("Sends", 46, sendsTop() + 6, w - 50, 15, juce::Justification::centredRight);
             for (std::size_t i = 0; i < std::min(shown_, sends_.size()); ++i) {
                 const auto b = sendBounds(i);
                 g.setColour(look::text.withAlpha(sendOn_[i] != 0 ? 1.f : .45f));
@@ -496,17 +528,8 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     // track to the Main track.
     const int rows = std::max(1, (getHeight() - 1) / 17);
     auto chooser = [&](int row, const char *label, bool enabled) {
-        if (row >= rows)
-            return;
-        const juce::Rectangle<float> r(static_cast<float>(x + 3), static_cast<float>(3 + 17 * row), 70, 13);
-        look::box(g, r, look::chooser);
-        g.setColour(enabled ? look::text : look::textDim);
-        g.setFont(look::font(11.5f));
-        // Cut at the box's edge with no ellipsis, as Live cuts "All Channe" (Live 12 manual, Figure 6.1).
-        g.drawText(label, r.withTrimmedLeft(3).withTrimmedRight(12), juce::Justification::centredLeft, false);
-        if (*label != 0)
-            look::triangle(g, {r.getRight() - 10, r.getY() + 4, 7, 5}, juce::MathConstants<float>::halfPi,
-                           enabled ? look::text : look::textDim);
+        if (row < rows)
+            drawChooser(g, {static_cast<float>(x + 3), static_cast<float>(3 + 17 * row), 70, 13}, label, enabled);
     };
     // Main plays to the outputs, a return to Main; neither records, so neither has an input or the
     // monitoring switch, as Live's.
@@ -521,22 +544,47 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     // A MIDI track records from All Ins on All Channels, as Live's; an audio track from Ext. In.
     chooser(0, midi_ ? "All Ins" : "Ext. In", true);
     chooser(1, midi_ ? "All Channels" : "1/2", midi_);
-    if (rows > 2) {
-        const std::array<std::pair<const char *, int>, 3> monitor{{{"In", 16}, {"Auto", 23}, {"Off", 19}}};
-        float bx = static_cast<float>(x + 3);
-        for (const auto &[label, width] : monitor) {
-            const juce::Rectangle<float> r(bx, 37, static_cast<float>(width), 13);
-            const bool on = std::string_view(label) == "Auto";
-            look::box(g, r, on ? look::accent : look::button);
-            g.setColour(look::text);
-            g.setFont(look::font(11.5f));
-            g.drawText(label, r, juce::Justification::centred);
-            bx += static_cast<float>(width) + 6;
-        }
-    }
+    if (rows > 2)
+        drawMonitor(g, static_cast<float>(x + 3), 37, 6);
     // A MIDI track with no instrument plays nothing to Main: No Output, as Live's.
     chooser(3, audio_ ? "Master" : "No Output", true);
     chooser(4, "", false);
+}
+void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
+    // Live 12's In/Out section in the Mixer (manual, the Mixer in Arrangement View): where the track
+    // records from, its monitoring, where it plays to, each under its label; a return's output only,
+    // level with the tracks'; Main's Cue Out and Main Out. ADI's fixed routing, as the track
+    // controls' column shows it (the routing is not in the snapshot yet, look-live11 row 5).
+    const int top = kMixerTop, w = getWidth() - 2;
+    auto label = [&](int y, const char *text) {
+        g.setColour(look::text);
+        g.setFont(look::font(11.5f, true));
+        g.drawText(text, 5, top + y, w - 10, 13, juce::Justification::centredLeft);
+    };
+    auto chooser = [&](int y, const char *text, bool enabled) {
+        drawChooser(g, {4.f, static_cast<float>(top + y), static_cast<float>(w - 8), 13.f}, text, enabled);
+    };
+    if (kind_ == "master") {
+        // Live's Cue Out waits on the cue path (N23, N43), so it shows dimmed.
+        label(60, "Cue Out");
+        chooser(73, "1/2", false);
+        label(90, "Main Out");
+        chooser(103, "1/2", true);
+        return;
+    }
+    if (kind_ == "return") {
+        label(74, "Audio To");
+        chooser(87, "Master", true);
+        return;
+    }
+    label(2, midi_ ? "MIDI From" : "Audio From");
+    chooser(15, midi_ ? "All Ins" : "Ext. In", true);
+    chooser(31, midi_ ? "All Channels" : "1/2", midi_);
+    label(46, "Monitor");
+    drawMonitor(g, 4.f, static_cast<float>(top + 59), 3);
+    label(74, audio_ ? "Audio To" : "MIDI To");
+    chooser(87, audio_ ? "Master" : "No Output", true);
+    chooser(103, "", false);
 }
 void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
     // Live's meter: two dark channels on Live's scale, the level in green, the peak a
