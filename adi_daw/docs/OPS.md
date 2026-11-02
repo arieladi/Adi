@@ -435,6 +435,16 @@ silent truncation in JSON, a non-issue in CBOR.
 | `cc.delete` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
 
+N34: `note.setMute {clip,note,muted}` sets the note's active flag as
+`active = !muted`. `note` is its exact uint64 ANOT id, not a row index;
+zero/unassigned, absent and duplicate targets are refused. The MIDI clip and
+its canonical notes stream must exist. Undo restores the old muted bit.
+The handler patches only bit0 in the original record stride, preserving all
+other fields/flags, unknown future tails, header and trailing bytes, row id and
+other streams. An unreadable stream is refused without an empty/lossy rewrite.
+After committing, refresh Session and N32's Clip View read. Deactivating a held
+note releases it on the next published playback callback.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |

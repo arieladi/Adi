@@ -225,6 +225,7 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
+    src/adi/note_flags_ops.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -539,6 +540,10 @@ add_test(NAME adi_check_tests COMMAND adi_check_tests)
 add_executable(adi_remarks_tests tests/test_remarks.cpp)
 target_link_libraries(adi_remarks_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_remarks_tests COMMAND adi_remarks_tests)
+
+add_executable(adi_note_flags_tests tests/test_note_flags.cpp)
+target_link_libraries(adi_note_flags_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_flags_tests COMMAND adi_note_flags_tests)
 
 # History snapshots (ADR-0128): revert never discards, across branches too.
 add_executable(adi_snapshots_tests tests/test_snapshots.cpp)

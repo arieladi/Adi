@@ -16,6 +16,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/ops.hpp"
+#include "adi/note_flags_ops.hpp"
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
@@ -1049,6 +1050,8 @@ constexpr Field kFNoteResize[] = {{"clip", FieldType::Int, true},
 constexpr Field kFNoteVel[] = {{"clip", FieldType::Int, true},
                                {"note", FieldType::Int, true},
                                {"vel", FieldType::Int, true}};
+constexpr Field kFNoteMute[] = {{"clip",FieldType::Int,true},{"note",FieldType::Int,true},
+                                {"muted",FieldType::Bool,true}};
 constexpr Field kFTempoIns[] = {{"pos", FieldType::Int, true},
                                 {"bpm", FieldType::Real, true},
                                 {"curve", FieldType::Int, false}};
@@ -1945,6 +1948,8 @@ const OpDescriptor kHandWritten[] = {
      kFNoteResize, false, false, noteResizeApply, noteResizeInverse, ""},
     {"note.setVelocity", "Set a note's velocity", Scope::Edit, EngineImpact::Snapshot,
      kFNoteVel, true, false, noteSetVelocityApply, noteSetVelocityInverse, ""},
+    {"note.setMute", "Activate or deactivate a MIDI note", Scope::Edit, EngineImpact::Snapshot,
+     kFNoteMute, false, false, note_flags::mute, note_flags::muteInverse, ""},
 
     {"project.insertTempoEvent", "Add a tempo change", Scope::Edit,
      EngineImpact::Snapshot, kFTempoIns, false, false,
