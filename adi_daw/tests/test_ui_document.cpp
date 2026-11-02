@@ -61,20 +61,23 @@ int main(int argc, char **argv) {
         std::printf("%s\n", error.c_str());
         return 1;
     }
-    check(doc->store().db().execAndGet("SELECT count(*) FROM tracks WHERE kind='master'").getInt() ==
-              1,
-          "New makes the Main track");
-    check(doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == 1,
-          "through the op every track is made with, not rows of its own");
-    check(!doc->ops().canUndo() && !doc->ops().undo().ok &&
-              doc->session().model().tracks.size() == 1,
+    // New is the store's (#307, N2): Main and Live's default Set, at the history's root.
+    const auto *made = doc->view().current().get();
+    check(made != nullptr && made->tracks.size() == 5 && made->findTrack(1) != nullptr &&
+              made->findTrack(1)->kind == "master" && made->findTrack(2)->name == "1 MIDI" &&
+              made->findTrack(3)->name == "2 MIDI" && made->findTrack(4)->name == "3 Audio" &&
+              made->findTrack(5)->name == "4 Audio",
+          "New makes Main and Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio");
+    check(doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == 0,
+          "as the history's root: no op, no undo step");
+    check(!doc->ops().canUndo() && !doc->ops().undo().ok && doc->session().model().tracks.size() == 5,
           "creating the project cannot be undone (Live 5.4.2)");
     OpRequest add;
     add.opType = "track.create";
-    add.payload = {{"id", 2}, {"kind", "audio"}, {"name", "Tone"}};
+    add.payload = {{"id", 6}, {"kind", "audio"}, {"name", "Tone"}};
     check(doc->ops().submit(add).ok && doc->synchronise(), "edit reaches Session and ProjectView");
     doc->session().setSourcesFor([&](std::int64_t id) {
-        return id == 2 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+        return id == 6 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
     });
     check(doc->session().rebuild(), "source enters the real graph");
     doc->prepare(48000, 64);
@@ -114,7 +117,7 @@ int main(int argc, char **argv) {
     check(!doc->mailbox().playing() && doc->mailbox().position() == 1024,
           "stop reaches driver without advancing");
     check(doc->ops().undo().ok && doc->synchronise(), "undo refreshes the real engine");
-    check(doc->session().model().tracks.size() == 1, "undo removes audio track and keeps master");
+    check(doc->session().model().tracks.size() == 5, "undo removes the added track and keeps the rest");
     check(doc->ops().redo().ok && doc->synchronise(), "redo restores graph rows");
     // Ctrl/Cmd+S takes a named snapshot (ADR-0203 d6, d13): history metadata, no op.
     const std::int64_t noon = 1'761'566'400'000'000; // 2025-10-27 12:00 UTC, in microseconds
@@ -137,12 +140,35 @@ int main(int argc, char **argv) {
     doc.reset();
     {
         auto reopen = ui::ProjectDocument::open(temp.path() / "project.adi", false, {}, error);
-        check(reopen && reopen->view().current()->tracks.size() == 2,
+        check(reopen && reopen->view().current()->tracks.size() == 6,
               "every edit is in the file once it closes; there is nothing to save");
         check(reopen && reopen->ops().undo().ok, "a reopened project undoes its edits");
         check(reopen && !reopen->ops().canUndo() && !reopen->ops().undo().ok,
               "but never its creation");
         check(reopen && reopen->ops().redo().ok, "and redoes them");
+    }
+    {
+        // A project an earlier build made began its history with a "New project" step that made
+        // Main: undo still stops there.
+        const auto earlier = temp.path() / "earlier.adi";
+        {
+            StoreError madeError{};
+            auto st = Store::create(earlier, madeError);
+            check(st != nullptr, "a project as an earlier build made it");
+            if (st) {
+                engine::ProjectView pv;
+                pv.refresh(*st);
+                ui::OpSubmitter sub(*st, pv);
+                OpRequest main;
+                main.opType = "track.create";
+                main.payload = {{"id", 1}, {"kind", "master"}, {"name", "Main"}};
+                main.label = ui::kNewProjectLabel;
+                check(sub.submit(std::move(main)).ok, "with Main made by its first step");
+            }
+        }
+        auto old = ui::ProjectDocument::open(earlier, false, {}, error);
+        check(old && !old->ops().canUndo() && !old->ops().undo().ok && old->view().current()->tracks.size() == 1,
+              "that step is still the floor undo stops at");
     }
     for (int i = 0; i < 12; ++i) {
         auto opened = ui::ProjectDocument::open(temp.path() / "project.adi", false, {}, error);
