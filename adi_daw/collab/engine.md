@@ -13,6 +13,43 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N34 ready; continuing to N7
+
+**PR requested** (ADR-0210 d4): `engine/note-active` at **`2db02a4`** →
+`main` (base `dff5b41`). Title: **Activate MIDI notes without rewriting their stream (N34)**.
+
+PR body / window handoff: use the already documented
+`note.setMute {clip,note,muted}` with `muted = !active`. `note` is N32's original
+uint64 ANOT identity, not display order. Commit as a snapshot-impact edit and
+refresh Session and the Clip View read. Inactive notes stay present/readable;
+playback skips them. Undo/redo of this symmetric op restores the prior muted
+bit, and deactivating a held note releases its voice on the next callback.
+The clip must be MIDI with an existing canonical notes stream. Zero/unassigned,
+absent or duplicate target ids and unreadable/unsupported-unit streams are
+refused, never silently replaced with an empty stream.
+
+The handler patches only bit0 in the original record stride: other flags and
+fields, wider future tails, original header/trailing bytes, row id/extension
+columns and other streams survive exactly. No sorting, blob re-encoding,
+schema bump or new audio-thread work. Existing OPS entry now has its handler;
+`docs/ENGINE-NOTE-ACTIVE.md` defines the call. N32 is an independent compatible
+reader, not a build dependency.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off: **9866 checks / 107 suites**,
+validators clean. New flag suite **49**; four Clang Werror suites pass: flags49,
+MIDI clips168, catalog106, ops130. Covers exact one-bit native/future stream
+changes on first and second records, full-width id, other flags/streams/columns,
+undo/redo/reopen, malformed/ambiguous target refusal, atomic batch rollback and
+read-only refusal. Op-driven playback proves deactivation, undo reactivation and
+held-voice release; callback allocation/IO guards pass. Three compiled plants
+fail: wiping other flags (12), wrong bit (16), wrong stride (1). Remote CI,
+MSVC/JUCE and measured Live parity unobserved. Win/window opens; win merges.
+Continuing to **N7**, a separate window producer into ParamOps edit capture,
+lifting the engine portion of `537c56d` and testing live/undo behavior, from
+current main. No director gate reached.
+
+
+
 ## 2026-11-02 — N33 pushed; continuing to N34
 
 **PR requested** (ADR-0210 d4): `engine/clip-properties` at **`9b50180`** →
