@@ -96,7 +96,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Overview", "In/Out", "Narrow Grid", "Widen Grid",
                                   "Triplet Grid", "Snap to Grid", "Fixed Grid",
                                   "Wrap Tab Navigation", "Use Large Track Height",
-                                  "Group Tracks", "Ungroup Tracks", "Mix View"};
+                                  "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -224,6 +224,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         // ADR-0209 d9: F4 opens and closes the Mix View; the function keys do functions.
         info.addDefaultKeypress(juce::KeyPress::F4Key, 0);
         info.setTicked(active_ != nullptr && active_->state().mixView);
+        break;
+    case DetachMixView: // ADR-0209 d11: docked in the centre, or in a window onto any display
+        info.setTicked(active_ != nullptr && active_->state().mixViewDetached);
         break;
     case GroupTracks: // §41.5; manual 18.3
     case UngroupTracks: {
@@ -526,7 +529,8 @@ void AdiRootComponent::frame() noexcept {
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
-    if (mixViewPanel.isVisible())
+    // In its own window the floating host drives its frame.
+    if (mixViewPanel.isVisible() && mixViewPanel.getParentComponent() == this)
         mixViewPanel.frame(reader());
     if (lastDrain_ & DirtySet::Transport) {
         transport.refresh();
@@ -716,18 +720,22 @@ void AdiRootComponent::resized() {
     // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
     // View and its track controls, which a lane-less view has no use for. The browser, the strip
     // down the edge and the Detail View stay.
-    mixViewArea_ = state_.mixView ? juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_)
-                                  : juce::Rectangle<int>();
+    mixViewArea_ = state_.mixView && !state_.mixViewDetached
+                       ? juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_)
+                       : juce::Rectangle<int>();
     const bool mixing = !mixViewArea_.isEmpty();
-    mixViewPanel.setVisible(mixing);
-    mixViewPanel.setBounds(mixViewArea_);
+    // In its own window the panel is the window's; docked, it is laid out here.
+    if (mixViewPanel.getParentComponent() == this) {
+        mixViewPanel.setVisible(mixing);
+        mixViewPanel.setBounds(mixViewArea_);
+    }
     arrangement.setVisible(!mixing);
     if (mixing) {
         mixer.setVisible(false);
         mixerView.setVisible(false);
         mixerViewResizer.setVisible(false);
     }
-    transport.mix.setToggleState(mixing, juce::dontSendNotification);
+    transport.mix.setToggleState(state_.mixView, juce::dontSendNotification);
     // The Overview runs from the lanes' left edge to Live's H and W buttons.
     const int overviewX = lanesX + ArrangementView::kLeftMargin;
     const int overviewRight = browserLeft && !mixerArea_.isEmpty()
@@ -818,6 +826,18 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+bool AdiRootComponent::setMixView(bool open, bool detached) {
+    const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
+    state_.mixView = open;
+    state_.mixViewDetached = detached;
+    if (!persist()) {
+        state_.mixView = wasOpen;
+        state_.mixViewDetached = wasDetached;
+        return fail(error_);
+    }
+    resized();
+    return true;
+}
 bool AdiRootComponent::chooseMixViewTab(int tab) {
     const int was = state_.mixViewTab;
     state_.mixViewTab = std::clamp(tab, 0, MixViewPanel::kTabCount - 1);
@@ -1013,6 +1033,10 @@ bool AdiRootComponent::focusView(int id) {
 }
 bool AdiRootComponent::command(int id) {
     // The application's own: files, Settings, and the floating Channel EQ window.
+    // In a window of its own, the Mix View is the application's to open and close (its floating
+    // host); docked, the root's.
+    if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
+        return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::ShowChannelEq ||
         id == AppCommands::Quit)
         return applicationCommand && applicationCommand(id);
@@ -1223,7 +1247,8 @@ const std::vector<MenuEntries> &menuBar() {
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut,
-          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::ToggleMixer, C::ToggleDeviceView,
+          C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleMixer,
+          C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},

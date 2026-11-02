@@ -46,6 +46,9 @@ struct WindowState {
     // (0 OVERVIEW, 1 STACK, 2 SCOPE & PHASE, 3 SPECTROGRAM, 4 CTZ CASCADE); STACK first (P1, d11).
     bool mixView = false;
     int mixViewTab = 1;
+    // Where it opens: docked in the centre, or in a window of its own onto any display (ADR-0209
+    // d11, ADR-0180 d3); the window's place is kept as every floating window's.
+    bool mixViewDetached = false;
     // Live's Follow (manual §6.2): the arrangement keeps the playhead on screen while it plays.
     bool follow = false;
     // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out.

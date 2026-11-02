@@ -1091,6 +1091,83 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
     check(!root.state().mixView && !panel.isVisible() && root.arrangement.isVisible() && root.mixer.isVisible() &&
               root.arrangement.getBounds() == lanes && !root.transport.mix.getToggleState(),
           "the Mix button closes it: the arrangement and its track controls where they were");
+    // In a window of its own, onto any display (ADR-0209 d11, ADR-0180 d3): the same panel moves
+    // into the floating host's window and back.
+    {
+        FloatingHost host(root, commands, persistence, view, [](std::int64_t) { return true; }, false);
+        root.applicationCommand = [&host, &root](int id) {
+            if (id == AppCommands::DetachMixView)
+                return detachMixView(host, root, !root.state().mixViewDetached);
+            if (id == AppCommands::ToggleMixView)
+                return toggleMixViewWindow(host, root);
+            return false;
+        };
+        check(root.command(AppCommands::ToggleMixView) && panel.isVisible() && panel.getParentComponent() == &root,
+              "F4: docked first");
+        panel.floating.onClick();
+        root.frame();
+        check(root.state().mixView && root.state().mixViewDetached && host.content("Mix View") == &panel &&
+                  panel.getParentComponent() != &root && root.arrangement.isVisible() && root.mixer.isVisible(),
+              "its window button moves it into a window; the arrangement comes back in the centre");
+        host.frame("Mix View");
+        check(panel.floating.getToggleState() && root.transport.mix.getToggleState(),
+              "the window button is lit while it is in a window, and so is the Mix field");
+        commands.getCommandInfo(AppCommands::DetachMixView, info);
+        check(info.shortName == "Mix View in a Window" && (info.flags & juce::ApplicationCommandInfo::isTicked) != 0,
+              "the View menu's Mix View in a Window, ticked");
+        OpRequest keys;
+        keys.opType = "track.create";
+        keys.payload = {{"id", 14}, {"kind", "midi"}, {"name", "Keys"}, {"index", 4}};
+        keys.label = "Create track";
+        check(submitter.submit(std::move(keys)).ok, "another track");
+        host.frame("Mix View");
+        check(panel.stack.rows().size() == 6 && host.drains("Mix View") == 2, "the window's own clock frames it");
+        root.frame();
+        check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && host.count() == 0 &&
+                  panel.getParentComponent() == &root && !panel.isVisible() && !root.state().mixView &&
+                  root.state().mixViewDetached,
+              "F4 closes its window; it will open there again");
+        check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && host.content("Mix View") == &panel,
+              "and F4 opens it there again");
+        // Its own close button: the host collects the window, and the Mix View is closed.
+        host.close("Mix View");
+        syncMixView(host, root);
+        check(!root.state().mixView && root.state().mixViewDetached && !panel.isVisible(),
+              "a window closed by its own button closes the Mix View");
+        check(root.setMixView(true, true) && host.count() == 0, "kept open in a window, as a project reopens");
+        syncMixView(host, root, true);
+        check(host.content("Mix View") == &panel, "at startup it opens in its window again");
+        check(persistence.load("mix", {}).mixViewDetached, "where it opens is kept with the window's view");
+        if (const auto out = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); out.isNotEmpty()) {
+            // The main window with the arrangement back, and the Mix View's window, for the picture.
+            host.frame("Mix View");
+            root.mark(DirtySet::All);
+            root.frame();
+            auto save = [&out](juce::Component &c, const char *name) {
+                juce::Image image(juce::Image::ARGB, 2 * c.getWidth(), 2 * c.getHeight(), true,
+                                  juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(image);
+                    g.addTransform(juce::AffineTransform::scale(2.f));
+                    c.paintEntireComponent(g, true);
+                }
+                const auto file = juce::File(out).getChildFile(name);
+                file.deleteFile();
+                if (auto stream = file.createOutputStream())
+                    juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            };
+            save(root, "adi-mix-view-main.png");
+            save(panel, "adi-mix-view-window.png");
+        }
+        panel.floating.onClick();
+        root.frame();
+        check(host.count() == 0 && panel.getParentComponent() == &root && panel.isVisible() &&
+                  !root.arrangement.isVisible() && root.state().mixView && !root.state().mixViewDetached &&
+                  panel.getBounds() == lanes.getUnion(controls),
+              "the button again docks it back in the centre");
+        check(root.command(AppCommands::ToggleMixView) && !panel.isVisible() && root.arrangement.isVisible(), "and F4 closes it");
+        root.applicationCommand = nullptr;
+    }
     const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
     if (folder.isNotEmpty()) {
         root.command(AppCommands::ToggleMixView);
