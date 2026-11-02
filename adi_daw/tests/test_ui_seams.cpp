@@ -22,6 +22,10 @@
 #include "adi/store.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/audio_drop.hpp"
+#include "adi/audio/wav_file.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/textproj.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/send_edits.hpp"
@@ -736,6 +740,82 @@ void sendsAsBatches() {
           "A may send to itself (Live's feedback loop)");
 }
 
+void audioDropAsOneStep() {
+    section("An audio file dropped on the arrangement: the pool row, the clip and its audio, one step (#308)");
+    adi::test::TempDirectory temp("ui_seams", "drop");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    bool made = true;
+    for (const auto& [id, kind, name] : {std::tuple{1, "audio", "Drums"}, std::tuple{2, "midi", "Bass"},
+                                         std::tuple{3, "return", "A Reverb"}, std::tuple{4, "master", "Main"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        r.label = "Create track";
+        made = sub.submit(std::move(r)).ok && made;
+    }
+    check(made, "an audio track, a MIDI track, a return and Main");
+    const auto& snap = *view.current();
+    check(ui::audioDropRefusal(snap, 1).empty() && ui::audioDropRefusal(snap, 0).empty() &&
+              !ui::audioDropRefusal(snap, 2).empty() && !ui::audioDropRefusal(snap, 3).empty() &&
+              !ui::audioDropRefusal(snap, 4).empty() && !ui::audioDropRefusal(snap, 99).empty(),
+          "an audio track or the drop area takes the file; MIDI, a return, Main or no track refuses it");
+    // Half a second at 44.1 kHz: a beat at the default 120 BPM.
+    const auto wav = temp.path() / "snare.wav";
+    {
+        std::vector<float> samples(22050, .25f);
+        audio::WavWriter writer(wav, 44100, 1, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+    }
+    auto capture = [&store, &wav](std::int64_t id) {
+        ui::AudioImport import;
+        OpRequest captured;
+        const auto r = media::prepareImport(*store, wav, id, 1, captured);
+        if (r.ok && r.audio) {
+            import.mediaId = r.mediaId;
+            import.sampleRate = r.audio->sampleRate;
+            import.frames = r.audio->frames;
+            import.media = std::move(captured);
+        }
+        return import;
+    };
+    const auto bar2 = textproj::kWhole;
+    auto edit = ui::dropAudio(*view.current(), 1, bar2, "snare", capture(1));
+    check(edit.refusal.empty() && edit.ops.size() == 3 && edit.ops[0].opType == "media.import" &&
+              edit.ops[1].opType == "clip.create" && edit.ops[1].payload["kind"] == "audio" &&
+              edit.ops[1].payload["pos"] == bar2 && edit.ops[2].opType == "clip.attachAudio" &&
+              edit.ops[2].payload["frames"] == 22050 && edit.select == 1 && edit.clip == 1,
+          "on Drums at bar 2: the pool row, the clip, its audio");
+    const auto length = edit.ops[1].payload["length"].get<std::int64_t>();
+    check(std::abs(length - textproj::kPPQ) <= 1, "half a second at 120 BPM is one beat long");
+    check(sub.submit(std::move(edit.ops)).ok && sub.nextUndo()->opCount == 3 &&
+              sub.nextUndo()->label == "Insert Audio Clip",
+          "one undo step, named");
+    const auto* drums = view.current()->findTrack(1);
+    check(drums != nullptr && drums->clips.size() == 1 && drums->clips[0]->name == "snare" &&
+              drums->clips[0]->posTicks == bar2,
+          "the snapshot has the clip on Drums at bar 2");
+
+    // The same file again, below the tracks: the pool row is reused, and a new audio track holds it.
+    auto again = ui::dropAudio(*view.current(), 0, 0, "snare", capture(2));
+    check(again.refusal.empty() && again.ops.size() == 3 && again.ops[0].opType == "track.create" &&
+              again.ops[0].payload["kind"] == "audio" && again.ops[0].payload["id"] == 5 &&
+              again.ops[1].payload["track"] == 5 && again.ops[2].payload["media"] == 1 && again.select == 5 &&
+              again.clip == 2,
+          "the drop area: a new audio track, the pool's row reused");
+    check(sub.submit(std::move(again.ops)).ok && view.current()->findTrack(5) != nullptr &&
+              view.current()->findTrack(5)->clips.size() == 1,
+          "and lands");
+    check(sub.undo().ok && view.current()->findTrack(5) == nullptr, "undo takes the new track away with its clip");
+    check(sub.undo().ok && view.current()->findTrack(1)->clips.empty(), "and the first drop");
+    check(ui::dropAudio(*view.current(), 1, 0, "x", ui::AudioImport{}).refusal == "That file holds no audio ADI can play." &&
+              !ui::dropAudio(*view.current(), 2, 0, "x", capture(3)).refusal.empty(),
+          "no audio, or a MIDI track, is refused with the reason");
+}
+
 void returnsStandBeforeMain() {
     section("the returns after the tracks, Main last: Live's foot (manual 6.1)");
     adi::test::TempDirectory temp("ui_seams", "returns");
@@ -844,6 +924,7 @@ int main() {
     groupAndUngroupAsBatches();
     returnsStandBeforeMain();
     sendsAsBatches();
+    audioDropAsOneStep();
     referenceTapAndHold();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);

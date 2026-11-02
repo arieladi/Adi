@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/audio_drop.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/snapshot_reader.hpp"
@@ -174,6 +175,13 @@ class AdiRootComponent final : public juce::Component {
     // the engine refresh after an edit belong to whoever owns the document.
     std::function<bool(int)> applicationCommand;
     std::function<void()> afterEdit;
+    // Reads a dropped file and captures its media row, writing nothing (the document's
+    // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
+    std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
+    // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
+    // the new clip and its track are selected. A refusal goes to the Status Bar.
+    bool dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const std::string &name);
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
     // own, and the ZoomHost around the root applies it as a transform.
     float interfaceZoom() const noexcept { return interfaceZoom_; }

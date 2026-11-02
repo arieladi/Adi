@@ -177,7 +177,7 @@ three of them are **not** already in the engine. Measured 2026-09-29:
 | **New / Open / Save** a project | **PARTIAL** | 7.2 | `Store::create` and `Store::open` are solid (`store.cpp:218`, `:272`); save is continuous and per-edit atomic, and `Store::close()` is the one-file rule (`store.cpp:370-399`). But **`Store::create` never inserts the `project` row**, so `project.setName` silently updates nothing on a brand-new file (`ops_catalog.cpp:309-315`) and the snapshot falls back to 48 kHz (`snapshot.cpp:130-134`). **Save As does not exist in any form.** Both are engine gaps step 7 must raise, not route around. |
 | **Undo / redo**, menu and keys | **EXISTS** | 7.2 | `adi::History::undo()/redo()`, and the menu queries are already there: `canUndo`/`canRedo`/`nextUndo`/`nextRedo` return a `Step` whose `label` is commented *"what the undo menu shows"* (`history.hpp:39-52`). Only the menu item and the key binding are missing. |
 | **Add a track** | **EXISTS** | 7.3 | The `track.create` op, which also inserts the mixer strip in the same op so "a track exists" and "it can be mixed" are never one undo apart (`ops_catalog.cpp:344-350`). Fourteen track kinds (`schema.sql:218-225`). |
-| **Drop audio onto it** | **PARTIAL — the real gap** | 7.3 | `media_files` is a real content-addressed table and `importMedia` dedupes by BLAKE3 (`media/media_ops.cpp:183-205`); the decoder handles RIFF/AIFF/FLAC/MP3/Ogg; `ClipPlayback` plays `audio_clips` rows. But **no op in the 73-op catalogue writes an `audio_clips` row** — every such row in the tree is raw SQL in a test or in `tools/make_demo_project.py:104`. So there is **no undoable path from "a file and a track" to "a clip that plays"**, and `importMedia` leaves `sample_rate`, `channels`, `frames` and `bit_depth` NULL. This is an engine gap for win, and it blocks 7.3's headline gesture. |
+| **Drop audio onto it** | **CLOSED by #308 (N5); built in `window/audio-drop`** — was PARTIAL, the real gap | 7.3 | `media_files` is a real content-addressed table and `importMedia` dedupes by BLAKE3 (`media/media_ops.cpp:183-205`); the decoder handles RIFF/AIFF/FLAC/MP3/Ogg; `ClipPlayback` plays `audio_clips` rows. But **no op in the 73-op catalogue writes an `audio_clips` row** — every such row in the tree is raw SQL in a test or in `tools/make_demo_project.py:104`. So there is **no undoable path from "a file and a track" to "a clip that plays"**, and `importMedia` leaves `sample_rate`, `channels`, `frames` and `bit_depth` NULL. This is an engine gap for win, and it blocks 7.3's headline gesture. |
 | **Choose the audio device** | **PARTIAL** | 7.2 | `juce::AudioDeviceManager` appears only in `adi_play` and `adi_audio_probe`, driven by CLI flags. The settings registry already defines `audio.driverType` / `inputDevice` / `outputDevice` / `sampleRate` / `bufferSize`, and `AppSettings` persists them atomically — but **nothing reads those keys into an `AudioDeviceSetup`**. Step 7 writes that binding and the chooser. ADR-0052 d4 applies to plug-in formats, not to this. |
 
 **Each of the five gets its Live 12 manual checklist written from the manual
@@ -245,8 +245,11 @@ a position-indexed structure for hit-testing (ADR-0044) — which means
 hand-written hit-testing, focus and accessibility, and that is the known price.
 
 Carries the other two of §3.0: **adding a track** and **dropping audio onto
-it**. The second is blocked on the missing `audio_clips` op and must not be
-worked around in the UI.
+it**. The second was blocked on the missing `audio_clips` op and was not
+worked around in the UI. The engine's #308 closed it (`clip.attachAudio` and
+`media::prepareImport`, N5), and `window/audio-drop` builds the drop on it: the
+document captures the pool row, and the window commits it with the clip as one
+undo step.
 
 **The frame drain, stated here because this is the first thing that moves.**
 ADR-0181 d3 says the parameter feed emits *"on the one UI clock (ADR-0050
