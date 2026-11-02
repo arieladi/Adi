@@ -99,7 +99,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Wrap Tab Navigation", "Use Large Track Height",
                                   "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
                                   "Reference Track", "Play Reference", "Select All", "Insert Return Track",
-                                  "Return Tracks", "Sends", "Mixer In/Out", "Solo Selected Tracks"};
+                                  "Return Tracks", "Sends", "Mixer In/Out", "Solo Selected Tracks",
+                                  "Deactivate Selected Track", "Activate/Deactivate Track 1",
+                                  "Activate/Deactivate Track 2", "Activate/Deactivate Track 3",
+                                  "Activate/Deactivate Track 4", "Activate/Deactivate Track 5",
+                                  "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
+                                  "Activate/Deactivate Track 8"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -111,6 +116,15 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     const auto shift = juce::ModifierKeys::shiftModifier;
+    // Live's Activate/Deactivate Track 1…8 (§42.19): F1 to F8.
+    if (id >= ActivateTrack1 && id <= ActivateTrack8) {
+        static const std::array<int, 8> keys{juce::KeyPress::F1Key, juce::KeyPress::F2Key, juce::KeyPress::F3Key,
+                                             juce::KeyPress::F4Key, juce::KeyPress::F5Key, juce::KeyPress::F6Key,
+                                             juce::KeyPress::F7Key, juce::KeyPress::F8Key};
+        info.addDefaultKeypress(keys[static_cast<std::size_t>(id - ActivateTrack1)], 0);
+        info.setActive(active_ != nullptr);
+        return;
+    }
     // Live 12 manual §41.1, §41.5, §41.9 and §41.20. Esc stops nothing: in Live
     // it closes a window or a dialog, and the window lane builds Live's keys.
     switch (id) {
@@ -254,6 +268,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case SoloSelected: // §42.19: Solo Selected Tracks, S
         info.addDefaultKeypress('s', 0);
+        info.setActive(active_ != nullptr);
+        break;
+    case DeactivateSelected: // §42.19: Deactivate Selected Track, 0 (the Arrangement takes 0 for clips first)
+        info.addDefaultKeypress('0', 0);
         info.setActive(active_ != nullptr);
         break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
@@ -1160,6 +1178,17 @@ bool AdiRootComponent::soloTrack(std::int64_t id, bool add) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::activateTrack(std::int64_t id, bool withSelection) {
+    // From the CURRENT cell (ADR-0201); the batch is one undo step.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Deactivating needs an open project.");
+    auto edit = activateTracks(current->tracks, id,
+                               withSelection ? arrangement.geometry.selectedTracks(reader()) : std::vector<std::int64_t>{});
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
     return window != nullptr && window->isFullScreen();
@@ -1219,6 +1248,15 @@ bool AdiRootComponent::command(int id) {
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
         (id >= AppCommands::NarrowGrid && id <= AppCommands::FixedGrid))
         return arrangement.command(id);
+    // F1…F8: the first eight numbered tracks, in the arrangement's order (returns and Main have letters
+    // or none), each alone.
+    if (id >= AppCommands::ActivateTrack1 && id <= AppCommands::ActivateTrack8) {
+        auto n = id - AppCommands::ActivateTrack1;
+        for (const auto row : arrangement.geometry.rows(reader()))
+            if (row.track->kind != "return" && row.track->kind != "master" && n-- == 0)
+                return activateTrack(row.track->id, false);
+        return fail("There is no track " + std::to_string(id - AppCommands::ActivateTrack1 + 1) + ".");
+    }
     if (id == AppCommands::LargeTracks) {
         const bool done = arrangement.command(id);
         strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
@@ -1401,6 +1439,10 @@ bool AdiRootComponent::command(int id) {
         break;
     case AppCommands::SoloSelected:
         if (!soloTrack(arrangement.geometry.selection.track, false))
+            return false;
+        break;
+    case AppCommands::DeactivateSelected:
+        if (!activateTrack(arrangement.geometry.selection.track))
             return false;
         break;
     case AppCommands::InsertReturnTrack:

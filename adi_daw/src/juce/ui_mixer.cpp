@@ -189,11 +189,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     arm.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffff3a34));
     pan.addMouseListener(this, false);
     active.setClickingTogglesState(false);
-    active.onClick = [this] {
-        if (auto *t = panel_.root.reader().findTrack(track_))
-            panel_.submit("track.setMute", {{"id", track_}, {"muted", !t->muted}},
-                          t->muted ? "Activate Track" : "Deactivate Track");
-    };
+    // Live's Track Activator (manual 18.1): the selected tracks together when this one is among them.
+    active.onClick = [this] { panel_.root.activateTrack(track_); };
     // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
     solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };

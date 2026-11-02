@@ -91,7 +91,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleSends,
         ToggleMixerInOut,
         SoloSelected,
-        LastId = SoloSelected
+        DeactivateSelected,
+        ActivateTrack1,
+        ActivateTrack8 = ActivateTrack1 + 7,
+        LastId = ActivateTrack8
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -262,6 +265,9 @@ class AdiRootComponent final : public juce::Component {
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);
+    // Live's Track Activator on track `id`: with `withSelection`, the selected tracks together when
+    // `id` is among them (a switch, or 0 on the selection); without, that track alone (F1…F8).
+    bool activateTrack(std::int64_t id, bool withSelection = true);
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }

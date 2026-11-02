@@ -1131,6 +1131,21 @@ void soloRules() {
     check(ui::soloTracks(tracks, 3, {3}, true, false).ops.front().label == "Solo Track" &&
               ui::soloTracks(tracks, 2, {}, true, false).ops.front().label == "Unsolo Track",
           "named Solo Track or Unsolo Track, as before");
+
+    // Live's Track Activator (manual 18.1): the selected tracks together; Main has none.
+    auto mutes = [](const ui::TrackEdit &e) {
+        std::vector<std::pair<std::int64_t, bool>> out;
+        for (const auto &o : e.ops)
+            out.emplace_back(o.payload["id"].get<std::int64_t>(), o.payload["muted"].get<bool>());
+        return out;
+    };
+    check(mutes(ui::activateTracks(tracks, 3, {3})) == Ops{{3, true}}, "Snare deactivated alone");
+    check(mutes(ui::activateTracks(tracks, 3, {2, 3, 4})) == Ops{{2, true}, {3, true}, {4, true}},
+          "with Kick, Snare and Bass selected, all three together");
+    check(mutes(ui::activateTracks(tracks, 3, {2, 4})) == Ops{{3, true}}, "Snare, not among the selected, alone");
+    check(ui::activateTracks(tracks, 1, {}).refusal == "Main has no Track Activator." &&
+              ui::activateTracks(tracks, 3, {3}).ops.front().label == "Deactivate Track",
+          "Main refused; the step named as before");
 }
 
 int main() {
