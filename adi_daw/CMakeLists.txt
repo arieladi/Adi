@@ -262,6 +262,7 @@ add_library(adi_core STATIC
     src/adi/textproj_store.cpp
     "${ADI_SCHEMA_HPP}"
 )
+target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(adi_core PUBLIC
     ADI_VERSION_STRING="${PROJECT_VERSION}")
@@ -723,6 +724,10 @@ target_link_libraries(adi_analyser_taps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 
 # ADR-0163: the mixer strip in the graph.
+add_executable(adi_split_pan_tests tests/test_split_pan.cpp)
+target_link_libraries(adi_split_pan_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_split_pan_tests COMMAND adi_split_pan_tests)
+
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)

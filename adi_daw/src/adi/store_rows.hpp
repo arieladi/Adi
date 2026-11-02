@@ -97,6 +97,8 @@ struct MixerStrip {
     bool phaseInvert = false;
     std::int64_t delaySamples = 0;
     std::optional<std::int64_t> vcaGroupId;
+    std::string panMode = "stereo";
+    double panLeft = -1.0, panRight = 1.0;
 };
 
 /// ADR-0174: native analog summing on a group track (schema 1.7).

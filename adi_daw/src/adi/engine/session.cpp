@@ -564,7 +564,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
 namespace {
 // What a user can move on a strip, per track: what an override compares.
 struct StripValues {
-    double volume = 0.0, pan = 0.0;
+    double volume = 0.0, pan = 0.0, panLeft = -1.0, panRight = 1.0;
     bool muted = false;
 };
 std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
@@ -579,6 +579,8 @@ std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
     for (const rows::MixerStrip& s : m.strips) {
         v[s.trackId].volume = s.volumeDb;
         v[s.trackId].pan = s.pan;
+        v[s.trackId].panLeft = s.panLeft;
+        v[s.trackId].panRight = s.panRight;
     }
     return v;
 }
@@ -604,6 +606,8 @@ bool Session::refresh(const Store& store) {
             if (b == before.end() || a == after.end()) continue;
             const bool changed = key.second == StripParam::Volume ? b->second.volume != a->second.volume
                                : key.second == StripParam::Pan    ? b->second.pan != a->second.pan
+                               : key.second == StripParam::PanLeft ? b->second.panLeft != a->second.panLeft
+                               : key.second == StripParam::PanRight ? b->second.panRight != a->second.panRight
                                                                   : b->second.muted != a->second.muted;
             if (changed) overridden_.insert(laneId);
         }

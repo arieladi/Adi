@@ -31,7 +31,8 @@ bool same(const ClipNode& a, const ClipNode& b) {
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
         a.kind != b.kind || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
-        a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
+        a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
+        a.panLeft != b.panLeft || a.panRight != b.panRight || a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
         if (a.clips[i] != b.clips[i]) return false;   // pointer identity: already shared
@@ -203,6 +204,13 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    struct PanSettings {std::string mode;double left=-1.0,right=1.0;};
+    std::map<std::int64_t,PanSettings> panSettings;
+    try {
+        SQLite::Statement st(db,"SELECT track_id,mode,pan_left,pan_right FROM mixer_pan_settings");
+        while(st.executeStep())panSettings[st.getColumn(0).getInt64()]={st.getColumn(1).getString(),st.getColumn(2).getDouble(),st.getColumn(3).getDouble()};
+    } catch(const std::exception&) {} // an older read-only file has default stereo
+
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -221,6 +229,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.soloed = st.getColumn(3).getInt() != 0;
             t.volumeDb = static_cast<float>(st.getColumn(4).getDouble());
             t.pan = static_cast<float>(st.getColumn(5).getDouble());
+            if(const auto it=panSettings.find(t.id);it!=panSettings.end()) {
+                t.panMode=it->second.mode;t.panLeft=it->second.left;t.panRight=it->second.right;
+            }
             t.parent = st.getColumn(6).getInt64();
             t.indexInParent = st.getColumn(7).getInt64();
             t.kind = st.getColumn(8).getString();

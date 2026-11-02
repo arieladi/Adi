@@ -126,13 +126,14 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 51> kTables{{
+    static constexpr std::array<TableCoverage, 52> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
         {"time_signature_map", Coverage::Projected, ""},
         {"tracks", Coverage::Projected, ""},
         {"mixer_strip", Coverage::Projected, "inlined on its track"},
+        {"mixer_pan_settings", Coverage::Projected, "inlined on its strip track (N12)"},
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
@@ -343,6 +344,9 @@ Tree buildTree(const rows::Model& m) {
             a.real("width", s.width, 1.0);
             a.real("inGain", s.inputGainDb, 0.0);
             a.num("panLaw", s.panLaw, 0);
+            a.text("panMode", s.panMode, "stereo");
+            a.real("panLeft", s.panLeft, -1.0);
+            a.real("panRight", s.panRight, 1.0);
             a.num("delay", s.delaySamples, 0);
             a.flag("phaseInvert", s.phaseInvert);
         }

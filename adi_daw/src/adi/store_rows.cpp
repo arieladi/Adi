@@ -7,6 +7,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
+#include <map>
 
 namespace adi::rows {
 namespace {
@@ -187,6 +188,19 @@ Model readModel(const Store& store) {
               s.delaySamples = st.getColumn(7).getInt64();
               s.vcaGroupId = optInt(st, 8);
               m.strips.push_back(s);
+          });
+
+    std::map<std::int64_t,MixerStrip*> panStripOf;
+    for(auto& strip:m.strips)panStripOf[strip.trackId]=&strip;
+    query(m, db, "mixer_pan_settings",
+          "SELECT track_id, mode, pan_left, pan_right FROM mixer_pan_settings ORDER BY track_id",
+          [&](const SQLite::Statement& st) {
+              const auto id=st.getColumn(0).getInt64();
+              if(const auto it=panStripOf.find(id);it!=panStripOf.end()) {
+                  it->second->panMode=st.getColumn(1).getString();
+                  it->second->panLeft=st.getColumn(2).getDouble();
+                  it->second->panRight=st.getColumn(3).getDouble();
+              }
           });
 
     query(m, db, "lanes",

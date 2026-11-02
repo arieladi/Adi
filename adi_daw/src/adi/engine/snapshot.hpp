@@ -83,6 +83,8 @@ struct TrackNode {
     bool soloed = false;
     float volumeDb = 0.0f;
     float pan = 0.0f;
+    std::string panMode = "stereo";
+    double panLeft = -1.0, panRight = 1.0;
     std::vector<std::shared_ptr<const ClipNode>> clips;
 };
 

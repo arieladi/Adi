@@ -14,6 +14,7 @@
 //   OPS.md §6.1  The inverse is built from the state ABOUT TO BE OVERWRITTEN,
 //             before apply, in the same transaction.
 
+#include "adi/split_pan_ops.hpp"
 #include "adi/blob.hpp"
 #include "adi/ops.hpp"
 #include "adi/controller_maps.hpp"
@@ -2039,6 +2040,7 @@ std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
+        const auto split=splitPanOps();v.insert(v.end(),split.begin(),split.end());
         return v;
     }();
     return all;

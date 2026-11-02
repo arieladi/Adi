@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1009;          -- schema 1.9
+PRAGMA user_version   = 1010;          -- schema 1.10
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -621,6 +621,20 @@ track's devices, and whatever the track feeds takes the strip's output
 
   For laws 0 and 1, with θ = (pan + 1)·π/4: law 1 gives (cos θ, sin θ), and
   law 0 gives √2 times that.
+- **Split Stereo Pan (1.10, ADR-0203 d9)** is an optional additive
+  `mixer_pan_settings(track_id,mode,pan_left,pan_right)` row, keyed to the strip.
+  Absence means `stereo`, -1, +1. `mode` is `stereo` or `split`; readers use
+  stereo for an unknown future mode and SHOULD report it. Each position is
+  -1..+1 and stays stored when dormant. The original pan is dormant in split.
+  Split applies one mono panner per input: each can reach either output, and
+  their contributions sum. Under Live's law these mono panners use constant
+  power without the stereo law's sqrt(2) boost, so the initial hard-left /
+  hard-right pair is exactly unity. Other selected laws retain their formulas.
+  Fader/mute apply to all coefficients. Changes use the strip's five-ms ramp,
+  including crossfeeds and precision handover; Post sends use the same matrix.
+  Only the first stereo pair is panned; additional channels keep their existing
+  fader-only behavior. Lanes `panLeft` / `panRight` are real -1..+1 values.
+  Width and phase retain their separate Utility placement.
 - **Mute and solo live on `tracks`** (`muted`, `soloed`, `solo_defeat`).
   - A muted track is silent.
   - While any track other than the master is soloed, a track is heard only if
@@ -1109,6 +1123,9 @@ A minor normally only **adds** objects (tables, indexes, triggers). The explicit
 |---|---|
 | **for writing** | Upgrade it before anything else reads or writes it: in **one transaction**, create each later minor's objects in minor order, set `adi_meta.schema_minor`, and set `user_version` **last**. If any step fails, roll back everything: the file stays at its old version and the open fails with a clear error. |
 | **read-only** | Never write. Every table the file lacks reads as **empty**. The reference implementation creates empty `TEMP` tables of the same names on its own connection, in one place (`Store::open`), so every reader is covered. |
+
+Schema 1.10 adds only `mixer_pan_settings`; the frozen mixer_strip definition
+is unchanged.
 
 Schema 1.9 changes `project.sample_rate`'s default from 48,000 to 44,100 Hz
 (ADR-0203 d18). Its migration rebuilds only `project`, copying every stored value

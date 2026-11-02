@@ -491,6 +491,9 @@ silent truncation in JSON, a non-issue in CBOR.
 | `routing.reorder` | e | S | sym | P1 |
 | `mixer.setVolume` | e | S | sym, coalescable | P0 |
 | `mixer.setPan` | e | S | sym, coalescable | P0 |
+| `mixer.setPanMode` | e | S | cap, sym | P1 |
+| `mixer.setPanLeft` | e | S | cap, sym, coalescable | P1 |
+| `mixer.setPanRight` | e | S | cap, sym, coalescable | P1 |
 | `mixer.setWidth` | e | S | sym, coalescable | P2 |
 | `mixer.setInputGain` | e | S | sym, coalescable | P1 |
 | `mixer.setPhaseInvert` | e | S | sym | P1 |
@@ -500,6 +503,18 @@ silent truncation in JSON, a non-issue in CBOR.
 | `group.setSummingDrive` | e | S | sym, coalescable | P1 |
 | `mixer.setPanLaw` | e | S | sym | P2 |
 | `mixer.setVcaGroup` | e | S | sym | P2 |
+
+N12: `mixer.setPanMode {id,mode}` selects `"stereo"` or `"split"` on an
+existing mixer strip. `mixer.setPanLeft {id,pan}` and
+`mixer.setPanRight {id,pan}` position each input of the stereo pair, finite
+-1..+1. Values persist while dormant in the other mode; existing `mixer.setPan`
+is dormant in split mode. The optional additive settings row starts at stereo,
+left -1, right +1. Inverses capture prior scalar values and first-touch absence
+(`_erase`); mode inverses use `_restore` to retain an unknown future mode exactly.
+Those bookkeeping fields are for replay, not window controls. All updates retain
+unrelated settings columns. Refresh Session and Snapshot after committing. Track
+lanes `panLeft` and `panRight` use real -1..+1 units and the existing override /
+Re-Enable Automation path. The window does not implement the panning matrix.
 
 ### 9.9 Markers, arranger, snapshots
 
@@ -650,7 +665,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**175 ops** — 66 P0, 57 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
