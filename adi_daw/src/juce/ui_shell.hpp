@@ -294,6 +294,8 @@ class AdiRootComponent final : public juce::Component {
     bool insertMeter(std::int64_t pos, const std::string &text);
     bool editMeter(std::int64_t pos, const std::string &text);
     bool deleteMeter(std::int64_t pos);
+    // The marker at `from` moved to `to`, its value kept, one step; it stays selected.
+    bool moveMeter(std::int64_t from, std::int64_t to);
     // Live's track drag (the Arrangement View; manual 18.3): the selected tracks when `dragged` is
     // among them, else that track alone, to `to`; one undo step, "Move Track" or "Move Tracks".
     bool moveTracks(std::int64_t dragged, TrackDrop to);

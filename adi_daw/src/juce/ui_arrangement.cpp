@@ -138,12 +138,14 @@ void ScrubArea::paint(juce::Graphics &g) {
     const auto &meters = view.reader().meters();
     g.setFont(look::font(11.5f));
     for (std::size_t i = 1; i < meters.size(); ++i) {
-        const auto &m = meters[i];
+        auto m = meters[i];
+        if (m.start_ticks == dragged_ && movingTo_ >= 0)
+            m.start_ticks = movingTo_; // drawn where the drag would put it
         const auto box = markerBox(m);
         if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
             continue;
         const float x = box.getX();
-        g.setColour(m.start_ticks == view.selectedMeter ? look::selection : juce::Colour(0xffb4b4b4));
+        g.setColour(meters[i].start_ticks == view.selectedMeter ? look::selection : juce::Colour(0xffb4b4b4));
         g.fillRect(box);
         g.setColour(look::separator);
         g.drawRect(box, 1.5f);
@@ -156,8 +158,11 @@ void ScrubArea::paint(juce::Graphics &g) {
     }
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
-    // A marker clicked is selected, and plays nothing; its menu acts on it.
+    // A marker clicked is selected, and plays nothing; its menu acts on it; a drag moves it.
     const auto marker = markerAt(e.position.x);
+    dragged_ = e.mods.isPopupMenu() ? -1 : marker;
+    movingTo_ = marker;
+    grabbed_ = marker >= 0 ? view.geometry.tick(e.position.x) - marker : 0;
     if (marker >= 0 || view.selectedMeter >= 0) {
         view.selectedMeter = marker;
         if (marker >= 0) {
@@ -179,6 +184,24 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     // From the point clicked; Live's global launch quantization arrives with Session
     // View's launch settings (ADR-0203 d10), so nothing is quantized yet.
     view.root.playFrom(view.geometry.tick(e.position.x));
+}
+void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
+    if (dragged_ < 0)
+        return;
+    const auto raw = view.geometry.tick(e.position.x) - grabbed_;
+    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+    const auto snapped = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
+    // Never onto the start, which is the control bar's: at the first grid line at the earliest.
+    movingTo_ = std::max(snapped, view.snaps(e.mods) ? view.geometry.nextGridLine(0, true) : std::int64_t{1});
+    repaint();
+}
+void ScrubArea::mouseUp(const juce::MouseEvent &) {
+    const auto from = dragged_, to = movingTo_;
+    dragged_ = -1;
+    movingTo_ = -1;
+    if (from >= 0 && to >= 0 && to != from)
+        view.root.moveMeter(from, to);
+    repaint();
 }
 juce::PopupMenu ScrubArea::menu() {
     // Live's scrub area menu (manual 6.5): Insert Time Signature Change at the insert marker; on a
@@ -2112,6 +2135,13 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     }
     if (k == juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) {
         view.unfoldAll();
+        return true;
+    }
+    // Left and right move a selected time signature marker by the grid (Live 12 manual 6.5).
+    if (view.selectedMeter >= 0 && (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey) &&
+        !mods.isAnyModifierKeyDown()) {
+        const auto from = view.selectedMeter;
+        view.root.moveMeter(from, view.geometry.nextGridLine(from, code == juce::KeyPress::rightKey));
         return true;
     }
     const auto tracks = view.geometry.rows(view.reader());

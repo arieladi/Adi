@@ -1331,6 +1331,20 @@ bool AdiRootComponent::editMeter(std::int64_t pos, const std::string &text) {
     arrangement.scrub.repaint();
     return true;
 }
+bool AdiRootComponent::moveMeter(std::int64_t from, std::int64_t to) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    auto edit = ::adi::ui::moveMeter(current->meters, from, to);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    if (to != from)
+        arrangement.selectedMeter = to;
+    arrangement.scrub.repaint();
+    return true;
+}
 bool AdiRootComponent::deleteMeter(std::int64_t pos) {
     const auto current = view_.current();
     if (!current)

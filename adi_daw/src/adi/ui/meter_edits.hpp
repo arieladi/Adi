@@ -132,6 +132,31 @@ inline MeterEdit insertMeter(const std::vector<textproj::Meter> &meters, std::in
     edit.ops.push_back(meter_edits_detail::insert(pos, *value, "Insert Time Signature Change"));
     return edit;
 }
+// A marker moved, its value kept: "Time signature markers can be moved with the mouse or left and
+// right arrow keys" (manual 6.5). Never onto the start, which is the control bar's, nor onto another
+// marker. In place, no edit.
+inline MeterEdit moveMeter(const std::vector<textproj::Meter> &meters, std::int64_t from, std::int64_t to) {
+    MeterEdit edit;
+    const auto at = markerAt(meters, from);
+    if (at == 0) {
+        edit.refusal = "Select a time signature marker to move.";
+        return edit;
+    }
+    if (to == from)
+        return edit;
+    if (to <= 0) {
+        edit.refusal = "A time signature change stays after the start; the start's is the control bar's.";
+        return edit;
+    }
+    if (markerAt(meters, to) != 0) {
+        edit.refusal = "Another time signature change stands there.";
+        return edit;
+    }
+    const MeterValue value{meters[at].numerator, meters[at].denominator};
+    edit.ops.push_back(meter_edits_detail::remove(from, "Move Time Signature Change"));
+    edit.ops.push_back(meter_edits_detail::insert(to, value, "Move Time Signature Change"));
+    return edit;
+}
 // Delete on a selected marker.
 inline MeterEdit deleteMeter(const std::vector<textproj::Meter> &meters, std::int64_t pos) {
     MeterEdit edit;
