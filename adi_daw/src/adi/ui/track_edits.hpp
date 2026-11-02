@@ -83,6 +83,31 @@ inline bool canGroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
     return t != nullptr && groupable(*t);
 }
+// Live's colour chooser (Live 12 manual 2.3.2): the colour at `index` of Live's palette (ADR-0211) on
+// every track of `ids` whose colour differs, as one batch; no ops when none would change.
+inline TrackEdit colourTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t index,
+                              const char *label) {
+    TrackEdit edit;
+    if (ids.empty())
+        edit.refusal = "Select a track to colour.";
+    for (const auto id : ids)
+        if (const auto *t = track_edits_detail::find(tracks, id); t != nullptr && t->color != index)
+            edit.ops.push_back(track_edits_detail::op("track.setColor", {{"id", id}, {"color", index}}, label));
+    return edit;
+}
+// The tracks group `id` holds, at every depth, in the snapshot's order.
+inline std::vector<std::int64_t> heldBy(const SnapshotTracks &tracks, std::int64_t id) {
+    std::vector<std::int64_t> out;
+    for (const auto &t : tracks)
+        if (t)
+            for (const auto *up = track_edits_detail::find(tracks, t->parent); up != nullptr;
+                 up = track_edits_detail::find(tracks, up->parent))
+                if (up->id == id) {
+                    out.push_back(t->id);
+                    break;
+                }
+    return out;
+}
 // Whether a soloed track stands anywhere inside group `id`, nested groups too: Live then shows the
 // group's Solo half coloured (manual 18.3).
 inline bool holdsSoloed(const SnapshotTracks &tracks, std::int64_t id) noexcept {

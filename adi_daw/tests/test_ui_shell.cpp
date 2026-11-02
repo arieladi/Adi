@@ -802,6 +802,70 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.command(AppCommands::Undo), "undo");
         refresh();
         check(!halfLit(10), "unsoloed, Drums' Solo is whole again");
+        // Live's colour chooser at the foot of a track's menu (Live 12 manual 2.3.2): the palette's
+        // measured row; on a group, Assign Track Color to Grouped Tracks and Clips (manual 18.3).
+        auto headerItems = [&root] {
+            juce::StringArray out;
+            const auto menu = root.arrangement.headerMenu();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (!it.getItem().isSeparator)
+                    out.add(it.getItem().text + (it.getItem().customComponent != nullptr ? " (swatches)" : ""));
+            return out;
+        };
+        auto colourOf = [&trackNamed](std::int64_t id) -> std::int64_t {
+            const auto *t = trackNamed(id);
+            return t != nullptr && t->color ? *t->color : -1;
+        };
+        lanes.selection.track = 10;
+        lanes.selection.toTrack = 0;
+        check(headerItems().contains("Assign Track Color to Grouped Tracks and Clips") &&
+                  headerItems()[headerItems().size() - 1] == "Colour (swatches)",
+              "a group's menu ends with Assign Track Color to Grouped Tracks and Clips, then the colour chooser");
+        lanes.selection.track = 11;
+        check(!headerItems().contains("Assign Track Color to Grouped Tracks and Clips") &&
+                  headerItems().contains("Colour (swatches)"),
+              "a track's has the chooser only");
+        check(root.arrangement.recolour(5), "a swatch picked on Clap/Snare");
+        refresh();
+        check(colourOf(11) == 5 && root.undoTitle(false) == "Undo Recolour Track", "Clap/Snare takes colour 5, one step");
+        render("adi-colour-chosen.png");
+        // The chooser itself, drawn as the menu draws it, for the picture.
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+            const auto menu = root.arrangement.headerMenu();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (auto *chooser = it.getItem().customComponent.get()) {
+                    int w = 0, h = 0;
+                    chooser->getIdealSize(w, h);
+                    chooser->setSize(w, h);
+                    juce::Image image(juce::Image::ARGB, 4 * w, 4 * h, true, juce::SoftwareImageType{});
+                    {
+                        juce::Graphics g(image);
+                        g.addTransform(juce::AffineTransform::scale(4.f));
+                        g.fillAll(juce::Colour(0xff2b2b2b));
+                        chooser->paintEntireComponent(g, true);
+                    }
+                    const auto file = juce::File(folder).getChildFile("adi-colour-chooser.png");
+                    file.deleteFile();
+                    if (auto stream = file.createOutputStream())
+                        juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+                }
+        }
+        lanes.selection.toTrack = 12;
+        check(root.arrangement.recolour(7), "a swatch picked on Clap/Snare and Hats & Percs");
+        refresh();
+        check(colourOf(11) == 7 && colourOf(12) == 7 && root.undoTitle(false) == "Undo Recolour Track",
+              "every selected track takes it, one step");
+        lanes.selection.track = 10;
+        lanes.selection.toTrack = 0;
+        check(root.arrangement.recolour(3) && root.arrangement.assignGroupColour(), "Drums coloured, then its colour assigned");
+        refresh();
+        check(colourOf(10) == 3 && colourOf(11) == 3 && colourOf(12) == 3 &&
+                  root.undoTitle(false) == "Undo Assign Track Color to Grouped Tracks and Clips",
+              "the tracks Drums holds take its colour, one step named as Live's");
+        for (int i = 0; i < 4; ++i)
+            root.command(AppCommands::Undo);
+        refresh();
+        check(colourOf(10) != 3 && colourOf(11) != 7 && colourOf(12) != 7, "four undos put the colours back");
     }
     // The Mix View's STACK lists every channel the window's project view shows: the group chosen,
     // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").

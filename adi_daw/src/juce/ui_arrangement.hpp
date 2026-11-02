@@ -213,6 +213,19 @@ class ArrangementView final : public juce::Component {
     void locate();
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);
+    // A track header's menu: Insert Audio and MIDI Track; with a track selected, Rename, Delete, Group
+    // and Ungroup, then Live's colour chooser (Live 12 manual 2.3.2), and on a group Assign Track
+    // Color to Grouped Tracks and Clips (manual 18.3).
+    juce::PopupMenu headerMenu();
+    // The colour chooser's pick: the colour at `index` of Live's palette on every selected track, one
+    // undo step ("Recolour Track").
+    bool recolour(std::int64_t index);
+    // Live's Assign Track Color to Grouped Tracks and Clips: the selected group's colour, its own or
+    // the one its place gives it, on every track it holds, one undo step. ADI's clips take their
+    // track's colour.
+    bool assignGroupColour();
+    // The colour index a track shows: its own, or the one its place in the arrangement gives it.
+    std::int64_t colourIndex(std::int64_t track) const;
     // The lanes' menu's grid (§6.10): the adaptive and fixed widths by name, the one in use
     // ticked, then Triplet Grid and Snap to Grid.
     void addGridItems(juce::PopupMenu &);
