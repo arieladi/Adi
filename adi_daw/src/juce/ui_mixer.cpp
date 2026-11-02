@@ -642,6 +642,15 @@ bool MixerStrip::hitTest(int x, int y) {
         return false;
     return juce::Component::hitTest(x, y);
 }
+void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
+    // Live: a track's title bar, double-clicked, brings up the Device View with its devices.
+    if (!panel_.vertical() || e.eventComponent != this || e.y >= 17 || track_ == 0)
+        return;
+    panel_.root.arrangement.geometry.selection.track = track_;
+    panel_.root.arrangement.geometry.selection.toTrack = 0;
+    panel_.root.publishSelection();
+    panel_.root.showDeviceView();
+}
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     // A send's own clicks, and an off send's, which reach the strip: its menu, or what it waits for.
     for (std::size_t i = 0; i < sends_.size(); ++i) {

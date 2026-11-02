@@ -72,6 +72,8 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     std::int64_t renaming() const noexcept { return renaming_; }
     RenameEditor editor;
     void mouseDown(const juce::MouseEvent &) override;
+    // A double-click on a track's title brings up the Device View, as Live's.
+    void mouseDoubleClick(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;

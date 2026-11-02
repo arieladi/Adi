@@ -268,6 +268,9 @@ class AdiRootComponent final : public juce::Component {
     // Live's Track Activator on track `id`: with `withSelection`, the selected tracks together when
     // `id` is among them (a switch, or 0 on the selection); without, that track alone (F1…F8).
     bool activateTrack(std::int64_t id, bool withSelection = true);
+    // Live: "Double-clicking a track's title bar brings up the Device View" (Live 12 manual, Live
+    // Concepts): shown if it is hidden, the selected track's devices in it.
+    bool showDeviceView();
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }

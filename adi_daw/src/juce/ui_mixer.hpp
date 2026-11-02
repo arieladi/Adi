@@ -43,6 +43,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
+    void mouseDoubleClick(const juce::MouseEvent &) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
     bool hitTest(int x, int y) override;
     std::int64_t track() const noexcept { return track_; }
