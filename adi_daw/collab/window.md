@@ -73,6 +73,25 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — tracks dragged by their titles [#347](https://github.com/arieladi/Adi/pull/347) `window/track-move`, on #346
+
+**Built: Live's track drag** (parity 7.3 rows 7 and 33). A drag on a track's title moves the track
+above or below other tracks. The selected tracks move with it when it is among them. Below an open
+group's title, or on the middle of a folded or empty group, the drag puts them into the group; out of
+it, it takes them out, routed as Group Tracks routes them. A line at their depth, or an outline on the
+group, shows where they will land. One undo step, "Move Track" or "Move Tracks". The split line at a
+title's foot now resizes the track (Live's "dragging the split line"). Main and the returns stay at
+the foot, and a group never goes inside itself; each refusal gives its reason. The rule is headless,
+`moveTracks` in `track_edits.hpp`. The old local `window/track-move` stash (from before groups) was
+not used.
+
+**Open:** the lanes do not scroll while a track is dragged near their edge; the returns cannot be
+reordered by dragging; Live's drop line is not measured.
+
+**Tests.** seams 253, shell 713; `test_all.sh` PASS (9937 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — tracks picked apart [#346](https://github.com/arieladi/Adi/pull/346) `window/picked-tracks`, on #345
 
 **Built: Live's Ctrl/Cmd+click on track titles** (parity 7.3 row 33): `Selection::picked` holds
