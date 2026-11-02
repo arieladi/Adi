@@ -8,6 +8,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -25,6 +26,45 @@ std::string filename(Store& store) {
     SQLite::Statement st(store.db(),"PRAGMA database_list");
     while(st.executeStep())if(st.getColumn(1).getString()=="main")return st.getColumn(2).getString();
     throw std::runtime_error("edit needs a project connection");
+}
+Payload mediaKey(SQLite::Database& db,std::int64_t id) {
+    SQLite::Statement row(db,"SELECT hash_blake3,orig_name,rel_path,abs_path_hint,sample_rate,channels,frames,format FROM media_files WHERE id=?");
+    row.bind(1,id);
+    if(!row.executeStep())throw std::runtime_error("copied clip media reference is missing");
+    Payload key={{"id",id},{"hash",nullptr}};
+    const auto hash=row.getColumn(0).isNull()?std::string{}:row.getColumn(0).getString();
+    if(!row.getColumn(0).isNull())key["hash"]=hash;
+    if(hash.empty()) {
+        // Legacy un-hashed rows have no content identity yet. Preserve their
+        // locator/dimensions without copying potentially huge peaks BLOBs.
+        constexpr std::array<const char*,7> names={"name","relative","absolute","rate","channels","frames","format"};
+        auto& legacy=key["legacy"];legacy=Payload::object();
+        for(int column=1;column<=7;++column) {
+            auto& cell=legacy[names[static_cast<std::size_t>(column-1)]];
+            if(row.getColumn(column).isNull())cell=nullptr;
+            else if(column>=4 && column<=6)cell=row.getColumn(column).getInt64();
+            else cell=row.getColumn(column).getString();
+        }
+    }
+    return key;
+}
+void captureMediaKeys(Store& store,Payload& image) {
+    auto& keys=image["mediaKeys"];keys=Payload::array();
+    for(const auto& source:image.at("children").at("audio_clips"))
+        keys.push_back(mediaKey(store.db(),detail::signedInteger(source.at("media_id"))));
+}
+void verifyMediaKeys(Store& store,const Payload& image) {
+    const auto& sources=image.at("children").at("audio_clips");
+    if(sources.empty())return;
+    if(!image.contains("mediaKeys") || !image.at("mediaKeys").is_array() || image.at("mediaKeys").size()!=sources.size())
+        throw std::runtime_error("copied media identity is not captured");
+    for(const auto& source:sources) {
+        const auto id=detail::signedInteger(source.at("media_id"));
+        const auto& keys=image.at("mediaKeys");
+        const auto found=std::find_if(keys.begin(),keys.end(),[&](const Payload& key){return detail::signedInteger(key.at("id"))==id;});
+        if(found==keys.end() || *found!=mediaKey(store.db(),id))
+            throw std::runtime_error("media identity changed after clip copy");
+    }
 }
 void validRate(double rate) {
     if(!std::isfinite(rate) || rate<=0 || rate>768000)throw std::runtime_error("invalid reference render rate");
@@ -204,7 +244,7 @@ ClipCopy copyClip(Store& store,std::int64_t id,double referenceRate) {
     ClipCopy result;
     try {
         validRate(referenceRate);Read read(store.db());OpContext context{store,store.db()};
-        result.sourceFile=filename(store);result.image=captureDeleted(context,id);
+        result.sourceFile=filename(store);result.image=captureDeleted(context,id);captureMediaKeys(store,result.image);
         edit::TimeMap time(store.db());freezeAudio(store,result.image,time,referenceRate);result.ok=true;
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
@@ -226,6 +266,7 @@ PreparedEdit preparePaste(Store& store,const ClipCopy& copy,std::int64_t newId,s
         validRate(referenceRate);if(!copy.ok)throw std::runtime_error(copy.error);
         Read read(store.db());expectedHead(store,result);
         if(filename(store)!=copy.sourceFile)throw std::runtime_error("clip clipboard belongs to a different project");
+        verifyMediaKeys(store,copy.image);
         CopyIds ids(store.db());auto image=cloneImage(copy.image,newId,ids);edit::TimeMap time(store.db());
         relocate(image["row"],track,point,time);
         edit::RowEdits plan(store.db());createImage(plan,image);packet(store,result,"clip.duplicate","Paste Clip",newId,plan);
@@ -347,7 +388,7 @@ RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenc
         for(std::size_t track=0;track<selection.tracks.size();++track) {
             SQLite::Statement clips(store.db(),"SELECT id FROM clips WHERE track_id=? ORDER BY id");clips.bind(1,selection.tracks[track]);
             while(clips.executeStep()) {
-                auto image=captureDeleted(context,clips.getColumn(0).getInt64());
+                auto image=captureDeleted(context,clips.getColumn(0).getInt64());captureMediaKeys(store,image);
                 const int base=static_cast<int>(detail::signedInteger(image.at("row").at("time_base")));
                 const char* position=base==0?"pos_ticks":"pos_ns";const char* length=base==0?"length_ticks":"length_ns";
                 const auto begin=coordinate(selection.begin,base,time),end=coordinate(selection.end,base,time);
@@ -411,6 +452,7 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
             }
         } else eraseRange(store,plan,ids,destination,time,referenceRate);
         for(const auto& original:copy.images) {
+            verifyMediaKeys(store,original);
             auto image=cloneImage(original,ids.next("clips"),ids);
             const auto index=original.at("trackIndex").get<std::size_t>();
             if(index>=tracks.size())throw std::runtime_error("clipboard track offset is invalid");

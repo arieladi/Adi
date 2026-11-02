@@ -20,6 +20,10 @@ Available entry points:
 
 - copyClip, preparePaste, prepareDuplicate and prepareSplit. The caller supplies
   the new clip ID; child IDs are allocated during capture and stored in the op.
+  Clip/range clipboards retain media content identities. Paste refuses a pool
+  ID reused for another file after history changes. Hashed media can relocate
+  without changing identity; legacy unhashed rows retain locator/dimensions.
+  Peaks and media bytes are not copied into the clipboard.
 - copyRange and prepareDeleteRange trim every intersecting clip on selected
   tracks. prepareCutRange returns a clipboard and deletion captured in one read
   snapshot; prepareCutClip does the same for one clip. Commit the prepared edit.

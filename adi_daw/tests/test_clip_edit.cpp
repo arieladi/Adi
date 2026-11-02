@@ -277,5 +277,28 @@ void pureLoopAndCut() {
     }
 }
 
+void reusedMediaIds() {
+    Project p;auto& db=p.store->db();const std::string original(64,'a'),replacement(64,'b');
+    SQLite::Statement media(db,"INSERT INTO media_files(id,hash_blake3,rel_path,format) VALUES(300,?,'original.wav','wav')");
+    media.bind(1,original);media.exec();
+    db.exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,0,1024)");
+    const auto copy=clip_edit::copyClip(*p.store,7,48000);
+    check(copy.ok && copy.image.at("mediaKeys")[0].at("hash")==original,"audio clipboard captures pooled content identity without reading media bytes");
+    SQLite::Statement changed(db,"UPDATE media_files SET hash_blake3=? WHERE id=300");changed.bind(1,replacement);changed.exec();
+    const auto wrong=clip_edit::preparePaste(*p.store,copy,17,21,{0,5765760},48000);
+    check(!wrong.ok && wrong.error.find("media identity")!=std::string::npos,"reused media ID cannot make an old clipboard play another file");
+    changed.reset();changed.bind(1,original);changed.exec();
+    db.exec("UPDATE media_files SET rel_path='relocated.wav',missing=1 WHERE id=300");
+    check(clip_edit::preparePaste(*p.store,copy,17,21,{0,5765760},48000).ok,"same content remains compatible with relocation and a missing-file status change");
+    const auto range=clip_edit::copyRange(*p.store,{{21},{0,0},{0,5765760}},48000);
+    changed.reset();changed.bind(1,replacement);changed.exec();
+    const auto wrongRange=clip_edit::preparePasteRange(*p.store,range,{21},{0,5765760},48000);
+    check(range.ok && !wrongRange.ok && wrongRange.error.find("media identity")!=std::string::npos,"range clipboard checks every referenced media identity too");
+    db.exec("UPDATE media_files SET hash_blake3='' WHERE id=300");
+    const auto legacy=clip_edit::copyClip(*p.store,7,48000);
+    db.exec("UPDATE media_files SET rel_path='different-legacy.wav' WHERE id=300");
+    check(legacy.ok && !clip_edit::preparePaste(*p.store,legacy,17,21,{0,5765760},48000).ok,"legacy unhashed media retains locator/dimension identity");
+}
+
 } // namespace
-int main(){try{stateAndSharing();refusalAndCurves();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{stateAndSharing();refusalAndCurves();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
