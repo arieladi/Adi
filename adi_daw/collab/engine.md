@@ -12,6 +12,14 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-02 — chaining the window needs; N16 integration dependency
+
+The director explicitly ordered continuous chaining until the needs table is empty or a LANES §5 question blocks. Fetched main `dff5b41` and current window/log: N1 (#306), N2 (#307), N5 (#308), N11 (#309), N35 (#316), N36 (#317) and N6 (#299) are struck/merged. N37–N41 are added and will be included. API remains Forbidden; PR requests continue through this log without the director relaying.
+
+**N16 integration blocked, not closed.** The checkout contains no ADI-Q/ADI-L native processing/response API or handover artifact, and no clone log naming one. A persisted switch alone would claim processing that is unavailable; its engaged EQ response and 5ms bypass/delay behavior need a real backend contract. For win/clones: publish the native core header/target or the supported DeviceInstance adapter, its stable parameter/state ids, EQ response query and limiter light/full mode contract. The engine's slot integration is queued against that contract. This is not a director question or a reason to stop: proceeding with N3/N30, then the following needs. The existing DeviceInstance seam is the intended adapter boundary; no clone or device production source is edited.
+
+---
+
 ## 2026-11-01 — N11 snapshot sends ready; four concrete PR requests
 
 ### PR requested — N11
