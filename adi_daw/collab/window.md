@@ -70,6 +70,36 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — dropping audio makes a clip that plays [#327](https://github.com/arieladi/Adi/pull/327) `window/audio-drop`, on #326
+
+**Built: parity 7.3 row 19, STEP-7-PLAN §3.0's headline gesture, on the engine's #308 (N5).**
+- An audio file dropped on an audio track's lane makes a clip there: named after the file, on
+  the nearest grid line, as long as the file plays with Warp off.
+- Dropped on the drop area below the tracks, it makes a new audio track holding the clip.
+- One undo step ("Insert Audio Clip"): the pool row, the new track if any, `clip.create`,
+  `clip.attachAudio`. A file already pooled is reused.
+- A MIDI track, a group, a return or Main refuses the drop before the file is read. A file that
+  is not audio is refused with the reason.
+- The window never reads the store. `ProjectDocument::prepareImport` reads the file and the pool
+  and captures the row; the app wires it into the root's `importAudio` hook; the headless
+  `adi/ui/audio_drop.hpp` builds the batch from the snapshot.
+- The document test hears the clip play through the real Session.
+
+**New need N40** (engine): a clip's audio and the pool's peaks in the snapshot, so an audio clip
+draws its waveform (parity 7.3 row 35, new). Until then a clip shows its colour and name.
+
+**Still open on row 19:**
+- several files at once;
+- a MIDI file onto a MIDI track;
+- reading a long file on a worker rather than the message thread.
+
+**Tests.** document 47, seams 189, shell 591; `test_all.sh` PASS, 9846 checks across 105 suites;
+the sweeps are clean; the goldens are unchanged.
+
+**Next:** the Settings pages in Live's ten tab names and order (queue item 3).
+
+---
+
 ## 2026-11-02, cloud, continued — the send knobs [#325](https://github.com/arieladi/Adi/pull/325) `window/send-knobs`, on #323; the volume's -inf [#326](https://github.com/arieladi/Adi/pull/326)
 
 **Built: parity 7.6 row 9, the sends as ADR-0203 d3 rules.**
