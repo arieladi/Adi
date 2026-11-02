@@ -6,6 +6,50 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-02 (evening) — N14 done: the registry speaks Live's tab names, sections and labels; the director's first remarks are in `collab/director.md`
+
+**N14 (win's, from the window's needs table) is in this PR.** The settings registry
+(`src/adi/settings/registry.{hpp,cpp}`) now names its pages in Live's ten tab names (ADR-0203 d11;
+Live 12 manual 2.3): Display & Input, Theme & Colors, Audio, Link, Tempo & MIDI, File & Folder,
+Library, Plug-Ins, Record, Warp & Launch, Licenses & Updates, in Live's order, then ADI's own pages;
+`pages()` returns them in that order. Each `Setting` carries a new `section`, Live's section within
+the tab (Display Options, Latency, Plug-In Windows, MIDI Ports, Privacy and the rest), set from one
+table (`liveSections`) at the end of `build()`. The labels of the settings Live has are Live's words
+("Use Tab Key to Move Focus", "Driver Type", "Buffer Size", "Start Stop Sync", "Create Fades on
+Clip Edges", the port columns Track/Sync/Remote/MPE). `sync.showLinkToggle` is "Show Link Toggle",
+on Link, default on, as Live's. `audio.keepMonitoringLatency` moved to Record, Warp & Launch, where
+Live keeps it. The window's `settings_tabs.hpp` takes the registry's section first, so its own
+`groupFor` table is now the fallback for ADI's unsectioned settings only. The agent rule in
+`store.cpp` names the Plug-Ins page and the Privacy section. `docs/SETTINGS.md` lists the 22 pages
+with their sections and counts (226 settings).
+
+**Three placements are win's, not Live's, and are marked `win's` in `liveSections` for the window
+to strike or keep:** `ui.zoomOnSelection` under Display, `ui.showTooltips` under Display Options,
+and the knob, slider and value-box modes under Mouse and Pen Input. Where ADI's own settings sit on
+a Live tab (the waveform, fade and meter looks on Theme & Colors; the chase and filter switches on
+Tempo & MIDI) they have no section; the window decides where its tab draws them. The window's tab
+order still draws the tab's own group first and the sections after; that is the window's call.
+
+**Measured on MSVC in the worktree before the merge of main:** `tools\build.bat werror` clean,
+`tools/test_all.sh build` 9889 checks across 106 suites, validators clean; `test_settings` 124 PASS
+with the new checks (Live's tabs lead `pages()`, every Live-answered key sits on its catalogue
+row's tab, sections only on Live tabs, the Link toggle on Link and on).
+
+**The director's first remarks on the exe are recorded in `collab/director.md` (#355, merged):**
+seven remarks on build `add5102`, each with win's reading and the window item it becomes; R4 and R5
+are answered by #339, #347 and #350 in the chain, R1, R2, R3 and R6 are window items that come
+before new ones (LANES §4 item 4). The director reads that file first on his next round; the window
+lane reads it first on its next "continue".
+
+**Chain:** #355 merged. #311 merged. #331's macOS validators leg sat queued eleven hours and was
+cancelled by the runner; rerun, and the chain merger (#331 to #352, in order) restarted on it. #353
+(the README count) and this PR wait on the macOS legs, which are the queue's bottleneck today.
+
+**Next for win:** N4 (per-window zoom home) and N20 (channel configuration home), each its own PR;
+the exe rebuilt after the chain lands, for the director's second round.
+
+---
+
 ## 2026-11-02 (afternoon) — eleven window PRs merged; main measured; the director's build refreshed; #330 is the window's rebase
 
 **Merged, in stack order, every leg green:** win's #332 (the morning entry), then the window's #318,
