@@ -73,6 +73,26 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — keys latched momentarily [#361](https://github.com/arieladi/Adi/pull/361) `window/key-latch`, on #358
+
+**Built: Live's momentary latching (§42.25) for S, F1…F8 and Z** (parity 7.6 rows 6 and 7, 7.3
+row 8). A latching key runs its command once while it is held; its repeats do nothing. A tap
+stays. A hold of 500 ms or more goes back on release: S's solo or an F-key's activator step is
+undone while it is still the latest (an edit made during the hold stays), and Z's zoom goes back
+a step. `MomentaryLatch` (`src/adi/ui/momentary_latch.hpp`) times the key, beside
+`ReferenceAudition`. The release reaches the root from the main window's and a floating window's
+key listener, so Shift+R's hold now ends in the Mix View's own window too (Mix View row 8). Live's
+A, B and Tab wait on Automation Mode, Draw Mode and the Session View.
+
+**Tests.** seams 296, shell 781; `test_all.sh` PASS (9981 checks, 106 suites). No golden moved. In
+the app under Xvfb, S and F1 held 1.1 s went back on release and a tap stayed.
+
+**CI check-in, 20:06 UTC.** #330 to #358: no failure but #350's known MSVC timeout (its run still
+has macOS jobs queued, so its re-run waits). The macOS jobs on #337 and #339 were cancelled after
+six hours without a runner, never having started; each was re-run once.
+
+---
+
 ## 2026-11-02, cloud, continued — picked clips across tracks [#358](https://github.com/arieladi/Adi/pull/358) `window/picked-clips-across`, on #357
 
 **Built: several selected clips dragged across tracks, each by the same rows** (parity 7.3 rows
