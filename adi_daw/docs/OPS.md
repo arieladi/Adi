@@ -478,6 +478,25 @@ silent truncation in JSON, a non-issue in CBOR.
 | `macro.unmap` | e | S | cap | P2 |
 | `macro.setRange` | e | S | sym | P2 |
 
+Device clipboard (N18): readDeviceCopy(Store&,id), in device_copy.hpp,
+returns the registered device.remove inverse as a device.insert payload, plus
+the referenced plug-in metadata. It is a read on the Store's owner, including
+read-only projects: no live plug-in call, state-byte copy or op. Stored params,
+state hashes, panel order, expression route, nullable rack kind and remote host
+reference are retained. Native order/latency/parameter flags remain signed
+64-bit; device.insert accepts optional rackKind and remoteHost (null clears).
+
+prepareDevicePaste captures an ordered batch with a caller-supplied new ID,
+destination chain and optional before-device. It normalizes that chain's
+integer ordinals in its existing (ord,id) order, inserts immediately before the
+selection (or appends), and captures every move. One undo restores exact prior
+ordinals, including legacy ties and large values. commitDevicePaste preserves
+the captured expected head, including a null root. Keep the document generation
+with an asynchronous result; cross-project state/ref import and nested rack
+images are not supplied and return explicit refusals. The reader still exposes
+a rack's root metadata and hasNestedChains. Flush pending host edit capture
+before reading if the clipboard should include that gesture.
+
 ### 9.8 Routing and mixer
 
 | Op | S | E | Inv | P |

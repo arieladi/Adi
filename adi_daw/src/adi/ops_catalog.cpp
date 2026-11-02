@@ -1081,7 +1081,9 @@ constexpr Field kFDeviceInsert[] = {{"id", FieldType::Int, true},
                                     {"params", FieldType::Array, false},
                                     {"state", FieldType::Array, false},
                                     {"route", FieldType::Text, false},
-                                    {"panel", FieldType::Array, false}};
+                                    {"panel", FieldType::Array, false},
+                                    {"rackKind", FieldType::Text, false},
+                                    {"remoteHost", FieldType::Int, false}};
 constexpr Field kFDeviceMove[] = {{"id", FieldType::Int, true},
                                   {"chain", FieldType::Int, true},
                                   {"ord", FieldType::Int, true}};
@@ -1354,6 +1356,14 @@ Payload captureState(OpContext& c, std::int64_t deviceId) {
     return arr;
 }
 
+std::int64_t deviceInteger(const Payload& value,const char* key,std::int64_t fallback=0) {
+    if(!value.contains(key))return fallback;
+    const auto& number=value.at(key);
+    if(!number.is_number_integer() ||
+       (number.is_number_unsigned() && number.get<std::uint64_t>()>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())))
+        throw std::runtime_error(std::string("device integer outside signed 64-bit range: ")+key);
+    return number.get<std::int64_t>();
+}
 void replayParams(OpContext& c, std::int64_t deviceId, const Payload& arr) {
     if (!arr.is_array()) return;
     for (const auto& row : arr) {
@@ -1370,7 +1380,7 @@ void replayParams(OpContext& c, std::int64_t deviceId, const Payload& arr) {
             st.bind(5);
         st.bind(6, row.value("display", std::string{}));
         st.bind(7, row.value("unit", std::string{}));
-        st.bind(8, static_cast<std::int64_t>(row.value("flags", 0)));
+        st.bind(8, deviceInteger(row,"flags"));
         st.exec();
     }
 }
@@ -1418,7 +1428,7 @@ bool chainCreateApply(OpContext& c, const Payload& p, std::string& err) {
             st.bind(3, p.at("track").get<std::int64_t>());
         else
             st.bind(3);
-        st.bind(4, static_cast<std::int64_t>(p.value("ord", 0)));
+        st.bind(4, static_cast<std::int64_t>(p.value("ord", std::int64_t{0})));
         st.bind(5, p.value("name", std::string{}));
         st.exec();
         return true;
@@ -1507,29 +1517,33 @@ Payload capturePanel(OpContext& c, std::int64_t dev) {
 
 bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
-        const auto id = p.at("id").get<std::int64_t>();
+        const auto id = deviceInteger(p,"id");
         SQLite::Statement st(c.db,
             "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled, "
-            "is_rack, preset_name, latency_samples, always_process, missing) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+            "is_rack, preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
         st.bind(1, id);
-        st.bind(2, p.at("chain").get<std::int64_t>());
-        st.bind(3, static_cast<std::int64_t>(p.value("ord", 0)));
+        st.bind(2, deviceInteger(p,"chain"));
+        st.bind(3, deviceInteger(p,"ord"));
         if (p.contains("ref") && !p.at("ref").is_null())
-            st.bind(4, p.at("ref").get<std::int64_t>());
+            st.bind(4, deviceInteger(p,"ref"));
         else
             st.bind(4);
         st.bind(5, p.value("name", std::string{}));
         st.bind(6, p.value("enabled", true) ? 1 : 0);
         st.bind(7, p.value("rack", false) ? 1 : 0);
         st.bind(8, p.value("preset", std::string{}));
-        st.bind(9, static_cast<std::int64_t>(p.value("latency", 0)));
+        st.bind(9, deviceInteger(p,"latency"));
         st.bind(10, p.value("always", false) ? 1 : 0);
         // ADR-0011: a device whose plugin did not load is inserted MISSING
         // rather than not inserted. The flag travels so that undoing the
         // removal of a placeholder restores a placeholder, not a device that
         // claims to have loaded.
         st.bind(11, p.value("missing", false) ? 1 : 0);
+        if(p.contains("rackKind") && !p.at("rackKind").is_null())st.bind(12,p.at("rackKind").get<std::string>());
+        else st.bind(12);
+        if(p.contains("remoteHost") && !p.at("remoteHost").is_null())st.bind(13,deviceInteger(p,"remoteHost"));
+        else st.bind(13);
         st.exec();
 
         if (p.contains("params")) replayParams(c, id, p.at("params"));
@@ -1575,7 +1589,7 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
         const auto id = p.at("id").get<std::int64_t>();
         SQLite::Statement st(c.db,
             "SELECT chain_id, ord, plugin_ref_id, name, enabled, is_rack, "
-            "preset_name, latency_samples, always_process, missing "
+            "preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id "
             "FROM devices WHERE id = ?");
         st.bind(1, id);
         if (!st.executeStep()) { err = "no such device to capture"; return false; }
@@ -1593,6 +1607,8 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
         inv["latency"] = st.getColumn(7).getInt64();
         inv["always"]  = st.getColumn(8).getInt() != 0;
         inv["missing"] = st.getColumn(9).getInt() != 0;
+        inv["rackKind"]=st.getColumn(10).isNull()?Payload{}:Payload(st.getColumn(10).getString());
+        inv["remoteHost"]=st.getColumn(11).isNull()?Payload{}:Payload(st.getColumn(11).getInt64());
 
         // The part that makes undoing a delete actually restore the device
         // rather than a device with that name. Without these the plugin comes
