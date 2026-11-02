@@ -90,7 +90,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleReturnTracks,
         ToggleSends,
         ToggleMixerInOut,
-        LastId = ToggleMixerInOut
+        SoloSelected,
+        LastId = SoloSelected
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -120,6 +121,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool arrowKeysMoveClips() const noexcept { return arrowKeysMoveClips_; }
     // Ctrl/Cmd+wheel zooms around the selection, as Live; off, around the cursor.
     bool zoomOnSelection() const noexcept { return zoomOnSelection_; }
+    // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
+    // the others unless Ctrl/Cmd is held.
+    bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
     juce::ApplicationCommandManager manager;
 
   private:
@@ -133,6 +137,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool tabMovesFocus_ = false;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
+    bool exclusiveSolo_ = true;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
@@ -254,6 +259,9 @@ class AdiRootComponent final : public juce::Component {
     // Several ops as one undo step (a batch lands whole or not at all); a refusal goes to the
     // Status Bar.
     bool submitEdits(std::vector<OpRequest> ops);
+    // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
+    // several (`add`), and the selected tracks together; one undo step.
+    bool soloTrack(std::int64_t id, bool add);
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }

@@ -1094,6 +1094,45 @@ void midiTrackMixer() {
           "never onto a group, a return or Main");
 }
 
+// Live's Solo rules (manual 18.1, §42.19): Exclusive Solo, Ctrl/Cmd for several, the selected tracks
+// together; Main has no Solo.
+void soloRules() {
+    section("solo rules");
+    ui::SnapshotTracks tracks;
+    auto add = [&tracks](std::int64_t id, const char *kind, bool soloed) {
+        auto t = std::make_shared<engine::TrackNode>();
+        t->id = id;
+        t->kind = kind;
+        t->soloed = soloed;
+        tracks.push_back(t);
+    };
+    add(1, "master", false);
+    add(2, "audio", true);
+    add(3, "audio", false);
+    add(4, "midi", false);
+    auto ops = [](const ui::TrackEdit &e) {
+        std::vector<std::pair<std::int64_t, bool>> out;
+        for (const auto &o : e.ops)
+            out.emplace_back(o.payload["id"].get<std::int64_t>(), o.payload["soloed"].get<bool>());
+        return out;
+    };
+    using Ops = std::vector<std::pair<std::int64_t, bool>>;
+    check(ops(ui::soloTracks(tracks, 3, {3}, true, false)) == Ops{{2, false}, {3, true}},
+          "exclusive: soloing Snare unsolos Kick, one batch");
+    check(ops(ui::soloTracks(tracks, 3, {3}, true, true)) == Ops{{3, true}}, "Ctrl/Cmd adds Snare, Kick stays");
+    check(ops(ui::soloTracks(tracks, 3, {3}, false, false)) == Ops{{3, true}}, "Exclusive Solo off: Snare joins Kick");
+    check(ops(ui::soloTracks(tracks, 3, {3, 4}, true, false)) == Ops{{2, false}, {3, true}, {4, true}},
+          "with Snare and Bass selected, both solo together, Kick unsoloed");
+    check(ops(ui::soloTracks(tracks, 2, {3, 4}, true, false)) == Ops{{2, false}},
+          "Kick, soloed and not selected, unsolos alone");
+    check(ui::soloTracks(tracks, 1, {}, true, false).refusal == "Main has no Solo." &&
+              ui::soloTracks(tracks, 9, {}, true, false).refusal == "Select a track to solo.",
+          "Main and a missing track are refused, with the reason");
+    check(ui::soloTracks(tracks, 3, {3}, true, false).ops.front().label == "Solo Track" &&
+              ui::soloTracks(tracks, 2, {}, true, false).ops.front().label == "Unsolo Track",
+          "named Solo Track or Unsolo Track, as before");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -1119,6 +1158,7 @@ int main() {
     rangeEditsAsBatches();
     referenceTapAndHold();
     midiTrackMixer();
+    soloRules();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

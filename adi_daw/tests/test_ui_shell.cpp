@@ -1200,6 +1200,43 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     if (auto *third = rowOf(root.mixer, 3))
         check(third->sendKnobs().size() == 3 && third->sendsTo(2) == 8, "and every track has a send to it");
     render("adi-return-inserted.png");
+    // Live's Solo rules (manual 18.1, §42.19): S solos the selected track; a Solo switch solos its
+    // track and unsolos the others (Exclusive Solo, on by default); Ctrl/Cmd adds.
+    auto soloed = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->soloed)
+                out.push_back(t->id);
+        return out;
+    };
+    // The track controls realise rows for the lanes on screen only: 1 and 2 MIDI here.
+    root.arrangement.geometry.selection.track = 1;
+    root.arrangement.geometry.selection.toTrack = 0;
+    check(root.keyPressed(juce::KeyPress('s', 0, 0)), "S");
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{1} && submitter.nextUndo()->label == "Solo Track",
+          "S solos the selected track, one step");
+    auto *second = rowOf(root.mixer, 2);
+    check(second != nullptr, "2 MIDI's row is on screen");
+    if (second != nullptr)
+        second->solo.onClick();
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{2} && submitter.nextUndo()->opCount == 2,
+          "2 MIDI's Solo solos it and unsolos 1 MIDI, one step");
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys(juce::ModifierKeys::commandModifier);
+    if (auto *first = rowOf(root.mixer, 1))
+        first->solo.onClick();
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{1, 2}, "Ctrl/Cmd+click adds 1 MIDI");
+    render("adi-solo-rules.png");
+    check(root.keyPressed(juce::KeyPress('s', 0, 0)), "S again");
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{2}, "S on the soloed, selected 1 MIDI unsolos it alone");
+    for (int i = 0; i < 4; ++i)
+        root.command(AppCommands::Undo);
+    root.frame();
+    check(soloed().empty(), "four undos: nothing soloed");
     // Live's selectors at the strip's foot repeat the View menu: R hides the returns, I-O the In/Out;
     // each is lit while its part shows.
     check(root.strip.returns.getToggleState() && root.strip.inOut.getToggleState() &&
