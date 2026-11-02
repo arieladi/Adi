@@ -73,6 +73,25 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — the Mixer View's options and In/Out [#337](https://github.com/arieladi/Adi/pull/337) `window/mixer-options`, on #336
+
+**Built: Live 12's Mixer View Control options and the Mixer's In/Out section** (manual 18.1; the
+Mixer in Arrangement View figure; parity 7.6 row 19, 7.2 row 24).
+- The Status Bar's Mixer button has Live's arrow; its menu in Live's order: In/Out (the Mixer View's
+  own, `WindowState::mixerInOut`, hidden until shown), Sends, Volume (always), Track Options,
+  Crossfader, Performance Impact (dimmed), then Return Tracks.
+- The In/Out section under ADI's slots: Audio or MIDI From and its choosers, Monitor, Audio or MIDI
+  To; a return's Audio To; Main's Cue Out (dimmed, N23) and Main Out. A short strip leaves it out.
+
+**Measure on Live:** whether ⌥⌘I switches the Mixer's In/Out or the track controls'.
+
+**Tests.** window state 61, shell 641; `test_all.sh` PASS (9899 checks, 106 suites). No golden moved.
+
+**Next:** dragging a clip onto another track (parity 7.3 row 27, which waited on N6)
+(`window/clip-to-track`).
+
+---
+
 ## 2026-11-02, cloud, continued — a MIDI track's row and strip [#336](https://github.com/arieladi/Adi/pull/336) `window/midi-rows`, on #335
 
 **Built: a MIDI track as Live draws it** (look-live11 difference row 3, parity 7.6 row 18).
