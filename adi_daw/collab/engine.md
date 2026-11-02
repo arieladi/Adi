@@ -13,6 +13,46 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N25 pushed; continuing to N26
+
+**PR requested** (ADR-0210 d4): `engine/markers-locators` at **`bb846aa`**
+→ `main` (base `dff5b41`). Title: **Add marker locators, literal notes and prompts (N25)**.
+
+PR body / window handoff: read `Snapshot::markers` / `findMarker(id)` for stable
+identity, time base, optional tick/ns positions and cycle lengths, name, kind,
+optional palette colour, note and literal prompt. Id order is not display order.
+Every field participates in sharing. Use `marker.create {id,pos,time_base?,name?,kind?,length?,color?,note?,prompt?}`
+(default musical position; a length defaults to cycle), `marker.delete {id}`,
+`marker.move {id,pos}`, `marker.rename {id,name}`, `marker.resize {id,length}`,
+`marker.setColor {id,color?}` (omit to clear), `marker.setNote {id,text}` and
+`marker.setPrompt {id,text}`. Cycles need positive lengths, colour is 0..69.
+All are snapshot-impact undoable edits; no graph rebuild. Text is never executed.
+Schema 1.10 adds optional `marker_details`, frozen 1.9 and migration/read-only
+coverage; the projection includes note/prompt and linear cycle lengths. Captured
+undo retains both rows, extension columns and SQLite types; scalar inverses
+update in place, avoiding cascade loss. A failed batch leaves no rows/log data.
+
+**Win-owned integration edit before CI/merge:** `adi_daw/README.md:57` still says
+**51 tables**; this additive schema has **52**. Please change that count in the
+feature PR. Engine leaves the README count to win (LANES §1/standing prompt).
+This is the sole `validate_schema.py` failure, not a director gate. No other
+validator is failing. The schema checker proves every frozen minor upgrades to
+1.10, including the named 1.9 default rebuild; no validator is weakened.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off, **9955 checks / 107 suites**,
+all test binaries pass. `test_all.sh` returns failure solely for the README count
+above; ops/pd/ci/layout validators pass. Marker suite **126**; five Clang Werror
+suites pass: marker126, engine119, migrate162, text projection209, history95.
+New coverage includes both units, literal multiline text, sharing of every
+field, null colour versus zero, exact undo/redo after reopen, atomic failure,
+1.9 read-only bytes unchanged, empty/nonempty BLOBs and quoted extension columns.
+Two separately compiled plants fail: omitted deleted text (3), ignored note
+sharing (1). No remote CI, MSVC/JUCE or measured Live parity result claimed.
+Win/window opens the PR and win reviews/merges. Continuing to **N26**, lanes,
+points and runtime overrides in the snapshot, independently from main.
+
+
+
 ## 2026-11-02 — N23 ready; continuing to N25
 
 **PR requested** (ADR-0210 d4): `engine/cue-reference` at **`1466c85`** →
