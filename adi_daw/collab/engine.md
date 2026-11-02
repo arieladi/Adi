@@ -13,6 +13,42 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N38 engine role reader/op supplied; win's format remains
+
+**PR requested:** engine/track-roles -> main, head **58ca080**.
+**Title:** Add native track role snapshot and undoable op seam
+**Body:** N38's engine part: TrackNode.role is optional native role text, included
+in structural sharing. A missing tracks.role column reads no assignment; unknown
+future text remains visible. track.setRole {id, role?} accepts kick/bass/vocal/
+reference, with omission/null clearing. Positive ids and mixable track kinds are
+validated; a second reference refuses, so a caller explicitly clears the old id
+then assigns the new one in one batch. The symmetric inverse preserves SQL NULL;
+an unknown stored role refuses overwrite rather than creating a lossy inverse.
+GraphRebuild makes N23 re-read the native reference role once both branches land.
+Snapshot construction borrows a caller transaction or a deferred read snapshot
+(the same seam as N27). No UI production change or format DDL/version change.
+OPS.md documents the new op and its unavailable-format refusal.
+
+**N38 is still open for win:** origin/main has no tracks.role. This PR never
+invents/migrates that win-owned field and the op refuses atomically until its
+native format exists. Win supplies the nullable column, allowed role values,
+format version/migration, and can enforce reference uniqueness in the format.
+The ALTER in this suite is a synthetic reader/op fixture, not a migration or a
+claim that the native role is already persisted on today's schema. N23 already
+consumes the native role and supplies exclusive cue/reference audio; this branch
+does not duplicate it. No director question is needed; continuing N39.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF full **9916 / 107**, all
+validators clean. GCC + Clang 19 role **31**, engine **119**, catalog **106**,
+replay **63**. Native role fixture, unavailable legacy schema, reference move,
+nullable undo/redo, reopen, and literal replay with different UI selections pass.
+Strict GCC shadow checks pass for three sources; compiled defects catch missing
+role sharing (5 failures) and lost null inverse (2). No remote CI/MSVC claim.
+GitHub API remains CONNECT 403 after environment restart; win/window opens above.
+
+---
+
+
 ## 2026-11-02 — N37 Delete Track and Ungroup restore their contents
 
 **PR requested:** engine/track-delete-undo -> main, head **945f8d0**.
