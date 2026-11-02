@@ -191,12 +191,18 @@ in the mixer by default; that is what the group/stem focus view state is for.
 *Built (window lane, 2026-10-29): Live's group tracks (manual 18.3).* The model is
 `adi::ui::TrackOrder` (`src/adi/ui/track_order.hpp`), held by `ArrangementGeometry`
 and built again in place for each new snapshot: each group followed by what it
-holds, by `index_in_parent` then id, at any depth; Main last, as Live draws it. Every
-walk down the tracks reads it through `ArrangementGeometry::rows` (the lanes, the
-names, the track controls, the Mixer View, the Overview, the Channel EQ window, the
-keys, the Status Bar's number), so no panel orders tracks itself. The snapshot's own
-order (`index_in_parent, id`) mixes one group's tracks with another's and is not
-used for display.
+holds, by `index_in_parent` then id, at any depth; then the returns, then Main, as
+Live draws them. Every walk down the tracks reads it through `ArrangementGeometry::rows`
+(the lanes, the names, the track controls, the Mixer View, the Overview, the Channel EQ
+window, the keys, the Status Bar's number), so no panel orders tracks itself. The
+snapshot's own order (`index_in_parent, id`) mixes one group's tracks with another's
+and is not used for display.
+
+*Built (window lane, 2026-11-01): Live's foot.* The returns and Main are pinned at the
+bottom of the lanes, below the drop area, whatever the scroll (`ArrangementGeometry::
+footStart`, `footTop`). A walk down the rows starts at `-scrollY` and jumps to
+`footTop` at the foot's first row; `rowAt` gives a point in the foot to the foot, never
+to a track scrolled under it; the track controls' foot strips stand in front.
 
 A group's title shows Live 12's group switch (three lines, the top one out while
 open); a track in a group sits past a band in the group's colour for each group it
@@ -231,15 +237,11 @@ View's columns, hit tests, the keys) passes over it from the one list. The tree 
 built only while a group is chosen or the menu is open, in buffers kept between
 frames, so a new generation with the same rows allocates nothing (§8).
 
-*The director's choice, 2026-10-29:* until the snapshot carries a track's parent,
-place in its parent, kind and colour (window log, N6), the window reads them from
-the project file (`rows::readModel`, as the engine's MIDI player does;
-`adi::ui::refreshTrackRows`), wired by the application in `ui_main.cpp`: when the
-menu opens, and on each new snapshot whose tracks changed or whose project has a
-group (a project without groups reads nothing). It is the one place the window
-reads past the snapshot; STEP-7-PLAN §2.2 lists what changes when N6 arrives. If the
-engine's way proves better, N6 replaces it: the arrangement's `TrackRows` is the only
-thing that changes.
+*From the snapshot since 1 November:* each track's parent, place in its parent and kind
+come from the snapshot (#299, window log N6; `adi::ui::rowsFromSnapshot`). The window
+read them from the project file from 29 October until then, the director's choice;
+STEP-7-PLAN §2.2 records how that ended. A track's own colour waits on the format's
+meaning of `tracks.color` (N36); until then colours are by place.
 
 **Open, and it is not a UI question:** where a *keyboard* map lives.
 `controller_maps` is project-scoped and right for MIDI and OSC. A keymap is
@@ -473,3 +475,42 @@ rather than of this project. Nothing about it needs the format, and putting it
 there would make every project file a vector for changing a user's keyboard.
 
 ---
+
+## 12. The Mix View, the Info View's switcher and the device strip's pinned slot (ADR-0209)
+
+**Status: decided (ADR-0209 §10, 1 November).** P1 is the shell, `StackTab` and the ★ Reference
+strip with its toggle and [REF]; the other tabs, `CtzNavigator`, the ⚡ Kick SC pill, the switcher
+and the pinned slot are P2 after the first-window gate, drawn empty until then (d11). `OverviewTab`,
+`ScopePhaseTab` and `SpectrogramTab` are built from the existing analyser and the Scope (d12).
+`MixViewPanel` is the window of ADR-0209: F4 and a top-bar button open it, docked in the
+centre slot of `MainSplit` in place of the arrangement or detached through the floating-window
+host (ADR-0180 d3) onto a second display. It obeys the three rules of §2 unchanged: it reads
+project state from `ProjectView` and the snapshot only, it never holds a visibility flag of its
+own (the tab, the filter and the comparison pair live in `ui_view`), and nothing in it touches
+the audio thread. Its children, one component each, in the tab order: `OverviewTab` (the SPAN
+class overlay and the Bluprint parts, from the analyser's published arrays, ADR-0183),
+`StackTab` (every channel of the selected CTZ group or filter, dormant slots dimmed, the hovered
+row zoomed for ADI-Q editing with its drawers), `ScopePhaseTab` (the scope taps of ADR-0175, up
+to eight tracks), `SpectrogramTab` (the PerceptoMap OpenGL base) and `CascadeTab` (the group
+tree with summing and ADI-L state). Above them `CtzNavigator` (the block tree, read from the
+group metadata the engine writes per rebuild), the view-filter button with Link to Arrangement,
+the ⚡ Kick SC pill, the ★ Reference strip (the ★ Reference track against the ruler) and the track
+minimap on the right edge.
+
+**Stubs, by rule (ADR-0210 d3).** A field the engine has not written yet (a slot's state, a group's
+crest or shaving, a role) comes from a `MixViewProvider` interface with two implementations: the
+snapshot's, and a stub that returns the layout's placeholders. The tab is built and tested against
+the stub, the row goes into `collab/window.md`'s needs table, and the real provider replaces the
+stub when the field arrives; no tab waits.
+
+**The two docks.** `InfoViewPanel` gains a header switcher (`Info | SPAN | Scope | VISU | Bluprint |
+CTZ | AI Radar`); each mini-graph is the matching tab's component at a small size, sharing its
+provider, and a click inside opens `MixViewPanel` on that tab. `DeviceChainStrip` gains an optional
+pinned right-hand slot through the upward `DockResizer` of ADR-0184, showing the selected track's
+pre or post spectrum, scope, or ADI-Q / RMSC curve, again the same components. Nothing is drawn
+twice from two sources.
+
+**Keys.** F4 toggles the Mix View; **Shift+R** and the [REF] button tapped (under 200 ms) latch the
+★ Reference, held they are momentary, both through the application's command target so the Stream
+Deck's key (ADR-0181) maps to the same two commands. Ctrl+R stays Live's Rename and Ctrl+Shift+R
+Live's Export Audio/Video (ADR-0209 d9).

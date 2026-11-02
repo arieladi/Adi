@@ -76,7 +76,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         FixedGrid,
         WrapTabNavigation,
         LargeTracks,
-        LastId = LargeTracks
+        GroupTracks,
+        UngroupTracks,
+        LastId = UngroupTracks
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -215,6 +217,8 @@ class AdiRootComponent final : public juce::Component {
   private:
     bool insertTrack(bool midi);
     bool deleteTrack();
+    // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
+    bool groupTracks(bool ungroup);
     bool focusView(int);
     bool fail(std::string message);
     bool toggle(Panel);

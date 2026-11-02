@@ -15,11 +15,10 @@ struct TrackRow {
     std::uint32_t colour = 0; // 0xRRGGBB; 0 when the project gives none
     std::string name;
     std::int64_t index = 0; // its place among what its parent holds (index_in_parent)
+    bool ret = false;       // a return track: after the rest, before Main
 };
-// The project's tracks as a tree of groups. The window builds it from the snapshot, which does
-// not carry a track's group, kind or colour yet (collab/window.md, N6): until it does, the
-// application reads them from the project file (track_rows.hpp), and without that every track
-// stands alone and there is no group to choose.
+// The project's tracks as a tree of groups, built from the snapshot's rows (rowsFromSnapshot,
+// track_order.hpp).
 class TrackTree {
   public:
     TrackTree() = default;

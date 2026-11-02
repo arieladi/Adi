@@ -78,7 +78,7 @@ MR § is the Master Reference's section.
 | Rec-Q ([1/16] or [Free]) and Play-Q on every MIDI track header | V.2 §9 | Waits: no op, and no track kind (N6) |
 | Keep Monitoring Latency from the monitor button's right-click | V.2 §9 | Waits: no op (new Need) |
 | Freeze, Freeze All Channels, Freeze Group; Bounce in Place, Bounce to New Track, with a prompt | 1.3, 7 | Waits (engine, P1) |
-| Group Tracks; a group as a folder and its bus | 7 | Waits (N6: a track's parent and kind) |
+| Group Tracks; a group as a folder and its bus | 7 | Partial: the folder is built, read from the snapshot (#299): the tree in every panel, folding, Group Tracks and Ungroup Tracks (`window/groups`, `window/group-commands`; parity-7.3 row 33); dragging into a group and the summing controls are not built |
 | Save as Default Audio/MIDI Track in the header's menu | V.2 §9 | Later (P2) |
 | Moving tracks by dragging their title bars | 3.3 (Live §6.1, §18.2) | Missing, in progress (`window/track-move`); Main stays where the snapshot puts it until N6 |
 

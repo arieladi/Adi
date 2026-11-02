@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/ui/meters.hpp"
+#include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <array>
 #include <vector>
@@ -93,7 +95,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Previous Neighbor", "Full Screen",
                                   "Overview", "In/Out", "Narrow Grid", "Widen Grid",
                                   "Triplet Grid", "Snap to Grid", "Fixed Grid",
-                                  "Wrap Tab Navigation", "Use Large Track Height"};
+                                  "Wrap Tab Navigation", "Use Large Track Height",
+                                  "Group Tracks", "Ungroup Tracks"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -217,6 +220,15 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('r', cmd);
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
         break;
+    case GroupTracks: // §41.5; manual 18.3
+    case UngroupTracks: {
+        info.addDefaultKeypress('g', id == GroupTracks ? cmd : cmd | shift);
+        const auto snapshot = active_ != nullptr ? active_->current() : nullptr;
+        const auto track = active_ != nullptr ? active_->arrangement.geometry.selection.track : 0;
+        info.setActive(snapshot != nullptr && (id == GroupTracks ? canGroup(snapshot->tracks, track)
+                                                                 : canUngroup(snapshot->tracks, track)));
+        break;
+    }
     // Live 12's Navigate menu (online manual §41.4.1, §42.2): Alt, or Option, and the view's
     // number moves the keyboard focus there.
     case FocusControlBar:
@@ -811,11 +823,12 @@ void AdiRootComponent::say(std::string message) {
 }
 juce::String AdiRootComponent::selectionText() const {
     // Live's Status Bar: the insert marker with its time, or the time selection.
+    // Positions and lengths in the project's meters (#299).
     const auto &s = arrangement.geometry.selection;
-    auto where = [](std::int64_t tick) {
-        const auto sixteenths = tick / (textproj::kPPQ / 4);
-        return juce::String(sixteenths / 16 + 1) + "." + juce::String(sixteenths / 4 % 4 + 1) +
-               "." + juce::String(sixteenths % 4 + 1);
+    const auto &meters = reader_->meters();
+    auto where = [&meters](std::int64_t tick) {
+        const auto at = barPosition(tick, meters);
+        return juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth);
     };
     auto seconds = [this](std::int64_t tick) {
         const auto *tempo = reader_->tempo();
@@ -824,10 +837,10 @@ juce::String AdiRootComponent::selectionText() const {
     };
     if (s.start != s.end) {
         const auto a = std::min(s.start, s.end), b = std::max(s.start, s.end);
-        const auto beats = (b - a) / (textproj::kPPQ / 4);
+        const auto length = barSpan(a, b - a, meters);
         return "Time Selection   Start: " + where(a) + "   End: " + where(b) + "   Length: " +
-               juce::String(beats / 16) + "." + juce::String(beats / 4 % 4) + "." +
-               juce::String(beats % 4) + "   (Duration: " + seconds(b - a) + ")";
+               juce::String(length.bar) + "." + juce::String(length.beat) + "." +
+               juce::String(length.sixteenth) + "   (Duration: " + seconds(b - a) + ")";
     }
     return "Insert Mark " + where(s.marked ? s.insert : 0) + " (Time: " +
            seconds(s.marked ? s.insert : 0) + ")";
@@ -896,6 +909,24 @@ bool AdiRootComponent::deleteTrack() {
         return fail(result.error);
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = 0;
+    arrangement.geometry.selection.clip = 0;
+    publishSelection();
+    return true;
+}
+bool AdiRootComponent::groupTracks(bool ungroup) {
+    // From the CURRENT cell, as every action is; the batch is one undo step, labelled as Live's
+    // Edit menu names it.
+    const auto current = view_.current();
+    const auto id = arrangement.geometry.selection.track;
+    auto edit = ungroup ? ungroupTrack(current->tracks, id) : groupTrack(current->tracks, id);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    edit.ops.front().selBefore = session_.advisory();
+    const auto result = submitter_.submit(std::move(edit.ops));
+    if (!result)
+        return fail(result.error);
+    arrangement.followPaused = true;
+    arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.clip = 0;
     publishSelection();
     return true;
@@ -1084,6 +1115,11 @@ bool AdiRootComponent::command(int id) {
         if (!deleteTrack())
             return false;
         break;
+    case AppCommands::GroupTracks:
+    case AppCommands::UngroupTracks:
+        if (!groupTracks(id == AppCommands::UngroupTracks))
+            return false;
+        break;
     case AppCommands::RenameTrack:
         // Rename acts on the selection: the device with the focus, else the selected track.
         // The edit itself is its own op when the name is committed.
@@ -1142,7 +1178,7 @@ const std::vector<MenuEntries> &menuBar() {
 #endif
         // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
         // Paste and Duplicate; those wait for their ops.
-        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack}},
+        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, 0, C::GroupTracks, C::UngroupTracks}},
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",

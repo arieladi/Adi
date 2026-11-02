@@ -48,7 +48,7 @@ struct Fixture {
     explicit Fixture(const char* n, const char* projectName = "My Song")
         : temp("snapshots", n) {
         StoreError e = StoreError::Ok;
-        store = Store::create(temp.path() / "p.adi", e);
+        store = Store::createEmpty(temp.path() / "p.adi", e);
         if (!store) return;
         SQLite::Statement st(store->db(), "INSERT INTO project(id,name) VALUES (1,?)");
         st.bind(1, projectName);
@@ -298,7 +298,7 @@ void testReadOnly() {
     std::int64_t id = 0;
     {
         StoreError e = StoreError::Ok;
-        auto s = Store::create(path, e);
+        auto s = Store::createEmpty(path, e);
         if (!s) return;
         s->db().exec("INSERT INTO project(id,name) VALUES (1,'R')");
         mk(*s, 1, "A");

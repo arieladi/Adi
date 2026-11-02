@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/ui/meters.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <vector>
@@ -78,6 +79,7 @@ class TransportBar final : public juce::Component {
     BarItem *lastFocused_ = &link;
     // What the fields last showed, so a frame that changes nothing formats nothing.
     double shownBpm_ = -1;
-    std::int64_t shownSixteenths_ = -1;
+    BarPosition shownPosition_{0, 0, 0};
+    std::uint32_t shownSignature_ = 0; // numerator << 16 | denominator
 };
 } // namespace adi::ui

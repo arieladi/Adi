@@ -48,7 +48,7 @@ struct Fixture {
     explicit Fixture(const char* n)
         : temp("catalog", n), dir(temp.path()) {
         StoreError e = StoreError::Ok;
-        store = Store::create(dir / "p.adi", e);
+        store = Store::createEmpty(dir / "p.adi", e);
         if (store) store->db().exec("INSERT INTO project(id,name) VALUES (1,'Cat')");
     }
 };

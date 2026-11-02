@@ -6,6 +6,102 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-01 (night) — Both seats are live; win relays CI, fixes a render step, answers N35 and N36
+
+**The seats started on the prompts of 1 November.** The engine (Codex, no GitHub API) pushed N1,
+N2, N5 and N11 and logged "PR requested"; the window opened them as #306, #307 (on #306), #308 and
+#309 (ADR-0210 d4), and its own #310 (N6's window side), #311 (its log), #312 (clip names), #313
+(bars in the meters), #314 (Group and Ungroup Tracks), #315 (the returns and Main at the foot), each
+stacked on the one before. #303 and #305 merged; the rest win merges as their legs go green, in
+stack order, retargeting each to main as the one under it merges.
+
+**#307 was red on every render leg, not in the compiler.** `adi_tool create` now writes Live's
+default Set (N2, ADR-0209 §10 d10), and `tools/make_demo_project.py` refused a file that already
+has tracks. Win pushed `2331626` on `engine/project-bootstrap`: a pristine default Set (tracks, no
+clip, device or op) is replaced by the demo's own tracks; an edited file is still refused. No engine
+file touched. **For the engine seat:** the three render steps of `ci.yml` (`"$tool" create` then
+`make_demo_project.py`) are not in `test_all.sh`; a change to `create` or to the schema's defaults
+shows there first. Nothing else of N1, N2, N5, N11 was red when this was written.
+
+**Two needs of the window's were win's.** N35 (the device tests' sixteen `*-render.wav` files left
+in `adi_daw/`): #316 adds the `.gitignore` line; the devices lane may still move the writes to a
+temporary folder. N36 (what `tracks.color` holds): ADR-0211, in this PR — a palette index, 0 to 69,
+never RGB; `NULL` is no colour of its own; the theme owns the RGB table and the window measures
+Live 12's seventy. His to strike.
+
+**New from the window, for the engine:** N37, `track.delete`'s inverse captures only the row
+(OPS.md §6.3 promises the clips and the device state), so undo of Delete Track and Ungroup brings
+the track back empty. The engine takes it in table order (ADR-0210 d2).
+
+## 2026-11-01 (later) — The engine stack merged; the window opens on the director's PC; main measured
+
+**Merged, in stack order, CI green on every leg:** the engine's #297 (the bypass delay, after win's
+one-hunk merge), #299 (the snapshot's N6), #298 (master summing), #300, #301, #302 (the export
+queue, stems and PCM; each retargeted to main as the one under it merged). Then win's #304 (the MSVC `/WX` fix in
+`tests/test_plan.cpp`; #304 conflicted with #298's own rename of the same mixer variable, resolved by
+taking main's). #303 (ADR-0209, ADR-0210, LANES, the prompts) and #305 (the ruling) follow when their macOS
+leg, which hung once and was re-run, is green. Nothing of the lanes is left open but #278 (draft) and the old
+#207, #208, #210.
+
+**The window opened on this PC.** Built as `.github/workflows/ui.yml` does (Ninja, Debug, JUCE on, Pd
+off, `/WX`): `D:\adi-ui\adi_app_artefacts\Debug\ADI.exe`. Live's layout; the three UI suites pass
+(55, 38 and 438 checks). One thing for the window lane's queue: on start an alert says
+`audio.bufferSize does not offer 480` on this machine's device; the Settings page should offer what
+the device offers and fall back without a dialog. Handed to the director with this entry (ADR-0210 d6).
+
+**main measured on MSVC after the merges:** `4398f4b`, **9700 checks across 106 suites**, `/WX`
+clean; the README's count line is corrected in #305. Master Reference v1.3 built from it and split into
+chapters under `reference/DOCS/Adi Master Reference/` (the generator stays on disk, out of git).
+
+## 2026-11-01 — Fifty-eight lane PRs merged; ADR-0209 (the Mix View, proposed in the morning, ruled in the evening) and ADR-0210 (nobody waits); the prompts of 1 November
+
+**The director:** the window and engine lanes had stopped, the window waiting on the engine and both
+waiting on him; "merge whatever you need", two new standing prompts, "a better plan"; and a MIX View
+specification to record, which he later said was Gemini's draft to be gone through before a final
+decision.
+
+**Merged, in stack order (CI green on every leg; review was the PR bodies, the lane logs and CI, not
+a line-by-line read, at this volume):** win's #238 (ADR-0208); the engine's #237, #239 to #245, #247,
+#249 (VST3 at 64, the Pd prepare gate, the sends and returns stack); the devices' #250 (the zero-delay
+adapter), #253 (Hybrid Reverb), #259 (Limiter), #255 (log); the window's #246 to #296, forty-five PRs
+(the six rebased step-7 PRs, Live's look measured on 11.2.7, the mixer, Settings, the channel EQ
+window, the menus and keys, the grid and clip editing, the view filter and group tracks), #252 (log).
+Closed as superseded: #196, #198, #199, #203, #204, #205 (rebased as window/*), #206 (#278), #209
+(#253), #173 (mac retired). Still open: #297, #298, #300 to #302 (the export stack, waiting on CI
+after a merge of main), #299, #278 (draft), #207, #208, #210.
+
+**One conflict resolved by win,** `src/juce/device_model.hpp` on `engine/bypass-delay` (#297): #237's
+`handed_` beside the branch's atomic `always_`/`bypassed_`; merged main into the branch (a merge
+commit, no rewrite), pushed. The engine seat (Codex, no GitHub API) could not do it; ADR-0210 d5 makes
+this the rule.
+
+**ADR-0210, the plan.** The lanes were not blocked on each other's code: forty-five green window PRs
+and fifteen engine PRs sat unmerged for five days, the window's needs table (N1 to N35) was never the
+engine's queue, and the engine seat's PRs went through the director. Now: the needs table heads the
+engine lane's queue; the window never waits (a stub and a row); a seat without the API pushes and
+logs; win merges whenever the lanes push; win builds main on Windows for him. Not "all on the engine":
+the window has months of work that needs nothing from the engine, and two seats on the engine's files
+would conflict.
+
+**ADR-0209, the MIX View, recorded as PROPOSED** with the draft in full and win's critique (§9: nine
+points, four of them his to rule: Ctrl+R is Live's Rename; the CTZ hierarchy as a template, not the
+default Set; P1 cut to the shell with STACK and the ★ Reference; the analyser tabs from the existing
+analyser, Spacer and Fuser as the only new DSP). FEATURES rows carry "proposed"; LANES lists the MIX
+View after his ruling; UI-ARCHITECTURE §12 is the shape, marked proposed.
+
+**Ruled the same evening** ("agree on all 4, keep Mix View, make it decided"): §10 of the entry, d9 to
+d13. While recording it win found its own Q1 recommendation wrong: Ctrl+Shift+R is Live's Export
+Audio/Video (manual ch. 41), Ctrl+Alt+R its Hide/Show Returns; the ★ Reference is on **Shift+R**, free
+in Live 12's list, as win's placement to strike. FEATURES, LANES, UI-ARCHITECTURE §12 and both
+prompts corrected in place; the Master Reference v1.3 carries the Mix View in 3.9 with the reference
+pictures he asked for (SPAN, Bluprint, s(M)exoscope, VISU, Trackspacer, RMSC, Pro-Q's instance list,
+FUSER), sources in its Appendix E.
+
+**Also:** `docs/LANES.md` rewritten for ADR-0210; the two standing prompts of 1 November
+(`collab/prompts/2026-11-01-engine-lane.md`, `2026-11-01-window-lane.md`); Master Reference v1.3 in
+build. main at 044b660 fails MSVC `/WX` in `tests/test_plan.cpp` (a warning the cloud legs do not
+raise): fixed separately; the README count is re-measured on that build.
+
 ## 2026-10-25 — Master Reference v1.1 built (179 pages); ADR-0205; the old versions deleted
 
 **v1.1.** Built from ADR-0203, ADR-0204 and ADR-0205: a Part 0 "For the agents, and for the project's sanity" (pp. 7 to 16: the facts, the tags, the rules, what ADI is not, the eight commitments as the agents' means, the roster, the history), then Part I "The dream DAW" written for the director with every ability named, then the rest as before. No {OPEN:} or {WISH:} tag remains: a Live measurement is a note with its AWAITING row and Live version; the wishes were ruled; the rejections keep their reasons. The content scripts went through three subagent passes (write; two-lens verify; fix; recheck) and a text scan of the built PDF. On the director's order every older version was deleted (v0.9.7 to v1.0, and the generator backups except `*_v10.py.bak`), and v1.1 is split into chapters in `reference/DOCS/Adi Master Reference/` (tools/ADI-PDF-To-Chapters). Only v1.1 exists; it is rebuilt from `_build/`.

@@ -21,9 +21,11 @@
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/ui/op_submitter.hpp"
+#include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/meters.hpp"
 #include "adi/ui/snapshot_reader.hpp"
+#include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
-#include "adi/ui/track_rows.hpp"
 #include "adi/ui/track_tree.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -32,6 +34,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -176,7 +179,7 @@ void outlivesItsOwner() {
 
 std::unique_ptr<Store> freshProject(const fs::path& p) {
     StoreError err = StoreError::Ok;
-    auto st = Store::create(p, err);
+    auto st = Store::createEmpty(p, err);
     if (st) st->db().exec("INSERT INTO project(id,name) VALUES (1,'Untitled')");
     return st;
 }
@@ -439,8 +442,8 @@ void projectViewTree() {
     check(alone.groups().empty() && alone.shows(0).size() == 2, "without groups, nothing to choose");
 }
 
-void projectViewRowsFromTheFile() {
-    section("the project view's rows from the project file (the director, 29 October 2026)");
+void projectViewRowsFromTheSnapshot() {
+    section("the tracks' tree from the snapshot (#299; the project file until then)");
     adi::test::TempDirectory temp("ui_seams", "rows");
     auto store = freshProject(temp.path() / "p.adi");
     check(store != nullptr, "store created");
@@ -460,7 +463,7 @@ void projectViewRowsFromTheFile() {
           "Main, Body holding Fx And Hits holding Hits, and Lead alone");
     const ui::SnapshotReader reader(view.current());
     std::vector<ui::TrackRow> rows;
-    ui::trackRowsFrom(reader, rows::readModel(*store), rows);
+    ui::rowsFromSnapshot(reader, rows);
     auto row = [&rows](std::int64_t id) -> const ui::TrackRow* {
         for (const auto& r : rows)
             if (r.id == id) return &r;
@@ -509,28 +512,171 @@ void projectViewRowsFromTheFile() {
     const ui::SnapshotReader other(nullptr);
     check(!order.fits(other), "an order fits only the snapshot it was built for");
 
-    // The file is read again only when the tree may have changed (track_rows.hpp).
-    int reads = 0;
-    auto read = [&reads, &store] {
-        ++reads;
-        return rows::readModel(*store);
-    };
-    std::vector<ui::TrackRow> refreshed;
-    ui::refreshTrackRows(reader, read, refreshed);
-    ui::refreshTrackRows(reader, read, refreshed);
-    check(reads == 2 && refreshed.size() == 5, "with groups, every new snapshot reads the file");
-    auto flat = refreshed;
-    for (auto& r : flat) {
-        r.group = false;
-        r.parent = 0;
-        r.name = "old";
+    // Refilled in place: the same tracks again change nothing and keep the names the snapshot gives.
+    auto again = rows;
+    for (auto& r : again) r.name = "old";
+    ui::rowsFromSnapshot(reader, again);
+    bool sameRows = again.size() == rows.size();
+    for (std::size_t i = 0; sameRows && i < rows.size(); ++i)
+        sameRows = again[i].id == rows[i].id && again[i].parent == rows[i].parent && again[i].name == rows[i].name &&
+                   again[i].group == rows[i].group && again[i].main == rows[i].main;
+    check(sameRows, "refilled from the same snapshot, the rows are the same, names included");
+}
+
+void metersCountBars() {
+    section("bars, beats and sixteenths in the project's meters (#299; Live 12 manual 6.1)");
+    using textproj::Meter;
+    constexpr std::int64_t q = textproj::kPPQ;
+    // 4/4 from zero, 3/4 from bar 3 (eight quarters), then 6/8 a quarter into a bar of 3/4.
+    const std::vector<Meter> meters{{0, 4, 4}, {8 * q, 3, 4}, {15 * q, 6, 8}};
+    check(ui::barPosition(0, meters) == ui::BarPosition{1, 1, 1} &&
+              ui::barPosition(9 * q + q / 4, meters) == ui::BarPosition{3, 2, 2},
+          "4/4 then 3/4: bar 3 begins at the change, its second beat a sixteenth in");
+    // Bar 4 of 3/4 is 11 to 14 quarters; the change at 15 cuts bar 5 after one quarter, and that
+    // short bar still counts, so 6/8 begins bar 6. A beat of 6/8 is an eighth: two sixteenths.
+    check(ui::barPosition(15 * q, meters) == ui::BarPosition{6, 1, 1} &&
+              ui::barPosition(15 * q + q / 2 + q / 4, meters) == ui::BarPosition{6, 2, 2},
+          "a change part-way through a bar starts a new one; a beat of 6/8 holds two sixteenths");
+    bool agrees = true;
+    for (std::int64_t t = 0; t < 24 * q; t += q / 4) {
+        const auto at = ui::barPosition(t, meters);
+        const auto text = textproj::renderPosition(t, meters);
+        agrees = agrees && text.rfind(std::to_string(at.bar) + "|" + std::to_string(at.beat) + "|", 0) == 0;
     }
-    ui::refreshTrackRows(reader, read, flat);
-    check(reads == 2 && flat[1].name == reader.tracks()[1]->name,
-          "without groups and with the same tracks, nothing is read; the names follow");
-    flat.pop_back();
-    ui::refreshTrackRows(reader, read, flat);
-    check(reads == 3 && flat.size() == 5, "a track that came or went reads the file again");
+    check(agrees, "every sixteenth agrees with the text projection's bar and beat");
+    check(ui::barPosition(5 * q, {}) == ui::BarPosition{2, 2, 1} && ui::meterAt(5 * q, {}).numerator == 4,
+          "without meters, 4/4 throughout");
+    check(ui::meterAt(10 * q, meters).numerator == 3 && ui::meterAt(20 * q, meters).denominator == 8,
+          "the signature in force at a tick");
+    check(ui::barSpan(8 * q, 4 * q + q / 4, meters) == ui::BarPosition{1, 1, 1} &&
+              ui::barSpan(0, 6 * q, meters) == ui::BarPosition{1, 2, 0},
+          "a length in the start's signature: 3/4 makes four quarters and a sixteenth 1.1.1");
+    std::vector<std::pair<std::int64_t, std::int64_t>> bars;
+    ui::forEachBar(0, 18 * q, meters, [&bars](std::int64_t tick, std::int64_t bar) { bars.emplace_back(tick, bar); });
+    const std::vector<std::pair<std::int64_t, std::int64_t>> expected{
+        {0, 1}, {4 * q, 2}, {8 * q, 3}, {11 * q, 4}, {14 * q, 5}, {15 * q, 6}, {18 * q, 7}};
+    check(bars == expected, "every bar line, numbered, across both changes");
+    bars.clear();
+    ui::forEachBar(10 * q, 16 * q, meters, [&bars](std::int64_t tick, std::int64_t bar) { bars.emplace_back(tick, bar); });
+    check((bars == std::vector<std::pair<std::int64_t, std::int64_t>>{{11 * q, 4}, {14 * q, 5}, {15 * q, 6}}),
+          "only the bars in the range, still numbered from the start");
+}
+
+void groupAndUngroupAsBatches() {
+    section("Group Tracks and Ungroup Tracks: one batch each, from the snapshot (Live 12 manual 18.3)");
+    adi::test::TempDirectory temp("ui_seams", "groups");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    // Every index 0, as a file from before index_in_parent was kept: the order falls to the ids.
+    bool made = true;
+    for (const auto& [id, kind, name] : {std::tuple{1, "master", "Main"}, std::tuple{2, "audio", "Kick"},
+                                         std::tuple{3, "audio", "Snare"}, std::tuple{4, "midi", "Bass"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}};
+        r.label = "Create track";
+        made = sub.submit(std::move(r)).ok && made;
+    }
+    check(made, "Main, Kick, Snare and Bass, all at index 0");
+    auto order = [&view] {
+        const ui::SnapshotReader reader(view.current());
+        std::vector<ui::TrackRow> rows;
+        ui::rowsFromSnapshot(reader, rows);
+        ui::TrackOrder built;
+        built.build(reader, rows);
+        std::vector<std::pair<std::int64_t, std::uint32_t>> out;
+        for (const auto& p : built.places()) out.emplace_back(p.id, p.depth);
+        return out;
+    };
+    using Order = std::vector<std::pair<std::int64_t, std::uint32_t>>;
+    const Order flat{{2, 0}, {3, 0}, {4, 0}, {1, 0}};
+    check(order() == flat, "Kick, Snare, Bass, then Main");
+
+    auto edit = ui::groupTrack(view.current()->tracks, 3);
+    check(edit.refusal.empty() && edit.select == 5 && edit.ops.size() == 3 && edit.ops[0].opType == "track.create" &&
+              edit.ops[0].payload["index"] == 1 && edit.ops[0].payload["parent"].is_null() &&
+              edit.ops[1].opType == "track.setParent" && edit.ops[2].opType == "track.reorder" &&
+              edit.ops[2].payload["id"] == 4 && edit.ops[2].payload["index"] == 2,
+          "Snare grouped: the group at Snare's place, Snare into it, Bass's index put after it; Main untouched");
+    const auto groupOps = static_cast<int>(edit.ops.size());
+    check(sub.submit(std::move(edit.ops)).ok && sub.nextUndo() && sub.nextUndo()->opCount == groupOps &&
+              sub.nextUndo()->label == "Group Tracks",
+          "one undo step, named as Live's Edit menu names it");
+    check(order() == Order{{2, 0}, {5, 0}, {3, 1}, {4, 0}, {1, 0}}, "Kick, the group holding Snare, Bass, Main");
+    check(sub.undo().ok && order() == flat, "undo puts it back");
+    check(sub.redo().ok, "redo");
+
+    auto undo = ui::ungroupTrack(view.current()->tracks, 5);
+    check(undo.refusal.empty() && undo.select == 3 && undo.ops.back().opType == "track.delete",
+          "Ungroup: Snare out, then the group removed, last");
+    const auto ungroupOps = static_cast<int>(undo.ops.size());
+    check(sub.submit(std::move(undo.ops)).ok && order() == flat && sub.nextUndo()->opCount == ungroupOps &&
+              sub.nextUndo()->label == "Ungroup Tracks",
+          "Snare back where the group stood; one more step");
+    check(sub.undo().ok && order() == Order{{2, 0}, {5, 0}, {3, 1}, {4, 0}, {1, 0}}, "undo brings the group back");
+
+    // A group inside a group: Ungroup puts its tracks in the outer one, where it stood.
+    auto nested = ui::groupTrack(view.current()->tracks, 5);
+    check(nested.select == 6 && sub.submit(std::move(nested.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {5, 1}, {3, 2}, {4, 0}, {1, 0}},
+          "the group grouped: groups nest");
+    auto inner = ui::ungroupTrack(view.current()->tracks, 5);
+    check(sub.submit(std::move(inner.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}},
+          "the inner group ungrouped: Snare in the outer one");
+
+    check(ui::groupTrack(view.current()->tracks, 1).refusal == "Main and return tracks can't be grouped." &&
+              ui::groupTrack(view.current()->tracks, 99).refusal == "Select a track to group." &&
+              ui::ungroupTrack(view.current()->tracks, 2).refusal == "Select a group track to ungroup.",
+          "Main, a missing track and a track that is not a group are refused, with the reason");
+    check(ui::canGroup(view.current()->tracks, 4) && !ui::canGroup(view.current()->tracks, 1) &&
+              ui::canUngroup(view.current()->tracks, 6) && !ui::canUngroup(view.current()->tracks, 4),
+          "what the menu offers follows the same rules");
+}
+
+void returnsStandBeforeMain() {
+    section("the returns after the tracks, Main last: Live's foot (manual 6.1)");
+    adi::test::TempDirectory temp("ui_seams", "returns");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    bool made = true;
+    for (const auto& [id, kind, parent, index] :
+         {std::tuple{1, "master", 0, 0}, std::tuple{2, "return", 0, 0}, std::tuple{3, "audio", 0, 0},
+          std::tuple{4, "group", 0, 1}, std::tuple{5, "audio", 4, 0}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", "t"}, {"index", index}};
+        if (parent != 0) r.payload["parent"] = parent;
+        r.label = "Create track";
+        made = sub.submit(std::move(r)).ok && made;
+    }
+    check(made, "Main and a return at index 0, a track, a group holding one");
+    const ui::SnapshotReader reader(view.current());
+    std::vector<ui::TrackRow> rows;
+    ui::rowsFromSnapshot(reader, rows);
+    ui::TrackOrder order;
+    order.build(reader, rows);
+    std::vector<std::int64_t> ids;
+    for (const auto& p : order.places()) ids.push_back(p.id);
+    check((ids == std::vector<std::int64_t>{3, 4, 5, 2, 1}), "the tracks and the group, then the return, then Main");
+    check(order.places()[3].ret && order.places()[3].foot() && order.places()[4].foot() && !order.places()[2].foot(),
+          "the return and Main make the foot");
+    ui::ArrangementGeometry geometry;
+    geometry.order = order;
+    const auto all = geometry.rows(reader);
+    check(geometry.footStart(all) == 3 && geometry.footTop(reader) == 3 * geometry.height,
+          "without its view, the foot follows the tracks");
+    geometry.lanesHeight = 1000;
+    check(geometry.footTop(reader) == 1000 - 2 * geometry.height &&
+              geometry.rowTop(reader, 1) == 1000 - geometry.height && geometry.rowTop(reader, 3) == 0,
+          "with its view, it stands at the bottom of the lanes");
+    check(ui::groupTrack(view.current()->tracks, 2).refusal == "Main and return tracks can't be grouped.",
+          "a return can't be grouped");
 }
 
 int main() {
@@ -549,7 +695,10 @@ int main() {
     everyWriteRefreshesTheView();
     aFrameKeepsItsSnapshot();
     projectViewTree();
-    projectViewRowsFromTheFile();
+    projectViewRowsFromTheSnapshot();
+    metersCountBars();
+    groupAndUngroupAsBatches();
+    returnsStandBeforeMain();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

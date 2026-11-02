@@ -30,7 +30,7 @@ void check(bool ok, const std::string& name) {
 void run() {
     adi::test::TempDirectory temp("project_view", "cell");
     StoreError e = StoreError::Ok;
-    auto store = Store::create(temp.path() / "p.adi", e);
+    auto store = Store::createEmpty(temp.path() / "p.adi", e);
     check(store != nullptr, "a scratch project opens");
     if (!store) return;
     store->db().exec("INSERT INTO project(id,name,sample_rate) VALUES (1,'V',48000)");

@@ -13,16 +13,38 @@ struct TrackPlace {
     std::uint32_t depth = 0;         // how many groups it sits in
     std::int64_t id = 0, parent = 0; // parent: the group it sits in; 0 at the top
     bool group = false, main = false;
+    bool ret = false; // a return track
+    // Live pins the returns and Main at the foot of the lanes (ArrangementGeometry::footStart).
+    bool foot() const noexcept { return main || ret; }
 };
 // The one order every panel reads (UI-ARCHITECTURE §4; Live 12 manual 18.3): each group followed
-// by what it holds, in their order in it (index_in_parent, then id), at any depth; Main last, as
-// Live draws it. A track the rows do not describe, or whose group is not among the tracks, stands
+// by what it holds, in their order in it (index_in_parent, then id), at any depth; then the
+// returns, then Main, as Live draws them in the Arrangement and the mixer. A track the rows do not describe, or whose group is not among the tracks, stands
 // at the top; so does one in a loop of parents, which the project should never hold.
 //
 // The snapshot's own order is by index_in_parent alone (engine/snapshot.cpp), which mixes what
-// one group holds with what another does; until it carries the tree (collab/window.md, N6) the
-// rows come from the project file (track_rows.hpp). Built again in place for each new snapshot,
-// so the same tracks allocate nothing.
+// one group holds with what another does; it carries the tree (#299), and this orders by it. Built
+// again in place for each new snapshot, so the same tracks allocate nothing.
+// The rows the snapshot gives (#299): each track's group, its place there, whether it is a group
+// or Main, its name; in the snapshot's order, refilled in place, so the same tracks allocate
+// nothing. A track's colour stays 0 (the window's colour by place) until the format says what
+// `tracks.color` holds (collab/window.md, N36).
+inline void rowsFromSnapshot(const SnapshotReader &reader, std::vector<TrackRow> &rows) {
+    const auto &tracks = reader.tracks();
+    rows.resize(tracks.size());
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        const auto &t = *tracks[i];
+        auto &row = rows[i];
+        row.id = t.id;
+        row.parent = t.parent;
+        row.index = t.indexInParent;
+        row.group = t.kind == "group";
+        row.main = t.kind == "master";
+        row.ret = t.kind == "return";
+        row.colour = 0;
+        row.name = t.name;
+    }
+}
 class TrackOrder {
   public:
     void build(const SnapshotReader &reader, const std::vector<TrackRow> &rows) {
@@ -47,12 +69,14 @@ class TrackOrder {
             const auto &row = rows[r];
             place.group = row.group;
             place.main = row.main;
+            place.ret = row.ret;
             index_[i] = row.index;
             if (row.parent != place.id &&
                 find(tracksById_, row.parent, [&tracks](std::uint32_t k) { return tracks[k]->id; }) != kNone)
                 place.parent = row.parent;
         }
-        // What each parent holds, in its order: by parent, Main after the rest, then the index,
+        // What each parent holds, in its order: by parent, the returns after the rest and Main
+        // after them, then the index,
         // then the snapshot's order (by id within an index; the snapshot's own without rows).
         children_.resize(n);
         for (std::uint32_t i = 0; i < n; ++i)
@@ -61,8 +85,8 @@ class TrackOrder {
             const auto &x = info_[a], &y = info_[b];
             if (x.parent != y.parent)
                 return x.parent < y.parent;
-            if (x.main != y.main)
-                return y.main;
+            if (rank(x) != rank(y))
+                return rank(x) < rank(y);
             if (index_[a] != index_[b])
                 return index_[a] < index_[b];
             return a < b;
@@ -104,6 +128,7 @@ class TrackOrder {
 
   private:
     static constexpr std::uint32_t kNone = 0xffffffffu;
+    static int rank(const TrackPlace &p) noexcept { return p.main ? 2 : p.ret ? 1 : 0; }
     template <class Id>
     static void sortedIndices(std::vector<std::uint32_t> &out, std::uint32_t n, Id id) {
         out.resize(n);

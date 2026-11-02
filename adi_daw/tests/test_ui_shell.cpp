@@ -6,7 +6,6 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
-#include "adi/ui/track_rows.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -15,6 +14,7 @@
 #include <cstdlib>
 #include <new>
 #include <thread>
+#include <tuple>
 #include <vector>
 namespace {
 thread_local bool audit = false;
@@ -65,6 +65,19 @@ OpRequest track(int id) {
     r.label = "Create track";
     return r;
 }
+// The tracks in the arrangement's order (TrackOrder): each group, then what it holds; the returns,
+// then Main, as Live draws them.
+std::vector<std::int64_t> laneOrder(AdiRootComponent &root) {
+    std::vector<std::int64_t> out;
+    for (const auto row : root.arrangement.geometry.rows(root.reader()))
+        out.push_back(row.track->id);
+    return out;
+}
+// Where a track's lane begins in the canvas, scrolled, or at the foot for the returns and Main; -1
+// for a track with no row.
+int laneTop(AdiRootComponent &root, std::int64_t id) {
+    return root.arrangement.geometry.rowTop(root.reader(), id);
+}
 void reference(AdiRootComponent &root, const char *name, bool write) {
     // Explicit software rasterisation, no peer, OpenGL, display, or audio device.
     juce::Image image(juce::Image::ARGB, root.getWidth(), root.getHeight(), true,
@@ -94,14 +107,32 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(0, 54, root.getWidth(), 30);
         // The ruler's numbers and the headers' track names are typography as well.
         const auto area = root.arrangement.getBounds();
+        // So are the clips' names, in their title strips.
+        {
+            const auto canvas = root.arrangement.canvas.getBounds() + area.getPosition();
+            const auto &geo = root.arrangement.geometry;
+            g.saveState();
+            g.reduceClipRegion(canvas);
+            for (const auto row : geo.rows(root.reader())) {
+                const int rowTop = geo.rowTop(root.reader(), row.track->id);
+                if (rowTop < 0)
+                    continue;
+                const int top = canvas.getY() + rowTop;
+                for (const auto &c : row.track->clips) {
+                    const int x0 = canvas.getX() + static_cast<int>(geo.x(c->posTicks));
+                    const int x1 = canvas.getX() + static_cast<int>(geo.x(c->posTicks + c->lengthTicks));
+                    if (x1 > x0)
+                        g.fillRect(x0, top + 1, x1 - x0, ArrangementCanvas::kClipBarHeight);
+                }
+            }
+            g.restoreState();
+        }
         g.fillRect(area.getX(), area.getY() + ArrangementView::kOverviewHeight, area.getWidth(),
                    ArrangementView::kRulerHeight);
         const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
-        int laneY = headers.getY() - root.arrangement.geometry.scrollY;
-        for (const auto &trackNode : root.reader().tracks()) {
-            g.fillRect(headers.getX() + 6, laneY + 4, std::max(0, headers.getWidth() - 8), 24);
-            laneY += root.arrangement.geometry.heightFor(trackNode->id);
-        }
+        for (const auto track : laneOrder(root))
+            if (const int top = root.arrangement.geometry.rowTop(root.reader(), track); top >= 0)
+                g.fillRect(headers.getX() + 6, headers.getY() + top + 4, std::max(0, headers.getWidth() - 8), 24);
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
@@ -149,7 +180,16 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
                                            ArrangementView::kRulerHeight - 3,
                    32, 15);
         const auto canvas = root.arrangement.canvas.getBounds() + area.getPosition();
-        g.fillRect(canvas.withTrimmedTop(std::max(0, laneY - canvas.getY())));
+        {
+            const auto &geo = root.arrangement.geometry;
+            const auto rowsShown = geo.rows(root.reader());
+            const int dropTop = canvas.getY() + geo.tracksHeight(root.reader()) - geo.scrollY;
+            const int dropBottom = geo.footStart(rowsShown) < rowsShown.size()
+                                       ? canvas.getY() + geo.footTop(root.reader())
+                                       : canvas.getBottom();
+            if (dropBottom > dropTop)
+                g.fillRect(canvas.getX(), dropTop, canvas.getWidth(), dropBottom - dropTop);
+        }
         if (root.mixer.isVisible() && !root.mixer.vertical()) {
             const auto m = root.mixer.getBounds();
             g.fillRect(m.getRight() - 44, m.getY() + 3, 42, 17);
@@ -207,7 +247,7 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
 // names a folder for a 2x render to lay beside the capture.
 void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool write) {
     StoreError err{};
-    auto store = Store::create(dir / "parity.adi", err);
+    auto store = Store::createEmpty(dir / "parity.adi", err);
     check(store != nullptr, "the parity project opens");
     if (!store)
         return;
@@ -400,11 +440,11 @@ juce::MouseEvent pressAt(juce::Component &c, juce::Point<float> at, juce::Modifi
 }
 // Live's group tracks (manual 18.3) in the director's Bitwig project (Master Reference 10,
 // Figure 32): Drums holds Clap/Snare/Rimshot and Hats & Percs; Body holds Bass, Synths and
-// Fx And Hits, which holds Rises and Hits; Main. Read from the project file as the application
-// reads it until the snapshot carries the tree (collab/window.md, N6).
+// Fx And Hits, which holds Rises and Hits; Main. The tree from the snapshot (#299), as the
+// application reads it.
 void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
-    auto store = Store::create(dir / "groups.adi", err);
+    auto store = Store::createEmpty(dir / "groups.adi", err);
     check(store != nullptr, "the groups project opens");
     if (!store)
         return;
@@ -450,7 +490,12 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         clip.payload = {{"id", clipId++},
                         {"track", track},
                         {"kind", track == 14 || track == 15 ? "midi" : "audio"},
-                        {"name", "Clip"},
+                        {"name", track == 11   ? "Claps"
+                                 : track == 12 ? "Hats Loop"
+                                 : track == 14 ? "Sub Line"
+                                 : track == 15 ? "Pad Chords"
+                                 : track == 17 ? "Riser"
+                                               : "Impact"},
                         {"pos", (track % 2) * 4 * textproj::kPPQ},
                         {"length", bars * 4 * textproj::kPPQ}};
         clip.label = "Create clip";
@@ -458,14 +503,6 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     }
     check(madeAll, "the director's project: three groups, one inside another, and clips in them");
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "groups");
-    // As the application wires it (ui_main.cpp), counting the reads of the project file.
-    int reads = 0;
-    root.arrangement.setTrackRows([&store, &reads](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
-        refreshTrackRows(reader, [&store, &reads] {
-            ++reads;
-            return rows::readModel(*store);
-        }, rows);
-    });
     root.setSize(1440, 900);
     root.arrangement.geometry.scale = 3.92;
     // Every track in sight: ten at 40 points.
@@ -580,13 +617,19 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
               "Alt+U unfolds every group");
     }
-    // The file is read again on each new snapshot only while the project has groups; the order is
-    // built again in place.
+    // The tree is the snapshot's: a new generation with the same rows costs a frame nothing, groups
+    // and all, and the order is built again in place.
     {
-        const int before = reads;
         check(root.submitEdit("track.rename", {{"id", 14}, {"name", "Sub Bass"}}, "Rename Track"), "a rename");
         root.frame();
-        check(reads == before + 1 && order() == tree, "with groups, an edit reads the project file again");
+        check(order() == tree, "an edit keeps the tree, read from the snapshot");
+        check(root.submitEdit("track.rename", {{"id", 14}, {"name", "Low Bass"}}, "Rename Track"),
+              "a new generation with the same rows");
+        allocations = 0;
+        audit = true;
+        root.frame();
+        audit = false;
+        check(allocations == 0 && order() == tree, "with groups, a generation-change frame allocates zero");
         std::vector<TrackRow> rows = root.arrangement.tree().rows();
         allocations = 0;
         audit = true;
@@ -630,11 +673,201 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(image, *stream);
     };
+    // Live's Group Tracks and Ungroup Tracks (manual 18.3; Ctrl/Cmd+G, Ctrl/Cmd+Shift+G, §41.5):
+    // each one batch of ops, one undo step, the tracks where they stood.
+    {
+        const auto cmd = juce::ModifierKeys::commandModifier, shift = juce::ModifierKeys::shiftModifier;
+        auto enabled = [&commands, &root](int id) {
+            commands.activate(root);
+            juce::ApplicationCommandInfo info(id);
+            commands.getCommandInfo(id, info);
+            return (info.flags & juce::ApplicationCommandInfo::isDisabled) == 0;
+        };
+        auto refresh = [&root] {
+            root.mark(DirtySet::All);
+            root.frame();
+        };
+        auto trackNamed = [&root](std::int64_t id) -> const engine::TrackNode * {
+            for (const auto &t : root.reader().tracks())
+                if (t->id == id)
+                    return t.get();
+            return nullptr;
+        };
+        lanes.selection.track = 15;
+        check(enabled(AppCommands::GroupTracks) && !enabled(AppCommands::UngroupTracks),
+              "on Synths, Group Tracks is offered and Ungroup Tracks is not");
+        check(root.keyPressed(juce::KeyPress('g', cmd, 0)), "Ctrl/Cmd+G groups the selected track");
+        refresh();
+        const std::vector<std::pair<std::int64_t, std::uint32_t>> grouped{
+            {10, 0}, {11, 1}, {12, 1}, {13, 0}, {14, 1}, {19, 1}, {15, 2}, {16, 1}, {17, 2}, {18, 2}, {1, 0}};
+        const auto *newGroup = trackNamed(19);
+        check(order() == grouped && newGroup != nullptr && newGroup->kind == "group" && newGroup->name == "# Group" &&
+                  newGroup->parent == 13,
+              "a new group stands where Synths stood in Body, with Synths in it");
+        check(lanes.selection.track == 19 && root.undoTitle(false) == "Undo Group Tracks",
+              "the new group is selected, and the Edit menu names the step");
+        check(enabled(AppCommands::UngroupTracks), "on a group, Ungroup Tracks is offered");
+        check(root.command(AppCommands::Undo), "undo");
+        refresh();
+        check(order() == tree && trackNamed(19) == nullptr, "one undo step puts everything back");
+        check(root.command(AppCommands::Redo), "redo");
+        refresh();
+        check(order() == grouped, "and redo groups it again");
+        lanes.selection.track = 19;
+        check(root.keyPressed(juce::KeyPress('g', cmd | shift, 0)), "Ctrl/Cmd+Shift+G ungroups the selected group");
+        refresh();
+        check(order() == tree && trackNamed(19) == nullptr && lanes.selection.track == 15 &&
+                  root.undoTitle(false) == "Undo Ungroup Tracks",
+              "Synths is back in Body where the group stood, and selected; the group is gone");
+        // Body ungrouped: what it held takes its place at the top, in its order.
+        lanes.selection.track = 13;
+        check(root.command(AppCommands::UngroupTracks), "Ungroup Tracks on Body");
+        refresh();
+        check(order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {11, 1}, {12, 1}, {14, 0}, {15, 0},
+                                                                               {16, 0}, {17, 1}, {18, 1}, {1, 0}} &&
+                  lanes.selection.track == 14,
+              "Bass, Synths and Fx And Hits stand where Body stood, Fx And Hits still a group");
+        check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo) && root.command(AppCommands::Undo),
+              "three undos");
+        refresh();
+        const auto *body = trackNamed(13);
+        check(order() == tree && body != nullptr && body->name == "Body" && body->kind == "group",
+              "Body comes back, by name, holding what it held");
+        lanes.selection.track = 1;
+        check(!enabled(AppCommands::GroupTracks) && !root.command(AppCommands::GroupTracks) &&
+                  root.error() == "Main and return tracks can't be grouped." && order() == tree,
+              "Main can't be grouped, and the Status Bar says so");
+        lanes.selection.track = 0;
+        check(!root.command(AppCommands::UngroupTracks) && root.error() == "Select a group track to ungroup.",
+              "Ungroup Tracks with nothing selected says what it needs");
+        lanes.selection.track = 15;
+        check(root.keyPressed(juce::KeyPress('g', cmd, 0)), "Synths grouped again, for the picture");
+        render("adi-group-tracks.png");
+        check(root.command(AppCommands::Undo), "and put back");
+        refresh();
+        check(order() == tree, "the tree as it was");
+    }
     lanes.selection.track = 15;
+    // Two changes of signature, for the picture of the ruler and its markers.
+    for (const auto &[pos, num, den] : {std::tuple{8 * textproj::kPPQ, 3, 4}, std::tuple{14 * textproj::kPPQ, 7, 8}}) {
+        OpRequest sig;
+        sig.opType = "project.insertTimeSignature";
+        sig.payload = {{"pos", pos}, {"num", num}, {"den", den}};
+        sig.label = "Insert Time Signature";
+        submitter.submit(std::move(sig));
+    }
+    lanes.scale = 60;
     render("adi-groups.png");
+    lanes.scale = 3.92;
     root.arrangement.toggleFold(16);
     root.arrangement.toggleFold(10);
     render("adi-groups-folded.png");
+}
+// Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
+// bottom of the lanes, below the drop area, whatever the scroll.
+void footRows(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::create(dir / "foot.adi", err);
+    check(store != nullptr, "the foot's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Foot')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    // Main and the returns made first, at index 0, so only the order puts them at the foot.
+    bool madeAll = true;
+    auto make = [&submitter, &madeAll](std::int64_t id, const char *kind, const std::string &name, std::int64_t index) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    };
+    make(1, "master", "Main", 0);
+    make(2, "return", "A Reverb", 0);
+    make(3, "return", "B Delay", 0);
+    for (std::int64_t i = 0; i < 12; ++i)
+        make(10 + i, "audio", "Track " + std::to_string(i + 1), i);
+    check(madeAll, "twelve tracks, two returns and Main");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "foot");
+    root.setSize(1200, 720);
+    root.arrangement.geometry.resizeTrack(0, 48, true);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &lanes = root.arrangement.geometry;
+    const auto rows = laneOrder(root);
+    check(rows.size() == 15 && rows[11] == 21 && rows[12] == 2 && rows[13] == 3 && rows[14] == 1,
+          "the tracks, then the returns, then Main, as Live's");
+    const int lanesHeight = root.arrangement.canvas.getHeight();
+    check(lanes.lanesHeight == lanesHeight && lanes.footHeight(root.reader()) == 3 * 48,
+          "the foot is the returns and Main, the lanes' height known to the geometry");
+    const int footY = lanesHeight - 3 * 48;
+    check(laneTop(root, 2) == footY && laneTop(root, 3) == footY + 48 && laneTop(root, 1) == footY + 96,
+          "they stand at the bottom of the lanes");
+    check(lanes.tracksHeight(root.reader()) == 12 * 48 && 12 * 48 > footY,
+          "twelve tracks run on under the foot");
+    // A point in the foot is the foot's, though Track 9 or so is scrolled under it.
+    check(lanes.trackAt(root.reader(), footY + 5)->id == 2 && lanes.trackAt(root.reader(), lanesHeight - 5)->id == 1,
+          "a point in the foot finds a return or Main, never the track under it");
+    check(lanes.trackAt(root.reader(), footY - 5) != nullptr && lanes.trackAt(root.reader(), footY - 5)->id != 2,
+          "just above it, a track");
+    // Scrolled: the tracks move, the foot does not.
+    lanes.scrollY = 200;
+    root.arrangement.changed();
+    root.frame();
+    check(laneTop(root, 10) == -200 && laneTop(root, 1) == footY + 96 && laneTop(root, 2) == footY,
+          "scrolled, the tracks move and the foot stays");
+    lanes.scrollY = 100000;
+    check(lanes.maxScroll(root.reader()) == 12 * 48 - ArrangementGeometry::kMinTrackHeight,
+          "the tracks scroll no further than their last sliver");
+    lanes.scrollY = lanes.maxScroll(root.reader());
+    root.arrangement.changed();
+    root.frame();
+    // The track controls follow: the foot's strips at the foot, in front of any partly under it.
+    const int bodyTop = root.arrangement.topHeight();
+    const MixerStrip *mainStrip = nullptr;
+    int shownUnder = 0;
+    for (const auto &strip : root.mixer.strips()) {
+        if (!strip->isVisible())
+            continue;
+        if (strip->track() == 1)
+            mainStrip = strip.get();
+        else if (strip->track() >= 10 && strip->getY() >= bodyTop + footY)
+            ++shownUnder;
+    }
+    check(mainStrip != nullptr && mainStrip->getY() == bodyTop + footY + 96 && shownUnder == 0,
+          "Main's track controls at the foot; no track's realised under it");
+    // Down from the last track goes into the foot, and the foot never scrolls.
+    lanes.scrollY = 0;
+    lanes.selection.track = 21;
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && lanes.selection.track == 2,
+          "down from the last track selects the first return");
+    root.arrangement.changed();
+    root.frame();
+    check(laneTop(root, 2) == footY, "and the foot is where it was");
+    const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+    if (folder.isNotEmpty()) {
+        // The last tracks, the drop area under them, and the foot, as Live's figure.
+        lanes.scrollY = lanes.tracksHeight(root.reader()) - 3 * 48;
+        lanes.selection.track = 20;
+        root.arrangement.changed();
+        root.mark(DirtySet::All);
+        root.frame();
+        juce::Image image(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-foot.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+    }
 }
 } // namespace
 int main(int argc, char **argv) {
@@ -642,7 +875,7 @@ int main(int argc, char **argv) {
     const bool write = argc == 2 && std::string(argv[1]) == "--write-references";
     test::TempDirectory temp("ui_shell", "root");
     StoreError err{};
-    auto store = Store::create(temp.path() / "p.adi", err);
+    auto store = Store::createEmpty(temp.path() / "p.adi", err);
     if (!store)
         return 2;
     store->db().exec("INSERT INTO project(id,name) VALUES(1,'Shell test')");
@@ -789,8 +1022,8 @@ int main(int argc, char **argv) {
         // every track, and the track controls' rows with them; a track resized while they are
         // small keeps that size when they grow again.
         auto &lanes = a.arrangement.geometry;
-        const auto &rows = a.reader().tracks();
-        const std::int64_t first = rows.empty() ? 0 : rows.front()->id;
+        const auto rows = laneOrder(a);
+        const std::int64_t first = rows.empty() ? 0 : rows.front();
         const int full = lanes.heightFor(first);
         auto ticked = [&commands, &a] {
             commands.activate(a);
@@ -1235,8 +1468,8 @@ int main(int argc, char **argv) {
               "the Options menu: Follow (§6.2), the grid (§6.10), then Settings off the Mac (§2.3)");
 #endif
         check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
-                                                C::RenameTrack},
-              "the Edit menu deletes the selected track, before Rename (§18.2)");
+                                                C::RenameTrack, 0, C::GroupTracks, C::UngroupTracks},
+              "the Edit menu deletes the selected track, before Rename (§18.2), then Group and Ungroup Tracks");
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack},
               "the Create menu inserts tracks");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
@@ -1426,11 +1659,12 @@ int main(int argc, char **argv) {
                         {"pos", 0},        {"length", 4 * textproj::kPPQ}};
         check(document->ops().submit(clip).ok, "arrangement clip created through op");
         integrated.frame();
-        const auto *mainRow = arrangement.geometry.trackAt(integrated.reader(), 4);
-        const auto *hitTrack =
-            arrangement.geometry.trackAt(integrated.reader(), arrangement.geometry.height + 4);
-        check(mainRow && mainRow->id == 1 && hitTrack && hitTrack->id == 2,
-              "every track is a row, in the snapshot's order");
+        const auto *hitTrack = arrangement.geometry.trackAt(integrated.reader(), 4);
+        const auto *mainRow = arrangement.geometry.trackAt(integrated.reader(), laneTop(integrated, 1) + 4);
+        const auto rowsInOrder = laneOrder(integrated);
+        check(mainRow && mainRow->id == 1 && hitTrack && hitTrack->id == 2 && !rowsInOrder.empty() &&
+                  rowsInOrder.back() == 1,
+              "every track is a row; Main last, as Live draws it");
         check(hitTrack && arrangement.geometry.hit(*hitTrack, 0) &&
                   !arrangement.geometry.hit(*hitTrack, 4 * textproj::kPPQ),
               "hit-test includes start and excludes end");
@@ -1453,9 +1687,9 @@ int main(int argc, char **argv) {
               "each clip on screen has an accessible child the mouse passes through");
         auto handler = readable ? readable->createAccessibilityHandler() : nullptr;
         check(handler && handler->getRole() == juce::AccessibilityRole::listItem &&
-                  handler->getTitle().startsWith("Track, clip at bar 1 beat 1") &&
+                  handler->getTitle().startsWith("Track, Rendered clip, at bar 1 beat 1") &&
                   handler->getTitle().contains("4.00 beats"),
-              "a screen reader hears the clip's track, start and length");
+              "a screen reader hears the clip's track, its name, its start and its length");
         arrangement.geometry.selection.track = 0;
         arrangement.geometry.selection.clip = 0;
         arrangement.changed();
@@ -1482,7 +1716,7 @@ int main(int argc, char **argv) {
         check(arrangement.canvas.keyPressed(juce::KeyPress(
                   juce::KeyPress::leftKey, juce::ModifierKeys::shiftModifier | clipEdgeKey, 0)) &&
                   arrangement.geometry.selection.clip == 1 &&
-                  arrangement.canvas.lastAnnouncement.contains("clip at bar 1 beat 1"),
+                  arrangement.canvas.lastAnnouncement.contains("Rendered clip, at bar 1 beat 1"),
               "with Shift it selects back to the clip's start, which selects the clip, and says which");
         arrangement.geometry.left = 100;
         arrangement.changed();
@@ -1493,6 +1727,34 @@ int main(int argc, char **argv) {
         check(shown == 0, "a clip scrolled off screen has no accessible child");
         arrangement.geometry.left = 0;
         arrangement.changed();
+        // Bars in the project's meters (#299): with 3/4 from the start, the control bar shows it and
+        // the Status Bar counts in it; undo puts 4/4 back.
+        {
+            OpRequest sig;
+            sig.opType = "project.insertTimeSignature";
+            sig.payload = {{"pos", 0}, {"num", 3}, {"den", 4}};
+            sig.label = "Insert Time Signature";
+            check(document->ops().submit(sig).ok, "3/4 from the start");
+            integrated.mark(DirtySet::All);
+            integrated.frame();
+            auto &sel = arrangement.geometry.selection;
+            const auto selWas = sel;
+            sel.clip = 0;
+            sel.marked = true;
+            sel.insert = sel.start = sel.end = 7 * textproj::kPPQ + textproj::kPPQ / 2;
+            const auto mark = integrated.selectionText();
+            sel.start = 0;
+            sel.end = 4 * textproj::kPPQ;
+            const auto span = integrated.selectionText();
+            check(integrated.transport.signature.text == "3 / 4" && mark.contains("Insert Mark 3.2.3") &&
+                      span.contains("Length: 1.1.0"),
+                  "the signature and the positions in the project's meters: 3/4 makes seven and a half quarters 3.2.3");
+            sel = selWas;
+            check(integrated.command(AppCommands::Undo), "undo the signature");
+            integrated.mark(DirtySet::All);
+            integrated.frame();
+            check(integrated.transport.signature.text == "4 / 4", "and the control bar shows 4/4 again");
+        }
         check(arrangement.headers.getX() > arrangement.canvas.getX() &&
                   arrangement.headers.getRight() == arrangement.getWidth() &&
                   arrangement.canvas.getX() == ArrangementView::kLeftMargin,
@@ -1571,7 +1833,7 @@ int main(int argc, char **argv) {
             auto *peer = peerRoot.getPeer();
             check(peer != nullptr, "fake peer created without OS window");
             const auto origin =
-                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, 64 + 35})
+                peerRoot.getLocalPoint(&arrangement.canvas, juce::Point<int>{10, laneTop(integrated, 2) + 35})
                     .toFloat();
             juce::int64 when = 100000;
             auto mouse = [&](juce::Point<float> point, int mods) {
@@ -1614,7 +1876,8 @@ int main(int argc, char **argv) {
                 auto &geo = arrangement.geometry;
                 std::int64_t clipTrack = 0, pos0 = 0;
                 int barTop = -geo.scrollY;
-                for (const auto &tr : integrated.reader().tracks()) {
+                for (const auto row : geo.rows(integrated.reader())) {
+                    const auto *tr = row.track;
                     for (const auto &c : tr->clips)
                         if (c->id == 1) {
                             clipTrack = tr->id;
@@ -1941,7 +2204,7 @@ int main(int argc, char **argv) {
                       arrangement.geometry.selection.marked && arrangement.geometry.selection.clip == 0 &&
                       arrangement.geometry.selection.start == arrangement.geometry.selection.end,
                   "Ctrl/Cmd+Shift+Space puts the insert marker where the playhead is");
-            const auto heightTrack = integrated.reader().tracks().front()->id;
+            const auto heightTrack = laneOrder(integrated).front();
             arrangement.geometry.selection.track = heightTrack;
             const int heightBefore = arrangement.geometry.heightFor(heightTrack);
             check(integrated.keyPressed(juce::KeyPress('=', alt, 0)) &&
@@ -2175,11 +2438,11 @@ int main(int argc, char **argv) {
             // Neighbor (§41.4.1.2) to the same switch on the track after or before. The selection
             // stays as it is: the device strip, and `controls` below, follow it.
             {
-                const auto &rows = integrated.reader().tracks();
+                const auto rows = laneOrder(integrated);
                 const auto selected = integrated.arrangement.geometry.selection.track;
                 std::size_t at = 0;
                 for (std::size_t i = 0; i < rows.size(); ++i)
-                    if (rows[i]->id == selected)
+                    if (rows[i] == selected)
                         at = i;
                 const bool forward = at + 1 < rows.size();
                 const std::size_t there = forward ? at + 1 : (at > 0 ? at - 1 : at);
@@ -2199,16 +2462,16 @@ int main(int argc, char **argv) {
                     previousKey(juce::KeyPress::tabKey, neighbourMods | juce::ModifierKeys::shiftModifier, 0);
                 const juce::KeyPress mixerKey('m', alt | juce::ModifierKeys::shiftModifier, 0);
                 check(integrated.keyPressed(mixerKey) && focusedRow() != nullptr &&
-                          focusedRow()->track() == rows[at]->id && focusedRow()->active.hasKeyboardFocus(false),
+                          focusedRow()->track() == rows[at] && focusedRow()->active.hasKeyboardFocus(false),
                       "Alt/Option+Shift+M moves the focus to the selected track's Track Activator");
                 check(rows.size() >= 2 && integrated.keyPressed(forward ? nextKey : previousKey) &&
-                          focusedRow() != nullptr && focusedRow()->track() == rows[there]->id &&
+                          focusedRow() != nullptr && focusedRow()->track() == rows[there] &&
                           focusedRow()->active.hasKeyboardFocus(false),
                       "a Neighbor key: the same switch on the next or previous track");
                 if (auto *row = focusedRow())
                     row->solo.grabKeyboardFocus();
                 check(integrated.keyPressed(forward ? previousKey : nextKey) && focusedRow() != nullptr &&
-                          focusedRow()->track() == rows[at]->id && focusedRow()->solo.hasKeyboardFocus(false),
+                          focusedRow()->track() == rows[at] && focusedRow()->solo.hasKeyboardFocus(false),
                       "and the other one back, on the switch that had the focus");
                 check(focusedRow() != nullptr && !focusedRow()->solo.getMouseClickGrabsKeyboardFocus(),
                       "a click on a mixer switch leaves the focus where it was");
@@ -2221,18 +2484,18 @@ int main(int argc, char **argv) {
                 auto &lanes = integrated.arrangement.geometry;
                 const auto heightsWas = lanes.heights;
                 const int scrollWas = lanes.scrollY;
-                for (const auto &row : rows)
-                    lanes.resizeTrack(row->id, 400);
+                for (const auto row : rows)
+                    lanes.resizeTrack(row, 400);
                 integrated.arrangement.changed();
                 integrated.frame();
                 for (std::size_t k = 0; k < rows.size(); ++k)
                     integrated.keyPressed(previousKey);
-                const bool reachedFirst = focusedRow() != nullptr && focusedRow()->track() == rows.front()->id &&
+                const bool reachedFirst = focusedRow() != nullptr && focusedRow()->track() == rows.front() &&
                                           lanes.scrollY == 0;
                 for (std::size_t k = 0; k < rows.size(); ++k)
                     integrated.keyPressed(nextKey);
                 check(rows.size() >= 2 && reachedFirst && focusedRow() != nullptr &&
-                          focusedRow()->track() == rows.back()->id && lanes.scrollY > 0 &&
+                          focusedRow()->track() == rows.back() && lanes.scrollY > 0 &&
                           focusedRow()->getY() >= ArrangementView::kTopHeight,
                       "a neighbour out of view is scrolled into view, its row's top showing");
                 lanes.heights = heightsWas;
@@ -2406,13 +2669,7 @@ int main(int argc, char **argv) {
                 row = s.get();
         check(row != nullptr && mixer.getX() == integrated.arrangement.getRight(),
               "every visible track has a mixer row, beside the headers");
-        int lane = integrated.arrangement.getY() + integrated.arrangement.canvas.getY() -
-                   arrangement.geometry.scrollY;
-        for (const auto &t : integrated.reader().tracks()) {
-            if (t->id == 2)
-                break;
-            lane += arrangement.geometry.heightFor(t->id);
-        }
+        const int lane = integrated.arrangement.getY() + integrated.arrangement.canvas.getY() + laneTop(integrated, 2);
         check(row && mixer.getY() + row->getY() == lane &&
                   row->getHeight() == arrangement.geometry.heightFor(2),
               "a mixer row sits level with its track's lane, as Live's track controls");
@@ -2441,8 +2698,10 @@ int main(int argc, char **argv) {
             row->pan.setValue(0, juce::sendNotificationSync);
             row->active.onClick();
             integrated.frame();
-            check(document->view().current()->findTrack(2)->muted &&
-                      !row->active.getToggleState() && row->active.getButtonText() == "2",
+            const auto lanesNow = laneOrder(integrated);
+            const auto place = std::find(lanesNow.begin(), lanesNow.end(), 2) - lanesNow.begin() + 1;
+            check(document->view().current()->findTrack(2)->muted && !row->active.getToggleState() &&
+                      row->active.getButtonText() == juce::String(static_cast<int>(place)),
                   "the Track Activator, numbered by its place as Live's, mutes the track");
             row->active.onClick();
             row->solo.onClick();
@@ -2484,11 +2743,15 @@ int main(int argc, char **argv) {
             ChannelEqView eqView(integrated);
             SnapshotReader eqReader(document->view().current());
             eqView.frame(eqReader);
-            const auto &all = integrated.reader().tracks();
+            const auto all = laneOrder(integrated);
             bool ordered = !all.empty() && eqView.rows().size() == all.size();
             for (std::size_t i = 0; ordered && i < all.size(); ++i)
-                ordered = eqView.rows()[i]->track() == all[i]->id;
-            check(ordered, "the Channel EQ window lists every channel, in the snapshot's order");
+                ordered = eqView.rows()[i]->track() == all[i];
+            check(ordered, "the Channel EQ window lists every channel, in the arrangement's order");
+            bool modes = !eqView.rows().empty();
+            for (const auto &eqRow : eqView.rows())
+                modes = modes && std::string(eqRow->mode()) == (eqRow->track() == 1 ? "Full" : "Light");
+            check(modes, "ADI-L is full on Main's row and light on every other channel's");
             allocations = 0;
             audit = true;
             eqView.frame(eqReader);
@@ -2535,10 +2798,10 @@ int main(int argc, char **argv) {
         for (const auto &strip : mixerView.strips())
             if (strip->isVisible())
                 columns.push_back(strip.get());
-        const auto &trackOrder = integrated.reader().tracks();
+        const auto trackOrder = laneOrder(integrated);
         check(columns.size() >= 2 && columns.size() < trackOrder.size() &&
-                  columns[0]->track() == trackOrder[0]->id &&
-                  columns[1]->track() == trackOrder[1]->id &&
+                  columns[0]->track() == trackOrder[0] &&
+                  columns[1]->track() == trackOrder[1] &&
                   columns[1]->getX() == columns[0]->getX() + MixerPanel::kStripWidth,
               "one strip per track, left to right, only those on screen");
         bool numbered = true;
@@ -2547,15 +2810,24 @@ int main(int argc, char **argv) {
                        columns[i]->active.getButtonText() == juce::String(static_cast<int>(i) + 1);
         check(numbered, "each activator shows its track's place, whatever the track's id");
         // Live's peak level (manual 18.1): the highest peak since a click, in dB.
-        if (columns.size() >= 2) {
-            auto &held = columns[1]->peakHold;
-            check(columns[1]->track() == 2 && held.isVisible() && std::abs(held.held - .5f) < .01f,
+        // Track 2 sounds (its tap reads a half-scale sine); the others are silent.
+        MixerStrip *sounding = nullptr, *silent = nullptr;
+        for (auto *column : columns) {
+            if (column->track() == 2)
+                sounding = column;
+            else if (silent == nullptr)
+                silent = column;
+        }
+        check(sounding != nullptr && silent != nullptr, "a sounding and a silent strip in view");
+        if (sounding != nullptr && silent != nullptr) {
+            auto &held = sounding->peakHold;
+            check(held.isVisible() && std::abs(held.held - .5f) < .01f,
                   "the Mixer View's peak level holds the track's highest peak");
             held.onClick();
             check(held.held == 0, "a click resets it");
             integrated.frame();
             check(std::abs(held.held - .5f) < .01f, "and it holds the next peak it meets");
-            check(!columns[0]->peakHold.isVisible() || columns[0]->peakHold.held == 0,
+            check(!silent->peakHold.isVisible() || silent->peakHold.held == 0,
                   "a silent track's peak level stays at -Inf");
         }
         check(std::abs(meterDepth(0) - .06) < 1e-9 && std::abs(meterLevel(meterDepth(-24)) + 24) < 1e-9 &&
@@ -2778,6 +3050,7 @@ int main(int argc, char **argv) {
     }
     liveParity(commands, temp.path(), write);
     groupTracks(commands, temp.path());
+    footRows(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

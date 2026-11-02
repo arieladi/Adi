@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
+#include "adi/ui/meters.hpp"
 #include "ui_shell.hpp"
 namespace adi::ui {
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
@@ -97,6 +98,30 @@ void ScrubArea::paint(juce::Graphics &g) {
     // Live's locator band: the lanes' grey and grid, where the loop brace and the
     // locators sit.
     paintLanes(g, view.geometry, getWidth(), 0, getHeight(), false);
+    // A marker at each change of time signature (Live 12 manual 6.4.1, its figure): a grey box
+    // with a dark edge, a notch at its top left, the signature in it. The first signature is the
+    // control bar's and has none.
+    const auto &meters = view.reader().meters();
+    g.setFont(look::font(11.5f));
+    for (std::size_t i = 1; i < meters.size(); ++i) {
+        const auto &m = meters[i];
+        const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
+        const float x = static_cast<float>(view.geometry.x(m.start_ticks));
+        const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
+        if (x + w < 0 || x > static_cast<float>(getWidth()))
+            continue;
+        const juce::Rectangle<float> box(x, 3.f, w, 15.f);
+        g.setColour(juce::Colour(0xffb4b4b4));
+        g.fillRect(box);
+        g.setColour(look::separator);
+        g.drawRect(box, 1.5f);
+        juce::Path notch;
+        notch.addTriangle(x + 2.f, box.getBottom() - 3.f, x + 2.f, 5.f, x + 10.f, 5.f);
+        g.setColour(juce::Colour(0xffe8e8e8));
+        g.fillPath(notch);
+        g.setColour(look::text);
+        g.drawText(text, box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
+    }
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu())
@@ -108,9 +133,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
-    // The snapshot carries no time signatures yet (collab/window.md, N6).
-    setTooltip("Drag sideways to scroll, up or down to zoom; double-click to zoom to the "
-               "selection. Bars are counted in 4/4 until the project's meters reach the view.");
+    setTooltip("Drag sideways to scroll, up or down to zoom; double-click to zoom to the selection.");
 }
 bool RenameEditor::keyPressed(const juce::KeyPress &k) {
     if (k == juce::KeyPress::returnKey) {
@@ -222,12 +245,14 @@ juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clip
         for (const auto &c : t->clips) {
             if (c->id != clipId)
                 continue;
-            // Bars and beats in 4/4 until the snapshot carries the meters (window log, N6).
-            const auto beat = c->posTicks / textproj::kPPQ;
+            // Bar and beat in the project's meters (#299).
+            const auto at = barPosition(c->posTicks, view.reader().meters());
             const auto beats = static_cast<double>(c->lengthTicks) / textproj::kPPQ;
-            return juce::String::fromUTF8(displayName(t->name, i + 1).c_str()) +
-                   ", clip at bar " + juce::String(beat / 4 + 1) + " beat " +
-                   juce::String(beat % 4 + 1) + ", " + juce::String(beats, 2) + " beats" +
+            // The clip's name when it has one: "2 Audio, Verse, at bar 9 beat 1, 16.00 beats".
+            const auto clip = c->name.empty() ? juce::String("clip") : juce::String::fromUTF8(c->name.c_str()) + ",";
+            return juce::String::fromUTF8(displayName(t->name, i + 1).c_str()) + ", " + clip +
+                   " at bar " + juce::String(at.bar) + " beat " + juce::String(at.beat) + ", " +
+                   juce::String(beats, 2) + " beats" +
                    (c->muted ? ", muted" : "");
         }
     }
@@ -235,11 +260,18 @@ juce::String ArrangementCanvas::describe(std::int64_t trackId, std::int64_t clip
 }
 void ArrangementCanvas::realiseAccessible() {
     std::size_t used = 0;
+    const auto rows = view.geometry.rows(view.reader());
+    const auto foot = view.geometry.footStart(rows);
+    const int footY = view.geometry.footTop(view.reader());
     int y = -view.geometry.scrollY;
-    for (const auto row : view.geometry.rows(view.reader())) {
+    for (const auto row : rows) {
+        if (row.position == foot)
+            y = footY;
         const auto *t = row.track;
         const int h = view.geometry.heightFor(t->id);
-        if (h > 0 && y + h > 0 && y < getHeight())
+        // A track scrolled under the foot is out of sight.
+        const int below = row.position < foot ? std::min(footY, getHeight()) : getHeight();
+        if (h > 0 && y + h > 0 && y < below)
             for (const auto &c : t->clips) {
                 const double x = view.geometry.x(c->posTicks),
                              end = view.geometry.x(c->posTicks + c->lengthTicks);
@@ -275,19 +307,8 @@ ArrangementView::ArrangementView(AdiRootComponent &r)
     for (auto *c : std::array<juce::Component *, 7>{&overview, &ruler, &scrub, &headers, &canvas,
                                                      &playhead, &projectView})
         addAndMakeVisible(c);
-    // Each track alone, its name only, until the snapshot carries more (N6).
-    trackRows_ = [](const SnapshotReader &reader, std::vector<TrackRow> &rows) {
-        const auto &tracks = reader.tracks();
-        rows.resize(tracks.size());
-        for (std::size_t i = 0; i < tracks.size(); ++i) {
-            auto &row = rows[i];
-            row.id = tracks[i]->id;
-            row.parent = row.index = 0;
-            row.group = row.main = false;
-            row.colour = 0;
-            row.name = tracks[i]->name;
-        }
-    };
+    // The tree the snapshot carries (#299).
+    trackRows_ = rowsFromSnapshot;
     projectView.onClick = [this] {
         projectViewMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&projectView));
     };
@@ -363,8 +384,7 @@ void ProjectViewButton::paintButton(juce::Graphics &g, bool over, bool down) {
 }
 void ArrangementView::setTrackRows(TrackRows rows) {
     trackRows_ = std::move(rows);
-    // Rows the last way filled are not this one's: it starts from none (track_rows.hpp reads the
-    // project file only when the rows it has may be stale).
+    // Rows the last way filled are not this one's: it starts from none.
     tree_.rows().clear();
     applyView();
     // Drawn again on the next frame; nothing of the view changed, so nothing is saved.
@@ -505,6 +525,7 @@ void ArrangementView::resized() {
     ruler.setBounds(lanesX, above, clipsW, kRulerHeight);
     scrub.setBounds(lanesX, above + kRulerHeight, clipsW, kScrubHeight);
     canvas.setBounds(lanesX, top, clipsW, body);
+    geometry.lanesHeight = body;
     headers.setBounds(namesFirst_ ? 0 : kLeftMargin + clipsW, top, headerW, body);
     // Bitwig's place for it: the top of the track names, level with the ruler.
     projectView.setBounds(headers.getX() + 4, above + 5, 30, 17);
@@ -773,6 +794,9 @@ void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
         menu.addSeparator();
         menu.addCommandItem(&commands.manager, AppCommands::RenameTrack);
         menu.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+        menu.addSeparator();
+        menu.addCommandItem(&commands.manager, AppCommands::GroupTracks);
+        menu.addCommandItem(&commands.manager, AppCommands::UngroupTracks);
     }
     if (!header) {
         // The lanes' menu sets the grid as well (§6.10).
@@ -833,40 +857,58 @@ void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDet
         geometry.pan(-w.deltaX * 300);
         if (w.deltaX != 0)
             followPaused = true;
-        geometry.scrollY = std::clamp(geometry.scrollY - static_cast<int>(w.deltaY * 300), 0,
-                                      std::max(0, geometry.contentHeight(reader()) - 24));
+        geometry.scrollY =
+            std::clamp(geometry.scrollY - static_cast<int>(w.deltaY * 300), 0, geometry.maxScroll(reader()));
     }
     changed();
 }
 void TimelineRuler::paint(juce::Graphics &g) {
-    // Live's beat-time ruler: bar numbers along its foot in light grey on the dark
-    // band, each after its hook; a dot at the bars between them. In 4/4 until the
-    // snapshot carries the meters (window log, N6).
+    // Live's beat-time ruler: bar numbers along its foot in light grey on the dark band, each after
+    // its hook; a dot at every bar. In the project's meters (#299): a signature change starts a new
+    // bar where it falls, and a bar's beats are its signature's (Live 12 manual 6.1).
     g.fillAll(look::band);
     const auto &geo = view.geometry;
-    double stepQ = 4; // quarters between labels
-    while (stepQ * geo.scale < 56)
-        stepQ *= 2;
-    while (stepQ > 1 && stepQ / 2 * geo.scale >= 56)
-        stepQ /= 2;
+    const auto &meters = view.reader().meters();
+    const auto from = geo.tick(0.), to = geo.tick(static_cast<double>(getWidth()));
+    // The spacing from the signature at the left edge: every beat, or every few beats, while they
+    // are 56 points apart; else every bar, every second, every fourth and so on.
+    const auto &first = meterAt(from, meters);
+    const double beatPx = 4. / std::max<double>(1, first.denominator) * geo.scale;
+    std::int64_t beatStep = 1;
+    while (beatStep < first.numerator && static_cast<double>(beatStep) * beatPx < 56)
+        beatStep *= 2;
+    const bool beats = beatStep < first.numerator;
+    std::int64_t barStep = 1;
+    while (static_cast<double>(barStep) * beatPx * first.numerator < 56)
+        barStep *= 2;
     const int foot = getHeight();
     g.setFont(look::font(12.f, true));
-    for (double q = std::floor(geo.left / stepQ) * stepQ; q < geo.left + getWidth() / geo.scale; q += stepQ) {
-        const int x = static_cast<int>((q - geo.left) * geo.scale);
-        const auto quarter = static_cast<std::int64_t>(std::llround(q));
-        const auto bar = quarter / 4 + 1, beat = quarter % 4 + 1;
+    auto label = [&](std::int64_t tick, const juce::String &text) {
+        const int x = static_cast<int>(geo.x(tick));
         g.setColour(juce::Colour(0xff7d7d7d));
         g.fillRect(x, foot - 11, 1, 8);
         g.fillRect(x, foot - 11, 3, 1);
         g.setColour(look::textOnBand);
-        g.drawText(beat == 1 ? juce::String(bar) : juce::String(bar) + "." + juce::String(beat), x + 5,
-                   foot - 15, 60, 14, juce::Justification::centredLeft);
-    }
-    if (4 * geo.scale >= 8) {
-        g.setColour(juce::Colour(0xff7d7d7d));
-        for (double q = std::floor(geo.left / 4) * 4; q < geo.left + getWidth() / geo.scale; q += 4)
-            g.fillRect(static_cast<int>((q - geo.left) * geo.scale), foot - 2, 1, 1);
-    }
+        g.drawText(text, x + 5, foot - 15, 60, 14, juce::Justification::centredLeft);
+    };
+    const bool dots = beatPx * first.numerator >= 8;
+    // From a bar before the left edge, so a bar's later beats still show.
+    forEachBar(from - first.barTicks(), to, meters, [&](std::int64_t tick, std::int64_t bar) {
+        if (dots) {
+            g.setColour(juce::Colour(0xff7d7d7d));
+            g.fillRect(static_cast<int>(geo.x(tick)), foot - 2, 1, 1);
+        }
+        if (!beats) {
+            if ((bar - 1) % barStep == 0)
+                label(tick, juce::String(bar));
+            return;
+        }
+        label(tick, juce::String(bar));
+        const auto &m = meterAt(tick, meters);
+        const auto beatTicks = textproj::kWhole / std::max<std::int64_t>(1, m.denominator);
+        for (std::int64_t b = beatStep; b < m.numerator; b += beatStep)
+            label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
+    });
 }
 void TimelineRuler::mouseDown(const juce::MouseEvent &e) {
     last = e.position;
@@ -900,7 +942,17 @@ void TrackHeaderList::paint(juce::Graphics &g) {
     // are its own groups'.
     std::array<juce::Colour, kMaxBands> groups{};
     const auto &folded = view.root.state().foldedGroups;
-    for (const auto row : view.geometry.rows(view.reader())) {
+    const auto rows = view.geometry.rows(view.reader());
+    const auto foot = view.geometry.footStart(rows);
+    for (const auto row : rows) {
+        // The foot stands at the bottom, over what scrolls under it, a rule above it.
+        if (row.position == foot) {
+            y = view.geometry.footTop(view.reader());
+            g.setColour(look::panel);
+            g.fillRect(0, y, getWidth(), getHeight() - y);
+            g.setColour(look::separator);
+            g.fillRect(0, y - 2, getWidth(), 2);
+        }
         const auto *t = row.track;
         const auto colour = view.colourFor(row.position);
         if (row.place.group && row.place.depth < groups.size())
@@ -955,11 +1007,10 @@ bool TrackHeaderList::beginRename(std::int64_t track) {
     // Its title bar where this window draws it; a track newer than this frame below the rows,
     // until the next frame's rows place it (ArrangementView::applyView).
     const auto rows = view.geometry.rows(view.reader());
-    int y = -view.geometry.scrollY;
+    const int top = view.geometry.rowTop(view.reader(), track);
+    const int y = top >= 0 ? top : view.geometry.tracksHeight(view.reader()) - view.geometry.scrollY;
     std::uint32_t depth = 0;
     const auto at = rows.find(track);
-    for (std::size_t i = 0; i < std::min(at, rows.size()); ++i)
-        y += view.geometry.heightFor(rows[i].track->id);
     if (at < rows.size())
         depth = rows[at].place.depth;
     renaming_ = track;
@@ -1039,12 +1090,32 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
     ++view.canvasPaints;
     const auto &geo = view.geometry;
     const auto rows = geo.rows(view.reader());
+    const auto foot = geo.footStart(rows);
     int y = -geo.scrollY;
     auto lanes = [&](int top, int height, bool selected) {
         paintLanes(g, geo, getWidth(), top, height, selected);
     };
+    // Under the last track, Live's drop area, down to the foot or the bottom.
+    auto dropArea = [&](int top, int bottom) {
+        if (top >= bottom)
+            return;
+        lanes(top, bottom - top, false);
+        g.setColour(look::text);
+        g.setFont(look::font(12.f));
+        g.drawText("Drop Files and Devices Here", 0, top, getWidth(), bottom - top, juce::Justification::centred);
+    };
     for (std::size_t i = 0; i < rows.size(); ++i) {
         const auto row = rows[i];
+        // The returns and Main at the foot, over the tracks scrolled under it.
+        if (i == foot) {
+            const int footY = geo.footTop(view.reader());
+            dropArea(y, footY);
+            y = footY;
+            g.setColour(look::band);
+            g.fillRect(0, y, getWidth(), getHeight() - y);
+            g.setColour(look::separator);
+            g.fillRect(0, y - 2, getWidth(), 2);
+        }
         const auto *t = row.track;
         const int h = geo.heightFor(t->id);
         if (h == 0)
@@ -1080,28 +1151,39 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
+            // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
+            // arrangement).
+            if (!c->name.empty() && right - left > 6.f) {
+                g.setColour(look::text);
+                g.setFont(look::font(10.f));
+                g.drawText(juce::String::fromUTF8(c->name.c_str()),
+                           juce::Rectangle<float>(left + 3.f, static_cast<float>(y + 1), right - left - 5.f,
+                                                  static_cast<float>(kClipBarHeight)),
+                           juce::Justification::centredLeft, false);
+            }
             g.setColour(clipColour.darker(0.5f));
             g.drawRect(left, static_cast<float>(y + 1), std::max(1.f, right - left),
                        static_cast<float>(h - 4), 1.f);
         }
         y += h;
     }
-    // Under the last track, Live's drop area.
-    if (y < getHeight()) {
-        lanes(y, getHeight() - y, false);
-        g.setColour(look::text);
-        g.setFont(look::font(12.f));
-        g.drawText("Drop Files and Devices Here", 0, y, getWidth(), getHeight() - y,
-                   juce::Justification::centred);
-    }
+    if (foot == rows.size())
+        dropArea(y, getHeight());
     // The insert marker, a thin blue line in the selected track.
     if (geo.selection.start == geo.selection.end && geo.selection.marked) {
+        const int footY = geo.footTop(view.reader());
         int top = -geo.scrollY;
         for (const auto row : rows) {
+            if (row.position == foot)
+                top = footY;
             const auto id = row.track->id;
             if (id == geo.selection.track && geo.heightFor(id) > 0) {
+                // A track scrolled under the foot shows its marker down to the foot's rule.
+                const int bottom = row.position < foot && foot < rows.size()
+                                       ? std::min(top + geo.heightFor(id), footY) - 2
+                                       : top + geo.heightFor(id) - 2;
                 g.setColour(juce::Colour(0xff5dc9e8));
-                g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, geo.heightFor(id) - 2);
+                g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, std::max(0, bottom - top));
             }
             top += geo.heightFor(id);
         }
@@ -1174,10 +1256,18 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
 }
 const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &track, bool &edge) const {
     const auto &geo = view.geometry;
+    const auto rows = geo.rows(view.reader());
+    const auto foot = geo.footStart(rows);
+    const int footY = geo.footTop(view.reader());
+    // A point in the foot is the foot's, never a track's scrolled under it.
+    const bool inFoot = foot < rows.size() && y >= footY;
     int top = -geo.scrollY;
-    for (const auto row : geo.rows(view.reader())) {
+    for (const auto row : rows) {
+        if (row.position == foot)
+            top = footY;
         const auto *t = row.track;
-        if (geo.shown(t->id) && y >= top + 1 && y < top + 1 + kClipBarHeight)
+        const bool covered = inFoot && row.position < foot;
+        if (!covered && geo.shown(t->id) && y >= top + 1 && y < top + 1 + kClipBarHeight)
             for (const auto &c : t->clips) {
                 const int left = static_cast<int>(geo.x(c->posTicks));
                 const int right = static_cast<int>(geo.x(c->posTicks + c->lengthTicks));
@@ -1215,7 +1305,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     }
     if (moving_ != 0) {
         // The clip's start follows the mouse, to the nearest grid line while snapping;
-        // it stays on its own track until the snapshot says which tracks can take it (N6).
+        // it stays on its own track until the snapshot says which tracks can take it (a clip's
+        // kind, window log N32).
         const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
@@ -1224,8 +1315,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
     }
     if (panning) {
         view.geometry.pan(last.x - e.position.x);
-        view.geometry.scrollY =
-            std::max(0, view.geometry.scrollY + static_cast<int>(last.y - e.position.y));
+        view.geometry.scrollY = std::clamp(view.geometry.scrollY + static_cast<int>(last.y - e.position.y), 0,
+                                           view.geometry.maxScroll(view.reader()));
         last = e.position;
     } else {
         // A time selection covers whole grid cells while snapping (§6.10).
