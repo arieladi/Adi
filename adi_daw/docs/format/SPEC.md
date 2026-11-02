@@ -251,6 +251,11 @@ Ableton's bus are distinct and we model both. ADI follows Ableton, and carrying
 the other alongside it would leave a container that looks like a group and
 whose fader does nothing.
 
+**A `color` column holds an index into the colour palette, `0` to `69`, never an RGB
+value** (ADR-0211). The theme turns it into a colour when drawing, as Live does; `NULL`
+is "no colour of its own": a track shows the auto-colour or the default, a clip its
+track's. The same holds for `clips`, `markers`, `arranger_sections` and `macros`.
+
 **A track with no `main` routing row routes to its parent, or to the master if
 it has none** (ADR-0065). The default is a rule, not a row, so a project where
 every track routes the obvious way stores no `routing` rows at all.

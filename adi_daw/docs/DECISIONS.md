@@ -17075,3 +17075,58 @@ code; they were blocked on the merge and on the message path, both of which ran 
 | ADR-0207 d1, ADR-0208 d1 | the lanes' order of work: the window's needs first for the engine (d2); no lane waits (d3) |
 | `docs/LANES.md` §2, §3, §3b, §6 | the rules above; the prompts of 1 November replace those of 25 and 27 October |
 | `collab/prompts/2026-11-01-engine-lane.md`, `2026-11-01-window-lane.md` | the standing prompts |
+
+## ADR-0211 — What a colour column holds: an index into Live's palette, never an RGB value; NULL is "no colour of its own" — `DECIDED` (2026-11-01) — **WIN'S RULING UNDER ADR-0203 d1 (LIVE'S WAY), ANSWERING THE WINDOW LANE'S NEED N36; THE DIRECTOR MAY STRIKE IT**
+
+**The question (the window lane, `collab/window.md` N36, 1 November).** `docs/format` gives
+`tracks.color` only as an INTEGER. Live stores a palette index, one of its colours; ADI's window
+draws `0xRRGGBB` (`adi::ui::TrackRow::colour`, "0 when the project gives none"). Which is it?
+
+**What Live does.** A track, clip, scene, chain or marker is coloured from *the* colour palette,
+the one grid in every colour context menu (Live 12 manual 2.3.2, 8.1.1.3, 7.1, 24.1); a user never
+types an RGB value. The palette's look belongs to the theme: Theme & Colors sets a warm, cool or
+neutral *tone to the colour palette*, colour intensity and hue (manual 2.3.2), so the same Set shows
+different RGB values under a different theme, and nothing in the Set changes. A new track takes the
+previous track's colour plus one when auto-assigning is on, or the default colour (manual 2.3.2;
+ADR-0203 d11's rows: "Live's one switch and a default colour"); a new clip takes its track's colour,
+or a random one (manual 8.1.1.3, 2.3.2). Assign Track Color to Clips and to Grouped Tracks and Clips
+copy a colour down (manual 8.1.1.3).
+
+### Decisions
+
+1. **Every `color` column (`tracks`, `clips`, `markers`, `arranger_sections`, `macros`) holds an
+   index into the colour palette: `0` to `69`, row-major as Live's chooser lays it out (five rows of
+   fourteen; index = row × 14 + column).** Never an RGB value. The theme turns the index into a
+   colour at draw time, as Live does, so a Set keeps its colours when the theme, its tone, intensity
+   or hue changes. The schema does not change: the column was and stays `INTEGER`; the `1.9`
+   bytes of #306 and #307 are untouched. The text projection prints the index as it is.
+2. **`NULL` is "no colour of its own".** A track with `NULL` shows the auto-colour
+   (`lookfeel.autoTrackColor` on: the previous track's palette index plus one, modulo 70; off:
+   the default colour, `lookfeel.trackColor.<kind>` when set, else the theme's) and a clip with
+   `NULL` shows its track's colour (`lookfeel.clipColor` = `track`) or the random colour it was
+   given at creation (`random`: the op writes the index; the file never holds "random"). Live's
+   Set stores the resolved index for new tracks and clips; ADI does the same through the ops: a
+   creation op may write the resolved index, and `NULL` is what a converter or an old file leaves.
+   The window draws `NULL` as it draws today, by place; nothing is red.
+3. **The RGB table is the theme's, the window lane's to measure.** `look::trackColour(position)`
+   (fourteen Live 11 colours, read off the director's Live 11.2.7) becomes
+   `look::paletteColour(index)` over the seventy, measured from Live 12's chooser on the director's
+   Mac in the default theme, with the palette tone, intensity and hue applied as ADR-0203 d11's
+   Theme & Colors rows say. Until the seventy are measured the fourteen stand in, `index % 14`.
+4. **Assign Track Color to Clips, Assign Track Color to Grouped Tracks and Clips, and the chooser
+   itself are `track.setColor` and `clip.setColor` batches (one undo step), the window's to build
+   when it reaches the colour context menus; no new op.** If the catalogue lacks a set-colour op
+   for a table that has a `color` column, that is an engine need, logged as usual.
+5. **An RGB colour of the user's own is not ruled.** Live's palette has none; ADI's accent colour
+   and default colour per kind (ADR-0203 d11) are settings, not file columns. If an addition wants
+   arbitrary colours per track, it comes to the director as its own proposal; nothing here forbids
+   it, and the index leaves room (a later ADR could reserve values above the palette).
+
+### Consequences
+
+- Answers N36; the window strikes the row when this merges. The `TrackRow::colour` comment and
+  the arrangement's `colourFor` read the index through `look::paletteColour`.
+- `docs/format/SPEC.md` §6.1 gains the paragraph; `schema.sql` is not touched (its bytes are
+  the frozen DDL).
+- No change to any op, the catalogue, OPS.md, the validator or the Master Reference's text
+  beyond a line in 3.x's track colour sentence at the next build.
