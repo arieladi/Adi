@@ -73,6 +73,22 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — time signature markers from the window [#362](https://github.com/arieladi/Adi/pull/362) `window/meter-markers`, on #361
+
+**Built: Live's time signature markers inserted, edited and deleted** (parity 7.3 row 11; Live 12
+manual 6.5). A click on a marker in the scrub area selects it. Insert Time Signature Change (the
+Create menu, the scrub area's menu) opens a field at the insert marker; Ctrl/Cmd+R edits a selected
+marker in the same field; Delete removes it. Each is one step through `project.insertTimeSignature`
+and `project.removeTimeSignature`. `meter_edits.hpp` parses values as Live's manual says. The
+start's signature is left to the control bar's fields: the snapshot's implicit 4/4 at zero can't be
+told from a stored one. The ruler now stops a cut-short bar's beat labels at the change. Moving
+markers is the next item.
+
+**Tests.** seams 325, shell 797; `test_all.sh` PASS (10010 checks, 106 suites). No golden moved.
+In the app, Alt+C and the Create menu's last item made a 3/4 marker.
+
+---
+
 ## 2026-11-02, cloud, continued — keys latched momentarily [#361](https://github.com/arieladi/Adi/pull/361) `window/key-latch`, on #358
 
 **Built: Live's momentary latching (§42.25) for S, F1…F8 and Z** (parity 7.6 rows 6 and 7, 7.3
