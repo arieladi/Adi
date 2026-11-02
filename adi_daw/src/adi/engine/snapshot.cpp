@@ -5,6 +5,7 @@
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <algorithm>
 #include <map>
@@ -124,6 +125,11 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const Snapshot& previous) {
     auto snap = std::make_unique<Snapshot>();
     auto& db = const_cast<SQLite::Database&>(store.db());
+    // A frame and its anchor owners must come from one WAL state. Reuse a
+    // caller's read/write transaction rather than nesting or committing it.
+    std::optional<SQLite::Transaction> readSnapshot;
+    if(sqlite3_get_autocommit(db.getHandle())!=0)
+        readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -236,6 +242,11 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch (const std::exception&) {
     }
+
+    // Endpoint ids and the filtered send list cannot supply routing identity.
+    // Keep this root observation coherent with the rows in this same frame.
+    try {snap->maxRoutingId=std::max(std::int64_t{0},db.execAndGet("SELECT COALESCE(MAX(id),0) FROM routing").getInt64());}
+    catch(const std::exception&){}
 
     // --- sends ------------------------------------------------------------------
     // Snapshot construction is off the audio thread; every control value is

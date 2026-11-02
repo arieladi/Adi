@@ -102,6 +102,9 @@ struct SendRoute {
 struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
+    // All routing kinds, including disabled rows. Zero if no positive id.
+    // Observation only: caller must guard INT64_MAX and reserve pending ids.
+    std::int64_t maxRoutingId = 0;
     int sampleRate = 44100;
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.

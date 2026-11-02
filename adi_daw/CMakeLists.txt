@@ -751,6 +751,10 @@ add_executable(adi_param_ops_tests tests/test_param_ops.cpp)
 target_link_libraries(adi_param_ops_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
 
+add_executable(adi_snapshot_routing_ids_tests tests/test_snapshot_routing_ids.cpp)
+target_link_libraries(adi_snapshot_routing_ids_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_snapshot_routing_ids_tests COMMAND adi_snapshot_routing_ids_tests)
+
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)
