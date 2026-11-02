@@ -70,7 +70,8 @@ public:
     static std::unique_ptr<Store> create(const std::filesystem::path&, StoreError&);
 
     /// Application New: create the project row, Main and the Live default's
-    /// two MIDI/two audio tracks, mixer strips and 120 BPM / 4/4 maps at the
+    /// two MIDI/two audio tracks, A Reverb/B Delay returns and their sends,
+    /// native wet-only effects, mixer strips and 120 BPM / 4/4 maps at the
     /// history root. No ops or protected UI undo step. Window callers replace
     /// their track.create bootstrap with this single factory.
     static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&);
