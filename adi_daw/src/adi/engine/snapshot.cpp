@@ -3,6 +3,9 @@
 #include "adi/engine/snapshot.hpp"
 
 #include "adi/store.hpp"
+#include "adi/media/media_ops.hpp"
+#include "juce/builtin_samples.hpp"
+#include <filesystem>
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -258,6 +261,54 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch (const std::exception&) {
     }
+    // State bytes are immutable: decode only a changed state hash. Ordinary
+    // edits reuse its metadata and check only the small pool row and locator.
+    std::map<std::pair<std::int64_t,std::int32_t>,std::shared_ptr<const SampleSlotNode>> previousSlots;
+    for(const auto& slot:previous.sampleSlots)previousSlots[{slot->deviceId,slot->slot}]=slot;
+    SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid FROM plugin_state s "
+        "JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
+        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' ORDER BY s.device_id,s.stream_role");
+    while(slots.executeStep()) {
+        SampleSlotNode node;node.deviceId=slots.getColumn(0).getInt64();node.stateHash=slots.getColumn(2).getString();
+        try {
+            const auto role=slots.getColumn(1).getString();
+            if(role!="sample:1")throw std::runtime_error("unknown built-in sample role");
+            node.slot=1;node.name="Impulse";const auto old=previousSlots.find({node.deviceId,node.slot});
+            if(old!=previousSlots.end() && old->second->stateHash==node.stateHash && old->second->problem.empty())node=*old->second;
+            else {
+                SQLite::Statement size(db,"SELECT length(data) FROM state_blobs WHERE hash_blake3=?");size.bind(1,node.stateHash);
+                if(!size.executeStep() || size.getColumn(0).getInt64()<=0 || size.getColumn(0).getInt64()>40LL*1024*1024)
+                    throw std::runtime_error("sample state is missing or too large");
+                const auto bytes=store.getStateBlob(node.stateHash);
+                if(!bytes || bytes->empty() || bytes->size()>40u*1024u*1024u)throw std::runtime_error("sample state is missing or too large");
+                const auto* first=reinterpret_cast<const std::uint8_t*>(bytes->data());
+                const auto value=Payload::from_cbor(first,first+bytes->size());const auto info=device::inspectBuiltinSample(value);
+                if(info.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
+                node.uid=info.uid;node.empty=info.empty;node.mediaHash=info.mediaHash;node.hasDerivedState=!info.empty && value.contains("derived");
+            }
+            if(node.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
+            node.mediaId.reset();node.missing=false;
+            if(!node.empty && node.problem.empty()) {
+                SQLite::Statement media(db,"SELECT id,rel_path,abs_path_hint,missing FROM media_files WHERE hash_blake3=?");media.bind(1,node.mediaHash);
+                node.missing=true;
+                if(media.executeStep()) {
+                    node.mediaId=media.getColumn(0).getInt64();
+                    if(media.getColumn(3).getInt()==0) {
+                        std::error_code ec;bool present=false;
+                        if(!media.getColumn(1).isNull()) {
+                            const auto relative=media::pathFromUtf8(media.getColumn(1).getString());
+                            if(!relative.is_absolute())present=std::filesystem::is_regular_file(media::projectFolder(store)/relative,ec);
+                        }
+                        if(!present && !media.getColumn(2).isNull())present=std::filesystem::is_regular_file(media::pathFromUtf8(media.getColumn(2).getString()),ec);
+                        node.missing=!present;
+                    }
+                }
+            }
+        }catch(const std::exception& exception){node.problem=exception.what();node.missing=true;}
+        const auto old=previousSlots.find({node.deviceId,node.slot});
+        if(old!=previousSlots.end() && *old->second==node)snap->sampleSlots.push_back(old->second);
+        else snap->sampleSlots.push_back(std::make_shared<const SampleSlotNode>(std::move(node)));
+    }
     return snap;
 }
 
@@ -278,6 +329,8 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
     }
     for (const auto& sa : a.sends)
         if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
+    for(const auto& slot:a.sampleSlots)
+        if(std::find(b.sampleSlots.begin(),b.sampleSlots.end(),slot)!=b.sampleSlots.end())++shared;
     return shared;
 }
 

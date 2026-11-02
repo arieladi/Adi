@@ -97,11 +97,23 @@ struct SendRoute {
     bool preFader = false, enabled = true;
 };
 
+/// Assigned built-in media slot. State hash caches immutable metadata across
+/// rebuilds; file presence and pool metadata are refreshed off the callback.
+struct SampleSlotNode {
+    std::int64_t deviceId=0;
+    std::int32_t slot=0;
+    std::string name,uid,mediaHash,stateHash,problem;
+    std::optional<std::int64_t> mediaId;
+    bool empty=true,missing=false,hasDerivedState=false;
+    friend bool operator==(const SampleSlotNode&,const SampleSlotNode&)=default;
+};
+
 /// What the audio thread sees. Derives from Sequenced so the publisher can
 /// stamp it; nothing else touches `seq`.
 struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
+    std::vector<std::shared_ptr<const SampleSlotNode>> sampleSlots;
     int sampleRate = 44100;
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.

@@ -825,6 +825,19 @@ A third-party implementation that does host AU is conforming, and a `.adi` it
 writes is readable here. That is the point of specifying the format separately
 from the application.
 
+#### Built-in sample roles (ADR-0192 d4)
+
+A canonical built-in may persist a declared sample slot as plugin_state role
+sample:<id>. The content-addressed CBOR state is versioned independently of the
+project schema: kind=adi.builtin.sample, version=1, uid, slot and empty. An
+occupied Color Cab slot also keeps the original mediaHash, sourceRate,
+source_f32le mono backup and derived rate/kernel/target. Original media remains
+in the ordinary media pool. The derived profile plays without the original;
+the backup permits off-thread regeneration at another engine rate. Unknown
+fields and unsupported versions remain opaque state beside a placeholder.
+The decoder rejects invalid state before publishing any live change. Empty
+state represents an identity sample; absence remains distinct for undo.
+
 ### 7.5 The expression route (schema 1.4)
 
 ```sql

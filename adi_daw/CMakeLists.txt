@@ -229,6 +229,8 @@ add_library(adi_core STATIC
     src/adi/builtin_insert.cpp
     src/adi/row_capture.cpp
     src/juce/builtin_host.cpp
+    src/juce/builtin_samples.cpp
+    src/adi/sample_slots.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -689,6 +691,10 @@ add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
 add_executable(adi_bypass_delay_tests tests/test_bypass_delay.cpp)
 target_link_libraries(adi_bypass_delay_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_bypass_delay_tests COMMAND adi_bypass_delay_tests)
+
+add_executable(adi_sample_slots_tests tests/test_sample_slots.cpp)
+target_link_libraries(adi_sample_slots_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_sample_slots_tests COMMAND adi_sample_slots_tests)
 
 add_executable(adi_builtin_devices_tests tests/test_builtin_devices.cpp)
 target_link_libraries(adi_builtin_devices_tests PRIVATE adi_core adi_warnings)

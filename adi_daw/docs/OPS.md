@@ -489,6 +489,16 @@ The batch creates a reference/track chain only when absent, orders the device
 before the selected device or at the chain end, and commits one undo group.
 No scanning, filesystem access or ambient ID allocation occurs in handlers.
 
+N28's prepareSampleAssignment/prepareSampleClear produce ordinary media.import
+(or relink) and device.loadState requests as one undo group. The built-in
+sample:<slot-id> role stores CBOR content in state_blobs, identified by its
+captured hash; no PCM/profile bytes enter the op payload. The first assignment
+writes the empty baseline first, so live undo restores the empty slot before
+removing the originally absent state row. Existing inverses preserve that role
+and format hint exactly. See ENGINE-SAMPLE-SLOTS.md for the window's call path,
+rate conversion, missing-file snapshot and immutable-content publication limit.
+
+
 
 ### 9.8 Routing and mixer
 
