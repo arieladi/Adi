@@ -830,7 +830,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(colourOf(11) == 5 && root.undoTitle(false) == "Undo Recolour Track", "Clap/Snare takes colour 5, one step");
         render("adi-colour-chosen.png");
         // The chooser itself, drawn as the menu draws it, for the picture.
-        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
             const auto menu = root.arrangement.headerMenu();
             for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
                 if (auto *chooser = it.getItem().customComponent.get()) {
@@ -844,7 +844,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                         g.fillAll(juce::Colour(0xff2b2b2b));
                         chooser->paintEntireComponent(g, true);
                     }
-                    const auto file = juce::File(folder).getChildFile("adi-colour-chooser.png");
+                    const auto file = juce::File(pictures).getChildFile("adi-colour-chooser.png");
                     file.deleteFile();
                     if (auto stream = file.createOutputStream())
                         juce::PNGImageFormat{}.writeImageToStream(image, *stream);
