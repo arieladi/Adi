@@ -13,6 +13,59 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N42 one persistent Pre/Post choice on each return
+
+**PR requested:** engine/return-send-tap -> main, head **bf83f66**.
+**Title:** Persist one Pre/Post send choice per return
+**Body:** N42: return.setSendTap {id, pre} persists a return-owned choice even
+with no sends and changes all incoming send taps in one undo step. Ordinary new
+routing.connect sends inherit an explicit return choice; a conflicting new
+per-edge setter refuses (same-value old callers still work). TrackNode and
+rows::Track expose optional returnSendTap {preFader, explicitChoice, legacyMixed};
+all fields participate in sharing. Snapshot sends and actual engine routing use
+that explicit policy. Legacy absent choices keep their raw per-edge audio,
+including mixed values, until the first explicit return choice. The new-send
+producer prepareSendToReturn/commitSendToReturn captures uniform legacy Pre as
+literal requests and guards file/head; the window keeps its document/generation
+check and caller-reserved ids. The inverse guards expected choice/flags/edge set,
+restores exact absence and mixed flags, and updates only tap columns, preserving
+future metadata. routing.disconnect now captures/restores its full typed row,
+including channel-map/future BLOBs, gain/pan/order/enable/origin, bypassing current
+policy on inverse reconnect. Historical six-field inverses and scalar apply
+semantics remain supported. The window replaces its per-edge batch with the
+return op and uses the producer/DTO for new sends; no UI production change.
+ENGINE-RETURN-SEND-TAPS.md gives calls and compatibility details.
+
+**Format:** 1.10 adds only return_send_taps (tracks FK, cascade); frozen 1.9 is
+byte-for-byte the base schema. Migration creates an empty table and changes no
+old audio. Read-only older projects use an empty TEMP stand-in. Text projection
+inlines stored sendTap pre/post (including explicit Post), retains raw edge taps,
+and covers the new table. N37's generic track inverse discovers this FK child
+when win combines the branches; no duplicate track-delete patch/own merge.
+Independent 1.10 schema branches N25/N17/N31 still need win's ordered version/
+merge handling; this is a standalone branch from main, not a deeper stack.
+
+**Validation:** final full run has all **107 C++ suites / 9968 checks passing**
+on GCC 14 Debug/Werror, PD ON/JUCE OFF. test_all.sh's ONLY final failure is
+validate_schema.py's README count: **README 51 tables vs actual 52**. **Win must
+update its owned count on this PR (or while integrating schema branches) to make
+that check/CI green.** README was not edited. All schema shape/frozen upgrade
+checks 1.0 through 1.9 -> 1.10, ops/Pd/CI/layout validators pass. GCC + Clang 19
+return taps **68**, migration **162**, projection **209**, catalog **106**, replay
+**63**, engine **119**. The existing N11 sharing test now accounts for a return's
+derived tap changing when its last incoming send moves away; unrelated tracks
+remain shared. Actual heard Post .25 vs Pre .375 with deliberately mismatched raw
+rows passes in both precisions, alongside zero-send persistence, inheritance,
+mixed legacy/CBOR/reopen, typed reconnect, future bytes, conflict rollback and
+UI-independent literal replay/undo/redo. Strict GCC shadow checks pass for eight
+changed sources; compiled defects caught: stale control sharing (1), lost choice
+(28), ignored engine policy (5), lost route image (1), stale restore (1). No
+MSVC/remote CI claim. API still CONNECT 403; win/window opens above, with the
+README-only failure visible. Continuing own remaining needs, no director gate.
+
+---
+
+
 ## 2026-11-02 — N41 New includes A Reverb and B Delay
 
 **PR requested:** engine/default-returns -> engine/library-devices, head **8e4c6a5**.
