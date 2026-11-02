@@ -623,6 +623,19 @@ the current Focus Dial CC before constructing an op. Runtime dispatch checks
 the live reservation first; a project binding that collides is reported as
 shadowed and cannot fire. Hardware-scope map/unmap remain separate planned ops.
 
+N10 controller Learn can address a mixer control before it has an automation
+lane: learnControllerTarget(bindingId, kind, targetId, paramRef, sourceCC,
+observedValues, policy, error) returns one resolved controller.bind request.
+It never creates a lane or reads a project, device or app setting. The existing
+lane-based learnController resolves its owner/param_ref and calls the same
+producer. Remote permission, Focus Dial reservation, source/channel/CC,
+absolute/relative detection and takeover use that explicit policy snapshot.
+Native target kinds and positive IDs are validated by the producer; the commit
+also verifies current target existence. A caller running an asynchronous Learn
+session must keep its document generation and expected-head guard, as for other
+producers. The op payload stays unchanged: captured binding fields only, no
+machine policy or display-name resolution during replay. No schema/opcode change.
+
 ### 9.12 Remarks (ADR-0131)
 
 | Op | S | E | Inv | P |
