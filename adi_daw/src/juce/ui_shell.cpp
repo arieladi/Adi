@@ -1127,8 +1127,11 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
     // From the CURRENT cell, as every action is; the batch is one undo step, labelled as Live's
     // Edit menu names it.
     const auto current = view_.current();
+    // Group Tracks takes every selected track (Shift+click on the headers, or a selection across
+    // tracks); Ungroup the selected group.
     const auto id = arrangement.geometry.selection.track;
-    auto edit = ungroup ? ungroupTrack(current->tracks, id) : groupTrack(current->tracks, id);
+    auto edit = ungroup ? ungroupTrack(current->tracks, id)
+                        : ::adi::ui::groupTracks(current->tracks, arrangement.geometry.selectedTracks(reader()));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     edit.ops.front().selBefore = session_.advisory();

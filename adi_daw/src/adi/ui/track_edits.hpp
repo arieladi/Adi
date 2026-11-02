@@ -87,47 +87,83 @@ inline bool canUngroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
     return t != nullptr && t->kind == "group";
 }
-// The selected track into a new group, which takes its place and is selected (manual 18.3). The
+// Live's Group Tracks (manual 18.3): the selected tracks, in their order, into a new group that
+// takes the first one's place and is selected. A track whose group is selected as well goes with
+// its group. They stand in one group, or at the top; Main and the returns are never grouped. The
 // group's name is "# Group": '#' shows its number, as a new track's does (manual 18.2).
-inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) {
+inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids) {
     using namespace track_edits_detail;
     constexpr const char *label = "Group Tracks";
     TrackEdit edit;
-    const auto *t = find(tracks, id);
-    if (t == nullptr) {
+    auto picked = [&ids](std::int64_t id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); };
+    // The selected tracks no selected group holds.
+    std::vector<const engine::TrackNode *> chosen;
+    for (const auto id : ids) {
+        const auto *t = find(tracks, id);
+        if (t == nullptr)
+            continue;
+        bool held = false;
+        for (const auto *up = find(tracks, t->parent); up != nullptr && !held; up = find(tracks, up->parent))
+            held = picked(up->id);
+        if (!held)
+            chosen.push_back(t);
+    }
+    if (chosen.empty()) {
         edit.refusal = "Select a track to group.";
         return edit;
     }
-    if (!groupable(*t)) {
-        edit.refusal = "Main and return tracks can't be grouped.";
-        return edit;
+    const auto parent = chosen.front()->parent;
+    for (const auto *t : chosen) {
+        if (!groupable(*t)) {
+            edit.refusal = "Main and return tracks can't be grouped.";
+            return edit;
+        }
+        if (t->parent != parent) {
+            edit.refusal = "Select tracks in one group to group them together.";
+            return edit;
+        }
     }
     std::int64_t group = 1;
     for (const auto &k : tracks)
         if (k)
             group = std::max(group, k->id + 1);
-    auto order = children(tracks, t->parent);
-    const auto at = static_cast<std::size_t>(std::find(order.begin(), order.end(), t) - order.begin());
+    // Into the group, in their order; the rest of their group's tracks around it, the group at the
+    // first one's place.
+    std::vector<const engine::TrackNode *> inside, rest;
+    std::size_t at = 0;
+    for (const auto *k : children(tracks, parent)) {
+        if (std::find(chosen.begin(), chosen.end(), k) == chosen.end()) {
+            rest.push_back(k);
+            continue;
+        }
+        if (inside.empty())
+            at = rest.size();
+        inside.push_back(k);
+    }
     edit.ops.push_back(op("track.create",
                           {{"id", group},
                            {"kind", "group"},
                            {"name", "# Group"},
-                           {"parent", parentValue(t->parent)},
+                           {"parent", parentValue(parent)},
                            {"index", static_cast<std::int64_t>(at)}},
                           label));
-    edit.ops.push_back(op("track.setParent", {{"id", id}, {"parent", group}}, label));
-    if (t->indexInParent != 0)
-        edit.ops.push_back(op("track.reorder", {{"id", id}, {"index", std::int64_t{0}}}, label));
-    order.erase(order.begin() + static_cast<std::ptrdiff_t>(at));
+    for (std::size_t i = 0; i < inside.size(); ++i) {
+        const auto place = static_cast<std::int64_t>(i);
+        edit.ops.push_back(op("track.setParent", {{"id", inside[i]->id}, {"parent", group}}, label));
+        if (inside[i]->indexInParent != place)
+            edit.ops.push_back(op("track.reorder", {{"id", inside[i]->id}, {"index", place}}, label));
+    }
     // The group stands at `at`; the tracks after it move up one place.
-    for (std::size_t i = 0; i < order.size(); ++i) {
+    for (std::size_t i = 0; i < rest.size(); ++i) {
         const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
-        if (order[i]->kind != "master" && order[i]->indexInParent != place)
-            edit.ops.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", place}}, label));
+        if (rest[i]->kind != "master" && rest[i]->indexInParent != place)
+            edit.ops.push_back(op("track.reorder", {{"id", rest[i]->id}, {"index", place}}, label));
     }
     edit.select = group;
     return edit;
 }
+// The selected track into a new group, which takes its place and is selected.
+inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) { return groupTracks(tracks, {id}); }
 // A group's tracks back where the group stood, in their order, and the group removed; the first
 // of them is selected. An empty group is just removed.
 inline TrackEdit ungroupTrack(const SnapshotTracks &tracks, std::int64_t id) {

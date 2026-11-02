@@ -643,6 +643,16 @@ void groupAndUngroupAsBatches() {
     check(ui::canGroup(view.current()->tracks, 4) && !ui::canGroup(view.current()->tracks, 1) &&
               ui::canUngroup(view.current()->tracks, 6) && !ui::canUngroup(view.current()->tracks, 4),
           "what the menu offers follows the same rules");
+
+    // Live's Group Tracks on several selected tracks (manual 18.3): Kick and the group after it into
+    // one new group, in their order; Snare, selected with its group, goes with it.
+    auto several = ui::groupTracks(view.current()->tracks, {2, 6, 3});
+    check(several.refusal.empty() && several.select == 7 && sub.submit(std::move(several.ops)).ok &&
+              order() == Order{{7, 0}, {2, 1}, {6, 1}, {3, 2}, {4, 0}, {1, 0}} && sub.nextUndo()->label == "Group Tracks",
+          "Kick and the group holding Snare grouped together, one step; Snare goes with its group");
+    check(ui::groupTracks(view.current()->tracks, {3, 4}).refusal == "Select tracks in one group to group them together.",
+          "tracks in different groups are refused, with the reason");
+    check(sub.undo().ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}}, "undo puts them back");
 }
 
 void sendsAsBatches() {
