@@ -96,7 +96,7 @@ std::string body(const rows::Model& m) {
     const std::string head =
         "project \"#0\"\n"
         "  format 0.1\n"
-        "  schema 1.8\n"
+        "  schema 1.9\n"
         "  ppq 5765760\n"
         "  defaults 1\n";
     if (all.rfind(head, 0) == 0) return all.substr(head.size());
@@ -377,7 +377,7 @@ void testCoverage() {
     section("the coverage manifest names every table, and only real ones");
 
     StoreError e = StoreError::Ok;
-    const auto store = Store::create(dir / "coverage.adi", e);
+    const auto store = Store::createEmpty(dir / "coverage.adi", e);
     check(store != nullptr, "a store to read the live schema from");
     if (!store) return;
 
@@ -417,7 +417,7 @@ void testEndToEnd() {
     section("a real .adi, driven through the op registry");
 
     StoreError e = StoreError::Ok;
-    const auto store = Store::create(dir / "e2e.adi", e);
+    const auto store = Store::createEmpty(dir / "e2e.adi", e);
     check(store != nullptr, "created a project");
     if (!store) return;
 
@@ -455,7 +455,7 @@ void testEndToEnd() {
     eq(p.text,
        "project \"#0\"\n"
        "  format 0.1\n"
-       "  schema 1.8\n"
+       "  schema 1.9\n"
        "  ppq 5765760\n"
        "  defaults 1\n"
        "trk Keys\n"
@@ -478,7 +478,7 @@ void testSessionStateIsInvisible() {
     section("session state cannot reach the projection (ADR-0021)");
 
     StoreError e = StoreError::Ok;
-    const auto store = Store::create(dir / "session.adi", e);
+    const auto store = Store::createEmpty(dir / "session.adi", e);
     check(store != nullptr, "created a project");
     if (!store) return;
 
@@ -510,7 +510,7 @@ void testCorruptBlobIsNamed() {
     section("a corrupt note stream is named, not swallowed and not thrown");
 
     StoreError e = StoreError::Ok;
-    const auto store = Store::create(dir / "corrupt.adi", e);
+    const auto store = Store::createEmpty(dir / "corrupt.adi", e);
     check(store != nullptr, "created a project");
     if (!store) return;
 
@@ -664,7 +664,7 @@ void testRemarksEndToEnd() {
     section("remarks through the op registry, undo and redo, byte for byte");
 
     StoreError e = StoreError::Ok;
-    const auto store = Store::create(scratch.path() / "remarks.adi", e);
+    const auto store = Store::createEmpty(scratch.path() / "remarks.adi", e);
     if (!store) return;
     OpJournal j(*store);
     OpRequest r;
@@ -688,7 +688,7 @@ void testRemarksEndToEnd() {
     eq(p.text,
        "project \"#0\"\n"
        "  format 0.1\n"
-       "  schema 1.8\n"
+       "  schema 1.9\n"
        "  ppq 5765760\n"
        "  defaults 1\n"
        "trk Bass\n"

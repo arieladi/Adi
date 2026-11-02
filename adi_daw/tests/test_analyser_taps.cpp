@@ -87,7 +87,7 @@ struct Fixture {
     bool delays = false;
     Fixture(bool inserts=true, bool instrument=false) {
         StoreError error{};
-        store = Store::create(dir.path()/"taps.adi",error);
+        store = Store::createEmpty(dir.path()/"taps.adi",error);
         if (!store) throw std::runtime_error("fixture store");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
                         "(1,'audio','A',0),(2,'audio','B',1),(9,'master','Master',2);");

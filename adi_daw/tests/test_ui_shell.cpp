@@ -247,7 +247,7 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
 // names a folder for a 2x render to lay beside the capture.
 void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool write) {
     StoreError err{};
-    auto store = Store::create(dir / "parity.adi", err);
+    auto store = Store::createEmpty(dir / "parity.adi", err);
     check(store != nullptr, "the parity project opens");
     if (!store)
         return;
@@ -444,7 +444,7 @@ juce::MouseEvent pressAt(juce::Component &c, juce::Point<float> at, juce::Modifi
 // application reads it.
 void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
-    auto store = Store::create(dir / "groups.adi", err);
+    auto store = Store::createEmpty(dir / "groups.adi", err);
     check(store != nullptr, "the groups project opens");
     if (!store)
         return;
@@ -1000,7 +1000,7 @@ int main(int argc, char **argv) {
     const bool write = argc == 2 && std::string(argv[1]) == "--write-references";
     test::TempDirectory temp("ui_shell", "root");
     StoreError err{};
-    auto store = Store::create(temp.path() / "p.adi", err);
+    auto store = Store::createEmpty(temp.path() / "p.adi", err);
     if (!store)
         return 2;
     store->db().exec("INSERT INTO project(id,name) VALUES(1,'Shell test')");

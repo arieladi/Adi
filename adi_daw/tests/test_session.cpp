@@ -201,7 +201,7 @@ bool commits(OpJournal& j, const OpRequest& r, const std::string& what) {
 ///   Master (9)
 std::unique_ptr<Store> makeProject(const fs::path& file) {
     StoreError e = StoreError::Ok;
-    auto store = Store::create(file, e);
+    auto store = Store::createEmpty(file, e);
     check(store != nullptr, "created the project");
     if (!store) return nullptr;
 
@@ -585,7 +585,7 @@ void testAProjectWithoutAMasterIsRefusedNotCrashed() {
     const adi::test::TempDirectory scratch("session", "nomaster");
     section("no master -- the plan has no output, the session says so, and process writes silence");
     StoreError e = StoreError::Ok;
-    auto store = Store::create(scratch.path() / "m.adi", e);
+    auto store = Store::createEmpty(scratch.path() / "m.adi", e);
     check(store != nullptr, "created");
     if (!store) return;
     OpJournal j(*store);
