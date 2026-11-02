@@ -219,8 +219,8 @@ void MixerStrip::frame(bool changed) noexcept {
             }
         }
     }
-    // The selected track's controls are lighter, as Live's.
-    const bool selected = track_ != 0 && panel_.root.arrangement.geometry.selection.track == track_;
+    // The selected tracks' controls are lighter, as Live's, a selection across tracks lighting each.
+    const bool selected = track_ != 0 && panel_.root.arrangement.geometry.inSelection(panel_.root.reader(), track_);
     if (selected != selected_) {
         selected_ = selected;
         repaint();

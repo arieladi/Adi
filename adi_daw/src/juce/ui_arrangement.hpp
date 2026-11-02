@@ -151,6 +151,10 @@ class ArrangementCanvas final : public juce::Component,
     std::int64_t clipEdge(std::int64_t tick, bool forward) const;
     // Deletes or switches the selected clip: one op, through the root.
     bool clipEdit(const char *op, Payload payload, const char *label);
+    // Shift+click: the selection from its anchor to the point clicked, across tracks too (§6.9).
+    void extendTo(int x, int y, bool snapToGrid);
+    // Delete or 0 on a time selection, on every selected track, as one undo step.
+    bool rangeEdit(bool deactivate);
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0;
     std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     bool keyResize_ = false;

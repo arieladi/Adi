@@ -5,8 +5,8 @@
 namespace adi::ui {
 namespace {
 Payload toJson(const Selection &s) {
-    return {{"track", s.track}, {"clip", s.clip},     {"start", s.start},
-            {"end", s.end},     {"insert", s.insert}, {"marked", s.marked}};
+    return {{"track", s.track}, {"clip", s.clip},     {"start", s.start},   {"end", s.end},
+            {"insert", s.insert}, {"marked", s.marked}, {"toTrack", s.toTrack}};
 }
 Selection fromJson(const Payload &j) {
     Selection s;
@@ -16,6 +16,7 @@ Selection fromJson(const Payload &j) {
     s.end = j.value("end", std::int64_t{0});
     s.insert = j.value("insert", std::int64_t{0});
     s.marked = j.value("marked", false);
+    s.toTrack = j.value("toTrack", std::int64_t{0}); // absent in a selection written before it
     return s;
 }
 } // namespace

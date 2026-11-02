@@ -27,7 +27,9 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/range_edits.hpp"
 #include "adi/ui/reference_audition.hpp"
+#include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
@@ -816,6 +818,91 @@ void audioDropAsOneStep() {
           "no audio, or a MIDI track, is refused with the reason");
 }
 
+void rangeEditsAsBatches() {
+    section("A time selection across tracks: Delete and 0 on its whole clips, one step each (Live 12 manual 6.9)");
+    adi::test::TempDirectory temp("ui_seams", "range");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    const auto bar = textproj::kWhole;
+    bool made = true;
+    for (std::int64_t id = 1; id <= 3; ++id) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "midi"}, {"name", "Track " + std::to_string(id)}, {"index", id - 1}};
+        r.label = "Create track";
+        made = sub.submit(std::move(r)).ok && made;
+    }
+    // Track 1: bar 1; Track 2: bar 2; Track 3: from bar 2.5 to 3.5, across the selection's end.
+    for (const auto& [id, track, pos, length] :
+         {std::tuple<std::int64_t, std::int64_t, std::int64_t, std::int64_t>{1, 1, 0, bar},
+          {2, 2, bar, bar}, {3, 3, bar + bar / 2, bar}}) {
+        OpRequest r;
+        r.opType = "clip.create";
+        r.payload = {{"id", id}, {"track", track}, {"kind", "midi"}, {"pos", pos}, {"length", length}};
+        r.label = "Create clip";
+        made = sub.submit(std::move(r)).ok && made;
+    }
+    check(made, "three tracks, a clip on each");
+
+    // The tracks a selection covers: from its track to its far track, either way round.
+    const ui::SnapshotReader reader(view.current());
+    ui::ArrangementGeometry geo;
+    geo.selection.track = 1;
+    check(geo.selectedTracks(reader) == std::vector<std::int64_t>{1} && !geo.inSelection(reader, 2),
+          "without a far track, the selection is its one track");
+    geo.selection.toTrack = 3;
+    check(geo.selectedTracks(reader) == std::vector<std::int64_t>{1, 2, 3} && geo.inSelection(reader, 2),
+          "with one, every track between");
+    geo.selection.track = 3;
+    geo.selection.toTrack = 1;
+    check(geo.selectedTracks(reader) == std::vector<std::int64_t>{1, 2, 3}, "dragged upwards too");
+
+    const std::vector<std::int64_t> all{1, 2, 3};
+    const auto content = ui::rangeContent(view.current()->tracks, all, 0, 2 * bar);
+    check(content.inside.size() == 2 && content.crossing == 1, "bars 1 and 2: two clips inside, one across the end");
+    auto off = ui::deactivateRange(view.current()->tracks, all, 0, 2 * bar);
+    check(off.refusal.empty() && off.ops.size() == 2 && off.ops[0].opType == "clip.setMute" &&
+              off.ops[0].payload["muted"] == true,
+          "0 deactivates the two clips inside");
+    const auto note = ui::rangeNote(view.current()->tracks, all, 0, 2 * bar);
+    check(note.find("1 clip crosses") != std::string::npos && note.find("split") != std::string::npos,
+          "and says the one across the edge waits for Split");
+    check(sub.submit(std::move(off.ops)).ok && sub.nextUndo()->opCount == 2 &&
+              sub.nextUndo()->label == "Deactivate Clips",
+          "one undo step, named");
+    auto on = ui::deactivateRange(view.current()->tracks, all, 0, 2 * bar);
+    check(on.ops.size() == 2 && on.ops[0].payload["muted"] == false && on.ops[0].label == "Activate Clips",
+          "0 again, every one deactivated: activates them");
+    auto gone = ui::deleteRange(view.current()->tracks, all, 0, 2 * bar);
+    check(gone.ops.size() == 2 && gone.ops[0].opType == "clip.delete" && sub.submit(std::move(gone.ops)).ok &&
+              sub.nextUndo()->label == "Delete Clips" && view.current()->findTrack(1)->clips.empty() &&
+              view.current()->findTrack(2)->clips.empty() && view.current()->findTrack(3)->clips.size() == 1,
+          "Delete removes the clips inside, on every track; the one across the edge stays");
+    check(sub.undo().ok && view.current()->findTrack(1)->clips.size() == 1 && view.current()->findTrack(2)->clips.size() == 1,
+          "one undo brings both back");
+    check(ui::deleteRange(view.current()->tracks, {3}, 0, 2 * bar).refusal.find("crosses") != std::string::npos &&
+              ui::deleteRange(view.current()->tracks, all, 5 * bar, 6 * bar).refusal ==
+                  "There is nothing in the selection to delete.",
+          "only a clip across the edge, or nothing: refused, with the reason");
+
+    // The far track is kept with the rest of the selection, and a selection written without one
+    // reads as one track.
+    {
+        ui::SessionState session(*store);
+        ui::Selection chosen;
+        chosen.track = 1;
+        chosen.toTrack = 3;
+        chosen.start = 0;
+        chosen.end = bar;
+        std::string why;
+        check(session.select(chosen, why), "a selection across tracks is kept");
+    }
+    check(ui::SessionState(*store).selection().toTrack == 3, "and read back with its far track");
+}
+
 void returnsStandBeforeMain() {
     section("the returns after the tracks, Main last: Live's foot (manual 6.1)");
     adi::test::TempDirectory temp("ui_seams", "returns");
@@ -925,6 +1012,7 @@ int main() {
     returnsStandBeforeMain();
     sendsAsBatches();
     audioDropAsOneStep();
+    rangeEditsAsBatches();
     referenceTapAndHold();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);

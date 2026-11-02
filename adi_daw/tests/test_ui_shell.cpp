@@ -1047,6 +1047,121 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(root.reader().findTrack(1)->clips.size() == 1 && !root.error().empty(), "a text file is refused, with the reason");
 }
+// Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
+// Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
+// the clips inside it on all of them, as one undo step each.
+void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "range.adi", err);
+    check(store != nullptr, "the range's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Range')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole;
+    bool madeAll = true;
+    for (std::int64_t id = 1; id <= 4; ++id) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "midi"}, {"name", "# MIDI"}, {"index", id - 1}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    // A clip in bar 2 on each of the first three tracks; the fourth's runs on past bar 3.
+    for (std::int64_t id = 1; id <= 4; ++id) {
+        OpRequest r;
+        r.opType = "clip.create";
+        r.payload = {{"id", 10 + id}, {"track", id}, {"kind", "midi"}, {"pos", bar}, {"length", id == 4 ? 2 * bar : bar}};
+        r.label = "Create clip";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    check(madeAll, "four MIDI tracks, a clip on each");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "range");
+    root.setSize(1200, 720);
+    for (std::int64_t id = 1; id <= 4; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
+    // From bar 1 on track 1, dragged to bar 3 on track 3: bars 1 to 3 on tracks 1, 2 and 3. A forward
+    // selection snaps up to the next grid line, so the mouse lets go just short of bar 3's.
+    canvas.mouseDown(pressAt(canvas, {x(0) + 1, lane(1)}));
+    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    canvas.mouseUp(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    root.frame();
+    check(geo.selection.track == 1 && geo.selection.toTrack == 3 && geo.selection.start == 0 &&
+              geo.selection.end == 2 * bar && geo.inSelection(root.reader(), 2) && !geo.inSelection(root.reader(), 4),
+          "dragged across lanes, the selection reaches every track between");
+    // Drawn on every selected lane, not on the fourth.
+    juce::Image image(juce::Image::ARGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        canvas.paintEntireComponent(g, true);
+    }
+    const int px = static_cast<int>(x(bar / 2));
+    const auto lit = image.getPixelAt(px, static_cast<int>(lane(2))), unlit = image.getPixelAt(px, static_cast<int>(lane(4)));
+    check(lit != unlit && image.getPixelAt(px, static_cast<int>(lane(1))) == lit &&
+              image.getPixelAt(px, static_cast<int>(lane(3))) == lit,
+          "the time selection is drawn on each selected track's lane, as Live's");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-range.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    // 0 deactivates the three clips inside; the fourth track is not selected.
+    check(canvas.keyPressed(juce::KeyPress('0')), "0");
+    root.frame();
+    auto clipOf = [&root](std::int64_t track) { return root.reader().findTrack(track)->clips.front(); };
+    check(clipOf(1)->muted && clipOf(2)->muted && clipOf(3)->muted && !clipOf(4)->muted &&
+              submitter.nextUndo()->label == "Deactivate Clips" && submitter.nextUndo()->opCount == 3,
+          "0 deactivates the material on every selected track, one undo step");
+    // Shift+Down reaches the fourth track; its clip crosses the end, so 0 leaves it and says why.
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey, juce::ModifierKeys::shiftModifier, 0)) &&
+              geo.selection.toTrack == 4 && geo.selection.track == 1,
+          "Shift+Down reaches one track further");
+    check(canvas.keyPressed(juce::KeyPress('0')), "0 again");
+    root.frame();
+    check(!clipOf(1)->muted && !clipOf(4)->muted && root.error().find("1 clip crosses") != std::string::npos,
+          "the three inside are activated; the one across the edge stays, and the Status Bar says why");
+    // Shift+click on track 2 at bar 2 pulls the selection back to tracks 1 and 2, bars 1 to 2.
+    canvas.mouseDown(pressAt(canvas, {x(bar) - 1, lane(2)}, juce::ModifierKeys::shiftModifier));
+    canvas.mouseUp(pressAt(canvas, {x(bar) - 1, lane(2)}, juce::ModifierKeys::shiftModifier));
+    check(geo.selection.track == 1 && geo.selection.toTrack == 2 && geo.selection.end == bar,
+          "Shift+click extends or shortens the selection, across tracks too");
+    // Delete on bars 1 to 3 of tracks 1 to 3: their clips go, as one step.
+    canvas.mouseDown(pressAt(canvas, {x(0) + 1, lane(1)}));
+    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    canvas.mouseUp(pressAt(canvas, {x(2 * bar) - 1, lane(3)}));
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete");
+    root.frame();
+    check(root.reader().findTrack(1)->clips.empty() && root.reader().findTrack(3)->clips.empty() &&
+              root.reader().findTrack(4)->clips.size() == 1 && submitter.nextUndo()->label == "Delete Clips",
+          "Delete removes the material on every selected track");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(root.reader().findTrack(1)->clips.size() == 1 && root.reader().findTrack(2)->clips.size() == 1,
+          "brings it all back");
+    // A plain click starts over: one track.
+    canvas.mouseDown(pressAt(canvas, {x(bar) + 1, lane(4)}));
+    canvas.mouseUp(pressAt(canvas, {x(bar) + 1, lane(4)}));
+    check(geo.selection.track == 4 && geo.selection.toTrack == 0 && !geo.inSelection(root.reader(), 1),
+          "a plain click selects in one track again");
+}
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
 void footRows(AppCommands &commands, const std::filesystem::path &dir) {
@@ -3840,6 +3955,7 @@ int main(int argc, char **argv) {
     footRows(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
+    rangeSelection(commands, temp.path());
     mixViewShell(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
