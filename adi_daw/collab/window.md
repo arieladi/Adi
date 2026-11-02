@@ -73,6 +73,21 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — clips picked apart [#356](https://github.com/arieladi/Adi/pull/356) `window/picked-clips`, on #352
+
+**Built: Live's "Select Multiple Items" on clips** (Ctrl/Cmd+click, §42.5; parity 7.3 row 29).
+`Selection::pickedClips` holds the clips picked besides the selected one, kept with the session's
+selection; a Ctrl/Cmd+click on another clip picks it or lets it go, and anything that selects a clip
+or none lets them go. `ArrangementGeometry::clipSelected` lights them; `deleteClips` and
+`deactivateClips` (`range_edits.hpp`) act on them all, one undo step each, named as the range edits
+name theirs.
+
+**Open:** dragging several picked clips together (a drag moves the one clicked).
+
+**Tests.** seams 277, shell 752; `test_all.sh` PASS (9962 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — #318 to #329 merged; #330's conflict; #350's MSVC timeout
 
 **Merged into main** (16:07–16:10 UTC): #318, #319, #320, #321, #322, #323, #325, #326, #327, #328 and
