@@ -3340,6 +3340,17 @@ int main(int argc, char **argv) {
                       std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
                   "and undo restores it");
             integrated.frame();
+            // The bottom stop reads -inf and writes silence (-150 dB, SPEC §6.9), not the -70 dB
+            // it stands on, which is quiet but heard.
+            row->volume.setValue(row->volume.getMinimum(), juce::sendNotificationSync);
+            integrated.frame();
+            check(document->view().current()->findTrack(2)->volumeDb <= -150.0 &&
+                      row->volume.getTextFromValue(row->volume.getValue()) == "-inf",
+                  "the fader's bottom stop writes silence and reads -inf");
+            check(integrated.command(AppCommands::Undo) &&
+                      std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
+                  "and undo restores 0 dB");
+            integrated.frame();
             check(row->pan.isDoubleClickReturnEnabled() &&
                       row->pan.getDoubleClickReturnValue() == 0,
                   "a double-click resets the pan to centre");
