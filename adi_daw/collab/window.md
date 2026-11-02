@@ -73,6 +73,25 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — Hide/Show Sends and the strip's selectors [#335](https://github.com/arieladi/Adi/pull/335) `window/view-selectors`, on #334
+
+**Built: Live's Hide/Show Sends** (Ctrl/Cmd+Alt+S, the View menu after In/Out; §42.1; parity 7.2
+row 26): the sends out of the track controls' rows (ADI-Q and ADI-L move up) and the Mixer View
+strips' Sends section with Main's Pre/Post; kept per window. **The strip's foot selectors** (parity
+7.2 row 27) are buttons: I-O switches In/Out, R the return tracks, each lit while shown; M stays
+lit, D dark until Track Delay (N22). No golden moved.
+
+**Measure on Live:** Live 12 shows and hides the Mixer's and the track controls' sends apart, in two
+submenus; ADI has one toggle for both.
+
+**Tests.** window state 60, shell 633; `test_all.sh` PASS (9894 checks, 106 suites).
+
+**Next:** a MIDI track's row and strip as Live's (look-live11 difference row 3, which waited on N6,
+merged as #299): All Ins and All Channels; with no instrument, no volume, pan or sends and No Output
+(`window/midi-rows`).
+
+---
+
 ## 2026-11-02, cloud, continued — Live's return-track commands [#334](https://github.com/arieladi/Adi/pull/334) `window/return-commands`, on #333
 
 **Built: Insert Return Track, Enable All Sends, Hide/Show Return Tracks** (manual 18.4, §42.1,
