@@ -13,6 +13,56 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N28: undoable Color Cab sample assignment and missing-file snapshot
+
+**PR requested:** engine/sample-slots -> engine/library-devices, head **34259fe**.
+**Title:** Assign built-in sample slots with undo and missing-file snapshots
+**Body:** Depends on N15 (71d7921), depth two. Window calls prepareSampleAssignment
+(store, device, declared slot, file, engineRate, importedUtc, optionalDecodeCache)
+then commitSampleAssignment; prepareSampleClear clears it. One undo group captures
+media import/relink, an absent slot's explicit empty baseline and device.loadState
+hashes. The existing ParamOps.appliedState path handles live forward/inverse
+notifications; Session restores on reopen. Color Cab slot1 (Impulse) uses the
+existing public preparation SDK and lock-free PdSampleSlots, no DSP/UI production
+changes. State contains the media hash, derived profile and mono source backup
+for another engine rate with the original absent. Snapshot.sampleSlots carries
+device/slot/name/UID, state/media hashes, optional media ID, empty/missing/derived
+flags and problems; immutable metadata is cached by state hash, small pool and
+locator presence refresh per rebuild, and every field participates in sharing.
+No project schema or opcode addition. Oversized/nonfinite/wrong-slot state
+refuses before publication. Immutable content follows the existing writeBlobs
+convention: later journal failure may retain an unreferenced blob only; expected
+head is checked inside the journal too. Hybrid's missing native backend remains
+unavailable. ENGINE-SAMPLE-SLOTS.md gives the exact window integration and limits.
+
+**Validation:** GCC14 Debug/Werror full test_all PASS **10014 checks / 108 suites**,
+all validators/migrations/layout clean. GCC + Clang19/Werror focused sample28,
+built-ins99, ParamOps177, engine119 and Session214 pass. After final review's
+undo label and pre-copy blob-size guard, affected sample28/engine119 pass on
+both compilers. GCC shadow syntax including disabled-backend paths passes.
+Sample tests exercise real audio, live undo/redo, missing original, 44.1k restore,
+malformed-state atomic refusal, cached UID/pool changes, and zero callback
+allocation/file IO. Compiled plants: missing undo baseline4 failures, skipped
+live publication3, ignored missing-state sharing3; restored tests pass. No
+remote CI/MSVC/JUCE-runtime/hardware/Live parity claim; README remains win's.
+
+**Refreshed queue:** explicitly fetched window/log (032498f; the remote's normal
+fetch spec covers main and engine branches only). New **N42** is queued: return-owned
+Pre/Post with persistence even without sends. New **N43** matches the already-pushed
+N23 engine/cue-reference (1466c85): Snapshot.cue.volumeDb/cueMode,
+cue.setVolume {db} (-150..+6), cue.setMode {on}, readCueSettings and the real cue
+path. Stored in session_state cue.controls, performance ops rather than undo
+edits; window refreshes ProjectView/Session as documented. N23's PR request
+remains the one for these controls; no duplicate backend/PR is needed.
+
+Window also reports #350's MSVC mixer timeout (same job passed #351). Repair that
+CI bottleneck next by isolating existing group-console/send-level sweeps in a
+third binary, keeping assertions and renders intact and the timeout unchanged;
+then **N31** and the remaining needs. No LANES5 director gate blocks this queue.
+
+---
+
+
 ## 2026-11-02 — N15: catalogue, native built-in project loader and one-step insertion
 
 **PR requested:** engine/library-devices -> main, head **71d7921**.
