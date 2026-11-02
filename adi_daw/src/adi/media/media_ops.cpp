@@ -2,6 +2,9 @@
 #include "media_ops.hpp"
 #include "blake3.hpp"
 #include "adi/store.hpp"
+#include "adi/audio/decode.hpp"
+#include "adi/audio/wav_file.hpp"
+#include "adi/audio/io_audit.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <array>
@@ -59,6 +62,48 @@ bool noEmbedded(SQLite::Database& db, std::int64_t id, std::string& error) {
     if (!q.executeStep()) { error = "no such media"; return false; }
     if (q.getColumn(0).getInt() != 0) { error = "extract embedded media first"; return false; }
     return true;
+}
+std::optional<AudioInfo> captureAudio(const fs::path& source, Payload& row, audio::DecodeCache* supplied) {
+    const auto format=audio::sniff(source);
+    if (format==audio::SourceFormat::Unknown) return std::nullopt;
+    const auto read=[&](const fs::path& playable, bool native) {
+        audio::WavReader wave(playable);
+        if (!wave.frames() || wave.frames()>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
+            !wave.sampleRate() || wave.sampleRate()>audio::kMaxDecodeRate ||
+            !wave.channels() || wave.channels()>audio::kMaxDecodeChannels)
+            throw std::runtime_error("unsupported audio dimensions");
+        AudioInfo info{wave.sampleRate(),wave.channels(),static_cast<std::int64_t>(wave.frames())};
+        constexpr std::int64_t billion=1000000000;
+        const auto seconds=info.frames/info.sampleRate;
+        if (seconds>(std::numeric_limits<std::int64_t>::max()-billion)/billion)
+            throw std::runtime_error("audio duration exceeds the supported timeline");
+        row["sample_rate"]=info.sampleRate;row["channels"]=info.channels;row["frames"]=info.frames;
+        row["duration_ns"]=seconds*billion+(info.frames%info.sampleRate)*billion/info.sampleRate;
+        if (native) row["bit_depth"]=wave.format()==audio::WavFormat::Pcm16 ? 16 : wave.format()==audio::WavFormat::Pcm24 ? 24 : 32;
+        return info;
+    };
+    switch (format) {
+        case audio::SourceFormat::Riff:row["format"]="wav";break;
+        case audio::SourceFormat::Aiff:row["format"]="aiff";break;
+        case audio::SourceFormat::Flac:row["format"]="flac";break;
+        case audio::SourceFormat::Mp3:row["format"]="mp3";break;
+        case audio::SourceFormat::Ogg:row["format"]="ogg";break;
+        case audio::SourceFormat::Unknown:break;
+    }
+    if (format==audio::SourceFormat::Riff) {
+        try {return read(source,true);} catch (const std::exception&) {
+            // PCM encodings outside WavReader's subset use the same decoding
+            // path as playback. A corrupt source still fails that path.
+        }
+    }
+    auto& cache=supplied ? *supplied : audio::defaultDecodeCache();
+    const auto playable=cache.playable(source);
+    struct Release {
+        audio::DecodeCache& cache;
+        const fs::path& path;
+        ~Release(){cache.release(path);}
+    } release{cache,playable};
+    return read(playable,false);
 }
 }
 std::string pathUtf8(const fs::path& path) {
@@ -180,28 +225,48 @@ bool relinkInverse(OpContext& c, const Payload& p, Payload& inverse, std::string
         return true;
     } catch (const std::exception& e) { error = e.what(); return false; }
 }
-MediaResult importMedia(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, Actor actor) {
+MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request,
+                          audio::DecodeCache* cache) {
+    request = {};
     try {
+        if (audio::onAudioThread) return {false, "media capture must run off the audio thread"};
         if (store.readOnly()) return {false, "project is read-only"};
         const auto source = path.is_absolute() ? path : projectFolder(store) / path;
         const auto hash = blake3File(source);
         if (!hash) return {false, "cannot hash " + pathUtf8(source)};
+        Payload row = Payload::object(); for (const auto* key : columns) row[key] = nullptr;
+        row["format"]="";
+        const auto info=captureAudio(source,row,cache);
+        const auto verified=blake3File(source);
+        if (!verified || hash.hex!=verified.hex) return {false,"media changed during import capture"};
         SQLite::Statement existing(store.db(), "SELECT id FROM media_files WHERE hash_blake3=?"); existing.bind(1, hash.hex);
         if (existing.executeStep()) {
             const auto found = existing.getColumn(0).getInt64(); std::string error;
             if (!noEmbedded(store.db(), found, error)) return {false, error};
-            return {true, {}, found, true};
+            const auto old=mediaRow(store.db(),found);
+            if (old.at("missing")!=0 || resolveMedia(projectFolder(store),old,error).empty()) {
+                request.opType="media.relink";
+                request.payload={{"id",found},{"hash",hash.hex},{"paths",capturedPaths(store,source)}};
+            }
+            return {true, {}, found, true, info};
         }
-        Payload row = Payload::object(); for (const auto* key : columns) row[key] = nullptr;
         row.update(capturedPaths(store, source)); row["hash_blake3"] = hash.hex;
-        row["orig_name"] = pathUtf8(source.filename()); row["format"] = "";
+        row["orig_name"] = pathUtf8(source.filename());
         const auto size = fs::file_size(source);
         if (size > static_cast<std::uintmax_t>(std::numeric_limits<std::int64_t>::max())) return {false, "media size exceeds signed 64-bit range"};
         row["size_bytes"] = static_cast<std::int64_t>(size); row["imported_utc"] = time;
-        OpRequest request; request.opType = "media.import"; request.payload = {{"id", id}, {"row", row}}; request.actor = actor;
-        const auto result = OpJournal(store).commit(request);
-        return {result.ok, result.error, id};
+        request.opType = "media.import"; request.payload = {{"id", id}, {"row", row}};
+        return {true, {}, id, false, info};
     } catch (const std::exception& e) { return {false, e.what()}; }
+}
+MediaResult importMedia(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, Actor actor) {
+    OpRequest request;
+    auto prepared=prepareImport(store,path,id,time,request);
+    if (!prepared.ok || request.opType.empty()) return prepared;
+    request.actor=actor;
+    const auto result=OpJournal(store).commit(request);
+    prepared.ok=result.ok;prepared.error=result.error;
+    return prepared;
 }
 MediaResult relinkMedia(Store& store, std::int64_t id, const fs::path& path, Actor actor) {
     try {
