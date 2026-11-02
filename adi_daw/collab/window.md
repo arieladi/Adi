@@ -73,6 +73,25 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — Live's return-track commands [#334](https://github.com/arieladi/Adi/pull/334) `window/return-commands`, on #333
+
+**Built: Insert Return Track, Enable All Sends, Hide/Show Return Tracks** (manual 18.4, §42.1,
+§42.19; parity 7.6 row 9).
+- Insert Return Track (Ctrl/Cmd+Alt+T, the Create menu): "C Return" after the others, selected,
+  a send knob on every track for it; the returns shown again if hidden; one undo step.
+- Enable All Sends in a return's send menu: every send of the return on, one undo step.
+- Hide/Show Return Tracks (Ctrl/Cmd+Alt+R, the View menu after In/Out): the returns out of the
+  lanes, the track controls and the Mixer View; kept per window.
+
+**Measure on Live:** a new return's name and colour.
+
+**Tests.** seams 211, window state 59, shell 625; `test_all.sh` PASS (9893 checks, 106 suites).
+
+**Next:** Hide/Show Sends (Ctrl/Cmd+Alt+S) and the strip's I-O and R selectors wired to the View
+menu (`window/view-selectors`).
+
+---
+
 ## 2026-11-02, cloud, continued — the returns' and Main's rows and strips, each return's Pre/Post [#333](https://github.com/arieladi/Adi/pull/333) `window/return-main-rows`, on #331
 
 **Built: the returns' and Main's rows and strips as Live 12's figures draw them** (manual 6.1,
