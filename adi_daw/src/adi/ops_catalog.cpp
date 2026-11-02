@@ -16,6 +16,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/ops.hpp"
+#include "adi/builtin_catalog.hpp"
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
@@ -2039,6 +2040,7 @@ std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
+        const auto builtins=builtinReferenceOps();v.insert(v.end(),builtins.begin(),builtins.end());
         return v;
     }();
     return all;

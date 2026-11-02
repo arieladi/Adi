@@ -799,8 +799,12 @@ cheaper than a user discovering it with an hour of sound design at stake.
 
 These are two different lists and conflating them loses data.
 
-**Hosted by this implementation: VST3, and CLAP when it is written.** Nothing
-else, and adding to that set takes an ADR (ADR-0041). In particular ADI does not
+**Hosted by this implementation: VST3, CLAP, and supported canonical ADI
+built-ins** (internal references, ADR-0104/ADR-0188). Internal UIDs are stable
+org.adidaw.builtin.<device-slug> identities from builtinCatalog(); they do not
+name a disk binary or a user patch. A build without the backend, an unknown UID,
+or a listed unavailable device follows the same placeholder rule below.
+Adding third-party formats takes an ADR (ADR-0041). In particular ADI does not
 host **VST2**, **AU** or **AUv3**, and no build option turns that on.
 
 **Recorded by the format: whatever was there.** `plugin_refs.format` admits

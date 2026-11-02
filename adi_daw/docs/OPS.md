@@ -454,6 +454,8 @@ silent truncation in JSON, a non-issue in CBOR.
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
+| `pluginRef.register` | e | N | pair `pluginRef.unregister` | P1 |
+| `pluginRef.unregister` | e | N | cap | P1 |
 | `device.insert` | e | G | pair `device.remove` | P0 |
 | `device.remove` | e | G | cap | P0 |
 | `device.move` | e | G | sym | P0 |
@@ -477,6 +479,16 @@ silent truncation in JSON, a non-issue in CBOR.
 | `macro.map` | e | S | pair `macro.unmap` | P2 |
 | `macro.unmap` | e | S | cap | P2 |
 | `macro.setRange` | e | S | sym | P2 |
+
+The browser calls prepareBuiltinInsert(store, uid, track, beforeDevice) then
+commitBuiltinInsert with its captured expected head. Preparation allocates all
+IDs and captures the complete typed plugin_refs row (including future columns
+and BLOBs) in pluginRef.register's {id,row}; unregister takes {id} and captures
+that full row for its inverse. A used reference cannot be unregistered (FK).
+The batch creates a reference/track chain only when absent, orders the device
+before the selected device or at the chain end, and commits one undo group.
+No scanning, filesystem access or ambient ID allocation occurs in handlers.
+
 
 ### 9.8 Routing and mixer
 
@@ -650,7 +662,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**174 ops** — 66 P0, 56 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
