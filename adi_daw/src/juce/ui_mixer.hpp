@@ -71,6 +71,9 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // audio mixer: a MIDI track holding no instrument has no volume, pan or sends, as Live's.
     bool isMidi() const noexcept { return midi_; }
     bool hasAudio() const noexcept { return audio_; }
+    // Where the track plays to, as its output chooser shows it: Main's outputs (1/2), Master, its
+    // group ("Group"), or No Output.
+    const char *outputLabel() const noexcept;
     // Main's strip in the Mixer View: each return's Pre/Post switch in its Sends section, as Live's.
     const std::vector<std::unique_ptr<juce::TextButton>> &returnSwitches() const noexcept { return returnSwitches_; }
     // One send per return, the returns in the arrangement's order (ADR-0203 d3): Live's value
@@ -129,7 +132,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     std::vector<std::unique_ptr<juce::Slider>> sends_;
     std::vector<std::unique_ptr<juce::TextButton>> returnSwitches_;
     std::string kind_;
-    bool midi_ = false, audio_ = true;
+    bool midi_ = false, audio_ = true, inGroup_ = false;
     const void *devices_ = nullptr; // the device publication the strip last read
     int label_ = 0; // what the activator shows: a track's number, or -1 - a return's place
     // Throws a return's Pre/Post switch: every send into it moved, one undo step.

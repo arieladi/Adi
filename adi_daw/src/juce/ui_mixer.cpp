@@ -531,14 +531,10 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
         if (row < rows)
             drawChooser(g, {static_cast<float>(x + 3), static_cast<float>(3 + 17 * row), 70, 13}, label, enabled);
     };
-    // Main plays to the outputs, a return to Main; neither records, so neither has an input or the
-    // monitoring switch, as Live's.
-    if (kind_ == "master") {
-        chooser(0, "1/2", true);
-        return;
-    }
-    if (kind_ == "return") {
-        chooser(0, "Master", true);
+    // Main plays to the outputs, a return and a group to Main or their group; none records, so none
+    // has an input or the monitoring switch, as Live's (manual 18.3: a group "cannot contain clips").
+    if (kind_ == "master" || kind_ == "return" || kind_ == "group") {
+        chooser(0, outputLabel(), true);
         return;
     }
     // A MIDI track records from All Ins on All Channels, as Live's; an audio track from Ext. In.
@@ -546,9 +542,19 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(1, midi_ ? "All Channels" : "1/2", midi_);
     if (rows > 2)
         drawMonitor(g, static_cast<float>(x + 3), 37, 6);
-    // A MIDI track with no instrument plays nothing to Main: No Output, as Live's.
-    chooser(3, audio_ ? "Master" : "No Output", true);
+    chooser(3, outputLabel(), true);
     chooser(4, "", false);
+}
+const char *MixerStrip::outputLabel() const noexcept {
+    // Main plays to the outputs; a MIDI track with no instrument to nothing (No Output); a track in a
+    // group to its group, as Live assigns a grouped track's Audio To (manual 18.3), shown as Live's
+    // "Group"; every other track to Main. ADI's fixed routing: the snapshot carries none yet
+    // (look-live11 row 5).
+    if (kind_ == "master")
+        return "1/2";
+    if (!audio_)
+        return "No Output";
+    return inGroup_ ? "Group" : "Master";
 }
 void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     // Live 12's In/Out section in the Mixer (manual, the Mixer in Arrangement View): where the track
@@ -572,9 +578,9 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
         chooser(103, "1/2", true);
         return;
     }
-    if (kind_ == "return") {
+    if (kind_ == "return" || kind_ == "group") {
         label(74, "Audio To");
-        chooser(87, "Master", true);
+        chooser(87, outputLabel(), true);
         return;
     }
     label(2, midi_ ? "MIDI From" : "Audio From");
@@ -583,7 +589,7 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     label(46, "Monitor");
     drawMonitor(g, 4.f, static_cast<float>(top + 59), 3);
     label(74, audio_ ? "Audio To" : "MIDI To");
-    chooser(87, audio_ ? "Master" : "No Output", true);
+    chooser(87, outputLabel(), true);
     chooser(103, "", false);
 }
 void MixerStrip::paintMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
@@ -655,16 +661,18 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     const std::string &kind = t != nullptr ? t->kind : none;
     const bool midi = t != nullptr && isMidiTrack(*t);
     const bool audio = t == nullptr || hasAudioMixer(*t, devices);
+    const bool grouped = t != nullptr && t->parent != 0;
     // A send knob per return on every track with an audio mixer but Main; on Main's Mixer View
     // strip, each return's Pre/Post switch instead (Live's Mixer).
     const auto knobs = t != nullptr && hasSends(*t) && audio ? order_.size() : 0;
     const auto switches = kind == "master" && panel_.vertical() ? order_.size() : 0;
     if (order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size() &&
-        midi == midi_ && audio == audio_)
+        midi == midi_ && audio == audio_ && grouped == inGroup_)
         return;
     kind_ = kind;
     midi_ = midi;
     audio_ = audio;
+    inGroup_ = grouped;
     returns_ = order_;
     returnCount_ = returns_.size();
     sends_.resize(std::min(sends_.size(), knobs));
