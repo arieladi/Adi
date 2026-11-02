@@ -912,6 +912,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(delay->sendOn(0) && delay->sendOn(1) && findSend(root.reader().sends(), 6, 5) != nullptr &&
                   findSend(root.reader().sends(), 6, 6) != nullptr && submitter.nextUndo()->label == "Enable All Sends",
               "Enable All Sends switches every send of B Delay on, one undo step");
+        render("adi-enable-all.png");
         delay->enableAllSends();
         check(root.error() == "Every send of this return is on already.", "and again only says so");
         check(root.command(AppCommands::Undo), "undo");
@@ -992,6 +993,8 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)) &&
               root.state().hideReturns && shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 7},
           "Ctrl/Cmd+Alt+R hides the returns");
+    root.frame();
+    render("adi-returns-hidden.png");
     // Insert Return Track (§18.4, Ctrl/Cmd+Alt+T): C Return after B Delay, selected, the returns shown
     // again; every track gets a send to it.
     check(root.keyPressed(juce::KeyPress('t', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),
@@ -1004,6 +1007,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
           "Insert Return Track makes C Return after the others, selected, the returns shown again");
     if (auto *first = rowOf(root.mixer, 1))
         check(first->sendKnobs().size() == 3 && first->sendsTo(2) == 8, "and every track has a send to it");
+    render("adi-return-inserted.png");
 }
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
