@@ -1150,14 +1150,22 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         y += h;
     }
     // Where the dragged tracks would land: a line at their depth, or the group they would go into.
+    // White, edged in black, to read on every title's colour and on the rule between rows.
     if (moving_) {
-        g.setColour(look::text);
         const int x = nameLeft(drop_.depth);
-        if (drop_.into != 0)
-            g.drawRect(x, view.geometry.rowTop(view.reader(), drop_.into), getWidth() - x,
-                       view.geometry.heightFor(drop_.into) - 2, 2);
-        else
+        if (drop_.into != 0) {
+            const juce::Rectangle<int> box(x, view.geometry.rowTop(view.reader(), drop_.into), getWidth() - x,
+                                           view.geometry.heightFor(drop_.into) - 2);
+            g.setColour(look::text);
+            g.drawRect(box, 4);
+            g.setColour(juce::Colours::white);
+            g.drawRect(box.reduced(1), 2);
+        } else {
+            g.setColour(look::text);
+            g.fillRect(x, drop_.y - 2, getWidth() - x, 4);
+            g.setColour(juce::Colours::white);
             g.fillRect(x, drop_.y - 1, getWidth() - x, 2);
+        }
     }
 }
 void TrackHeaderList::resized() {

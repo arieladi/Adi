@@ -918,12 +918,23 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
             if (auto stream = file.createOutputStream())
                 juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
         };
-        // Drags `id`'s title to `to`; what the line showed on the way.
+        // Drags `id`'s title to `to`; what the line showed on the way, and whether it was drawn.
+        bool lineShown = false;
         auto drag = [&](std::int64_t id, juce::Point<float> to, juce::ModifierKeys mods = {}, const char *shots = nullptr) {
             const auto from = at(id, 16);
             headers.mouseDown(pressAt(headers, from, mods));
             headers.mouseDrag(dragAt(headers, from, to, mods));
             const auto shown = headers.drop();
+            if (shown) {
+                // The line, white, where the drop would land; or the group outlined.
+                juce::Image image(juce::Image::ARGB, headers.getWidth(), headers.getHeight(), true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(image);
+                    headers.paintEntireComponent(g, true);
+                }
+                const int y = shown->into != 0 ? topOf(shown->into) + 1 : shown->y;
+                lineShown = image.getPixelAt(headers.nameLeft(shown->depth) + 30, y) == juce::Colours::white;
+            }
             if (shots != nullptr)
                 picture((std::string(shots) + "-dragging.png").c_str());
             headers.mouseUp(dragAt(headers, from, to, mods));
@@ -945,13 +956,13 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
               "the split line at a title's foot shows the resize cursor; the rest of the title does not");
         const int drumsTop = topOf(10);
         auto shown = drag(14, at(10, 6));
-        check(shown && shown->to.parent == 0 && shown->to.before == 10 && shown->y == drumsTop && shown->depth == 0 &&
+        check(shown && shown->to.parent == 0 && shown->to.before == 10 && shown->y == drumsTop && shown->depth == 0 && lineShown &&
                   order() == bassFirst && root.undoTitle(false) == "Undo Move Track" && lanes.selection.track == 14,
               "Bass dragged to Drums' upper half: the line above Drums, and Bass first, one step; still selected");
         undo();
         check(order() == tree && !headers.drop(), "undo puts Bass back in Body; no line once the drag is over");
         shown = drag(17, at(10, 30), {}, "adi-track-move");
-        check(shown && shown->to.parent == 10 && shown->to.before == 11 && shown->depth == 1 &&
+        check(shown && shown->to.parent == 10 && shown->to.before == 11 && shown->depth == 1 && lineShown &&
                   order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {17, 1}, {11, 1}, {12, 1}, {13, 0},
                                                                                   {14, 1}, {15, 1}, {16, 1}, {18, 2}, {1, 0}},
               "Rises dragged under open Drums: into it, at the top of what it holds, out of Fx And Hits");
@@ -966,7 +977,7 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         root.arrangement.toggleFold(10);
         root.frame();
         shown = drag(14, at(10, 20));
-        check(shown && shown->into == 10 && shown->to.parent == 10 && shown->to.before == 0,
+        check(shown && shown->into == 10 && shown->to.parent == 10 && shown->to.before == 0 && lineShown,
               "Bass dragged to the middle of folded Drums: the group outlined, at the end of what it holds");
         root.arrangement.toggleFold(10);
         root.frame();
