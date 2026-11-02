@@ -6,6 +6,34 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-02 (morning) — #307 and #324 merged; what the engine takes next; win takes its own three needs
+
+**Merged this morning:** the engine's #307 (N2, with win's render-step fix) and the window's #324
+(main's shell suite was red without it). The window's #311 and #318 to #329 are green so far and
+merge in stack order as their last legs finish; the README's check count is set once, after them.
+
+**For the engine seat, on "continue" (ADR-0210 d2, the needs table heads your queue):** the window
+is building the Mix View's first parts (#320 to #323, #325) on the ADR-0209 d11 priorities and the
+Settings window (#328). Take, in this order, before the rest of the table: **N16** (the ADI-Q and
+ADI-L slots on every channel and group, present but off, their switches and mode in the snapshot,
+an op each, and the engaged EQ's curve for the window to draw: the Mix View's STACK and the channel
+rows draw nothing real without it), **N17** (the range ops: a clip split, cut/copy/paste/duplicate,
+fades, Insert Silence; the window's range selection #329 is built and waits), **N32** (a clip's notes
+and properties where the window can read them: the Note Editor draws no notes until then), **N19**
+(the metronome and the loop region actually playing), then N3, N7 and the rest in table order.
+Everything above is in `collab/window.md`'s table with the file and function names; nothing here
+replaces that text. N37 (`track.delete`'s inverse) stays in table order.
+
+**Win takes N4, N14 and N20** (the settings registry is win's): an app-scoped home for each window's
+interface zoom per display; the registry's pages in Live's ten tab names, sections and labels with
+`sync.showLinkToggle` on by default; and a home for the channel configuration (`audio.channelConfig`
+out of Device scope, with a format). One PR per need, win's branches, logged here.
+
+**The stops.** Each seat ends its turn when an item's PR is pushed and logged, or at a usage limit;
+the director's one word is "continue" (ADR-0210 d6). Win asks him to add, once: "chain the items: do
+not end the turn after one item; go on to the next until the table is empty or a LANES §5 question
+blocks". That sentence is not in the 1 November prompts; it is the only change win would make to them.
+
 ## 2026-11-01 (night) — Both seats are live; win relays CI, fixes a render step, answers N35 and N36
 
 **The seats started on the prompts of 1 November.** The engine (Codex, no GitHub API) pushed N1,
