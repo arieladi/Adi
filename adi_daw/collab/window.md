@@ -73,6 +73,21 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — a group's row [#340](https://github.com/arieladi/Adi/pull/340) `window/group-rows`, on #339
+
+**Built: a group's row as Live's** (manual 18.3 and its figure of a group's Mixer strip; parity 7.6
+row 20). A group's In/Out, in the track controls and the Mixer, shows its output only; a track in a
+group plays to "Group", nested groups too. One `outputLabel()` for both views.
+
+**Measure on Live:** whether a grouped track's chooser reads "Group" or the group's name.
+
+**Tests.** shell 654; `test_all.sh` PASS (9905 checks, 106 suites). No golden moved.
+
+**Next:** the group's strip from the same figure: no Arm, the half-coloured Solo, the empty chooser
+under a return's or group's Audio To (`window/group-strip`).
+
+---
+
 ## 2026-11-02, cloud, continued — Group Tracks on every selected track [#339](https://github.com/arieladi/Adi/pull/339) `window/group-selected`, on #338
 
 **Built: Live's Group Tracks on the selection** (manual 18.3; parity 7.3 row 33). `groupTracks`
