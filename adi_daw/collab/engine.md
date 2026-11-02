@@ -13,6 +13,59 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N33 pushed; continuing to N34
+
+**PR requested** (ADR-0210 d4): `engine/clip-properties` at **`9b50180`** →
+**`engine/markers-locators`** (`bb846aa`, N25). Two deep; merge N25 first.
+Title: **Edit and play clip markers, loop, signature and scale (N33)**.
+
+PR body / window handoff: submit `clip.setStartMarker {id,ticks}`,
+`clip.setEndMarker {id,ticks}`, `clip.setLoop {id,on,start?,length?}`,
+`clip.setTimeSignature {id,num?,den?}` and
+`clip.setScale {id,root?,scale?,mask?}`. All are undoable snapshot edits; refresh
+ProjectView and Session, and N32's `readClipDetails` for the Clip View. Source
+markers/loop use ticks in 0..2^50 even for a linear clip, preserving placement
+and its units. Start pins the previous default End; End bounds non-loop audio
+at the exact sample in both graph widths and releases crossing MIDI notes.
+Loop uses its own window with End inactive. A malformed imported loop can still
+be switched off. Signature uses numerator1..255 / power-of-two denominator1..128,
+both omitted to inherit. Scale takes root0..11/nonempty id/12-bit relative mask
+including tonic, all omitted to inherit. Signature/scale are metadata, not an
+implicit Fit to Scale. `rows::Clip` and the text projection carry local values;
+N32's optional-table reader is already compatible (independent PR).
+
+Schema **1.11**, additive optional `clip_properties`, frozen 1.10 and migration/
+read-only tests. N25 is the format dependency; N32 is not a build dependency.
+Scalar inverses capture full core/property rows, update in place and retain
+presence/extensions. Clip delete also captures all native streams, expressions,
+audio, clip envelopes, properties, and alias links cleared by FK; restore keeps
+ids/types/BLOBs and refuses collisions. Legacy inverse payloads still apply.
+Arbitrary unknown child tables are not claimed. Full track deletion is still
+N37; this closes the clip-level loss newly exposed by Main properties.
+API/semantics: `docs/ENGINE-CLIP-PROPERTIES.md`, OPS/SPEC updated.
+
+**Win-owned integration edit before CI/merge:** README's table count is **51**
+in this branch, **53** in its schema. Please update `adi_daw/README.md:57` to
+53 in this PR, after N25's count52 edit. Engine leaves that count to win.
+This is `validate_schema.py`'s sole failure; every frozen minor0..10 upgrades to
+1.11 and the additive-object checks pass. No validator was weakened.
+
+Validation: GCC Debug/Werror, libpd on/JUCE off, **10061 checks / 108 suites**,
+all test binaries pass. `test_all.sh` returns failure solely on that README
+count; ops/pd/ci/layout validators pass. Seven Clang Werror suites pass:
+properties85, audio clips89, MIDI clips167, markers126, migrate175, projection211,
+media ops71. Tests include op-driven exact audio/MIDI source boundaries, double
+precision, loop End inactivity, full-state undo/redo/reopen, native cascade and
+alias restoration, collision rollback, extensions, invalid/batched edits and
+old read-only bytes unchanged. Five compiled plants fail: missing End pin (2),
+missing aliases (4), missing native children (4), no audio cut (2), no MIDI cut
+(1). No remote CI, MSVC/JUCE or measured Live parity result claimed. Win/window
+opens; win reviews/merges. Continuing to **N34** independently from main, using
+existing documented `note.setMute` for the active flag (muted=!active).
+No director gate reached.
+
+
+
 ## 2026-11-02 — N32 ready; continuing to N33
 
 **PR requested** (ADR-0210 d4): `engine/clip-details` at **`93f2e35`** →
