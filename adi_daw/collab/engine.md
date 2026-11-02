@@ -13,6 +13,42 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N37 Delete Track and Ungroup restore their contents
+
+**PR requested:** engine/track-delete-undo -> main, head **945f8d0**.
+**Title:** Restore complete track subtrees and routing on undo
+**Body:** N37: existing track.delete now captures the complete causal row image:
+track descendants, all columns/SQLite types, clips/streams/lanes/mixer/summing,
+nested racks, parameters, panels, expression routes and state hashes. It removes
+routing of every internal kind and owned automation/controller bindings, while
+keeping equal numeric hardware ids distinct. Surviving rows changed by FK SET
+NULL (aliases, lane membership, VCA links) have exact before/after images.
+track.create's paired inverse accepts optional versioned contents; ordinary
+create and old inverses still work. Restoration checks identities/current rows,
+uses a savepoint with temporary FK deferral, then verifies the complete causal
+image and FK integrity. Collisions, unrelated packet rows and changed surviving
+rows refuse atomically. Future keyed FK children, composite keys and future
+BLOB/NULL columns survive. Media_files, shared state_blobs and plugin_refs stay
+pooled; weak remarks, session views and unknown scoped extensions remain.
+No window call changes: its existing Delete/Ungroup batches get a full undo.
+No schema/opcode change; OPS.md section 6.3 documents the extended inverse.
+Affected user triggers, generated/unkeyed tables, key-changing SET NULL and SET
+DEFAULT effects currently refuse explicitly rather than silently losing data.
+The typed row_capture helpers match N15/N17 for merge compatibility; new FK child
+tables (such as N31 recording choices) are discovered automatically.
+
+**Validation:** GCC 14 Debug/Werror/PD ON/JUCE OFF test_all.sh **9923 / 107**,
+all validators clean. GCC + Clang 19: track deletion **38**, catalog **106**,
+history **95**, replay **63**. Full metadata digest matches across repeated
+undo/redo, reopen and Ungroup; late batch failure and restoration conflicts leave
+no partial changes. Strict GCC shadow checks pass for four changed sources.
+Isolated compiled defects caught: lost future cascades (2 failures), lost external
+restore (3), unrelated restore injection (1). No MSVC/remote CI claim. API still
+CONNECT 403; win/window opens this exact PR. Continuing N38/N39, no director gate.
+
+---
+
+
 ## 2026-11-02 — N27 remarks in the immutable snapshot
 
 **PR requested:** engine/snapshot-remarks -> main, head **06c372f**.
