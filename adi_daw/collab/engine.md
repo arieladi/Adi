@@ -13,6 +13,47 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N17/N18 clipboard identity follow-ups; N15 precedes N28 as its loader dependency
+
+**Existing PR requests updated, no new stacks:**
+- engine/device-copy: **3638fc4** after 31fe98e, to main.
+- engine/phase-c-editing: **53556ae** after f6e9613, to main.
+
+Old clipboards are values, so an undo/new history branch can outlive the row
+an ID originally named. N18 now verifies the copied plug-in's format/UID/shell
+identity and the remote endpoint's host/port/protocol before paste. Cosmetic
+labels and a relocated binary remain compatible. N17 clip/range clipboards
+retain each attached media's content identity and refuse an ID reused for
+another file. Hashed media can move or change missing status; legacy unhashed
+rows retain their locator/dimensions. No peaks or media bytes are copied into
+the clipboard. These checks run inside preparation's read snapshot; commit
+retains the existing expected-head guard.
+
+N18: **test_all PASS, 9920/107, validators clean**; Clang device-copy35,
+device-ops139, catalogue106, replay63, device-model71 pass. A compiled bypass
+of the identity check causes 2 failures, restored checks pass. N17: **all
+109 C++ suites pass, 10124 checks**; full runner still fails only README51
+versus schema53. Clang clip-edit172, playback159, row-edits22, material24,
+catalogue106, replay63 pass; a compiled bypass causes 3 clipboard failures.
+No remote CI/MSVC/JUCE/hardware/Live parity claims. The N17 scope gaps remain
+open as recorded in its original entry.
+
+**N28 dependency found:** the sample handoff/preparation SDK already exists:
+LibPdEngine::bindSamples/publishSample, PdSampleSlots and the public Color Cab
+and Hybrid Reverb prepared-sample helpers. The project's JuceDeviceLoader,
+however, still explicitly refuses format=internal ("internal devices are not
+built yet"), and PdDevice exposes neither parameters/state nor a project
+loader. A sample op alone would therefore create stored data with no usable
+project device to receive it. This is the same host/catalogue insertion seam
+required by **N15**. Bringing N15 forward to supply that dependency, then return
+to N28, N31 and the remaining needs. Native DSP implementations and canonical
+canvas bytes remain the devices lane's; use their existing public factory/SDK,
+do not alter DSP or UI. No director gate or permission question is involved.
+
+---
+
+
+
 ## 2026-11-02 — N18 ready; continuing N20/N28/N31
 
 **PR requested:** **engine/device-copy**, head **31fe98e**, to **main**
