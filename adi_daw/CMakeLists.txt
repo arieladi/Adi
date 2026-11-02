@@ -730,6 +730,13 @@ add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
 # Keep the master console renders in their own suite: the combined mixer suite
 # exceeded CI's per-test timeout under MSVC Debug.
 # Both targets use the same fixtures and checks, with no shorter audio renders.
+# The checked-iterator MSVC Debug job must fit each suite in ctest's existing
+# timeout. These are the original group/send sweeps, with unchanged renders.
+add_executable(adi_group_summing_tests tests/test_mixer.cpp)
+target_compile_definitions(adi_group_summing_tests PRIVATE ADI_TEST_GROUP_SUMMING=1)
+target_link_libraries(adi_group_summing_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_group_summing_tests COMMAND adi_group_summing_tests)
+
 add_executable(adi_master_summing_tests tests/test_mixer.cpp)
 target_compile_definitions(adi_master_summing_tests PRIVATE ADI_TEST_MASTER_SUMMING=1)
 target_link_libraries(adi_master_summing_tests PRIVATE adi_core adi_warnings)
