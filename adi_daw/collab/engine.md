@@ -13,6 +13,37 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-02 — N33 follow-up for N17's pinned source clocks
+
+**Existing PR request updated:** engine/clip-properties is now **7496a7d**
+(after 9b50180), still based on engine/markers-locators. Keep its one N33 PR;
+no merge, rebase, force or additional stack dependency.
+
+Start/End/Loop property edits now honor a present N17 clip_playback_details
+table: Start clears the offset and retained fade domains, End clears the
+source limit, and a loop window edit clears both physical endpoints. A
+switch-only edit keeps its dormant window. Their inverse restores the full
+typed details row (or absence), including future BLOB columns. Clip deletion
+also includes the optional playback/range child tables and remains able to
+restore old captured payloads. No N17 schema or C++ dependency was added;
+the standalone suite supplies the optional SQL seam.
+
+Window uses the same N33 ops. Win retains N17's stronger clip-image/FK guard
+when combining both branches; this follow-up supplies the property-clock
+invalidation and typed inverse. It prevents a successful field edit from
+leaving playback on an older split-time override.
+
+GCC Debug/Werror: **10071 checks across 108 C++ suites pass**. Full runner
+still fails only README's 51-vs-53 table count; other validators pass.
+Clang Werror: properties95, playback89, catalogue106, migration175 pass.
+A compiled lost-invalidation plant produces 3 failures, restored checks pass.
+Remote CI/MSVC/JUCE unobserved. Continuing with N26's retained-curve snapshot
+compatibility and then N18; the N17 remainder stays recorded above.
+
+---
+
+
+
 ## 2026-11-02 — N17 captured editing and material actions; N17 stays open for the rest of Time and Warp/video
 
 **PR requested** (ADR-0210 d4): **engine/phase-c-editing**, head
