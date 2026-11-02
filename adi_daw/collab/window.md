@@ -73,6 +73,17 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — tracks picked apart [#346](https://github.com/arieladi/Adi/pull/346) `window/picked-tracks`, on #345
+
+**Built: Live's Ctrl/Cmd+click on track titles** (parity 7.3 row 33): `Selection::picked` holds
+tracks picked apart from the others; a plain click lets them go; `inSelection` counts them, so Group
+Tracks, Solo, the Track Activator, Delete and 0 take them; the session state records them, so undo
+restores them.
+
+**Tests.** seams 241, shell 700; `test_all.sh` PASS (9925 checks, 106 suites). No golden moved.
+
+---
+
 ## 2026-11-02, cloud, continued — a track title's double-click [#345](https://github.com/arieladi/Adi/pull/345) `window/title-double-click`, on #344
 
 **Built: Live's double-click on a track's title** (Live 12 manual, Live Concepts; parity 7.3 row
