@@ -57,7 +57,7 @@ Fixed here so the plan cannot grow:
 | ADI Mobile's three modes | step 15 (ADR-0200) — but see §8 |
 | Control-surface hardware (Stream Deck etc.) | P2 (ADR-0181 d4) |
 | An Inspector | rejected (ADR-0047) |
-| Aux sends | rejected (ADR-0072) |
+| ~~Aux sends~~ | ~~rejected (ADR-0072)~~ — reversed by ADR-0203 d3: sends and returns come back, as Live's, and the mixer of 7.6 shows them |
 | Comping, VariAudio, Direct Offline Processing | later steps |
 | A second shell document | forbidden — revise `UI-ARCHITECTURE.md` |
 
@@ -537,8 +537,8 @@ A reference map is corroboration, not authority: where one disagrees with an
 ADR, the ADR wins and the disagreement is recorded rather than quietly followed.
 
 Every difference from Live is a **defect** unless (a) Adi approved it, dated,
-in the checklist, or (b) an ADR rejects the Live behaviour — only ADR-0072
-(sends) and ADR-0047 (Inspector) are named today.
+in the checklist, or (b) an ADR rejects the Live behaviour — only ADR-0047
+(Inspector) is named today. ADR-0072 (sends) was reversed by ADR-0203 d3.
 
 ---
 

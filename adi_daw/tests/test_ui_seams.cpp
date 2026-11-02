@@ -24,6 +24,7 @@
 #include "adi/ui/arrangement_geometry.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/reference_audition.hpp"
+#include "adi/ui/send_edits.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_order.hpp"
@@ -637,6 +638,104 @@ void groupAndUngroupAsBatches() {
           "what the menu offers follows the same rules");
 }
 
+void sendsAsBatches() {
+    section("Sends: one knob per return, a new send's row and level as one batch (ADR-0203 d3)");
+    adi::test::TempDirectory temp("ui_seams", "sends");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    bool made = true;
+    // B Delay made first at index 1, A Reverb at index 0: the arrangement's order is A, then B.
+    for (const auto& [id, kind, name, index] :
+         {std::tuple{1, "master", "Main", 0}, std::tuple{2, "audio", "Kick", 0}, std::tuple{3, "group", "Drums", 1},
+          std::tuple{11, "return", "B Delay", 1}, std::tuple{10, "return", "A Reverb", 0}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}};
+        r.label = "Create track";
+        made = sub.submit(std::move(r)).ok && made;
+    }
+    check(made, "Main, Kick, a group and two returns");
+    const auto& tracks = view.current()->tracks;
+    std::vector<std::int64_t> returns;
+    ui::returnsInOrder(tracks, returns);
+    check(returns == std::vector<std::int64_t>{10, 11}, "the returns in the arrangement's order: A, then B");
+    check(!ui::hasSends(*view.current()->findTrack(1)) && ui::hasSends(*view.current()->findTrack(3)) &&
+              ui::hasSends(*view.current()->findTrack(10)),
+          "every track has sends but Main; groups and returns too");
+    const auto* kick = view.current()->findTrack(2);
+    const auto* reverb = view.current()->findTrack(10);
+    check(ui::findSend(view.current()->sends, 2, 10) == nullptr && ui::sendLevel(nullptr) == ui::kSendSilenceDb &&
+              ui::sendOn(*kick, nullptr) && !ui::sendOn(*reverb, nullptr),
+          "without a row: fully down; a track's send on, a return's off until Enable Send");
+
+    // Turning Kick's send A up writes the row, then its level: one undo step.
+    auto edit = ui::setSend(view.current()->sends, 2, 10, -12);
+    check(edit.refusal.empty() && edit.ops.size() == 2 && edit.ops[0].opType == "routing.connect" &&
+              edit.ops[0].payload["kind"] == "send" && edit.ops[0].payload["src"] == 2 &&
+              edit.ops[0].payload["dst"] == 10 && edit.ops[1].opType == "routing.setGain" &&
+              edit.ops[1].payload["id"] == edit.ops[0].payload["id"] && edit.ops[1].payload["db"] == -12.0,
+          "a new send: the row, then its level");
+    check(sub.submit(std::move(edit.ops)).ok && sub.nextUndo() && sub.nextUndo()->opCount == 2 &&
+              sub.nextUndo()->label == "Change Send Level",
+          "one undo step, named");
+    const auto* send = ui::findSend(view.current()->sends, 2, 10);
+    check(send != nullptr && send->gainDb == -12.0 && send->enabled && !send->preFader &&
+              ui::sendOn(*view.current()->findTrack(2), send),
+          "the snapshot holds Kick's send A at -12 dB, on, post fader");
+    const auto first = send != nullptr ? send->id : 0;
+
+    // A row that exists: its level only. The bottom stop writes silence; the top stays at 0 dB.
+    auto again = ui::setSend(view.current()->sends, 2, 10, ui::kSendFloorDb);
+    check(again.ops.size() == 1 && again.ops[0].opType == "routing.setGain" && again.ops[0].payload["id"] == first &&
+              again.ops[0].payload["db"] == ui::kSendSilenceDb,
+          "fully down writes silence (-150 dB), on the same row");
+    check(sub.submit(std::move(again.ops)).ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == ui::kSendSilenceDb,
+          "and lands");
+    check(ui::setSend(view.current()->sends, 2, 10, -90).ops.empty() &&
+              ui::setSend(view.current()->sends, 3, 10, ui::kSendFloorDb).ops.empty(),
+          "a level that would not change writes nothing: no empty undo step, no row left fully down");
+    auto top = ui::setSend(view.current()->sends, 2, 10, 6);
+    check(top.ops.size() == 1 && top.ops[0].payload["db"] == ui::kSendTopDb, "past the top stays at 0 dB");
+    check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == -12.0, "undo brings -12 dB back");
+    check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10) == nullptr, "and then removes the row");
+    check(sub.redo().ok && ui::findSend(view.current()->sends, 2, 10) != nullptr, "redo");
+
+    // A second send gets the next id.
+    auto second = ui::setSend(view.current()->sends, 3, 11, -6);
+    check(second.ops.size() == 2 && second.ops[0].payload["id"] == first + 1 && sub.submit(std::move(second.ops)).ok &&
+              ui::findSend(view.current()->sends, 3, 11) != nullptr &&
+              ui::findSend(view.current()->sends, 3, 11)->gainDb == -6.0,
+          "the group's send B: a row with the next id");
+
+    // A return's send: off until Enable Send, which makes the row fully down; Enable Send again
+    // (unticked) switches it off; a return may send to itself.
+    auto enable = ui::enableSend(view.current()->sends, 10, 11, true);
+    check(enable.refusal.empty() && enable.ops.size() == 2 && enable.ops[0].opType == "routing.connect" &&
+              enable.ops[1].payload["db"] == ui::kSendSilenceDb && sub.submit(std::move(enable.ops)).ok &&
+              sub.nextUndo()->label == "Enable Send",
+          "Enable Send on A's send B: the row, fully down, one step");
+    const auto* ab = ui::findSend(view.current()->sends, 10, 11);
+    check(ab != nullptr && ab->enabled && ui::sendOn(*view.current()->findTrack(10), ab), "A's send B is on");
+    check(ui::enableSend(view.current()->sends, 10, 11, true).refusal == "The send is on already." &&
+              ui::enableSend(view.current()->sends, 10, 10, false).refusal == "The send is off already.",
+          "nothing to do is said, not written");
+    auto off = ui::enableSend(view.current()->sends, 10, 11, false);
+    check(off.ops.size() == 1 && off.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(off.ops)).ok &&
+              !ui::findSend(view.current()->sends, 10, 11)->enabled &&
+              !ui::sendOn(*view.current()->findTrack(10), ui::findSend(view.current()->sends, 10, 11)),
+          "unticked: the row switched off, kept");
+    auto on = ui::enableSend(view.current()->sends, 10, 11, true);
+    check(on.ops.size() == 1 && on.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(on.ops)).ok &&
+              ui::findSend(view.current()->sends, 10, 11)->enabled,
+          "ticked again: the same row back on");
+    auto loop = ui::enableSend(view.current()->sends, 10, 10, true);
+    check(sub.submit(std::move(loop.ops)).ok && ui::findSend(view.current()->sends, 10, 10) != nullptr,
+          "A may send to itself (Live's feedback loop)");
+}
+
 void returnsStandBeforeMain() {
     section("the returns after the tracks, Main last: Live's foot (manual 6.1)");
     adi::test::TempDirectory temp("ui_seams", "returns");
@@ -744,6 +843,7 @@ int main() {
     metersCountBars();
     groupAndUngroupAsBatches();
     returnsStandBeforeMain();
+    sendsAsBatches();
     referenceTapAndHold();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);

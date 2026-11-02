@@ -233,6 +233,9 @@ class AdiRootComponent final : public juce::Component {
     juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
     // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
     bool submitEdit(const std::string &op, Payload payload, const char *label);
+    // Several ops as one undo step (a batch lands whole or not at all); a refusal goes to the
+    // Status Bar.
+    bool submitEdits(std::vector<OpRequest> ops);
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }
@@ -245,6 +248,8 @@ class AdiRootComponent final : public juce::Component {
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
     bool groupTracks(bool ungroup);
+    // After a submit: a refusal to the Status Bar; an edit pauses Follow and repaints.
+    bool edited(const SubmitResult &);
     bool focusView(int);
     bool fail(std::string message);
     bool toggle(Panel);
