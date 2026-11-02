@@ -7,8 +7,11 @@
 #include <string_view>
 namespace adi::ui {
 namespace {
-// Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf.
-constexpr double kFloorDb = -70, kTopDb = 6;
+// Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
+// silence as the format defines it, at or below -150 dB (SPEC §6.9), never the -70 dB it stands
+// on: -70 dB is quiet, not silent.
+constexpr double kFloorDb = -70, kTopDb = 6, kSilenceDb = -150;
+double writtenVolume(double db) noexcept { return db <= kFloorDb ? kSilenceDb : db; }
 // Live 11's meter, measured: +6 dB at the top, then 0, -12, -24, -36, -48 and -60 dB
 // at these depths; the scale is wider near 0 dB, as Live's.
 constexpr std::array<std::pair<double, double>, 7> kScale{
@@ -118,7 +121,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     // double-click changes commit at once.
     volume.onDragEnd = [this] {
         dragging_ = false;
-        panel_.submit("mixer.setVolume", {{"id", track_}, {"db", volume.getValue()}},
+        panel_.submit("mixer.setVolume", {{"id", track_}, {"db", writtenVolume(volume.getValue())}},
                       "Change Track Volume");
     };
     pan.onDragEnd = [this] {
@@ -128,7 +131,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     };
     volume.onValueChange = [this] {
         if (!dragging_)
-            panel_.submit("mixer.setVolume", {{"id", track_}, {"db", volume.getValue()}},
+            panel_.submit("mixer.setVolume", {{"id", track_}, {"db", writtenVolume(volume.getValue())}},
                           "Change Track Volume");
     };
     pan.onValueChange = [this] {
