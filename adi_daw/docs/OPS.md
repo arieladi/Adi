@@ -478,6 +478,15 @@ silent truncation in JSON, a non-issue in CBOR.
 | `macro.unmap` | e | S | cap | P2 |
 | `macro.setRange` | e | S | sym | P2 |
 
+N7's `ParamOps::uiEvent` emits the existing `device.setParam` requests with
+the same first-touch opener and normalization as a plug-in's own edit capture.
+Commit each completed gesture's batch as one transaction; unbracketed UI edits
+finish on the ordinary drain timer. Session-connected UI input overrides its
+device automation lane before gesture completion, without an extra op. Runtime
+overrides resume through Session's existing Re-Enable API. The UI and plug-in
+captures have separate producers. `docs/ENGINE-UI-PARAM-CAPTURE.md` defines the
+commit, lifetime, refusal and delayed-echo contract. No new vocabulary/schema.
+
 ### 9.8 Routing and mixer
 
 | Op | S | E | Inv | P |

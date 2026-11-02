@@ -360,6 +360,9 @@ public:
     /// Message thread. The op log is the source of truth (ADR-0038); this
     /// pushes a value the log has already recorded into the live plugin.
     virtual bool setParam(const std::string& paramId, const ParamValue& v);
+    /// Message thread: an accepted control is still waiting for processing.
+    /// State recall must supersede it even if the serialized chunk is equal.
+    [[nodiscard]] virtual bool hasPendingParamChanges() const noexcept { return false; }
 
     // --- opaque state (ADR-0038) -------------------------------------------
 

@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 // Dynamic loading is the one genuinely platform-specific thing in a CLAP
 // host, and it is three calls. Split here rather than behind a wrapper
 // library: a wrapper for `LoadLibrary` versus `dlopen` is more code than
@@ -546,8 +547,21 @@ ParamValue ClapDevice::getParam(const std::string& paramId) const noexcept {
         paramsExt_->get_value == nullptr) return {};
     for (std::size_t i = 0; i < params_.size(); ++i) {
         if (params_[i].id != paramId) continue;
+        // This getter belongs to the same message-thread producer as setParam.
+        // The consumer never writes slots, and does not acknowledge a batch
+        // until process returns. Expose the latest accepted intent meanwhile.
+        std::optional<double> queued;
+        if (!pending_.empty()) {
+            auto read = pendingRead_.load(std::memory_order_acquire);
+            const auto end = pendingWrite_.load(std::memory_order_relaxed);
+            while (read != end) {
+                if (pending_[read].id == paramIds_[i]) queued = pending_[read].value;
+                read = read+1 == pending_.size() ? 0 : read+1;
+            }
+        }
         double plain = 0.0;
-        if (!paramsExt_->get_value(plugin_, paramIds_[i], &plain))
+        if (queued) plain = *queued;
+        else if (!paramsExt_->get_value(plugin_, paramIds_[i], &plain))
             return params_[i].defaultValue;
         const double span = params_[i].maxReal - params_[i].minReal;
         const double norm = (span > 0.0) ? (plain - params_[i].minReal) / span : 0.0;
@@ -590,10 +604,13 @@ bool ClapDevice::setParam(const std::string& paramId, const ParamValue& v) {
             paramsExt_->flush(plugin_, one.inputEvents(), &outEvents_);
             return true;
         }
-        if (pendingUsed_ >= pending_.size()) { ++pendingDropped_; return false; }
-        pending_[pendingUsed_].id = paramIds_[i];
-        pending_[pendingUsed_].value = plain;
-        ++pendingUsed_;
+        if (pending_.empty()) return false;
+        const auto write = pendingWrite_.load(std::memory_order_relaxed);
+        const auto next = write+1 == pending_.size() ? 0 : write+1;
+        if (next == pendingRead_.load(std::memory_order_acquire)) { ++pendingDropped_; return false; }
+        pending_[write].id = paramIds_[i];
+        pending_[write].value = plain;
+        pendingWrite_.store(next,std::memory_order_release);
         return true;
     }
     return false;
@@ -663,11 +680,13 @@ std::vector<std::uint8_t> ClapDevice::saveState(const std::string& role) const {
 bool ClapDevice::loadState(const std::string& role, const std::vector<std::uint8_t>& b) {
     if (plugin_ == nullptr || stateExt_ == nullptr || stateExt_->load == nullptr ||
         role != "chunk") return false;
+    const ReactivationGate::Hold hold(gate_);
     VecIn src(b);
     // ADR-0142: a plugin commonly answers a load with params.rescan(VALUES);
     // that answer is not the user's boundary. Both calls are main-thread.
     if (glue_ != nullptr) glue_->muteStateSignals();
     const bool ok = stateExt_->load(plugin_, &src.is);
+    if (ok) pendingRead_.store(pendingWrite_.load(std::memory_order_relaxed),std::memory_order_release);
     if (glue_ != nullptr) glue_->unmuteStateSignals();
     return ok;
 }
@@ -975,6 +994,7 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
         processing_ = false;
         if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     }
+    flushPendingParams();
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
     // ADR-0099: deactivated now, so the note ports may be scanned -- they can
@@ -1085,8 +1105,9 @@ void ClapDevice::prepare(double sampleRate, std::int32_t maxFrames) {
     routedStore_.assign(static_cast<std::size_t>(routedCap), engine::MpeOut{});
     routed_ = engine::MpeOutList(routedStore_.data(), routedCap);
 
-    pending_.assign(256, PendingParam{});
-    pendingUsed_ = 0;
+    pending_.assign(257, PendingParam{}); // 256 usable slots plus the SPSC sentinel
+    pendingRead_.store(0,std::memory_order_relaxed);
+    pendingWrite_.store(0,std::memory_order_relaxed);
     injected_.assign(static_cast<std::size_t>((perNote > 0 ? perNote : 8) * 16),
                      engine::Event{});
     injectedUsed_ = 0;
@@ -1147,6 +1168,27 @@ void ClapDevice::release() {
     processing_ = false;
     if (plugin_->deactivate != nullptr) plugin_->deactivate(plugin_);
     activated_ = false;
+    flushPendingParams();
+}
+
+void ClapDevice::flushPendingParams() {
+    // A driver stop must not discard accepted UI intents before the next
+    // audio block. Inactive flush belongs to this message thread (params.h).
+    auto read = pendingRead_.load(std::memory_order_relaxed);
+    const auto end = pendingWrite_.load(std::memory_order_acquire);
+    if (read != end && paramsExt_ && paramsExt_->flush) {
+        ClapEventList remaining;
+        remaining.reserve(256);
+        while (read != end) {
+            engine::Event event;
+            event.type = engine::EventType::ParamValue;
+            event.paramId = pending_[read].id; event.value = pending_[read].value;
+            remaining.add(event);
+            read = read+1 == pending_.size() ? 0 : read+1;
+        }
+        paramsExt_->flush(plugin_,remaining.inputEvents(),&outEvents_);
+        pendingRead_.store(read,std::memory_order_release);
+    }
 }
 
 std::int32_t ClapDevice::indexOfParamByText(const std::string& id) const noexcept {
@@ -1297,15 +1339,17 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
     // are sample-accurate and this is the floor of that, not the ceiling:
     // once the graph drives them per segment they carry a real offset and
     // nothing here changes (ADR-0042).
-    for (std::size_t i = 0; i < pendingUsed_; ++i) {
+    auto read = pendingRead_.load(std::memory_order_relaxed);
+    const auto pendingEnd = pendingWrite_.load(std::memory_order_acquire);
+    while (read != pendingEnd && !events_.full()) {
         engine::Event e;
         e.type = engine::EventType::ParamValue;
-        e.paramId = static_cast<std::uint32_t>(pending_[i].id);
-        e.value = pending_[i].value;
+        e.paramId = static_cast<std::uint32_t>(pending_[read].id);
+        e.value = pending_[read].value;
         e.frame = io.blockOffset;      // segment start, once the offset goes
-        events_.add(e, io.blockOffset, n);
+        if (!events_.add(e, io.blockOffset, n)) break;
+        read = read+1 == pending_.size() ? 0 : read+1;
     }
-    pendingUsed_ = 0;
 
     // CLAP requires input events in time order, and the list above was built
     // from three sources. Queued parameters went in last at the segment's
@@ -1362,6 +1406,7 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
         steadyTime_ += n;
         return;
     }
+    pendingRead_.store(read,std::memory_order_release);
 
     if (wideIo) {
         for (std::int32_t c = 0; c < io.channels; ++c) {

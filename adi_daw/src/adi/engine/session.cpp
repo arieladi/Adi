@@ -8,6 +8,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "juce/clap_host.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -567,9 +568,22 @@ struct StripValues {
     double volume = 0.0, pan = 0.0;
     bool muted = false;
 };
+std::optional<std::string> automationParamRef(const std::string& format, const std::string& id) {
+    if (format != "clap") return id;
+    std::uint32_t numeric = 0;
+    if (!device::ClapDevice::paramIdFromText(id,numeric)) return {};
+    return std::to_string(numeric); // ADR-0165: lane refs stay decimal for every format
+}
 std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
     std::map<std::pair<std::int64_t, std::string>, double> v;
-    for (const rows::PluginParam& p : m.pluginParams) v[{p.deviceId, p.paramId}] = p.normalized;
+    std::set<std::int64_t> clapRefs, clapDevices;
+    for (const auto& reference : m.pluginRefs) if (reference.format == "clap") clapRefs.insert(reference.id);
+    for (const auto& item : m.devices)
+        if (item.pluginRefId && clapRefs.contains(*item.pluginRefId)) clapDevices.insert(item.id);
+    for (const rows::PluginParam& p : m.pluginParams) {
+        const auto ref = automationParamRef(clapDevices.contains(p.deviceId) ? "clap" : "",p.paramId);
+        if (ref) v[{p.deviceId,*ref}] = p.normalized;
+    }
     return v;
 }
 
@@ -748,6 +762,17 @@ bool Session::reenableAutomation() {
 
 bool Session::reenableAutomation(std::int64_t laneId) {
     if (overridden_.erase(laneId) == 0) return false;
+    return rebuild();
+}
+
+bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId) {
+    if (!deviceAutomation_) return true;
+    const auto* instance = instanceFor(deviceId);
+    const auto ref = automationParamRef(instance ? instance->identity().format : "",paramId);
+    if (!ref) return true;
+    const auto lane = deviceAutomation_->laneFor.find({deviceId,*ref});
+    if (lane == deviceAutomation_->laneFor.end() || overridden_.contains(lane->second)) return true;
+    overridden_.insert(lane->second);
     return rebuild();
 }
 

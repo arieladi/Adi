@@ -160,6 +160,7 @@ public:
     [[nodiscard]] std::int32_t size() const noexcept {
         return static_cast<std::int32_t>(events_.size());
     }
+    [[nodiscard]] bool full() const noexcept { return cap_ <= 0 || events_.size() >= static_cast<std::size_t>(cap_); }
 
     /// Translate one ADI event.
     ///
@@ -271,6 +272,9 @@ public:
     [[nodiscard]] std::string paramText(const std::string& paramId,
                                         double normalized) const override;
     bool setParam(const std::string& paramId, const ParamValue& v) override;
+    [[nodiscard]] bool hasPendingParamChanges() const noexcept override {
+        return pendingRead_.load(std::memory_order_acquire) != pendingWrite_.load(std::memory_order_acquire);
+    }
 
     [[nodiscard]] std::vector<std::string> stateRoles() const override;
     [[nodiscard]] std::vector<std::uint8_t> saveState(const std::string& role) const override;
@@ -380,7 +384,7 @@ public:
     /// Events refused because a queue was full. Non-zero means the capacity
     /// derived at prepare was too small for what arrived (ADR-0056).
     [[nodiscard]] std::int64_t eventsDropped() const noexcept {
-        return events_.dropped() + pendingDropped_;
+        return events_.dropped() + pendingDropped_.load(std::memory_order_relaxed);
     }
 
     /// Events whose frame fell outside the segment they were handed with.
@@ -484,8 +488,11 @@ private:
     /// counted, like every other queue in this project.
     struct PendingParam { clap_id id; double value; };
     std::vector<PendingParam> pending_;
-    std::size_t pendingUsed_ = 0;
-    std::int64_t pendingDropped_ = 0;
+    // One message-thread producer and the audio consumer. prepare/release
+    // change storage only while processing is quiescent.
+    std::atomic<std::size_t> pendingRead_{0}, pendingWrite_{0};
+    std::atomic<std::int64_t> pendingDropped_{0};
+    void flushPendingParams(); // owner thread, processing quiescent, plug-in inactive
 
     /// Audio, allocated at prepare. CLAP wants an array of channel pointers
     /// per bus; the graph hands separate in and out pointers (ADR-0045's port

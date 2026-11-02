@@ -168,6 +168,11 @@ public:
     /// One lane only: the parameter's context menu in Live. False if that lane
     /// was not overridden.
     bool reenableAutomation(std::int64_t laneId);
+    /// Message thread: a live UI value overrides its device lane before the
+    /// gesture commits, so playback cannot fight the drag. No op/history row;
+    /// reenableAutomation resumes it. True for an absent/already-overridden
+    /// lane too; false if rebuilding the requested binding failed (error()).
+    bool overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId);
 
     /// ADR-0165: the device lanes this rebuild plays, per device. Message
     /// thread, for tests and the UI: null until the first rebuild.
