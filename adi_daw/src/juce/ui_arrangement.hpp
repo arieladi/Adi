@@ -28,16 +28,39 @@ class ArrangementOverview final : public juce::Component, public juce::SettableT
     ArrangementView &view;
     juce::Point<float> last;
 };
+// The title bar's own editor for Rename: Enter commits, Esc cancels, Tab commits
+// and moves on to the next track's title (Shift+Tab, the previous), as Live.
+class RenameEditor final : public juce::TextEditor {
+  public:
+    bool keyPressed(const juce::KeyPress &) override;
+    std::function<void()> onCommit, onCancel;
+    std::function<void(bool forward)> onTab;
+};
 // The scrub area (Live 12 manual 6.1, p. 161): a click anywhere in it launches
 // playback from that point. Holding to loop waits for the transport's loop.
+// Its time signature markers (manual 6.5): a click on one selects it; its menu holds Insert Time
+// Signature Change, and on a marker Edit Time Signature and Delete.
 class ScrubArea final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit ScrubArea(ArrangementView &);
     void paint(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
+    // The position of the time signature marker drawn under `x`, or -1.
+    std::int64_t markerAt(float x) const;
+    // Insert Time Signature Change at `pos` (inserting), or Edit Time Signature on the marker there:
+    // a field over the marker, holding the signature in force there, selected; Enter commits, Esc
+    // cancels. A value refused keeps the field open, and the Status Bar says why.
+    bool beginMeterEdit(std::int64_t pos, bool inserting);
+    std::int64_t meterEditing() const noexcept { return editing_; }
+    juce::PopupMenu menu();
+    RenameEditor editor;
 
   private:
+    juce::Rectangle<float> markerBox(const textproj::Meter &) const;
+    void endMeterEdit();
     ArrangementView &view;
+    std::int64_t editing_ = -1;
+    bool inserting_ = false;
 };
 // The beat-time ruler (Live 12 manual 6.1): bars-beats-sixteenths; drag sideways
 // scrolls, vertically zooms; a double-click zooms to the selection, or out to the
@@ -56,14 +79,6 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
 };
 // One row per track, on the RIGHT of the clips as in Live's Arrangement View (on the left,
 // before the track controls, with the side panels swapped).
-// The title bar's own editor for Rename: Enter commits, Esc cancels, Tab commits
-// and moves on to the next track's title (Shift+Tab, the previous), as Live.
-class RenameEditor final : public juce::TextEditor {
-  public:
-    bool keyPressed(const juce::KeyPress &) override;
-    std::function<void()> onCommit, onCancel;
-    std::function<void(bool forward)> onTab;
-};
 class TrackHeaderList final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit TrackHeaderList(ArrangementView &);
@@ -285,6 +300,9 @@ class ArrangementView final : public juce::Component {
     // Paused by an edit, a sideways scroll or a click on the ruler; a click in the lanes or
     // the scrub area, or playback starting or stopping, starts it again.
     bool followPaused = false;
+    // The selected time signature marker's position (Live 12 manual 6.5), or -1. A click in the
+    // lanes or on a track's title lets it go; Delete and Ctrl/Cmd+R act on it while it is selected.
+    std::int64_t selectedMeter = -1;
     const SnapshotReader &reader() const;
     // Live 11's measures at 100 % (2026-10-27): the Overview with its margin, the beat
     // ruler with its numbers along its foot, the locator band, a dark gap, then the
