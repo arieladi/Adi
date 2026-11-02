@@ -73,6 +73,19 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-02, cloud, continued — Live's Solo rules [#343](https://github.com/arieladi/Adi/pull/343) `window/solo-rules`, on #342
+
+**Built: Live's Solo rules** (manual 18.1, §42.19; parity 7.6 row 7): Exclusive Solo from
+`record.exclusiveSolo` (on by default), Ctrl/Cmd adds, the selected tracks solo together, S solos
+the selected tracks; one step each (`soloTracks`).
+
+**Tests.** seams 235, shell 676; `test_all.sh` PASS (9919 checks, 106 suites). No golden moved.
+
+**Next:** the Track Activator's rules: the selected tracks together, 0 on the selection, F1–F8
+(parity 7.6 row 6) (`window/activator-rules`).
+
+---
+
 ## 2026-11-02, cloud, continued — the colour chooser [#342](https://github.com/arieladi/Adi/pull/342) `window/colour-chooser`, on #341
 
 **Built: Live's colour chooser in a track's menu** (manual 2.3.2; parity 7.3 row 34): swatches of
