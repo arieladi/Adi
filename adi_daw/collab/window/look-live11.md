@@ -44,7 +44,7 @@ With `ADI_UI_PARITY=<folder>` it writes a 2x render to lay beside the capture.
 | # | Live shows | ADI shows | Waits on |
 |---|---|---|---|
 | 1 | The browser's list (folders, devices) | The list's header only | The browser's content model (LANES §3b item 2) |
-| 2 | Return tracks A and B and Main, last, with Post and the cue volume | Nothing below the tracks | The snapshot's track kind and returns (N6, N11) |
+| 2 | Return tracks A and B and Main, last, with Post and the cue volume | Built 2 November 2026: the returns and Main at the foot (#315), the returns' letters and Pre/Post, Main's own row (`window/return-main-rows`) | Main's cue volume (N43) |
 | 3 | MIDI tracks: All Ins, All Channels, No Output; no volume or pan; a dot meter | Every track drawn as an audio track | The track's kind (N6) |
 | 4 | ~~The sends' -inf boxes~~ | ~~ADI-Q and ADI-L in that row~~ | Built 2 November 2026 (`window/send-knobs`): the boxes on that row, ADI-Q and ADI-L on the next |
 | 5 | In/Out choosers with the track's own routing | ADI's fixed routing: Ext. In, 1/2, Auto, Master | The routing in the snapshot (N11) |

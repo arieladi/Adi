@@ -172,6 +172,18 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
                           t->soloed ? "Unsolo Track" : "Solo Track");
     };
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
+    // A return's Pre/Post (ADR-0203 d3), where a track has Arm: every send into it taps before or
+    // after the fader. Shown on a return's row only.
+    prePost.setTitle("Pre/Post");
+    prePost.setTooltip("Whether this return's sends tap before or after their tracks' faders.");
+    prePost.setClickingTogglesState(false);
+    prePost.setColour(juce::TextButton::buttonColourId, look::button);
+    prePost.setColour(juce::TextButton::buttonOnColourId, look::accent);
+    prePost.setMouseClickGrabsKeyboardFocus(false);
+    prePost.getProperties().set("live.focusRing", true);
+    prePost.getProperties().set("live.font", 11.0);
+    prePost.onClick = [this] { throwPrePost(track_); };
+    addChildComponent(prePost);
     // Present but off: the slots exist on every strip; what fills them is ADI-Q and
     // ADI-L from the clones lane, in the engine's channel slots (LANES §3 item 7).
     // A slot opens the Mix View's STACK on its track, where every channel's EQ and limiter
@@ -207,9 +219,16 @@ void MixerStrip::frame(bool changed) noexcept {
         // as Live's (and as a # in its name does); the text changes only when it moves.
         const auto rows = panel_.root.arrangement.geometry.rows(panel_.root.reader());
         if (const auto at = rows.find(track_); at < rows.size()) {
-            if (position_ != at + 1) {
-                position_ = at + 1;
-                active.setButtonText(juce::String(static_cast<int>(position_)));
+            position_ = at + 1;
+            // A return's activator shows its letter, as Live's ("A", "B"); a track's its number. The
+            // text changes only when the label does, so a steady frame allocates nothing.
+            const int label = kind_ == "return"
+                                  ? -1 - static_cast<int>(std::find(returns_.begin(), returns_.end(), track_) - returns_.begin())
+                                  : static_cast<int>(position_);
+            if (label != label_) {
+                label_ = label;
+                active.setButtonText(label < 0 ? juce::String::charToString(static_cast<juce::juce_wchar>('A' + (-1 - label) % 26))
+                                               : juce::String(label));
             }
             const auto parent = rows[at].place.parent;
             const auto group = parent == 0 ? rows.size() : rows.find(parent);
@@ -242,6 +261,19 @@ void MixerStrip::frame(bool changed) noexcept {
             sends_[i]->setAlpha(on ? 1.f : .45f);
             sends_[i]->setInterceptsMouseClicks(on, false);
         }
+        // Pre/Post, lit while the sends tap after the fader: a return's own, and Main's for each
+        // return in the Mixer View.
+        auto showPost = [&rows](juce::TextButton &b, std::int64_t ret) {
+            const bool post = !returnPre(rows, ret);
+            if (post != b.getToggleState() || post != (b.getButtonText() == "Post")) {
+                b.setButtonText(post ? "Post" : "Pre");
+                b.setToggleState(post, juce::dontSendNotification);
+            }
+        };
+        if (kind_ == "return")
+            showPost(prePost, track_);
+        for (std::size_t i = 0; i < returnSwitches_.size(); ++i)
+            showPost(*returnSwitches_[i], returns_[i]);
         repaint();
     }
     // The meter reads the newest frames of the track's tap: wait-free, no allocation.
@@ -283,6 +315,17 @@ void MixerStrip::resized() {
             sends_[i]->setVisible(i < shown_);
             sends_[i]->setBounds(sendBounds(i));
         }
+        // Main's Sends section holds each return's Pre/Post switch where a track has its knobs.
+        for (std::size_t i = 0; i < returnSwitches_.size(); ++i) {
+            const auto b = sendBounds(i);
+            returnSwitches_[i]->setVisible(i < shown_);
+            returnSwitches_[i]->setBounds(b.getX(), b.getY() + 9, 34, 14);
+        }
+        // Live's Mixer: a return has its letter and Solo but no Arm; Main none of the three.
+        active.setVisible(kind_ != "master");
+        solo.setVisible(kind_ != "master");
+        arm.setVisible(kind_ != "master" && kind_ != "return");
+        prePost.setVisible(false);
         const int top = mixerTop(), bottom = getHeight();
         eq.setBounds(4, 22, 29, 13);
         limiter.setBounds(37, 22, 29, 13);
@@ -308,11 +351,26 @@ void MixerStrip::resized() {
         c.setVisible(row < rows);
         c.setBounds(r);
     };
-    place(active, 0, {x + 4, 3, 45, 13});
-    place(solo, 0, {x + 54, 3, 20, 13});
-    place(arm, 0, {x + 78, 3, 21, 13});
-    place(volume, 1, {x + 4, 20, 35, 13});
-    place(pan, 1, {x + 54, 20, 45, 13});
+    if (kind_ == "master") {
+        // Live's Main row: no activator, Solo or Arm; its volume where a track has its activator.
+        for (juce::Component *c : std::initializer_list<juce::Component *>{&active, &solo, &arm, &prePost})
+            c->setVisible(false);
+        place(volume, 0, {x + 4, 3, 45, 13});
+        place(pan, 1, {x + 54, 20, 45, 13});
+    } else {
+        place(active, 0, {x + 4, 3, 45, 13});
+        place(solo, 0, {x + 54, 3, 20, 13});
+        // A return's Pre/Post where a track has Arm, as Live's ("A", "S", "Post").
+        if (kind_ == "return") {
+            arm.setVisible(false);
+            place(prePost, 0, {x + 76, 3, 25, 13});
+        } else {
+            prePost.setVisible(false);
+            place(arm, 0, {x + 78, 3, 21, 13});
+        }
+        place(volume, 1, {x + 4, 20, 35, 13});
+        place(pan, 1, {x + 54, 20, 45, 13});
+    }
     // Live's sends on the rows under volume and pan, its 29 pt boxes three to a row; ADI's slots
     // on the row after them.
     for (std::size_t i = 0; i < sends_.size(); ++i) {
@@ -413,6 +471,16 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
             look::triangle(g, {r.getRight() - 10, r.getY() + 4, 7, 5}, juce::MathConstants<float>::halfPi,
                            enabled ? look::text : look::textDim);
     };
+    // Main plays to the outputs, a return to Main; neither records, so neither has an input or the
+    // monitoring switch, as Live's.
+    if (kind_ == "master") {
+        chooser(0, "1/2", true);
+        return;
+    }
+    if (kind_ == "return") {
+        chooser(0, "Master", true);
+        return;
+    }
     chooser(0, "Ext. In", true);
     chooser(1, "1/2", false);
     if (rows > 2) {
@@ -496,19 +564,52 @@ void MixerStrip::syncSends() {
     const auto &reader = panel_.root.reader();
     const auto *t = reader.findTrack(track_);
     returnsInOrder(reader.tracks(), order_);
-    const auto returns = order_.size();
-    if (t == nullptr || !hasSends(*t))
-        order_.clear();
-    if (order_ == returns_ && returns == returnCount_)
+    static const std::string none;
+    const std::string &kind = t != nullptr ? t->kind : none;
+    // A send knob per return on every track but Main; on Main's Mixer View strip, each return's
+    // Pre/Post switch instead (Live's Mixer).
+    const auto knobs = t != nullptr && hasSends(*t) ? order_.size() : 0;
+    const auto switches = kind == "master" && panel_.vertical() ? order_.size() : 0;
+    if (order_ == returns_ && kind == kind_ && knobs == sends_.size() && switches == returnSwitches_.size())
         return;
-    returnCount_ = returns;
+    kind_ = kind;
     returns_ = order_;
-    sends_.resize(std::min(sends_.size(), returns_.size()));
-    while (sends_.size() < returns_.size())
+    returnCount_ = returns_.size();
+    sends_.resize(std::min(sends_.size(), knobs));
+    while (sends_.size() < knobs)
         sends_.push_back(makeSend(sends_.size()));
-    sendOn_.assign(returns_.size(), 1);
+    returnSwitches_.resize(std::min(returnSwitches_.size(), switches));
+    while (returnSwitches_.size() < switches) {
+        auto button = std::make_unique<juce::TextButton>("Post");
+        const auto index = returnSwitches_.size();
+        button->setTitle("Pre/Post " + juce::String::charToString(static_cast<juce::juce_wchar>('A' + index % 26)));
+        button->setTooltip("Whether this return's sends tap before or after their tracks' faders.");
+        button->setClickingTogglesState(false);
+        button->setColour(juce::TextButton::buttonColourId, look::button);
+        button->setColour(juce::TextButton::buttonOnColourId, look::accent);
+        button->setMouseClickGrabsKeyboardFocus(false);
+        button->getProperties().set("live.font", 11.0);
+        button->onClick = [this, index] {
+            if (index < returns_.size())
+                throwPrePost(returns_[index]);
+        };
+        addAndMakeVisible(*button);
+        returnSwitches_.push_back(std::move(button));
+    }
+    sendOn_.assign(knobs, 1);
     resized();
     repaint();
+}
+void MixerStrip::throwPrePost(std::int64_t ret) {
+    // From the CURRENT cell (ADR-0201): every send into the return moved, one undo step.
+    const auto current = panel_.root.current();
+    if (!current)
+        return;
+    auto edit = setReturnPre(current->sends, ret, !returnPre(current->sends, ret));
+    if (!edit.refusal.empty())
+        panel_.root.say(edit.refusal);
+    else
+        panel_.root.submitEdits(std::move(edit.ops));
 }
 std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
     auto knob = std::make_unique<juce::Slider>();
@@ -663,18 +764,22 @@ bool MixerPanel::focusNeighbour(bool next) {
     const auto tracks = geometry.rows(root.reader());
     // The next or previous track this panel shows (the Mixer View keeps what a folded group
     // holds); at either end the focus stays.
-    auto showing = [this, &geometry](std::int64_t id) { return vertical_ ? geometry.inView(id) : geometry.shown(id); };
+    // Main has no activator, Solo or Arm, as Live's: the focus passes it by for those (its ADI-Q and
+    // ADI-L it keeps).
+    auto showing = [this, &geometry, slot](const engine::TrackNode *t) {
+        return (vertical_ ? geometry.inView(t->id) : geometry.shown(t->id)) && !(t->kind == "master" && slot < 3);
+    };
     const auto i = tracks.find(from->track());
     if (i == tracks.size())
         return true;
     std::size_t to = tracks.size();
     if (next) {
         for (std::size_t j = i + 1; j < tracks.size() && to == tracks.size(); ++j)
-            if (showing(tracks[j].track->id))
+            if (showing(tracks[j].track))
                 to = j;
     } else {
         for (std::size_t j = i; j-- > 0 && to == tracks.size();)
-            if (showing(tracks[j].track->id))
+            if (showing(tracks[j].track))
                 to = j;
     }
     if (to == tracks.size())

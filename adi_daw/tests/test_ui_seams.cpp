@@ -740,6 +740,24 @@ void sendsAsBatches() {
     auto loop = ui::enableSend(view.current()->sends, 10, 10, true);
     check(sub.submit(std::move(loop.ops)).ok && ui::findSend(view.current()->sends, 10, 10) != nullptr,
           "A may send to itself (Live's feedback loop)");
+
+    // A return's Pre/Post (ADR-0203 d3): one switch on the return, every send into it moved.
+    check(!ui::returnPre(view.current()->sends, 10) && !ui::returnPre(view.current()->sends, 12),
+          "a return reads Post; one no send reaches reads Post too");
+    auto pre = ui::setReturnPre(view.current()->sends, 10, true);
+    check(pre.refusal.empty() && pre.ops.size() == 2 && pre.ops[0].opType == "routing.setPreFader" &&
+              pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
+              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 2 &&
+              ui::returnPre(view.current()->sends, 10) && ui::findSend(view.current()->sends, 2, 10)->preFader,
+          "Pre moves both sends into A before the fader, one undo step");
+    auto newPre = ui::setSend(view.current()->sends, 3, 10, -9);
+    check(newPre.ops.size() == 3 && newPre.ops[1].opType == "routing.setPreFader" && sub.submit(std::move(newPre.ops)).ok &&
+              ui::findSend(view.current()->sends, 3, 10)->preFader && ui::returnPre(view.current()->sends, 10),
+          "a new send into a Pre return taps before the fader too");
+    check(ui::setReturnPre(view.current()->sends, 12, true).refusal ==
+              "No track sends to this return yet, so there is nothing to switch.",
+          "a return no send reaches has nothing to switch, and says so");
+    check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->sends, 10), "undo puts A back to Post");
 }
 
 void audioDropAsOneStep() {

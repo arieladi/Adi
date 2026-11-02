@@ -79,6 +79,34 @@ inline OpRequest connect(std::int64_t id, std::int64_t source, std::int64_t dest
 // What a knob's value writes: silence at its bottom stop, never past its top.
 inline double written(double db) noexcept { return db <= kSendFloorDb ? kSendSilenceDb : std::min(db, kSendTopDb); }
 } // namespace send_edits_detail
+// A return's Pre/Post (ADR-0203 d3: one switch on each return, not on each send): Pre when every send
+// into it taps before the fader. The format keeps the tap on each send row, so a return no send reaches
+// yet has no switch of its own to hold and reads Post, where a new send starts (window log, N42).
+inline bool returnPre(const SnapshotSends &sends, std::int64_t ret) noexcept {
+    bool any = false;
+    for (const auto &s : sends)
+        if (s && s->destinationKind == "track" && s->destinationId == ret) {
+            if (!s->preFader)
+                return false;
+            any = true;
+        }
+    return any;
+}
+// The return's switch thrown: every send into it moved before or after the fader, one batch.
+inline TrackEdit setReturnPre(const SnapshotSends &sends, std::int64_t ret, bool pre) {
+    constexpr const char *label = "Change Pre/Post";
+    TrackEdit edit;
+    bool any = false;
+    for (const auto &s : sends)
+        if (s && s->destinationKind == "track" && s->destinationId == ret) {
+            any = true;
+            if (s->preFader != pre)
+                edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", s->id}, {"pre", pre}}, label));
+        }
+    if (!any)
+        edit.refusal = "No track sends to this return yet, so there is nothing to switch.";
+    return edit;
+}
 // The send from `source` to `destination` set to `db`, as one batch: the row's level when the row
 // exists; else the row, then its level (a new row starts at the format's 0 dB, and the batch lands
 // whole or not at all). No ops when the level would not change, so a click that moves nothing
@@ -91,8 +119,12 @@ inline TrackEdit setSend(const SnapshotSends &sends, std::int64_t source, std::i
     if (written(db) == (s != nullptr ? s->gainDb : kSendSilenceDb))
         return edit;
     const auto id = s != nullptr ? s->id : newId(sends);
-    if (s == nullptr)
+    if (s == nullptr) {
         edit.ops.push_back(connect(id, source, destination, label));
+        // A new send follows its return's switch.
+        if (returnPre(sends, destination))
+            edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", id}, {"pre", true}}, label));
+    }
     edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", written(db)}}, label));
     return edit;
 }
@@ -113,6 +145,8 @@ inline TrackEdit enableSend(const SnapshotSends &sends, std::int64_t source, std
     }
     const auto id = newId(sends);
     edit.ops.push_back(connect(id, source, destination, label));
+    if (returnPre(sends, destination))
+        edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", id}, {"pre", true}}, label));
     edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
     return edit;
 }
