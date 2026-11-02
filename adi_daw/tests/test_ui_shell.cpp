@@ -780,6 +780,28 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(outputOf(10) == "Master" && outputOf(11) == "Group" && outputOf(16) == "Group" && outputOf(17) == "Group" &&
                   outputOf(1) == "1/2",
               "Drums plays to Master; Clap/Snare, Fx And Hits (in Body) and Rises (in Fx And Hits) to their group; Main to 1/2");
+        // Live's group strip (manual 18.3, the figure of a group's strip): no Arm, and its Solo half
+        // coloured while a track inside it is soloed.
+        auto stripOf = [&root](std::int64_t id) -> MixerStrip * {
+            for (const auto &strip : root.mixer.strips())
+                if (strip->isVisible() && strip->track() == id)
+                    return strip.get();
+            return nullptr;
+        };
+        auto halfLit = [&stripOf](std::int64_t id) {
+            const auto *strip = stripOf(id);
+            return strip != nullptr && static_cast<bool>(strip->solo.getProperties()["live.half"]) &&
+                   !strip->solo.getToggleState();
+        };
+        check(stripOf(10) != nullptr && stripOf(11) != nullptr && !stripOf(10)->arm.isVisible() && stripOf(11)->arm.isVisible(),
+              "Drums, a group, has no Arm; Clap/Snare inside it has");
+        check(root.submitEdit("track.setSolo", {{"id", 11}, {"soloed", true}}, "Solo Track"), "Clap/Snare soloed");
+        refresh();
+        check(halfLit(10) && !halfLit(13) && !halfLit(11), "Drums' Solo is half coloured; Body's and Clap/Snare's are not");
+        render("adi-group-solo.png");
+        check(root.command(AppCommands::Undo), "undo");
+        refresh();
+        check(!halfLit(10), "unsoloed, Drums' Solo is whole again");
     }
     // The Mix View's STACK lists every channel the window's project view shows: the group chosen,
     // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").

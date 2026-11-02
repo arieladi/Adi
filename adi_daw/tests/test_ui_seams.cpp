@@ -653,6 +653,16 @@ void groupAndUngroupAsBatches() {
     check(ui::groupTracks(view.current()->tracks, {3, 4}).refusal == "Select tracks in one group to group them together.",
           "tracks in different groups are refused, with the reason");
     check(sub.undo().ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}}, "undo puts them back");
+
+    // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
+    OpRequest solo;
+    solo.opType = "track.setSolo";
+    solo.payload = {{"id", 3}, {"soloed", true}};
+    solo.label = "Solo Track";
+    check(sub.submit(std::move(solo)).ok && ui::holdsSoloed(view.current()->tracks, 6) &&
+              !ui::holdsSoloed(view.current()->tracks, 3) && !ui::holdsSoloed(view.current()->tracks, 4),
+          "the group holding soloed Snare holds a soloed track; Snare and Bass hold none");
+    check(sub.undo().ok && !ui::holdsSoloed(view.current()->tracks, 6), "unsoloed, the group holds none");
 }
 
 void sendsAsBatches() {
