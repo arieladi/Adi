@@ -366,6 +366,10 @@ void SettingsPanel::showPage(const std::string &name) {
              s.key == "audio.sampleRate" || s.key == "audio.bufferSize"))
             continue;
         rows_.push_back(std::make_unique<SettingRow>(*this, s));
+        // A row the page's head holds stands among the head's own controls, not in the list.
+        if (auto *head = dynamic_cast<SettingsPageHead *>(audio_.get());
+            head != nullptr && name == "Audio" && head->hold(s.key, *rows_.back()))
+            continue;
         content_.addAndMakeVisible(*rows_.back());
         order_.push_back(rows_.back().get());
     }

@@ -32,6 +32,15 @@ class SettingRow final : public juce::Component, public juce::SettableTooltipCli
     SettingsPanel &panel_;
     bool keyFocus_ = false;
 };
+// A page's head that holds some of its page's settings among its own controls, where Live has them
+// (the Audio page's Driver Error Compensation among the latencies, Live 11's Preferences). The row
+// stays the panel's, which keeps it up to date and writes its changes; the head places it.
+class SettingsPageHead {
+  public:
+    virtual ~SettingsPageHead() = default;
+    // True when the head holds `key`'s row: it has taken `row` as its child at its place.
+    virtual bool hold(const std::string &key, SettingRow &row) = 0;
+};
 // A page's heading, as Live's: the words in bold, a rule to the page's edge.
 class SettingsHeading final : public juce::Component {
   public:
