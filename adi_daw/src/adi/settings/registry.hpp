@@ -19,6 +19,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,7 +28,10 @@ namespace adi::settings {
 
 using Value = nlohmann::json;
 
-enum class Type { Bool, Int, Real, Text, Choice, Path, PathList };
+/// Table: numbers keyed by text, each within the row's range when it has one
+/// (`window.zoom`: a window's interface zoom per display, N4). Record: an object
+/// whose shape the row's own `check` validates (`audio.channelConfig`, N20).
+enum class Type { Bool, Int, Real, Text, Choice, Path, PathList, Table, Record };
 enum class Scope { App, Project, Device };
 
 [[nodiscard]] const char* toString(Type);
@@ -37,14 +41,19 @@ struct Setting {
     std::string key;        // "audio.bufferSize" -- permanent, like an op name
     Type type = Type::Bool;
     Scope scope = Scope::App;
-    std::string page;       // "Audio", "Look & Feel": the left-hand list (R-01)
+    std::string page;       // the left-hand list (R-01): Live's ten tab names for Live's
+                            // tabs ("Display & Input" .. "Licenses & Updates"), ADI's own after
+    std::string section;    // Live's section within the tab ("Audio Device", "Latency");
+                            // empty: the tab's own group. ADI's pages have none.
     std::string label;      // what the page shows
     std::string help;       // what the Find box searches with the label (R-02)
     Value defaultValue;
     std::vector<Value> choices;   // Type::Choice: the allowed values, in order
-    double min = 0.0;             // Int and Real: inclusive range, when max > min
+    double min = 0.0;             // Int, Real and each Table value: inclusive range, when max > min
     double max = 0.0;
     std::string op;         // Project scope: the op that sets it (OPS.md 9)
+    /// Type::Record: the shape check, from the record's own header; `why` says what is wrong.
+    std::function<bool(const Value&, std::string&)> check;
     /// ADR-0125 d2: on the agent's whitelist. Off unless someone set it on
     /// purpose -- a new setting is never agent-writable by default.
     bool agentMayChange = false;
@@ -58,7 +67,8 @@ struct Setting {
 [[nodiscard]] const std::vector<Setting>& registry();
 [[nodiscard]] const Setting* find(std::string_view key);
 
-/// The pages, in the order the Settings window lists them (R-01).
+/// The pages, in the order the Settings window lists them (R-01): Live's ten tabs in
+/// Live's order, then ADI's own in the registry's order (ADR-0203 d11).
 [[nodiscard]] std::vector<std::string> pages();
 
 /// R-02: every setting whose label, help text or key contains each word of

@@ -90,6 +90,15 @@ Initialization precedes the first op: it creates no undo step. Converters and
 low-level fixtures that supply their own project data use `Store::createEmpty`.
 The default applies to new rows; opening an existing project preserves its rate.
 
+The window's **New** command calls `Store::createNewProject`: the project row,
+Main (id 1), two MIDI and two audio tracks (ids 2 to 5, in that order), their
+mixer strips, and 120 BPM / 4/4 maps at zero form the history root. This keeps
+Live's default Set (ADR-0209 §10 d10); CTZ is a separate template. No bootstrap
+op is appended and no UI protection is needed to keep Main through Undo.
+`Store::create` remains the row-only factory for callers that supply their own
+track/template layout. The root is persisted in the file and survives reopening,
+undo/redo, history branching and reverting to a snapshot taken before any edit.
+
 ### 3.2 Required pragmas while a project is open
 
 ```sql
