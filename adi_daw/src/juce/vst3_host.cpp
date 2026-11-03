@@ -185,6 +185,9 @@ engine::ExpressionCaps probeExpressionCaps(juce::AudioPluginInstance& inst) {
         };
         for (Steinberg::int16 ch = 0; ch < 16; ++ch) {
             const auto c = static_cast<std::size_t>(ch);
+            for (int cc = 0; cc < 128; ++cc)
+                caps.controllerParam[c][static_cast<std::size_t>(cc)] =
+                    mapped(ch, static_cast<SV::CtrlNumber>(cc));
             caps.bendParam[c]     = mapped(ch, SV::kPitchBend);
             caps.pressureParam[c] = mapped(ch, SV::kAfterTouch);
             caps.timbreParam[c]   = mapped(ch, static_cast<SV::CtrlNumber>(engine::kCtrlTimbre));
@@ -543,6 +546,8 @@ void Vst3Device::process(const engine::NodeIo& io) noexcept {
                 const std::int32_t t = o.frame - off;
                 if (t < 0 || t >= n) { ++routedOutOfRange_; continue; }
                 paramChanges_.set(o.paramId, o.value, t);
+            } else if (o.kind == engine::MpeOut::Kind::Control) {
+                unsupportedControllers_.fetch_add(1, std::memory_order_relaxed);
             } else {
                 events_.addOut(o, off, n);
             }

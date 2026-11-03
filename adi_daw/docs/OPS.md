@@ -473,6 +473,32 @@ work, as with the other prepared editing APIs. The window needs no SQL access.
 These are editing/read APIs; ordinary controller-event playback/host routing is
 the next increment. No schema or audio-callback change accompanies this one.
 
+Playback prepares immutable per-track controller timelines off the callback.
+Musical/linear placement, source offsets, clip loops and step tempo changes use
+musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
+at the same channel/CC use the latest clip start, then greatest clip ID. Empty
+lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
+ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+at one million spans and placed points. Controllers are sampled on a global
+64-sample cadence and at exact point/placement/note boundaries, independent of
+callback size, with exact state chased on start/seek.
+
+Controller values remain doubles through graph compensation and VST3 mapped
+parameters. CLAP uses MIDI bytes on a port advertising MIDI/MIDI-MPE, alongside
+native CLAP notes when that is the chosen note dialect; quantization occurs only
+at that boundary. Unsupported CLAP ports and unmapped VST3 controllers are counted
+by each host's `unsupportedControllers()`. VST3 mapping discovery retains the
+existing limitation to a reachable edit controller; no mapping is invented for a
+two-component plug-in whose controller JUCE does not expose.
+
+Owned sustain/sostenuto/hold-2 (CC64/66/69) are released before note-offs on stop,
+seek, transport/clip wrap, mute or generation replacement. A source keeps pending
+release ownership through graph delay and retries rejected/full-list releases,
+including after the lane disappears. Ordinary CC values hold after a clip ends.
+Controller pressure reserves note-event space and rotates addresses;
+`MidiClips::droppedControllers()` counts deferred/refused updates. Callbacks use
+fixed state and prepared arrays, with no Store access, allocation or locks.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
