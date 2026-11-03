@@ -72,6 +72,8 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     std::int64_t renaming() const noexcept { return renaming_; }
     RenameEditor editor;
     void mouseDown(const juce::MouseEvent &) override;
+    // A double-click on a track's title brings up the Device View, as Live's.
+    void mouseDoubleClick(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
@@ -129,6 +131,9 @@ class ArrangementCanvas final : public juce::Component,
     juce::String lastAnnouncement;
     // The clip being moved by its bar (§6.7), and where it would land; 0 when none is.
     std::int64_t movingClip() const noexcept { return moving_; }
+    // The track a clip being dragged would land on: its own until the mouse is over another lane
+    // that can take it.
+    std::int64_t movingTrack() const noexcept { return movingTrack_; }
     std::int64_t movingTo() const noexcept { return movingTo_; }
     // The clip whose right edge is being dragged (§6.7), and its length so far; 0 when none.
     std::int64_t resizingClip() const noexcept { return resizing_; }
@@ -151,7 +156,11 @@ class ArrangementCanvas final : public juce::Component,
     std::int64_t clipEdge(std::int64_t tick, bool forward) const;
     // Deletes or switches the selected clip: one op, through the root.
     bool clipEdit(const char *op, Payload payload, const char *label);
-    std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0;
+    // Shift+click: the selection from its anchor to the point clicked, across tracks too (§6.9).
+    void extendTo(int x, int y, bool snapToGrid);
+    // Delete or 0 on a time selection, on every selected track, as one undo step.
+    bool rangeEdit(bool deactivate);
+    std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
     std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     bool keyResize_ = false;
     // The clip's bar under a point, and whether the point is on its right edge.
@@ -185,8 +194,8 @@ class ArrangementView final : public juce::Component {
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
     void paint(juce::Graphics &) override;
-    // A track's colour by its place, as Live's auto-assigned colours (the format does not yet
-    // say what a track's own colour holds: window log, N36).
+    // The colour of the track at `position` down the rows: its own, an index into Live's palette
+    // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
     void frame(bool changed) noexcept;
     void changed();
@@ -199,9 +208,26 @@ class ArrangementView final : public juce::Component {
     bool snaps(const juce::ModifierKeys &) const noexcept;
     // Select one clip by identity: the accessible children's press action.
     void selectClip(std::int64_t track, std::int64_t clip);
+    // Live's Select All (Ctrl/Cmd+A, manual §42.5): all the material, a time selection from the
+    // earliest clip's start to the latest one's end across every track that holds clips; one clip
+    // alone is selected as that clip. False, saying so, when there is nothing to select.
+    bool selectAll();
     void locate();
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);
+    // A track header's menu: Insert Audio and MIDI Track; with a track selected, Rename, Delete, Group
+    // and Ungroup, then Live's colour chooser (Live 12 manual 2.3.2), and on a group Assign Track
+    // Color to Grouped Tracks and Clips (manual 18.3).
+    juce::PopupMenu headerMenu();
+    // The colour chooser's pick: the colour at `index` of Live's palette on every selected track, one
+    // undo step ("Recolour Track").
+    bool recolour(std::int64_t index);
+    // Live's Assign Track Color to Grouped Tracks and Clips: the selected group's colour, its own or
+    // the one its place gives it, on every track it holds, one undo step. ADI's clips take their
+    // track's colour.
+    bool assignGroupColour();
+    // The colour index a track shows: its own, or the one its place in the arrangement gives it.
+    std::int64_t colourIndex(std::int64_t track) const;
     // The lanes' menu's grid (§6.10): the adaptive and fixed widths by name, the one in use
     // ticked, then Triplet Grid and Snap to Grid.
     void addGridItems(juce::PopupMenu &);
@@ -268,16 +294,17 @@ class ArrangementView final : public juce::Component {
     // Shows `group`, everything inside it and Main; 0 for the whole project. Kept per window; a
     // selected track left out gives the selection to the first track shown.
     void chooseView(std::int64_t group);
-    // The button's menu: the project, then its groups as a tree, as Bitwig's.
+    // The button's menu: the project, then its groups as a tree, as Bitwig's, then the ★ Reference
+    // track's toggle.
     juce::PopupMenu projectViewMenu();
+    // A selected track left out gives the selection to the first track shown.
+    void firstShownIfHidden();
 
   private:
     void refreshTree();
     TrackRows trackRows_;
     // What the chosen view and the folded groups leave out, from the tree as it is.
     void leaveOut();
-    // A selected track left out gives the selection to the first track shown.
-    void firstShownIfHidden();
     TrackTree tree_;
     // The menu's own look, Bitwig's; a menu keeps only a weak reference to it.
     std::unique_ptr<juce::LookAndFeel_V4> menuLook_;

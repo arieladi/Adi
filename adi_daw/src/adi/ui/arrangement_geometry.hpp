@@ -145,8 +145,32 @@ struct ArrangementGeometry {
         } else if (id)
             heights[id] = next;
     }
+    // Whether the selection covers a track: a time selection across tracks covers every track from
+    // `selection.track` to `selection.toTrack` in the lanes' order (Live 12 manual 6.9); otherwise
+    // just the selected track.
+    bool inSelection(const SnapshotReader &reader, std::int64_t id) const noexcept {
+        if (id == 0)
+            return false;
+        if (std::find(selection.picked.begin(), selection.picked.end(), id) != selection.picked.end())
+            return true;
+        if (selection.toTrack == 0 || selection.toTrack == selection.track)
+            return id == selection.track;
+        const auto all = rows(reader);
+        const auto from = all.find(selection.track), to = all.find(selection.toTrack), at = all.find(id);
+        if (from == all.size() || to == all.size() || at == all.size())
+            return id == selection.track;
+        return at >= std::min(from, to) && at <= std::max(from, to);
+    }
+    // The tracks the selection covers, in the lanes' order.
+    std::vector<std::int64_t> selectedTracks(const SnapshotReader &reader) const {
+        std::vector<std::int64_t> out;
+        for (const auto row : rows(reader))
+            if (inSelection(reader, row.track->id))
+                out.push_back(row.track->id);
+        return out;
+    }
     // Alt+wheel (Live 12 manual 6.2): the track under the mouse, or, with a time
-    // selection, every track with selected content.
+    // selection, every selected track with selected content.
     void wheelHeight(const SnapshotReader &reader, std::int64_t under, int delta) {
         bool changed = false;
         if (selection.start != selection.end) {
@@ -154,7 +178,8 @@ struct ArrangementGeometry {
                        b = std::max(selection.start, selection.end);
             for (const auto &t : reader.tracks())
                 for (const auto &c : t->clips)
-                    if (shown(t->id) && c->posTicks < b && c->posTicks + c->lengthTicks > a) {
+                    if (shown(t->id) && inSelection(reader, t->id) && c->posTicks < b &&
+                        c->posTicks + c->lengthTicks > a) {
                         resizeTrack(t->id, heightFor(t->id) + delta);
                         changed = true;
                         break;
