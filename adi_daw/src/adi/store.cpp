@@ -253,6 +253,30 @@ std::unique_ptr<Store> Store::create(const std::filesystem::path& path, StoreErr
     }
 }
 
+std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path, StoreError& err) {
+    auto store = create(path, err);
+    if (!store) return nullptr;
+    try {
+        SQLite::Transaction root(store->db());
+        // ADR-0209 section 10 d10 keeps Live's default Set. Templates such as
+        // CTZ are separate; New does not silently choose the CTZ hierarchy.
+        store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+            "(1,'master','Main',4),(2,'midi','1 MIDI',0),(3,'midi','2 MIDI',1),"
+            "(4,'audio','3 Audio',2),(5,'audio','4 Audio',3);"
+            "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
+            "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
+            "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,4,4);");
+        root.commit();
+        return store;
+    } catch (const SQLite::Exception&) {
+        store.reset();
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        err = StoreError::CannotCreate;
+        return nullptr;
+    }
+}
+
 std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, StoreError& err) {
     std::error_code ec;
     if (std::filesystem::exists(path, ec)) {

@@ -12,6 +12,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/settings/bundle.hpp"
 #include "adi/settings/catalogue.hpp"
+#include "adi/settings/channel_config.hpp"
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
 
@@ -78,8 +79,47 @@ void testRegistry() {
     check(unique, "every key is unique");
     check(defaultsLegal, "every default is a legal value of its own setting");
     check(pageKnown, "every setting has a page, a label and help text (R-01, R-02)");
-    check(pages().front() == "Look & Feel" && pages().back() == "Project",
-          "pages are listed in window order");
+    const std::vector<std::string> liveTabs = {"Display & Input", "Theme & Colors", "Audio",
+                                               "Link",            "Tempo & MIDI",   "File & Folder",
+                                               "Library",         "Plug-Ins",       "Record, Warp & Launch",
+                                               "Licenses & Updates"};
+    const auto pageList = pages();
+    check(pageList.size() > liveTabs.size() &&
+              std::equal(liveTabs.begin(), liveTabs.end(), pageList.begin()) && pageList.back() == "Project",
+          "pages are Live's ten tabs in Live's order, then ADI's own, Project last (ADR-0203 d11; N14)");
+    // N14: a setting Live has is on the tab where Live has it: its catalogue row's Part II tab.
+    std::string offTab;
+    std::size_t onLiveTabs = 0;
+    for (const auto& a : answeredRows()) {
+        const auto dot = a.row.find(". ");
+        const auto slash = a.row.find(" / ");
+        if (dot == std::string::npos || slash == std::string::npos) continue;
+        const auto tab = a.row.substr(dot + 2, slash - dot - 2);
+        if (std::find(liveTabs.begin(), liveTabs.end(), tab) == liveTabs.end()) continue;
+        for (const auto& key : a.keys) {
+            const auto* s = find(key);
+            if (!s || s->scope == Scope::Project) continue;  // project.sampleRate stays on Project
+            ++onLiveTabs;
+            if (s->page != tab) offTab += "\n        " + key + " on " + s->page + ", Live: " + tab;
+        }
+    }
+    check(onLiveTabs > 120 && offTab.empty(),
+          "every setting Live has sits on Live's tab (" + std::to_string(onLiveTabs) + " checked):" + offTab);
+    std::string strayedSection;
+    for (const auto& s : registry())
+        if (!s.section.empty() && std::find(liveTabs.begin(), liveTabs.end(), s.page) == liveTabs.end() &&
+            s.page != "Project")
+            strayedSection += "\n        " + s.key;
+    check(strayedSection.empty(), "sections are Live's, on Live's tabs only:" + strayedSection);
+    const auto* linkToggle = find("sync.showLinkToggle");
+    check(linkToggle && linkToggle->page == "Link" && linkToggle->section == "Link" &&
+              linkToggle->label == "Show Link Toggle" && linkToggle->defaultValue == true,
+          "Show Link Toggle: on the Link tab under Link, on, as Live shows Link's switch (ADR-0203 d11)");
+    const auto* bufferSize = find("audio.bufferSize");
+    const auto* keepLatency = find("audio.keepMonitoringLatency");
+    check(bufferSize && bufferSize->section == "Latency" && bufferSize->label == "Buffer Size" && keepLatency &&
+              keepLatency->page == "Record, Warp & Launch" && keepLatency->section == "Record",
+          "Buffer Size under Audio's Latency; Keep Monitoring Latency in Recorded Audio on Record, Warp & Launch");
 
     // Project settings are rows changed by ops (R-03): each names one the
     // catalogue actually lists.
@@ -97,8 +137,8 @@ void testRegistry() {
     // ADR-0145's settings.
     const auto* zoom = find("lookfeel.zoomOnSelection");
     check(zoom && zoom->type == Type::Bool && zoom->defaultValue == true && zoom->scope == Scope::App &&
-              zoom->page == "Look & Feel",
-          "Zoom on Selection: an [App] switch under Look & Feel, on as Live (ADR-0145 d2 amended by ADR-0203)");
+              zoom->page == "Display & Input",
+          "Zoom on Selection: an [App] switch under Display & Input, on as Live (ADR-0145 d2 amended by ADR-0203)");
     const auto* resample = find("audio.silentResampling");
     check(resample && resample->type == Type::Bool && resample->page == "Audio" &&
               resample->defaultValue == false,
@@ -189,8 +229,8 @@ void testRulings() {
         const auto* s = find(key);
         return s && s->type == Type::Bool && s->page == page && s->defaultValue == v && s->scope == Scope::App;
     };
-    check(onPage("midi.chaseNotes", "MIDI", true) && onPage("midi.envelopeAutoReset", "MIDI", true),
-          "Chase MIDI Notes and MIDI Envelope Auto-Reset: MIDI switches, on as Live's Options");
+    check(onPage("midi.chaseNotes", "Tempo & MIDI", true) && onPage("midi.envelopeAutoReset", "Tempo & MIDI", true),
+          "Chase MIDI Notes and MIDI Envelope Auto-Reset: Tempo & MIDI switches, on as Live's Options");
     check(onPage("audio.reducedLatencyWhenMonitoring", "Audio", false) &&
               onPage("audio.recordPdcThresholdEnabled", "Audio", false),
           "reduced latency when monitoring, and the PDC bypass when recording: Audio switches, off");
@@ -201,7 +241,8 @@ void testRulings() {
     }
     check(enabledAt + 1 == thresholdAt && dflt("audio.recordPdcThresholdMs") == 10.0,
           "the switch sits right before the 10 ms threshold");
-    check(onPage("settings.logChanges", "Privacy", true), "settings.logChanges: a Privacy switch, on (A6-20)");
+    check(onPage("settings.logChanges", "Licenses & Updates", true) && find("settings.logChanges")->section == "Privacy",
+          "settings.logChanges: a Privacy switch on Licenses & Updates, on (A6-20)");
     // ADR-0207 d2: the Processing Precision switch, Live's scheme by default.
     const auto* precision = find("audio.processingPrecision");
     check(precision && precision->page == "Audio" && precision->type == Type::Choice &&
@@ -426,7 +467,7 @@ void testPartialPreset() {
     std::string why;
     s.set("lookfeel.theme", "light", kUser, why);
     s.set("lookfeel.tooltipDelayMs", 700, kUser, why);
-    const Preset look = makePreset(s, "My look", {"Look & Feel"});
+    const Preset look = makePreset(s, "My look", {"Display & Input", "Theme & Colors"});
     check(look.values.contains("lookfeel.theme") && !look.values.contains("audio.bufferSize"),
           "a Look & Feel preset holds that page's settings only");
 
@@ -485,7 +526,7 @@ void testBundles() {
     from.set("library.contentFolders", Value::array({"/data/samples", "/data/loops"}), kUser, why);
     from.set("files.recordFolder", "/home/ana/Music/ADI/Recordings", kUser, why);
     from.set("plugins.vst3Folders", Value::array({"/opt/vst3"}), kUser, why);
-    const Preset look = makePreset(from, "Light", {"Look & Feel"});
+    const Preset look = makePreset(from, "Light", {"Display & Input", "Theme & Colors"});
 
     const auto zip = temp.path() / "settings-bundle.zip";
     const auto rep = exportBundle(from, {look}, zip);
@@ -579,6 +620,114 @@ std::vector<CatalogueRow> readCatalogue() {
         rows.push_back({section + " / " + cell, trim(line.substr(last + 3))});
     }
     return rows;
+}
+
+void testWindowZoom() {
+    section("interface zoom per window and per display: window.zoom (N4; ADR-0129 d3)");
+    const Setting* z = find("window.zoom");
+    check(z && z->type == Type::Table && z->scope == Scope::App && z->page == "Display & Input" &&
+              z->section == "Display" && z->label == "Zoom Display" && z->defaultValue == Value::object(),
+          "the registry row: a table on Display & Input's Display section, Live's label, empty by default");
+    check(z && !z->agentMayChange, "the agent does not zoom the director's windows");
+    std::string why;
+    check(z && validate(*z, Value::object(), why) &&
+              validate(*z, Value({{"main@0:0:1920:1080:96", 1.25}}), why),
+          "an empty table and a table of zooms are legal: " + why);
+    check(z && !validate(*z, 1.25, why), "a bare number is not a table: " + why);
+    check(z && !validate(*z, Value({{"main@a", "big"}}), why), "a text zoom is refused: " + why);
+    check(z && !validate(*z, Value({{"main@a", 3.0}}), why), "300 % is outside Live's 50 to 200: " + why);
+
+    adi::test::TempDirectory temp("settings", "zoom");
+    const auto file = temp.path() / "settings.json";
+    const std::string first = "0:0:1920:1080:96", second = "1920:0:2560:1440:144";
+    {
+        AppSettings s(appdata::App::Daw, file);
+        check(!windowZoom(s, "main", first), "nothing kept yet: the window starts at 100 %");
+        check(setWindowZoom(s, "main", first, 1.25, kUser, why), "keep the main window at 125 %: " + why);
+        check(setWindowZoom(s, "main", second, 1.5, kUser, why), "and at 150 % on the second display");
+        check(setWindowZoom(s, "mixer", first, 0.75, kUser, why), "the mixer window at 75 % on the first");
+        check(!setWindowZoom(s, "main", first, 4.0, kUser, why), "400 % is refused: " + why);
+        check(windowZoom(s, "main", first) == 1.25, "and the refusal changed nothing");
+        check(windowZoom(s, "main", second) == 1.5 && windowZoom(s, "mixer", first) == 0.75,
+              "each window on each display has its own zoom");
+        check(s.save(why), "saved: " + why);
+    }
+    AppSettings again(appdata::App::Daw, file);
+    check(windowZoom(again, "main", first) == 1.25 && windowZoom(again, "mixer", first) == 0.75,
+          "the zooms come back after a relaunch");
+    check(!windowZoom(again, "main", "0:0:3840:2160:96"), "a display not seen before starts at 100 %");
+    check(again.get("window.zoom").size() == 3, "three rows in the table");
+}
+
+void testChannelConfig() {
+    section("the channel configuration: one record per audio device, Live's Input and Output Config (N20)");
+    const Setting* c = find("audio.channelConfig");
+    check(c && c->type == Type::Record && c->scope == Scope::App && c->page == "Audio" &&
+              c->section == "Audio Device" && c->label == "Channel Configuration" &&
+              c->defaultValue == Value::object() && c->check != nullptr,
+          "the registry row: a record per device on Audio's Audio Device section, Live's label, empty by default");
+    check(c && agentForbidden(*c), "the agent never touches the channel configuration (the Audio page)");
+
+    const auto d = defaultChannelConfig(4, 2);
+    check(d.monoInputs.size() == 4 && d.stereoInputs.size() == 2 && d.monoOutputs.size() == 2 &&
+              d.stereoOutputs.size() == 1,
+          "Live's default lists every mono channel and every pair of a 4-in 2-out device");
+    check(d.monoInputs[0].on && d.monoInputs[1].on && !d.monoInputs[2].on && !d.monoInputs[3].on &&
+              d.stereoInputs[0].on && !d.stereoInputs[1].on && d.stereoOutputs[0].on,
+          "with 1, 2 and 1/2 on and the rest off");
+    check(d.activeInputs() == std::set<int>{1, 2} && d.activeOutputs() == std::set<int>{1, 2},
+          "so the device opens with channels 1 and 2 on each side");
+    const auto odd = defaultChannelConfig(3, 1);
+    check(odd.stereoInputs.size() == 1 && odd.stereoInputs[0].left == 1 && odd.stereoOutputs.empty(),
+          "an odd channel has no pair");
+    check(displayName(d.monoInputs[2]) == "3 (mono)" && displayName(d.stereoInputs[1]) == "3/4 (stereo)",
+          "Live's names for channels with none of their own");
+
+    ChannelConfig mine = d;
+    mine.monoInputs[0].name = "Vocal";
+    mine.stereoInputs[1].on = true;
+    mine.stereoInputs[1].name = "Synth";
+    check(displayName(mine.monoInputs[0]) == "Vocal" && mine.activeInputs() == std::set<int>{1, 2, 3, 4},
+          "a renamed channel shows its name; an enabled pair adds both its channels");
+    std::string why;
+    const auto back = channelConfigFromJson(toJson(mine), why);
+    check(back && *back == mine, "a record round-trips through JSON: " + why);
+    check(!toJson(d).at("inputs").at("mono")[0].contains("name"), "an empty name is not written");
+
+    check(!channelConfigFromJson(Value::array(), why), "a list is not a record: " + why);
+    check(!channelConfigFromJson(Value({{"inputs", toJson(d).at("inputs")}}), why), "the outputs are required: " + why);
+    Value twice = toJson(d);
+    twice["inputs"]["mono"].push_back({{"ch", 1}, {"on", false}});
+    check(!channelConfigFromJson(twice, why) && why.find("twice") != std::string::npos, "a channel listed twice: " + why);
+    Value zero = toJson(d);
+    zero["outputs"]["stereo"][0]["ch"] = 0;
+    check(!channelConfigFromJson(zero, why), "channels are numbered from 1: " + why);
+    Value text = toJson(d);
+    text["inputs"]["mono"][0]["on"] = "yes";
+    check(!channelConfigFromJson(text, why), "a switch is a boolean: " + why);
+    check(checkChannelConfigs(Value::object(), why) && checkChannelConfigs(Value({{"Scarlett 2i2", toJson(d)}}), why),
+          "the setting: no devices, or a record per device: " + why);
+    check(!checkChannelConfigs(Value({{"Scarlett 2i2", 5}}), why) && why.find("Scarlett 2i2") != std::string::npos,
+          "a device's bad record is refused by the device's name: " + why);
+
+    adi::test::TempDirectory temp("settings", "channels");
+    const auto file = temp.path() / "settings.json";
+    {
+        AppSettings s(appdata::App::Daw, file);
+        check(!channelConfig(s, "Scarlett 2i2"), "no record yet: the window starts from Live's default");
+        check(setChannelConfig(s, "Scarlett 2i2", mine, kUser, why), "keep the Scarlett's record: " + why);
+        check(setChannelConfig(s, "Built-in", defaultChannelConfig(2, 2), kUser, why), "and the built-in device's");
+        check(!s.set("audio.channelConfig", Value({{"Scarlett 2i2", 5}}), kUser, why),
+              "the store refuses a bad record through its own door: " + why);
+        check(channelConfig(s, "Scarlett 2i2") == mine, "and the refusal changed nothing");
+        check(s.save(why), "saved: " + why);
+    }
+    AppSettings again(appdata::App::Daw, file);
+    const auto kept = channelConfig(again, "Scarlett 2i2");
+    check(kept && *kept == mine && kept->monoInputs[0].name == "Vocal",
+          "the record and its names come back after a relaunch, under the device's name");
+    check(channelConfig(again, "Built-in") == defaultChannelConfig(2, 2) && !channelConfig(again, "Other"),
+          "each device has its own; an unseen device has none");
 }
 
 void testCatalogue() {
@@ -686,6 +835,8 @@ int runAll() {
     testCorruptKeptAside();
     testApplicationsNeverShare();
     testChangeLog();
+    testWindowZoom();
+    testChannelConfig();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();
