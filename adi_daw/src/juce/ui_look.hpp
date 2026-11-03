@@ -33,6 +33,10 @@ inline const juce::Colour outline{0xff444444};   // every box's 1 pt edge
 // palette's first row. Measured from the four default tracks; the rest from Live's
 // palette, to be read again off Live (AWAITING).
 juce::Colour trackColour(std::size_t position);
+// A colour of Live's palette by its index, 0 to 69, row-major as Live's chooser lays it out
+// (ADR-0211 d1, d3). PROVISIONAL: until the seventy are measured from Live 12's chooser, the
+// fourteen above stand in, index % 14.
+juce::Colour paletteColour(std::int64_t index);
 inline const juce::Colour returnA{0xffc49b40}, returnB{0xfff2a948}, mainTrack{0xffe5742e};
 // --- the measures, in points at 100 % ---------------------------------------------------
 inline constexpr int controlBarHeight = 35, gap = 8, statusBarHeight = 38;

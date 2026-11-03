@@ -70,6 +70,69 @@ jobs:
   # as cp1252. Both validators pass encoding="utf-8" explicitly, and this proves
   # that keeps working.
   # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # Which legs run. GitHub serves this account one macOS job at a time, and the
+  # two heavy macOS legs (the universal build, ~130 min, and the apple clang
+  # warnings sweep, ~53 min) were the queue: with two lanes pushing, a PR waited
+  # days for a runner, not for a result. Since 2026-11-03 those two run on
+  # pushes to main and on dispatch, not on pull requests (LANES.md §2). A PR
+  # still proves itself on a Mac through the three light macOS legs (the
+  # validators, JUCE on, the GUI shell). A PR that must have the full gate gets
+  # the label `full-ci`. If a heavy leg goes red on main, the fix is win's and
+  # goes to the head of the queue. The matrices live here, as JSON, because a
+  # matrix `include` cannot be filtered by the event; it can only be computed.
+  # ---------------------------------------------------------------------------
+  plan:
+    name: 'which legs run'
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.legs.outputs.build }}
+      strict: ${{ steps.legs.outputs.strict }}
+    steps:
+      - name: Decide
+        id: legs
+        env:
+          FULL: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+        run: |
+          set -euo pipefail
+          python3 - "$FULL" >> "$GITHUB_OUTPUT" <<'PY'
+          import json, sys
+          full = sys.argv[1] == "true"
+          # Both macOS slices are compiled, so blob.hpp's static_asserts are
+          # evaluated for arm64 and for the x86_64 ABI in one job. Only the native
+          # slice can be executed on an arm64 runner; the Linux legs cover x86_64
+          # at runtime.
+          build = [
+              {"name": "macos arm64+x86_64 · apple clang · libc++", "os": "macos-latest",
+               "osx_archs": "arm64;x86_64", "heavy": True},
+              {"name": "ubuntu x86_64 · gcc · libstdc++", "os": "ubuntu-latest", "cc": "gcc", "cxx": "g++"},
+              {"name": "ubuntu x86_64 · clang · libstdc++", "os": "ubuntu-latest", "cc": "clang", "cxx": "clang++"},
+              {"name": "ubuntu arm64 · gcc · libstdc++", "os": "ubuntu-24.04-arm", "cc": "gcc", "cxx": "g++"},
+              {"name": "windows x86_64 · msvc · ms stl", "os": "windows-latest"},
+          ]
+          strict = [
+              {"name": "zero warnings + hardened libstdc++ (gcc)", "os": "ubuntu-latest",
+               "cxx": "g++", "harden": "-D_GLIBCXX_ASSERTIONS"},
+              {"name": "zero warnings + hardened libstdc++ (clang)", "os": "ubuntu-latest",
+               "cxx": "clang++", "harden": "-D_GLIBCXX_ASSERTIONS"},
+              {"name": "zero warnings + hardened libc++ (apple clang)", "os": "macos-latest",
+               "cxx": "clang++", "harden": "-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG",
+               "heavy": True},
+          ]
+          def keep(legs):
+              out = [dict(l) for l in legs if full or not l.get("heavy")]
+              for l in out:
+                  l.pop("heavy", None)
+              return out
+          b, s = keep(build), keep(strict)
+          print("full gate" if full else "pull request: the heavy macOS legs wait for main",
+                file=sys.stderr)
+          for l in b + s:
+              print("  " + l["name"], file=sys.stderr)
+          print("build=" + json.dumps(b))
+          print("strict=" + json.dumps(s))
+          PY
+
   validators:
     name: validators (py${{ matrix.python }} · ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -123,31 +186,12 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Both slices are compiled, so blob.hpp's static_asserts are evaluated
-          # for arm64 and for the x86_64 ABI in one job. Only the native slice
-          # can be executed on an arm64 runner; the Linux legs cover x86_64 at
-          # runtime.
-          - name: 'macos arm64+x86_64 · apple clang · libc++'
-            os: macos-latest
-            osx_archs: 'arm64;x86_64'
-          - name: 'ubuntu x86_64 · gcc · libstdc++'
-            os: ubuntu-latest
-            cc: gcc
-            cxx: g++
-          - name: 'ubuntu x86_64 · clang · libstdc++'
-            os: ubuntu-latest
-            cc: clang
-            cxx: clang++
-          - name: 'ubuntu arm64 · gcc · libstdc++'
-            os: ubuntu-24.04-arm
-            cc: gcc
-            cxx: g++
-          - name: 'windows x86_64 · msvc · ms stl'
-            os: windows-latest
+        # the five legs are listed in the plan job above; a pull request gets four
+        include: ${{ fromJSON(needs.plan.outputs.build) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -218,8 +262,14 @@ jobs:
       #                   timed out three PRs in a day (midi_clips 258 s,
       #                   clip_playback 204 s, mixer 159 s). 45 still fails a
       #                   hang in minutes, not hours.
+      #                   45 became 60 on 2026-11-03 (win): a slow runner day
+      #                   ran the Debug MSVC suites at half speed (#350, #362:
+      #                   midi_clips 241 s, mixer past 600 s) and the step
+      #                   stood at 42 minutes with the mixer suite cut off;
+      #                   healthy work at that pace needs the hour. The mixer
+      #                   suite's own TIMEOUT is 1200 for the same reason.
       - name: adi_tests
-        timeout-minutes: 45
+        timeout-minutes: 60
         run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure --timeout 600
 
       # The Visual Studio generator puts binaries in build/Debug/, everything
@@ -364,22 +414,12 @@ jobs:
   strict:
     name: '${{ matrix.name }}'
     runs-on: ${{ matrix.os }}
+    needs: plan
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: 'zero warnings + hardened libstdc++ (gcc)'
-            os: ubuntu-latest
-            cxx: g++
-            harden: '-D_GLIBCXX_ASSERTIONS'
-          - name: 'zero warnings + hardened libstdc++ (clang)'
-            os: ubuntu-latest
-            cxx: clang++
-            harden: '-D_GLIBCXX_ASSERTIONS'
-          - name: 'zero warnings + hardened libc++ (apple clang)'
-            os: macos-latest
-            cxx: clang++
-            harden: '-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG'
+        # the three sweeps are listed in the plan job above; a pull request gets two
+        include: ${{ fromJSON(needs.plan.outputs.strict) }}
     steps:
       - uses: actions/checkout@v4
 

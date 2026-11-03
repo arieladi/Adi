@@ -289,6 +289,40 @@ void FloatingHost::closeAll(bool remember) {
         entries_.erase(entries_.begin());
     }
 }
+namespace {
+constexpr const char *kMixViewKey = "Mix View";
+}
+bool detachMixView(FloatingHost &host, AdiRootComponent &root, bool detach) {
+    if (!detach) {
+        // Back where it docks: the host returns the panel to the root, which lays it out.
+        host.close(kMixViewKey);
+        return root.setMixView(root.state().mixView, false);
+    }
+    if (!root.setMixView(true, true))
+        return false;
+    if (host.content(kMixViewKey) != nullptr)
+        return true;
+    auto &panel = root.mixViewPanel;
+    if (host.detach(kMixViewKey, 0, panel, root, [&panel](const SnapshotReader &reader) { panel.frame(reader); }))
+        return true;
+    root.setMixView(true, false);
+    return false;
+}
+bool toggleMixViewWindow(FloatingHost &host, AdiRootComponent &root) {
+    if (host.content(kMixViewKey) == nullptr)
+        return detachMixView(host, root, true);
+    host.close(kMixViewKey);
+    return root.setMixView(false, true);
+}
+void syncMixView(FloatingHost &host, AdiRootComponent &root, bool restore) {
+    const auto &state = root.state();
+    if (!state.mixView || !state.mixViewDetached || host.content(kMixViewKey) != nullptr)
+        return;
+    if (restore)
+        detachMixView(host, root, true);
+    else
+        root.setMixView(false, true); // its window was closed by its own button
+}
 juce::Component *FloatingHost::content(const std::string &key) const {
     auto it = entries_.find(key);
     return it == entries_.end() ? nullptr : it->second->component.getComponent();
