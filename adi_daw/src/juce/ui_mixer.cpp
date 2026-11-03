@@ -670,12 +670,25 @@ void MixerStrip::enableSend(std::size_t index, bool on) {
     else
         panel_.root.submitEdits(std::move(edit.ops));
 }
+void MixerStrip::enableAllSends() {
+    const auto current = panel_.root.current();
+    if (!current)
+        return;
+    auto edit = adi::ui::enableAllSends(current->sends, track_, returns_);
+    if (!edit.refusal.empty())
+        panel_.root.say(edit.refusal);
+    else
+        panel_.root.submitEdits(std::move(edit.ops));
+}
 void MixerStrip::sendMenu(std::size_t index) {
     // Live's Enable Send, ticked while the send is on. A track's sends are on from the start; a
     // return's are off until it is chosen (ADR-0203 d3).
     juce::PopupMenu m;
     const bool on = sendOn(index);
     m.addItem("Enable Send", true, on, [this, index, on] { enableSend(index, !on); });
+    // A return's sends start off; Live's menu also switches them all on at once (§18.4).
+    if (kind_ == "return")
+        m.addItem("Enable All Sends", [this] { enableAllSends(); });
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
 }
 void MixerStrip::panMenu() {

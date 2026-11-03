@@ -52,6 +52,9 @@ struct WindowState {
     // The ★ Reference track (ADR-0209 §4, d11): hidden from the project view until its
     // [Reference Track] toggle shows it.
     bool showReference = false;
+    // Live's Hide/Show Return Tracks (§18.4, the View menu's Mixer Controls, Ctrl/Cmd+Alt+R): the
+    // returns left out of the lanes, the track controls and the Mixer View; shown by default.
+    bool hideReturns = false;
     // Live's Follow (manual §6.2): the arrangement keeps the playhead on screen while it plays.
     bool follow = false;
     // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out.

@@ -81,6 +81,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void commitSend(std::size_t index);
     // Live's Enable Send on the send at `index`, or its undoing.
     void enableSend(std::size_t index, bool on);
+    // Live's Enable All Sends, on a return's strip: every one of its sends on, one undo step.
+    void enableAllSends();
 
   private:
     void paintInOut(juce::Graphics &, int x) const;

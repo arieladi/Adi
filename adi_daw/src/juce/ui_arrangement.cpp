@@ -416,6 +416,12 @@ void ArrangementView::leaveOut() {
                 if (!tree_.shows(group, row))
                     geometry.hidden.push_back(row.id);
     }
+    // Hide/Show Return Tracks (§18.4): the returns left out, as Live leaves them out of the
+    // Arrangement and the Mixer.
+    if (root.state().hideReturns)
+        for (const auto &t : reader().tracks())
+            if (t->kind == "return" && std::find(geometry.hidden.begin(), geometry.hidden.end(), t->id) == geometry.hidden.end())
+                geometry.hidden.push_back(t->id);
     // The ★ Reference track, hidden until the project view's [Reference Track] shows it (ADR-0209
     // §4, d11); its strip in the Mix View shows it either way.
     if (const auto reference = root.referenceTrack(); reference != 0 && !root.state().showReference &&

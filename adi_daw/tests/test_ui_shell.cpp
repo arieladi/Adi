@@ -903,6 +903,21 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     reverb->enableSend(1, true);
     check(root.error() == "The send is on already.", "enabling it again only says so");
 
+    // Enable All Sends on B Delay (§18.4): both of its sends on, A and itself, fully down, one step.
+    auto *delay = rowOf(root.mixer, 6);
+    check(delay != nullptr && !delay->sendOn(0) && !delay->sendOn(1), "B Delay's sends start off");
+    if (delay != nullptr) {
+        delay->enableAllSends();
+        root.frame();
+        check(delay->sendOn(0) && delay->sendOn(1) && findSend(root.reader().sends(), 6, 5) != nullptr &&
+                  findSend(root.reader().sends(), 6, 6) != nullptr && submitter.nextUndo()->label == "Enable All Sends",
+              "Enable All Sends switches every send of B Delay on, one undo step");
+        render("adi-enable-all.png");
+        delay->enableAllSends();
+        check(root.error() == "Every send of this return is on already.", "and again only says so");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+    }
     // Live's return and Main rows: a return's activator shows its letter and its Pre/Post sits where
     // a track has Arm; Main has no activator, Solo or Arm, its volume where the activator is.
     check(reverb->kind() == "return" && reverb->active.getButtonText() == "A" && reverb->prePost.isVisible() &&
@@ -967,6 +982,32 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     render("adi-sends.png");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+    // Hide/Show Return Tracks (§18.4, Ctrl/Cmd+Alt+R): the returns out of the lanes and the controls.
+    auto shownLanes = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto row : root.arrangement.geometry.rows(root.reader()))
+            if (root.arrangement.geometry.shown(row.track->id))
+                out.push_back(row.track->id);
+        return out;
+    };
+    check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)) &&
+              root.state().hideReturns && shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 7},
+          "Ctrl/Cmd+Alt+R hides the returns");
+    root.frame();
+    render("adi-returns-hidden.png");
+    // Insert Return Track (§18.4, Ctrl/Cmd+Alt+T): C Return after B Delay, selected, the returns shown
+    // again; every track gets a send to it.
+    check(root.keyPressed(juce::KeyPress('t', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),
+          "Ctrl/Cmd+Alt+T");
+    root.frame();
+    const auto *inserted = root.reader().findTrack(8);
+    check(inserted != nullptr && inserted->kind == "return" && inserted->name == "C Return" && !root.state().hideReturns &&
+              shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 5, 6, 8, 7} &&
+              root.arrangement.geometry.selection.track == 8 && submitter.nextUndo()->label == "Insert Return Track",
+          "Insert Return Track makes C Return after the others, selected, the returns shown again");
+    if (auto *first = rowOf(root.mixer, 1))
+        check(first->sendKnobs().size() == 3 && first->sendsTo(2) == 8, "and every track has a send to it");
+    render("adi-return-inserted.png");
 }
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
@@ -2407,8 +2448,8 @@ int main(int argc, char **argv) {
                                                 C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Group and "
               "Ungroup Tracks");
-        check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack},
-              "the Create menu inserts tracks");
+        check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack},
+              "the Create menu inserts tracks, returns too (§18.4)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
