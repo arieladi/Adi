@@ -81,6 +81,9 @@ struct TrackNode {
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;
     bool soloed = false;
+    bool frozen = false;
+    std::optional<std::int64_t> freezeMediaId;
+    std::string freezeMode; // wet, unverified legacy flag, or empty
     float volumeDb = 0.0f;
     float pan = 0.0f;
     std::vector<std::shared_ptr<const ClipNode>> clips;

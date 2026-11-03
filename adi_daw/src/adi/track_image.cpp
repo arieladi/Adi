@@ -31,25 +31,10 @@ void bind(SQLite::Statement& statement,int index,const Payload& value) {
         statement.bind(index,bytes.empty()?static_cast<const void*>(&empty):bytes.data(),static_cast<int>(bytes.size()));
     }else throw std::runtime_error("invalid captured SQLite cell");
 }
-Payload record(SQLite::Statement& query) {
-    Payload result=Payload::object();
-    for(int column=0;column<query.getColumnCount();++column) {
-        const auto value=query.getColumn(column);const auto name=query.getColumnName(column);
-        switch(value.getType()) {
-            case SQLITE_NULL:result[name]=nullptr;break;
-            case SQLITE_INTEGER:result[name]=value.getInt64();break;
-            case SQLITE_FLOAT:result[name]=value.getDouble();break;
-            case SQLITE_TEXT:result[name]=value.getString();break;
-            case SQLITE_BLOB:{
-                std::vector<std::uint8_t> bytes(static_cast<std::size_t>(value.getBytes()));
-                if(!bytes.empty())std::copy_n(static_cast<const std::uint8_t*>(value.getBlob()),bytes.size(),bytes.data());
-                result[name]=Payload::binary(std::move(bytes));break;
-            }
-            default:throw std::runtime_error("unknown SQLite cell type");
-        }
-    }
-    return result;
+Payload record(SQLite::Statement &query) {
+    return captureQueryRow(query);
 }
+
 struct Table {std::string name;std::vector<std::string> columns,keys;bool generated=false,triggers=false;};
 struct ForeignKey {std::string child,parent,action;std::vector<std::string> from,to;};
 struct Catalog {
@@ -114,10 +99,25 @@ using Identity=std::pair<std::string,std::string>;
 struct Row {std::string table;Payload key,before,after;};
 class Image {
 public:
-    Image(SQLite::Database& database,const Catalog& schema):db(database),catalog(schema){}
+  Image(SQLite::Database &database, const Catalog &schema, bool source = false)
+      : db(database), catalog(schema), sourceRead(source) {}
+  bool ignored(const std::string &name) const {
+      return sourceRead && (name == "frozen_renders" || name == "device_panels" ||
+                            name == "device_panel_params" || name == "controller_maps");
+  }
     std::map<Identity,Row> rows;
     void remove(const std::string& name,const Payload& before) {
-        const auto& table=catalog.get(name);safeTable(table);auto key=keyOf(table,before);const Identity identity{lower(name),key.dump()};
+        if (ignored(lower(name)))
+            return;
+        const auto &table = catalog.get(name);
+        if (!sourceRead)
+            safeTable(table);
+        if (sourceRead && table.keys.empty())
+            throw std::runtime_error("freeze source table requires a primary key: " + table.name);
+        auto key = keyOf(table, before);
+        const Identity identity{lower(name), key.dump()};
+        if (sourceRead && rows.size() >= 100000 && !rows.contains(identity))
+            throw std::runtime_error("freeze source row count exceeds limit");
         const auto found=rows.find(identity);
         if(found==rows.end()){rows.emplace(identity,Row{lower(name),std::move(key),before,nullptr});pending.push_back(identity);}
         else if(!found->second.after.is_null()){found->second.after=nullptr;pending.push_back(identity);}
@@ -144,18 +144,31 @@ public:
             const auto removed=rows.at(pending[next]);
             const auto references=catalog.references.find(removed.table);
             if(references!=catalog.references.end())for(const auto& foreign:references->second) {
-                if(foreign.action!="CASCADE" && foreign.action!="SET NULL" && foreign.action!="SET DEFAULT")continue;
-                std::string where;Payload values=Payload::array();bool null=false;
-                for(std::size_t field=0;field<foreign.from.size();++field) {
-                    const auto& value=removed.before.at(foreign.to[field]);if(value.is_null()){null=true;break;}
-                    if(!where.empty())where+=" AND ";
-                    where+=quoted(foreign.from[field])+"=?";values.push_back(value);
+                    if (ignored(foreign.child))
+                        continue;
+                    if (!sourceRead && foreign.action != "CASCADE" && foreign.action != "SET NULL" &&
+                        foreign.action != "SET DEFAULT")
+                        continue;
+                    std::string where;
+                    Payload values = Payload::array();
+                    bool null = false;
+                    for (std::size_t field = 0; field < foreign.from.size(); ++field) {
+                        const auto &value = removed.before.at(foreign.to[field]);
+                        if (value.is_null()) {
+                            null = true;
+                            break;
+                        }
+                        if (!where.empty())
+                            where += " AND ";
+                        where += quoted(foreign.from[field]) + "=?";
+                        values.push_back(value);
                 }
                 if(null)continue;
                 SQLite::Statement children(db,"SELECT * FROM "+quoted(catalog.get(foreign.child).name)+" WHERE "+where);int index=0;
                 for(const auto& value:values)bind(children,++index,value);
                 while(children.executeStep()) {
-                    if(foreign.action=="CASCADE")remove(foreign.child,record(children));
+                    if (sourceRead || foreign.action == "CASCADE")
+                        remove(foreign.child, record(children));
                     else if(foreign.action=="SET NULL")nullReferences(foreign,record(children));
                     else throw std::runtime_error("track delete cannot safely capture SET DEFAULT");
                 }
@@ -178,7 +191,10 @@ public:
         return result;
     }
 private:
-    SQLite::Database& db;const Catalog& catalog;std::vector<Identity> pending;
+  SQLite::Database &db;
+  const Catalog &catalog;
+  bool sourceRead = false;
+  std::vector<Identity> pending;
 };
 void fullRow(const Table& table,const Payload& row) {
     if(!row.is_object() || row.size()!=table.columns.size())throw std::runtime_error("captured columns differ from table "+table.name);
@@ -226,6 +242,12 @@ void update(SQLite::Database& db,const Table& table,const Row& row) {
 } // namespace
 Payload captureTrack(SQLite::Database& db,std::int64_t root) {
     const Catalog catalog(db);Image image(db,catalog);image.collect(root);return image.encode(root);
+}
+Payload captureTrackSource(SQLite::Database &db, std::int64_t root) {
+    const Catalog catalog(db);
+    Image image(db, catalog, true);
+    image.collect(root);
+    return image.encode(root);
 }
 void deleteTrack(SQLite::Database& db,std::int64_t root) {
     const Catalog catalog(db);Image image(db,catalog);image.collect(root);Atomic atomic(db);

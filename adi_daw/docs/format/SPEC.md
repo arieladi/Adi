@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1009;          -- schema 1.9
+PRAGMA user_version   = 1010;          -- schema 1.10
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -1176,3 +1176,8 @@ Named here so they are visible gaps rather than accidental omissions:
 - Decision log: [`../DECISIONS.md`](../DECISIONS.md)
 - Feature scope this format must eventually carry: [`../FEATURES.md`](../FEATURES.md)
 - Agent architecture built on the op log: [`../AI-AGENT.md`](../AI-AGENT.md)
+
+Schema 1.10 adds frozen_renders: immutable whole-track dry/wet cache media,
+format, causal fingerprint, installed identities and the original arm switch.
+The original clips, parameters and state blobs remain intact. See ENGINE-FREEZE.md
+and OPS.md for preparation, native validation and undo semantics.

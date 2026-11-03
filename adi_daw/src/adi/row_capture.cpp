@@ -32,6 +32,10 @@ std::optional<Payload> captureRow(SQLite::Database& db, const std::string& table
     SQLite::Statement query(db, "SELECT * FROM " + quoted(table) + " WHERE " + quoted(key) + "=?");
     query.bind(1, id);
     if (!query.executeStep()) return std::nullopt;
+    return captureQueryRow(query);
+}
+
+Payload captureQueryRow(SQLite::Statement &query) {
     Payload row = Payload::object();
     for (int i = 0; i < query.getColumnCount(); ++i) {
         const auto column = query.getColumn(i);

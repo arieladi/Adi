@@ -30,11 +30,13 @@ class Database;
 }
 
 namespace adi {
+class Store;
+namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
 
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 9;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18)
+inline constexpr int kSchemaMinor = 10;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: track freeze provenance
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {
@@ -157,6 +159,11 @@ public:
     [[nodiscard]] const std::string& clientLabel() const noexcept { return clientLabel_; }
 
 private:
+    friend bool freeze::validated(Store&) noexcept;
+    friend void freeze::remember(Store&) noexcept;
+    std::int64_t frozenValidationChanges_=-1,frozenValidationDataVersion_=-1;
+    std::int64_t frozenValidationSchema_=-1,frozenValidationTempSchema_=-1;
+
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly);
     bool applySessionPragmas();
 

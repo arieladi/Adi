@@ -233,6 +233,10 @@ add_library(adi_core STATIC
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
     src/adi/render/queue.cpp
+    src/adi/render/freeze_capture.cpp
+    src/adi/freeze_fingerprint.cpp
+    src/adi/freeze_state.cpp
+    src/adi/freeze_commands.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
@@ -1357,3 +1361,15 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+
+add_executable(adi_freeze_capture_tests tests/test_freeze_capture.cpp)
+target_link_libraries(adi_freeze_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_freeze_capture_tests COMMAND adi_freeze_capture_tests)
+
+add_executable(adi_freeze_fingerprint_tests tests/test_freeze_fingerprint.cpp)
+target_link_libraries(adi_freeze_fingerprint_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_freeze_fingerprint_tests COMMAND adi_freeze_fingerprint_tests)
+
+add_executable(adi_freeze_commands_tests tests/test_freeze_commands.cpp)
+target_link_libraries(adi_freeze_commands_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_freeze_commands_tests COMMAND adi_freeze_commands_tests)

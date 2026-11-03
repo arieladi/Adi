@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_state.hpp"
 
 #include "adi/history.hpp"
 
@@ -307,7 +308,9 @@ History::Result History::undo() {
             return r;
         }
 
+        freeze::validate(store_);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         r.txnId = step->txnId;
         return r;
@@ -347,7 +350,9 @@ History::Result History::redo() {
             return r;
         }
 
+        freeze::validate(store_);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         r.txnId = step->txnId;
         return r;
@@ -417,7 +422,9 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         SQLite::Statement up(db, "UPDATE op_branches SET is_current = 1 WHERE id = ?");
         up.bind(1, branchId);
         up.exec();
+        freeze::validate(store_);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         return r;
     } catch (const std::exception& e) {
@@ -571,7 +578,9 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
             r.opsApplied = 0;
             return r;
         }
+        freeze::validate(store_);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         return r;
     } catch (const std::exception& e) {

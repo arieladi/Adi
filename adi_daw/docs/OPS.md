@@ -371,6 +371,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `track.create` | e | G | pair `track.delete` | P0 |
 | `track.delete` | e | G | cap | P0 |
 | `track.reorder` | e | S | sym | P0 |
+| `track.setFreeze` | e | G | sym | P1 |
 | `track.setParent` | e | G | sym | P1 |
 | `track.rename` | e | N | sym | P0 |
 | `track.setColor` | e | N | sym | P1 |
@@ -673,7 +674,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**173 ops** — 66 P0, 55 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
@@ -711,3 +712,15 @@ Compaction (SPEC §8.3) may drop ephemeral ops first.
    format gaps in FEATURES.md §12. No schema, therefore no ops.
 4. **Comping ops.** `lane.*` gives the structure; the comp *edit* gestures
    (swipe-to-comp, promote take) need their own verbs and are not yet named.
+
+### Whole-track freeze state
+
+track.setFreeze carries id, before and after objects. Each captured state holds
+armed, frozen, media and render (the complete frozen_renders row or null). The
+handler requires the current state to equal before, validates the closed after
+shape, then installs it. The inverse swaps the two captures. No filesystem or
+device loading occurs in apply. After a native batch, undo or redo, frozen
+source fingerprints and flags must remain valid; edits to baked source material
+require unfreezing first. Root fader, pan, width, phase, delay, mute, solo and
+outgoing sends stay live. Freeze preparation/publication is described in
+ENGINE-FREEZE.md.

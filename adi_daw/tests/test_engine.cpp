@@ -312,6 +312,10 @@ void testWindowMetadata() {
     editTrack("UPDATE tracks SET color=2309737967 WHERE id=3", [](const TrackNode& t) {return t.color==2309737967LL;}, "wide color");
     editTrack("UPDATE tracks SET color=NULL WHERE id=3", [](const TrackNode& t) {return !t.color;}, "cleared color");
     editTrack("UPDATE tracks SET parent_id=NULL WHERE id=3", [](const TrackNode& t) {return t.parent==0;}, "top-level parent");
+    editTrack("UPDATE tracks SET frozen=1 WHERE id=3", [](const TrackNode& t){return t.frozen;}, "frozen switch");
+    s.db().exec("INSERT INTO media_files(id,hash_blake3) VALUES(88,'freeze-cache')");
+    editTrack("UPDATE tracks SET freeze_media_id=88 WHERE id=3", [](const TrackNode& t){return t.freezeMediaId==88;}, "cache media identity");
+    editTrack("INSERT INTO frozen_renders VALUES(3,88,88,100,48000,2,'fp',x'00',0)", [](const TrackNode& t){return t.freezeMode=="wet";}, "stored wet cache mode");
 
     s.db().exec("UPDATE clips SET name='Renamed' WHERE id=10");
     auto renamed = SnapshotBuilder::fromStore(s, *before);
