@@ -16,6 +16,9 @@ const char* actorName(Actor a) { return a == Actor::Agent ? "agent" : "user"; }
 /// The switch for a person's changes in the log (A6-20, ADR-0203).
 constexpr const char* kLogChangesKey = "settings.logChanges";
 
+/// The table of interface zooms, per window and per display (N4).
+constexpr const char* kWindowZoomKey = "window.zoom";
+
 bool readText(const std::filesystem::path& p, std::string& out) {
     std::ifstream in(p, std::ios::binary);
     if (!in) return false;
@@ -187,7 +190,7 @@ bool agentForbidden(const Setting& s) {
     // virtual device), plug-in folders and scanning, privacy, the agent's
     // own settings, and anything that is not an App setting at all.
     return s.scope != Scope::App || s.type == Type::Path || s.type == Type::PathList ||
-           s.page == "Audio" || s.page == "Engine" || s.page == "Plug-ins" || s.page == "Privacy" ||
+           s.page == "Audio" || s.page == "Engine" || s.page == "Plug-Ins" || s.section == "Privacy" ||
            s.page == "AI";
 }
 
@@ -255,6 +258,26 @@ std::optional<Preset> presetFromJson(const Value& j, std::string& why) {
         why = e.what();
         return std::nullopt;
     }
+}
+
+std::string windowZoomKey(std::string_view window, std::string_view display) {
+    return std::string(window) + "@" + std::string(display);
+}
+
+std::optional<double> windowZoom(const AppSettings& s, std::string_view window, std::string_view display) {
+    const Value table = s.get(kWindowZoomKey);
+    if (!table.is_object()) return std::nullopt;
+    const auto it = table.find(windowZoomKey(window, display));
+    if (it == table.end() || !it->is_number()) return std::nullopt;
+    return it->get<double>();
+}
+
+bool setWindowZoom(AppSettings& s, std::string_view window, std::string_view display, double zoom,
+                   const ChangeContext& who, std::string& why) {
+    Value table = s.get(kWindowZoomKey);
+    if (!table.is_object()) table = Value::object();
+    table[windowZoomKey(window, display)] = zoom;
+    return s.set(kWindowZoomKey, table, who, why);
 }
 
 }  // namespace adi::settings
