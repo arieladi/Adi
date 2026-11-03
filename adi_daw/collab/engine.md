@@ -15,6 +15,51 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 
 
+
+## 2026-11-03 — N17 continuation: the Warp button on an existing clean import
+
+**PR requested: update the existing N17 PR**, engine/phase-c-editing -> main,
+head **19d1fc6** (after 619ccd3), title **Add captured clip, range and whole-Set
+editing actions**. Add to its body: the window can now call
+clip_edit::prepareSetWarp(store, clipId, WarpOptions, referenceRate) from
+warp_commands.hpp on an owner/worker connection, keep the document generation,
+then commitPrepared. Enable detects source timing and captures trim, bar map,
+mode and musical length on the same clip identity; disable captures the actual
+physical source duration and pins, instead of leaving a stretched extent with
+only its flag switched. One native captured arranger.splice undo step; apply,
+undo and redo never analyze files. Exact head, cancellation and a commit-time
+BLAKE3 guard protect the captured source. A future marker layout refuses rewrite.
+The full API/limits are in ENGINE-WARP.md, ENGINE-EDIT-COMMANDS.md and OPS.md.
+
+This producer is for the director's **clean import** (d7): an edited source
+offset/loop, alias, End marker, reverse/pitch or trimmed extent gives a named
+refusal. All six mode selections capture; arbitrary edited-clip Warp toggling
+and individual catalogue marker setters are separate. Material split/copy of
+Warp audio already works from the previous increment. No schema, version or
+new opcode change here; no UI/device code. The requested clip/range/Time,
+fades, silence and audio-import/bounce actions are available together in this
+one N17 branch. Video import still refuses honestly; the video clip/window
+backend is P2 under ADR-0206 d4, rather than a silent audio attachment.
+Next actionable window work is N20's engine input-recording backend; win's
+per-device channel configuration is still external. N16's native Q/L contracts
+and N38's role format remain with their respective lanes; no director gate.
+
+**Validation:** full GCC14 Debug/Werror/PD ON/JUCE OFF test_all **10988 checks
+across 115 C++ suites**, every result inspected and passing. Only the known
+win-owned README **51 vs 54 tables** fails; all other schema/frozen migrations,
+ops, Pd, CI and binary-layout validators pass. GCC and Clang19 Warp actions
+31, Warp playback/edit 125, Warp import 33 pass. Actual heard attacks move onto
+the project grid; Warp off returns physical speed/duration; exact undo/redo
+restores the heard PCM. Tests cover every mode selection, missing/edited
+source refusals, late/pre cancellation, stale journal head, changed source
+bytes and future map preservation. Strict shadow passes on producer/test.
+Compiled plants catch wrong off duration (1 failure), missing file guard (1),
+missing expected head (3), future marker rewrite (1). Latest fetch remains
+main 0cadd72, window/log 49b597d; no new need or CI relay arrived.
+
+---
+
+
 ## 2026-11-03 — N17 continuation: warped material edits retain musical fades
 
 **PR requested: update the same N17 PR**, engine/phase-c-editing -> main,
