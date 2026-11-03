@@ -13,6 +13,19 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-03 — Daily history snapshots and persistent-snapshot budgets ready; undo compaction next
+
+**PR requested** — head `engine/history-retention` at **`75909f71439bf0afad0d408da42629e214004079`**, base `main` (cut from `61eb28d`). Title: **Add daily snapshots and bounded snapshot retention**. GitHub API remains unavailable in this seat; win/window opens the PR and win merges. No other feature dependency.
+
+**PR body:** Implements ADR-0203 d13's daily automatic snapshot and 10,000 local / 100,000 collaboration persistent-snapshot limits. Opening an unchanged document creates nothing; the owner service records changed days and refreshes that day's automatic point after completed edits, undo or redo, including after reopen/timezone changes. Renaming an automatic point pins it as named. Retention removes only oldest automatic points; all-named limits report a block. Eviction, insertion/update and persistent day markers commit together, with rollback and same-head retry on failure. Explicit snapshot removal is metadata, like rename. No schema, opcode, UI or audio-thread change.
+
+**Window handoff:** construct one `DailyHistorySnapshots(Store&, HistorySnapshotPolicy)` before accepting edits on New/Open/Save As; call `poll(nowUtcMicros, utcOffsetMinutes)` after completed edit gestures/undo/redo and before close. Recreate the service when replacing the Store. Poll returns Unchanged/Created/Updated/Blocked/Failed and ID/name/error; there is no timer or clock read. `History::takeSnapshot` accepts the same optional budget policy, `renameSnapshot` promotes automatic points, and `removeSnapshot` explicitly frees a slot. See `docs/ENGINE-HISTORY-RETENTION.md`. Persistent snapshot metadata adds no journal operations. These APIs do not replace the separate N3/N30 file commands.
+
+**Validation:** full GCC14 Debug/Werror/no-JUCE/PD-on build and `test_all.sh`: **9,963 checks / 107 suites**, every C++ result and sum inspected; all five validators pass. GCC14 and Clang19 daily-policy **38**, snapshots **65**, history **95** pass. Direct shadow-warning builds of both changed production units and the new suite pass. Eight compiled plants fail normally (3/5/6/12/1/1/5/1 checks); no crashes counted: named eviction, failed promotion, phantom open, duplicate day, lost pending retry, negative-date floor, budget off-by-one and eviction without a transaction. Full runner was rebuilt after removing unregistered freeze executables; an earlier stale run was stopped and is not validation evidence. README counts remain win-owned.
+
+**Queue:** this completes daily snapshots and persistent snapshot budgets, **not** active undo's 2,000 transactions / 1,000 MB compaction. Continuing that independent increment now. It must store a replayable checkpoint, preserve named snapshots/reachable branch points and refuse to compact unuploaded collaboration edits. Freeze Group's final request remains `c7fecf74` below; live-key Freeze All still needs the host key-routing capability described there. No LANES §5 question blocks.
+
+
 ## 2026-11-03 — Freeze Group added; final track-freeze head supersedes the earlier request
 
 **PR requested / update the earlier request:** engine/track-freeze ->
