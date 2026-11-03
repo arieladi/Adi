@@ -433,7 +433,45 @@ silent truncation in JSON, a non-issue in CBOR.
 | `noteExpression.clear` | e | S | cap | P1 |
 | `cc.write` | e | S | cap | P0 |
 | `cc.delete` | e | S | cap | P0 |
+| `cc.restoreStream` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
+
+Implemented controller-lane editing uses existing addressed `event_streams`
+rows (`stream_kind='cc'`, ACTL), with channel 0..15 and controller 0..127:
+
+- `cc.write {id,clip,channel,controller,points[]}` upserts explicit point IDs in
+  that stream. `id` is its explicit SQL row ID, required even on creation.
+  A point is `{id,time,value,tension?,curve?,flags?}`: positive uint64 ID,
+  signed relative musical ticks, finite normalized double value 0..1, tension
+  -1..1 (default 0), curve 0..5 (default Hold), byte flags (default 0).
+  Duplicate incoming IDs, unsupported layouts, invalid values and slot/ID
+  collisions refuse the whole op. Unmentioned points retain their raw bytes.
+- `cc.delete {id,clip,channel,controller,point_ids[]}` removes only listed
+  points. Empty/duplicate/missing selections refuse. Deleting the last point
+  retains an empty addressed lane.
+- `cc.restoreStream {id,clip,channel,controller,state:{data}}` is the captured
+  inverse. Data is NULL for previous absence, or `{bytes}` containing compact
+  CBOR binary (JSON callers may supply byte integers). Undo of first creation
+  removes its row. Existing streams restore exact bytes, including future
+  record tails/header flags/trailer. The same ID/address collision checks apply.
+
+Streams are sorted stably by time. Updating an existing future record preserves
+its full tail, while insertion of a new record into an unknown wider layout
+refuses. Values retain full normalized precision; MIDI byte quantization belongs
+at the host boundary. `controllers::readLanes` returns typed points, raw bytes and
+per-lane errors; an unbound NULL address is distinct from channel/controller zero.
+ClipNode.controllers publishes the same data immutably, and every field/raw
+change participates in structural sharing. SnapshotBuilder reads all project
+fields in one SQLite read transaction, including when another connection edits
+between the controller and clip queries. The row model carries these lanes too.
+`controllers::prepareWrite` finds the addressed slot, allocates explicit stream
+and point IDs (zero input point IDs request new IDs), and validates the request
+under one owner-side read transaction. It reserves/writes nothing. The returned
+request contains all actual IDs. `commitPrepared` refuses a changed history head
+or another file/open Store client; retain the document generation across async
+work, as with the other prepared editing APIs. The window needs no SQL access.
+These are editing/read APIs; ordinary controller-event playback/host routing is
+the next increment. No schema or audio-callback change accompanies this one.
 
 ### 9.6 Automation
 
@@ -650,7 +688,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**173 ops** — 67 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

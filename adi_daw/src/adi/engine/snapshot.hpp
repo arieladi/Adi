@@ -25,6 +25,7 @@
 
 #pragma once
 
+#include "adi/controller_data.hpp"
 #include "adi/engine/publisher.hpp"
 #include "adi/textproj.hpp"
 
@@ -70,6 +71,7 @@ struct ClipNode {
     std::int64_t lengthTicks = 0;
     bool muted = false;
     float gainDb = 0.0f;
+    std::vector<controllers::Lane> controllers = {};
 };
 
 struct TrackNode {

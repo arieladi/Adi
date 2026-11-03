@@ -2,9 +2,12 @@
 
 #include "adi/engine/snapshot.hpp"
 
+#include "adi/controller_lanes.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
+#include <stdexcept>
 
 #include <algorithm>
 #include <map>
@@ -25,7 +28,7 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
-           a.muted == b.muted && a.gainDb == b.gainDb;
+           a.muted == b.muted && a.gainDb == b.gainDb && a.controllers == b.controllers;
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
@@ -124,6 +127,15 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const Snapshot& previous) {
     auto snap = std::make_unique<Snapshot>();
     auto& db = const_cast<SQLite::Database&>(store.db());
+    std::optional<SQLite::Transaction> transaction;
+    if (sqlite3_get_autocommit(db.getHandle()) != 0)
+        transaction.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+    auto controllerRows = controllers::readLanes(store);
+    if (!controllerRows.ok)
+        throw std::runtime_error("controller snapshot: " + controllerRows.error);
+    std::map<std::int64_t, std::vector<controllers::Lane>> controllersByClip;
+    for (auto &lane : controllerRows.lanes)
+        controllersByClip[lane.clipId].push_back(std::move(lane));
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -193,6 +205,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.muted = st.getColumn(4).getInt() != 0;
             c.gainDb = static_cast<float>(st.getColumn(5).getDouble());
             c.name = st.getColumn(6).getString();
+            if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
+                c.controllers = lanes->second;
 
             const auto prev = prevClips.find(c.id);
             if (prev != prevClips.end() && same(*prev->second, c))
@@ -258,6 +272,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch (const std::exception&) {
     }
+    if (transaction)
+        transaction->commit();
     return snap;
 }
 
