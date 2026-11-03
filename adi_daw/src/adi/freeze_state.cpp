@@ -2,6 +2,7 @@
 #include "adi/freeze_state.hpp"
 #include "adi/engine/plan.hpp"
 #include "adi/freeze_fingerprint.hpp"
+#include "adi/freeze_groups.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
@@ -64,6 +65,8 @@ void validate(Store &store, bool source) {
             throw std::runtime_error("frozen track flags are inconsistent; unfreeze first");
         return;
     }
+    validateGroups(store);
+    const auto scopes = groups(store.db());
     for (const auto &row : renders(store.db())) {
         const auto id = detail::signedInteger(row.at("track_id"));
         const auto flags = state(store.db(), id);
@@ -84,16 +87,20 @@ void validate(Store &store, bool source) {
             const auto model = rows::readModel(store);
             const auto track = std::find_if(model.tracks.begin(), model.tracks.end(),
                                             [id](const auto &t) { return t.id == id; });
+            const bool wholeGroup = scopes.contains(id);
             if (track == model.tracks.end() ||
-                (track->kind != "audio" && track->kind != "midi" && track->kind != "instrument"))
+                (wholeGroup
+                     ? track->kind != "group"
+                     : (track->kind != "audio" && track->kind != "midi" && track->kind != "instrument")))
                 throw std::runtime_error("whole-track cache requires a regular track");
             const auto plan = engine::planGraph(model);
             for (const auto &edge : plan.edges)
-                if (plan.nodes.at(edge.to).trackId == id)
+                if (!wholeGroup && plan.nodes.at(edge.to).trackId == id)
                     throw std::runtime_error(
                         "whole-track freeze cannot retain live incoming audio or sidechain routing");
             FingerprintSpec spec;
             spec.root = id;
+            spec.subtree = wholeGroup;
             if (fingerprint(store, spec).hash != row.at("fingerprint").get<std::string>())
                 throw std::runtime_error(
                     "frozen source changed; unfreeze before editing its material or devices");

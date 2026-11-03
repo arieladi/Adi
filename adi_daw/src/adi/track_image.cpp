@@ -102,7 +102,7 @@ public:
   Image(SQLite::Database &database, const Catalog &schema, bool source = false)
       : db(database), catalog(schema), sourceRead(source) {}
   bool ignored(const std::string &name) const {
-      return sourceRead && (name == "frozen_renders" || name == "device_panels" ||
+      return sourceRead && (name == "frozen_renders" || name == "frozen_groups" || name == "device_panels" ||
                             name == "device_panel_params" || name == "controller_maps");
   }
     std::map<Identity,Row> rows;

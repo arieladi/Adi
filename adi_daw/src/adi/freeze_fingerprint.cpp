@@ -85,7 +85,7 @@ void parents(Rows &rows, SQLite::Database &db, const std::set<std::int64_t> &roo
         "tracks",           "clips",           "devices",       "device_chains",       "lanes",
         "automation_lanes", "routing",         "ops",           "op_branches",         "history_snapshots",
         "agent_requests",   "op_clients",      "op_clocks",     "session_state",       "ui_view",
-        "window_state",     "controller_maps", "device_panels", "device_panel_params", "frozen_renders",
+        "window_state",     "controller_maps", "device_panels", "device_panel_params", "frozen_renders", "frozen_groups",
         "state_blobs"};
     std::vector<Row> pending;
     for (const auto &[identity, row] : rows) {

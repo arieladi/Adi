@@ -11,8 +11,8 @@ an encoding boundary, so this does not promise a bit-exact 64-bit null.
 
 The producer refuses partial-track ranges, locked/already frozen tracks,
 incoming audio or sidechain edges, and MIDI material forwarded without its own
-instrument. Groups, Freeze All Channels with live keys/group balance, and live
-instrument-prefix caches remain subsequent increments. A static wet file cannot
+instrument. Freeze All Channels with live keys/group balance and live instrument-prefix
+caches remain subsequent increments. Whole-group mode is described below. A static wet file cannot
 respond to a changed key or independently changed child balances. The lower
 capture/fingerprint helpers do not enable those native modes.
 
@@ -82,3 +82,45 @@ published, only files created by that attempt are removed; the same prepared
 job can retry. A prior pooled file is reused only after a full hash match and
 is never removed on failure. Last-owner cleanup removes only the job's private
 directory, after its readers and worker Session have closed.
+
+## Freeze Group
+
+Set wholeGroups=true and select non-overlapping group roots in
+FreezeCaptureSpec. This records each complete group bus once, including its
+child balances, internal sends/keys, console halves and group inserts. Children
+keep their original clips/state in the file but their sources, devices and
+audio routes are removed from the realized graph. The group fader, pan, sends
+and parent console remain live. Child audio routes to outside the group also
+stop until unfreeze: show this warning and set acknowledgeChildAudioRoutes=true
+only when the user chooses that operation. The saved routing rows are never
+rewritten. Source changes inside the parked subtree require unfreezing first.
+
+Capture requires Solo off, no externally driven audio/sidechain inputs into the
+subtree, and no independently frozen children. Baked VCA controls must be within
+the group. MIDI forwarded out of the group without an included instrument is
+refused. These boundaries prevent a static cache from silently replacing a
+partial or live-input mix; live-input modes remain follow-up work. Empty and
+nested ordinary groups are valid. A master track cannot belong to the scope.
+
+Use the same prepareFreeze/commitFreeze/unfreeze calls. Schema 1.11 adds
+frozen_groups with captured descendant IDs and original arm switches, and
+group.setFreezeScope records them beside the root cache in the same transaction.
+Undo, redo, reopen and generic track-delete undo retain that metadata. Unfreeze
+restores child arm switches. A root deletion retains the surviving children's
+current disarmed state; undo restores the entire frozen group.
+
+Snapshot children expose frozenByGroup (zero when absent), frozen=true and
+freezeMode=group-member. The active group root has mode group. The child's own
+freezeMediaId stays empty; look up its owner to find the group cache and unfreeze that owning group. Every field
+participates in structural sharing, including ownership changes between nested
+groups. Parked child readers are filtered before constructing audio/MIDI
+sources; missing original media and plug-ins therefore do not block playback.
+The original graph is planned first, then its nodes/edges are filtered and
+indices remapped, preserving explicit routing rather than inventing defaults.
+
+Verified cache resolutions are pinned in the private playback model, including
+original-hint/collected-media fallbacks. Later opens check file size/modification
+time and reverify changed files; unchanged immutable cache files avoid hashing
+the full audio on each live fader rebuild. Serialized hints and the UI model
+are preserved. New captures exclude parked group originals from input copying,
+so unrelated tracks can still be frozen with those originals offline.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/snapshot.hpp"
+#include "adi/freeze_groups.hpp"
 
 #include "adi/store.hpp"
 
@@ -31,9 +32,9 @@ bool same(const ClipNode& a, const ClipNode& b) {
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
         a.kind != b.kind || a.color != b.color || a.frozen != b.frozen ||
-        a.freezeMediaId != b.freezeMediaId || a.freezeMode != b.freezeMode || a.muted != b.muted ||
-        a.soloed != b.soloed || a.volumeDb != b.volumeDb || a.pan != b.pan ||
-        a.clips.size() != b.clips.size())
+        a.frozenByGroup != b.frozenByGroup || a.freezeMediaId != b.freezeMediaId ||
+        a.freezeMode != b.freezeMode || a.muted != b.muted || a.soloed != b.soloed ||
+        a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
         if (a.clips[i] != b.clips[i]) return false;   // pointer identity: already shared
@@ -205,6 +206,16 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    std::map<std::int64_t, std::int64_t> groupOwners;
+    std::set<std::int64_t> groupRoots;
+    try {
+        for (const auto &[root, members] : freeze::groups(db)) {
+            groupRoots.insert(root);
+            for (const auto &member : members)
+                groupOwners[member.id] = root;
+        }
+    } catch (const std::exception &) {
+    }
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -232,6 +243,13 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if (!st.getColumn(11).isNull())
                 t.freezeMediaId = st.getColumn(11).getInt64();
             t.freezeMode = !st.getColumn(12).isNull() ? "wet" : t.frozen ? "unverified" : "";
+            if (groupRoots.contains(t.id))
+                t.freezeMode = "group";
+            if (groupOwners.contains(t.id)) {
+                t.frozenByGroup = groupOwners.at(t.id);
+                t.frozen = true;
+                t.freezeMode = "group-member";
+            }
             if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
                 t.clips = it->second;
 

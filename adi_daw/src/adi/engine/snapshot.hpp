@@ -82,6 +82,7 @@ struct TrackNode {
     bool muted = false;
     bool soloed = false;
     bool frozen = false;
+    std::int64_t frozenByGroup = 0; // the group whose cache currently replaces this track
     std::optional<std::int64_t> freezeMediaId;
     std::string freezeMode; // wet, unverified legacy flag, or empty
     float volumeDb = 0.0f;

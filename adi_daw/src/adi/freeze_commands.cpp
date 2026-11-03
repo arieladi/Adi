@@ -3,6 +3,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/freeze_fingerprint.hpp"
+#include "adi/freeze_groups.hpp"
 #include "adi/freeze_state.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
@@ -98,20 +99,26 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
             const auto track = std::find_if(model.tracks.begin(), model.tracks.end(),
                                             [id](const auto &row) { return row.id == id; });
             if (track == model.tracks.end() ||
-                (track->kind != "audio" && track->kind != "midi" && track->kind != "instrument") ||
+                (stream.wholeGroup
+                     ? track->kind != "group"
+                     : (track->kind != "audio" && track->kind != "midi" && track->kind != "instrument")) ||
                 track->locked || track->frozen || !before.at("render").is_null())
-                throw std::runtime_error("freeze requires an unlocked, unfrozen regular track");
+                throw std::runtime_error("freeze requires an unlocked, unfrozen track or group");
             for (const auto &edge : plan.edges)
-                if (plan.nodes.at(edge.to).trackId == id)
-                    throw std::runtime_error(
-                        "freeze with live incoming audio or sidechains requires a live-prefix cache");
-            if (stream.source.prefixDevices.empty() &&
+                if (!stream.wholeGroup && plan.nodes.at(edge.to).trackId == id)
+                    throw std::runtime_error("freeze is unavailable while the track receives audio or "
+                                             "sidechain input from another track");
+            if (!stream.wholeGroup && stream.source.prefixDevices.empty() &&
                 std::any_of(model.clips.begin(), model.clips.end(),
                             [id](const auto &clip) { return clip.trackId == id && clip.kind == "midi"; }))
                 throw std::runtime_error(
                     "freeze cannot discard a forwarded MIDI stream; add its instrument to the track");
             FingerprintSpec spec;
             spec.root = id;
+            spec.subtree = stream.wholeGroup;
+            auto scoped = stream.wholeGroup ? groupMembers(model, id) : std::set<std::int64_t>{id};
+            if (stream.wholeGroup)
+                checkGroup(model, id, scoped, false);
             if (fingerprint(store, spec).hash != stream.fingerprint)
                 throw std::runtime_error("source changed after freeze render");
             std::int64_t mediaIds[2]{};
@@ -156,7 +163,7 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
                 files->files.push_back({source, target, hash.hex});
             }
             for (const auto &clip : model.clips)
-                if (clip.trackId == id) {
+                if (scoped.contains(clip.trackId)) {
                     if (clip.timeBase == 0 &&
                         clip.posTicks.value_or(0) >
                             std::numeric_limits<std::int64_t>::max() - clip.lengthTicks.value_or(0))
@@ -170,7 +177,11 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
                         throw std::runtime_error(
                             "freeze range must include every clip and its requested tail");
                 }
-            const auto bytes = encodePayload(identities(stream.source));
+            auto capturedIdentities = identities(stream.source);
+            for (const auto &contributor : stream.contributors)
+                for (const auto &identity : identities(contributor))
+                    capturedIdentities.push_back(identity);
+            const auto bytes = encodePayload(capturedIdentities);
             std::vector<std::uint8_t> blob(bytes.size());
             for (std::size_t i = 0; i < bytes.size(); ++i)
                 blob[i] = static_cast<std::uint8_t>(bytes[i]);
@@ -185,7 +196,23 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
                            {"original_armed", before.at("armed")}};
             Payload after = {{"armed", 0}, {"frozen", 1}, {"media", mediaIds[1]}, {"render", row}};
             files->requests.push_back(request(id, before, after, "Freeze Tracks"));
+            if (stream.wholeGroup) {
+                Payload members = Payload::array();
+                for (const auto member : scoped)
+                    if (member != id) {
+                        const auto found =
+                            std::find_if(model.tracks.begin(), model.tracks.end(),
+                                         [member](const auto &candidate) { return candidate.id == member; });
+                        if (found == model.tracks.end())
+                            throw std::runtime_error("group member disappeared during preparation");
+                        members.push_back({{"id", member}, {"armed", found->recordArmed ? 1 : 0}});
+                    }
+                files->requests.push_back(
+                    groupChange(id, groupState(store.db(), id), Payload{{"members", members}}));
+            }
         }
+        for (auto &operation : files->requests)
+            operation.label = files->capture.streams().front().wholeGroup ? "Freeze Group" : "Freeze Tracks";
         read.commit();
         result.files_ = std::move(files);
     } catch (const std::exception &e) {
@@ -271,6 +298,7 @@ CommitResult unfreeze(Store &store, std::span<const std::int64_t> tracks, bool a
         if (audio::onAudioThread || tracks.empty() || tracks.size() > 128)
             throw std::runtime_error("unfreeze requires the document owner and 1..128 tracks");
         const auto head = OpJournal(store).headSeq();
+        const auto scopes = groups(store.db());
         std::vector<OpRequest> requests;
         std::set<std::int64_t> unique;
         for (const auto id : tracks) {
@@ -283,6 +311,7 @@ CommitResult unfreeze(Store &store, std::span<const std::int64_t> tracks, bool a
             if (!acknowledgeChanged && !row.is_null()) {
                 FingerprintSpec spec;
                 spec.root = id;
+                spec.subtree = scopes.contains(id);
                 if (fingerprint(store, spec).hash != row.at("fingerprint").get<std::string>())
                     throw std::runtime_error(
                         "frozen source changed outside native edits; acknowledge before unfreezing");
@@ -295,6 +324,9 @@ CommitResult unfreeze(Store &store, std::span<const std::int64_t> tracks, bool a
                 if (!decoded || (installed && !installed(id, *decoded, error)))
                     throw std::runtime_error(error.empty() ? "installed device identity changed" : error);
             }
+            if (scopes.contains(id))
+                requests.push_back(
+                    groupChange(id, groupState(store.db(), id), Payload{{"members", nullptr}}));
             auto after = before;
             after["render"] = nullptr;
             after["frozen"] = 0;
@@ -303,6 +335,8 @@ CommitResult unfreeze(Store &store, std::span<const std::int64_t> tracks, bool a
                 after["armed"] = row.at("original_armed");
             requests.push_back(request(id, before, after, "Unfreeze Tracks"));
         }
+        for (auto &operation : requests)
+            operation.label = "Unfreeze Tracks";
         CommitOptions options;
         options.expectHead.emplace(head);
         return OpJournal(store).commit(requests, options);

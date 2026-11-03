@@ -2,6 +2,7 @@
 #include "adi/render/freeze_capture.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/freeze_fingerprint.hpp"
+#include "adi/freeze_groups.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/render/private_copy.hpp"
@@ -83,14 +84,25 @@ void backup(Store &source, const fs::path &path, std::stop_token stop) {
     }
     // Pin the active project's audio assets into the private generation before
     // loading any reader. A later external edit cannot change half a render.
-    std::string activeQuery = "SELECT DISTINCT media_id FROM audio_clips a JOIN clips c ON c.id=a.clip_id "
-                              "JOIN tracks t ON t.id=c.track_id WHERE t.frozen=0";
-    if (copy.tableExists("frozen_renders"))
-        activeQuery +=
-            " UNION SELECT pre_media_id FROM frozen_renders UNION SELECT post_media_id FROM frozen_renders";
-    SQLite::Statement active(copy, activeQuery);
-    while (active.executeStep()) {
-        const auto id = active.getColumn(0).getInt64();
+    std::set<std::int64_t> inactive;
+    for (const auto &[root, members] : freeze::groups(copy)) {
+        (void)root;
+        for (const auto &member : members)
+            inactive.insert(member.id);
+    }
+    std::set<std::int64_t> assets;
+    SQLite::Statement clips(copy, "SELECT a.media_id,c.track_id FROM audio_clips a JOIN clips c ON "
+                                  "c.id=a.clip_id JOIN tracks t ON t.id=c.track_id WHERE t.frozen=0");
+    while (clips.executeStep())
+        if (!inactive.contains(clips.getColumn(1).getInt64()))
+            assets.insert(clips.getColumn(0).getInt64());
+    if (copy.tableExists("frozen_renders")) {
+        SQLite::Statement cached(
+            copy, "SELECT pre_media_id FROM frozen_renders UNION SELECT post_media_id FROM frozen_renders");
+        while (cached.executeStep())
+            assets.insert(cached.getColumn(0).getInt64());
+    }
+    for (const auto id : assets) {
         const auto row = media::mediaRow(copy, id);
         std::string error;
         const auto sourcePath = media::resolveMedia(path.parent_path(), row, error);
@@ -188,6 +200,19 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
         auto snapshot = Store::open(captured, error, true);
         if (!snapshot)
             throw std::runtime_error("cannot open freeze project snapshot");
+        const auto model = rows::readModel(*snapshot);
+        if (spec.wholeGroups)
+            for (const auto root : spec.tracks) {
+                const auto members = freeze::groupMembers(model, root);
+                freeze::checkGroup(model, root, members, true);
+                if (freeze::childAudioRoutesOutside(model, root, members) &&
+                    !spec.acknowledgeChildAudioRoutes)
+                    throw std::runtime_error("Freeze Group disables child audio sends/routes until unfreeze; "
+                                             "acknowledge before capture");
+                for (const auto other : spec.tracks)
+                    if (other != root && members.contains(other))
+                        throw std::runtime_error("whole-group capture roots cannot overlap");
+            }
         engine::Session session;
         session.graph().setFadeFrames(0);
         if (!session.load(*snapshot, std::move(loader), spec.session))
@@ -227,6 +252,58 @@ FreezeAudioCapture captureFreezeAudio(Store &store, FreezeCaptureSpec spec, engi
             stream.source = *info;
             freeze::FingerprintSpec fingerprintSpec;
             fingerprintSpec.root = id;
+            fingerprintSpec.subtree = spec.wholeGroups;
+            stream.wholeGroup = spec.wholeGroups;
+            if (spec.wholeGroups) {
+                const auto members = freeze::groupMembers(model, id);
+                std::map<std::int64_t, bool> forwarded;
+                for (const auto member : members) {
+                    if (member == id)
+                        continue;
+                    const auto track = std::find_if(model.tracks.begin(), model.tracks.end(),
+                                                    [member](const auto &row) { return row.id == member; });
+                    if (track != model.tracks.end() && track->kind == "vca")
+                        continue;
+                    const auto contributor = session.offlineSourceInfo(member);
+                    if (!contributor)
+                        throw std::runtime_error("group contributor has no loaded source identity");
+                    stream.contributors.push_back(*contributor);
+                }
+                for (const auto member : members) {
+                    const auto *source = member == id
+                                             ? &stream.source
+                                             : static_cast<const engine::OfflineSourceInfo *>(nullptr);
+                    for (const auto &contributor : stream.contributors)
+                        if (contributor.track == member)
+                            source = &contributor;
+                    const bool consumed = source && !source->prefixDevices.empty();
+                    forwarded[member] =
+                        !consumed &&
+                        std::any_of(model.clips.begin(), model.clips.end(), [member](const auto &clip) {
+                            return clip.trackId == member && clip.kind == "midi" && !clip.muted;
+                        });
+                }
+                const auto plan = engine::planGraph(model);
+                for (std::size_t pass = 0; pass < members.size(); ++pass)
+                    for (const auto &edge : plan.edges) {
+                        const auto from = plan.nodes.at(edge.from).trackId,
+                                   to = plan.nodes.at(edge.to).trackId;
+                        if (edge.bus != engine::Bus::Main || edge.kind == "send" || !members.contains(from) ||
+                            !members.contains(to) || !forwarded[from])
+                            continue;
+                        const auto *source = to == id
+                                                 ? &stream.source
+                                                 : static_cast<const engine::OfflineSourceInfo *>(nullptr);
+                        for (const auto &contributor : stream.contributors)
+                            if (contributor.track == to)
+                                source = &contributor;
+                        if (!source || source->prefixDevices.empty())
+                            forwarded[to] = true;
+                    }
+                if (forwarded[id])
+                    throw std::runtime_error(
+                        "Freeze Group cannot discard a forwarded MIDI stream; include its instrument");
+            }
             stream.fingerprint = freeze::fingerprint(*snapshot, fingerprintSpec).hash;
             stream.preFx = data->directory / ("pre-" + std::to_string(i) + ".wav");
             stream.postFx = data->directory / ("post-" + std::to_string(i) + ".wav");

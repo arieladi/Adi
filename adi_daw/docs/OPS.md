@@ -371,6 +371,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `track.create` | e | G | pair `track.delete` | P0 |
 | `track.delete` | e | G | cap | P0 |
 | `track.reorder` | e | S | sym | P0 |
+| `group.setFreezeScope` | e | G | sym | P1 |
 | `track.setFreeze` | e | G | sym | P1 |
 | `track.setParent` | e | G | sym | P1 |
 | `track.rename` | e | N | sym | P0 |
@@ -674,7 +675,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**173 ops** — 66 P0, 55 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**174 ops** — 66 P0, 56 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
@@ -724,3 +725,10 @@ source fingerprints and flags must remain valid; edits to baked source material
 require unfreezing first. Root fader, pan, width, phase, delay, mute, solo and
 outgoing sends stay live. Freeze preparation/publication is described in
 ENGINE-FREEZE.md.
+
+Group freeze also uses group.setFreezeScope with id and closed before/after
+objects containing members (null, or captured id/armed pairs). Installation
+checks complete current descendant membership and original arm flags, disarms
+members and stores their provenance. Removal restores those arm flags. Its
+inverse swaps captures. Root cache, scope and media changes remain one native
+transaction; group scopes are validated before commit/undo/redo.

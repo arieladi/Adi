@@ -8,6 +8,8 @@ struct FreezeCaptureSpec {
     engine::SessionSpec session;
     audio::WavFormat format = audio::WavFormat::Float32;
     std::uint64_t documentGeneration = 0; // owner identity captured when the job starts
+    bool wholeGroups = false;
+    bool acknowledgeChildAudioRoutes = false;
 };
 struct FrozenStreamCapture {
     std::int64_t track = 0;
@@ -15,6 +17,8 @@ struct FrozenStreamCapture {
     std::int64_t preFxLatency = 0, postFxLatency = 0;
     engine::OfflineSourceInfo source;
     std::string fingerprint; // from the immutable backup, before any progress callback
+    bool wholeGroup = false;
+    std::vector<engine::OfflineSourceInfo> contributors{};
 };
 class FreezeAudioCapture {
   public:

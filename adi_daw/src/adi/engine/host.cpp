@@ -17,11 +17,13 @@ std::int32_t GraphHost::latencyHeadroomAt(double sampleRate) const noexcept {
     return static_cast<std::int32_t>(scaled < kMax ? scaled : kMax);
 }
 
-bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
-                        double sampleRate, std::int32_t maxFrames) {
+bool GraphHost::rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
+                        std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan) {
     error_.clear();
 
-    const GraphPlan plan = planGraph(model);
+    GraphPlan plan = planGraph(model);
+    if (transformPlan)
+        transformPlan(plan);
     std::unique_ptr<RealizedGraph> rg = realize(plan, opts);
     problems_ = rg->problems();
 

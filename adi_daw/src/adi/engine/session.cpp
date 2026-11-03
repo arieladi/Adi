@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_groups.hpp"
 #include "adi/freeze_state.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/row_capture.hpp"
@@ -379,6 +380,13 @@ void Session::syncRoute(Entry& e, device::DeviceInstance& inst) {
 void Session::attach() {
     device::DeviceHost::RebuildSpec rs;
     rs.model = [this] { return &model_; };
+    if (!frozenGroupChildren_.empty())
+        rs.transformPlan = [this](GraphPlan &plan) {
+            std::set<std::int64_t> roots;
+            for (const auto &source : frozenSources_)
+                roots.insert(source.first);
+            freeze::pruneGroupPlan(plan, frozenGroupChildren_, roots);
+        };
     rs.channels = spec_.channels;
     rs.sampleRate = spec_.sampleRate;
     rs.maxFrames = spec_.maxFrames;
@@ -421,7 +429,9 @@ void Session::attach() {
 std::vector<Node*> Session::trackChain(std::int64_t trackId) {
     std::vector<Node*> nodes;
     // ADR-0174: a summing group's buss half is first, right after its sum.
-    if (Node* buss = summing_.headFor(trackId)) nodes.push_back(buss);
+    if (!frozenSources_.contains(trackId))
+        if (Node *buss = summing_.headFor(trackId))
+            nodes.push_back(buss);
     if (const auto frozen = frozenSources_.find(trackId); frozen != frozenSources_.end()) {
         auto wet = clips_->sourcesFor(frozen->second.second);
         nodes.insert(nodes.end(), wet.begin(), wet.end());
@@ -467,6 +477,8 @@ Node* Session::tapFor(std::int64_t trackId, Tap tap) {
         case Tap::PostFx:
             return at > 0 && at <= nodes.size() ? nodes[at - 1] : nullptr;
         case Tap::PreFx: {
+            if (frozenSources_.contains(trackId))
+                return nullptr;
             // After the instrument, before the first audio effect: the last
             // node that plays the track's notes, or what comes before them.
             Node* last = summing_.headFor(trackId);
@@ -608,7 +620,8 @@ bool Session::rebuild() {
 
 bool Session::parkedDevice(const rows::Device &device) const {
     const auto *chain = chainOf(device.chainId);
-    return chain && chain->trackId && frozenSources_.contains(*chain->trackId);
+    return chain && chain->trackId &&
+           (frozenSources_.contains(*chain->trackId) || frozenGroupChildren_.contains(*chain->trackId));
 }
 bool Session::readPlayback(const Store &store) {
     try {
@@ -625,6 +638,14 @@ bool Session::readPlayback(const Store &store) {
             throw std::runtime_error("stop playback before freezing or unfreezing");
         playbackModel_ = model_;
         frozenSources_.clear();
+        frozenGroupChildren_.clear();
+        for (const auto &[root, members] : freeze::groups(const_cast<SQLite::Database &>(store.db()))) {
+            (void)root;
+            for (const auto &member : members)
+                frozenGroupChildren_.insert(member.id);
+        }
+        std::erase_if(playbackModel_.clips,
+                      [&](const auto &clip) { return frozenGroupChildren_.contains(clip.trackId); });
         std::int64_t ordinal = 0;
         std::set<std::int64_t> used;
         for (const auto &clip : model_.clips)
@@ -655,12 +676,27 @@ bool Session::readPlayback(const Store &store) {
                     {"abs_path_hint",
                      q.getColumn(2).isNull() ? Payload() : Payload(q.getColumn(2).getString())}};
                 const auto key = row.dump();
-                if (!verifiedFrozenMedia_.contains(mediaId) || verifiedFrozenMedia_.at(mediaId) != key) {
+                auto &verified = verifiedFrozenMedia_[mediaId];
+                std::error_code statusError;
+                const auto size = std::filesystem::file_size(verified.file, statusError);
+                bool current = !statusError && verified.row == key && verified.size == size;
+                const auto modified = std::filesystem::last_write_time(verified.file, statusError);
+                current = current && !statusError && modified == verified.modified;
+                if (!current) {
                     std::string error;
-                    if (media::resolveMedia(media::projectFolder(store), row, error).empty())
+                    const auto resolved = media::resolveMedia(media::projectFolder(store), row, error);
+                    if (resolved.empty())
                         throw std::runtime_error("freeze cache media: " + error);
-                    verifiedFrozenMedia_[mediaId] = key;
+                    verified = {key, resolved, std::filesystem::file_size(resolved),
+                                std::filesystem::last_write_time(resolved)};
                 }
+                // Use the verified resolution in this private playback model;
+                // a missing relative path can have a valid original/collected fallback.
+                const auto entry = std::find_if(playbackModel_.media.begin(), playbackModel_.media.end(),
+                                                [mediaId](const auto &item) { return item.id == mediaId; });
+                if (entry == playbackModel_.media.end())
+                    throw std::runtime_error("freeze cache has no playback media row");
+                entry->relPath = media::pathUtf8(verified.file);
             }
             const auto dry = synthetic(), wet = synthetic();
             frozenSources_.emplace(id, std::pair{dry, wet});

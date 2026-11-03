@@ -235,6 +235,7 @@ add_library(adi_core STATIC
     src/adi/render/queue.cpp
     src/adi/render/freeze_capture.cpp
     src/adi/freeze_fingerprint.cpp
+    src/adi/freeze_groups.cpp
     src/adi/freeze_state.cpp
     src/adi/freeze_commands.cpp
     src/adi/engine/project_view.cpp
@@ -1373,3 +1374,7 @@ add_test(NAME adi_freeze_fingerprint_tests COMMAND adi_freeze_fingerprint_tests)
 add_executable(adi_freeze_commands_tests tests/test_freeze_commands.cpp)
 target_link_libraries(adi_freeze_commands_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_freeze_commands_tests COMMAND adi_freeze_commands_tests)
+
+add_executable(adi_freeze_group_tests tests/test_freeze_group.cpp)
+target_link_libraries(adi_freeze_group_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_freeze_group_tests COMMAND adi_freeze_group_tests)

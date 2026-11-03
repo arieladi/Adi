@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1010;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1011;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '10'),
+    ('schema_minor',        '11'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -1011,4 +1011,10 @@ CREATE TABLE frozen_renders (
     fingerprint TEXT NOT NULL,
     identities BLOB NOT NULL,
     original_armed INTEGER NOT NULL CHECK(original_armed IN (0,1))
+) STRICT;
+
+-- One cached whole-group bus parks its descendant sources and audio routes.
+CREATE TABLE frozen_groups (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    members BLOB NOT NULL
 ) STRICT;

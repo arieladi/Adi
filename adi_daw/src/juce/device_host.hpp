@@ -84,6 +84,7 @@ public:
         engine::SendFn sendTailFor;
         /// And what closes a return's send into itself. Unset, no loop is made.
         engine::FeedbackFn feedbackFor;
+        std::function<void(engine::GraphPlan &)> transformPlan{};
     };
 
     /// Attach to the HOST that owns the live graph, and take responsibility

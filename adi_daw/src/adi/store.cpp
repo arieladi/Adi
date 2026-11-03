@@ -78,6 +78,7 @@ const std::vector<MigrationStep>& migrationSteps() {
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
         {10, {"frozen_renders"}},
+        {11, {"frozen_groups"}},
     };
     return steps;
 }

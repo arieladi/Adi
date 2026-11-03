@@ -350,7 +350,14 @@ private:
     GraphHost graph_;
     rows::Model model_;
     rows::Model playbackModel_;
-    std::map<std::int64_t, std::string> verifiedFrozenMedia_;
+    std::set<std::int64_t> frozenGroupChildren_;
+    struct FrozenMediaFile {
+        std::string row;
+        std::filesystem::path file;
+        std::uintmax_t size = 0;
+        std::filesystem::file_time_type modified{};
+    };
+    std::map<std::int64_t, FrozenMediaFile> verifiedFrozenMedia_;
     std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> frozenSources_; // dry, wet synthetic tracks
     DeviceLoader loader_;
     SourceFn sources_;
