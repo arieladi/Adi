@@ -241,6 +241,9 @@ class AdiRootComponent final : public juce::Component {
     // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
     MixViewPanel mixViewPanel{*this};
     juce::Rectangle<int> mixViewArea() const noexcept { return mixViewArea_; }
+    // Where the Mix View stands docked, open or not: the arrangement's place and its track controls'.
+    // Its first window opens over it, on the screen (detachMixView).
+    juce::Rectangle<int> mixViewDock() const noexcept { return mixViewDock_; }
     // The Mix View's tab, this window's view state; false only on a write error.
     bool chooseMixViewTab(int tab);
     // Opens or closes the Mix View and says where it goes; the application moves the panel into
@@ -365,7 +368,7 @@ class AdiRootComponent final : public juce::Component {
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
     juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
-        mixerViewArea_, stripArea_, mixViewArea_;
+        mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
     StubMixViewProvider mixStub_;

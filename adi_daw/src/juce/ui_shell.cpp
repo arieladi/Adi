@@ -822,14 +822,16 @@ void AdiRootComponent::resized() {
     // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
     // View and its track controls, which a lane-less view has no use for. The browser, the strip
     // down the edge and the Detail View stay.
-    mixViewArea_ = state_.mixView && !state_.mixViewDetached
-                       ? juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_)
-                       : juce::Rectangle<int>();
+    mixViewDock_ = juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_);
+    mixViewArea_ = state_.mixView && !state_.mixViewDetached ? mixViewDock_ : juce::Rectangle<int>();
     const bool mixing = !mixViewArea_.isEmpty();
-    // In its own window the panel is the window's; docked, it is laid out here.
+    // In its own window the panel is the window's; docked, it is laid out here. Framed before it shows,
+    // so the switch never shows what it held when it was last open (the director's R3).
     if (mixViewPanel.getParentComponent() == this) {
-        mixViewPanel.setVisible(mixing);
         mixViewPanel.setBounds(mixViewArea_);
+        if (mixing && !mixViewPanel.isVisible() && reader_)
+            mixViewPanel.frame(reader());
+        mixViewPanel.setVisible(mixing);
     }
     arrangement.setVisible(!mixing);
     if (mixing) {
