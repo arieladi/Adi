@@ -78,6 +78,8 @@ inline bool lanAudio(const settings::Setting &s) noexcept { return s.key.rfind("
 // A tab's groups: its own first, as Live heads a page with its name; then PTP beside Link (ADR-0145
 // d7), the LAN audio node, and Privacy on Licenses & Updates (ADR-0203 d11).
 inline std::string groupFor(const settings::Setting &s, const std::string &tab) {
+    if (!s.section.empty())
+        return s.section; // the registry carries Live's sections (N14)
     if (s.page == "Privacy")
         return "Privacy";
     if (s.key.rfind("sync.ptp", 0) == 0)
