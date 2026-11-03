@@ -1064,6 +1064,7 @@ bool AdiRootComponent::insertTrack(bool midi) {
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = id;
     arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.picked.clear();
     publishSelection();
     return true;
 }
@@ -1099,6 +1100,7 @@ bool AdiRootComponent::insertReturnTrack() {
     }
     arrangement.geometry.selection.track = id;
     arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = 0;
     publishSelection();
     arrangement.applyView();
@@ -1142,6 +1144,7 @@ bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track
         return false;
     arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = edit.clip;
     publishSelection();
     return true;
@@ -1164,6 +1167,7 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = 0;
     publishSelection();
     return true;

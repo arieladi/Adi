@@ -966,6 +966,17 @@ void rangeEditsAsBatches() {
         check(session.select(chosen, why), "a selection across tracks is kept");
     }
     check(ui::SessionState(*store).selection().toTrack == 3, "and read back with its far track");
+    // The tracks picked with Ctrl/Cmd+click are kept too, so an undo puts them back.
+    {
+        ui::SessionState session(*store);
+        ui::Selection chosen;
+        chosen.track = 1;
+        chosen.picked = {3, 4};
+        std::string why;
+        check(session.select(chosen, why), "a selection with picked tracks is kept");
+    }
+    check(ui::SessionState(*store).selection().picked == std::vector<std::int64_t>{3, 4},
+          "and read back with them");
 }
 
 void returnsStandBeforeMain() {

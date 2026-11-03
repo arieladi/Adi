@@ -817,6 +817,7 @@ void ArrangementView::select(int x, int y, bool snapToGrid) {
     if (const auto *t = geometry.trackAt(reader(), y)) {
         geometry.selection.track = t->id;
         geometry.selection.toTrack = 0;
+        geometry.selection.picked.clear();
         const auto at = geometry.tick(x);
         // The clip under the mouse is hit where it is; the insert marker snaps (§6.10).
         const auto *c = geometry.hit(*t, at);
@@ -847,6 +848,7 @@ void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
         if (c->id == clip) {
             geometry.selection.track = track;
             geometry.selection.toTrack = 0;
+            geometry.selection.picked.clear();
             geometry.selection.clip = clip;
             geometry.selection.start = c->posTicks;
             geometry.selection.end = c->posTicks + c->lengthTicks;
@@ -1214,12 +1216,22 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         return;
     }
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
-        // Shift+click on another header reaches the selection across the tracks between.
-        if (e.mods.isShiftDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu())
+        // Ctrl/Cmd+click picks a track apart from the others, or lets it go again (Live: non-adjacent
+        // tracks); Shift+click on another header reaches the selection across the tracks between.
+        if (e.mods.isCommandDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu()) {
+            auto &picked = view.geometry.selection.picked;
+            if (t->id != view.geometry.selection.track) {
+                if (const auto at = std::find(picked.begin(), picked.end(), t->id); at != picked.end())
+                    picked.erase(at);
+                else
+                    picked.push_back(t->id);
+            }
+        } else if (e.mods.isShiftDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu())
             view.geometry.selection.toTrack = t->id == view.geometry.selection.track ? 0 : t->id;
         else {
             view.geometry.selection.track = t->id;
             view.geometry.selection.toTrack = 0;
+            view.geometry.selection.picked.clear();
         }
         resizeId = t->id;
         initialHeight = view.geometry.heightFor(t->id);
@@ -1433,6 +1445,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && edge) {
             view.geometry.selection.track = track;
             view.geometry.selection.toTrack = 0;
+            view.geometry.selection.picked.clear();
             view.geometry.selection.clip = c->id;
             view.geometry.selection.start = c->posTicks;
             view.geometry.selection.end = c->posTicks + c->lengthTicks;
@@ -1560,6 +1573,7 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
                 sel.end = to + length;
                 sel.track = track;
                 sel.toTrack = 0;
+                sel.picked.clear();
             }
         }
         repaint();
@@ -1703,6 +1717,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         }
         sel.track = tracks[to].track->id;
         sel.toTrack = 0;
+        sel.picked.clear();
         sel.clip = 0;
         view.changed();
         return true;

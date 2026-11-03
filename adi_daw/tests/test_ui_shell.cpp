@@ -1648,6 +1648,58 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     canvas.mouseUp(pressAt(canvas, {x(bar) + 1, lane(4)}));
     check(geo.selection.track == 4 && geo.selection.toTrack == 0 && !geo.inSelection(root.reader(), 1),
           "a plain click selects in one track again");
+    // Live's Ctrl/Cmd+click on track titles picks tracks apart from one another; Solo and Group Tracks
+    // take them all; a plain click lets them go.
+    auto &headers = root.arrangement.headers;
+    const auto title = [&root](std::int64_t id) { return juce::Point<float>{20.f, static_cast<float>(laneTop(root, id) + 8)}; };
+    const auto cmd = juce::ModifierKeys::commandModifier;
+    headers.mouseDown(pressAt(headers, title(1)));
+    headers.mouseUp(pressAt(headers, title(1)));
+    headers.mouseDown(pressAt(headers, title(3), cmd));
+    headers.mouseUp(pressAt(headers, title(3), cmd));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 3} && !geo.inSelection(root.reader(), 2),
+          "1 MIDI, then Ctrl/Cmd+click on 3: the two selected, 2 not");
+    if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+        root.frame();
+        juce::Image picked(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picked);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(pictures).getChildFile("adi-picked-tracks.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picked, *stream);
+    }
+    check(root.keyPressed(juce::KeyPress('s', 0, 0)), "S");
+    root.frame();
+    auto soloedOnes = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->soloed)
+                out.push_back(t->id);
+        return out;
+    };
+    check(soloedOnes() == std::vector<std::int64_t>{1, 3}, "S solos both picked tracks, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(root.keyPressed(juce::KeyPress('g', cmd, 0)), "Ctrl/Cmd+G");
+    root.frame();
+    const auto *group = root.reader().findTrack(5);
+    check(group != nullptr && group->kind == "group" && root.reader().findTrack(1)->parent == 5 &&
+              root.reader().findTrack(3)->parent == 5 && root.reader().findTrack(2)->parent == 0,
+          "Group Tracks puts the two picked tracks in one group, 2 MIDI left outside");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    headers.mouseDown(pressAt(headers, title(1)));
+    headers.mouseDown(pressAt(headers, title(3), cmd));
+    headers.mouseDown(pressAt(headers, title(3), cmd));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1}, "Ctrl/Cmd+click again lets 3 go");
+    headers.mouseDown(pressAt(headers, title(3), cmd));
+    headers.mouseDown(pressAt(headers, title(2)));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{2} && geo.selection.picked.empty(),
+          "a plain click on 2 selects it alone");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
