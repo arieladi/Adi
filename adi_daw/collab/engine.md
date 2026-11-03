@@ -13,6 +13,100 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-03 — NI Stems: bounded MP4, real AAC workers, queue export and one-step group import
+
+**PR requested:** engine/ni-stems -> **main**, head
+**341c0eeae06494f52e3145b289ecfbe07ab74fe9**, title
+**Add NI Stems transport, export jobs and captured group import**.
+Independent of the unmerged N13/normalization stack; no third-level branch.
+GitHub API remains unavailable here; win/window please open and relay native
+Windows/macOS CI, including MSVC /WX. No new director gate.
+
+**Body / what the window can call:** set Job.niStems to one to four direct wet
+Source/name/#RRGGBB values plus a per-track AAC bit rate (256000 default), use
+stereo 44.1/48-kHz Session settings, and enqueue through the existing Queue.
+Main post-fader is the premixed master; output is .stem.mp4 with four stem slots
+(unused slots contain real silence). Queue identity/retry/naming/region/cancel
+and no-clobber publication retain their contracts; progress spans five streams,
+while Result.framesWritten is one audible stream's frame count. To import,
+prepareStemImport captures a private original and decodes only stems, then
+commitStemImport verifies project connection, document generation and journal
+head and creates the group/tracks/Warp-off clips/media as ONE undo step.
+Allocate explicit ids, placement ticks, optional parent/index and optional
+Live palette indices 0..69; NI RGB stays in the retained manifest, never in
+tracks.color. containerMedia() identifies the untouched owned original after
+reopen. Enabled NI mastering compressor/limiter is a named refusal unless the
+caller explicitly chooses raw stems; manifest().masteringEnabled still reports
+the unapplied processing. ENGINE-NI-STEMS.md documents the worker/thread,
+resource, codec, recovery and capability contracts. No UI, DSP-tier, schema or
+native-opcode changes; OPS.md records the existing native batch composition.
+
+The original ISO-BMFF reader/writer bounds boxes, tables, descriptors and actual
+mdat packet addresses, supports co64/extended media, preserves raw NI metadata
+at moov/udta/stem and separates encoder priming, audible duration and EOF padding.
+Five AAC-LC tracks use one codec/rate/config. Unsupported fragmentation,
+encryption, HE-AAC, composition offsets, complex edits and inconsistent tracks
+refuse by name. Packet data streams from disk. Native platform AAC is independent
+of JUCE; Linux dynamically loads codec60/util58 or codec61/util59 through two
+major-matched public-header shims. FFmpeg headers are sparse, pinned by official
+tag AND verified commit; no FFmpeg implementation is compiled or CLI invoked.
+The ordinary compensated WAV renderer is reused from one SQLite Backup revision
+(including WAL and device blobs), with verified absolute media paths, so live
+project edits cannot alter later stem renders. Direct wet stems need not sum
+back through nonlinear Main processing; generated mastering DSP is disabled.
+
+Native import retains an original private copy until commit and moves only a
+separate publication copy. A late SQL failure removes newly published assets,
+preserves other files and leaves the SAME prepared job retryable. In-batch/pool
+content dedup works even for the identical silent slots. Imported pool assets
+remain through Undo for Redo; the original container is retained byte for byte,
+including unknown metadata. No new persistent group-to-container association
+is claimed. Worker cancellation/service runs between bounded operations;
+publication inside the native transaction checks stop without pumping the UI.
+
+**Known capability / follow-up, not a parity closure:** native Mac/Windows code
+needs its CI runners. Some Media Foundation versions omit explicit sample-exact
+priming/duration: the real native availability probe then returns false and both
+export/import refuse instead of guessing a delay. The missing Windows codec
+capability remains open. This branch's NI jobs use normalization Off. **When
+combining with engine/export-normalization, keep NI normalization Off/refuse an
+enabled mode until post-AAC loudness/true-peak verification is implemented**;
+verifying a pre-AAC WAV cannot certify the delivered AAC ceiling. The two Job
+additions are adjacent; retain both fields and the queue's format dispatch when
+merging. NI LUFS integration follows the N13/normalization merge; no unsafe
+three-deep stack. This is not a Traktor certification or NI mastering-DSP clone.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all **9976 checks
+across 108 suites, ALL PASS, every binary result inspected; validators clean**,
+and validate_schema.py separately PASS (51 tables, version 1.9). Final GCC and
+Clang19 MP4/AAC **48**, NI **43**, ordinary queue **196** pass; the last private
+codec fixture names were made distinct per rate and MP4 tests rerun on both.
+Actual AAC decode proves exact frame count and zero-sample waveform alignment
+at 44.1 and 48 kHz. Structural fixtures cover malformed offsets/counts/clocks,
+unsupported codecs/edits, future boxes, and real sparse >4-GiB co64 addresses
+without reading/allocating gigabytes. Import actually plays through native
+groups in BOTH processing widths; tests cover source-project edits during
+render, silent slots, labels/palette separation, master exclusion, native
+Undo/Redo/reopen, stale generation/head, enabled mastering's explicit choice,
+late SQL rollback, same-job retry and preserved external destination collisions.
+
+Ten changed translation units pass the extra shadow check. Seven independently
+compiled defect plants fail: lost priming (7), packet outside mdat accepted (1),
+enabled SBR accepted (1), live project replacing captured revision (1), premixed
+master imported as a stem (2), moved-only recovery source (1), missing head
+guard (1). Original sources were not mutated. Independent FFmpeg reads all five
+ADI-generated AAC streams at each rate, exact edit durations and zero-sample
+alignment; its raw PCM command retains final packet padding (ADI trims it by
+container duration). Mixxx's independent five-second sine container remuxes with
+all five streams at 5.000 s and preserved 1600-frame priming. No external source
+or audio fixture was vendored; references and header pins are attributed.
+
+**Next:** freeze and bounce (LANES 3.4); then history caps/daily snapshots and
+remaining brief work. Continue chaining; the window's newer needs still win.
+
+---
+
+
 
 
 
