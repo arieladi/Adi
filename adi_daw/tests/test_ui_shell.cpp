@@ -1043,6 +1043,28 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(lanes.heightFor(12) == 60 && order() == tree, "a drag from the split line makes the track taller, and moves none");
         lanes.resizeTrack(12, 40);
         root.frame();
+        // The header is one piece, as Live's: the split line runs on under the track controls (the
+        // director's R2, 2 November).
+        MixerStrip *controls = nullptr;
+        for (const auto &s : root.mixer.strips())
+            if (s->isVisible() && s->track() == 12)
+                controls = s.get();
+        check(controls != nullptr, "Hats & Percs has its track controls");
+        if (controls != nullptr) {
+            const juce::Point<float> foot(20.f, static_cast<float>(controls->getHeight() - 2));
+            controls->mouseMove(pressAt(*controls, foot));
+            const bool cursor = controls->getMouseCursor() == juce::MouseCursor::UpDownResizeCursor;
+            controls->mouseMove(pressAt(*controls, {20.f, 10.f}));
+            check(cursor && controls->getMouseCursor() == juce::MouseCursor::NormalCursor,
+                  "the split line under the track controls shows the resize cursor; the rest of them does not");
+            controls->mouseDown(pressAt(*controls, foot));
+            controls->mouseDrag(dragAt(*controls, foot, foot.translated(0, 24)));
+            controls->mouseUp(dragAt(*controls, foot, foot.translated(0, 24)));
+            check(lanes.heightFor(12) == 64 && order() == tree,
+                  "a drag from it makes the track taller, lanes and names with it");
+        }
+        lanes.resizeTrack(12, 40);
+        root.frame();
     }
     // Live's Insert Track (manual 18.2) inside a group: right after the selected track, in its group.
     {
