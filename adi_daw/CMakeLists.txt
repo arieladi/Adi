@@ -247,6 +247,7 @@ add_library(adi_core STATIC
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
     src/adi/render/queue.cpp
+    src/adi/bounce_commands.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
@@ -1408,3 +1409,7 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+
+add_executable(adi_track_bounce_tests tests/test_track_bounce.cpp)
+target_link_libraries(adi_track_bounce_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_track_bounce_tests COMMAND adi_track_bounce_tests)

@@ -755,3 +755,13 @@ Compaction (SPEC §8.3) may drop ephemeral ops first.
    format gaps in FEATURES.md §12. No schema, therefore no ops.
 4. **Comping ops.** `lane.*` gives the structure; the comp *edit* gestures
    (swipe-to-comp, promote take) need their own verbs and are not yet named.
+
+Dedicated track bounce producers (`bounce_commands.hpp`,
+[ENGINE-BOUNCE.md](ENGINE-BOUNCE.md)) compose the existing native vocabulary:
+Bounce to New Track groups sibling reorder/create/color, optional Main connect,
+media import/relink, complete clip creation, naming and optional original mute.
+Whole-track Bounce in Place groups full material replacement, parked insert
+bypass, baked input-gain reset and optional disarm. Both play Warp off and use
+one undo transaction with project/document/head guards. No new opcode or schema
+is required. In-place preparation refuses partial extents or live incoming
+main/send audio rather than applying a baked mix twice.
