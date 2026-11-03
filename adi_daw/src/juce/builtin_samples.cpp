@@ -66,7 +66,8 @@ Payload emptyBuiltinSample(std::string_view uid,std::int32_t slot) {
     return {{"kind","adi.builtin.sample"},{"version",1},{"uid",uid},{"slot",slot},{"empty",true}};
 }
 BuiltinSampleInfo inspectBuiltinSample(const Payload& value) {
-    if(value.at("kind")!="adi.builtin.sample" || value.at("version")!=1)throw std::runtime_error("unsupported built-in sample state");
+    const auto& kind=value.at("kind");
+    if(!kind.is_string() || kind.get_ref<const std::string&>()!="adi.builtin.sample" || value.at("version")!=1)throw std::runtime_error("unsupported built-in sample state");
     BuiltinSampleInfo info;info.uid=value.at("uid").get<std::string>();
     const auto slot=value.at("slot").get<std::int64_t>();
     if(!value.at("slot").is_number_integer()||slot!=1||info.uid!=colorCabUid)throw std::runtime_error("unsupported built-in sample slot");
