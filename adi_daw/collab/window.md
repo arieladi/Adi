@@ -73,6 +73,44 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-03, win (ORC-VST) — the director's R1, R2, R3 and R6 [#372](https://github.com/arieladi/Adi/pull/372), [#373](https://github.com/arieladi/Adi/pull/373), [#374](https://github.com/arieladi/Adi/pull/374), on #370
+
+**A fresh seat**, after the last one's usage limit, resuming from `collab/prompts/2026-11-03-window-lane.md`
+(#371). From today the lane runs on the director's Windows PC: worktree `D:\wt-window`, built as
+`ui.yml` builds on Windows (Ninja, Debug, MSVC `/WX`, `ADI_WITH_JUCE=ON`, `ADI_WITH_PD=OFF`) in
+`D:\bw`. The app is not driven on the desktop: that is the director's own screen, in use. Pictures
+come from the shell tests' software renders (`ADI_UI_PARITY`).
+
+**The director's remarks on build `add5102` first** (`collab/director.md`, LANES §4 window item 4),
+one PR each, stacked:
+
+- **R1 and R6, #372 `window/dead-controls`.** Unfold Track on a plain track, and U on it, say that its
+  automation lanes wait for the engine (N26) and select nothing; a group's switch still folds.
+  Set Locator, Previous and Next Locator (N25), Automation Mode and Lock Envelopes (N26) each say what
+  they wait for. A press on a fold switch no longer runs the title's release, which had cleared the
+  Status Bar. Parity 7.3 rows 38 and 39.
+- **R2, #373 `window/split-line`.** The divider was already Live 11's measured 2 pt #505050 across
+  lanes, names and controls. What was missing: the split line under the track controls did nothing.
+  It now shows the resize cursor and drags the height, as under the name. If the director still
+  cannot see the border, the next step is to measure Live 12's divider on his PC. Parity 7.3 row 7.
+- **R3, #374 `window/mix-view-switch`.** Docked, the panel is framed before it shows. A floating
+  window is hidden before its content leaves it, so no empty black window shows on docking. The
+  first window opens over the place it stood docked, at its size; after that, where it was left.
+  F4, the Mix field and the window button each go both ways. Parity Mix View row 4. What else
+  "terrible" means waits for the director's next build.
+
+**#330 needed nothing.** The last seat's merge of main (eab4b28) is clean against today's main, and
+all 22 checks are green.
+
+**N4, N14 and N20** (win's #354, #359, #360) are not merged, so their rows stand. They are the lane's
+next items, after these three.
+
+**Tests.** shell 858, window state 62, document 47, all passing on MSVC `/WX`. Each PR's own count is
+in its body. `test_all.sh` was not run here: no engine file changed, and the shell suite is not among
+its counts.
+
+---
+
 ## 2026-11-03, cloud — Driver Error Compensation among the latencies [#370](https://github.com/arieladi/Adi/pull/370) `window/latency-compensation`, on #369
 
 **Built: the Audio page's Driver Error Compensation where Live 11 has it** (parity-settings row 7).
