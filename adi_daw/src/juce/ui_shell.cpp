@@ -35,6 +35,7 @@ void AppCommands::reload() {
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
+    exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
@@ -98,7 +99,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Wrap Tab Navigation", "Use Large Track Height",
                                   "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
                                   "Reference Track", "Play Reference", "Select All", "Insert Return Track",
-                                  "Return Tracks", "Sends", "Mixer In/Out"};
+                                  "Return Tracks", "Sends", "Mixer In/Out", "Solo Selected Tracks"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -250,6 +251,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleMixerInOut: // Live 12's Mixer Controls In/Out: the Mixer View's own; no key of its own
         info.setTicked(active_ != nullptr && active_->state().mixerInOut);
+        break;
+    case SoloSelected: // §42.19: Solo Selected Tracks, S
+        info.addDefaultKeypress('s', 0);
+        info.setActive(active_ != nullptr);
         break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
@@ -1145,6 +1150,16 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
     publishSelection();
     return true;
 }
+bool AdiRootComponent::soloTrack(std::int64_t id, bool add) {
+    // From the CURRENT cell (ADR-0201); the batch is one undo step.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Soloing needs an open project.");
+    auto edit = soloTracks(current->tracks, id, arrangement.geometry.selectedTracks(reader()), commands_.exclusiveSolo(), add);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
     return window != nullptr && window->isFullScreen();
@@ -1382,6 +1397,10 @@ bool AdiRootComponent::command(int id) {
         break;
     case AppCommands::SelectAll:
         if (!arrangement.selectAll())
+            return false;
+        break;
+    case AppCommands::SoloSelected:
+        if (!soloTrack(arrangement.geometry.selection.track, false))
             return false;
         break;
     case AppCommands::InsertReturnTrack:

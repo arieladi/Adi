@@ -194,11 +194,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             panel_.submit("track.setMute", {{"id", track_}, {"muted", !t->muted}},
                           t->muted ? "Activate Track" : "Deactivate Track");
     };
-    solo.onClick = [this] {
-        if (auto *t = panel_.root.reader().findTrack(track_))
-            panel_.submit("track.setSolo", {{"id", track_}, {"soloed", !t->soloed}},
-                          t->soloed ? "Unsolo Track" : "Solo Track");
-    };
+    // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
+    solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
     // A return's Pre/Post (ADR-0203 d3), where a track has Arm: every send into it taps before or
     // after the fader. Shown on a return's row only.

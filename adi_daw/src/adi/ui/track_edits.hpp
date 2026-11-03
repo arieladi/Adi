@@ -83,6 +83,34 @@ inline bool canGroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
     return t != nullptr && groupable(*t);
 }
+// Live's Solo switch and its S key (Live 12 manual 18.1, §42.19 "Solo Selected Tracks"): the clicked
+// track's Solo thrown; with several tracks selected and the clicked one among them, all of them
+// together. Soloing unsolos every other track while Exclusive Solo is on (the Record, Warp & Launch
+// Settings, `record.exclusiveSolo`, on by default as Live's), unless Ctrl/Cmd is held (`add`). Main
+// has no Solo. One batch.
+inline TrackEdit soloTracks(const SnapshotTracks &tracks, std::int64_t clicked, const std::vector<std::int64_t> &selected,
+                            bool exclusive, bool add) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    const auto *t = find(tracks, clicked);
+    if (t == nullptr || t->kind == "master") {
+        edit.refusal = t == nullptr ? "Select a track to solo." : "Main has no Solo.";
+        return edit;
+    }
+    const bool on = !t->soloed;
+    const char *label = on ? "Solo Track" : "Unsolo Track";
+    const bool together =
+        selected.size() > 1 && std::find(selected.begin(), selected.end(), clicked) != selected.end();
+    for (const auto &k : tracks) {
+        if (!k || k->kind == "master")
+            continue;
+        const bool acted = together ? std::find(selected.begin(), selected.end(), k->id) != selected.end()
+                                    : k->id == clicked;
+        if (acted ? k->soloed != on : on && exclusive && !add && k->soloed)
+            edit.ops.push_back(op("track.setSolo", {{"id", k->id}, {"soloed", acted && on}}, label));
+    }
+    return edit;
+}
 // Live's colour chooser (Live 12 manual 2.3.2): the colour at `index` of Live's palette (ADR-0211) on
 // every track of `ids` whose colour differs, as one batch; no ops when none would change.
 inline TrackEdit colourTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t index,
