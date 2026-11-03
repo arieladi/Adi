@@ -73,7 +73,7 @@ void printVersions() {
 
 int cmdCreate(const char* path) {
     adi::StoreError err = adi::StoreError::Ok;
-    auto st = adi::Store::create(path, err);
+    auto st = adi::Store::createNewProject(path, err);
     if (!st) {
         std::printf("create failed: %s\n", adi::toString(err));
         return 1;
