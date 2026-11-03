@@ -68,7 +68,7 @@ inline constexpr std::uint32_t kMaxDecodeChannels = 64;
 /// The registry keys (Settings > File & Folder > Decoding Cache), in MB.
 inline constexpr const char* kCacheMaxSizeKey = "cache.maxSizeMb";
 inline constexpr const char* kCacheMinFreeKey = "cache.minFreeSpaceMb";
-inline constexpr std::uint64_t kCacheMaxSizeMbDefault = 10240;   // 10 GB
+inline constexpr std::uint64_t kCacheMaxSizeMbDefault = 20480;   // 20 GB (ADR-0203)
 inline constexpr std::uint64_t kCacheMinFreeMbDefault = 2048;    // 2 GB
 
 struct DecodeCacheLimits {

@@ -21,6 +21,13 @@ namespace adi::engine {
 
 struct TransportInfo;
 
+/// What the graph's buffers hold and its nodes process (ADR-0207 d2): the
+/// Processing Precision switch on the Audio page. 32 is Live's scheme, the
+/// default: 32-bit float processing, every mix point summed in 64-bit. 64 is
+/// Cubase's "64 bit float": the whole graph in double, a node that cannot take
+/// double processed at 32 between conversions. Changing it builds a new graph.
+enum class Precision : std::uint8_t { Float32 = 32, Float64 = 64 };
+
 /// One callback's worth of audio, as the device hands it over.
 ///
 /// Raw pointers rather than a buffer type, because the buffer type on the other
@@ -46,6 +53,12 @@ struct AudioIo {
 
     /// Session-owned, valid for this callback only; device drivers leave null.
     const TransportInfo* transport = nullptr;
+
+    /// ADR-0207 d2: `numOut` channels of `frames` at full width, or null. An
+    /// offline render that keeps a 64-bit graph's output unnarrowed sets this;
+    /// a device driver, which is float, leaves it null. Both may be set, and
+    /// both are then written.
+    double* const* out64 = nullptr;
 };
 
 /// What an audio device drives. The graph implements it.
@@ -106,8 +119,11 @@ public:
     void process(const AudioIo& io) noexcept override {
         for (std::int32_t c = 0; c < io.numOut; ++c) {
             float* dst = io.out ? io.out[c] : nullptr;
-            if (dst == nullptr) continue;
-            for (std::int32_t i = 0; i < io.frames; ++i) dst[i] = 0.0f;
+            if (dst != nullptr)
+                for (std::int32_t i = 0; i < io.frames; ++i) dst[i] = 0.0f;
+            double* wdst = io.out64 ? io.out64[c] : nullptr;
+            if (wdst != nullptr)
+                for (std::int32_t i = 0; i < io.frames; ++i) wdst[i] = 0.0;
         }
         ++callbacks_;
         frames_ += io.frames;

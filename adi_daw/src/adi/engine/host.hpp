@@ -114,10 +114,16 @@ public:
     /// reporting a fixed time reports four times the samples at 192 kHz. So a
     /// graph built at another rate gets it scaled, never below this value:
     /// 8192 is 171 ms at 48 kHz, 32768 at 192 kHz, 65536 at 384 kHz. The cost
-    /// scales with it: `channels * (delay + headroom) * 4` bytes per edge, so
+    /// scales with it: `channels * (delay + headroom) * 4` bytes per edge (`* 8`
+    /// in a graph at 64, ADR-0207 d2), so
     /// 512 KiB of headroom per stereo edge at 384 kHz.
     void setLatencyHeadroom(std::int32_t n) noexcept { headroom_ = n > 0 ? n : 0; }
     [[nodiscard]] std::int32_t latencyHeadroom() const noexcept { return headroom_; }
+
+    /// The Processing Precision every graph is built at (ADR-0207 d2), kept on
+    /// the host as the headroom is. Takes effect at the next `rebuild`.
+    void setPrecision(Precision p) noexcept { precision_ = p; }
+    [[nodiscard]] Precision precision() const noexcept { return precision_; }
     /// What a graph built at `sampleRate` gets (ADR-0157 d3).
     [[nodiscard]] std::int32_t latencyHeadroomAt(double sampleRate) const noexcept;
 
@@ -176,6 +182,7 @@ private:
     std::vector<std::string> problems_;
     std::int32_t headroom_ = 8192;
     std::int32_t fadeFrames_ = 0;
+    Precision precision_ = Precision::Float32;
     bool keepHistory_ = true;
 
     // Audio thread only.

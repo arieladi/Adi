@@ -8,7 +8,7 @@ before your first commit, and re-read it if you have been away.
 
 | Agent | Machine | Model | Owns | Cannot |
 |---|---|---|---|---|
-| **win** | Windows 11 desktop, MSVC 19.44 / x64 | Claude Code | Lead technical coordinator (ADR-0109): architecture, ADR sequencing, engine integration, the format spec, `src/adi/**`, `tests/**`, `tools/**`, docs, Windows-specific code; since ADR-0202 also `.github/**`, `src/juce/**` (the plug-in host), `cmake/**`, `third_party/JUCE`, `docs/UI-ARCHITECTURE.md` and `docs/STEP-7-PLAN.md` | Build or test on macOS/clang/arm64 |
+| **win** | ORC-VST, a Windows 10 IoT Enterprise LTSC desktop (salon-tv, Windows 11, until 2026-09-30), MSVC 19.44 / x64 | Claude Code | Lead technical coordinator (ADR-0109): architecture, ADR sequencing, engine integration, the format spec, `src/adi/**`, `tests/**`, `tools/**`, docs, Windows-specific code; since ADR-0202 also `.github/**`, `src/juce/**` (the plug-in host), `cmake/**`, `third_party/JUCE`, `docs/UI-ARCHITECTURE.md` and `docs/STEP-7-PLAN.md` | Build or test on macOS/clang/arm64 |
 | **mac** | macOS, Apple clang / arm64 | Claude Code (team licence) | **Retired by the director on 2026-09-30, until he decides otherwise (ADR-0202).** Its areas moved to win and win_codex; its history and ADRs stand | Everything, until recalled |
 | **linux** | Ubuntu workstation, GCC/Clang / x86-64 | ChatGPT Codex (terminal) | Portable standard C++, headless CI and test enforcement, sanitizers, POSIX portability | OS-specific GUI or driver code; any Linux-only library; `docs/UI-ARCHITECTURE.md`; schema, ADR numbers or claims without `win` |
 | **cloud** | Claude Code on the web, Linux (an ephemeral cloud container) | Claude Code | Portable headless C++, the format and its docs, on win's assignments | JUCE, platform code, `.github/**`, `drivers/**`, other monorepo projects |
@@ -240,6 +240,15 @@ subject, say so in your log instead of writing it twice.
 | 0200 | win | `win/adi-mobile-0200` | ADI Mobile designed now, built last: same engine and format on iOS and Android, three modes, what the desktop must not foreclose (director) | used |
 | 0201 | win | `win/project-view` | the UI reads project state from one message-thread cell, `ProjectView`; no publisher, no epoch (answers mac on #187) | used |
 | 0202 | win | `win/mac-retired` | the director retires mac (both sessions) until he decides otherwise; its areas move to win and win_codex (director) | used |
+| 0203 | win | `win/v1.0-rulings` | the director's rulings on Master Reference v1.0: the standing rule (Live's way, additions first-class), sends and returns back, no added delay, history, Loudness Drive, freeze, the defaults, licensing closed (AGPLv3) (director) | used |
+| 0204 | win | `win/adr-0204` | the director's rulings on v1.0: the channel EQ is his Pro-Q 4 clone and ZL leaves; one installer with tiers; measurement clones welcome; the document's shape; every open item closed (director) | used |
+| 0205 | win | `win/adr-0205-visual-story` | the Export Page's AI Visual Story Director and the sharded `.adiviz` telemetry bundle, approved as specified; stem jobs and NI Stems export P1; the Export page with Cubase's and REAPER's abilities; the engine layer copies whoever does it best (precision back to the director); an AI companion noted (director) | used |
+| 0206 | win | `win/adr-0206-artcraft` | interoperability with the storytold ArtCraft suite: a converter plus a client of the control API; the exact time base and a schema reservation P1; the bridge P2; what waits on storytold P3 (director's request; the repositories read first) | used |
+| 0207 | win | `win/lanes` | no orchestrator: three lanes (win, engine, clones) with queues for months; 64-bit end to end; the evening's rulings of 25 October (director) | used |
+| 0208 | win | `win/lanes-5` | five lanes: the window (a Claude seat) and the devices (a Codex seat) get seats of their own; ADI-C joins the clones (director) | used |
+| 0209 | win | `win/adr-0209-mixview` | the Mix View (F4), Gemini's draft handed over by the director, recorded in full with win's critique and nine questions, ruled by him the same day (§10: the four recommendations taken, the name kept, the ★ Reference on Shift+R) | used |
+| 0210 | win | `win/adr-0209-mixview` | nobody waits: the window's needs table heads the engine lane's queue; a seat without the GitHub API pushes and logs; win merges whenever the lanes push (director) | used |
+| 0211 | win | `win/adr-0211-track-colour` | a colour column holds an index into Live's palette (0 to 69), never RGB; NULL is no colour of its own; the theme owns the RGB table (answers the window's N36) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
@@ -391,8 +400,10 @@ A branch is ready to merge when:
   Superseding an old decision means writing a new entry that says so, never
   editing the old one.
 - **`reference/` is read-only.** Its code may be copied with attribution under
-  `OPEN_SOURCE_POLICY.md` (AGPL included since ADR-0138: the first AGPL copy
-  makes `adi_daw` AGPLv3). See `docs/EXTERNAL-CODE.md` before copying anything.
+  `OPEN_SOURCE_POLICY.md` §4a: ADI is AGPLv3 in full (ADR-0203 d25), so any
+  open-source code may be used; only non-commercial-only and proprietary code
+  are refused, silently, as "not usable". **Licensing is never raised with the
+  director.** See `docs/EXTERNAL-CODE.md` before copying anything.
 - **Check claims rather than asserting them.** Both validators exist because a
   confident sentence in a spec turned out to be false — see the `152 ops` and
   `960 PPQ quintuplet` entries in the logs. If you write a number or a

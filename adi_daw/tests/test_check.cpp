@@ -47,7 +47,7 @@ struct Fixture {
     explicit Fixture(const char* n)
         : temp("check", n), dir(temp.path()) {
         StoreError e = StoreError::Ok;
-        store = Store::create(dir / "p.adi", e);
+        store = Store::createEmpty(dir / "p.adi", e);
         if (!store) return;
         // A small but real project: a track, a clip, and some notes.
         OpJournal j(*store);

@@ -34,8 +34,12 @@ public:
     std::weak_ptr<void> owner;
     Source(Transport& t,std::shared_ptr<TrackState> s,std::uint64_t g):transport(t),state(std::move(s)),generation(g){}
     std::shared_ptr<void> sourceLifetime() const override { return owner.lock(); }
+    // ADR-0092: new at every rebuild, the same track's notes all the same.
+    std::uint64_t historyName() const noexcept override { return 2; }
     std::int64_t tailSamples() const noexcept override { return 0; }
+    bool processesDouble() const noexcept override { return true; }
     void process(const NodeIo& io) noexcept override {
+        if(io.wide()) { for(std::int32_t c=0;c<io.channels;++c) std::fill_n(io.out64[c]+io.blockOffset,io.frames,0.0); return; }
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(io.out[c]+io.blockOffset,io.frames,0.0f);
     }
     bool stop(Active& a,EventList& out,std::int32_t frame,bool force=false) noexcept {

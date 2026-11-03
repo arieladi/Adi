@@ -230,6 +230,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/render/queue.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
@@ -505,6 +506,10 @@ add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
 
+add_executable(adi_project_bootstrap_tests tests/test_project_bootstrap.cpp)
+target_link_libraries(adi_project_bootstrap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_bootstrap_tests COMMAND adi_project_bootstrap_tests)
+
 # Separate again, for the same reason: an ops failure and a store failure should
 # be distinguishable from the CI summary without opening the log.
 add_executable(adi_ops_tests tests/test_ops.cpp)
@@ -547,6 +552,7 @@ add_test(NAME adi_snapshots_tests COMMAND adi_snapshots_tests)
 add_library(adi_settings STATIC
     src/adi/settings/registry.cpp
     src/adi/settings/store.cpp
+    src/adi/settings/channel_config.cpp
     src/adi/settings/bundle.cpp
     src/adi/settings/catalogue.cpp)
 target_link_libraries(adi_settings PUBLIC adi_core PRIVATE adi_miniz adi_warnings)
@@ -660,6 +666,10 @@ add_test(NAME adi_device_host_tests COMMAND adi_device_host_tests)
 add_executable(adi_clap_tests tests/test_clap.cpp)
 target_link_libraries(adi_clap_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clap_tests COMMAND adi_clap_tests)
+# Its threaded tests wait on each other. Each wait has a deadline, and a
+# watchdog ends the suite if any wait outlives it, but a leg that runs ctest
+# with no --timeout gets this bound too (ADR-0089 d4).
+set_tests_properties(adi_clap_tests PROPERTIES TIMEOUT 300)
 
 add_executable(adi_mpe_tests tests/test_mpe.cpp)
 target_link_libraries(adi_mpe_tests PRIVATE adi_core adi_warnings)
@@ -672,6 +682,10 @@ add_test(NAME adi_mpe_output_tests COMMAND adi_mpe_output_tests)
 add_executable(adi_device_model_tests tests/test_device_model.cpp)
 target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
+
+add_executable(adi_bypass_delay_tests tests/test_bypass_delay.cpp)
+target_link_libraries(adi_bypass_delay_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_bypass_delay_tests COMMAND adi_bypass_delay_tests)
 
 add_executable(adi_device_ops_tests tests/test_device_ops.cpp)
 target_link_libraries(adi_device_ops_tests PRIVATE adi_core adi_warnings)
@@ -713,6 +727,19 @@ add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
+# 305 s healthy in a Debug MSVC build (main, 2 November 2026); CI's --timeout 600 is there to
+# catch a HANG, and twice in one day a slow shared runner ran everything at half speed and
+# tipped this suite over it (#350, #362). Twenty minutes still names a hang; it no longer
+# fails healthy work.
+set_tests_properties(adi_mixer_tests PROPERTIES TIMEOUT 1200)
+
+# Keep the master console renders in their own suite: the combined mixer suite
+# exceeded CI's per-test timeout under MSVC Debug.
+# Both targets use the same fixtures and checks, with no shorter audio renders.
+add_executable(adi_master_summing_tests tests/test_mixer.cpp)
+target_compile_definitions(adi_master_summing_tests PRIVATE ADI_TEST_MASTER_SUMMING=1)
+target_link_libraries(adi_master_summing_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_master_summing_tests COMMAND adi_master_summing_tests)
 
 # ADR-0165: plug-in parameter automation, the engine side.
 add_executable(adi_param_automation_tests tests/test_param_automation.cpp)
@@ -983,7 +1010,12 @@ if(ADI_WITH_JUCE)
     # the test is `adi_play --list` finding all three variants in the built
     # bundle. Without this, the macOS half of the render CI job could only
     # ever have covered CLAP.
-    if(WIN32 OR APPLE)
+    #
+    # And Linux, where CI has no JUCE leg: the bundle is
+    # Contents/<machine>-linux/<name>.so, and the entry points are
+    # ModuleEntry/ModuleExit. It is how the VST3 host is run end to end on a
+    # Linux machine rather than only on CI's two.
+    if(WIN32 OR APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
         set(_adi_vst3sdk
             "${ADI_THIRD_PARTY}/JUCE/modules/juce_audio_processors_headless/format_types/VST3_SDK")
         # The SDK's own interface-id definitions, compiled WITHOUT our warning
@@ -994,6 +1026,9 @@ if(ADI_WITH_JUCE)
             "${_adi_vst3sdk}/public.sdk/source/vst/vstinitiids.cpp")
         target_include_directories(adi_test_vst3_sdk SYSTEM PRIVATE "${_adi_vst3sdk}")
         target_compile_features(adi_test_vst3_sdk PRIVATE cxx_std_20)
+        # Linked into a MODULE, so position-independent: the default already
+        # on Windows and macOS, not on Linux.
+        set_target_properties(adi_test_vst3_sdk PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
         add_library(adi_test_vst3 MODULE
             tests/fixtures/vst3_expression_synth.cpp
@@ -1004,9 +1039,11 @@ if(ADI_WITH_JUCE)
         # CFUUIDCreate on macOS, which is CoreFoundation.
         if(WIN32)
             target_link_libraries(adi_test_vst3 PRIVATE adi_warnings ole32)
-        else()
+        elseif(APPLE)
             target_link_libraries(adi_test_vst3 PRIVATE adi_warnings
                                   "-framework CoreFoundation")
+        else()
+            target_link_libraries(adi_test_vst3 PRIVATE adi_warnings)
         endif()
         set(ADI_FIXTURE_NAME "ADI Expression Test")
         set(_adi_fixture
@@ -1030,6 +1067,16 @@ if(ADI_WITH_JUCE)
                 COMMAND ${CMAKE_COMMAND} -E copy_if_different
                         "$<TARGET_FILE:adi_test_vst3>"
                         "${_adi_fixture}/Contents/x86_64-win/")
+        elseif(NOT APPLE)
+            set_target_properties(adi_test_vst3 PROPERTIES
+                PREFIX "" SUFFIX ".so" OUTPUT_NAME "${ADI_FIXTURE_NAME}"
+                LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fixture_dll")
+            add_custom_command(TARGET adi_test_vst3 POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                        "${_adi_fixture}/Contents/${CMAKE_SYSTEM_PROCESSOR}-linux"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "$<TARGET_FILE:adi_test_vst3>"
+                        "${_adi_fixture}/Contents/${CMAKE_SYSTEM_PROCESSOR}-linux/")
         else()
             configure_file(tests/fixtures/Info.plist.in
                            "${CMAKE_CURRENT_BINARY_DIR}/fixtures/Info.plist" @ONLY)
@@ -1174,6 +1221,8 @@ add_test(NAME adi_zip_writer_tests COMMAND adi_zip_writer_tests)
 # linux/collect-export: only this assignment's sources and test targets.
 target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp)
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
+target_compile_definitions(adi_media_ops_tests PRIVATE
+    ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
 target_link_libraries(adi_media_ops_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_media_ops_tests COMMAND adi_media_ops_tests)
 add_executable(adi_collect_export_tests tests/test_collect_export.cpp)
@@ -1221,6 +1270,11 @@ add_test(NAME adi_clip_playback_tests COMMAND adi_clip_playback_tests)
 target_compile_definitions(adi_clip_playback_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
 set_tests_properties(adi_clip_playback_tests PROPERTIES TIMEOUT 600)
+
+# ADR-0207 d2: 64-bit summing at every mix point, Live's Fact Sheet case.
+add_executable(adi_precision_tests tests/test_precision.cpp)
+target_link_libraries(adi_precision_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_precision_tests COMMAND adi_precision_tests)
 
 # ADR-0156: one decoder for imported audio, into the decoding cache. The
 # libraries' implementations compile once, as C, outside the warning wall;
@@ -1274,16 +1328,18 @@ add_executable(adi_automation_tests tests/test_automation.cpp)
 target_link_libraries(adi_automation_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_automation_tests COMMAND adi_automation_tests)
 
-# ADR-0195 d2: graph gestures are pure C++; every headless ABI tests them.
-# No ZL/JUCE/AGPL DSP code is linked into adi_core by this standalone test.
-add_executable(adi_dynamic_eq_gesture_tests plugins/dynamic-eq/tests/test_gestures.cpp)
-target_include_directories(adi_dynamic_eq_gesture_tests PRIVATE plugins/dynamic-eq/Source)
-target_link_libraries(adi_dynamic_eq_gesture_tests PRIVATE adi_warnings)
-add_test(NAME adi_dynamic_eq_gesture_tests COMMAND adi_dynamic_eq_gesture_tests)
-
 add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
 target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
+
+# ADR-0071/0205: queued offline master renders, isolated and published without replacement.
+add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
+target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
+
+add_executable(adi_offline_capture_tests tests/test_offline_capture.cpp)
+target_link_libraries(adi_offline_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_offline_capture_tests COMMAND adi_offline_capture_tests)
 
 
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
@@ -1298,3 +1354,6 @@ file(GLOB ADI_DEVICE_MODULES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmak
 foreach(ADI_DEVICE_MODULE IN LISTS ADI_DEVICE_MODULES)
     include("${ADI_DEVICE_MODULE}")
 endforeach()
+
+# Step 7: headless state and the optional JUCE window shell.
+include(src/juce/ui_shell.cmake)

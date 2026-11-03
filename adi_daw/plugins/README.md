@@ -1,19 +1,19 @@
 # Plug-ins
 
-ADI's plug-in line as CLAP (ADR-0166, ADR-0195): three of our own, and five open-source
+ADI's plug-in line as CLAP (ADR-0166): two of our own, and four open-source
 projects built from their upstream code, unchanged. Each is its own binary under
 its own licence; none links into the DAW.
 
 | Plug-in | Where | Upstream, pinned | CLAP id | Our build's licence |
 |---|---|---|---|---|
 | **ADI RMSC**: ring-modulation sidechain ducking | [`rmsc/`](rmsc) | ours; DSP in `src/adi/dsp/rmsc.*` | `com.adi.rmsc` | AGPLv3 (JUCE 9) |
-| **ADI Dynamic EQ** (working name): ZL DSP with graph gestures | [`dynamic-eq/`](dynamic-eq) | directly adapted from ZLEqualizer `3468a3a`; original headers retained | `com.adi.dynamic-eq` | AGPLv3 |
 | **ADI Airwindows**: 143 algorithms in eleven suite plug-ins, auto gain | [`airwindows/`](airwindows) | [airwin2rack](https://github.com/baconpaul/airwin2rack) `b6eef0a`, MIT | `com.adi.airwindows.<suite>` | GPLv3 |
 | **Smartelectronix**: Smexoscope, Anechoic Room Simulator, Bitmurderer, Bouncy, Crazy Ivan, Cyanide 2, H2O, MadShifta, One Ping Only, SupaPhaser, SupaTrigga | [`external/smartelectronix/`](external/smartelectronix) | [bdejong/smartelectronix](https://github.com/bdejong/smartelectronix) `248d2c4`, GPL-3.0 | `com.adi.smartelectronix.<name>` | AGPLv3 (JUCE 8) |
 | **ChowTapeModel** | its own tree | [AnalogTapeModel](https://github.com/jatinchowdhury18/AnalogTapeModel) `604372e`, GPL-3.0 | `org.chowdsp.CHOWTapeModel` (theirs) | GPLv3 |
 | **ChowCentaur** | [`external/chowcentaur/`](external/chowcentaur) | [KlonCentaur](https://github.com/jatinchowdhury18/KlonCentaur) `f3bb633`, BSD-3-Clause | `com.adi.chowdsp.chowcentaur` | GPLv3 (JUCE 6) |
-| **ZL Equalizer 2**: the baseline for our equalizer | [`external/zlequalizer/`](external/zlequalizer) | [ZLEqualizer](https://github.com/ZL-Audio/ZLEqualizer) `3468a3a`, AGPL-3.0 | `com.adi.zlaudio.zlequalizer2` | AGPLv3 |
 | **Dragonfly** Hall, Room, Plate, Early Reflections | [`external/dragonfly/`](external/dragonfly) | [dragonfly-reverb](https://github.com/michaelwillis/dragonfly-reverb) `440ec7b`, GPL-3.0 | `michaelwillis.dragonfly.<name>` (theirs) | GPLv3 |
+
+**ADI Dynamic EQ** (ZL DSP with graph gestures, ADR-0195) and the **ZL Equalizer 2** CLAP wrapper: retired 2026-10-18 (ADR-0204): the director's own Pro-Q 4 clone replaces it; nothing of ZL remains in the tree.
 
 **The ids say whose build it is.** Where upstream releases a CLAP itself
 (ChowTape, Dragonfly), ours keeps its id, so a project saved with theirs opens
@@ -23,8 +23,7 @@ a release they never made.
 **Upstream is never patched.** An `external/<name>/CMakeLists.txt` adds the
 upstream tree as it is and adds a CLAP target: clap-juce-extensions for JUCE
 projects, or DPF's own CMake for Dragonfly. Each file says why it looks the way
-it does: Centaur's older clap-juce-extensions pin, Dragonfly's symlinks, ZL
-under MSVC.
+it does: Centaur's older clap-juce-extensions pin, Dragonfly's symlinks.
 
 ## Airwindows
 
@@ -82,8 +81,7 @@ overrun MAX_PATH from deep ones.
 | What | Command |
 |---|---|
 | RMSC, and ADI Airwindows when `ADI_AIRWIN_SOURCE` is set | `tools\build-plugins.bat [target]` |
-| ADI Dynamic EQ (same pinned adaptation; optional `adi_play` render test) | `tools\build-external-plugin.bat dynamic-eq dynamic_eq_clap` |
-| One upstream: `smartelectronix`, `chowtape`, `chowcentaur`, `zlequalizer`, `dragonfly` | `tools\build-external-plugin.bat <name> [target]` |
+| One upstream: `smartelectronix`, `chowtape`, `chowcentaur`, `dragonfly` | `tools\build-external-plugin.bat <name> [target]` |
 
 `build-external-plugin.bat` reads `ADI_PLUGIN_SOURCES` (the fetch directory)
 and `ADI_PLUGIN_BUILD` (default `build-external`). It lists the `.clap` files it
@@ -93,7 +91,6 @@ finds.
 |---|---|
 | smartelectronix | about 14 minutes (eleven JUCE 8 builds) |
 | ChowTape | about 70 s |
-| ZL | about 80 s |
 | Centaur | about 40 s |
 | Dragonfly | about 12 s |
 

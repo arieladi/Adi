@@ -73,6 +73,7 @@ public:
     std::int32_t latencySamples() const noexcept override { return inner_->latencySamples(); }
     bool alwaysProcess() const noexcept override { return inner_->alwaysProcess(); }
     EventFlow eventFlow() const noexcept override { return inner_->eventFlow(); }
+    bool processesDouble() const noexcept override { return inner_->processesDouble(); }
     const char* name() const noexcept override { return inner_->name(); }
 private:
     std::unique_ptr<Node> inner_;
@@ -105,9 +106,12 @@ public:
     explicit Source(float value) : value_(value) {}
     void process(const NodeIo& io) noexcept override {
         for (std::int32_t ch = 0; ch < io.channels; ++ch)
-            for (std::int32_t frame = 0; frame < io.frames; ++frame)
-                io.out[ch][io.blockOffset + frame] = value_;
+            for (std::int32_t frame = 0; frame < io.frames; ++frame) {
+                if (io.wide()) io.out64[ch][io.blockOffset + frame] = value_;
+                else io.out[ch][io.blockOffset + frame] = value_;
+            }
     }
+    bool processesDouble() const noexcept override { return true; }
     std::int64_t tailSamples() const noexcept override {
         return value_ == 0.0f ? 0 : kInfiniteTail;
     }
@@ -123,11 +127,13 @@ struct Project {
     bool expressionStorm;
 };
 
-void measure(const Project& project, std::int32_t frames, std::size_t iterations, bool breakdown) {
+void measure(const Project& project, std::int32_t frames, std::size_t iterations, bool breakdown,
+             Precision precision) {
     // Graph does not own nodes. Declare owners first so the graph dies first.
     NodeTiming timing;
     std::vector<std::unique_ptr<Node>> nodes;
     Graph graph;
+    graph.setPrecision(precision);   // ADR-0207 d2: --precision 64 times the whole graph in double
     const auto add = [&](std::unique_ptr<Node> node) {
         if (breakdown) node = std::make_unique<TimedNode>(std::move(node), timing);
         const NodeId id = graph.addNode(*node);
@@ -248,8 +254,9 @@ int main(int argc, char** argv) {
     std::size_t iterations = 1000;
     if (argc == 2 && std::string_view(argv[1]) == "--self-test") return selfTest() ? 0 : 1;
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
-        std::puts("adi_block_benchmark [--iterations N] [--breakdown] | --self-test\n"
+        std::puts("adi_block_benchmark [--iterations N] [--breakdown] [--precision 32|64] | --self-test\n"
                   "N: 1..1000000, default 1000; 32 warmup callbacks per row.\n"
+                  "--precision: the graph's Processing Precision (ADR-0207 d2), 32 by default.\n"
                   "Use Release. 48 kHz stereo; CSV times in microseconds.\n"
                   "Block sizes: 32/64/128/256/512/1024/2048/4096 for every project.\n"
                   "dropouts = callback time > frames/sample_rate, not device xruns.\n"
@@ -264,9 +271,17 @@ int main(int argc, char** argv) {
         return 0;
     }
     bool breakdown = false;
+    Precision precision = Precision::Float32;
     for (int arg = 1; arg < argc; ++arg) {
         const std::string_view option(argv[arg]);
         if (option == "--breakdown") { breakdown = true; continue; }
+        if (option == "--precision" && arg + 1 < argc) {
+            const std::string_view value(argv[++arg]);
+            if (value == "32") precision = Precision::Float32;
+            else if (value == "64") precision = Precision::Float64;
+            else { std::fputs("precision must be 32 or 64\n", stderr); return 2; }
+            continue;
+        }
         if (option != "--iterations" || arg + 1 == argc) {
             std::fputs("use --help for usage\n", stderr); return 2;
         }
@@ -288,7 +303,7 @@ int main(int argc, char** argv) {
                  {"mpe-storm", 8, 4, false, true}}}) {
             if (breakdown && project.tracks != 64) continue;
             for (std::int32_t frames : {32, 64, 128, 256, 512, 1024, 2048, 4096})
-                measure(project, frames, iterations, breakdown);
+                measure(project, frames, iterations, breakdown, precision);
         }
     } catch (const std::exception& error) {
         std::fprintf(stderr, "benchmark failed: %s\n", error.what()); return 1;

@@ -14,21 +14,110 @@ Output is a drop-in for [AIComputerInteractionLogger](https://github.com/hemangj
 `src/dataset_exporter.py`, so its Claude computer-use / OSWorld / HuggingFace
 exports work on these sessions (verified, see *Why not upstream's recorder* below).
 
+With Live's `ADI_Logger` control surface enabled, each session also gets
+`live_events.jsonl`: what changed *inside* Live — every knob gesture with its
+from/to value, devices added, tracks, transport, selection, clip launches, note
+edits — on the same clock as `events.csv`.
+
+## Simple and deep logs (the desktop shortcuts)
+
+`install.ps1` puts three shortcuts on the desktop:
+
+| shortcut | does |
+| --- | --- |
+| **ADI Log - Start Simple** | asks what you are about to do, then records lightly for as long as you work |
+| **ADI Log - Start Deep** | asks what you are about to do, then records one task in full detail |
+| **ADI Log - Stop** | stops and saves whatever is running (both modes), prints where it went |
+
+Both Start shortcuts open the bar first: type *we are now working on a real
+avastha project* or *open Ableton and make a serum acid trance lead*, Enter
+starts, Esc cancels. The description names the folder, is kept verbatim in
+`label.txt`/`session.json`, and is the first line of `live_events.jsonl`. The
+two modes can run at the same time; each records into its own folder.
+
+| | simple | deep |
+| --- | --- | --- |
+| frames | after each click/key, at most 1/s, plus a keyframe every 60s if the screen changed; 1280 wide WebP | 5 per second, 1920 wide WebP |
+| input | clicks, scrolls, keys — **only while Live has focus** | everything, including the mouse path |
+| other apps | logged as "chrome.exe had focus", title blanked, no frames | recorded like Live |
+| Live log | one line per gesture, structure, transport, selection, note counts | the same plus the gesture's path at 10 Hz, every parameter value at the start, and the notes themselves |
+| hotkeys | none (shortcuts only) | `Ctrl+Shift+F9` stops / starts the next task, `Ctrl+Shift+F10` quits |
+| sessions | `<base>/simple/` | `<base>/deep/` |
+
+Both run windowless; their console output goes to `<base>/.state/<mode>.log`.
+`logger_ctl.py status` says what is running. Recording refuses to start, and a
+running one stops, when the disk has less than `min_free_gb` (10) free.
+
+### What it costs
+
+Measured on adi-mobile (i9-11950H, 3840x2560 screen) with `bench.py`:
+
+| | simple | deep |
+| --- | --- | --- |
+| capture process CPU | 4.5% of one core (0.3% of the machine) | 39% of one core (2.4% of the machine) |
+| input-hook delay, max | 3.4 ms | 3.0 ms |
+| frame | 1280x853 WebP, ~77 KB | 1920x1280 WebP, ~195 KB |
+| disk, screen mostly still | ~160 MB/hour | ~330 MB/hour |
+| disk, worst case | ~280 MB/hour (clicking every second) | ~3.5 GB/hour (every frame different — Live playing, meters moving) |
+
+Deep mode while the transport runs is close to its worst case. Dropping
+`screenshot_freq` in `modes.deep` scales that linearly (3 fps ≈ 2.1 GB/hour).
+
+Frames are grabbed and encoded in a separate below-normal-priority process.
+In the process that owns the input hooks, one 4K grab held Python's GIL long
+enough to delay every mouse and keyboard event on the machine (34 ms max
+measured at 1080p before the split); the hook delay is now idle-level.
+`bench.py` re-measures any machine.
+
+## Live state log (`ADI_Logger`)
+
+`install.ps1` copies `live_remote_script/ADI_Logger` into Live's User Library
+(`Remote Scripts/`). Enable it once: Live > Preferences > Link, Tempo & MIDI >
+Control Surface: **ADI_Logger**, Input and Output: None.
+
+It is idle — no listeners at all — until a recording starts. The logger drops a
+small JSON file into `<base>/.live/` naming its session folder; the script
+watches that folder once a second and writes into every session it names, at
+that session's level. Highlights of `live_events.jsonl`:
+
+| ev | when |
+| --- | --- |
+| `start`, `snapshot` | first lines: description, Live version, every track and device (deep: every parameter value) |
+| `param` | a knob/fader/tempo/loop-brace gesture ended: `from`, `to`, `display` ("-20.0 dB"), where it lives |
+| `param_move` | deep only: the value every ~100 ms while it moves |
+| `devices`, `tracks`, `track_name`, `device_name` | structure changed |
+| `mute`, `solo`, `arm`, `transport`, `record`, `metronome`, `clip_fired`, `clip_playing` | the obvious |
+| `select_track`, `select_device`, `select_param`, `view`, `detail_clip` | what you are looking at |
+| `notes` | the open MIDI clip's notes changed (simple: count, deep: the notes) |
+| `end` | the recording stopped |
+
+Automation playback is filtered out: a parameter whose automation is playing
+while the transport runs is Live moving it, not you. The script runs on Live's
+main thread, so listeners only mark values dirty; reading them and writing the
+file happen ten times a second, batched. Status (connected, listener count) is
+in `<base>/.live/live.json`; problems go to Live's `Log.txt` prefixed
+`ADI_Logger:`.
+
 ## Setup
 
 ```bash
-install.cmd
+install.cmd -LogDir E:\InteractionLogs
 ```
 
 Creates `.venv` next to the scripts and installs `mss`, `Pillow`, `pynput`,
-`pywin32`, `psutil`. Then check it works:
+`pywin32`, `psutil`; writes `config.local.json` (machine-only settings, not in
+git) with the session folder; installs `ADI_Logger` into Live; makes the desktop
+shortcuts. Keep `-LogDir` off OneDrive — the installer warns if it is not. Then
+check it works:
 
 ```bash
 .venv\Scripts\python.exe selftest.py
+.venv\Scripts\python.exe selftest_modes.py
+.venv\Scripts\python.exe selftest_live.py
 .venv\Scripts\python.exe selftest_ui.py
 ```
 
-## Use
+## Use (hotkey daemon, no mode)
 
 ```bash
 start_logger.cmd
@@ -109,7 +198,8 @@ still comfortably inside a 5 fps budget.
 
 ## Options
 
-Edit `config.json`, or pass flags (flags win):
+Edit `config.json` (its `modes` section holds the simple/deep settings), put
+machine-only overrides in `config.local.json`, or pass flags (flags win):
 
 | setting / flag | default | notes |
 | --- | --- | --- |
@@ -122,15 +212,23 @@ Edit `config.json`, or pass flags (flags win):
 | `motion_threshold` | 0.001 | fraction of the frame that must change to count |
 | `mask_text_keys` / `--mask-text` | off | log typed characters as `'*'` |
 | `base_output_dir` / `--base-dir` | `~/Documents/InteractionLogs` | |
+| `capture_trigger` | `interval` | `events` = frame after clicks/keys + keyframe (simple) |
+| `event_frame_delay`, `event_frame_min_gap`, `keyframe_interval` | 0.3, 1.0, 60 | seconds, `events` trigger only |
+| `input_scope` | `[]` | process-name patterns; input/frames only while one has focus |
+| `live_log` | `off` | `simple` / `deep`: ask ADI_Logger for Live's state |
+| `min_free_gb` | 10 | refuse / stop recording below this much free disk |
+| `--mode simple\|deep` | none | apply that `modes` section, record into `<base>/<mode>/` |
+| `--open-bar`, `--description TEXT` | | ask at launch / start at launch with this description |
 
 With `jpeg`/`webp` the session also gets one `frame_reference.png`, because
 upstream's exporter sniffs resolution from the first `.png` it finds.
 
 ## Worth knowing
 
-- **This logs every keystroke system-wide while recording**, not just in the
-  target window — passwords included if you type one. `--mask-text` replaces
-  typed characters with `*`; the safer habit is to stop the recording first.
+- **Deep (and the no-mode daemon) log every keystroke system-wide while
+  recording**, not just in the target window — passwords included if you type
+  one. `--mask-text` replaces typed characters with `*`; the safer habit is to
+  stop the recording first. Simple mode only logs input while Live has focus.
 - The stop hotkey itself lands at the end of the log (`Key.ctrl`, `Key.shift`,
   `Key.f9`). Trim the last few key events if they matter.
 - **The mouse cursor is not in the frames** — Windows screen capture omits it.
@@ -140,7 +238,11 @@ upstream's exporter sniffs resolution from the first `.png` it finds.
   `session.json`'s `target_window` bounds.
 - The bar renders Hebrew in logical order without bidi shaping, so an RTL
   description looks reversed while you type it. The saved folder name is correct.
-- One recording at a time. A second hotkey press always means "stop".
+- One recording at a time per mode. A second hotkey press always means "stop".
+- Live scans `Remote Scripts` at startup: after installing or updating
+  `ADI_Logger`, restart Live.
+- No audio is recorded. Live usually runs on an ASIO driver, which bypasses the
+  Windows mixer a loopback recorder would listen to.
 
 ## Why not upstream's recorder
 
@@ -211,9 +313,18 @@ one dataset.
 
 | file | |
 | --- | --- |
-| `logger_daemon.py` | hotkey listener, state machine, entry point |
+| `logger_daemon.py` | hotkey listener, modes, state machine, entry point |
+| `logger_ctl.py` | what the desktop shortcuts run: start / stop / status |
 | `overlay.py` | the command bar |
-| `recorder.py` | capture engine and session writer |
+| `recorder.py` | input hooks, session writer, capture-process owner |
+| `capture.py` | frame grab + encode, in its own below-normal process |
+| `livelink.py` | desktop half of the Live handshake |
+| `live_remote_script/ADI_Logger/` | the Live control surface that writes `live_events.jsonl` |
 | `winutil.py` | DPI awareness, window facts, focus restore |
+| `install.ps1` / `install.cmd` | venv, local config, Live script, desktop shortcuts |
+| `make_icons.py` | draws the shortcut icons |
+| `bench.py` | CPU / hook delay / disk per mode on this machine |
 | `selftest.py` | headless capture + output-format checks |
+| `selftest_modes.py` | simple mode: event frames, focus scope, Live handshake |
+| `selftest_live.py` | ADI_Logger against a fake Live, plus Python 3.7 grammar |
 | `selftest_ui.py` | scripted bar → record → stop → saved run |

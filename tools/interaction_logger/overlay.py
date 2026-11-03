@@ -55,7 +55,7 @@ class CommandBar:
                               relief="flat", font=entry_font, highlightthickness=0, bd=0)
         self.entry.pack(fill="x", padx=14, pady=(4, 2))
 
-        self.hint = tk.Label(body, text="Enter to start  ·  Esc to cancel",
+        self.hint = tk.Label(body, text="What are you about to do?  ·  Enter to start  ·  Esc to cancel",
                              bg=BG, fg=MUTED, anchor="w",
                              font=tkfont.Font(family="Segoe UI", size=8))
         self.hint.pack(fill="x", padx=14, pady=(0, 10))
@@ -69,7 +69,7 @@ class CommandBar:
     def show(self, target_title: str = "") -> None:
         self.entry.delete(0, "end")
         self.target_label.config(text=self._shorten(target_title))
-        self.hint.config(text="Enter to start  ·  Esc to cancel", fg=MUTED)
+        self.hint.config(text="What are you about to do?  ·  Enter to start  ·  Esc to cancel", fg=MUTED)
 
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()

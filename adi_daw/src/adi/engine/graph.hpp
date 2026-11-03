@@ -16,6 +16,12 @@
 //             special case anywhere
 //   ADR-0054  the split floor MUST NOT exceed sample_rate/500, or MPE+ is
 //             quantised in time
+//   ADR-0207  d2, the Processing Precision switch. At 32 (the default) nodes
+//             process in 32-bit float and every edge sum into a node is
+//             accumulated in 64-bit double and converted once, as Live sums
+//             every mix point (Audio Fact Sheet 38.2.4). At 64 every buffer,
+//             sum and compensation ring is double, and a node that does not
+//             say processesDouble() is handed float, converted either side
 //
 // No JUCE, no SQLite, no allocation after `prepare` (ADR-0010, ADR-0036). A
 // `Graph` is a `BlockProcessor`, so `DeviceCore` drives it with no adapter.
@@ -34,6 +40,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -103,6 +110,19 @@ struct NodeIo {
     /// Valid only during process; null without a Session. All segments see
     /// the same block-start values, not values shifted by blockOffset.
     const TransportInfo* transport = nullptr;
+
+    /// ADR-0207 d2, the Processing Precision switch at 64: the same three
+    /// buffers at full width. A graph at 64 hands these, and NOT `in`, `out`
+    /// and `sidechain`, to a node that says `processesDouble()`; every other
+    /// node is handed float pointers as always, the graph converting at its
+    /// edges (Cubase: a plug-in that cannot take 64 is processed at 32). At 32
+    /// these are null and nothing changes.
+    const double* const* in64 = nullptr;
+    double* const* out64 = nullptr;
+    const double* const* sidechain64 = nullptr;
+
+    /// This call is at full width: `out64` is the buffer to write.
+    [[nodiscard]] bool wide() const noexcept { return out64 != nullptr; }
 };
 
 /// What a node does with the note stream passing through it (ADR-0091).
@@ -113,6 +133,11 @@ enum class EventFlow : std::uint8_t {
     /// They stop here: an instrument turns notes into audio, and the effects
     /// after it have no use for them.
     Consume,
+    /// They stop here and nothing plays them: a send (ADR-0203 d3) carries a
+    /// track's audio into a return and never its notes. Unlike Consume, the
+    /// node holds no note awake and acknowledges no note-off, because the
+    /// track's notes are still on their way to whatever does play them.
+    Stop,
 };
 
 /// Addressed events generated FOR a node, once per block (ADR-0165): the
@@ -150,8 +175,18 @@ public:
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
 
-    /// Scope-only notification when scheduling skips a silent node. No DSP
-    /// work; a strip uses it to keep watched rings current through silence.
+    /// Opt-in device bypass (ADR-0203 d4). The graph keeps a dry delay at
+    /// graph precision, including while the node is active, and owns its
+    /// history across rebuilds. Bypass never removes the declared latency.
+    [[nodiscard]] virtual bool hasBypass() const noexcept { return false; }
+    [[nodiscard]] virtual bool bypassed() const noexcept { return false; }
+    /// Called only after the graph sampled bypass for this block. Do not
+    /// re-read the switch: a concurrent toggle must not select undelayed dry.
+    virtual void processActive(const NodeIo& io) noexcept { process(io); }
+
+    /// Notification when scheduling skips a silent node. No DSP work; a strip
+    /// uses it to keep watched rings current through silence, and to land a
+    /// gain moved while it sleeps, so it wakes at that gain.
     virtual void silenceTaps(const NodeIo&) noexcept {}
 
     /// Session retains every tap until audio stops, including after close.
@@ -209,9 +244,47 @@ public:
     /// plugin.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
 
+    /// One end of a feedback loop (ADR-0203 d3): the writer a return's send
+    /// into itself ends in, a sink, or the reader that plays it back into the
+    /// return's junction a block later, a source. Its edge is the loop's own
+    /// and never the project's compensation -- not delayed, glided or grown --
+    /// so the loop's trip is the ring's block and the chain's latency alone:
+    /// not the arrival of whatever else feeds the return, nor the return's
+    /// own track delay, which its send reports as latency. Nothing else in the
+    /// project waits for it (the reader's arrival and latency are 0). Message
+    /// thread, asked with `latencySamples`.
+    [[nodiscard]] virtual bool closesFeedback() const noexcept { return false; }
+
+    /// Audio thread, at a swap, before the new graph's first block: this
+    /// feedback loop's reader is in the graph now playing and was not in the
+    /// one played last (ADR-0203 d3), so its loop starts empty rather than
+    /// playing what it held when it left. Only a loop's reader is told
+    /// (`RealizedGraph::loopReaders`). Bounded, allocation-free.
+    virtual void enterPlay() noexcept {}
+
     /// The `devices.always_process` escape hatch (ADR-0043), for a plugin that
     /// reports no tail and then produces one.
     [[nodiscard]] virtual bool alwaysProcess() const noexcept { return false; }
+
+    /// Whether this node can be handed `NodeIo::in64`/`out64` (ADR-0207 d2).
+    /// **False by default, the answer that cannot corrupt:** a node that says
+    /// nothing is handed float, as it always was, and a graph at 64 converts
+    /// either side of it, so it is processed at 32 inside a 64-bit graph. A
+    /// node saying true must then handle BOTH widths: the same node runs in a
+    /// graph at 32, where it is handed float. Asked by the graph at `prepare`,
+    /// on the message thread, before it prepares the node, and kept until the
+    /// graph is next built: a value known at construction. A node that
+    /// revises it in its own `prepare` (a CLAP plug-in after a port rescan)
+    /// is still handed the width the graph kept, which it takes anyway.
+    [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
+
+    /// The width this build hands the node (ADR-0207 d2): `Float64` when it
+    /// said `processesDouble()` in a graph at 64, `Float32` otherwise. Told
+    /// by the graph at `prepare`, on the message thread, just before the
+    /// node's own `prepare`. A node whose plug-in fixes its sample size when
+    /// it is activated -- VST3's `setupProcessing` -- has to know then;
+    /// every other node takes the width it is handed and ignores this.
+    virtual void willBeHanded(Precision /*width*/) {}
 
     /// Whether note events stop at this node or pass on (ADR-0091).
     ///
@@ -231,6 +304,22 @@ public:
     [[nodiscard]] virtual EventFlow eventFlow() const noexcept { return EventFlow::Through; }
 
     [[nodiscard]] virtual const char* name() const noexcept { return "node"; }
+
+    /// ADR-0092: who this node is across rebuilds, when it is a NEW OBJECT in
+    /// every graph -- a track's clip reader, which the session builds afresh
+    /// at each rebuild. 0, the default, means the object itself: a device, a
+    /// strip, anything the session keeps. A node that names itself is, on the
+    /// same track in the next graph, the same signal, and the line it feeds
+    /// keeps its history.
+    [[nodiscard]] virtual std::uint64_t historyName() const noexcept { return 0; }
+
+    /// ADR-0092: what an edge carries when this node ENDS a track's chain, as
+    /// a rebuild's handover sees it. A ring's history goes only to a line
+    /// carrying the same thing. 0 by default; a summed child's channel half
+    /// (ADR-0174) says its output is a console's -- with drive, hotter than
+    /// the track by the drive, made up after the group's buss -- so turning
+    /// summing on or off never plays one as the other.
+    [[nodiscard]] virtual std::uint32_t wireKind() const noexcept { return 0; }
 
     /// The notes this node has been handed and not released (ADR-0158).
     /// Audio thread; the graph keeps it, and a node never needs to touch it.
@@ -283,6 +372,9 @@ struct GraphStats {
     std::int64_t eventsDropped = 0;
     std::int64_t eventsForwarded = 0; ///< deliveries made along an edge (ADR-0091)
     std::int64_t eventsDeferred = 0;  ///< held for a later block by a delay
+    /// Mix-point segments summed in double (ADR-0207 d2): two or more inputs
+    /// that could each add something. One live input needs no sum at all.
+    std::int64_t wideMixes = 0;
 };
 
 /// A fixed delay, applied to one input edge so that two paths of unequal
@@ -291,6 +383,13 @@ struct GraphStats {
 /// A ring rather than a memmove: at 4096 frames and a few thousand samples of
 /// compensation, shuffling the history every block is real work for no reason.
 /// Prepared once, never allocates afterwards.
+///
+/// FLOAT OR DOUBLE, chosen at `prepare` (ADR-0207 d2): a graph at the
+/// Processing Precision switch's 64 compensates in double, so a delayed edge
+/// carries the bits it was given. One class with two storages rather than a
+/// template, so the graph's compensation code -- arrival, retap, escalation,
+/// collection, the handover -- stays one path for both widths; only `process`
+/// and `offerRing` come in two widths, and each refuses the other's line.
 class DelayLine {
 public:
     DelayLine() = default;
@@ -304,6 +403,9 @@ public:
         if (this == &o) return *this;
         buf_ = std::move(o.buf_);
         incoming_ = std::move(o.incoming_);
+        wbuf_ = std::move(o.wbuf_);
+        wincoming_ = std::move(o.wincoming_);
+        wide_ = o.wide_;
         capacity_ = o.capacity_;
         ring_ = o.ring_;
         delay_ = o.delay_;
@@ -314,6 +416,11 @@ public:
         inWrite_ = o.inWrite_;
         targetDelay_ = o.targetDelay_;
         primeRemaining_ = o.primeRemaining_;
+        limit_ = o.limit_;
+        filled_ = o.filled_;
+        inFilled_ = o.inFilled_;
+        quiet_ = o.quiet_;
+        ran_ = o.ran_;
         target_.store(o.target_.load(std::memory_order_relaxed),
                       std::memory_order_relaxed);
         gliding_.store(o.gliding_.load(std::memory_order_relaxed),
@@ -328,8 +435,9 @@ public:
     /// `capacity` is the LARGEST delay this line will ever be asked for, not
     /// the delay itself. Sizing the ring bigger than the tap is what makes a
     /// runtime latency change possible without allocating: the tap moves
-    /// inside a ring that already holds the history (ADR-0079).
-    void prepare(std::int32_t channels, std::int32_t capacity);
+    /// inside a ring that already holds the history (ADR-0079). `wide` holds
+    /// the history in double (ADR-0207 d2).
+    void prepare(std::int32_t channels, std::int32_t capacity, bool wide = false);
 
     /// The delay in effect, taking hold at once. Message thread, before the
     /// graph runs.
@@ -338,12 +446,20 @@ public:
     void reset() noexcept;
 
     /// `frames` samples of `src` delayed into `dst`, for one channel. Safe to
-    /// call with src == dst.
+    /// call with src == dst. The width must be the line's: a call of the
+    /// other width passes `src` through undelayed, as an unprepared line does.
     void process(std::int32_t channel, const float* src, float* dst,
                  std::int32_t frames) noexcept;
+    void process(std::int32_t channel, const double* src, double* dst,
+                 std::int32_t frames) noexcept;
 
+    /// The delay in effect. The audio thread moves it at the end of a glide
+    /// and at a grow's swap, so another thread reads it only while the line
+    /// is not being processed; `capacity` too, or once `growing()` is false.
     [[nodiscard]] std::int32_t delay() const noexcept { return delay_; }
     [[nodiscard]] std::int32_t capacity() const noexcept { return capacity_; }
+    /// The history is held in double.
+    [[nodiscard]] bool wide() const noexcept { return wide_; }
 
     // --- moving the tap within the ring (ADR-0079) -------------------------
 
@@ -353,12 +469,18 @@ public:
     /// prohibition (ADR-0010). A false here is the signal to escalate.
     ///
     /// Safe to call from the message thread while the audio thread processes:
-    /// it writes one atomic and nothing else.
+    /// it writes two atomics and reads nothing the audio thread writes. While
+    /// a bigger ring is being handed over, "fits" means fits THAT ring, and
+    /// the move waits for the swap: the old ring is on its way out. Either
+    /// way a move waits, held, until the ring holds that much real history:
+    /// a ring fresh from a swap holds what was written since its offer, and
+    /// a tap past that reads zeros, which is a dropout (ADR-0085).
     bool beginGlide(std::int32_t d) noexcept;
 
     [[nodiscard]] bool gliding() const noexcept {
         return gliding_.load(std::memory_order_relaxed);
     }
+    /// The delay last asked for: by `setDelay`, a glide, or an offered ring.
     [[nodiscard]] std::int32_t target() const noexcept {
         return target_.load(std::memory_order_relaxed);
     }
@@ -379,20 +501,35 @@ public:
     /// is silence, which is a dropout.
     ///
     /// Returns false when a previous offer is still in flight; the caller
-    /// retries after `collectRing`.
+    /// retries after `collectRing`. A ring of the other width is refused, and
+    /// so is any ring for a line that has none (no delay and no headroom):
+    /// nothing would run its grow, and only a rebuild gives it a ring.
     bool offerRing(std::vector<float> ring, std::int32_t capacity,
+                   std::int32_t targetDelay);
+    bool offerRing(std::vector<double> ring, std::int32_t capacity,
                    std::int32_t targetDelay);
 
     /// MESSAGE THREAD. Takes back the buffer the audio thread finished with,
     /// and frees the line for another offer. Empty when there is nothing to
-    /// collect. The audio thread never deallocates; it swaps and parks.
+    /// collect. The audio thread never deallocates; it swaps and parks. A
+    /// wide line's retired ring is freed here too, and an empty vector
+    /// returned: `reclaim` is the call that says whether anything was.
     std::vector<float> collectRing();
+
+    /// MESSAGE THREAD: `collectRing` for either width. True when a retired
+    /// ring was freed.
+    bool reclaim();
+
+    /// MESSAGE THREAD: the largest delay a glide may be asked for now (the
+    /// ring's, or an offered ring's).
+    [[nodiscard]] std::int32_t limit() const noexcept { return limit_; }
 
     /// An offer is in flight: priming, fading, or waiting to be collected.
     [[nodiscard]] bool growing() const noexcept {
         return grow_.load(std::memory_order_acquire) != Grow::Idle;
     }
     /// Samples of history the new ring still needs. Zero once it is ready.
+    /// The audio thread's count, read like `delay`.
     [[nodiscard]] std::int32_t primeRemaining() const noexcept {
         return primeRemaining_;
     }
@@ -416,7 +553,8 @@ public:
 
     /// Bytes this line holds, both rings included while one is in flight.
     [[nodiscard]] std::size_t bytes() const noexcept {
-        return (buf_.size() + incoming_.size()) * sizeof(float);
+        return (buf_.size() + incoming_.size()) * sizeof(float) +
+               (wbuf_.size() + wincoming_.size()) * sizeof(double);
     }
 
     /// Anything that spans a block is in progress, so the caller must not take
@@ -426,11 +564,58 @@ public:
 
     // --- per-edge state, shared across channels ----------------------------
 
-    /// The cursors and counters an edge shares across its channels. A caller
+    /// One edge's view of the line, taken ONCE before its first channel and
+    /// handed to every channel and to `endEdge`. AUDIO THREAD.
+    ///
+    /// It is what makes a live graph's grow safe. The message thread writes
+    /// the incoming ring's cursor and prime count when it offers a ring
+    /// (Idle) and clears them when it collects one (Spent); the audio thread
+    /// owns them only from Priming to the swap. So the snapshot carries them
+    /// only in those two states, and only then are they written back: a
+    /// round trip in any other state is a write racing the message thread's,
+    /// and one that lands after an offer erases the prime count, so the edge
+    /// swaps to its new ring at once and plays its zeros.
+    ///
+    /// The state is loaded once for the same reason the cursors are shared:
+    /// a grow published between two channels would otherwise have the left
+    /// channel write one ring and the right both.
+private:
+    enum class Grow : std::uint8_t {
+        Idle,      ///< one ring
+        Priming,   ///< two rings; writing both, reading the old
+        Fading,    ///< two rings; crossfading old tap to new
+        Spent,     ///< swapped; the old buffer is parked for collection
+    };
+
+public:
+    class Edge {
+        friend class DelayLine;
+        Grow grow_ = Grow::Idle;
+        bool glide_ = false;
+        std::int32_t target_ = 0;
+        std::int32_t write_ = 0;
+        std::int32_t inWrite_ = 0;
+        std::int32_t primeRemaining_ = 0;
+    };
+    [[nodiscard]] Edge beginEdge() const noexcept;
+    /// `process` for one channel of the edge `e` began.
+    void process(const Edge& e, std::int32_t channel, const float* src, float* dst,
+                 std::int32_t frames) noexcept;
+    void process(const Edge& e, std::int32_t channel, const double* src, double* dst,
+                 std::int32_t frames) noexcept;
+    /// ONCE per edge, after its last channel: ends a glide and advances the
+    /// grow state machine, from the state the edge was processed in.
+    /// `silentSource`: what the edge wrote was the source's silence (its
+    /// block was all zero), which `due` and `forgetAllButSilence` count on.
+    void endEdge(const Edge& e, bool silentSource = false) noexcept;
+
+    /// The cursors and counters an edge shares across its channels, for a
+    /// line one thread drives alone (a node's own delay, a test). A caller
     /// processing several channels must restore these between them and call
     /// `endEdge` once after the last: getting it wrong does not pull stereo
     /// apart -- every channel drifts identically -- it makes the compensation
-    /// the wrong LENGTH from the next block on. See `Graph::accumulate`.
+    /// the wrong LENGTH from the next block on. A graph's edges, which the
+    /// message thread grows while they play, use `Edge` instead.
     struct Cursors {
         std::int32_t write = 0;
         std::int32_t inWrite = 0;
@@ -446,8 +631,8 @@ public:
     }
 
     /// Called ONCE per edge, after every channel has been processed. Ends a
-    /// glide and advances the grow state machine.
-    void endEdge() noexcept;
+    /// glide and advances the grow state machine. With `Cursors`: one thread.
+    void endEdge() noexcept { endEdge(beginEdge()); }
 
     /// ADR-0092: take the history `old` has been accumulating, so this line's
     /// tap reads what the old one would have read. AUDIO THREAD, at a graph
@@ -457,27 +642,79 @@ public:
     /// old capacity)` samples per channel. A ring carries thousands of samples
     /// of headroom (ADR-0088), and copying all of it would make a rebuild cost
     /// in proportion to headroom rather than to compensation. What lies beyond
-    /// the old ring's capacity was never stored, and is not invented.
-    void adoptHistory(const DelayLine& old) noexcept;
+    /// the old ring's capacity was never stored, and is not invented. An old
+    /// line in the middle of a grow is copied from whichever of its two rings
+    /// holds more of the edge's past. The line then counts what it was handed
+    /// as its history and nothing more, so a glide past it waits for the rest.
+    /// Only what the old line really holds is copied: a ring its edge left
+    /// unwritten (`forget`) hands on silence, not what it last had. What it
+    /// hands on that is not silence is audio still due out, which keeps this
+    /// line's consumer awake until it has played it (`due`).
+    ///
+    /// True when it copied anything: what a host may count as carried.
+    bool adoptHistory(const DelayLine& old) noexcept;
+
+    /// AUDIO THREAD: this edge's segment went by without its ring being
+    /// written, and the source may have been playing -- `Graph::accumulate`'s
+    /// zero-delay fast path, and a sleeping source's edge at zero -- so the
+    /// ring no longer holds the edge's history. Two stores, so zero
+    /// compensation stays free. What it buys: a glide away from zero waits,
+    /// held, until the ring holds what its tap reads, instead of reading what
+    /// the ring held the last time the edge had a delay (ADR-0079 d2: both
+    /// taps read the SAME history). And a handover carries nothing that is
+    /// not this edge's.
+    void forget() noexcept { filled_ = 0; quiet_ = 0; }
+
+    /// AUDIO THREAD: the consumer falls asleep, so the ring goes unwritten
+    /// through a silence. Every input of a sleeping node is silent, so the
+    /// silence the ring last took in (`quiet_`) is still the edge's newest
+    /// past, and only what lies behind it stops being so. A glide that reads
+    /// no further than that silence goes on at the wake as if the ring had
+    /// been written all along, which is what the drain bought.
+    void forgetAllButSilence() noexcept {
+        if (filled_ > quiet_) filled_ = quiet_;
+    }
+
+    /// AUDIO THREAD: whether this line's consumer must run although every
+    /// input is silent. Either audio is still due out -- the newest real
+    /// history its taps reach is not all silence -- or a glide is pending.
+    /// Run now, in the silence, a glide crossfades silence into silence and
+    /// waits for any history it needs where nobody hears it, so the wake
+    /// plays at the new alignment from its first sample. Left for the wake,
+    /// it fades the onset in, or plays it at the old alignment while it
+    /// waits.
+    [[nodiscard]] bool due() const noexcept {
+        if (gliding_.load(std::memory_order_acquire)) return true;
+        const std::int32_t r = reach();
+        return quiet_ < (filled_ < r ? filled_ : r);
+    }
 
 private:
-    enum class Grow : std::uint8_t {
-        Idle,      ///< one ring
-        Priming,   ///< two rings; writing both, reading the old
-        Fading,    ///< two rings; crossfading old tap to new
-        Spent,     ///< swapped; the old buffer is parked for collection
-    };
-
-    [[nodiscard]] static float tapAt(const float* hist, std::int32_t w,
-                                     std::int32_t ring, std::int32_t d) noexcept {
+    template <typename T>
+    [[nodiscard]] static T tapAt(const T* hist, std::int32_t w,
+                                 std::int32_t ring, std::int32_t d) noexcept {
         std::int32_t r = w - d;
         if (r < 0) r += ring;
         return hist[r];
     }
-    void processGrowing(std::int32_t channel, const float* src, float* dst,
-                        std::int32_t frames, Grow state) noexcept;
+    // One body for both widths, over the storage of that width.
+    template <typename T>
+    void run(const Edge& e, std::vector<T>& buf, std::vector<T>& incoming,
+             std::int32_t channel, const T* src, T* dst, std::int32_t frames) noexcept;
+    template <typename T>
+    void processGrowing(std::vector<T>& buf, std::vector<T>& incoming, std::int32_t channel,
+                        const T* src, T* dst, std::int32_t frames, Grow state) noexcept;
+    /// AUDIO THREAD, once `delay_` holds what a glide or a swap reached: the
+    /// glide flag comes down unless a newer delay was asked for meanwhile.
+    void settle() noexcept;
+    template <typename T>
+    bool offer(std::vector<T>& incoming, std::vector<T> ring, std::int32_t capacity,
+               std::int32_t targetDelay);
+    template <typename T, typename U>
+    void adopt(std::vector<T>& buf, const std::vector<U>& from, std::int32_t fromRing,
+               std::int32_t fromWrite, std::int32_t k) noexcept;
 
-    std::vector<float> buf_;        ///< channels * ring_
+    std::vector<float> buf_;        ///< channels * ring_, at 32
     std::int32_t capacity_ = 0;     ///< the largest delay that fits
     std::int32_t ring_ = 0;         ///< capacity_ + 1; see graph.cpp
     std::int32_t delay_ = 0;
@@ -489,11 +726,33 @@ private:
     // `Priming`, the audio thread owns it until it publishes `Spent`, and the
     // message thread takes it back after observing that.
     std::vector<float> incoming_;
+    // The same two at 64; a line uses one pair, the other stays empty.
+    std::vector<double> wbuf_;
+    std::vector<double> wincoming_;
+    bool wide_ = false;
     std::int32_t inCapacity_ = 0;
     std::int32_t inRing_ = 0;
     std::int32_t inWrite_ = 0;
     std::int32_t targetDelay_ = 0;
     std::int32_t primeRemaining_ = 0;
+    // MESSAGE THREAD ONLY: the largest delay a glide may ask for, which is
+    // the ring's capacity, or the offered ring's from the offer on. The audio
+    // thread swaps `capacity_` itself, so the message thread never reads it
+    // while a grow is in flight.
+    std::int32_t limit_ = 0;
+    // AUDIO THREAD: how much of `buf_` behind the cursor is real history, up
+    // to the capacity. All of it at `prepare` (the silence before the stream
+    // is real); after a swap, what the new ring was written since its offer.
+    // A glide waits until the ring holds its target. `inFilled_` is the same
+    // count for the incoming ring: zeroed by the offer, the audio thread's
+    // from Priming to the swap. `ran_` is the frames the edge in hand ran.
+    std::int32_t filled_ = 0;
+    std::int32_t inFilled_ = 0;
+    // AUDIO THREAD: how much of the newest history is known silence, at most
+    // `filled_`: what a silent source wrote since the last block that was
+    // not, or all of the ring at `prepare`.
+    std::int32_t quiet_ = 0;
+    std::int32_t ran_ = 0;
 
     // Written by the message thread, read by the audio thread. Two plain
     // atomics rather than a published schedule: while the new delay FITS, a
@@ -543,6 +802,18 @@ public:
     /// header's list of what this is not.
     void setChannels(std::int32_t n) { channels_ = n > 0 ? n : 2; }
 
+    /// The Processing Precision switch (ADR-0207 d2). Message thread, before
+    /// `prepare`, which sizes every buffer at this width. At 64 each node's
+    /// output, every sum and every compensation ring is double; a node that
+    /// does not `processesDouble()` is handed float, converted either side.
+    /// A different precision is a different graph, as a different block size
+    /// is: the caller builds one and publishes it.
+    void setPrecision(Precision p) noexcept {
+        if (p != precision_) prepared_ = false;
+        precision_ = p;
+    }
+    [[nodiscard]] Precision precision() const noexcept { return precision_; }
+
     /// Per-node event capacity. At 500 Hz with heavy polyphony this is a real
     /// design number rather than a formality (events.hpp).
     /// Per-node event capacity. Zero -- the default -- DERIVES it at `prepare`
@@ -577,6 +848,15 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
+    /// Offline owner only, between process calls with no concurrent rendering,
+    /// retap or rebuild. Copies a node's last complete block at graph precision;
+    /// out64 retains double samples and extra destination channels are silence.
+    /// False (and clears output) for an invalid node, stale/unprepared graph or
+    /// a frame count different from the last successful process call.
+    [[nodiscard]] bool copyNodeOutput(NodeId, const AudioIo&) const noexcept;
+    /// Cached arrival + node latency, at the same output point. No device call.
+    [[nodiscard]] std::optional<std::int64_t> outputLatencyOf(NodeId) const noexcept;
+
     // --- what happened -----------------------------------------------------
 
     [[nodiscard]] bool ok() const noexcept { return ok_; }
@@ -609,7 +889,8 @@ public:
     /// phase modes. The sentence this replaces guessed "low thousands", which
     /// would have made 2048 and 4096 both look sufficient and both miss.
     ///
-    /// Cost is `channels * (delay + headroom) * 4` bytes per edge; see
+    /// Cost is `channels * (delay + headroom + 1) * 4` bytes per edge at 32,
+    /// `* 8` at 64 (ADR-0207 d2); see
     /// `compensationBytes()`, which measures it rather than estimating.
     void setLatencyHeadroom(std::int32_t n) noexcept {
         latencyHeadroom_ = n > 0 ? n : 0;
@@ -638,7 +919,16 @@ public:
     /// not per graph: growing one ring leaves every other edge's history
     /// untouched, where swapping a whole schedule would reset all of them and
     /// glitch the entire project to fix one plugin.
-    std::size_t escalateLatency();
+    /// What `escalateLatency` could not settle, for its caller to act on.
+    struct Unresolved {
+        /// Edges that need a delay and have no ring to grow (no delay and no
+        /// headroom): only a rebuild gives them one.
+        std::size_t ringless = 0;
+        /// Edges whose grow is still in flight for less than they now need:
+        /// they can be grown again once the old ring is collected.
+        std::size_t inFlight = 0;
+    };
+    std::size_t escalateLatency(Unresolved* left = nullptr);
 
     /// Message thread, on a timer. Frees the rings the audio thread has
     /// finished with. Returns how many were reclaimed.
@@ -714,9 +1004,17 @@ public:
     /// Sorting and random-number generation happen here, never in process().
     void permuteLevelsForTest(std::uint32_t seed);
 
+    /// Audio-thread handover, before the old graph is retired. Device nodes
+    /// retain their identity across rebuilds; the matching table is sorted
+    /// during prepare, so this walk allocates nothing.
+    std::int32_t adoptBypassHistory(const Graph& old) noexcept;
+
 private:
+    void writeNodeOutput(NodeId, const AudioIo&) const noexcept;
     struct Slot {
         Node* node = nullptr;
+        bool hasBypass = false;
+        DelayLine dryDelay;
         std::vector<NodeId> inputs;
         std::vector<NodeId> sidechains;
         std::vector<DelayLine> inDelays;     ///< parallel to `inputs`
@@ -725,6 +1023,14 @@ private:
         std::int32_t level = 0;
         std::vector<float> audio;       ///< channels * maxFrames, interleaved by channel
         std::vector<float*> chanPtrs;
+        /// ADR-0207 d2, at 64: the node's output at full width, which is what
+        /// every consumer reads. `audio` is then kept only for a node that
+        /// does not process double, as the float buffer it writes, widened
+        /// into this one after each segment.
+        std::vector<double> wideAudio;
+        std::vector<double*> widePtrs;
+        /// At 64, the node said `processesDouble()` at prepare.
+        bool doubles = false;
         std::vector<Event> eventStore;
         EventList events;
 
@@ -750,15 +1056,69 @@ private:
         /// at 4096 frames, twelve times a 41-node project that was all awake
         /// (linux's measurement, 2026-09-23).
         bool zeroed = false;
+        /// The retap (`glides_`) as of which this sleeping node's lines were
+        /// all found not `due`. While that holds they stay so: nothing writes
+        /// a sleeping node's lines, so no audio comes due in them, and only a
+        /// retap starts a glide. So a sleeping node reads one shared counter
+        /// per block, not every line it has. `kLinesUnchecked` whenever the
+        /// node runs, and from `prepare` (a handover may hand it audio due).
+        std::uint64_t dozeGlides = kLinesUnchecked;
     };
+    static constexpr std::uint64_t kLinesUnchecked = ~std::uint64_t{0};
+
+    std::vector<std::pair<Node*, NodeId>> bypassNodes_;
 
     bool topoSort();
 
-    /// Accumulate one input's segment into the mix scratch. `first` copies,
-    /// the rest add -- which is the whole of ADR-0044's summing, and why a
-    /// group is a node with no device rather than a case in the scheduler.
-    void accumulate(std::vector<float*>& dst, const Slot& src, DelayLine& delay,
-                    std::int32_t begin, std::int32_t frames, bool first) noexcept;
+    /// One mix point: sum `inputs` (compensated by `delays`) into `dst` for
+    /// one segment, and say whether there was anything to sum. The node's
+    /// processing is 32-bit; the SUM is 64-bit and converted once, as Live
+    /// sums every mix point (ADR-0207 d2, Audio Fact Sheet 38.2.4). `wide` is
+    /// the double accumulator for this bus.
+    bool mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+             std::vector<float*>& dst, std::vector<double*>& wide,
+             std::int32_t begin, std::int32_t frames) noexcept;
+
+    /// An input that can add nothing to this segment: a sleeping source on an
+    /// edge with nothing in flight. Taken ONCE per input per mix and handed to
+    /// `accumulate`, so the count of live inputs, the choice of the last and
+    /// the reads skipped cannot disagree: the message thread moves `busy()`
+    /// (an offer, a collection) between any two reads of it.
+    [[nodiscard]] static bool idle(const Slot& src, const DelayLine& delay) noexcept;
+
+    /// Accumulate one input's segment into a mix buffer. `first` copies, the
+    /// rest add -- which is the whole of ADR-0044's summing, and why a group
+    /// is a node with no device rather than a case in the scheduler. `Src` is
+    /// the width the sources hold (the graph's precision); `Acc` the width of
+    /// the sum: at 32, `float` when at most one input is live and `double`
+    /// otherwise; at 64, `double` always.
+    template <typename Src, typename Acc>
+    void accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
+                    std::int32_t begin, std::int32_t frames, bool first,
+                    bool asleep) noexcept;
+
+    /// `mix` for a graph at 64: every source, delay line and sum is double,
+    /// and the sum is left in `wide` for the node (or narrowed by the caller
+    /// for a node that does not process double).
+    bool mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+                 std::vector<double*>& wide, std::int32_t begin, std::int32_t frames) noexcept;
+
+    /// One segment of a double sum, converted to the float a node reads.
+    void narrow(const std::vector<double*>& from, std::vector<float*>& to,
+                std::int32_t begin, std::int32_t frames) const noexcept;
+
+    /// A slot's output at the width `T`: `chanPtrs` at 32, `widePtrs` at 64.
+    template <typename T>
+    [[nodiscard]] static T* const* outputOf(const Slot& s) noexcept;
+    /// One channel of one segment, at the width `T`, for a delayed edge.
+    template <typename T>
+    [[nodiscard]] T* scratch() noexcept;
+
+    /// The last live input of a double sum: added to `wide` and converted
+    /// into `dst` in the same pass, so the sum is narrowed once and read once.
+    void accumulateLast(std::vector<float*>& dst, const std::vector<double*>& wide,
+                        const Slot& src, DelayLine& delay, std::int32_t begin,
+                        std::int32_t frames) noexcept;
     void computeCompensation();
     void prepareLine(DelayLine& line, std::int32_t delaySamples);
     void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
@@ -780,6 +1140,12 @@ private:
     /// (prepare, retap), for the audio thread to read when it forwards events
     /// (ADR-0123). Sized at prepare, never resized on the audio thread.
     std::vector<std::atomic<std::int32_t>> slotLatency_;
+    /// Each slot's arrival, likewise: `retapLatency` recomputes it while the
+    /// audio thread stamps an input tap with it.
+    std::vector<std::atomic<std::int32_t>> slotArrival_;
+    /// `idle` per input of the mix in hand, sized at prepare to the most
+    /// inputs any slot has.
+    std::vector<std::uint8_t> asleep_;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
 
@@ -787,6 +1153,12 @@ private:
     std::vector<float*> mixPtrs_;
     std::vector<float> sideBuf_;        ///< summed sidechain inputs
     std::vector<float*> sidePtrs_;
+    // ADR-0207 d2: the 64-bit accumulators the two buffers above are
+    // converted from, once per segment, when two or more inputs are live.
+    std::vector<double> mixWide_;
+    std::vector<double*> mixWidePtrs_;
+    std::vector<double> sideWide_;
+    std::vector<double*> sideWidePtrs_;
     std::vector<std::vector<NodeId>> levels_;
     std::vector<Event> mixEventStore_;
     EventList mixEvents_;
@@ -798,7 +1170,9 @@ private:
     /// beyond one subtraction.
     std::int64_t now_ = 0;
     std::vector<float> delayScratch_;   ///< one channel of one segment
+    std::vector<double> delayScratch64_; ///< the same at 64
 
+    Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;
@@ -810,9 +1184,14 @@ private:
     // is not the real risk on the platforms we target; the data race is, and
     // an int32 costs nothing to do properly.
     std::atomic<std::int32_t> graphLatency_{0};
+    // How many retaps have started glides (`retapLatency`), released after
+    // the glides it started: a sleeping node that sees it unmoved since its
+    // lines were checked need not check them again (`Slot::dozeGlides`).
+    std::atomic<std::uint64_t> glides_{0};
     std::int32_t latencyHeadroom_ = 8192;
     bool ok_ = false;
     bool prepared_ = false;
+    std::int32_t renderedFrames_ = 0;
     bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;
@@ -829,6 +1208,7 @@ private:
 class SumNode final : public Node {
 public:
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "sum"; }
 };
@@ -844,8 +1224,9 @@ class GainNode final : public Node {
 public:
     explicit GainNode(std::uint32_t paramId = 0) : paramId_(paramId) {}
 
-    void prepare(double, std::int32_t) override { gain_ = 1.0f; }
+    void prepare(double, std::int32_t) override { gain_ = 1.0f; gain64_ = 1.0; }
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "gain"; }
@@ -854,6 +1235,7 @@ public:
 private:
     std::uint32_t paramId_ = 0;
     float gain_ = 1.0f;
+    double gain64_ = 1.0;   ///< the same value, unrounded, for a graph at 64
 };
 
 }  // namespace adi::engine

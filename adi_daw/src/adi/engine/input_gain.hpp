@@ -22,10 +22,17 @@ public:
         }
         for (int i = 0; i < io.frames; ++i) {
             if (remaining_ > 0) { current_ += step_; if (--remaining_ == 0) current_ = goal_; }
-            for (int c = 0; c < io.channels; ++c)
-                io.out[c][io.blockOffset + i] = io.in ? static_cast<float>(io.in[c][io.blockOffset + i] * current_) : 0.0f;
+            for (int c = 0; c < io.channels; ++c) {
+                // The gain is double already; at 64 (ADR-0207 d2) the product
+                // is kept, at 32 it is rounded once, as it always was.
+                if (io.wide())
+                    io.out64[c][io.blockOffset + i] = io.in64 ? io.in64[c][io.blockOffset + i] * current_ : 0.0;
+                else
+                    io.out[c][io.blockOffset + i] = io.in ? static_cast<float>(io.in[c][io.blockOffset + i] * current_) : 0.0f;
+            }
         }
     }
+    bool processesDouble() const noexcept override { return true; }
     std::int64_t tailSamples() const noexcept override { return 0; }
     const char* name() const noexcept override { return "input gain"; }
 private:

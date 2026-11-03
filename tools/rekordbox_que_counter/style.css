@@ -74,7 +74,6 @@ select {
 .btn:hover { background: var(--panel2); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
 .btn.primary:hover { filter: brightness(1.08); }
-.btn.primary.dirty::after { content: "●"; margin-left: 6px; font-size: .5625rem; vertical-align: 2px; }
 .btn.danger { color: var(--neg); border-color: var(--neg-line); background: transparent; }
 .btn.danger:hover { background: color-mix(in srgb, var(--neg) 10%, transparent); }
 .btn.icon { padding: 9px 11px; }
@@ -99,29 +98,63 @@ select {
 .chip b { font-family: var(--mono); font-size: .9375rem; }
 .chip.blue { background: var(--accent-bg); border-color: var(--accent-line); }
 .chip.blue b { color: var(--accent); font-size: 1.0625rem; }
+.chip[hidden] { display: none; }
+.chip.range { background: var(--range-bg); border-color: var(--accent-line); flex-wrap: wrap; align-items: center; }
+.chip.range b { color: var(--accent); }
+.chip.range i { font-style: normal; color: var(--dim); font-size: .75rem; }
+.chip.range .rb { width: 22px; height: 22px; font-size: .6875rem; }
+/* S → E is a button: it takes you to the end marker */
+.rangeGo {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: 0; padding: 0; border: 0; border-radius: 6px; background: none; text-align: left;
+}
+@media (hover: hover) { .rangeGo:hover b { text-decoration: underline; text-underline-offset: 3px; } }
+.rangeGo:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .chip.status { border-style: dashed; }
 .chip.status b { font-family: inherit; font-size: .75rem; font-weight: 600; color: var(--dim); }
 .chip.status.ok b { color: var(--accent); }
-.chip.status.dirty b { color: var(--warn); }
+.chip.status.warn b { color: var(--warn); } /* autosave: not saved yet / offline */
+/* the status is a button too: it opens the history view */
+button.chip.status { margin: 0; text-align: left; }
+button.chip.status::after { content: "🕘"; align-self: center; font-size: .75rem; line-height: 1; opacity: .55; }
+@media (hover: hover) { button.chip.status:hover { border-color: var(--accent-line); } button.chip.status:hover::after { opacity: 1; } }
+button.chip.status:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .histbtns { display: flex; gap: 8px; align-items: center; margin-left: auto; }
 .histbtns .btn { font-size: 1.125rem; line-height: 1; }
 .histbtns .btn:disabled { opacity: .35; cursor: default; }
 .histbtns .btn:disabled:hover { background: transparent; }
 
 /* ---------- table ---------- */
+/* One grid for header + rows. The table scrolls sideways inside .rowswrap
+   when it is wider than the window (phones get a list instead, see the end
+   of this file); the # and Track columns stay
+   pinned on the left and the header follows the scroll (app.js syncs it). */
 main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
-.thead, .row { display: grid; grid-template-columns: 38px minmax(140px, 1fr) 60px 56px 84px 84px 96px 108px 64px 92px; align-items: stretch; }
-.thead {
-  position: sticky; top: 54px; z-index: 20;
+:root {
+  --cols: 58px minmax(140px, 1fr) 60px 56px 84px 84px 96px 108px 64px 40px;
+  --idx-w: 58px;
+  --table-min: 790px;
+  --row-hover: color-mix(in srgb, var(--bg) 96%, var(--text));
+  --range-bg: color-mix(in srgb, var(--bg) 88%, var(--accent));
+  --range-hover: color-mix(in srgb, var(--bg) 83%, var(--accent));
+}
+.thead, .row { display: grid; grid-template-columns: var(--cols); align-items: stretch; min-width: var(--table-min); }
+.theadwrap {
+  position: sticky; top: var(--lb-h, 54px); z-index: 20; overflow: hidden;
   background: var(--bg); border-bottom: 2px solid var(--line);
 }
-.thead b { padding: 8px 8px; font-size: .6875rem; color: var(--dim); text-transform: uppercase; letter-spacing: .6px; align-self: end; }
-.thead b:nth-child(n+3) { text-align: right; }
-.thead b:nth-child(9) { text-align: center; }
+.rowswrap { overflow-x: auto; overscroll-behavior-x: contain; }
+.thead b {
+  padding: 8px 8px; font-size: .6875rem; color: var(--dim); text-transform: uppercase; letter-spacing: .6px;
+  display: flex; align-items: flex-end; justify-content: flex-start; background: var(--bg);
+  white-space: nowrap; overflow: hidden;
+}
+.thead b:nth-child(n+3) { justify-content: flex-end; }
+.thead b:nth-child(9) { justify-content: center; }
 
 .row .f { display: contents; }
 .row .f > span { display: none; }
-.row .f.ops, .row .f.link { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 4px; }
+.row .f.idx, .row .f.ops, .row .f.link { display: flex; align-items: center; gap: 2px; border-bottom: 1px solid var(--line); padding: 0 4px; }
 .row .f.ops { justify-content: flex-end; }
 .row .f.link { justify-content: center; }
 .rb.pl { color: var(--accent); font-size: .6875rem; }
@@ -132,17 +165,118 @@ main { padding: 4px 14px 20px; max-width: 1100px; margin: 0 auto; }
   border: 0; border-bottom: 1px solid var(--line); background: transparent;
   padding: var(--cell-pad) 8px; min-width: 0; display: block; font-weight: 400;
 }
-.row input:focus { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; background: var(--panel); }
+.row input:focus { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; background-color: var(--panel) !important; }
 .row input.cue, .row .f > b { font-family: var(--mono); text-align: right; font-size: .90625rem; }
 .row input.bp { font-family: var(--mono); text-align: right; }
 .row input.ky { font-family: var(--mono); text-align: center; }
-.row .f.idx > b { color: var(--dim); text-align: left; font-size: .75rem; padding-top: calc(var(--cell-pad) + 2px); }
+.row .f.idx { padding: 0 4px 0 0; }
+.row .f.idx > b { color: var(--dim); text-align: left; font-size: .75rem; padding: 0; border: 0; background: none; }
 .row .f.stime > b { color: var(--accent); font-weight: 700; }
 .row b.neg { color: var(--neg) !important; }
 .row input.warn { color: var(--warn); }
 .row input::placeholder { color: color-mix(in srgb, var(--dim) 55%, transparent); }
 
-.row:hover input, .row:hover .f > b, .row:hover .f.ops, .row:hover .f.link { background: var(--hover); }
+/* pinned columns need a solid background so the scrolled cells pass under them */
+.row .f.idx, .row .tt, .thead b:nth-child(1), .thead b:nth-child(2) { position: sticky; z-index: 2; background: var(--bg); }
+.row .f.idx, .thead b:nth-child(1) { left: 0; }
+.row .tt, .thead b:nth-child(2) { left: var(--idx-w); }
+
+.row :is(input, .f > b, .f.idx, .f.ops, .f.link) { transition: background-color .12s; }
+.row:hover :is(input, .f > b, .f.idx, .f.ops, .f.link) { background-color: var(--row-hover); }
+.row .f.idx > b, .row:hover .f.idx > b { background: none; }
+
+/* the Start marker to the End marker: the marked part of the set is tinted (less than the whole list only) */
+.row.inrange :is(input, .f > b, .f.idx, .f.ops, .f.link) { background-color: var(--range-bg); }
+.row.inrange:hover :is(input, .f > b, .f.idx, .f.ops, .f.link) { background-color: var(--range-hover); }
+.row.inrange .f.idx > b { background: none; }
+.row.inrange .f.idx { box-shadow: inset 3px 0 0 var(--accent); }
+
+/* drag to move */
+.grip {
+  background: none; border: 0; color: var(--dim); border-radius: 6px;
+  width: 26px; height: 30px; padding: 0; flex: none;
+  font-size: 1rem; line-height: 1; cursor: grab; touch-action: none;
+}
+.grip:hover { background: var(--panel2); color: var(--text); }
+.row { transition: transform .16s ease; }
+.row.dragging { position: relative; z-index: 10; transition: none; box-shadow: var(--shadow); }
+.row.dragging :is(input, .f > b, .f.idx, .f.ops, .f.link) { background-color: var(--panel2); }
+.row.dragging .f.idx > b { background: none; }
+.row.dragging .grip { color: var(--accent); }
+body.dragging-active, body.dragging-active * { cursor: grabbing !important; user-select: none; -webkit-user-select: none; }
+
+/* the end marker (app.js, "start + end markers"): an accent line with a pill on it, in a gap
+   of its own under the end track (.endgap) — it never covers a row, a move's
+   preview included. The pill
+   drags: it lifts off (fixed, under the pointer) while a line shows where the
+   end snaps to. Heights are fixed (one line here, two on phones) so the gap fits. */
+main { position: relative; } /* the marker's offsetParent */
+:root {
+  --em-pill-h: calc(1.25rem * 1.25 + 14px);
+  --em-gap: calc(var(--em-pill-h) + 14px);
+}
+.row.endgap { margin-bottom: var(--em-gap); }
+.endmark {
+  position: absolute; left: 14px; right: 14px; z-index: 5; height: var(--em-gap);
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none; transition: transform .16s ease; /* rides a row drag's preview along with its row */
+}
+.endmark[hidden], .emsnap[hidden] { display: none; }
+.endmark.away { visibility: hidden; }
+.endmark::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px;
+  border-radius: 2px; background: var(--accent);
+}
+.endmark.dragging::before { opacity: .45; background: repeating-linear-gradient(90deg, var(--accent) 0 10px, transparent 10px 16px); }
+.emPill {
+  position: relative; pointer-events: auto; max-width: calc(100% - 28px);
+  display: flex; align-items: center; gap: 10px; height: var(--em-pill-h); padding: 0 16px 0 12px;
+  background: var(--panel); color: var(--text); border: 2px solid var(--accent); border-radius: 999px;
+  box-shadow: 0 3px 12px color-mix(in srgb, #000 22%, transparent);
+  white-space: nowrap; cursor: grab; touch-action: pan-y; /* a swipe scrolls, on it too; a touch grabs it after a short hold (app.js) */
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+.emPill:hover { background: var(--panel2); }
+.emPill:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.emGrip { color: var(--accent); font-size: 1rem; line-height: 1; padding: 8px; margin: -8px; touch-action: none; } /* the ⇕ grabs at once */
+.emT { font-family: var(--mono); font-size: 1.25rem; line-height: 1.25; font-weight: 800; color: var(--accent); }
+.emI { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--dim); font-size: .8125rem; font-variant-numeric: tabular-nums; }
+.emPill.lifted {
+  position: fixed; z-index: 1; transform: translateX(-50%) scale(1.04);
+  background: var(--panel2); box-shadow: var(--shadow), 0 0 0 4px var(--accent-bg); outline: none;
+  transition: box-shadow .18s ease;
+}
+.emsnap {
+  position: absolute; left: 14px; right: 14px; z-index: 4; height: 4px; margin-top: -2px;
+  border-radius: 2px; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); pointer-events: none;
+}
+.endmark.flash .emPill { animation: emFlash .5s ease 3; }
+@keyframes emFlash { 50% { box-shadow: 0 0 0 8px var(--accent-line); } }
+/* the start marker: the same line and pill, in a gap of its own over the start
+   track (.startgap). Its pill is compact — "Start · #5", the time is the End's —
+   and tinted with the accent, so the two read apart at a glance. */
+:root {
+  --sm-pill-h: calc(.9375rem * 1.25 + 10px);
+  --sm-gap: calc(var(--sm-pill-h) + 12px);
+  --sm-bg: color-mix(in srgb, var(--panel) 82%, var(--accent));
+  --sm-bg-hover: color-mix(in srgb, var(--panel) 74%, var(--accent));
+}
+.row.startgap { margin-top: var(--sm-gap); }
+.endmark.smark { height: var(--sm-gap); }
+.smPill { height: var(--sm-pill-h); gap: 7px; padding: 0 14px 0 10px; background: var(--sm-bg); }
+.smPill:hover, .smPill.lifted { background: var(--sm-bg-hover); }
+/* the label: the accent toward the text, so it reads (4.5:1) on the tint in both themes */
+.smK { font-size: .6875rem; line-height: 1; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: color-mix(in srgb, var(--accent) 65%, var(--text)); }
+.smDot { font-style: normal; color: var(--dim); }
+.smN { font-family: var(--mono); font-size: .9375rem; line-height: 1.25; font-weight: 800; color: var(--text); font-variant-numeric: tabular-nums; }
+/* the Start track's intro (0:00 to its cue in), added to the Start → End time */
+.smIn { font-family: var(--mono); font-size: .8125rem; line-height: 1.25; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+.smIn[hidden] { display: none; }
+@media (prefers-reduced-motion: reduce) {
+  .endmark, .emPill { transition: none; }
+  .endmark.flash .emPill { animation: none; }
+}
 
 .rb {
   background: none; border: 0; color: var(--dim); border-radius: 6px;
@@ -223,6 +357,186 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
 .urow b { font-weight: 600; font-size: .875rem; }
 .urow .rb { flex: none; }
 
+/* ---------- history view (app.js, "history view") ---------- */
+/* While it is open (body.hv) the list's rows, its markers, Add track and
+   the summary go (the rows stay in the DOM, untouched); a banner and a
+   read-only preview of the version picked take their place, and the timeline
+   of versions sits in a panel on the right (a sheet from the bottom on
+   phones). Changed = warn, new = accent, removed = neg — all from the theme. */
+:root {
+  --hv-chg: color-mix(in srgb, var(--bg) 76%, var(--warn));
+  --hv-add: color-mix(in srgb, var(--bg) 80%, var(--accent));
+  --hv-del: color-mix(in srgb, var(--bg) 87%, var(--neg));
+  --hp-w: 360px;
+  --hm-pill-h: calc(1rem * 1.25 + 12px);
+  --hm-gap: calc(var(--hm-pill-h) + 12px);
+}
+.hvbar[hidden], .hvwrap[hidden], .hpanel[hidden], .hvSum[hidden] { display: none !important; }
+body.hv :is(.summary, #rowsWrap, #startMark, #endMark, #emSnap, #btnAdd) { display: none !important; }
+body.hv main { max-width: 1100px; margin-left: max(0px, calc((100% - var(--hp-w) - 1100px) / 2)); margin-right: var(--hp-w); }
+body.hv .help { margin-right: var(--hp-w); }
+body.hv .theadwrap { top: calc(var(--lb-h, 54px) + var(--hv-h, 0px)); }
+@media screen and (min-width: 741px) {
+  /* the same grid, less its empty last column (nothing to delete here): the room goes to the titles —
+     its cells lose their padding too, or they would stick out of it and the table would scroll sideways */
+  body.hv { --cols: 58px minmax(140px, 1fr) 60px 56px 84px 84px 96px 108px 64px 0px; --table-min: 750px; }
+  body.hv #hvRows .f.ops, body.hv .thead b:last-child { padding: 0; border: 0; }
+}
+
+/* banner: History · name, the version shown, Restore as new list, ✕ — and what changed */
+.hvbar {
+  position: sticky; top: var(--lb-h, 54px); z-index: 21;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-areas: "t r x" "v r x" "s s s";
+  align-items: center; gap: 2px 8px; margin: 2px 0 8px; padding: 10px 12px 10px 14px;
+  background: var(--panel); border: 1px solid var(--accent-line); border-radius: var(--radius);
+  box-shadow: 0 -6px 0 2px var(--bg); /* rows scrolling under it stay out of sight at its corners */
+}
+.hvbar h2 { grid-area: t; margin: 0; min-width: 0; font-size: 1.0625rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hvbar .hvK { color: var(--accent); }
+.hvbar h2:focus { outline: none; }
+.hvbar h2 .was { display: inline; font-size: .8125rem; }
+.hvVer { grid-area: v; margin: 0; min-width: 0; color: var(--dim); font-size: .84375rem; }
+.hvVer b { color: var(--text); font-variant-numeric: tabular-nums; }
+.hvSep { font-style: normal; }
+#hvRestore { grid-area: r; }
+#hvRestore:disabled { opacity: .45; cursor: default; filter: none; }
+#hvClose { grid-area: x; }
+.hvSum { grid-area: s; margin: 6px 0 0; padding-top: 7px; border-top: 1px solid var(--line); font-size: .84375rem; font-variant-numeric: tabular-nums; }
+.hvSum b { color: var(--text); }
+.hvVs { color: var(--dim); }
+.hvTag { display: inline-block; padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; font-style: normal; font-size: .6875rem; line-height: 1.5; color: var(--dim); white-space: nowrap; }
+mark.chg { background: var(--hv-chg); color: var(--text); border-radius: 4px; padding: 0 3px; }
+.was {
+  display: block; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: .71875rem; font-weight: 400; line-height: 1.25; color: var(--dim); white-space: nowrap;
+}
+.was s { text-decoration-thickness: 1px; text-decoration-color: color-mix(in srgb, var(--dim) 80%, transparent); }
+
+/* preview (desktop): the table's grid, read-only cells */
+.hvwrap { overflow-x: auto; overscroll-behavior-x: contain; }
+.hvrow .f.title > b {
+  position: sticky; left: var(--idx-w); z-index: 2; background: var(--bg);
+  display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px;
+  font-family: inherit; font-size: inherit; text-align: left;
+}
+.hvrow .htT { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } /* one line, as the list's; its badges beside it */
+.hvrow .f.title .hb { flex: none; margin: 0; }
+.hvrow .f.title .was { flex: 1 0 100%; }
+.hvrow .f.idx > b { padding-left: 12px; font-family: var(--mono); }
+.hvrow .f.key > b { text-align: center; }
+.hvrow i.rb { font-style: normal; font-weight: 700; }
+.hvrow .f > b .was s { font-family: var(--mono); }
+.hvrow .f.title > b .was { overflow: hidden; text-overflow: ellipsis; }
+.hvrow .f.title > b .was s { font-family: inherit; }
+.hvrow .untitled { color: var(--dim); font-weight: 400; }
+.hvrow .rb { display: inline-flex; align-items: center; justify-content: center; text-decoration: none; cursor: default; }
+.hvrow a.rb { cursor: pointer; }
+#hvRows .chg { background-color: var(--hv-chg); }
+#hvRows .row .f > b.chg { color: var(--text); font-weight: 700; }
+#hvRows .rb.pl.chg { box-shadow: inset 0 0 0 1px var(--warn); }
+#hvRows .row.add :is(.f > b, .f.idx, .f.ops, .f.link) { background-color: var(--hv-add); }
+#hvRows .row.add .f.idx { box-shadow: inset 4px 0 0 var(--accent); }
+#hvRows .row.del :is(.f > b, .f.idx, .f.ops, .f.link) { background-color: var(--hv-del); color: var(--dim); }
+#hvRows .row.del .f.idx { box-shadow: inset 4px 0 0 var(--neg); }
+#hvRows .row.del .htT, .hvph.del .ph-tt { text-decoration: line-through; text-decoration-color: var(--neg); }
+.hb {
+  display: inline-block; margin-left: 8px; padding: 0 6px; border-radius: 5px; vertical-align: 1px;
+  font-family: inherit; font-style: normal; font-weight: 700; font-size: .6875rem; line-height: 1.6; white-space: nowrap;
+}
+.hb.new { background: var(--accent); color: var(--on-accent); }
+.hb.rm { border: 1px solid var(--neg); color: var(--neg); }
+.hb.mv { border: 1px solid var(--warn); color: var(--warn); }
+.hvNote { margin: 22px 8px; color: var(--dim); text-align: center; }
+.hvNote .btn { margin-left: 8px; }
+/* the version's markers, drawn: a line with a pill, in the list where they were */
+.hvEndL { position: relative; display: flex; align-items: center; justify-content: center; min-width: var(--table-min); height: calc(var(--hm-pill-h) + 14px); }
+.hvEndL::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; margin-top: -1px; border-radius: 2px; background: var(--accent); }
+.hvEndP {
+  position: relative; display: flex; align-items: baseline; gap: 8px; max-width: calc(100% - 28px); padding: 3px 14px;
+  background: var(--panel); border: 2px solid var(--accent); border-radius: 999px; color: var(--dim); font-size: .8125rem; white-space: nowrap;
+}
+.hvEndP i { font-style: normal; font-weight: 700; color: var(--text); }
+.hvEndP b { font-family: var(--mono); font-size: .9375rem; color: var(--accent); }
+.hvEndP .was { display: inline; color: var(--text); }
+.hvStartL { height: calc(var(--hm-pill-h) + 8px); }
+.hvStartL .hvEndP { align-items: center; padding: 2px 12px; background: var(--sm-bg); }
+.hvStartL .hvEndP i { font-size: .6875rem; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; color: color-mix(in srgb, var(--accent) 65%, var(--text)); }
+.hvStartL .hvEndP b { font-size: .875rem; color: var(--text); }
+.hvEndL.moved .hvEndP { border-color: var(--warn); background: var(--hv-chg); }
+/* ↓ Next change: the row it lands on flashes */
+.hvNext { margin-left: 8px; padding: 2px 10px; border: 1px solid var(--accent-line); border-radius: 999px; background: none; color: var(--accent); font-size: .78125rem; font-weight: 600; white-space: nowrap; }
+@media (hover: hover) { .hvNext:hover { background: var(--accent-bg); } }
+#hvRows .flash { animation: hvFlash .45s ease 3; }
+@keyframes hvFlash { 50% { box-shadow: inset 0 0 0 2px var(--warn); } }
+@media (prefers-reduced-motion: reduce) { #hvRows .flash { animation: none; outline: 2px solid var(--warn); outline-offset: -2px; } }
+
+/* the timeline: a panel on the right, under the list bar (app.js keeps its top there) */
+.hpanel {
+  position: fixed; right: 0; bottom: 0; top: var(--lb-h, 54px); z-index: 28; width: var(--hp-w);
+  display: flex; flex-direction: column;
+  background: var(--panel); border-left: 1px solid var(--line);
+  box-shadow: -10px 0 28px color-mix(in srgb, #000 16%, transparent);
+}
+.hpHead { flex: none; padding: 12px 14px 9px; border-bottom: 1px solid var(--line); }
+.hpFold { display: none; } /* phones only: folds the sheet down to its head */
+.vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.hpHead h2 { margin: 0; font-size: 1rem; }
+#hpCount { color: var(--dim); font-weight: 500; }
+.hpHint { margin: 2px 0 0; color: var(--dim); font-size: .75rem; }
+.hpHint b { color: var(--text); font-weight: 600; }
+.hpMsg { margin: 8px 0 0; padding: 7px 10px; border: 1px solid var(--line); border-radius: 9px; font-size: .8125rem; color: var(--text); }
+.hpMsg.warn { border-color: var(--warn); background: color-mix(in srgb, var(--panel) 86%, var(--warn)); }
+.hpMsg .btn { margin-left: 4px; }
+.hpScroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 6px 0 16px; }
+.hpOlder { display: block; margin: 4px auto 8px; padding: 6px 14px; background: var(--bg); border: 1px dashed var(--line); border-radius: 999px; color: var(--accent); font-size: .8125rem; }
+.hpOlder:hover { border-color: var(--accent); }
+.hpOlder:disabled { color: var(--dim); cursor: default; }
+.hpOlder[hidden] { display: none; } /* no older versions: no button (display: block above would show it) */
+.hpTrack { position: relative; } /* the marker's offsetParent */
+#hpList { display: flex; flex-direction: column; } /* the Start's and End's gaps never collapse into one (two entries apart while the End is dragged) */
+.hvE { border-bottom: 1px solid var(--line); transition: transform .16s ease; }
+.hvE:first-child { border-top: 1px solid var(--line); }
+.hvEb {
+  display: flex; flex-direction: column; gap: 1px; width: 100%; min-width: 0; margin: 0; padding: 7px 12px 8px 16px;
+  background: none; border: 0; border-radius: 0; text-align: left; color: var(--text);
+}
+@media (hover: hover) { .hvEb:hover { background: var(--hover); } }
+.hvEb:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 6px; }
+.hvL1 { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.hvWho { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .875rem; }
+.hvWhen { flex: none; margin-left: auto; padding-left: 6px; color: var(--dim); font-size: .75rem; font-variant-numeric: tabular-nums; }
+.hvMsgL, .hvSm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .8125rem; }
+.hvMsgL { font-style: italic; color: var(--dim); }
+.hvSm { color: var(--text); font-variant-numeric: tabular-nums; opacity: .88; }
+.hvSm.new { color: var(--accent); opacity: 1; }
+.hvSm.neg { color: var(--neg); opacity: 1; }
+.hvSm.warn { color: var(--warn); opacity: 1; }
+.hvSm.wait { color: var(--dim); }
+.hvE.repo .hvWho { font-style: italic; font-weight: 600; }
+.hvE.now .hvWho { color: var(--accent); }
+.hvE.inrange { background: var(--range-bg); box-shadow: inset 3px 0 0 var(--accent); }
+.hvE.isEnd .hvWho { color: var(--accent); }
+.hvE.endgap { margin-bottom: var(--hm-gap); }
+.hvE.startgap { margin-top: var(--hm-gap); }
+/* its markers: the list's (.endmark / .emPill / .emsnap), one line each; the
+   Start says "auto" while it follows the End, else offers ↺ auto beside it */
+.endmark.hmark { left: 8px; right: 8px; height: var(--hm-gap); }
+.hmark .emPill { height: var(--hm-pill-h); gap: 8px; padding: 0 14px 0 10px; }
+.hmark .emT { font-size: 1rem; }
+.hmark .emI { font-size: .8125rem; }
+.hmark .smPill { min-width: 0; } /* short of room (big sizes, ↺ auto beside it) the date gives way, the pill stays on screen */
+.hmark .smPill .emI { color: var(--text); }
+.smTag { font-style: normal; font-size: .6875rem; line-height: 1.45; padding: 0 5px; border: 1px solid var(--accent-line); border-radius: 5px; color: var(--dim); }
+.smTag[hidden], .hsAuto[hidden] { display: none; }
+.hsAuto {
+  position: relative; pointer-events: auto; flex: none; margin-left: 6px; height: 26px; padding: 0 10px;
+  background: var(--panel); border: 1px solid var(--accent-line); border-radius: 999px;
+  color: var(--accent); font-size: .75rem; font-weight: 700; white-space: nowrap;
+}
+@media (hover: hover) { .hsAuto:hover { background: var(--accent-bg); } }
+.hsAuto:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#hmSnap { left: 8px; right: 8px; }
+
 /* ---------- toast ---------- */
 #toast {
   position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
@@ -234,36 +548,405 @@ dialog::backdrop { background: rgba(5, 8, 12, .6); backdrop-filter: blur(3px); }
 #toast.ok { border-color: var(--accent-line); }
 #toast.err { border-color: var(--neg-line); }
 
-/* ---------- mobile: rows become cards ---------- */
-@media (max-width: 740px) {
-  .thead { display: none; }
-  #rows { display: flex; flex-direction: column; gap: 10px; }
-  .row {
-    display: flex; flex-wrap: wrap; gap: 8px 10px;
-    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
-    padding: 10px 12px 12px;
+/* ---------- phone: a list to read + a sheet to edit ---------- */
+/* Pinned at the top: the list bar as one line (list, ↶ ↷, ⋯ — app.js
+   moves undo / redo up into it and New / Duplicate / Rename / Delete into ⋯),
+   a slim summary line and the column header; the brand row scrolls away.
+   Rows turn into read-only list lines: number over the drag grip, the title
+   on up to two lines with BPM · key · cues under it, and Play Time over Set
+   time on the right. Tapping a row opens #dlgTrack, a bottom sheet with big
+   inputs for that track (app.js, "phone" section). The desktop cells stay in
+   the DOM, hidden, and the sheet writes through them. Screens only: printing
+   (A4 is narrower than 740px too) keeps the table, see the very end. */
+@media screen and (max-width: 740px) {
+  :root {
+    --sel-bg: color-mix(in srgb, var(--bg) 72%, var(--accent));
+    --ph-cols: 44px minmax(0, 1fr) auto;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   }
-  .row .f { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .row .f > span { display: block; font-size: .625rem; color: var(--dim); text-transform: uppercase; letter-spacing: .6px; }
-  .row input, .row .f > b { border-bottom: 0; padding: calc(var(--cell-pad) * .7) 9px; border-radius: 8px; background: var(--bg); }
-  .row .f.idx { order: 0; flex: 0 0 auto; }
-  .row .f.idx > b { background: none; padding: 8px 0 0; }
-  /* line 1 = idx + title + ops: title basis leaves exact room for the ops cluster */
-  .row .f.title { order: 1; flex: 1 1 calc(100% - 175px); min-width: 0; }
-  .row .f.ops { order: 2; flex: 0 0 auto; flex-direction: row; align-items: flex-end; border: 0; padding: 0 0 4px; }
-  .row .f.link { order: 3; flex: 0 0 auto; flex-direction: row; align-items: flex-end; border: 0; padding: 0 0 3px; }
-  .row .f.link > span { display: none; }
-  .row .f.bpm  { order: 4; flex: 1 1 18%; }
-  .row .f.key  { order: 5; flex: 1 1 18%; }
-  .row .f.cin  { order: 6; flex: 1 1 24%; }
-  .row .f.cout { order: 7; flex: 1 1 24%; }
-  .row .f.play { order: 8; flex: 1 1 24%; }
-  .row .f.stime{ order: 9; flex: 1 1 100%; }
-  .row .f.stime > b { text-align: right; }
-  .rb { width: 34px; height: 34px; font-size: .9375rem; }
-  .rb.pl { font-size: .8125rem; }
+  /* brand + 👤 on one line down to 360px; bigger Overall / Text sizes wrap instead of overflowing */
+  .topbar { padding: 10px 14px 4px; gap: 8px; flex-wrap: wrap; }
+  .brand h1 { white-space: normal; }
+  .account { margin-left: auto; }
+  #userBtn { padding: 8px 10px; }
+
+  /* list bar, one sticky line: [list ▾] [↶|↷] [⋯] — the buttons wrap under
+     the list name when it would get under 8rem (big sizes, 320px phones);
+     lists autosave, so there is no Save button */
+  .listbar { gap: 6px; padding: 6px 14px; background: var(--bg); }
+  #listSelect {
+    flex: 1 1 8rem; min-width: min(8rem, 100%); min-height: 42px; padding: 8px 22px 8px 8px; font-size: max(calc(16px / var(--z, 1)), 1rem);
+    background-position: calc(100% - 14px) 55%, calc(100% - 9px) 55%;
+  }
+  #btnRename, #btnNew, #btnDup, #btnDelete { display: none; }
+  .listbtns { gap: 4px; margin-left: auto; }
+  .listbar .btn { min-height: 42px; padding: 8px 10px; }
+  .listbar .btn.icon { min-width: 40px; padding: 8px 9px; }
+  .listbtns .histbtns { gap: 0; margin: 0; }
+  .listbtns .histbtns .btn { min-width: 40px; padding: 8px 6px; font-size: 1.0625rem; }
+  .listbtns .histbtns .btn:first-child { border-radius: 10px 0 0 10px; }
+  .listbtns .histbtns .btn:last-child { border-radius: 0 10px 10px 0; border-left: 0; }
+  /* ⋯ menu: list actions first, Delete list last and red; Users… only when shown */
+  .menu button[hidden] { display: none; }
+  .menu .phAct + button:not(.phAct), .menu button:not(.phAct) + .phAct {
+    margin-top: 4px; border-top: 1px solid var(--line); border-radius: 0 0 8px 8px;
+  }
+  .menu .phAct[data-act=delete] { color: var(--neg); }
+
+  /* summary, one sticky line: 4:02:11 · 39 tracks · status   [S → E 0:43:17 ✕]
+     (the status gives way first; at big sizes the S → E pill drops to a second line) */
+  .summary {
+    position: sticky; top: var(--lb-h, 54px); z-index: 25;
+    gap: 0; min-height: 34px; padding: 0 14px 2px; background: var(--bg);
+    white-space: nowrap;
+  }
+  .summary .chip { flex: none; gap: 0; padding: 0; background: none; border: 0; border-radius: 0; }
+  .summary .chip span { display: none; }
+  .summary .chip.blue span { /* "Set time": still read out by screen readers ("tracks" comes from ::after below) */
+    display: block; position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .chip.blue { order: 1; }
+  .chip.blue b { font-size: 1rem; font-weight: 700; }
+  .summary > .chip:first-child { order: 2; }
+  .summary > .chip:first-child b { font: inherit; font-size: .8125rem; font-variant-numeric: tabular-nums; }
+  .summary > .chip:first-child b::after { content: " tracks"; color: var(--dim); }
+  .summary > .chip.one b::after { content: " track"; }
+  .chip.status { order: 3; flex: 1 1 0; min-width: 0; margin-right: 10px; }
+  .chip.status b { overflow: hidden; text-overflow: ellipsis; font-size: .8125rem; font-weight: 500; }
+  .summary > .chip:first-child::before, .chip.status::before { content: "·"; margin: 0 7px; color: var(--dim); }
+  .summary .chip.range {
+    order: 4; align-items: center; gap: 6px; height: 26px; margin-left: auto; padding: 0;
+    background: var(--range-bg); border: 1px solid var(--accent-line); border-radius: 999px;
+  }
+  .summary .rangeGo { flex-wrap: nowrap; align-items: center; gap: 6px; height: 40px; margin: -7px 0; padding: 0 0 0 10px; } /* a 40px target too */
+  .summary .chip.range span { display: inline; letter-spacing: .3px; }
+  .chip.range b { font-size: .875rem; font-weight: 700; }
+  #rangeInfo { display: none; }
+  .chip.range .rb { width: 40px; height: 40px; margin: -7px -8px -7px -6px; font-size: .75rem; } /* a 40px target in a slim line */
+
+  /* the column header, one line under them: #  TRACK  …  PLAY / SET */
+  main { padding: 0 0 16px; }
+  .rowswrap { overflow: visible; }
+  .thead, .row { min-width: 0; }
+  .row { grid-template-columns: var(--ph-cols); column-gap: 8px; }
+  .theadwrap { top: calc(var(--lb-h, 54px) + var(--sum-h, 36px)); border-bottom: 1px solid var(--line); }
+  .thead { display: flex; padding-right: 14px; }
+  .thead b:nth-child(n) { display: none; position: static; padding: 4px 0 5px; letter-spacing: .5px; }
+  .thead b:is(:nth-child(-n+2), :nth-child(7), :nth-child(8)) { display: flex; }
+  .thead b:nth-child(1) { flex: 0 0 44px; justify-content: center; }
+  .thead b:nth-child(2) { flex: 1 1 auto; margin-left: 8px; }
+  .thead b:is(:nth-child(7), :nth-child(8)) { font-size: 0; letter-spacing: 0; }
+  .thead b:nth-child(7)::before { content: "Play /\a0"; font-size: .6875rem; letter-spacing: .5px; }
+  .thead b:nth-child(8)::before { content: "Set"; font-size: .6875rem; letter-spacing: .5px; color: var(--accent); }
+
+  /* the list: full-width lines on hairlines, no sideways scroll */
+  #rows .row {
+    align-items: center; padding: var(--cell-pad) 14px var(--cell-pad) 0;
+    border-bottom: 1px solid var(--line); background: var(--bg);
+    cursor: pointer; -webkit-tap-highlight-color: transparent;
+  }
+  #rows .row > .f:not(.idx, .play, .stime) { display: none; }
+  #rows .row :is(input, .f > b, .f.idx) { background-color: transparent; } /* the row itself is tinted */
+  #rows .row.inrange { background: var(--range-bg); box-shadow: inset 3px 0 0 var(--accent); }
+  #rows .row.sel { background: var(--sel-bg); box-shadow: inset 4px 0 0 var(--accent); }
+  #rows .row:active { background: var(--row-hover); }
+  #rows .row.inrange:active { background: var(--range-hover); }
+  #rows .row.dragging { background: var(--panel2); box-shadow: var(--shadow); }
+
+  /* number on top; the gutter scrolls (and taps open the track) like the rest
+     of the row, only the 44 × 44 zone round the ⠿ grabs for a drag */
+  #rows .row .f.idx {
+    grid-area: 1 / 1 / 3 / 2; align-self: stretch; display: block; position: relative;
+    padding: 0; border: 0; box-shadow: none; touch-action: pan-y;
+  }
+  #rows .row .f.idx > b {
+    position: relative; z-index: 1; pointer-events: none;
+    padding: 2px 0 0; text-align: center; font-family: var(--mono); font-size: .8125rem;
+  }
+  #rows .row.inrange .f.idx > b { color: var(--accent); }
+  /* the row being edited: full-strength text on its tint (dim and accent read too faintly there) */
+  #rows .row.sel :is(.f.idx > b, .f.stime > b, .ph-meta) { color: var(--text); }
+  #rows .row.sel .grip { color: var(--dim); }
+  #rows .grip {
+    position: absolute; left: 0; bottom: calc(-1 * var(--cell-pad)); width: 44px; height: 44px;
+    display: flex; align-items: flex-end; justify-content: center; border-radius: 0;
+    padding-bottom: calc(var(--cell-pad) + 1px); font-size: 1.0625rem;
+    color: color-mix(in srgb, var(--dim) 75%, transparent);
+    touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none;
+  }
+  #rows .grip:hover { background: none; }
+  #rows .row.dragging .grip { color: var(--accent); }
+
+  /* title (2 lines) + BPM · key · cues */
+  #rows .ph {
+    grid-area: 1 / 2 / 3 / 3; align-self: center; min-width: 0;
+    display: flex; flex-direction: column; gap: 3px;
+    margin: 0; padding: 0; border: 0; background: none; color: var(--text); text-align: left;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  #rows .ph:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+  .ph-tt {
+    font-size: 1rem; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  }
+  .ph-tt.empty { color: var(--dim); font-weight: 400; font-style: italic; }
+  .ph-meta {
+    display: block; font-family: var(--mono); font-size: .78125rem; line-height: 1.45; color: var(--dim);
+    overflow-wrap: anywhere;
+  }
+  .ph-meta .bit { display: inline-block; max-width: 100%; } /* BPM, key, in → out: each wraps as a whole */
+  .ph-meta em { font-style: normal; }
+  .ph-meta .warn { color: var(--warn); }
+  .ph-meta .hint { font-family: var(--sans); font-style: italic; }
+
+  /* Play Time over Set time on the right, tabular figures (narrower than mono) */
+  #rows .row .f.play > b, #rows .row .f.stime > b {
+    grid-column: 3; padding: 0; border: 0; white-space: nowrap; line-height: 1.3;
+    font-family: var(--sans); font-variant-numeric: tabular-nums;
+  }
+  #rows .row .f.play > b { grid-row: 1; align-self: end; font-size: .875rem; }
+  #rows .row .f.stime > b { grid-row: 2; align-self: start; font-size: .9375rem; font-weight: 700; }
+
+  /* the end marker: full width, the pill on two lines — the time over #from → #to */
+  :root {
+    --em-pill-h: calc(1.25rem * 1.15 + .75rem * 1.35 + 12px);
+    --em-gap: calc(var(--em-pill-h) + 10px);
+  }
+  .endmark, .emsnap { left: 0; right: 0; }
+  .emPill {
+    display: grid; grid-template-columns: auto minmax(0, auto); align-content: center; column-gap: 10px;
+    padding: 0 18px 0 14px; border-radius: 14px;
+  }
+  .emGrip { grid-row: 1 / 3; padding: 12px 10px 12px 14px; margin: -12px -10px -12px -14px; } /* a 40px zone at the pill's left */
+  .emT { line-height: 1.15; }
+  .emI { font-size: .75rem; line-height: 1.35; }
+  /* the start marker's pill: one line, a finger's height */
+  :root {
+    --sm-pill-h: calc(.9375rem * 1.25 + 16px);
+    --sm-gap: calc(var(--sm-pill-h) + 10px);
+  }
+  .smPill { display: flex; padding: 0 18px 0 14px; border-radius: 999px; }
+  .smPill .emGrip { grid-row: auto; padding: 10px 8px 10px 14px; margin: -10px -8px -10px -14px; }
+
+  .addtrack {
+    margin: 0; min-height: 54px; padding: 15px 14px 15px 52px;
+    background: none; border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+    color: var(--accent); text-align: left;
+  }
+  .addtrack:hover { color: var(--accent); border-color: var(--line); }
+  .addtrack:active { background: var(--row-hover); }
+
+  /* no zoom-on-focus in iOS: form text stays >= 16px on screen, also at an
+     Overall size under 100% (--z, the zoom on <html>, which iOS counts in) */
+  .dlg input:not([type=checkbox]):not([type=color]):not([type=range]) { font-size: max(calc(16px / var(--z, 1)), 1rem); }
+
+  /* ---------- the track sheet ---------- */
+  #dlgTrack {
+    position: fixed; inset: auto 0 var(--kb, 0px); z-index: 60;
+    width: auto; max-width: 640px; margin: 0 auto;
+    max-height: max(calc(var(--vvh, 100vh) - 40px), calc(var(--vvh, 100vh) * .9)); overflow-y: auto; overscroll-behavior: contain;
+    padding: 0 0 env(safe-area-inset-bottom);
+    background: var(--panel); border: 1px solid var(--line); border-bottom: 0; border-radius: 18px 18px 0 0;
+    box-shadow: 0 -12px 36px color-mix(in srgb, #000 38%, transparent);
+    transition: transform .2s ease; animation: shUp .26s cubic-bezier(.2, .9, .3, 1);
+  }
+  #dlgTrack.swiping { transition: none; }
+  #dlgTrack.closing { transform: translateY(105%); }
+  body:is(.sheet-open, .sheet-hold) main { padding-bottom: calc(var(--sheet-h, 420px) + var(--kb, 0px) + 12px); }
+  body.sheet-open #toast { bottom: auto; top: calc(12px + env(safe-area-inset-top)); }
+  /* no room for the track between the pinned bars and the sheet (keyboard up,
+     big sizes): the bars stop sticking and just scroll with the page (app.js) */
+  body.sheet-unpin :is(.listbar, .summary, .theadwrap) { position: static; }
+
+  /* header: 🗑 alone on the left, away from Link and Done; ↶ ↷ Done on the right */
+  .shHead {
+    position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 4px;
+    padding: 18px 12px 8px; background: var(--panel); touch-action: none;
+  }
+  .shHead::before {
+    content: ""; position: absolute; top: 7px; left: 50%; width: 40px; height: 4px; margin-left: -20px;
+    border-radius: 4px; background: color-mix(in srgb, var(--dim) 45%, transparent);
+  }
+  .shHead h2 {
+    flex: 1; min-width: 0; display: flex; align-items: baseline; gap: .3em;
+    margin: 0 0 0 6px; font-size: .9375rem; font-weight: 500; color: var(--dim); white-space: nowrap;
+  }
+  .shHead h2 b { flex: none; color: var(--text); font-family: var(--mono); font-size: 1.125rem; }
+  /* short of room "Track" goes first, then "of N"; the number never */
+  .shHead h2 span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .shHead h2 span:first-child { flex-shrink: 99; }
+  .shHead .btn { min-height: 40px; }
+  .shHead .btn.icon { width: 42px; padding: 0; font-size: 1.125rem; line-height: 1; }
+  .shHead .btn:disabled { opacity: .35; }
+  #shDel { font-size: 1rem; }
+  #shDone { padding: 0 14px; margin-left: 4px; }
+  #dlgTrack .btn:not(.primary, .on) { background: transparent; }
+
+  .shBody { display: flex; flex-direction: column; gap: 12px; padding: 4px 16px 14px; container-type: inline-size; }
+  #dlgTrack :is(textarea, input) {
+    width: 100%; min-width: 0; margin: 0; color: var(--text); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 10px; font-size: max(calc(16px / var(--z, 1)), 1.0625rem);
+  }
+  #dlgTrack :is(textarea, input):focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  #dlgTrack :is(textarea, input)::placeholder { color: color-mix(in srgb, var(--dim) 55%, transparent); }
+  #dlgTrack textarea { display: block; resize: none; padding: 9px 12px; font-family: inherit; font-weight: 600; line-height: 1.35; }
+  .shFields { display: grid; grid-template-columns: 1fr .9fr 1.3fr 1.3fr; gap: 8px; }
+  .shFields label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: .8125rem; color: var(--dim); }
+  .shFields input { height: 48px; padding: 0 6px; font-family: var(--mono); text-align: center; }
+  #dlgTrack .shFields input.warn { color: var(--warn); border-color: var(--warn); }
+  .shWarn { margin: -4px 0 0; color: var(--warn); font-size: .8125rem; }
+
+  .shTimes { display: grid; grid-template-columns: 1fr 1fr; border-block: 1px solid var(--line); }
+  .shTimes div { display: flex; flex-direction: column; padding: 8px 0 9px; }
+  .shTimes div + div { border-left: 1px solid var(--line); padding-left: 16px; }
+  .shTimes span { font-size: .8125rem; color: var(--dim); }
+  .shTimes b { font-family: var(--mono); font-size: 1.625rem; line-height: 1.2; }
+  .shTimes div + div b { color: var(--accent); }
+  #dlgTrack .shTimes b.neg { color: var(--neg); }
+  /* bigger Overall / Text sizes on a narrow phone (the body's content under 21 of
+     its own em, so zoom and text size both count): the cues get a line of their own
+     and the two times stack, label left and value right — nothing clips or scrolls
+     sideways */
+  @container (max-width: 21em) {
+    .shFields { grid-template-columns: 1fr 1fr; }
+    .shTimes { grid-template-columns: 1fr; }
+    .shTimes div { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 8px; }
+    .shTimes div + div { border-left: 0; border-top: 1px solid var(--line); padding-left: 0; }
+  }
+
+  .shTools { display: flex; flex-wrap: wrap; gap: 6px; } /* one row; two when the sizes are turned up */
+  .shTools .btn { flex: 1 1 0; min-width: max-content; min-height: 44px; padding: 0 6px; font-size: .875rem; }
+  #shOpen.custom { color: var(--accent); }
+  /* typing: the keyboard needs the room — the tools go, Prev / Next move up under
+     the fields (still in reach on short phones) and the times shrink to one line */
+  #dlgTrack.kb .shTools { display: none; }
+  #dlgTrack.kb { padding-bottom: 0; } /* the keyboard covers the home indicator */
+  /* and the header scrolls away with the rest: a short (landscape) sheet must show the field */
+  #dlgTrack.kb .shHead { position: static; padding-top: 12px; padding-bottom: 6px; }
+  #dlgTrack.kb .shBody { gap: 8px; }
+  #dlgTrack.kb textarea:not(:focus) { height: calc(1.35em + 20px); overflow: hidden; white-space: pre; } /* one line unless typed in */
+  #dlgTrack.kb .shTimes { order: 1; }
+  #dlgTrack.kb .shTimes div { flex-direction: row; align-items: baseline; gap: 8px; padding-block: 4px; }
+  #dlgTrack.kb .shTimes b { font-size: 1.25rem; }
+  #dlgTrack.kb .shNav .btn { min-height: 44px; }
+
+  .shNav { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .shNav .btn { min-height: 50px; font-size: .9375rem; font-weight: 600; }
+  .shNav .btn:disabled { opacity: .35; }
+  #shNext { border-color: var(--accent-line); color: var(--accent); }
+
+  .helplink { min-height: 40px; padding: 8px 18px; }
+  #toast .tUndo {
+    min-height: 40px; margin-left: 10px; padding: 8px 14px; border-radius: 9px;
+    background: none; border: 1px solid var(--accent-line); color: var(--accent); font-weight: 700;
+  }
+
+  /* ---------- the history view on phones ---------- */
+  /* the banner pins under the list bar (one line + the version and Restore + what
+     changed), the preview is the list's own lines, read-only, and the timeline is
+     a sheet from the bottom like the track sheet, about half the screen */
+  button.chip.status::after { content: none; }
+  body.hv main { margin: 0; padding-bottom: calc(var(--hp-h, 50vh) + 12px); }
+  body.hv .help { margin-right: 0; }
+  body.hv #toast { bottom: auto; top: calc(12px + env(safe-area-inset-top)); }
+  body.hv-unpin :is(.listbar, .hvbar, .theadwrap) { position: static; } /* no room under them (app.js, hpTop) */
+  .hvbar {
+    grid-template-areas: "t r x" "v v v" "s s s";
+    gap: 2px 4px; margin: 0; padding: 5px 4px 6px 14px; z-index: 25;
+    border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none;
+  }
+  .hvbar h2 { font-size: .9375rem; }
+  .hvbar h2 .was { display: none; } /* short of room: a rename shows highlighted, and "renamed" in the line of changes */
+  #hvClose { width: 40px; min-height: 40px; padding: 0; border: 0; background: none; font-size: 1rem; }
+  #hvRestore { min-height: 34px; padding: 4px 10px; font-size: .8125rem; }
+  .hvVer { margin-right: 10px; font-size: .8125rem; line-height: 1.35; }
+  /* what changed: one line, ↓ Next at its end */
+  .hvSum { display: flex; align-items: center; gap: 6px; margin: 2px 6px 0 0; padding-top: 4px; font-size: .78125rem; line-height: 1.4; }
+  .hvSumT { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hvNext { flex: none; margin: -6px 0; min-height: 34px; padding: 0 10px; }
+  .hvph {
+    display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
+    padding: var(--cell-pad) 14px var(--cell-pad) 0; border-bottom: 1px solid var(--line); background: var(--bg);
+  }
+  .hvph.inrange { background: var(--range-bg); box-shadow: inset 3px 0 0 var(--accent); }
+  .hvph.add { background: var(--hv-add); box-shadow: inset 4px 0 0 var(--accent); }
+  .hvph.del { background: var(--hv-del); box-shadow: inset 4px 0 0 var(--neg); }
+  .hvph.del :is(.ph-tt, .ph-meta, .hvN) { color: var(--dim); }
+  .hvN { align-self: start; padding-top: 2px; text-align: center; font-family: var(--mono); font-size: .8125rem; color: var(--dim); }
+  .hvph.inrange .hvN { color: var(--accent); }
+  .hvM { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .hvM .ph-tt.chg { align-self: flex-start; max-width: 100%; margin-left: -4px; padding: 0 4px; border-radius: 4px; background: var(--hv-chg); }
+  .hvM > .was { margin-top: -2px; overflow: hidden; text-overflow: ellipsis; } /* a long old title: one line, cut — never over the times */
+  .ph-meta s { color: var(--dim); }
+  .ph-meta .wasI { font-family: var(--sans); font-size: .6875rem; color: var(--dim); white-space: nowrap; }
+  .ph-meta .wasI s { font-family: var(--mono); font-size: .75rem; }
+  .ph-meta .hb { margin: 0 6px 0 0; font-family: var(--sans); }
+  .hvTm { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.3; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .hvTm span { font-size: .875rem; }
+  .hvTm b { font-size: .9375rem; font-weight: 700; color: var(--accent); }
+  .hvTm .neg { color: var(--neg); }
+  .hvEndL { min-width: 0; height: calc(var(--hm-pill-h) + 12px); }
+  .hvEndP { padding: 2px 12px; font-size: .75rem; }
+  .hvEndP span { overflow: hidden; text-overflow: ellipsis; }
+  /* the timeline sheet */
+  .hpanel {
+    top: auto; left: 0; right: 0; width: auto; max-width: 640px; margin: 0 auto;
+    height: min(46vh, 460px); min-height: 240px; padding-bottom: env(safe-area-inset-bottom);
+    border: 1px solid var(--line); border-bottom: 0; border-radius: 18px 18px 0 0;
+    box-shadow: 0 -12px 36px color-mix(in srgb, #000 38%, transparent);
+    animation: shUp .26s cubic-bezier(.2, .9, .3, 1);
+  }
+  .hpHead { position: relative; padding: 16px 16px 6px; border-bottom-color: var(--line); touch-action: none; }
+  /* the head folds the sheet down to itself and back: a tap, or a swipe down / up (app.js) */
+  .hpFold { display: block; position: absolute; inset: 0; z-index: 1; width: 100%; margin: 0; padding: 0; border: 0; background: none; cursor: pointer; }
+  .hpFold:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; border-radius: 18px 18px 0 0; }
+  .hpHead .hpMsg .btn { position: relative; z-index: 2; } /* Retry stays a button of its own */
+  body.hp-fold .hpanel { height: auto; min-height: 0; }
+  body.hp-fold .hpScroll { display: none; }
+  body.hp-fold .hpHead { border-bottom: 0; padding-bottom: 10px; }
+  .hpHead::before {
+    content: ""; position: absolute; top: 6px; left: 50%; width: 40px; height: 4px; margin-left: -20px;
+    border-radius: 4px; background: color-mix(in srgb, var(--dim) 45%, transparent);
+  }
+  .hpHead { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 10px; }
+  .hpHead h2 { font-size: .9375rem; white-space: nowrap; }
+  .hpHint { flex: 1 1 0; min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
+  .hpMsg { flex: 1 1 100%; }
+  .hpScroll { padding-bottom: 10px; }
+  .hvEb { padding: 8px 14px 9px 16px; }
+  .hmark .emPill { display: flex; padding: 0 14px 0 10px; border-radius: 999px; }
+  .hmark .emGrip { grid-row: auto; padding: 10px 8px 10px 12px; margin: -10px -8px -10px -12px; }
+  .hmark .emT { line-height: 1.25; }
+  .hsAuto { height: 34px; padding: 0 12px; }
+  @media (prefers-reduced-motion: reduce) { .hpanel { animation: none; } }
+
+  @keyframes shUp { from { transform: translateY(100%); } }
+  @media (prefers-reduced-motion: reduce) { #dlgTrack { animation: none; transition: none; } }
+}
+
+/* ---------- printing narrower than 740px (A4): the table, as it always printed ---------- */
+@media print and (max-width: 740px) {
+  :root {
+    --cols: 52px 192px 50px 44px 70px 70px 72px 84px 60px 34px;
+    --idx-w: 52px;
+    --table-min: 728px;
+  }
+  main { padding-left: 8px; padding-right: 8px; }
+  .thead b { padding: 8px 6px; letter-spacing: .3px; }
+  /* edge line on the pinned Track column while the rest scrolls under it */
+  .row .tt, .thead b:nth-child(2) { box-shadow: inset -1px 0 0 var(--line); }
+  .rb { width: 30px; height: 30px; }
+  .grip { width: 28px; height: 34px; }
   .topbar { flex-wrap: wrap; }
   .listbtns { flex: 1 1 100%; }
-  .listbtns .btn.primary { margin-left: auto; }
   .chip.blue { margin-left: auto; }
+  .row .ph { display: none; } /* a phone's list line, should its rows not be rebuilt for print */
+}
+/* printing: the S → E box tells the stretch; no markers (they are placed for the screen) */
+@media print {
+  .endmark, .emsnap { display: none; }
+  .row.endgap { margin-bottom: 0; }
+  .row.startgap { margin-top: 0; }
+  .hpanel { display: none !important; }
+  body.hv main { margin: 0 auto; }
 }

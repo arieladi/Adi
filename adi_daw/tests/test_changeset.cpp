@@ -57,7 +57,7 @@ struct Fixture {
     std::unique_ptr<Store> store;
     explicit Fixture(const char* n) : temp("changeset", n), path(temp.path() / "p.adi") {
         StoreError e = StoreError::Ok;
-        store = Store::create(path, e);
+        store = Store::createEmpty(path, e);
         if (!store) return;
         store->db().exec("INSERT INTO project(id,name) VALUES (1,'Song')");
         OpJournal j(*store);
@@ -424,7 +424,9 @@ void testLargeProject() {
     std::printf("  info  %d clips: preview %.1f ms (one projection %.1f ms); a backup copy "
                 "alone %.1f ms, before any projection\n",
                 kTracks * kClipsPerTrack, previewMs, projMs, backupMs);
-    check(previewMs < 20000.0, "the preview finishes in bounded time");
+    // 60 s, not 20: a Debug build on an idle i7-4930K takes 22-24 s, and the
+    // bound is against a hang, not a benchmark.
+    check(previewMs < 60000.0, "the preview finishes in bounded time (under 60 s)");
 }
 
 int runAll() {

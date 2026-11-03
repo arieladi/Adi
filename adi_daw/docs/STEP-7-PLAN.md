@@ -57,7 +57,7 @@ Fixed here so the plan cannot grow:
 | ADI Mobile's three modes | step 15 (ADR-0200) — but see §8 |
 | Control-surface hardware (Stream Deck etc.) | P2 (ADR-0181 d4) |
 | An Inspector | rejected (ADR-0047) |
-| Aux sends | rejected (ADR-0072) |
+| ~~Aux sends~~ | ~~rejected (ADR-0072)~~ — reversed by ADR-0203 d3: sends and returns come back, as Live's, and the mixer of 7.6 shows them |
 | Comping, VariAudio, Direct Offline Processing | later steps |
 | A second shell document | forbidden — revise `UI-ARCHITECTURE.md` |
 
@@ -108,6 +108,26 @@ via ADR-0195's Auto Gain Stage). So step 7.1 is not wiring an established
 mechanism — it is the **first** user of the publish side, and the first place
 its epoch discipline is exercised at all.
 
+*A dated exception, now closed.* From 29 October (the director's choice) Live's group tracks and
+the project view read each track's parent, place and kind from the project file. The snapshot has
+carried them since #299 (window log, N6), and on 1 November the window took them from there
+(`adi::ui::rowsFromSnapshot`, `src/adi/ui/track_order.hpp`): the project-file read
+(`track_rows.hpp`) and its wiring in `ui_main.cpp` are gone. Nothing in the window reads past the
+snapshot.
+
+Of the six changes this section listed for that day, five are done:
+- the default `TrackRows` fills parent, place, group and Main from the snapshot;
+- the file read is deleted;
+- this exception ends;
+- the allocation audit now has a project with groups (`groupTracks`: a generation-change frame
+  allocates nothing);
+- the seams test reads the snapshot's rows.
+
+The sixth, a track's own colour, waited on the format until ADR-0211 ruled (1 November, answering
+the window log's N36): `tracks.color` holds an index into Live's palette, NULL for none. The window
+draws it through `look::paletteColour` and keeps the colour by place for a track with none
+(`window/track-colour`).
+
 ### 2.3 `MainSplit` is a panel→slot map, not a `StretchableLayoutManager` — APPROVED
 
 *(Director, 2026-09-29. `UI-ARCHITECTURE.md:55` is amended, and the map is built
@@ -157,7 +177,7 @@ three of them are **not** already in the engine. Measured 2026-09-29:
 | **New / Open / Save** a project | **PARTIAL** | 7.2 | `Store::create` and `Store::open` are solid (`store.cpp:218`, `:272`); save is continuous and per-edit atomic, and `Store::close()` is the one-file rule (`store.cpp:370-399`). But **`Store::create` never inserts the `project` row**, so `project.setName` silently updates nothing on a brand-new file (`ops_catalog.cpp:309-315`) and the snapshot falls back to 48 kHz (`snapshot.cpp:130-134`). **Save As does not exist in any form.** Both are engine gaps step 7 must raise, not route around. |
 | **Undo / redo**, menu and keys | **EXISTS** | 7.2 | `adi::History::undo()/redo()`, and the menu queries are already there: `canUndo`/`canRedo`/`nextUndo`/`nextRedo` return a `Step` whose `label` is commented *"what the undo menu shows"* (`history.hpp:39-52`). Only the menu item and the key binding are missing. |
 | **Add a track** | **EXISTS** | 7.3 | The `track.create` op, which also inserts the mixer strip in the same op so "a track exists" and "it can be mixed" are never one undo apart (`ops_catalog.cpp:344-350`). Fourteen track kinds (`schema.sql:218-225`). |
-| **Drop audio onto it** | **PARTIAL — the real gap** | 7.3 | `media_files` is a real content-addressed table and `importMedia` dedupes by BLAKE3 (`media/media_ops.cpp:183-205`); the decoder handles RIFF/AIFF/FLAC/MP3/Ogg; `ClipPlayback` plays `audio_clips` rows. But **no op in the 73-op catalogue writes an `audio_clips` row** — every such row in the tree is raw SQL in a test or in `tools/make_demo_project.py:104`. So there is **no undoable path from "a file and a track" to "a clip that plays"**, and `importMedia` leaves `sample_rate`, `channels`, `frames` and `bit_depth` NULL. This is an engine gap for win, and it blocks 7.3's headline gesture. |
+| **Drop audio onto it** | **CLOSED by #308 (N5); built in `window/audio-drop`** — was PARTIAL, the real gap | 7.3 | `media_files` is a real content-addressed table and `importMedia` dedupes by BLAKE3 (`media/media_ops.cpp:183-205`); the decoder handles RIFF/AIFF/FLAC/MP3/Ogg; `ClipPlayback` plays `audio_clips` rows. But **no op in the 73-op catalogue writes an `audio_clips` row** — every such row in the tree is raw SQL in a test or in `tools/make_demo_project.py:104`. So there is **no undoable path from "a file and a track" to "a clip that plays"**, and `importMedia` leaves `sample_rate`, `channels`, `frames` and `bit_depth` NULL. This is an engine gap for win, and it blocks 7.3's headline gesture. |
 | **Choose the audio device** | **PARTIAL** | 7.2 | `juce::AudioDeviceManager` appears only in `adi_play` and `adi_audio_probe`, driven by CLI flags. The settings registry already defines `audio.driverType` / `inputDevice` / `outputDevice` / `sampleRate` / `bufferSize`, and `AppSettings` persists them atomically — but **nothing reads those keys into an `AudioDeviceSetup`**. Step 7 writes that binding and the chooser. ADR-0052 d4 applies to plug-in formats, not to this. |
 
 **Each of the five gets its Live 12 manual checklist written from the manual
@@ -225,8 +245,11 @@ a position-indexed structure for hit-testing (ADR-0044) — which means
 hand-written hit-testing, focus and accessibility, and that is the known price.
 
 Carries the other two of §3.0: **adding a track** and **dropping audio onto
-it**. The second is blocked on the missing `audio_clips` op and must not be
-worked around in the UI.
+it**. The second was blocked on the missing `audio_clips` op and was not
+worked around in the UI. The engine's #308 closed it (`clip.attachAudio` and
+`media::prepareImport`, N5), and `window/audio-drop` builds the drop on it: the
+document captures the pool row, and the window commits it with the clip as one
+undo step.
 
 **The frame drain, stated here because this is the first thing that moves.**
 ADR-0181 d3 says the parameter feed emits *"on the one UI clock (ADR-0050
@@ -517,8 +540,8 @@ A reference map is corroboration, not authority: where one disagrees with an
 ADR, the ADR wins and the disagreement is recorded rather than quietly followed.
 
 Every difference from Live is a **defect** unless (a) Adi approved it, dated,
-in the checklist, or (b) an ADR rejects the Live behaviour — only ADR-0072
-(sends) and ADR-0047 (Inspector) are named today.
+in the checklist, or (b) an ADR rejects the Live behaviour — only ADR-0047
+(Inspector) is named today. ADR-0072 (sends) was reversed by ADR-0203 d3.
 
 ---
 
@@ -526,9 +549,11 @@ in the checklist, or (b) an ADR rejects the Live behaviour — only ADR-0072
 
 Named so they are visible rather than silently resolved:
 
-1. **The device strip's floor is 169 logical pixels, UNVERIFIED.** It is the
-   director's figure for Live 12's default Device View; the measurement is with
-   him and his reply of 2026-09-29 confirms it stays unverified. **The plan
+1. **The device strip's floor: 169 logical pixels, measured on Live 11 as 196.**
+   169 is the director's figure for Live 12's default Device View; his reply of
+   2026-09-29 left it unverified. On 2026-10-27 the window lane measured Live
+   11.2.7: the whole panel is 196 with its edges, its body about 170. The floor
+   is 196 (`collab/window/look-live11.md`), still to be read on Live 12. **The plan
    carries it as unverified and must not harden it into a constant** — and
    ADR-0200 d5 now requires the same thing for a second reason (§8). It is also
    a deliberate departure from Live, whose Device View is fixed height

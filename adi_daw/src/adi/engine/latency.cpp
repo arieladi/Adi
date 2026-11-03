@@ -108,14 +108,24 @@ bool LatencyCoalescer::poll(std::int64_t nowMs) {
         // ADR-0085. An edge wants more delay than its ring holds, so grow that
         // ring -- here, on the message thread, where allocating is allowed.
         // Per EDGE and not per graph: the others keep their history.
-        const std::size_t grown = autoEscalate_ ? graph->escalateLatency() : 0;
-        if (grown > 0) {
-            stats_.escalations += static_cast<std::int64_t>(grown);
-        } else if (!shapeMoved) {
-            // Nothing could be grown, so this is not a size problem. The
-            // topology changed under us and only a rebuild will do. Guarded on
-            // `shapeMoved` so a burst that already raised the flag is not
-            // counted twice.
+        Graph::Unresolved left;
+        const std::size_t grown = autoEscalate_ ? graph->escalateLatency(&left) : 0;
+        if (grown > 0) stats_.escalations += static_cast<std::int64_t>(grown);
+        // An edge whose grow is in flight for less than it now needs is grown
+        // again once that ring is collected, which the top of the next poll
+        // does: so the next poll acts again, rather than this one rebuilding.
+        if (left.inFlight > 0) {
+            pending_ = true;
+            ++stats_.regrowsDeferred;
+        }
+        // Nothing could be grown and nothing waits on a grow, so this is not a
+        // size problem: the topology changed under us. Or an edge has no ring
+        // to grow at all. Either way only a rebuild will do -- even when other
+        // edges were grown in the same breath, or the refused one would stay
+        // misaligned with nothing left to fix it. Guarded on `shapeMoved` so a
+        // burst that already raised the flag is not counted twice.
+        const bool stuck = grown == 0 && left.inFlight == 0;
+        if ((stuck || left.ringless > 0) && !shapeMoved) {
             rebuildNeeded_ = true;
             ++stats_.rebuildsNeeded;
         }

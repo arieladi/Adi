@@ -1,0 +1,10 @@
+# The kit's work directories (paths.py), and anything derived from Ableton's own files or renders:
+# a generated set is a derivative of Live's default set and a factory preset, and never enters this public repo.
+sig/
+sets/
+out/
+cache/
+bin/
+*.als
+*.adv
+*.wav

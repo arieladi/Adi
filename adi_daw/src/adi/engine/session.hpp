@@ -60,6 +60,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <map>
 #include <string>
@@ -78,6 +79,8 @@ struct SessionSpec {
     std::int32_t channels = 2;
     double sampleRate = 48000.0;
     std::int32_t maxFrames = 512;
+    /// `audio.processingPrecision` (ADR-0207 d2): Live's scheme by default.
+    Precision precision = Precision::Float32;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -96,6 +99,12 @@ struct DeviceRequest {
 /// headless case, and every row then becomes a placeholder.
 using DeviceLoader = std::function<std::unique_ptr<device::DeviceInstance>(
     const DeviceRequest&, std::string& error)>;
+
+enum class OfflineTap { PreFader, PostFader };
+struct OfflineOutput {
+    NodeId node = kInvalidNode;
+    std::int64_t latency = 0;
+};
 
 class Session final : public BlockProcessor {
 public:
@@ -182,6 +191,15 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
+    /// The Processing Precision switch (ADR-0207 d2). Message thread. A new
+    /// precision is a new graph, built and published as a format change is
+    /// (decision 3), and swapped in as any graph is: the handover carries
+    /// every compensated edge's history across, widened or narrowed, and
+    /// there is no crossfade (the swap is faded in only when
+    /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
+    /// does nothing. False only when a graph was due and could not be built.
+    bool setPrecision(Precision p);
+
     // --- inspection (message thread) ---------------------------------------
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
@@ -189,6 +207,14 @@ public:
     [[nodiscard]] const SessionSpec& spec() const noexcept { return spec_; }
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
     [[nodiscard]] const std::string& error() const noexcept { return error_; }
+
+    /// Resolve a direct wet stem endpoint on an isolated offline session.
+    /// PostFader is before the parent's console encoder; PreFader is after
+    /// this track's effects (not dry). No graph mutation or extra DSP node.
+    /// Use currentGraph()->copyNodeOutput after each process, with no intervening
+    /// graph mutation. The result is invalidated by a rebuild or latency change.
+    /// Empty for missing/non-audio tracks, unsupported taps or no prepared graph.
+    [[nodiscard]] std::optional<OfflineOutput> offlineOutput(std::int64_t trackId, OfflineTap);
 
     /// Everything the model read, the plan found and the session decided,
     /// in that order. A project with problems still plays where it can.
@@ -198,6 +224,8 @@ public:
 
     /// ADR-0174: the group summing this graph plays. Message thread.
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
+    /// ADR-0163, ADR-0203 d3: the strips, sends and loops it plays. Message thread.
+    [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
 
     /// ADR-0175/0195: a track/point tap holding `seconds` of audio. The default
     /// is after the fader; spectrum.post is PreFader, spectrum.pre ChainInput.
@@ -208,6 +236,14 @@ public:
     [[nodiscard]] std::shared_ptr<const ScopeTap> openScope(std::int64_t trackId, double seconds = 10.0,
                                                          ScopePoint point = ScopePoint::PostFader);
     void closeScope(std::int64_t trackId, ScopePoint point = ScopePoint::PostFader);
+
+    /// ADR-0203 d3: how long a return's send into itself takes to come back,
+    /// in samples, in the graph now playing -- the loop's block, D, plus the
+    /// latency of the return's chain from its junction to the send's tap.
+    /// Its own track delay is not in it: that is reported latency, played by
+    /// compensation elsewhere, and the loop is not compensated. -1 for a row
+    /// that is not a loop playing. Message thread.
+    [[nodiscard]] std::int32_t feedbackTrip(std::int64_t routingId);
 
     /// Message thread: isolated offline analysis, then one undoable transaction.
     [[nodiscard]] GainStageResult autoGainStage(Store& store, const GainStageOptions& options = {});
@@ -234,6 +270,13 @@ public:
     /// `ord`, every device in it by `ord`, skipping what was not resolved.
     /// This is what `RealizeOptions::devicesFor` answers with.
     [[nodiscard]] std::vector<device::DeviceNode*> chainFor(std::int64_t trackId);
+    /// Every node of a track's chain as the graph is given it: the buss half,
+    /// the devices with the input gain after the instrument, the strip, the
+    /// channel half (ADR-0122, ADR-0163, ADR-0174).
+    [[nodiscard]] std::vector<Node*> trackChain(std::int64_t trackId);
+    /// Where on that chain `tap` is (ADR-0203 d3): the node whose output it
+    /// is, or null for the junction.
+    [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
     void attach();

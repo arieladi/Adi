@@ -32,6 +32,7 @@
 
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace adi::device {
@@ -186,6 +187,24 @@ public:
 
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
+
+    /// `engine::Node::processesDouble`, for a device (ADR-0207 d2). False by
+    /// default: the device is handed float in every graph, converted either
+    /// side in a graph at 64, which is Cubase's rule for a plug-in that cannot
+    /// take 64-bit. A CLAP whose every port says `SUPPORTS_64BITS` answers
+    /// true, and a VST3 that says `canProcessSampleSize(kSample64)`; the Pd
+    /// tier in double comes with its own PR. Known at construction, because
+    /// the graph asks before it prepares. A device may revise it in a
+    /// `prepare` (a CLAP reads its ports only while deactivated, and a rescan
+    /// can move them) and is handed the width the graph kept until the graph
+    /// is next built, so it takes both; one that does moves `shapeEpoch`,
+    /// which asks for that build.
+    [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
+
+    /// `engine::Node::willBeHanded`, for a device: the width the next
+    /// `prepare` is for. Message thread, just before `prepare`. A VST3 needs
+    /// it, because it is set up at one sample size when it is activated.
+    virtual void willBeHanded(engine::Precision /*width*/) {}
 
     // --- what the scheduler asks (ADR-0043, ADR-0058) ----------------------
 
@@ -418,6 +437,8 @@ public:
     [[nodiscard]] bool loaded() const noexcept override { return false; }
 
     void process(const engine::NodeIo& io) noexcept override;
+    /// A pass-through is exact at either width.
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
     /// A pass-through adds no delay and holds nothing back. Declaring a tail
     /// here would keep a whole chain awake for a device that is doing nothing.
@@ -467,8 +488,8 @@ private:
 ///   * `always_process` (`devices.always_process`) forces `kInfiniteTail`,
 ///     which is ADR-0043's escape hatch for a plugin that reports no tail and
 ///     then produces one.
-///   * a bypassed device passes audio through and declares no tail and no
-///     latency, because it is not running.
+///   * a bypassed device runs no DSP; the graph supplies delayed dry audio
+///     and retains its latency (ADR-0203 d4).
 class DeviceNode final : public engine::Node {
 public:
     explicit DeviceNode(DeviceInstance& inst) : inst_(&inst) {}
@@ -477,32 +498,108 @@ public:
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
+    [[nodiscard]] bool hasBypass() const noexcept override { return true; }
+    void processActive(const engine::NodeIo& io) noexcept override;
+
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
-    [[nodiscard]] bool alwaysProcess() const noexcept override { return always_; }
+    [[nodiscard]] bool alwaysProcess() const noexcept override { return always_.load(std::memory_order_relaxed); }
     [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
+    /// The instance's answer. Bypass passes through at whichever width the
+    /// node is handed, so it does not change the answer.
+    [[nodiscard]] bool processesDouble() const noexcept override {
+        return inst_ != nullptr && inst_->processesDouble();
+    }
+    void willBeHanded(engine::Precision width) override {
+        handed_ = width;
+        if (inst_ != nullptr) inst_->willBeHanded(width);
+    }
+    /// The width the graph that prepared this node last said it would hand
+    /// it, whatever the instance says now. Message thread.
+    [[nodiscard]] engine::Precision handed() const noexcept { return handed_; }
     [[nodiscard]] const char* name() const noexcept override { return "device"; }
 
     /// `devices.always_process`. Message thread.
-    void setAlwaysProcess(bool v) noexcept { always_ = v; }
+    void setAlwaysProcess(bool v) noexcept { always_.store(v, std::memory_order_relaxed); }
 
     /// `devices.enabled` = 0. A bypassed device stays in the graph so the
     /// topology — and therefore every other node's compensation — does not
     /// change when someone clicks bypass.
-    void setBypassed(bool v) noexcept { bypassed_ = v; }
-    [[nodiscard]] bool bypassed() const noexcept { return bypassed_; }
+    void setBypassed(bool v) noexcept { bypassed_.store(v, std::memory_order_relaxed); }
+    [[nodiscard]] bool bypassed() const noexcept override { return bypassed_.load(std::memory_order_relaxed); }
 
     [[nodiscard]] DeviceInstance& instance() const noexcept { return *inst_; }
 
 private:
     DeviceInstance* inst_ = nullptr;
-    bool always_ = false;
-    bool bypassed_ = false;
+    engine::Precision handed_ = engine::Precision::Float32;
+    std::atomic<bool> always_{false};
+    std::atomic<bool> bypassed_{false};
+};
+
+/// A device that must be DEACTIVATED to take a new layout, rate or sample
+/// size, held off the audio thread while it is. ADR-0089 d4 has a rebuild
+/// prepare the next graph while the last one still renders, and both hold
+/// the same devices: a `prepare` that stops, deactivates and reallocates a
+/// plug-in would do it under a `process` call the audio thread is still
+/// making, on buffers being freed (a use-after-free, measured under ASan).
+///
+///   audio thread:    `const ReactivationGate::Pass pass(gate);`
+///                    `if (!pass) { passThrough(io); return; }`
+///   message thread:  `const ReactivationGate::Hold hold(gate);` around the
+///                    span from the first stop to the last allocation.
+///
+/// `Hold` closes the gate and then waits for every call already inside to
+/// leave -- one `process` call at most, and nothing at all when no audio
+/// runs -- so the message thread owns the plug-in until it opens it again.
+/// A call that starts meanwhile passes its audio through. Both sides are
+/// sequentially consistent: either the call sees the gate closed, or the
+/// wait sees the call inside; neither can miss the other. A `prepare` that
+/// changes nothing never takes it, so a rebuild costs a device no block.
+///
+/// Every audio-thread call into the plug-in passes it, not `process` alone:
+/// the graph also asks each node for its tail every block. A `Pass` never
+/// waits, so one made on the message thread inside a `Hold` -- a plug-in's
+/// callback during `activate` -- is turned away rather than deadlocked.
+class ReactivationGate {
+public:
+    class Pass {
+    public:
+        explicit Pass(ReactivationGate& g) noexcept : g_(g) {
+            g_.inside_.fetch_add(1, std::memory_order_seq_cst);
+            open_ = !g_.closed_.load(std::memory_order_seq_cst);
+        }
+        ~Pass() { g_.inside_.fetch_sub(1, std::memory_order_release); }
+        Pass(const Pass&) = delete;
+        Pass& operator=(const Pass&) = delete;
+        [[nodiscard]] explicit operator bool() const noexcept { return open_; }
+    private:
+        ReactivationGate& g_;
+        bool open_ = false;
+    };
+    class Hold {
+    public:
+        explicit Hold(ReactivationGate& g) noexcept : g_(g) {
+            g_.closed_.store(true, std::memory_order_seq_cst);
+            while (g_.inside_.load(std::memory_order_seq_cst) != 0) std::this_thread::yield();
+        }
+        ~Hold() { g_.closed_.store(false, std::memory_order_seq_cst); }
+        Hold(const Hold&) = delete;
+        Hold& operator=(const Hold&) = delete;
+    private:
+        ReactivationGate& g_;
+    };
+    /// Whether a reactivation holds the gate now. For tests and diagnostics.
+    [[nodiscard]] bool closed() const noexcept { return closed_.load(std::memory_order_acquire); }
+private:
+    std::atomic<bool> closed_{false};
+    std::atomic<std::int32_t> inside_{0};
 };
 
 /// Copy `io.in` to `io.out` for one segment, or zero the output when there is
 /// no input. Shared by `MissingDevice` and by a bypassed `DeviceNode` — the two
-/// places where "do nothing" has to mean something specific.
+/// places where "do nothing" has to mean something specific. At either width:
+/// `in64`/`out64` when the call is wide (ADR-0207 d2).
 void passThrough(const engine::NodeIo& io) noexcept;
 
 }  // namespace adi::device

@@ -29,6 +29,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace adi::settings {
@@ -90,6 +91,8 @@ public:
     [[nodiscard]] const Value& stored() const { return values_; }
 
     /// The change log beside the file (settings-changes.jsonl); on by default.
+    /// A person's changes are logged while this is on AND the setting
+    /// `settings.logChanges` (A6-20, ADR-0203) is on; the agent's always are.
     void setLogUserChanges(bool on) { logUsers_ = on; }
     [[nodiscard]] std::filesystem::path changeLogFile() const;
 
@@ -147,5 +150,26 @@ PresetResult applyPreset(AppSettings&, const Preset&, const ChangeContext& who);
 
 [[nodiscard]] Value toJson(const Preset&);
 [[nodiscard]] std::optional<Preset> presetFromJson(const Value&, std::string& why);
+
+// --- interface zoom per window and per display (N4; ADR-0129 d3) --------------------------
+//
+// `window.zoom` is one table: a row per window per display, "<window>@<display>",
+// the display named by its geometry and DPI as ui_floating names the monitors.
+// Each window zooms itself (Ctrl/Cmd + and -) and keeps the result here, so the
+// zoom comes back on the next launch on the same display (ADR-0203 d11: interface
+// zoom is kept with the application, never in the project).
+
+/// The row for one window on one display.
+[[nodiscard]] std::string windowZoomKey(std::string_view window, std::string_view display);
+
+/// The zoom kept for that window on that display; nothing when none was kept, and the
+/// window then starts at 1 (100 %).
+[[nodiscard]] std::optional<double> windowZoom(const AppSettings&, std::string_view window,
+                                               std::string_view display);
+
+/// Keeps a window's zoom for that display. The table is validated whole, so a zoom
+/// outside the row's range is refused and nothing changes. Does not save.
+bool setWindowZoom(AppSettings&, std::string_view window, std::string_view display, double zoom,
+                   const ChangeContext& who, std::string& why);
 
 }  // namespace adi::settings

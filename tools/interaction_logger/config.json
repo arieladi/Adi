@@ -13,7 +13,40 @@
   "dedupe_screenshots": true,
   "motion_threshold": 0.001,
   "mask_text_keys": false,
+  "min_free_gb": 10,
 
   "start_delay": 0.35,
-  "status_interval": 15.0
+  "status_interval": 15.0,
+
+  "modes": {
+    "simple": {
+      "hotkeys": false,
+      "capture_trigger": "events",
+      "event_frame_delay": 0.3,
+      "event_frame_min_gap": 1.0,
+      "keyframe_interval": 60,
+      "max_frame_width": 1280,
+      "screenshot_format": "webp",
+      "webp_quality": 70,
+      "webp_method": 2,
+      "capture_mouse_moves": false,
+      "window_poll_interval": 0.25,
+      "input_scope": ["Ableton Live*"],
+      "live_log": "simple",
+      "status_interval": 300
+    },
+    "deep": {
+      "hotkeys": true,
+      "capture_trigger": "interval",
+      "screenshot_freq": 5.0,
+      "max_frame_width": 1920,
+      "screenshot_format": "webp",
+      "webp_quality": 80,
+      "webp_method": 0,
+      "capture_mouse_moves": true,
+      "input_scope": [],
+      "live_log": "deep",
+      "status_interval": 60
+    }
+  }
 }

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The settings store: ADR-0125 R-01 to R-07 and d1-d3, ADR-0127 d5, ADR-0145,
-// ADR-0149, ADR-0152.
+// ADR-0149, ADR-0152, and the director's v1.0 rulings on the registry
+// (ADR-0203).
 //
 // Every check here runs on every platform, whatever the environment: the
 // check count is compared with the README's, so nothing is platform-only.
@@ -11,6 +12,7 @@
 #include "adi/audio/decode.hpp"
 #include "adi/settings/bundle.hpp"
 #include "adi/settings/catalogue.hpp"
+#include "adi/settings/channel_config.hpp"
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
 
@@ -77,8 +79,47 @@ void testRegistry() {
     check(unique, "every key is unique");
     check(defaultsLegal, "every default is a legal value of its own setting");
     check(pageKnown, "every setting has a page, a label and help text (R-01, R-02)");
-    check(pages().front() == "Look & Feel" && pages().back() == "Project",
-          "pages are listed in window order");
+    const std::vector<std::string> liveTabs = {"Display & Input", "Theme & Colors", "Audio",
+                                               "Link",            "Tempo & MIDI",   "File & Folder",
+                                               "Library",         "Plug-Ins",       "Record, Warp & Launch",
+                                               "Licenses & Updates"};
+    const auto pageList = pages();
+    check(pageList.size() > liveTabs.size() &&
+              std::equal(liveTabs.begin(), liveTabs.end(), pageList.begin()) && pageList.back() == "Project",
+          "pages are Live's ten tabs in Live's order, then ADI's own, Project last (ADR-0203 d11; N14)");
+    // N14: a setting Live has is on the tab where Live has it: its catalogue row's Part II tab.
+    std::string offTab;
+    std::size_t onLiveTabs = 0;
+    for (const auto& a : answeredRows()) {
+        const auto dot = a.row.find(". ");
+        const auto slash = a.row.find(" / ");
+        if (dot == std::string::npos || slash == std::string::npos) continue;
+        const auto tab = a.row.substr(dot + 2, slash - dot - 2);
+        if (std::find(liveTabs.begin(), liveTabs.end(), tab) == liveTabs.end()) continue;
+        for (const auto& key : a.keys) {
+            const auto* s = find(key);
+            if (!s || s->scope == Scope::Project) continue;  // project.sampleRate stays on Project
+            ++onLiveTabs;
+            if (s->page != tab) offTab += "\n        " + key + " on " + s->page + ", Live: " + tab;
+        }
+    }
+    check(onLiveTabs > 120 && offTab.empty(),
+          "every setting Live has sits on Live's tab (" + std::to_string(onLiveTabs) + " checked):" + offTab);
+    std::string strayedSection;
+    for (const auto& s : registry())
+        if (!s.section.empty() && std::find(liveTabs.begin(), liveTabs.end(), s.page) == liveTabs.end() &&
+            s.page != "Project")
+            strayedSection += "\n        " + s.key;
+    check(strayedSection.empty(), "sections are Live's, on Live's tabs only:" + strayedSection);
+    const auto* linkToggle = find("sync.showLinkToggle");
+    check(linkToggle && linkToggle->page == "Link" && linkToggle->section == "Link" &&
+              linkToggle->label == "Show Link Toggle" && linkToggle->defaultValue == true,
+          "Show Link Toggle: on the Link tab under Link, on, as Live shows Link's switch (ADR-0203 d11)");
+    const auto* bufferSize = find("audio.bufferSize");
+    const auto* keepLatency = find("audio.keepMonitoringLatency");
+    check(bufferSize && bufferSize->section == "Latency" && bufferSize->label == "Buffer Size" && keepLatency &&
+              keepLatency->page == "Record, Warp & Launch" && keepLatency->section == "Record",
+          "Buffer Size under Audio's Latency; Keep Monitoring Latency in Recorded Audio on Record, Warp & Launch");
 
     // Project settings are rows changed by ops (R-03): each names one the
     // catalogue actually lists.
@@ -95,9 +136,9 @@ void testRegistry() {
 
     // ADR-0145's settings.
     const auto* zoom = find("lookfeel.zoomOnSelection");
-    check(zoom && zoom->type == Type::Bool && zoom->defaultValue == false && zoom->scope == Scope::App &&
-              zoom->page == "Look & Feel",
-          "Zoom on Selection: an [App] switch under Look & Feel, off (ADR-0145 d2)");
+    check(zoom && zoom->type == Type::Bool && zoom->defaultValue == true && zoom->scope == Scope::App &&
+              zoom->page == "Display & Input",
+          "Zoom on Selection: an [App] switch under Display & Input, on as Live (ADR-0145 d2 amended by ADR-0203)");
     const auto* resample = find("audio.silentResampling");
     check(resample && resample->type == Type::Bool && resample->page == "Audio" &&
               resample->defaultValue == false,
@@ -132,6 +173,122 @@ void testRegistry() {
           "nothing matches nonsense, or an empty query");
 }
 
+// --- the director's v1.0 rulings (ADR-0203) ---------------------------------------------------
+
+/// A setting's default, or null when the key is not in the registry.
+Value dflt(const char* key) {
+    const auto* s = find(key);
+    return s ? s->defaultValue : Value();
+}
+
+void testRulings() {
+    section("the v1.0 rulings: defaults, removals, additions (ADR-0203)");
+    check(dflt("audio.bufferSize") == 512 && dflt("audio.sampleRate") == 44100,
+          "the device opens at 512 samples and 44.1 kHz by default");
+    check(dflt("cache.maxSizeMb") == 20480, "the decoding cache is 20 GB by default");
+    const auto* perRequest = find("agent.maxOpsPerRequest");
+    check(dflt("agent.maxOpsPerMinute") == 6000 && perRequest && perRequest->defaultValue == 6000 &&
+              perRequest->max == 100000,
+          "the agent's rate cap and per-request cap are 6000, the latter up to 100000");
+    check(dflt("record.warpDetectTempoChanges") == true && dflt("record.discardIncompleteTakes") == false,
+          "Warp detects tempo changes, as Auto-Warp; every loop-recording pass is kept, as Live");
+    const auto* results = find("library.maxResults");
+    check(results && results->defaultValue == 0 && results->min == 0,
+          "browser results are unlimited by default: 0 is legal and the default");
+    check(dflt("files.copyImportedMedia") == "never" && dflt("lookfeel.wheelChangesParameters") == "never",
+          "imported media is never copied and the wheel never moves a control, as Live");
+    const auto* metronome = find("audio.metronomeOutput");
+    check(metronome && metronome->defaultValue == "" && metronome->help.find("Cue Out") != std::string::npos,
+          "the metronome's empty output is Live's Cue Out");
+    const auto* colour = find("lookfeel.autoTrackColor");
+    check(colour && colour->type == Type::Bool && colour->defaultValue == true && colour->choices.empty(),
+          "auto track colours is Live's switch, on, no longer Cubase's five modes");
+    const auto* services = find("agent.asyncServices");
+    check(services && services->choices == std::vector<Value>{"builtin", "local", "remote"} &&
+              services->defaultValue == "builtin",
+          "stem separation is built in by default; local and remote stay (ADR-0064 d4 amended)");
+
+    // Removed: no switch for the out-of-process scan, no Pd externals path, no
+    // default send level, no run-effects-when-stopped, and no New track page.
+    bool gone = true;
+    for (const char* key : {"plugins.scanOutOfProcess", "devices.pdExternalsFolders", "mixing.defaultSendLevelDb",
+                            "transport.runFxWhenStoppedMs", "newtrack.faderGainDb", "newtrack.showInMixer",
+                            "newtrack.meterMode", "newtrack.sendLevelDb", "newtrack.showEnvelopes",
+                            "library.recordFolder"})
+        gone = gone && !find(key);
+    const auto pageList = pages();
+    check(gone && std::find(pageList.begin(), pageList.end(), "New track") == pageList.end(),
+          "the removed keys are gone, and the New track page with them");
+    const auto* recordFolder = find("files.recordFolder");
+    check(recordFolder && recordFolder->type == Type::Path && recordFolder->page == "File & Folder" &&
+              recordFolder->defaultValue == "",
+          "the default record folder is files.recordFolder on File & Folder, empty for the project's own");
+
+    // Added.
+    const auto onPage = [](const char* key, const char* page, const Value& v) {
+        const auto* s = find(key);
+        return s && s->type == Type::Bool && s->page == page && s->defaultValue == v && s->scope == Scope::App;
+    };
+    check(onPage("midi.chaseNotes", "Tempo & MIDI", true) && onPage("midi.envelopeAutoReset", "Tempo & MIDI", true),
+          "Chase MIDI Notes and MIDI Envelope Auto-Reset: Tempo & MIDI switches, on as Live's Options");
+    check(onPage("audio.reducedLatencyWhenMonitoring", "Audio", false) &&
+              onPage("audio.recordPdcThresholdEnabled", "Audio", false),
+          "reduced latency when monitoring, and the PDC bypass when recording: Audio switches, off");
+    std::size_t enabledAt = 0, thresholdAt = 0;
+    for (std::size_t i = 0; i < registry().size(); ++i) {
+        if (registry()[i].key == "audio.recordPdcThresholdEnabled") enabledAt = i;
+        if (registry()[i].key == "audio.recordPdcThresholdMs") thresholdAt = i;
+    }
+    check(enabledAt + 1 == thresholdAt && dflt("audio.recordPdcThresholdMs") == 10.0,
+          "the switch sits right before the 10 ms threshold");
+    check(onPage("settings.logChanges", "Licenses & Updates", true) && find("settings.logChanges")->section == "Privacy",
+          "settings.logChanges: a Privacy switch on Licenses & Updates, on (A6-20)");
+    // ADR-0207 d2: the Processing Precision switch, Live's scheme by default.
+    const auto* precision = find("audio.processingPrecision");
+    check(precision && precision->page == "Audio" && precision->type == Type::Choice &&
+              precision->choices == std::vector<Value>{32, 64} && precision->defaultValue == 32 &&
+              precision->scope == Scope::App && !precision->agentMayChange,
+          "audio.processingPrecision: 32 or 64 on the Audio page, 32 by default, not the agent's");
+
+    // The Export page: the dialog's defaults, and nothing else.
+    const auto* fileType = find("export.fileType");
+    const auto* depth = find("export.bitDepth");
+    const auto* dither = find("export.dither");
+    const auto* normalize = find("export.normalize");
+    check(fileType && fileType->page == "Export" && fileType->defaultValue == "wav" &&
+              fileType->choices == std::vector<Value>{"wav", "aiff", "flac", "mp3", "aac"},
+          "export: WAV, AIFF, FLAC, MP3 or AAC, WAV by default");
+    check(depth && depth->choices == std::vector<Value>{16, 24, 32} && depth->defaultValue == 24 &&
+              dither && dither->defaultValue == "triangular" && dither->choices.size() == 6,
+          "export: 16, 24 or 32 bit, 24 by default; Live's six dither choices, Triangular by default");
+    check(normalize && normalize->choices == std::vector<Value>{"off", "peak", "loudness"} &&
+              normalize->defaultValue == "off" && dflt("export.loudnessTargetLufs") == -14.0 &&
+              dflt("export.truePeakCeilingDb") == -1.0 && dflt("export.nameTemplate") == "{project} - {track}",
+          "export: normalize off, peak or loudness; -14 LUFS and -1 dBTP; the name template");
+    std::size_t exportCount = 0;
+    bool exportApp = true, noFolder = true;
+    for (const auto& s : registry()) {
+        if (s.page != "Export") continue;
+        ++exportCount;
+        exportApp = exportApp && s.scope == Scope::App;
+        noFolder = noFolder && s.type != Type::Path;
+    }
+    check(exportCount == 7 && exportApp && noFolder && find("files.renderFolder"),
+          "the Export page holds seven App settings and no folder: the destination stays files.renderFolder");
+
+    // The defaults the rulings confirmed.
+    check(dflt("midi.takeoverMode") == "pickup" && dflt("devices.freezeTailSeconds") == 4.0 &&
+              dflt("sync.lanJitterBufferMs") == 40 && dflt("privacy.crashReports") == false &&
+              dflt("record.quantize") == "1/16" && dflt("record.importAutoWarp") == false &&
+              dflt("lookfeel.showTooltips") == true && dflt("music.middleC") == "C3" &&
+              dflt("music.pitchNaming") == "english" && dflt("files.openOnStart") == "template" &&
+              dflt("library.backgroundIndexing") == true && dflt("audio.releaseDeviceInBackground") == "never" &&
+              dflt("audio.autoMute") == false && dflt("midi.resetOnStop") == true &&
+              dflt("midi.insertResetAfterRecord") == true && dflt("transport.stopAtProjectEnd") == false &&
+              dflt("editing.bounceReplaces") == "ask" && dflt("editing.importOptions") == "ask",
+          "the defaults the rulings confirmed are as ruled");
+}
+
 // --- the file -------------------------------------------------------------------------------
 
 void testStoreBasics() {
@@ -141,7 +298,7 @@ void testStoreBasics() {
     {
         AppSettings s(appdata::App::Daw, file);
         check(s.status() == LoadStatus::Defaults, "no file: defaults");
-        check(s.get("audio.bufferSize") == 256, "the default buffer is 256");
+        check(s.get("audio.bufferSize") == 512, "the default buffer is 512 (ADR-0203)");
         std::string why;
         check(s.set("audio.bufferSize", 128, kUser, why), "set 128");
         check(!s.set("audio.bufferSize", 32, kUser, why), "32 is refused: " + why);
@@ -169,9 +326,9 @@ void testUnknownKeysSurvive() {
     adi::test::TempDirectory temp("settings", "unknown");
     const auto file = temp.path() / "settings.json";
     writeText(file, R"({"schema": 1, "app": "ADI", "values": {
-        "audio.bufferSize": 512, "future.meterBallistics": {"attack": 3, "release": 300}}})");
+        "audio.bufferSize": 1024, "future.meterBallistics": {"attack": 3, "release": 300}}})");
     AppSettings s(appdata::App::Daw, file);
-    check(s.get("audio.bufferSize") == 512, "the known key is read");
+    check(s.get("audio.bufferSize") == 1024, "the known key is read");
     check(s.get("future.meterBallistics").is_null(), "the unknown key has no meaning here");
     std::string why;
     check(s.set("lookfeel.theme", "light", kUser, why) && s.save(why), "change something else, save");
@@ -198,7 +355,7 @@ void testCorruptKeptAside() {
     writeText(file, broken);
     AppSettings s(appdata::App::Daw, file);
     check(s.status() == LoadStatus::CorruptKept, "reported as corrupt");
-    check(s.get("audio.bufferSize") == 256, "and defaults are in use");
+    check(s.get("audio.bufferSize") == 512, "and defaults are in use");
     check(s.keptAside() && fs::exists(*s.keptAside()) && readText(*s.keptAside()) == broken,
           "the broken file is kept, byte for byte, beside it");
     check(!fs::exists(file), "and nothing has been written in its place yet");
@@ -255,6 +412,19 @@ void testChangeLog() {
     l = lines();
     check(l.size() == 2 && l[1].at("actor") == "agent" && l[1].at("detail") == "model-x 1.0",
           "an agent's change is always logged, with the model");
+
+    // ADR-0203: the switch is a setting, on by default (A6-20).
+    s.setLogUserChanges(true);
+    check(s.get("settings.logChanges") == true, "settings.logChanges is on by default");
+    s.set("settings.logChanges", false, kUser, why);
+    l = lines();
+    check(l.size() == 3 && l[2].at("key") == "settings.logChanges" && l[2].at("after") == false,
+          "the change that turns the log off is the log's last line");
+    s.set("lookfeel.theme", "os", kUser, why);
+    check(lines().size() == 3, "with it off a person's change is not logged");
+    check(agentSet(s, AgentTier::Apply, "lookfeel.theme", "dark", "model-x 1.0", kT0 + 2).ok &&
+              lines().size() == 4,
+          "and the agent's still is");
 }
 
 // --- the agent's pipeline -----------------------------------------------------------------
@@ -265,8 +435,8 @@ void testAgentWhitelist() {
     AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
     check(!agentSet(s, AgentTier::Propose, "lookfeel.theme", "light", "m", kT0).ok,
           "at Propose tier it changes nothing");
-    check(agentSet(s, AgentTier::Apply, "lookfeel.zoomOnSelection", true, "m", kT0).ok &&
-              s.get("lookfeel.zoomOnSelection") == true,
+    check(agentSet(s, AgentTier::Apply, "lookfeel.zoomOnSelection", false, "m", kT0).ok &&
+              s.get("lookfeel.zoomOnSelection") == false,
           "at Apply it may change Zoom on Selection");
     for (const char* key : {"audio.bufferSize", "audio.driverType", "audio.silentResampling",
                             "library.userLibrary", "plugins.vst3Folders", "privacy.crashReports",
@@ -275,7 +445,7 @@ void testAgentWhitelist() {
         const auto r = agentSet(s, AgentTier::Apply, key, v, "m", kT0);
         check(!r.ok, std::string("refused: ") + key);
     }
-    check(s.get("audio.bufferSize") == 256 && s.get("agent.tier") == "propose",
+    check(s.get("audio.bufferSize") == 512 && s.get("agent.tier") == "propose",
           "and none of them changed");
     bool consistent = true;
     int whitelisted = 0;
@@ -297,7 +467,7 @@ void testPartialPreset() {
     std::string why;
     s.set("lookfeel.theme", "light", kUser, why);
     s.set("lookfeel.tooltipDelayMs", 700, kUser, why);
-    const Preset look = makePreset(s, "My look", {"Look & Feel"});
+    const Preset look = makePreset(s, "My look", {"Display & Input", "Theme & Colors"});
     check(look.values.contains("lookfeel.theme") && !look.values.contains("audio.bufferSize"),
           "a Look & Feel preset holds that page's settings only");
 
@@ -354,9 +524,9 @@ void testBundles() {
     from.set("lookfeel.theme", "light", kUser, why);
     from.set("library.userLibrary", "/home/ana/Music/ADI", kUser, why);
     from.set("library.contentFolders", Value::array({"/data/samples", "/data/loops"}), kUser, why);
-    from.set("library.recordFolder", "/home/ana/Music/ADI/Recordings", kUser, why);
+    from.set("files.recordFolder", "/home/ana/Music/ADI/Recordings", kUser, why);
     from.set("plugins.vst3Folders", Value::array({"/opt/vst3"}), kUser, why);
-    const Preset look = makePreset(from, "Light", {"Look & Feel"});
+    const Preset look = makePreset(from, "Light", {"Display & Input", "Theme & Colors"});
 
     const auto zip = temp.path() / "settings-bundle.zip";
     const auto rep = exportBundle(from, {look}, zip);
@@ -376,7 +546,7 @@ void testBundles() {
           "a manifest names the kind and the application");
     check(!settingsDoc.is_null() && !containsAbsolutePath(settingsDoc),
           "no absolute path anywhere in the bundle's settings");
-    check(value("library.recordFolder") == "role:user library/Recordings",
+    check(value("files.recordFolder") == "role:user library/Recordings",
           "a folder under the user library travels as that role");
     check(value("library.contentFolders") ==
               Value::array({"role:content folder 1", "role:content folder 2"}),
@@ -393,7 +563,7 @@ void testBundles() {
     const auto in = importBundle(zip, to, kUser);
     check(in.ok, "imported: " + in.why);
     check(to.get("lookfeel.theme") == "light", "the theme came across");
-    check(to.get("library.recordFolder") == "/mnt/work/ADI/Recordings",
+    check(to.get("files.recordFolder") == "/mnt/work/ADI/Recordings",
           "the record folder resolved against THIS machine's user library");
     check(to.get("library.userLibrary") == "/mnt/work/ADI",
           "and this machine's own user library is its own");
@@ -450,6 +620,114 @@ std::vector<CatalogueRow> readCatalogue() {
         rows.push_back({section + " / " + cell, trim(line.substr(last + 3))});
     }
     return rows;
+}
+
+void testWindowZoom() {
+    section("interface zoom per window and per display: window.zoom (N4; ADR-0129 d3)");
+    const Setting* z = find("window.zoom");
+    check(z && z->type == Type::Table && z->scope == Scope::App && z->page == "Display & Input" &&
+              z->section == "Display" && z->label == "Zoom Display" && z->defaultValue == Value::object(),
+          "the registry row: a table on Display & Input's Display section, Live's label, empty by default");
+    check(z && !z->agentMayChange, "the agent does not zoom the director's windows");
+    std::string why;
+    check(z && validate(*z, Value::object(), why) &&
+              validate(*z, Value({{"main@0:0:1920:1080:96", 1.25}}), why),
+          "an empty table and a table of zooms are legal: " + why);
+    check(z && !validate(*z, 1.25, why), "a bare number is not a table: " + why);
+    check(z && !validate(*z, Value({{"main@a", "big"}}), why), "a text zoom is refused: " + why);
+    check(z && !validate(*z, Value({{"main@a", 3.0}}), why), "300 % is outside Live's 50 to 200: " + why);
+
+    adi::test::TempDirectory temp("settings", "zoom");
+    const auto file = temp.path() / "settings.json";
+    const std::string first = "0:0:1920:1080:96", second = "1920:0:2560:1440:144";
+    {
+        AppSettings s(appdata::App::Daw, file);
+        check(!windowZoom(s, "main", first), "nothing kept yet: the window starts at 100 %");
+        check(setWindowZoom(s, "main", first, 1.25, kUser, why), "keep the main window at 125 %: " + why);
+        check(setWindowZoom(s, "main", second, 1.5, kUser, why), "and at 150 % on the second display");
+        check(setWindowZoom(s, "mixer", first, 0.75, kUser, why), "the mixer window at 75 % on the first");
+        check(!setWindowZoom(s, "main", first, 4.0, kUser, why), "400 % is refused: " + why);
+        check(windowZoom(s, "main", first) == 1.25, "and the refusal changed nothing");
+        check(windowZoom(s, "main", second) == 1.5 && windowZoom(s, "mixer", first) == 0.75,
+              "each window on each display has its own zoom");
+        check(s.save(why), "saved: " + why);
+    }
+    AppSettings again(appdata::App::Daw, file);
+    check(windowZoom(again, "main", first) == 1.25 && windowZoom(again, "mixer", first) == 0.75,
+          "the zooms come back after a relaunch");
+    check(!windowZoom(again, "main", "0:0:3840:2160:96"), "a display not seen before starts at 100 %");
+    check(again.get("window.zoom").size() == 3, "three rows in the table");
+}
+
+void testChannelConfig() {
+    section("the channel configuration: one record per audio device, Live's Input and Output Config (N20)");
+    const Setting* c = find("audio.channelConfig");
+    check(c && c->type == Type::Record && c->scope == Scope::App && c->page == "Audio" &&
+              c->section == "Audio Device" && c->label == "Channel Configuration" &&
+              c->defaultValue == Value::object() && c->check != nullptr,
+          "the registry row: a record per device on Audio's Audio Device section, Live's label, empty by default");
+    check(c && agentForbidden(*c), "the agent never touches the channel configuration (the Audio page)");
+
+    const auto d = defaultChannelConfig(4, 2);
+    check(d.monoInputs.size() == 4 && d.stereoInputs.size() == 2 && d.monoOutputs.size() == 2 &&
+              d.stereoOutputs.size() == 1,
+          "Live's default lists every mono channel and every pair of a 4-in 2-out device");
+    check(d.monoInputs[0].on && d.monoInputs[1].on && !d.monoInputs[2].on && !d.monoInputs[3].on &&
+              d.stereoInputs[0].on && !d.stereoInputs[1].on && d.stereoOutputs[0].on,
+          "with 1, 2 and 1/2 on and the rest off");
+    check(d.activeInputs() == std::set<int>{1, 2} && d.activeOutputs() == std::set<int>{1, 2},
+          "so the device opens with channels 1 and 2 on each side");
+    const auto odd = defaultChannelConfig(3, 1);
+    check(odd.stereoInputs.size() == 1 && odd.stereoInputs[0].left == 1 && odd.stereoOutputs.empty(),
+          "an odd channel has no pair");
+    check(displayName(d.monoInputs[2]) == "3 (mono)" && displayName(d.stereoInputs[1]) == "3/4 (stereo)",
+          "Live's names for channels with none of their own");
+
+    ChannelConfig mine = d;
+    mine.monoInputs[0].name = "Vocal";
+    mine.stereoInputs[1].on = true;
+    mine.stereoInputs[1].name = "Synth";
+    check(displayName(mine.monoInputs[0]) == "Vocal" && mine.activeInputs() == std::set<int>{1, 2, 3, 4},
+          "a renamed channel shows its name; an enabled pair adds both its channels");
+    std::string why;
+    const auto back = channelConfigFromJson(toJson(mine), why);
+    check(back && *back == mine, "a record round-trips through JSON: " + why);
+    check(!toJson(d).at("inputs").at("mono")[0].contains("name"), "an empty name is not written");
+
+    check(!channelConfigFromJson(Value::array(), why), "a list is not a record: " + why);
+    check(!channelConfigFromJson(Value({{"inputs", toJson(d).at("inputs")}}), why), "the outputs are required: " + why);
+    Value twice = toJson(d);
+    twice["inputs"]["mono"].push_back({{"ch", 1}, {"on", false}});
+    check(!channelConfigFromJson(twice, why) && why.find("twice") != std::string::npos, "a channel listed twice: " + why);
+    Value zero = toJson(d);
+    zero["outputs"]["stereo"][0]["ch"] = 0;
+    check(!channelConfigFromJson(zero, why), "channels are numbered from 1: " + why);
+    Value text = toJson(d);
+    text["inputs"]["mono"][0]["on"] = "yes";
+    check(!channelConfigFromJson(text, why), "a switch is a boolean: " + why);
+    check(checkChannelConfigs(Value::object(), why) && checkChannelConfigs(Value({{"Scarlett 2i2", toJson(d)}}), why),
+          "the setting: no devices, or a record per device: " + why);
+    check(!checkChannelConfigs(Value({{"Scarlett 2i2", 5}}), why) && why.find("Scarlett 2i2") != std::string::npos,
+          "a device's bad record is refused by the device's name: " + why);
+
+    adi::test::TempDirectory temp("settings", "channels");
+    const auto file = temp.path() / "settings.json";
+    {
+        AppSettings s(appdata::App::Daw, file);
+        check(!channelConfig(s, "Scarlett 2i2"), "no record yet: the window starts from Live's default");
+        check(setChannelConfig(s, "Scarlett 2i2", mine, kUser, why), "keep the Scarlett's record: " + why);
+        check(setChannelConfig(s, "Built-in", defaultChannelConfig(2, 2), kUser, why), "and the built-in device's");
+        check(!s.set("audio.channelConfig", Value({{"Scarlett 2i2", 5}}), kUser, why),
+              "the store refuses a bad record through its own door: " + why);
+        check(channelConfig(s, "Scarlett 2i2") == mine, "and the refusal changed nothing");
+        check(s.save(why), "saved: " + why);
+    }
+    AppSettings again(appdata::App::Daw, file);
+    const auto kept = channelConfig(again, "Scarlett 2i2");
+    check(kept && *kept == mine && kept->monoInputs[0].name == "Vocal",
+          "the record and its names come back after a relaunch, under the device's name");
+    check(channelConfig(again, "Built-in") == defaultChannelConfig(2, 2) && !channelConfig(again, "Other"),
+          "each device has its own; an unseen device has none");
 }
 
 void testCatalogue() {
@@ -518,8 +796,9 @@ void testCatalogue() {
     const auto* project = find("project.sampleRate");
     const auto* device = find("audio.sampleRate");
     check(project && project->type == Type::Choice && project->choices == ladder && project->defaultValue == 48000,
-          "the project's rate chooser offers the ladder, 48 kHz by default");
-    check(device && device->type == Type::Choice && device->choices == ladder, "the device's rate chooser offers the ladder");
+          "the project's rate chooser offers the ladder, 48 kHz by default (the schema's column default)");
+    check(device && device->type == Type::Choice && device->choices == ladder && device->defaultValue == 44100,
+          "the device's rate chooser offers the ladder, 44.1 kHz by default (ADR-0203)");
     std::string why;
     check(project && device && !validate(*project, 32000, why) && !validate(*device, 22050, why) &&
               validate(*device, 768000, why) && !validate(*device, 1536000, why),
@@ -547,14 +826,17 @@ void testCatalogue() {
 }
 
 int runAll() {
-    std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152\n\n");
+    std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152, ADR-0203\n\n");
     testRegistry();
+    testRulings();
     testCatalogue();
     testStoreBasics();
     testUnknownKeysSurvive();
     testCorruptKeptAside();
     testApplicationsNeverShare();
     testChangeLog();
+    testWindowZoom();
+    testChannelConfig();
     testAgentWhitelist();
     testPartialPreset();
     testBundles();

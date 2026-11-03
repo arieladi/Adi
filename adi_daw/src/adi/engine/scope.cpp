@@ -16,6 +16,17 @@ ScopeTap::ScopeTap(double sampleRate, double seconds)
 
 void ScopeTap::write(const float* l, const float* r, std::int32_t frames, std::int64_t stamp,
                      bool advancing) noexcept {
+    store(l, r, frames, stamp, advancing);
+}
+
+void ScopeTap::write(const double* l, const double* r, std::int32_t frames, std::int64_t stamp,
+                     bool advancing) noexcept {
+    store(l, r, frames, stamp, advancing);
+}
+
+template <typename T>
+void ScopeTap::store(const T* l, const T* r, std::int32_t frames, std::int64_t stamp,
+                     bool advancing) noexcept {
     const std::int64_t w = written_.load(std::memory_order_relaxed);
     // A seqlock's order: say how far this write will reach BEFORE touching the
     // ring, so a reader that copies during it sees that it may have been lapped.
@@ -23,9 +34,9 @@ void ScopeTap::write(const float* l, const float* r, std::int32_t frames, std::i
     std::atomic_thread_fence(std::memory_order_release);
     for (std::int32_t i = 0; i < frames; ++i) {
         const auto at = static_cast<std::size_t>((w + i) % capacity_);
-        const float left = l != nullptr ? l[i] : 0.0f;
+        const float left = l != nullptr ? static_cast<float>(l[i]) : 0.0f;
         l_[at].store(left, std::memory_order_relaxed);
-        r_[at].store(r != nullptr ? r[i] : left, std::memory_order_relaxed);
+        r_[at].store(r != nullptr ? static_cast<float>(r[i]) : left, std::memory_order_relaxed);
         stamp_[at].store(advancing ? stamp + i : stamp, std::memory_order_relaxed);
     }
     written_.store(w + frames, std::memory_order_release);

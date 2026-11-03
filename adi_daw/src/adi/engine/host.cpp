@@ -32,6 +32,7 @@ bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
     }
 
     rg->graph().setLatencyHeadroom(latencyHeadroomAt(sampleRate));
+    rg->graph().setPrecision(precision_);
     rg->graph().prepare(sampleRate, maxFrames);
     if (!rg->graph().ok()) {
         error_ = rg->graph().error();
@@ -59,7 +60,7 @@ Graph* GraphHost::currentGraph() const noexcept {
 }
 
 void GraphHost::fadeIn(const AudioIo& io) noexcept {
-    if (fadeRemaining_ <= 0 || fadeLength_ <= 0 || io.out == nullptr) return;
+    if (fadeRemaining_ <= 0 || fadeLength_ <= 0 || (io.out == nullptr && io.out64 == nullptr)) return;
 
     const std::int32_t n = io.frames < fadeRemaining_ ? io.frames : fadeRemaining_;
     // Where in the ramp this block starts. The fade can span several blocks
@@ -69,27 +70,31 @@ void GraphHost::fadeIn(const AudioIo& io) noexcept {
     const std::int32_t done = fadeLength_ - fadeRemaining_;
 
     for (std::int32_t c = 0; c < io.numOut; ++c) {
-        float* dst = io.out[c];
-        if (dst == nullptr) continue;
-        for (std::int32_t i = 0; i < n; ++i) {
-            const float g = static_cast<float>(done + i + 1) /
-                            static_cast<float>(fadeLength_);
-            dst[i] *= g;
-        }
+        float* dst = io.out != nullptr ? io.out[c] : nullptr;
+        if (dst != nullptr)
+            for (std::int32_t i = 0; i < n; ++i) {
+                const float g = static_cast<float>(done + i + 1) /
+                                static_cast<float>(fadeLength_);
+                dst[i] *= g;
+            }
+        // The same ramp on the full-width output (ADR-0207 d2), so the two
+        // outputs of one block never disagree.
+        double* wdst = io.out64 != nullptr ? io.out64[c] : nullptr;
+        if (wdst != nullptr)
+            for (std::int32_t i = 0; i < n; ++i)
+                wdst[i] *= static_cast<double>(done + i + 1) / static_cast<double>(fadeLength_);
     }
     fadeRemaining_ -= n;
 }
 
-std::int32_t GraphHost::handover(const PublishedGraph& from,
-                                const PublishedGraph& to) noexcept {
-    const auto& a = from.graph().planEdges();
-    const auto& b = to.graph().planEdges();
-    Graph& ga = from.graph().graph();
-    Graph& gb = to.graph().graph();
+namespace {
 
-    // One walk over two sorted lists: no allocation, no map, and linear in the
-    // number of edges. Keyed by (track, track, bus), because node ids shift
-    // when a track is added and every junction is a new object per rebuild.
+// One walk over two sorted lists: no allocation, no map, and linear in the
+// number of edges. Keyed by what an edge joins, never by node id, because ids
+// shift when a track is added and every junction is a new object per rebuild.
+template <typename Record>
+std::int32_t carryHistory(const std::vector<Record>& a, const std::vector<Record>& b,
+                          Graph& ga, Graph& gb) noexcept {
     std::int32_t carried = 0;
     std::size_t i = 0, j = 0;
     while (i < a.size() && j < b.size()) {
@@ -98,15 +103,30 @@ std::int32_t GraphHost::handover(const PublishedGraph& from,
         const DelayLine* oldLine = ga.edgeLine(a[i].from, a[i].to, a[i].bus);
         DelayLine* newLine = gb.edgeLine(b[j].from, b[j].to, b[j].bus);
         // Only a line that DELAYS has history anyone will hear. A zero tap
-        // reads the sample just written, so there is nothing to carry.
-        if (oldLine != nullptr && newLine != nullptr && newLine->delay() > 0) {
-            newLine->adoptHistory(*oldLine);
+        // reads the sample just written, so there is nothing to carry. And
+        // only a line that took some is counted: one whose old ring held
+        // nothing, or had none, carried nothing.
+        if (oldLine != nullptr && newLine != nullptr && newLine->delay() > 0 &&
+            newLine->adoptHistory(*oldLine))
             ++carried;
-        }
         ++i;
         ++j;
     }
     return carried;
+}
+
+}  // namespace
+
+std::int32_t GraphHost::handover(const PublishedGraph& from,
+                                const PublishedGraph& to) noexcept {
+    Graph& ga = from.graph().graph();
+    Graph& gb = to.graph().graph();
+    // The edges between tracks, (track, track, bus); then the edges inside
+    // them, which delay too: a track delay on a strip that is not the last
+    // node of its chain, a source compensated against a later input.
+    return carryHistory(from.graph().planEdges(), to.graph().planEdges(), ga, gb) +
+           carryHistory(from.graph().chainEdges(), to.graph().chainEdges(), ga, gb) +
+           gb.adoptBypassHistory(ga);
 }
 
 void GraphHost::process(const AudioIo& io) noexcept {
@@ -126,12 +146,31 @@ void GraphHost::process(const AudioIo& io) noexcept {
                 if (io.out[c] != nullptr)
                     std::memset(io.out[c], 0,
                                 static_cast<std::size_t>(io.frames) * sizeof(float));
+        // Both outputs, as AudioIo promises (ADR-0207 d2).
+        if (io.out64 != nullptr)
+            for (std::int32_t c = 0; c < io.numOut; ++c)
+                if (io.out64[c] != nullptr)
+                    std::memset(io.out64[c], 0,
+                                static_cast<std::size_t>(io.frames) * sizeof(double));
         return;
     }
 
     if (snap->seq != lastSeq_) {
         if (lastSnap_ != nullptr && keepHistory_)
             stats_.historyCarried += handover(*lastSnap_, *snap);
+
+        // ADR-0203 d3: a feedback loop in play again after time out of it
+        // starts empty. Decided here, against the graph that really played
+        // last block, and not by whoever last published: a loop the audio
+        // thread never stopped playing keeps its echoes, and one it did stop
+        // never plays what it held when it left.
+        const std::vector<Node*>& now = snap->graph().loopReaders();
+        const std::vector<Node*>* before = lastSnap_ != nullptr ? &lastSnap_->graph().loopReaders() : nullptr;
+        std::size_t j = 0;
+        for (Node* reader : now) {
+            while (before != nullptr && j < before->size() && std::less<Node*>()((*before)[j], reader)) ++j;
+            if (before == nullptr || j == before->size() || (*before)[j] != reader) reader->enterPlay();
+        }
 
         // NOT on the first graph. `lastSeq_` is 0 until something has played,
         // and ramping the opening milliseconds of every session is an artefact

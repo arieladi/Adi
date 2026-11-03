@@ -52,6 +52,10 @@ public:
     /// writes silence; a null right channel duplicates the left.
     void write(const float* l, const float* r, std::int32_t frames, std::int64_t stamp,
                bool advancing) noexcept;
+    /// The same from a graph at 64 (ADR-0207 d2): the ring is float, a
+    /// picture of the signal, so each frame is narrowed as it is stored.
+    void write(const double* l, const double* r, std::int32_t frames, std::int64_t stamp,
+               bool advancing) noexcept;
 
     /// Any thread but the writer: the newest `l.size()` frames and the stamp of
     /// the first. False when fewer have been written, or the writer lapped the
@@ -67,6 +71,10 @@ public:
     [[nodiscard]] double sampleRate() const noexcept { return sampleRate_; }
 
 private:
+    template <typename T>
+    void store(const T* l, const T* r, std::int32_t frames, std::int64_t stamp,
+               bool advancing) noexcept;
+
     double sampleRate_;
     std::int64_t capacity_;
     std::unique_ptr<std::atomic<float>[]> l_, r_;

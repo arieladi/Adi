@@ -80,7 +80,10 @@ GainStageResult Session::autoGainStage(Store& store, const GainStageOptions& opt
     commitOptions.expectHead = journal.headSeq();
     Session offline;
     offline.graph().setFadeFrames(0);
-    if (!offline.load(store,loader_,{2,spec_.sampleRate,spec_.maxFrames})) return fail(offline.error());
+    // Measured at the precision the session plays at (ADR-0207 d2).
+    SessionSpec offlineSpec{2,spec_.sampleRate,spec_.maxFrames};
+    offlineSpec.precision=spec_.precision;
+    if (!offline.load(store,loader_,offlineSpec)) return fail(offline.error());
     if (offline.stats().placeholders || offline.stats().skipped || !offline.problems().empty())
         return fail("gain stage requires a fully resolved project: missing device, media or unsupported playback");
     // Track mute/solo are monitoring choices, not a change to a clip's level.

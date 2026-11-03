@@ -1,7 +1,9 @@
 # External code — inventory and licence boundary
 
-We are GPLv3 (ADR-0015). That makes *what we may copy from* a design constraint,
-not a footnote, so external code lives in two directories with different rules.
+We are AGPLv3, all of it (ADR-0203 d25; GPLv3 under ADR-0015 until 2026-10-12). Any
+open-source code may be copied in; only non-commercial-only and proprietary code are
+refused (`OPEN_SOURCE_POLICY.md` §4a). *Where it came from* is still recorded here,
+so external code lives in two directories with different rules.
 
 Both are gitignored — each clone is its own git repo, same arrangement as
 `VST-ADI/vital`. Nothing here is committed to the monorepo.
@@ -12,7 +14,7 @@ Refresh everything with `tools/fetch_external.sh`.
 
 ## `third_party/` — we link against these and ship them
 
-Permissive licences, all GPLv3-compatible in the direction we need.
+Permissive licences, all AGPLv3-compatible in the direction we need.
 
 | Repo | Licence | Size | Purpose |
 |---|---|---|---|
@@ -23,7 +25,7 @@ Permissive licences, all GPLv3-compatible in the direction we need.
 | [`dr_libs`](https://github.com/mackron/dr_libs) | Public domain (Unlicense) or MIT-0; ADI takes the Unlicense | 1.7 MB shallow | Import decoders, off the callback, into the decoding cache (ADR-0132 d3-d4, ADR-0156): `dr_flac` 0.13.3, `dr_mp3` 0.7.3, `dr_wav` 0.14.5 for AIFF/AIFC and the WAVs `WavReader` refuses. Pinned **wav-0.14.5 / `fa931f3285ced10ace628f7f1ac951e1951e7ea6`**; fetched by `--build-only`. Dependency row added by cloud on the director's instruction. |
 | [`miniaudio`](https://github.com/mackron/miniaudio) | `extras/stb_vorbis.c`: MIT or public domain; ADI takes MIT | 17 MB shallow | **Only `extras/stb_vorbis.c` is compiled**: Ogg Vorbis import (ADR-0156). It is byte-identical to `nothings/stb` master's `stb_vorbis.c` v1.22; stb has no tags, and the fetch script pins by tag and commit, so the tagged copy is the one pinned. Pinned **0.11.25 / `9634bedb5b5a2ca38c1ee7108a9358a4e233f14d`**; fetched by `--build-only`. Dependency row added by cloud on the director's instruction. |
 | [`libpd`](https://github.com/libpd/libpd) | BSD-3-Clause (the "Standard Improved BSD License", Miller Puckette and others) | 46 MB shallow, submodule included | The Pure Data runtime behind the Pd device tier (ADR-0035, ADR-0183). Pinned **0.16.1 / `ba0dc63262901d658af8bbda5e619a60fa975e78`**, with its `pure-data` submodule at **`f009fd8d7b537e209e09898d487fdf1bf547da2b`** (Pd 0.56-5) — fixed by libpd's own tree, so the pin still answers "what did we build against" with one hash. Fetched by `--build-only`. **The one row fetched WITH submodules**, which is why `fetch_external.sh` grew a seventh column: `pure-data` *is* the DSP, and libpd without it is a wrapper around nothing. Built `PD_MULTI` (`PDINSTANCE`), static only — no shared library for anyone to mistake for a plug-in, and no C examples. ADR-0035 requires multi-instance: a single-instance libpd would make every Pd device one session-wide effect sharing one graph, one sample rate and one block size. Licence read at the pinned commit in both `LICENSE.txt` files; `pure-data/src`, `pure-data/extra`, `libpd_wrapper` and `cpp` contain no GPL or LGPL text at all, so nothing we compile here is stronger than BSD-3. |
-| [`pffft`](https://bitbucket.org/jpommier/pffft) | FFTPACK v5 (NCAR/UCAR) — three-clause BSD in substance; see OPEN_SOURCE_POLICY §3 | 0.4 MB shallow | The FFT behind `dsp::Spectrum` (ADR-0183 d7, ADR-0195 d5): the analyser's spectrum and the overlay's per-track worker. Pinned **v1.0.0 / `02fe7715a5bf8bfd914681c53429600f94e0f536`**, fetched by `--build-only`. **Pinned at the commit bungee already uses** — bungee is the warp engine ADR-0188 d2 chose and carries PFFFT as a submodule, so ADI links this FFT when warp lands; a second FFT, hand-written or otherwise, would be two of them in one binary. The commit was read off bungee's own tree at its pinned commit (`submodules/pffft`), and Bitbucket resolves it as `refs/tags/v1.0.0^{}`. **Nothing reaches into bungee's submodule:** a dependency two levels down that nobody fetched is not a pin. **The first row whose upstream is not GitHub**, which is why `fetch_external.sh` now takes a full URL — better than pinning a mirror and having to argue it is the same object, as the pthreads4w row has to. Wrapped by `src/adi/dsp/spectrum.*` so no other file sees its API: its real transform packs DC in `out[0]` and **Nyquist in `out[1]`**, and `pffft_new_setup` *asserts* rather than returning NULL when the size is not a multiple of 32. |
+| [`pffft`](https://bitbucket.org/jpommier/pffft) | FFTPACK v5 (NCAR/UCAR) — three-clause BSD in substance; see OPEN_SOURCE_POLICY §3 | 0.4 MB shallow | The FFT behind `dsp::Spectrum` and `dsp::RealFft` (ADR-0183 d7, ADR-0195 d5): the analyser's spectrum, the overlay's per-track worker, and Hybrid Reverb's partitioned convolution. Pinned **v1.0.0 / `02fe7715a5bf8bfd914681c53429600f94e0f536`**, fetched by `--build-only`. **Pinned at the commit bungee already uses** — bungee is the warp engine ADR-0188 d2 chose and carries PFFFT as a submodule, so ADI links this FFT when warp lands; a second FFT, hand-written or otherwise, would be two of them in one binary. The commit was read off bungee's own tree at its pinned commit (`submodules/pffft`), and Bitbucket resolves it as `refs/tags/v1.0.0^{}`. **Nothing reaches into bungee's submodule:** a dependency two levels down that nobody fetched is not a pin. **The first row whose upstream is not GitHub**, which is why `fetch_external.sh` now takes a full URL — better than pinning a mirror and having to argue it is the same object, as the pthreads4w row has to. Wrapped by `src/adi/dsp/spectrum.*` so no other file sees its API: its real transform packs DC in `out[0]` and **Nyquist in `out[1]`**, and `pffft_new_setup` *asserts* rather than returning NULL when the size is not a multiple of 32. |
 | [`pthreads4w`](https://github.com/jwinarske/pthreads4w) | Apache-2.0, with five test-only exceptions (below) | 3.6 MB shallow | POSIX threads for Windows, so the Pd tier builds under MSVC (ADR-0192 d5). Pd threads with pthreads and MSVC ships no implementation, so without this libpd's own CMakeLists refuses to configure and `ADI_WITH_PD` stays off (ADR-0183 d24). Pinned **by commit alone, tag `-`**: `8c1d612b376333619c564ef8dadd2410b9ae0563` — the 3.0.0 release line lives on the branch `version_3` and was never tagged, the same case as airwin2rack. **Pinned on a MIRROR, and that was checked rather than trusted:** upstream is SourceForge (`git.code.sf.net/p/pthreads4w/code`) and this script clones from GitHub, so `git ls-remote` was run against both on 2026-09-27 — `refs/heads/version_3` is the same object, `8c1d612b…`, at each. The pin is upstream's own commit reached through a mirror, not a fork's idea of it; re-check that equality before moving it. Built as ONE translation unit (`pthread.c` includes 145 of the other 146 sources) and linked static, `__PTW32_STATIC_LIB`. Fetched by `--build-only`. |
 |  |  |  | **Its licence, read at the pinned commit (ADR-0024).** `LICENSE` is Apache-2.0. `NOTICE` excepts **five** files, not the four ADR-0192 d5 expected: `tests/rwlock7.c`, `tests/rwlock7_1.c`, `tests/rwlock8.c` and `tests/rwlock8_1.c` derive from Butenhof's *Programming With POSIX Threads*, and `tests/threestage.c` is taken from Hart's *Windows System Programming*. **All five are in `tests/`, and none is compiled here** — `pthread.c` includes no file under `tests/`, checked one by one. So nothing ADI ships carries anything but Apache-2.0. |
 | [`airwin2rack`](https://github.com/baconpaul/airwin2rack) | MIT (Airwindows, Chris Johnson; the registry, Paul Walker) | 31 MB shallow | **Only 16 console algorithms are compiled**, into the engine as native group summing (ADR-0173, ADR-0174): the channel and buss halves of Console9, ConsoleLA, ConsoleMC, ConsoleMD, PurestConsole3, PD, C5Raw and Atmosphere. The newest tag (v2.9.0, 2024) predates Console9, so this is the one row pinned **by commit alone**: **`b6eef0af60cd32641b09837096e41bbcdb030341`**, tag `-`, fetched by that commit by `--build-only`. The same checkout feeds the ADI Airwindows plug-ins (ADR-0166). |
@@ -70,6 +72,10 @@ and much easier question than copying from `modules/`.
 
 ## `reference/` — we read these. They are never on the include path.
 
+| [`soundcraft`](https://github.com/storytold/soundcraft), [`filmcraft`](https://github.com/storytold/filmcraft) | MIT OR Apache-2.0 | 16 MB, 61 MB | ✅ usable (the director, 2026-10-25) | The ArtCraft integration (ADR-0206, `docs/INTEROP-ARTCRAFT.md`): the control channels, SoundCraft's sample-indexed session model and bounce commands, FilmCraft's interchange and media watcher; and anything useful for ADI itself. Unpinned reference clones, read-only |
+| [`audacity`](https://github.com/audacity/audacity) | GPL-3.0 overall; most files GPL-2.0-or-later (its LICENSE.txt) | 256 MB | ✅ usable (the director, 2026-10-26) | Audacity 4 on the Audacity 3 engine: the `.aup3` project is one SQLite file (sample blocks stored in the database, the nearest open design to ADI's `.adi`, which keeps media on disk by ADR-0127); its project-file I/O, undo as project snapshots, the effect and Nyquist hosts, clip and envelope code. Unpinned reference clone, read-only |
+
+
 All GPL-family. Reading them to understand a problem is normal engineering.
 Copying code from them is a licensing act with consequences, so the boundary is
 explicit.
@@ -90,7 +96,7 @@ what the roadmap was going to do with them.
 
 | Repo | Licence | Size | Copy? | Read it for |
 |---|---|---|---|---|
-| [`ZLEqualizer`](https://github.com/ZL-Audio/ZLEqualizer) | **AGPL-3.0** | 6 MB | ✅ with attribution — the plugin that copies it is AGPLv3 | Dynamic EQ structure, matched-phase ("de-cramped") bells, linear-phase mode. Vicanek, *Matched Second Order Digital Filters* (2016), remains the maths behind the bells. |
+| [`ZLEqualizer`](https://github.com/ZL-Audio/ZLEqualizer) | **AGPL-3.0** | 6 MB | **retired 2026-10-18 (ADR-0204)**: the director's own Pro-Q 4 clone replaces it; nothing of ZL remains in the tree. No longer fetched, as reference or as a pinned plug-in source. | Was read for (ADR-0093, ADR-0195): Dynamic EQ structure, matched-phase ("de-cramped") bells, linear-phase mode. Vicanek, *Matched Second Order Digital Filters* (2016), remains the maths behind the bells. |
 | [`lsp-dsp-units`](https://github.com/lsp-plugins/lsp-dsp-units) | LGPL-3.0-or-later | 19 MB | ✅ with attribution | `dynamics/Limiter.h`, `util/Oversampler.h`, `meters/TruePeakMeter.h`, `meters/LoudnessMeter.h` — the true-peak limiter maths. LGPL is GPL-compatible. |
 | [`lsp-plugins-limiter`](https://github.com/lsp-plugins/lsp-plugins-limiter) | LGPL-3.0-or-later | 4 MB | ✅ with attribution | How the limiter core is driven: lookahead, oversampling ratio, and its Classic/Mixed/Modern modes. |
 | [`vitOTTx`](https://github.com/Sakhnovkrg/vitOTTx) | GPL-3.0 | 1 MB | ✅ with attribution | Vital's OTT multiband upward/downward compressor, extracted standalone. Matt Tytel's original is also in `adi-vst/`'s Vital fork. |
@@ -98,6 +104,7 @@ what the roadmap was going to do with them.
 | [`chowdsp_utils`](https://github.com/Chowdhury-DSP/chowdsp_utils) | **per module**; `chowdsp_waveshapers` is GPL-3.0 | 19 MB | ✅ waveshapers, with attribution — **check each module's own header first** | `ADAAHardClipper`, `ADAASoftClipper`, `ADAASineClipper`: production ADAA, the part a clipper actually ships. |
 | [`KlonCentaur`](https://github.com/jatinchowdhury18/KlonCentaur) | BSD-3-Clause | 220 MB (training data and PDFs; the code is small) | ✅ with attribution | ChowCentaur. A wave-digital-filter diode clipper and the paper describing it. **It contains no ADAA**, which is what it was requested for. |
 | [`Audio-Soft-Clip-Distortion`](https://github.com/JDSherbert/Audio-Soft-Clip-Distortion) | MIT | 0.1 MB | ✅ with attribution | Basic hard and soft clip curves with oversampling. Introductory, but MIT. |
+| [HIIR](http://ldesoras.free.fr/prod.html) (Laurent de Soras) | WTFPL-2.0 | read, not cloned | ✅ with attribution — public-domain-equivalent, GPL-compatible | The polyphase half-band IIR designer (`PolyphaseIir2Designer`). Its coefficient design is ported in `collab/mac/live-probe/hiir.py` and `tests/test_multiband_dynamics.cpp`, and the eight coefficients it yields sit in `src/adi/dsp/multiband_dynamics.cpp` (the Multiband Dynamics device's 2x oversampler, as Live's). |
 
 ### The director's references of 2026-09-27 (ADR-0186, ADR-0187)
 
@@ -139,19 +146,17 @@ Gemini's five proposals for ADiJ's rekordbox and CDJ work, and the spec they all
 | [`pyrekordbox`](https://github.com/dylanljones/pyrekordbox) | MIT | 8 MB | ✅ with attribution, **but not its key recovery** | Reads `master.db`, XML, ANLZ and MySettings. It recovers the key from Rekordbox's `options.json` with a constant in `utils.py` |
 | [`crate-digger`](https://github.com/Deep-Symmetry/crate-digger) | EPL-2.0, with MPL-2.0 or LGPL-3.0 as secondary licences; the `.ksy` headers say `EPL-2.0 OR MPL-2.0 OR LGPL-3.0-only` | 1.4 MB | ✅ under MPL-2.0 (ADR-0189 d2) | The Kaitai specs of the PDB and ANLZ formats, the source every tool above cites |
 
-**Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094).** Every project is open source:
-MIT by default, GPLv3 once it copies from a GPL or LGPL source. So everything above
-may be copied, keeping the original headers — a plugin that takes the LSP
-limiter, the chowdsp waveshapers or vitOTTx is a GPLv3 plugin, and one that
-takes ZLEqualizer is an AGPLv3 plugin (ADR-0138: the AGPL ban is lifted).
+**Decided by `OPEN_SOURCE_POLICY.md` (ADR-0094) and closed by ADR-0203 d25.** ADI is
+AGPLv3 in full, so everything above may be copied, keeping the original headers and
+adding its row here; where a copy lands (the core, a sibling plug-in) is a matter of
+structure, not of licence (ADR-0187 d3 as read by ADR-0203).
 
 ### The Zrythm rule, as of ADR-0138
 
 Zrythm is **AGPLv3**. Until 2026-09-24 that made it design-only; Adi lifted the
-AGPL ban (ADR-0138, `OPEN_SOURCE_POLICY.md` §4). Its code may now be copied with
-attribution, and the first copy makes `adi_daw` **AGPLv3** — which changes little,
-because every build that links JUCE already carries AGPL obligations. Its
-trademark clause (AGPL §7) still applies: never its name.
+AGPL ban (ADR-0138, `OPEN_SOURCE_POLICY.md` §4), and since 2026-10-12 ADI is AGPLv3
+in full (ADR-0203 d25), so its code may be copied anywhere in ADI with attribution.
+Its trademark clause (AGPL §7) still applies: never its name.
 
 ### Licence corrections worth recording
 

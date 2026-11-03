@@ -703,6 +703,58 @@ void testAHeldNoteIsNotSilence() {
     eqi(eq.calls, passed, "a node that passes notes on does not hold them");
 }
 
+/// Counts the note events it is handed and the note-offs acknowledged to it.
+class NoteProbe final : public Node {
+public:
+    explicit NoteProbe(EventFlow f) : flow_(f) {}
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][io.blockOffset + i] = 0.0f;
+        for (const Event& e : io.events) heard += (e.type == EventType::NoteOn || e.type == EventType::NoteOff) ? 1 : 0;
+    }
+    void noteOffDelivered(const Event&) noexcept override { ++acknowledged; }
+    [[nodiscard]] EventFlow eventFlow() const noexcept override { return flow_; }
+    int heard = 0;
+    int acknowledged = 0;
+private:
+    EventFlow flow_;
+};
+
+void testAStopNodePassesNoNote() {
+    section("ADR-0203 d3 -- EventFlow::Stop: a send carries audio and no note, and plays none");
+
+    // source -> middle -> instrument (the output). The middle is a send's
+    // node when it says Stop.
+    struct Run { int heard, acknowledged; bool held; };
+    auto run = [](EventFlow middle) {
+        NoteProbe source(EventFlow::Through), mid(middle), instrument(EventFlow::Consume);
+        Graph g;
+        const NodeId a = g.addNode(source), b = g.addNode(mid), c = g.addNode(instrument);
+        g.connect(a, b);
+        g.connect(b, c);
+        g.setOutput(c);
+        g.prepare(48000.0, 256);
+        Out o(256);
+        AudioIo io = makeIo(o, 256);
+        Event off = heldNote(EventType::NoteOff, 1, 60);
+        off.frame = 10;
+        g.pushInputEvent(a, heldNote(EventType::NoteOn, 1, 60));
+        g.pushInputEvent(a, off);
+        g.process(io);
+        g.pushInputEvent(a, heldNote(EventType::NoteOn, 2, 64));
+        g.process(io);
+        return Run{instrument.heard, source.acknowledged, mid.heldNotes().any()};
+    };
+    const Run through = run(EventFlow::Through), consume = run(EventFlow::Consume), stop = run(EventFlow::Stop);
+    check(through.heard == 3 && through.acknowledged == 1 && !through.held,
+          "the control, Through: the instrument hears all three, acknowledges the off, the middle holds none");
+    check(consume.heard == 0 && consume.acknowledged == 1 && consume.held,
+          "Consume: the middle plays them -- it holds the open note and acknowledges the off");
+    check(stop.heard == 0, "Stop: nothing after it hears a note");
+    check(!stop.held, "it holds no note awake");
+    eqi(stop.acknowledged, 0, "and acknowledges no note-off: nothing it feeds played the note");
+}
+
 void testHeldNotesTable() {
     section("ADR-0158 -- the held-notes table: bypass, capacity");
 
@@ -2331,6 +2383,44 @@ void testTheAudioThreadNeverAsksALatency() {
     eqi(a.offMain, 0, "still never off the message thread");
 }
 
+/// Answers its tail alternately finite and infinite, as a device mid
+/// reactivation can (ADR-0089 d4), and counts how often it is asked.
+class FlipTail final : public Node {
+public:
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            float* o = io.out[c] + io.blockOffset;
+            const float* i = (io.in != nullptr && io.in[c] != nullptr) ? io.in[c] + io.blockOffset : nullptr;
+            for (std::int32_t k = 0; k < io.frames; ++k) o[k] = i != nullptr ? i[k] : 0.0f;
+        }
+    }
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override {
+        return (asks++ % 2 == 0) ? 64 : kInfiniteTail;
+    }
+    [[nodiscard]] const char* name() const noexcept override { return "flip tail"; }
+    mutable int asks = 0;
+};
+
+void testATailIsAskedOnceABlock() {
+    section("ADR-0089 d4 -- a node is asked its tail once a block: its answer can change between "
+            "two questions, and finite then infinite overflowed the tail counter");
+    Graph g;
+    ConstNode src(0.5f);
+    FlipTail f;
+    const NodeId is = g.addNode(src), iff = g.addNode(f);
+    check(g.connect(is, iff), "the source feeds it, so its input is live");
+    g.setOutput(iff);
+    g.prepare(48000.0, 256);
+    check(g.ok(), "prepared: " + g.error());
+    std::vector<float> l(256, 0.0f), r(256, 0.0f);
+    std::vector<float*> out{l.data(), r.data()};
+    AudioIo io;
+    io.out = out.data(); io.numOut = 2; io.frames = 256;
+    const int before = f.asks;
+    for (int b = 0; b < 8; ++b) g.process(io);
+    eqi(f.asks - before, 8, "eight blocks, eight questions");
+}
+
 }  // namespace
 
 int main() {
@@ -2348,8 +2438,10 @@ int main() {
         testSuspendedNodeClearsOnceToCapacity();
         testMixSkipsSleepingSources();
         testTheAudioThreadNeverAsksALatency();
+        testATailIsAskedOnceABlock();
         testEventsAreNotSilence();
         testAHeldNoteIsNotSilence();
+        testAStopNodePassesNoNote();
         testHeldNotesTable();
         testTailKeepsRunning();
         testAlwaysProcess();

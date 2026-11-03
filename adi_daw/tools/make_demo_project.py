@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Fill an empty .adi with something to listen to: audio clips at chosen sample
+"""Fill a freshly created .adi with something to listen to: audio clips at chosen sample
 rates, and optionally the fixture VST3 or any installed VST3 on a MIDI track.
 
 For the director's listening tests (docs/AWAITING.md rows 2-4) and for win's
@@ -82,8 +82,16 @@ def main():
     rates = [int(r) for r in a.clip_rates.split(',') if r.strip()]
     c = sqlite3.connect(a.adi)
     c.execute("PRAGMA foreign_keys = ON")
+    # `adi_tool create` writes Live's default Set (Main, two MIDI, two audio
+    # tracks and their strips; ADR-0209 section 10 d10, engine #307). A
+    # pristine one has no clip, device or op; this script replaces its tracks
+    # with the demo's own. Anything already edited is left alone.
     if c.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]:
-        raise SystemExit(a.adi + ' already has tracks: start from `adi_tool create`')
+        edited = any(c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                     for t in ('clips', 'devices', 'ops'))
+        if edited:
+            raise SystemExit(a.adi + ' already has edits: start from `adi_tool create`')
+        c.execute("DELETE FROM tracks")   # strips and lanes cascade
     c.execute("INSERT OR REPLACE INTO project(id, name, sample_rate) VALUES (1, 'demo', ?)", (a.project_rate,))
 
     ns = 1_000_000_000

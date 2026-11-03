@@ -242,6 +242,21 @@ public:
     }
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
+
+    /// ADR-0207 d2: true when EVERY audio port the plug-in declares says
+    /// `CLAP_AUDIO_PORT_SUPPORTS_64BITS`, so a graph at 64 hands it double
+    /// and `data64` carries it. A plug-in with no ports extension declares no
+    /// port that takes 64, so it is processed at 32 between conversions, as
+    /// is one whose ports do not all take 64 (a port that cannot would need a
+    /// mixed-width call, and `REQUIRES_COMMON_SAMPLE_SIZE` forbids even that).
+    /// Read when the layout may be read -- at construction and at each
+    /// activation, never while active (`audio-ports.h`; ADR-0123 item 6) --
+    /// and remembered, because the graph asks at every prepare and a rebuild
+    /// leaves an unchanged plug-in active. The graph asks BEFORE it prepares
+    /// a node, so when an activation finds the answer moved, `shapeEpoch`
+    /// moves with it: the graph is built once more, asks again, and that build
+    /// leaves the plug-in active.
+    [[nodiscard]] bool processesDouble() const noexcept override { return double64_; }
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
@@ -359,6 +374,8 @@ public:
     /// rather than calling it: plugin.h makes `process` legal only while
     /// processing, and a start that failed says the plugin is not.
     [[nodiscard]] std::int64_t startFailures() const noexcept { return startFailures_; }
+    /// A reactivation holds the plug-in now (`ReactivationGate`). Any thread.
+    [[nodiscard]] bool reactivating() const noexcept { return gate_.closed(); }
 
     /// Events refused because a queue was full. Non-zero means the capacity
     /// derived at prepare was too small for what arrived (ADR-0056).
@@ -426,6 +443,18 @@ private:
     /// replacement for reading the port layout off an active plugin.
     std::uint64_t shapeSeen_ = 0;
 
+    /// ADR-0207 d2: how many activations found `processesDouble`'s answer
+    /// moved. Part of `shapeEpoch`, not of `shapeSeen_`, so the build it asks
+    /// for does not reactivate the plug-in. Written on the message thread,
+    /// read wherever the coalescer polls.
+    std::atomic<std::uint64_t> widthMoves_{0};
+
+    /// Holds the audio thread off the plug-in while `prepare` or `release`
+    /// stops, deactivates and reallocates it, which a live rebuild does while
+    /// the last graph still renders this device (ADR-0089 d4). Mutable:
+    /// `tailSamples` is const, and passes it too.
+    mutable ReactivationGate gate_;
+
     /// `glue_->flushRequests()` already answered. Message thread only.
     std::uint64_t flushSeen_ = 0;
     /// `glue_->paramListRescans()` already acted on. Message thread only.
@@ -443,6 +472,7 @@ private:
     std::vector<ParamDescriptor> params_;
     std::vector<clap_id> paramIds_;
     bool activated_ = false;
+    bool double64_ = false;            ///< every port takes 64 bits (see processesDouble)
     bool processing_ = false;          ///< start_processing succeeded (ADR-0123)
     std::int64_t startFailures_ = 0;
     double sampleRate_ = 0.0;
@@ -476,6 +506,8 @@ private:
         std::int32_t channels = 0;
         std::vector<float> storage;      ///< channels * maxFrames
         std::vector<float*> ptrs;
+        std::vector<double> wstorage;    ///< the same at 64, when every port takes it
+        std::vector<double*> wptrs;
     };
     std::vector<Bus> inBuses_, outBuses_;
     std::vector<clap_audio_buffer_t> inBufs_, outBufs_;

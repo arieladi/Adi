@@ -47,6 +47,13 @@ rejection and the breakdown count/time partition. The benchmark also refuses
 incorrect final audio or lost expression events rather than publishing timings
 for a broken fixture.
 
+`--precision 32|64` sets the graph's Processing Precision (ADR-0207 d2); 32,
+the default, is Live's scheme (float processing, every mix point summed in
+double) and 64 runs every buffer, sum and node of the fixture in double. The
+CSV columns are the same either way, so run the two into separate files and
+compare them row by row; matched runs on one core (`taskset -c N`) are the
+only comparison worth making on a shared machine.
+
 To run the full validation as well, build all targets first (the target-only
 commands above do not build the test binaries):
 

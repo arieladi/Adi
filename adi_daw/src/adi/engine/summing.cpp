@@ -161,6 +161,25 @@ void ConsoleNode::process(const NodeIo& io) noexcept {
     const std::int32_t n = io.frames;
     const float pre = pre_.load(std::memory_order_relaxed);
     const float post = post_.load(std::memory_order_relaxed);
+    if (io.wide()) {
+        // The same three steps at full width: the algorithm's own double
+        // path, the gains applied in double (they are levels, set once).
+        const double wpre = pre, wpost = post;
+        for (std::int32_t c = 0; c < io.channels; ++c) {
+            double* out = io.out64[c] + off;
+            const double* in = (io.in64 != nullptr && io.in64[c] != nullptr) ? io.in64[c] + off : nullptr;
+            if (in == nullptr) std::fill_n(out, n, 0.0);
+            else if (wpre == 1.0) { if (in != out) std::copy_n(in, n, out); }
+            else for (std::int32_t i = 0; i < n; ++i) out[i] = in[i] * wpre;
+        }
+        if (io.channels <= 0 || n <= 0) return;
+        double* ch[2] = {io.out64[0] + off, io.out64[io.channels > 1 ? 1 : 0] + off};
+        fx_->processDoubleReplacing(ch, ch, n);
+        if (wpost != 1.0)
+            for (std::int32_t c = 0; c < io.channels && c < 2; ++c)
+                for (std::int32_t i = 0; i < n; ++i) io.out64[c][off + i] *= wpost;
+        return;
+    }
     for (std::int32_t c = 0; c < io.channels; ++c) {
         float* out = io.out[c] + off;
         const float* in = (io.in != nullptr && io.in[c] != nullptr) ? io.in[c] + off : nullptr;
@@ -200,12 +219,13 @@ void GroupSumming::sync(const rows::Model& model) {
     std::map<std::int64_t, std::size_t> nodeOf;
     for (std::size_t i = 0; i < plan.nodes.size(); ++i) nodeOf[plan.nodes[i].trackId] = i;
 
-    std::set<std::int64_t> liveBusses, liveChannels;
+    std::set<std::int64_t> liveBusses, liveChannels, liveSends;
     for (const rows::GroupSumming& g : model.summing) {
         const std::string who = "tracks#" + std::to_string(g.trackId);
         const auto at = nodeOf.find(g.trackId);
-        if (at == nodeOf.end() || plan.nodes[at->second].kind != PlannedKind::Group) {
-            if (g.enabled) problems_.push_back(who + ": summing is on a track that is not a group; it is not played");
+        if (at == nodeOf.end() || (plan.nodes[at->second].kind != PlannedKind::Group &&
+                                   plan.nodes[at->second].kind != PlannedKind::Master)) {
+            if (g.enabled) problems_.push_back(who + ": summing is on a track that is not a group or master; it is not played");
             continue;
         }
         if (!g.enabled) continue;
@@ -216,23 +236,28 @@ void GroupSumming::sync(const rows::Model& model) {
         }
         const double drive = std::clamp(g.driveDb, -12.0, 24.0);
 
-        // The buss half, on the group's sum: the drive back off, the flavour's
+        // The buss half, on the group or master's sum: the drive back off, the flavour's
         // own gain staging made up.
         Half& b = busses_[g.trackId];
         if (!b.node || b.flavor != g.flavor) b = Half{g.flavor, g.trackId, makeConsoleHalf(g.flavor, true)};
         b.node->setGains(1.0f, dbToGain(-drive) * static_cast<float>(unityGain(*flavor)));
         liveBusses.insert(g.trackId);
 
-        // A channel half on every track whose main output is this group.
+        // A channel half on every track whose main output is this group or
+        // master, and on every send into it: a send is not a child, and its
+        // source keeps its own output as it was, so the half is the send's,
+        // not the source's (ADR-0203 d3, d14).
         for (const PlannedEdge& e : plan.edges) {
             if (e.bus != Bus::Main || e.to != at->second) continue;
             const PlannedNode& child = plan.nodes[e.from];
             if (child.kind == PlannedKind::Vca) continue;
-            Half& c = channels_[child.trackId];
+            const bool send = e.routingId != 0;
+            Half& c = send ? sends_[e.routingId] : channels_[child.trackId];
             if (!c.node || c.flavor != g.flavor || c.group != g.trackId)
                 c = Half{g.flavor, g.trackId, makeConsoleHalf(g.flavor, false)};
             c.node->setGains(dbToGain(drive), 1.0f);
-            liveChannels.insert(child.trackId);
+            if (send) liveSends.insert(e.routingId);
+            else liveChannels.insert(child.trackId);
         }
     }
     // Gone from the model: dropped here, kept alive by any graph still playing them.
@@ -240,6 +265,8 @@ void GroupSumming::sync(const rows::Model& model) {
         it = liveBusses.count(it->first) ? std::next(it) : busses_.erase(it);
     for (auto it = channels_.begin(); it != channels_.end();)
         it = liveChannels.count(it->first) ? std::next(it) : channels_.erase(it);
+    for (auto it = sends_.begin(); it != sends_.end();)
+        it = liveSends.count(it->first) ? std::next(it) : sends_.erase(it);
 }
 
 Node* GroupSumming::headFor(std::int64_t trackId) noexcept {
@@ -250,6 +277,16 @@ Node* GroupSumming::headFor(std::int64_t trackId) noexcept {
 Node* GroupSumming::tailFor(std::int64_t trackId) noexcept {
     const auto it = channels_.find(trackId);
     return it == channels_.end() ? nullptr : it->second.node.get();
+}
+
+Node* GroupSumming::sendTailFor(std::int64_t routingId) noexcept {
+    const auto it = sends_.find(routingId);
+    return it == sends_.end() ? nullptr : it->second.node.get();
+}
+
+const ConsoleNode* GroupSumming::sendChannelOf(std::int64_t routingId) const noexcept {
+    const auto it = sends_.find(routingId);
+    return it == sends_.end() ? nullptr : it->second.node.get();
 }
 
 const ConsoleNode* GroupSumming::bussOf(std::int64_t groupId) const noexcept {

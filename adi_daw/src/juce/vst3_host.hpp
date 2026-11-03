@@ -111,6 +111,23 @@ public:
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
+    // --- ADR-0207 d2: 64-bit processing -------------------------------------
+
+    /// True when the plug-in says `canProcessSampleSize(kSample64)`, which is
+    /// what JUCE's `supportsDoublePrecisionProcessing` asks. Asked once, at
+    /// construction: the graph asks before it prepares, and a VST3 does not
+    /// change what it supports.
+    [[nodiscard]] bool processesDouble() const noexcept override { return canDouble_; }
+    /// The graph's width for the next `prepare`. A VST3 fixes its sample
+    /// size in `setupProcessing`, at activation, so it is set up at 64 only
+    /// when it will be handed double, and at 32 in a graph at 32 whatever it
+    /// supports: the width is the graph's (Cubase's switch, ADR-0207 d2).
+    void willBeHanded(engine::Precision width) override {
+        handed64_ = width == engine::Precision::Float64;
+    }
+    /// Set up at `kSample64` now. Message thread, or while not processing.
+    [[nodiscard]] bool processingDouble() const noexcept { return double_; }
+
     // --- the two declarations, mapped straight through ----------------------
 
     /// VST3's `kInfiniteTail` is `INT64_MAX` and so is `engine::kInfiniteTail`;
@@ -119,7 +136,16 @@ public:
     /// here, and the infinite case is a branch rather than an arithmetic
     /// accident -- multiplying an infinity by a sample rate does not give you
     /// INT64_MAX, it gives you undefined behaviour.
-    [[nodiscard]] std::int64_t tailSamples() const noexcept override;
+    ///
+    /// READ ON THE MESSAGE THREAD, AND KEPT. The graph asks every block, on
+    /// the audio thread, and JUCE answers by calling the plug-in's
+    /// `getTailSamples`, which the SDK marks [UI-thread & Setup Done] -- and
+    /// during a reactivation it ran while the message thread had the plug-in
+    /// in `setupProcessing`. A VST3 says its tail when it is set up, so it is
+    /// read at construction and after each activation, and this returns that.
+    [[nodiscard]] std::int64_t tailSamples() const noexcept override {
+        return tail_.load(std::memory_order_acquire);
+    }
 
     /// Whatever `getLatencySamples()` says, and nothing added. ADR-0058
     /// decision 4: the device buffer is NOT included here, or every
@@ -226,6 +252,8 @@ public:
     /// prepare with the same rate, size and channels must not -- see the guard
     /// at the top of `prepare`, which never fired until ADR-0097 found why.
     [[nodiscard]] std::int64_t activations() const noexcept { return activations_; }
+    /// A reactivation holds the plug-in now (`ReactivationGate`). Any thread.
+    [[nodiscard]] bool reactivating() const noexcept { return gate_.closed(); }
 
     /// True when the raw interface was reached and the fast path is live.
     [[nodiscard]] bool usingRawProcessor() const noexcept { return processor_ != nullptr; }
@@ -269,11 +297,19 @@ private:
     std::vector<juce::AudioProcessorParameter*> handles_;
 
     juce::AudioBuffer<float> scratch_;
+    /// The same at 64, when the plug-in is set up at `kSample64`.
+    juce::AudioBuffer<double> scratch64_;
     juce::MidiBuffer midi_;
 
     /// The raw interface, when we could reach it. Null means JUCE's
-    /// processBlock is driving and note expression is unavailable.
+    /// processBlock is driving and note expression is unavailable. Holds a
+    /// reference of its own (`queryInterface` adds one), released when it is
+    /// asked for again and in the destructor.
     Steinberg::Vst::IAudioProcessor* processor_ = nullptr;
+    /// `tailSamples`, as the plug-in last said it on the message thread.
+    std::atomic<std::int64_t> tail_{engine::kInfiniteTail};
+    /// What the plug-in says its tail is now. Message thread, set up.
+    [[nodiscard]] std::int64_t readTail() const noexcept;
     Vst3EventList   events_;
 
     // ADR-0097. The router's output is sized at prepare and reused.
@@ -291,6 +327,18 @@ private:
     std::vector<engine::Event> injected_;
     std::size_t injectedUsed_ = 0;
     std::vector<float*> rawIn_, rawOut_;
+    std::vector<double*> rawIn64_, rawOut64_;
+    bool canDouble_ = false;   ///< `canProcessSampleSize(kSample64)`, asked at construction
+    bool handed64_ = false;    ///< the next `prepare` is for a graph handing double
+    bool double_ = false;      ///< set up at `kSample64`
+
+    /// The segment into `scratch_` or `scratch64_`, whichever the plug-in is
+    /// set up at, from the graph's width: copied, or converted once.
+    void copyIn(const engine::NodeIo& io, std::int32_t n, std::int32_t ch) noexcept;
+    /// And back out, into the graph's width, the rest of the segment silent.
+    void copyOut(const engine::NodeIo& io, std::int32_t n, std::int32_t ch) noexcept;
+    /// This segment of the output silent, at the graph's width.
+    static void silence(const engine::NodeIo& io) noexcept;
     std::int64_t continuousTime_ = 0;
 
     std::atomic<std::uint64_t> latencyEpoch_{0};
@@ -301,6 +349,10 @@ private:
     double sampleRate_ = 0.0;
     bool prepared_ = false;
     std::int64_t activations_ = 0;
+    /// Holds the audio thread off the plug-in while `prepare` or `release`
+    /// reactivates it, which a live rebuild does while the last graph still
+    /// renders this device (ADR-0089 d4).
+    ReactivationGate gate_;
 };
 
 }  // namespace adi::device

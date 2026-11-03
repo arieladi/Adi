@@ -32,6 +32,10 @@
 #include <fstream>
 #include <string>
 #include <type_traits>
+#include <atomic>
+#include <chrono>
+#include <cstdlib>
+#include <thread>
 
 namespace {
 
@@ -2443,11 +2447,673 @@ void testAParameterSetBeforeActivationIsFlushed() {
     check(f.flushes == 1, "and still no flush");
 }
 
+// --- ADR-0207 d2: a CLAP that takes 64 bits is handed 64 bits ---------------
+
+/// A plug-in whose ports' 64-bit flags the test sets, and which multiplies its
+/// main input by 0.1 at whichever width it is handed: 0.1 is a number float
+/// cannot hold, so the output says which width the arithmetic ran in.
+struct Fake64 {
+    clap_plugin_t plugin{};
+    clap_plugin_audio_ports_t ports{};
+    bool declarePorts = true;
+    std::uint32_t inputs = 1, outputs = 1;
+    std::uint32_t flags = CLAP_AUDIO_PORT_SUPPORTS_64BITS;
+    std::uint32_t secondInputFlags = CLAP_AUDIO_PORT_SUPPORTS_64BITS;
+    std::int64_t outputFlags = -1;         ///< the output ports' flags; -1: as `flags`
+    bool fail = false;
+    int activations = 0;
+    std::vector<std::int64_t> steady;      ///< steady_time, per process call
+    int calls = 0;
+    bool saw32 = false, saw64 = false, mixed = false;
+    bool sideFedZeros64 = true;            ///< the second input port, at 64, held zeros
+    bool active = false;
+    int portReads = 0, portReadsWhileActive = 0;   ///< audio-ports.h: deactivated only
+
+    static Fake64& self(const clap_plugin_t* p) { return *static_cast<Fake64*>(p->plugin_data); }
+
+    Fake64() {
+        plugin.plugin_data = this;
+        plugin.init = [](const clap_plugin_t*) { return true; };
+        plugin.destroy = [](const clap_plugin_t*) {};
+        plugin.activate = [](const clap_plugin_t* p, double, std::uint32_t, std::uint32_t) {
+            self(p).active = true;
+            ++self(p).activations;
+            return true;
+        };
+        plugin.deactivate = [](const clap_plugin_t* p) { self(p).active = false; };
+        plugin.start_processing = [](const clap_plugin_t*) { return true; };
+        plugin.stop_processing = [](const clap_plugin_t*) {};
+        plugin.reset = [](const clap_plugin_t*) {};
+        plugin.on_main_thread = [](const clap_plugin_t*) {};
+        plugin.get_extension = [](const clap_plugin_t* p, const char* id) -> const void* {
+            Fake64& f = self(p);
+            if (std::strcmp(id, CLAP_EXT_AUDIO_PORTS) == 0 && f.declarePorts) return &f.ports;
+            return nullptr;
+        };
+        ports.count = [](const clap_plugin_t* p, bool isInput) -> std::uint32_t {
+            Fake64& f = self(p);
+            ++f.portReads;
+            if (f.active) ++f.portReadsWhileActive;
+            return isInput ? f.inputs : f.outputs;
+        };
+        ports.get = [](const clap_plugin_t* p, std::uint32_t i, bool isInput,
+                       clap_audio_port_info_t* info) {
+            Fake64& f = self(p);
+            ++f.portReads;
+            if (f.active) ++f.portReadsWhileActive;
+            if (i >= (isInput ? f.inputs : f.outputs)) return false;
+            *info = clap_audio_port_info_t{};
+            info->id = i;
+            info->channel_count = 2;
+            info->flags = isInput ? (i == 1 ? f.secondInputFlags : f.flags)
+                                  : (f.outputFlags >= 0 ? static_cast<std::uint32_t>(f.outputFlags) : f.flags);
+            info->port_type = CLAP_PORT_STEREO;
+            info->in_place_pair = CLAP_INVALID_ID;
+            return true;
+        };
+        plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
+            Fake64& f = self(p);
+            ++f.calls;
+            f.steady.push_back(pd->steady_time);
+            if (f.fail) return CLAP_PROCESS_ERROR;
+            // Which width each port was handed: exactly one pointer per port,
+            // and the same width on every port.
+            bool any32 = false, any64 = false;
+            auto look = [&](const clap_audio_buffer_t& b) {
+                const bool has32 = b.data32 != nullptr, has64 = b.data64 != nullptr;
+                if (has32 == has64) f.mixed = true;
+                any32 = any32 || has32;
+                any64 = any64 || has64;
+            };
+            for (std::uint32_t b = 0; b < pd->audio_inputs_count; ++b) look(pd->audio_inputs[b]);
+            for (std::uint32_t b = 0; b < pd->audio_outputs_count; ++b) look(pd->audio_outputs[b]);
+            if (any32 && any64) f.mixed = true;
+            f.saw32 = f.saw32 || any32;
+            f.saw64 = f.saw64 || any64;
+            const clap_audio_buffer_t& out = pd->audio_outputs[0];
+            const clap_audio_buffer_t* in = pd->audio_inputs_count > 0 ? &pd->audio_inputs[0] : nullptr;
+            for (std::uint32_t c = 0; c < out.channel_count; ++c) {
+                for (std::uint32_t i = 0; i < pd->frames_count; ++i) {
+                    if (out.data64 != nullptr) {
+                        const double x = (in != nullptr && in->data64 != nullptr) ? in->data64[c][i] : 0.0;
+                        out.data64[c][i] = x * 0.1;
+                    } else {
+                        const float x = (in != nullptr && in->data32 != nullptr) ? in->data32[c][i] : 0.0f;
+                        out.data32[c][i] = x * 0.1f;
+                    }
+                }
+            }
+            if (pd->audio_inputs_count > 1 && pd->audio_inputs[1].data64 != nullptr)
+                for (std::uint32_t c = 0; c < pd->audio_inputs[1].channel_count; ++c)
+                    for (std::uint32_t i = 0; i < pd->frames_count; ++i)
+                        if (pd->audio_inputs[1].data64[c][i] != 0.0) f.sideFedZeros64 = false;
+            return CLAP_PROCESS_CONTINUE;
+        };
+    }
+};
+
+/// A NodeIo at 64 or at 32 over two-channel buffers of `frames`, input `x`.
+struct Io64 {
+    std::vector<double> il, ir, ol, orr;
+    std::vector<float> fl, fr, gl, gr;
+    const double* in64[2]{};
+    double* out64[2]{};
+    const float* in32[2]{};
+    float* out32[2]{};
+    engine::NodeIo io;
+    Io64(std::int32_t frames, double x, bool wide)
+        : il(static_cast<std::size_t>(frames), x), ir(static_cast<std::size_t>(frames), x),
+          ol(static_cast<std::size_t>(frames), -1.0), orr(static_cast<std::size_t>(frames), -1.0),
+          fl(static_cast<std::size_t>(frames), static_cast<float>(x)),
+          fr(static_cast<std::size_t>(frames), static_cast<float>(x)),
+          gl(static_cast<std::size_t>(frames), -1.0f), gr(static_cast<std::size_t>(frames), -1.0f) {
+        in64[0] = il.data(); in64[1] = ir.data();
+        out64[0] = ol.data(); out64[1] = orr.data();
+        in32[0] = fl.data(); in32[1] = fr.data();
+        out32[0] = gl.data(); out32[1] = gr.data();
+        io.channels = 2;
+        io.frames = frames;
+        io.sampleRate = 48000.0;
+        if (wide) { io.in64 = in64; io.out64 = out64; }
+        else      { io.in = in32; io.out = out32; }
+    }
+};
+
+void testA64BitPluginSaysSo() {
+    section("ADR-0207 d2 -- a CLAP whose every port takes 64 bits processes double");
+
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake64";
+    {
+        Fake64 f;
+        ClapDevice d(&f.plugin, id);
+        check(d.processesDouble(), "every port says SUPPORTS_64BITS: it processes double, "
+                                   "known before it is prepared, as the graph asks then");
+        d.prepare(48000.0, 256);
+        check(d.processesDouble(), "and after");
+    }
+    {
+        Fake64 f;
+        f.inputs = 2;
+        f.secondInputFlags = 0;
+        ClapDevice d(&f.plugin, id);
+        check(!d.processesDouble(), "one port that cannot take 64 bits makes it a 32-bit device");
+    }
+    {
+        Fake64 f;
+        f.declarePorts = false;
+        ClapDevice d(&f.plugin, id);
+        check(!d.processesDouble(), "no ports extension: no port says it takes 64 bits");
+    }
+    {
+        Fake64 f;
+        f.outputs = 0;
+        ClapDevice d(&f.plugin, id);
+        check(!d.processesDouble(), "no output port: nothing for it to hand back at 64");
+    }
+    {
+        Fake64 f;
+        f.outputFlags = 0;
+        ClapDevice d(&f.plugin, id);
+        check(!d.processesDouble(), "an output that cannot take 64 bits makes it a 32-bit device, "
+                                    "whatever its input says");
+    }
+    {
+        Fake64 f;
+        f.inputs = 0;                            // an instrument
+        f.outputFlags = 0;
+        ClapDevice a(&f.plugin, id);
+        check(!a.processesDouble(), "an instrument whose output cannot take 64 bits: 32-bit");
+        Fake64 g;
+        g.inputs = 0;
+        ClapDevice b(&g.plugin, id);
+        check(b.processesDouble(), "one whose output can: it processes double");
+    }
+}
+
+void testAt64ThePluginIsHandedDouble() {
+    section("ADR-0207 d2 -- at 64 the plugin is handed data64 on every port, and its bits come back");
+
+    Fake64 f;
+    f.inputs = 2;                                // a main input and a second one
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake64";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 256);
+
+    Io64 w(256, 0.3, true);
+    d.process(w.io);
+    check(f.saw64 && !f.saw32 && !f.mixed, "data64 on every port, data32 null on every port");
+    const double want = 0.3 * 0.1;
+    bool exact = true;
+    for (std::size_t i = 0; i < 256; ++i) if (w.ol[i] != want || w.orr[i] != want) exact = false;
+    check(exact, "the output is 0.3 * 0.1 in double, every bit");
+    check(want != static_cast<double>(0.3f * 0.1f), "(which float cannot give)");
+    check(f.sideFedZeros64, "the second input port, which the graph does not drive, held zeros");
+
+    Fake64 g;
+    ClapDevice e(&g.plugin, id);
+    e.prepare(48000.0, 256);
+    Io64 n(256, 0.3, false);
+    e.process(n.io);
+    check(g.saw32 && !g.saw64 && !g.mixed, "at 32 the same plugin is handed data32: the graph's "
+                                           "width, not the device's");
+    check(n.gl[17] == 0.3f * 0.1f, "and its float result reaches the graph");
+}
+
+void testAt64AFloatOnlyPluginIsConverted() {
+    section("ADR-0207 d2 -- double handed to a CLAP that cannot take it is converted, not bypassed");
+
+    // The graph only hands double to a device that said it takes it, but a
+    // rescan can change the answer before the rebuild it causes.
+    Fake64 f;
+    f.flags = 0;
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake32";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 256);
+    Io64 w(256, 0.3, true);
+    d.process(w.io);
+    check(f.calls == 1 && f.saw32 && !f.saw64, "it is processed at 32");
+    const auto want = static_cast<double>(static_cast<float>(0.3) * 0.1f);
+    check(w.ol[0] == want && w.orr[255] == want, "its input narrowed once, its output widened");
+}
+
+void testAt64TheSegmentAndTheErrorAreHonoured() {
+    section("ADR-0042/0207 -- at 64, the segment offset in and out, an error's silence, steady time");
+
+    // A RAMP, as the 32-bit test feeds, so an input read from the block's
+    // start instead of the segment's is a different number.
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake64";
+    for (const bool takes64 : {true, false}) {
+        const std::string where = takes64 ? "data64" : "narrowed";
+        Fake64 f;
+        if (!takes64) f.flags = 0;
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000.0, 256);
+        Io64 w(256, 0.0, true);
+        for (std::size_t i = 0; i < 256; ++i) w.il[i] = w.ir[i] = static_cast<double>(i);
+        w.io.blockOffset = 64;
+        w.io.frames = 128;
+        d.process(w.io);
+        bool placed = true;
+        for (std::size_t i = 0; i < 256; ++i) {
+            const double x = static_cast<double>(i);
+            const double y = takes64 ? x * 0.1
+                                     : static_cast<double>(static_cast<float>(x) * 0.1f);
+            const double want = (i >= 64 && i < 192) ? y : -1.0;
+            if (w.ol[i] != want || w.orr[i] != want) placed = false;
+        }
+        check(placed, where + ": the segment is read from its offset in the block, lands there, "
+                              "and nothing else is touched");
+
+        f.fail = true;
+        Io64 e(256, 0.3, true);
+        e.io.blockOffset = 64;
+        e.io.frames = 128;
+        d.process(e.io);
+        bool silenced = true;
+        for (std::size_t i = 0; i < 256; ++i) {
+            const double want = (i >= 64 && i < 192) ? 0.0 : -1.0;
+            if (e.ol[i] != want || e.orr[i] != want) silenced = false;
+        }
+        check(silenced, where + ": CLAP_PROCESS_ERROR silences its own segment, and only it");
+
+        f.fail = false;
+        Io64 n(256, 0.3, true);
+        d.process(n.io);
+        const bool timed = f.steady.size() == 3 && f.steady[1] == f.steady[0] + 128 &&
+                           f.steady[2] == f.steady[1] + 128;
+        check(timed, where + ": steady_time moves on by each call's frames, the failed one's "
+                             "too (process.h)");
+    }
+}
+
+/// A source that writes 0.1 at whichever width the graph hands it.
+class WideConst final : public engine::Node {
+public:
+    void process(const engine::NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) {
+                if (io.wide()) io.out64[c][io.blockOffset + i] = 0.1;
+                else io.out[c][io.blockOffset + i] = 0.1f;
+            }
+    }
+    [[nodiscard]] bool processesDouble() const noexcept override { return true; }
+    [[nodiscard]] const char* name() const noexcept override { return "wide-const"; }
+};
+
+void testThePortsAreReadOnlyWhileDeactivated() {
+    section("audio-ports.h / ADR-0123 item 6 -- the layout, 64-bit flags and all, is read deactivated");
+
+    // "The scan has to be done while the plugin is deactivated." The bus
+    // scan in prepare ran just after activate; the 64-bit flags are read in
+    // the same place, so both now run before it.
+    Fake64 f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake64";
+    ClapDevice d(&f.plugin, id);
+    const int atConstruction = f.portReads;
+    check(atConstruction > 0, "the flags are read at construction, deactivated");
+    d.prepare(48000.0, 256);
+    check(f.active && f.portReads > atConstruction, "prepare scans the ports and activates");
+    check(f.portReadsWhileActive == 0, "and never reads them while active: " +
+                                       std::to_string(f.portReadsWhileActive));
+    const int atFirst = f.portReads;
+    d.prepare(44100.0, 256);             // a new rate: deactivate, rescan, reactivate
+    check(f.active && f.portReads > atFirst, "a reactivation scans them again");
+    check(f.portReadsWhileActive == 0, "deactivated again: " +
+                                       std::to_string(f.portReadsWhileActive));
+    check(d.processesDouble(), "and the answer stands");
+    Io64 w(256, 0.3, true);
+    d.process(w.io);
+    check(f.saw64 && !f.saw32 && w.ol[9] == 0.3 * 0.1, "handed data64 after the reactivation");
+
+    // The prepare every rebuild makes of an unchanged plug-in: it stays
+    // active, so it must not read the layout at all.
+    const int atSecond = f.portReads, activations = f.activations;
+    d.prepare(44100.0, 256);
+    check(f.activations == activations, "an unchanged prepare leaves it active");
+    check(f.portReads == atSecond && f.portReadsWhileActive == 0,
+          "and reads no port: " + std::to_string(f.portReads - atSecond));
+}
+
+void testTheAnswerIsReadAgainAtEachActivation() {
+    section("ADR-0207 d2 -- the 64-bit answer is read at each activation, and a moved one is built again");
+
+    // A plug-in may change its ports while deactivated. The graph asks before
+    // it prepares, so the build that finds the answer moved hands the width it
+    // kept; `shapeEpoch` moves, and the next build asks again without
+    // reactivating anything.
+    DeviceIdentity id; id.format = "clap"; id.name = "Fake64";
+    for (const bool to64 : {false, true}) {
+        const std::string where = to64 ? "32 to 64" : "64 to 32";
+        Fake64 f;
+        if (to64) f.flags = 0;
+        ClapDevice dev(&f.plugin, id);
+        DeviceNode node(dev);
+        WideConst src;
+        engine::Graph g;
+        g.setChannels(2);
+        g.setPrecision(engine::Precision::Float64);
+        const engine::NodeId ns = g.addNode(src), nd = g.addNode(node);
+        g.connect(ns, nd);
+        g.setOutput(nd);
+        g.prepare(48000.0, 256);
+        check(dev.processesDouble() != to64, where + ": the first answer");
+        const std::uint64_t epoch = dev.shapeEpoch();
+
+        std::vector<float> l(256), r(256);
+        std::vector<double> wl(256), wr(256);
+        float* outp[2] = {l.data(), r.data()};
+        double* out64[2] = {wl.data(), wr.data()};
+        engine::AudioIo io;
+        io.out = outp; io.numOut = 2; io.frames = 256; io.out64 = out64;
+
+        g.release();
+        f.flags = to64 ? CLAP_AUDIO_PORT_SUPPORTS_64BITS : 0;   // deactivated: allowed
+        g.prepare(48000.0, 256);
+        check(dev.processesDouble() == to64, where + ": the activation reads it again");
+        check(dev.shapeEpoch() - epoch == 1, where + ": and moves shapeEpoch, which asks for a build");
+        f.saw32 = f.saw64 = false;
+        g.process(io);
+        if (to64)
+            check(f.saw32 && !f.saw64, where + ": the build that found it keeps 32, converted");
+        else
+            check(f.saw32 && !f.saw64, where + ": the build that found it hands no data64 to a "
+                                              "plug-in that cannot take it");
+
+        const int activations = f.activations;
+        g.prepare(48000.0, 256);              // the build the epoch asked for
+        check(f.activations == activations, where + ": which leaves the plug-in active");
+        check(dev.shapeEpoch() - epoch == 1, where + ": and asks for no other");
+        f.saw32 = f.saw64 = false;
+        g.process(io);
+        check(to64 ? (f.saw64 && !f.saw32) : (f.saw32 && !f.saw64),
+              where + ": and is handed " + (to64 ? "data64" : "data32"));
+        if (to64) check(wl[100] == 0.1 * 0.1, where + ": its double result, every bit");
+    }
+}
+
+void testA64BitClapThroughTheGraph() {
+    section("ADR-0207 d2 -- a graph at 64 hands a 64-bit CLAP double, end to end");
+
+    for (const bool at64 : {true, false}) {
+        Fake64 f;
+        DeviceIdentity id; id.format = "clap"; id.name = "Fake64";
+        ClapDevice dev(&f.plugin, id);
+        DeviceNode node(dev);
+        WideConst src;
+        engine::Graph g;
+        g.setChannels(2);
+        g.setPrecision(at64 ? engine::Precision::Float64 : engine::Precision::Float32);
+        const engine::NodeId ns = g.addNode(src), nd = g.addNode(node);
+        g.connect(ns, nd);
+        g.setOutput(nd);
+        g.prepare(48000.0, 256);
+        check(g.ok(), "the graph prepares: " + g.error());
+
+        std::vector<float> l(256), r(256);
+        std::vector<double> wl(256), wr(256);
+        float* outp[2] = {l.data(), r.data()};
+        double* out64[2] = {wl.data(), wr.data()};
+        engine::AudioIo io;
+        io.out = outp; io.numOut = 2; io.frames = 256;
+        if (at64) io.out64 = out64;
+        g.process(io);
+        if (at64) {
+            check(f.saw64 && !f.saw32, "at 64: the plugin was handed data64");
+            check(wl[100] == 0.1 * 0.1 && wr[255] == 0.1 * 0.1,
+                  "and the graph's double output is 0.1 * 0.1 in double, every bit");
+        } else {
+            check(f.saw32 && !f.saw64, "at 32: the plugin was handed data32, as before");
+            check(l[100] == 0.1f * 0.1f, "and the float result reaches the output");
+        }
+    }
+}
+
+// --- ADR-0089 d4: a reactivation holds the audio thread off the plug-in -----
+
+/// A plug-in whose `process`, `activate` and `stop_processing` can be held,
+/// so a test can put a call on the audio thread exactly where a live rebuild
+/// would meet it. It has a tail (7 samples) and counts who asks for it.
+struct Holdable {
+    clap_plugin_t plugin{};
+    clap_plugin_tail_t tail{};
+    std::atomic<bool> holdProcess{false}, holdActivate{false}, holdStop{false};
+    std::atomic<bool> inProcess{false}, inActivate{false}, inStop{false};
+    std::atomic<int> calls{0}, activations{0}, deactivations{0}, stops{0}, tailCalls{0};
+    std::atomic<int> deactivatedUnderACall{0}, calledWhileInactive{0}, tailWhileInactive{0};
+    std::atomic<bool> active{false};
+    bool startFails = false;
+
+    static Holdable& self(const clap_plugin_t* p) { return *static_cast<Holdable*>(p->plugin_data); }
+
+    Holdable() {
+        plugin.plugin_data = this;
+        plugin.init = [](const clap_plugin_t*) { return true; };
+        plugin.destroy = [](const clap_plugin_t*) {};
+        plugin.activate = [](const clap_plugin_t* p, double, std::uint32_t, std::uint32_t) {
+            Holdable& f = self(p);
+            f.inActivate = true;
+            while (f.holdActivate.load()) std::this_thread::yield();
+            f.inActivate = false;
+            ++f.activations;
+            f.active = true;
+            return true;
+        };
+        plugin.deactivate = [](const clap_plugin_t* p) {
+            Holdable& f = self(p);
+            if (f.inProcess.load()) ++f.deactivatedUnderACall;
+            f.active = false;
+            ++f.deactivations;
+        };
+        plugin.start_processing = [](const clap_plugin_t* p) { return !self(p).startFails; };
+        plugin.stop_processing = [](const clap_plugin_t* p) {
+            Holdable& f = self(p);
+            f.inStop = true;
+            while (f.holdStop.load()) std::this_thread::yield();
+            f.inStop = false;
+            ++f.stops;
+        };
+        plugin.reset = [](const clap_plugin_t*) {};
+        plugin.on_main_thread = [](const clap_plugin_t*) {};
+        plugin.get_extension = [](const clap_plugin_t* p, const char* id) -> const void* {
+            return std::strcmp(id, CLAP_EXT_TAIL) == 0 ? &self(p).tail : nullptr;
+        };
+        tail.get = [](const clap_plugin_t* p) -> std::uint32_t {
+            Holdable& f = self(p);
+            if (!f.active.load() || f.inActivate.load()) ++f.tailWhileInactive;
+            ++f.tailCalls;
+            return 7;
+        };
+        plugin.process = [](const clap_plugin_t* p, const clap_process_t* pd) -> clap_process_status {
+            Holdable& f = self(p);
+            if (!f.active.load()) ++f.calledWhileInactive;
+            f.inProcess = true;
+            while (f.holdProcess.load()) std::this_thread::yield();
+            ++f.calls;
+            const clap_audio_buffer_t& out = pd->audio_outputs[0];
+            for (std::uint32_t c = 0; c < out.channel_count; ++c)
+                for (std::uint32_t i = 0; i < pd->frames_count; ++i) out.data32[c][i] = 0.5f;
+            f.inProcess = false;
+            return CLAP_PROCESS_CONTINUE;
+        };
+    }
+};
+
+/// Wait, up to `ms`, for `pred`: a test that waits on another thread must
+/// fail, not hang, when what it waits for never comes.
+template <typename P>
+bool within(P pred, int ms = 5000) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() > until) return false;
+        std::this_thread::yield();
+    }
+    return true;
+}
+
+/// Spin for `ms`, so a thread that ought to wait has had the chance not to.
+void spinFor(int ms) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < until) std::this_thread::yield();
+}
+
+void testAReactivationWaitsForTheCallInFlight() {
+    section("ADR-0089 d4 -- a reactivation waits for the process call in flight, and owns the plug-in");
+
+    // A rebuild prepares the next graph while the last one still renders,
+    // both holding this device. A prepare that reactivates used to stop,
+    // deactivate and reallocate under a process call still running.
+    Holdable f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Holdable";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 256);
+    Io64 a(256, 0.3, false);
+
+    f.holdProcess = true;
+    std::thread audio([&] { d.process(a.io); });
+    check(within([&] { return f.inProcess.load(); }), "the audio thread is inside the plug-in");
+    const int before = f.deactivations.load();
+    std::thread message([&] { d.prepare(44100.0, 256); });     // a new rate: reactivate
+    check(within([&] { return d.reactivating(); }), "the reactivation holds the gate");
+    spinFor(50);
+    check(f.deactivations.load() == before,
+          "and does not deactivate the plug-in under the call: " +
+          std::to_string(f.deactivations.load() - before));
+    f.holdProcess = false;
+    audio.join();
+    message.join();
+    check(f.deactivations.load() == before + 1 && f.deactivatedUnderACall.load() == 0,
+          "it deactivates once the call has left, and never under one");
+    check(!d.reactivating(), "and lets go");
+
+    // A call that starts while the plug-in is being reactivated passes its
+    // audio through; the plug-in is not called until it is active again.
+    f.holdActivate = true;
+    std::thread again([&] { d.prepare(48000.0, 256); });
+    check(within([&] { return f.inActivate.load(); }), "a second reactivation is under way");
+    const int calls = f.calls.load();
+    Io64 b(256, 0.3, false);
+    d.process(b.io);
+    check(f.calls.load() == calls && f.calledWhileInactive.load() == 0,
+          "a call made meanwhile does not reach the plug-in");
+    check(b.gl[0] == 0.3f && b.gr[255] == 0.3f, "and passes its audio through");
+    f.holdActivate = false;
+    again.join();
+    Io64 c(256, 0.3, false);
+    d.process(c.io);
+    check(f.calls.load() == calls + 1 && c.gl[17] == 0.5f, "active again, the plug-in plays");
+
+    // An unchanged prepare, which every rebuild makes of a device it did not
+    // change, never takes the gate: it costs the device no block.
+    f.holdProcess = true;
+    std::thread audio2([&] { d.process(a.io); });
+    check(within([&] { return f.inProcess.load(); }), "a call in flight again");
+    std::atomic<bool> done{false};
+    std::thread rebuild([&] { d.prepare(48000.0, 256); done = true; });
+    check(within([&] { return done.load(); }, 1000),
+          "an unchanged prepare returns without waiting for it");
+    f.holdProcess = false;
+    audio2.join();
+    rebuild.join();
+}
+
+void testNothingReachesThePlugInWhileItIsReactivated() {
+    section("ADR-0089 d4 -- while a reactivation holds it, nothing on the audio thread reaches "
+            "the plug-in: not process, not the tail query the graph makes every block");
+
+    Holdable f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Holdable";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 256);
+    check(d.tailSamples() == 7, "active, the tail is the plug-in's");
+
+    // Held inside stop_processing, the first thing a reactivation does: the
+    // plug-in is still active and processing, so only the gate keeps a call
+    // out (a reactivation held in activate has already stopped processing,
+    // and the call would pass through without the gate).
+    f.holdStop = true;
+    std::thread message([&] { d.prepare(44100.0, 256); });
+    check(within([&] { return f.inStop.load(); }), "a reactivation is inside stop_processing");
+    const int calls = f.calls.load(), tails = f.tailCalls.load();
+    Io64 b(256, 0.3, false);
+    d.process(b.io);
+    check(f.calls.load() == calls, "a call made meanwhile does not reach the plug-in");
+    check(b.gl[0] == 0.3f && b.gr[255] == 0.3f, "and passes its audio through");
+    check(d.tailSamples() == engine::kInfiniteTail && f.tailCalls.load() == tails,
+          "the tail query meanwhile is answered without the plug-in: infinite, so nothing sleeps");
+    f.holdStop = false;
+    message.join();
+
+    // Held inside activate: deactivated and being activated again.
+    f.holdActivate = true;
+    std::thread again([&] { d.prepare(48000.0, 256); });
+    check(within([&] { return f.inActivate.load(); }), "a reactivation is inside activate");
+    check(d.tailSamples() == engine::kInfiniteTail && f.tailCalls.load() == tails,
+          "and while it is, the tail query does not reach the plug-in either");
+    f.holdActivate = false;
+    again.join();
+    check(f.tailWhileInactive.load() == 0, "the plug-in was never asked for its tail while inactive");
+    check(d.tailSamples() == 7 && f.tailCalls.load() == tails + 1, "active again, it is asked");
+}
+
+void testADestroyedDeviceStopsOnlyWhatStarted() {
+    section("plugin.h -- a device destroyed stops processing only if processing started, "
+            "then deactivates");
+
+    DeviceIdentity id; id.format = "clap"; id.name = "Holdable";
+    {
+        Holdable f;
+        f.startFails = true;
+        {
+            ClapDevice d(&f.plugin, id);
+            d.prepare(48000.0, 256);
+            check(d.startFailures() == 1, "start_processing refused");
+        }
+        check(f.stops.load() == 0, "destroyed, it is never stopped: it never started");
+        check(f.deactivations.load() == 1, "and it is deactivated");
+    }
+    {
+        Holdable f;
+        { ClapDevice d(&f.plugin, id); d.prepare(48000.0, 256); }
+        check(f.stops.load() == 1 && f.deactivations.load() == 1,
+              "one that started is stopped, then deactivated");
+    }
+}
+
+void testAReleaseWaitsForTheCallInFlight() {
+    section("ADR-0089 d4 -- a release waits for the process call in flight too");
+
+    Holdable f;
+    DeviceIdentity id; id.format = "clap"; id.name = "Holdable";
+    ClapDevice d(&f.plugin, id);
+    d.prepare(48000.0, 256);
+    Io64 a(256, 0.3, false);
+    f.holdProcess = true;
+    std::thread audio([&] { d.process(a.io); });
+    check(within([&] { return f.inProcess.load(); }), "the audio thread is inside the plug-in");
+    std::thread message([&] { d.release(); });
+    check(within([&] { return d.reactivating(); }), "the release holds the gate");
+    spinFor(50);
+    check(f.deactivations.load() == 0, "and does not deactivate under the call");
+    f.holdProcess = false;
+    audio.join();
+    message.join();
+    check(f.deactivations.load() == 1 && f.deactivatedUnderACall.load() == 0,
+          "it deactivates once the call has left");
+}
+
 }  // namespace
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_clap_tests -- the CLAP host, no JUCE and no plugin\n\n");
+    // Every wait in the threaded tests has a deadline, but a gate that never
+    // opens hangs in a Hold or a join, not in a wait. This ends the suite
+    // instead, well inside ctest's TIMEOUT for it.
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(240));
+        std::printf("\nFAILED -- still running after 240 s: a threaded test is stuck\n");
+        std::_Exit(1);
+    }).detach();
     testEveryDimensionHasANamedClapId();
     testTuningNeedsNoConversion();
     testEventListCarriesNoteIdAndDouble();
@@ -2488,6 +3154,17 @@ int main() {
     testRescanAllPreservesIndicesAndClearKeepsTheLane();
     testAutomationReachesClapInPlainUnits();
     testAnEchoDoesNotBecomeAnEdit();
+    testA64BitPluginSaysSo();
+    testAt64ThePluginIsHandedDouble();
+    testAt64AFloatOnlyPluginIsConverted();
+    testAt64TheSegmentAndTheErrorAreHonoured();
+    testThePortsAreReadOnlyWhileDeactivated();
+    testTheAnswerIsReadAgainAtEachActivation();
+    testAReactivationWaitsForTheCallInFlight();
+    testAReleaseWaitsForTheCallInFlight();
+    testNothingReachesThePlugInWhileItIsReactivated();
+    testADestroyedDeviceStopsOnlyWhatStarted();
+    testA64BitClapThroughTheGraph();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
