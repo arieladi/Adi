@@ -231,6 +231,7 @@ add_library(adi_core STATIC
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
     src/adi/render/queue.cpp
+    src/adi/render/normalization.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
@@ -1335,6 +1336,10 @@ add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
 add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
 target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
+
+add_executable(adi_normalization_tests tests/test_normalization.cpp)
+target_link_libraries(adi_normalization_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_normalization_tests COMMAND adi_normalization_tests)
 
 add_executable(adi_offline_capture_tests tests/test_offline_capture.cpp)
 target_link_libraries(adi_offline_capture_tests PRIVATE adi_core adi_warnings)

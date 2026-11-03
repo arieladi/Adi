@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/engine/session.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/render/normalization.hpp"
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -16,7 +17,8 @@ enum class JobState { Pending, Running, Completed, Failed, Cancelled };
 
 // ADR-0071/0205: application job state, never project operations. This first
 // runner exports direct wet sources as WAV. Other containers, noise shaping,
-// normalization, dry processing and isolated through-master stems need support.
+// dry processing and isolated through-master stems need support. Normalization
+// captures the selected source once and verifies the final encoded WAV.
 struct Source {
     std::int64_t trackId = 0; // zero selects the project's master at render start
     engine::OfflineTap tap = engine::OfflineTap::PostFader;
@@ -40,12 +42,14 @@ struct Job {
     // Independent jobs are not ADR-0070's continuous gapless region batch.
     std::optional<std::int64_t> regionId;
     Encoding encoding;
+    Normalization normalization{};
 };
 struct Result {
     JobState state = JobState::Pending;
     std::filesystem::path output;
     std::uint64_t framesWritten = 0;
     std::string error;
+    std::optional<NormalizationReport> normalization{};
 };
 struct Entry { JobId id = 0; Job job; Result result; };
 struct NameContext {
