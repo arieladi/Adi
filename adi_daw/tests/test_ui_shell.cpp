@@ -981,6 +981,22 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.mark(DirtySet::All);
     root.frame();
     render("adi-sends.png");
+    // Hide/Show Sends (§42.1, Ctrl/Cmd+Alt+S): the sends out of the track controls and the Mixer
+    // View; ADI-Q and ADI-L move up under volume and pan, the mixer to the strip's head.
+    const auto sendsKey = juce::KeyPress('s', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0);
+    check(root.keyPressed(sendsKey) && !root.state().sends, "Ctrl/Cmd+Alt+S hides the sends");
+    column = rowOf(root.mixerView, 3);
+    auto *mainStrip = rowOf(root.mixerView, 7);
+    check(!a.isVisible() && !b.isVisible() && audio->eq.getY() == 37 && audio->limiter.getY() == 37,
+          "the row's -inf boxes go; ADI-Q and ADI-L take their row");
+    check(column != nullptr && column->sendsShown() == 0 && !column->sendKnobs()[0]->isVisible() &&
+              column->volume.getY() == 40 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
+              !mainStrip->returnSwitches()[0]->isVisible(),
+          "the Mixer View strips lose their Sends section, Main's Pre/Post switches with it");
+    render("adi-sends-hidden.png");
+    check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && audio->eq.getY() == 54 &&
+              column->sendsShown() == 2 && column->sendKnobs()[0]->isVisible(),
+          "and again shows them");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
     // Hide/Show Return Tracks (§18.4, Ctrl/Cmd+Alt+R): the returns out of the lanes and the controls.
     auto shownLanes = [&root] {
@@ -1008,6 +1024,22 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     if (auto *first = rowOf(root.mixer, 1))
         check(first->sendKnobs().size() == 3 && first->sendsTo(2) == 8, "and every track has a send to it");
     render("adi-return-inserted.png");
+    // Live's selectors at the strip's foot repeat the View menu: R hides the returns, I-O the In/Out;
+    // each is lit while its part shows.
+    check(root.strip.returns.getToggleState() && root.strip.inOut.getToggleState() &&
+              root.strip.mixer.getToggleState() && !root.strip.delay.getToggleState(),
+          "I-O, R and M lit, D not, as Live's");
+    root.strip.returns.onClick();
+    check(root.state().hideReturns && !root.strip.returns.getToggleState() &&
+              shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 7},
+          "R hides the returns and goes dark");
+    root.strip.returns.onClick();
+    root.strip.inOut.onClick();
+    check(!root.state().hideReturns && root.strip.returns.getToggleState() && !root.state().inOut &&
+              !root.strip.inOut.getToggleState() && !rowOf(root.mixer, 1)->showsInOut(),
+          "R shows them again; I-O hides the In/Out");
+    root.strip.inOut.onClick();
+    check(root.state().inOut && root.strip.inOut.getToggleState(), "and shows it again");
 }
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it

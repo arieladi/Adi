@@ -57,8 +57,9 @@ struct WindowState {
     bool hideReturns = false;
     // Live's Follow (manual §6.2): the arrangement keeps the playhead on screen while it plays.
     bool follow = false;
-    // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out.
-    bool overview = true, inOut = true;
+    // Live's View menu (§42.1): the Overview above the ruler, the track controls' In/Out, and the
+    // sends (Hide/Show Sends, Ctrl/Cmd+Alt+S) in the track controls and the Mixer View.
+    bool overview = true, inOut = true, sends = true;
     // Bitwig's Use Large Track Height (Master Reference 10): off, every track at half height.
     bool largeTracks = true;
     // Bitwig's project view (Master Reference 10, ADR-0112 d2): the group this window shows,
