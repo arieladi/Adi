@@ -6,6 +6,26 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-03 (early) — CI: the mixer suite's timeout and the Windows test step's, raised for slow-runner days
+
+**#350 and #362 failed their Debug MSVC leg the same way:** `adi_mixer_tests` cut off at ctest's
+600 s. It takes 305 s on main and 320 s on #351 on an ordinary runner; on those two runs every
+suite ran at half speed (`adi_midi_clips_tests` 215 s and 241 s against 104 s on main), so the one
+suite that already used half its budget went over it. The timeout's own comment in `ci.yml` says
+what it is for: a hang, not healthy work, and "a timeout that fires on healthy work teaches everyone
+to ignore it". So: `adi_mixer_tests` gets its own `TIMEOUT 1200` in `CMakeLists.txt` (the
+`clip_playback` suite already has one), and the `adi_tests` step's `timeout-minutes` goes 45 → 60,
+because on those two runs the step stood at 42 minutes with the mixer suite cut short; healthy work
+at that pace needs the hour. Both still fail a hang in minutes. The two failed legs are rerun as
+their runs finish; the merger continues past them when they pass.
+
+**The macOS queue:** one macOS job at a time is all GitHub gives this account today; #331's
+validators leg waited nine hours and twenty minutes to start. That is the whole reason the chain
+stood since #329. It moves now: #331 and #333 merged at 04:32 UTC; the rest follow in order as each
+one's legs come through, and the new seat's #356 to #375 queue behind them.
+
+---
+
 ## 2026-11-02 (morning) — #307 and #324 merged; what the engine takes next; win takes its own three needs
 
 **Merged this morning:** the engine's #307 (N2, with win's render-step fix) and the window's #324
