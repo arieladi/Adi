@@ -6,6 +6,21 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-03 (evening) — The table count leaves the README (the director's ruling)
+
+**Ruled this evening: the README states no table count.** `validate_schema.py` check 7 had compared
+the README's hand-written "N tables" with `docs/format/schema.sql`. That made every PR that adds a
+table red until win re-typed the number (LANES.md §6: the count is win's), and because every such
+branch then changed the same line to a different number, each one conflicted with main after the
+previous one merged. Six engine PRs went red on it in one day (#385, #393, #413, #416, #419 and
+their stacks), each a merger stop and a CI re-queue behind the macOS runner. The number was derived
+and hand-written; it now lives where it is generated, in `schema.sql` itself and in the Master
+Reference. Check 7 now fails if the README states a table count again, and still holds the ADR count
+to `DECISIONS.md`, whose numbers are win's alone. The six branches that carry win's count edits get
+main merged in once this lands; the one-line conflict on each is resolved to main's text in that pass.
+
+---
+
 ## 2026-11-03 (early) — CI: the mixer suite's timeout and the Windows test step's, raised for slow-runner days
 
 **#350 and #362 failed their Debug MSVC leg the same way:** `adi_mixer_tests` cut off at ctest's
