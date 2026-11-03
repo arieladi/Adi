@@ -5,6 +5,7 @@
 #include "adi/history.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/ui/audio_drop.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
@@ -50,6 +51,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
+    // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
+    // captures the media row without writing anything; the window adds the clip and commits the
+    // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
+    // `error()` saying why, a file that is not audio included.
+    bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
 
   private:
     ProjectDocument(std::unique_ptr<Store>, std::string name);

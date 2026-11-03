@@ -76,4 +76,14 @@ class FloatingHost {
     bool native_;
     std::map<std::string, std::unique_ptr<Entry>> entries_;
 };
+// The Mix View in a window of its own, onto any display, or docked back in the centre (ADR-0209
+// d11, ADR-0180 d3). The root's own panel moves into the floating window and returns: one panel,
+// never two. Where it opens is this window's view state; the window's place is kept as every
+// floating window's. False only when the host or the view state refuses.
+bool detachMixView(FloatingHost &, AdiRootComponent &, bool detach);
+// F4 while the Mix View opens in a window: opens or closes that window.
+bool toggleMixViewWindow(FloatingHost &, AdiRootComponent &);
+// After the host collects the windows closed by their own button: a Mix View window closed so
+// closes the Mix View. With `restore`, at startup: one kept open in a window opens there again.
+void syncMixView(FloatingHost &, AdiRootComponent &, bool restore = false);
 } // namespace adi::ui
