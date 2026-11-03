@@ -17,6 +17,68 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 
 
+
+## 2026-11-03 — Export queue: Peak and LUFS targets from one captured render
+
+**PR requested:** engine/export-normalization -> **engine/main-loudness**,
+head **6b02b28df5cbcd0bdf9b59a5f44aebd0ba2e4146**, title **Normalize captured exports to peak or LUFS targets**.
+**Dependency / two deep:** stands on N13's engine/main-loudness (0e4c3cc);
+win merges N13 first, then this. No third branch is stacked on these.
+
+**Body / what the window can call:** Job.normalization captures Off (default),
+Peak or Loudness, targetLufs (-14 default, -36..0), truePeakCeilingDb (-1 default,
+-12..0) and optional explicit channelWeights (0..2). Map the existing Export
+settings into each job; Queue add/update/snapshot keeps those values, and the
+runner reads no ambient settings. Off retains the original direct writer path.
+Peak targets 0 dB sample peak. Loudness uses the selected cropped source's
+gated integrated LUFS and true peak, retaining the actual encoded measurements
+in Result.normalization: optional source/output metrics, appliedGainDb,
+ceilingLimited and encodingPasses. A ceiling-limited target reports its achieved
+LUFS. ENGINE-EXPORT-NORMALIZATION.md and ENGINE-EXPORT-QUEUE.md describe the
+API, units, channel roles, failure behavior and remaining parity work.
+
+One continuous project/device render captures private **double PCM**; gain,
+encoding and verification use that capture, never another plug-in run. It
+preserves a 64-bit graph until final quantization, excludes preroll from analysis,
+and includes intentional compensated-range silence. The existing N13 meter
+now accepts the renderer's full 8--768-kHz range. Loudness gain is corrected
+against the encoded result when a boost changes absolute-gate membership.
+The worker also verifies the encoded WAV's true peak after quantization/dither;
+bounded re-encoding lowers gain if needed, restarting the same dither seed.
+FIR-tail padding extends neither the file nor its integrated-loudness window.
+Tiny Peak sources use a ratio without an overflowing reciprocal. No schema,
+native-opcode, UI or device-tier changes. Legacy export-test member shadowing
+was renamed for the strict warning pass.
+
+**Scope:** uniform gain normalization; a ceiling can make the LUFS target
+unreachable, which is reported. This does not claim a brickwall limiter, RMS
+targeting or linked-batch normalization (the rest of ADR-0205 d9). Unmeasurable/
+short Loudness sources fail with a reason to select Peak or Off; silent Peak
+retains unity. Channel roles are explicit/full-range by default, never guessed.
+This uses N13's bounded 0.1-LU gates and reconstructed-peak design; no certified
+or measured-Live claim. Cancellation/host servicing continues during conversion.
+A job stays Running until no-clobber publication, including encoding after its
+last rendered progress frame. NI Stems is next; no director gate.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all **9895 checks
+across 108 suites, ALL PASS, validators clean**, every binary result inspected.
+Counts reflect this N13 stack's base, which predates newer window-only tests.
+GCC and Clang19 normalization **23**, render queue **210**, meter **44** pass;
+the variable-only shadow cleanup was rebuilt/retested on both after the full run.
+Tests decode actual WAVs for LUFS at 44.1/48/96/768 kHz, dithered PCM intersample
+ceiling, gate-membership correction, channel-weight propagation, wide PCM24
+half-LSB precision, tiny gain, exact one-pass dither, short/invalid/cancel cases.
+Actual cropped compensated exports prove excluded preroll, both widths, one
+loader/continuous device render, pending job edits, cancellation during encoding
+and late destination collision preservation. Five changed source/test shadow
+checks pass. Compiled plants catch narrowed capture (2 failures), ignored encoded
+ceiling (1), missing gate correction (1), wrong dither stream (1), missing worker
+service/cancellation (1), extra plug-in rendering (2), lost 768-kHz support (1).
+Original sources were never changed during those proofs.
+
+---
+
+
 ## 2026-11-03 — N20 engine backend: actual audio input recording and captured takes
 
 **PR requested:** engine/audio-input-recording -> main, head **0768096ec8fbfc09cb4d24b2c2389ea856bda8ab**,
