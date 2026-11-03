@@ -3,8 +3,9 @@
 #include "adi/check.hpp"
 
 #include "adi/blob.hpp"
-#include "adi/store.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/ops.hpp"
+#include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -268,6 +269,27 @@ void checkNoteExpressionTargets(Ctx& c) {
 // --- 4. the history tree ----------------------------------------------------------
 
 void checkHistory(Ctx& c) {
+    c.ran();
+    try {
+        if (c.db.execAndGet("PRAGMA user_version").getInt() >= 1010) {
+            SQLite::Statement checkpoint(
+                c.db, "SELECT c.base_seq,c.state,o.seq,o.parent_seq,o.inverse FROM "
+                      "history_checkpoint c LEFT JOIN ops o ON o.seq=c.base_seq WHERE c.id=1");
+            if (checkpoint.executeStep()) {
+                std::string error;
+                const auto state = decodeFromLog(blobOf(checkpoint.getColumn(1)), error);
+                if (checkpoint.getColumn(2).isNull() || !checkpoint.getColumn(3).isNull() ||
+                    !checkpoint.getColumn(4).isNull() || !state || !state->is_object() ||
+                    state->value("format", 0) != 1 || !state->contains("tables") ||
+                    !state->at("tables").is_array())
+                    c.add(Severity::Error, "history.checkpoint", "history_checkpoint",
+                          "invalid retained root or checkpoint envelope");
+            }
+        }
+    } catch (const std::exception &error) {
+        c.add(Severity::Error, "history.checkpoint", "history_checkpoint", error.what());
+    }
+
     c.ran();
     try {
         const auto current =

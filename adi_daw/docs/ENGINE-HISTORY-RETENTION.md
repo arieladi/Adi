@@ -36,8 +36,39 @@ All helpers refuse read-only writes. No schema or new opcode is needed: the
 existing history_snapshots and adi_meta tables hold this metadata. The date keys
 are history.daily.<local-day-number>; UI/app settings remain outside the file.
 
-This increment bounds persistent snapshot metadata. Active undo's separate
-2,000-transaction / 1,000 MB compaction policy remains the next increment. It must
-preserve named points, reachable branches and unuploaded collaboration ops and
-record a replayable baseline before removing any log prefix. Save As/Copy and
-Collect are the separate N3/N30 APIs; this service adds no file-save command.
+The following compaction increment adds `UndoRetentionPolicy` (2,000
+transactions / 1,000 decimal MB by default, optionally lower),
+`History::setUndoRetentionPolicy` and `compactUndo`. Setting policy compacts in
+the same metadata transaction; normal journal commits enforce the stored policy
+before the final commit hook. Enable collaboration before receiving its edits,
+and set `uploadedThroughSeq` only after every local seq through that point has
+been uploaded. Missing acknowledgement protects the whole log. A new
+collaboration session must transfer any existing checkpoint with its log.
+
+Compaction reports remaining transaction/byte counts, retained baseSeq,
+removedOps and protectedHistory. Named snapshots, other existing snapshots,
+branch heads and forks can keep history above budget. The newest whole
+transaction and legacy embedded-media rows are also protected. Nothing deletes
+these protections to meet a numeric limit. Daily automatic points remain usable
+until the snapshot-budget/user removal path removes them.
+
+Schema 1.10's single history_checkpoint row contains typed project state at the
+new root. Taking it temporarily rewinds under a SQLite savepoint, captures state,
+then rolls back that savepoint; only the checkpoint and old prefix pruning are
+committed. Keep all of this on the document owner, never on the audio callback.
+Checkpoint building can be proportional to project content and retained history.
+The byte limit is active journal storage, not total file size or content pools;
+see format/SPEC §8.3 for the exact accounting and retained-root contract.
+
+Replay consumers must hold a source read transaction while reading base and log.
+`History::restoreReplayBase(source, emptyJournalTarget)` preserves target UI
+metadata and returns baseSeq; replay source ops strictly after that seq. Domain
+rows include binary content and retain their SQL types. Source media-file paths
+still use the usual resolver; this is not Collect/Export. Failed restore rolls
+back all target writes. A nonempty/read-only target is refused. History's undo
+menu stops at the retained root, while redo and protected snapshot/branch
+navigation retain their existing semantics. The retained root must likewise be
+excluded from the window's list of undoable steps (N29 integration).
+
+Save As/Copy and Collect remain the separate N3/N30 APIs. Neither service adds
+a file-save command, changes UI code, nor appends snapshot/compaction opcodes.

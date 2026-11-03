@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <stdexcept>
 
 namespace adi {
 
@@ -218,6 +219,9 @@ std::optional<History::Step> History::nextUndo() const {
 
         const auto ops = txnOps(db, s.txnId);
         if (ops.empty()) return std::nullopt;
+        SQLite::Statement base(db, "SELECT base_seq FROM history_checkpoint WHERE id=1");
+        if (base.executeStep() && *h <= base.getColumn(0).getInt64())
+            return std::nullopt;
         s.firstSeq = ops.front().seq;
         s.lastSeq = ops.back().seq;
         s.opCount = static_cast<int>(ops.size());
@@ -612,3 +616,91 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
 }
 
 }  // namespace adi
+
+namespace adi {
+namespace history_detail {
+Payload checkpointAt(Store &store, std::int64_t seq) {
+    auto &db = store.db();
+    db.exec("SAVEPOINT adi_history_checkpoint");
+    try {
+        OpContext ctx{store, db};
+        int applied = 0;
+        std::string error;
+        if (!moveBetween(ctx, OpJournal(store).headSeq(), seq, applied, error))
+            throw std::runtime_error(error);
+        auto state = checkpointState(store);
+        db.exec("ROLLBACK TO adi_history_checkpoint");
+        db.exec("RELEASE adi_history_checkpoint");
+        return state;
+    } catch (...) {
+        db.exec("ROLLBACK TO adi_history_checkpoint");
+        db.exec("RELEASE adi_history_checkpoint");
+        throw;
+    }
+}
+} // namespace history_detail
+UndoCompactionResult History::setUndoRetentionPolicy(const UndoRetentionPolicy &policy) {
+    UndoCompactionResult result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        SQLite::Transaction transaction(store_.db());
+        history_detail::writeUndoPolicy(store_.db(), policy);
+        result = history_detail::compactUndo(store_, policy);
+        if (result.ok)
+            transaction.commit();
+    } catch (const std::exception &error) {
+        result.ok = false;
+        result.error = error.what();
+    }
+    return result;
+}
+UndoCompactionResult History::compactUndo() {
+    UndoCompactionResult result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        SQLite::Transaction transaction(store_.db());
+        result = history_detail::compactUndo(store_, history_detail::undoPolicy(store_.db()));
+        if (result.ok)
+            transaction.commit();
+    } catch (const std::exception &error) {
+        result.ok = false;
+        result.error = error.what();
+    }
+    return result;
+}
+History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store &target) {
+    ReplayBaseResult result;
+    if (target.readOnly()) {
+        result.error = "target is open read-only";
+        return result;
+    }
+    try {
+        if (&source == &target)
+            throw std::runtime_error("replay target must be a different project");
+        SQLite::Transaction transaction(target.db());
+        if (OpJournal(target).count() != 0)
+            throw std::runtime_error("replay target journal is not empty");
+        SQLite::Statement row(const_cast<SQLite::Database &>(source.db()),
+                              "SELECT base_seq,state FROM history_checkpoint WHERE id=1");
+        if (row.executeStep()) {
+            std::string error;
+            auto state = decodeFromLog(blobOf(row.getColumn(1)), error);
+            if (!state)
+                throw std::runtime_error("invalid history checkpoint: " + error);
+            history_detail::installCheckpoint(target, *state);
+            result.baseSeq = row.getColumn(0).getInt64();
+        }
+        transaction.commit();
+        result.ok = true;
+    } catch (const std::exception &error) {
+        result.error = error.what();
+    }
+    return result;
+}
+} // namespace adi

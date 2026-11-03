@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1009;          -- schema 1.9
+PRAGMA user_version   = 1010;          -- schema 1.10
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -894,11 +894,55 @@ the difference between the agent being usable and being frightening.
 
 ### 8.3 Compaction
 
-An unbounded op log grows without limit. Policy is stored in the project
-(`adi_meta`): keep at most N ops or M days, whichever is larger, with a default
-of 10,000 / 90 days. Compaction squashes the tail into a checkpoint and MUST NOT
-cross a branch point that is still reachable from a named branch, nor drop an
-op that a history snapshot names (§8.6).
+Active undo is capped at **2,000 transactions or 1,000 decimal MB**, whichever
+is reached first (ADR-0203 d13, superseding the old 10,000-op / 90-day policy).
+A transaction is one step, however many op rows it contains. A project may lower
+these budgets. `adi_meta` keys `history.undo.max_transactions`,
+`history.undo.max_bytes`, `history.undo.collaboration` and
+`history.undo.uploaded_through` hold the owner/sync policy; absent keys use the
+default local budgets. The obsolete `oplog_max_entries`/`oplog_max_age_days` keys
+remain readable extension metadata and do not control this implementation.
+
+Compaction runs inside the same SQLite transaction as a new journal commit,
+before its final caller hook. It can also be requested explicitly. It replaces
+an oldest complete prefix with one replayable checkpoint, retaining the prefix's
+last op as a root (`parent_seq`, `inverse` and `sel_before` NULL). The root is not
+an undo step. The newest complete transaction is retained even when that one
+transaction alone exceeds the byte budget. No partial transaction is pruned.
+
+A named snapshot, any other existing persistent snapshot, a branch head, and a
+reachable fork point protect their positions. Compaction can stop AT an anchor
+but MUST NOT pass it. A root snapshot/branch protects the entire prefix. In
+collaboration mode no seq after the contiguous upload acknowledgement may be
+compacted; a missing acknowledgement protects the entire log. Protections can
+leave the active history above its budget; the API reports `protectedHistory`.
+Legacy embedded-media rows also protect the log until extraction, because the
+current schema deliberately forbids reinserting their old embedded rows.
+
+The byte budget counts retained non-ephemeral payload, inverse and selection
+bytes, UTF-8 metadata bytes, and an 80-byte fixed allowance per op. It excludes
+the checkpoint, media/content pools and SQLite page/WAL overhead; it is not a
+limit on the whole project file. Ephemeral audit rows in a compacted prefix are
+removed only within the same safe uploaded/anchor boundary.
+
+Schema 1.10 adds `history_checkpoint(id, base_seq, state)`, one row with id 1.
+The CBOR state envelope has format 1, the writer's schema major/minor, and typed
+rows/column names for every project-state table covered by `digestProject`.
+Integer, REAL, TEXT, BLOB (including empty BLOB) and NULL are distinct. UI state,
+journal/audit metadata and locks are excluded. Checkpoint capture temporarily
+rewinds to the boundary inside a savepoint, reads the state, then rolls back the
+savepoint; the live project, head and UI remain unchanged. Checkpoint replacement,
+root retapping, old-op/clock pruning and orphan audit cleanup commit together.
+A checkpoint failure rolls back the edit as well as compaction.
+
+For replay, hold one read transaction on the source while copying its checkpoint
+and retained log. `History::restoreReplayBase(source, emptyJournalTarget)`
+installs the domain state atomically, preserving target UI metadata, and returns
+`baseSeq`. Replay ONLY source ops strictly greater than `baseSeq`; the retained
+root's forward payload has already been folded into the checkpoint. With no
+checkpoint, baseSeq is zero and the existing full-log replay applies. A nonempty
+or read-only target, malformed data or incompatible schema is refused without
+changing target state. Checkpoint bytes are content, never a new undo operation.
 
 ### 8.4 UI and session state
 
@@ -944,6 +988,15 @@ table, which holds mixer snapshots and track versions (Layer 1, OPS.md §9.9).
   "Untitled" for an unnamed project. The time and the local offset are supplied
   by the caller. A writer MUST NOT stamp `created_utc` from inside the history
   layer, so that tests and replays are exact.
+
+ADR-0203 d13 adds the owner-driven daily automatic point: one local date per
+changed day, refreshed after completed edits/undo/redo; unchanged opens create
+nothing. `DailyHistorySnapshots` receives the caller's time and UTC offset and
+persists its date marker in `adi_meta`. Renaming promotes automatic to named.
+Persistent snapshots are capped at 10,000 locally / 100,000 in collaboration;
+only oldest automatic points may be evicted. Named-only exhaustion blocks new
+points. Eviction and publication are one transaction. Explicit user removal,
+like rename, changes metadata without an op. There is no autosave timer.
 
 A file older than 1.3 has no `history_snapshots` table; a 1.3 reader treats that
 as "no snapshots".

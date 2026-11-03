@@ -171,7 +171,7 @@ void testUpgradeEachMinor() {
                                     describeDiff(got, fresh));
             check(s->db().execAndGet("SELECT name FROM tracks WHERE id = 1").getString() == "Keys",
                   v + ": the existing data is untouched");
-            check(s->db().execAndGet("SELECT sample_rate FROM project").getInt() == 48000,
+            check(s->db().execAndGet("SELECT sample_rate FROM project").getInt() == (minor >= 9 ? 44100 : 48000),
                   v + ": the stored 48 kHz is preserved despite the new 44.1 kHz default");
 
             check(addRemark(*s), v + ": remark.add works");

@@ -2,6 +2,7 @@
 
 #include "adi/ops.hpp"
 
+#include "adi/history_compaction.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -433,6 +434,14 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
             return r;
         }
 
+        // ADR-0203 d13: checkpoint and prefix pruning share the edit transaction.
+        const auto retention = history_detail::compactUndo(store_, history_detail::undoPolicy(db));
+        if (!retention.ok) {
+            r.error = "history compaction: " + retention.error;
+            r.seqs.clear();
+            return r;
+        }
+
         // ADR-0153: the caller's last word, still inside the transaction.
         if (options.beforeCommit) {
             std::string err;
@@ -526,6 +535,10 @@ std::optional<std::int64_t> OpJournal::headSeq() const {
 
 bool OpJournal::setHeadSeq(std::optional<std::int64_t> seq) {
     try {
+        SQLite::Statement base(store_.db(), "SELECT base_seq FROM history_checkpoint WHERE id=1");
+        if (base.executeStep() && (!seq || *seq < base.getColumn(0).getInt64()))
+            return false;
+
         SQLite::Statement st(store_.db(),
             "UPDATE op_branches SET head_seq = ? WHERE is_current = 1");
         if (seq) st.bind(1, *seq); else st.bind(1);

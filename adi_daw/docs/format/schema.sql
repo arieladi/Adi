@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1009;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1010;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '9'),
+    ('schema_minor',        '10'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -999,3 +999,11 @@ CREATE UNIQUE INDEX idx_ext ON extensions(ns, key, scope_kind, IFNULL(scope_id,-
 -- ============================================================================
 --  END
 -- ============================================================================
+
+-- ADR-0203 d13: replayable state at the retained undo root. Journal and
+-- checkpoint change atomically; base_seq itself remains in ops as the root.
+CREATE TABLE history_checkpoint (
+    id INTEGER PRIMARY KEY CHECK (id=1),
+    base_seq INTEGER NOT NULL REFERENCES ops(seq),
+    state BLOB NOT NULL
+) STRICT;

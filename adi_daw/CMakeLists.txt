@@ -228,6 +228,7 @@ add_library(adi_core STATIC
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/history_policy.cpp
+    src/adi/history_compaction.cpp
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
@@ -1356,3 +1357,7 @@ include(src/juce/ui_shell.cmake)
 add_executable(adi_history_policy_tests tests/test_history_policy.cpp)
 target_link_libraries(adi_history_policy_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_history_policy_tests COMMAND adi_history_policy_tests)
+
+add_executable(adi_history_compaction_tests tests/test_history_compaction.cpp)
+target_link_libraries(adi_history_compaction_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_history_compaction_tests COMMAND adi_history_compaction_tests)

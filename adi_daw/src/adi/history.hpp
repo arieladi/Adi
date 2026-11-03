@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include "adi/history_compaction.hpp"
 #include "adi/history_policy.hpp"
 #include "adi/ops.hpp"
 
@@ -82,6 +83,19 @@ public:
     /// ancestor and replayed forward, so this is a real navigation, not a label
     /// change. The branch left keeps its head, so nothing becomes unreachable.
     Result switchToBranch(std::int64_t branchId);
+
+    // Caps are project metadata. Setting a policy also compacts atomically.
+    UndoCompactionResult setUndoRetentionPolicy(const UndoRetentionPolicy &);
+    UndoCompactionResult compactUndo();
+    struct ReplayBaseResult {
+        bool ok = false;
+        std::int64_t baseSeq = 0;
+        std::string error;
+    };
+    // Hold a source read transaction across this call and retained-log reads.
+    // Restore the source checkpoint into a journal-empty target, preserving its
+    // UI metadata. Replay source ops strictly AFTER returned baseSeq.
+    static ReplayBaseResult restoreReplayBase(const Store &source, Store &target);
 
     // --- snapshots (ADR-0128, SPEC 8.6) ---------------------------------------
     //
