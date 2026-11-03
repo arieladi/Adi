@@ -37,7 +37,7 @@ for k in range(0, len(takes), PER):
         for i in range(N):
             im = Image.open(f[round(i * (len(f) - 1) / (N - 1))]).convert("RGB")
             sheet.paste(im.resize((TW, TH), Image.BILINEAR), (i * TW, y + 18))
-        lines.append(f"- {t} (slot {s['replaces']}, step {s['step']}, composite {s['composite']}"
+        lines.append(f"- {t} (slot {s.get('replaces') or s['fixes']},step {s['step']}, composite {s['composite']}"
                      + (f", continues from {s['chain_from']}" if s.get("chain_from") else "") + f"): prompt \"{g.get('prompt', s['prompt'])}\"")
     sheet.save(OUT / f"{name}.jpg", quality=88)
     (OUT / f"{name}.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
