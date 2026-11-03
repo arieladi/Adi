@@ -68,9 +68,16 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.laneHeight = j.value("laneHeight", 88);
         state.mixerView = j.value("mixerView", false);
         state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
+        state.mixView = j.value("mixView", false);
+        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 4);
+        state.mixViewDetached = j.value("mixViewDetached", false);
+        state.showReference = j.value("showReference", false);
+        state.hideReturns = j.value("hideReturns", false);
         state.follow = j.value("follow", false);
         state.overview = j.value("overview", true);
         state.inOut = j.value("inOut", true);
+        state.sends = j.value("sends", true);
+        state.mixerInOut = j.value("mixerInOut", false);
         state.largeTracks = j.value("largeTracks", true);
         state.viewGroup = j.value("viewGroup", std::int64_t{0});
         state.gridSnap = j.value("gridSnap", true);
@@ -132,9 +139,16 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"laneHeight", state.laneHeight},
                             {"mixerView", state.mixerView},
                             {"mixerViewHeight", state.mixerViewHeight},
+                            {"mixView", state.mixView},
+                            {"mixViewTab", state.mixViewTab},
+                            {"mixViewDetached", state.mixViewDetached},
+                            {"showReference", state.showReference},
+                            {"hideReturns", state.hideReturns},
                             {"follow", state.follow},
                             {"overview", state.overview},
                             {"inOut", state.inOut},
+                            {"sends", state.sends},
+                            {"mixerInOut", state.mixerInOut},
                             {"largeTracks", state.largeTracks},
                             {"viewGroup", state.viewGroup},
                             {"gridSnap", state.gridSnap},
