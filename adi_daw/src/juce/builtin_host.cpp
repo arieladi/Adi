@@ -161,7 +161,10 @@ public:
         }
         try {
             auto value=Payload::from_cbor(bytes);
-            if(value.at("version")!=1 || value.at("uid")!=info_.uid || !value.at("params").is_object())return false;
+            // Compared as strings on purpose: json against std::string is ambiguous on
+            // MSVC 14.51 once <string_view>'s rewritten operator== is a candidate (C2666).
+            const auto& uid=value.at("uid");
+            if(value.at("version")!=1 || !uid.is_string() || uid.get_ref<const std::string&>()!=info_.uid || !value.at("params").is_object())return false;
             std::vector<std::pair<std::size_t,float>> pending;
             for(auto parameter=value.at("params").begin();parameter!=value.at("params").end();++parameter) {
                 if(!parameter->is_number())return false;
