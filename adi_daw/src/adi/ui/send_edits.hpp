@@ -150,4 +150,29 @@ inline TrackEdit enableSend(const SnapshotSends &sends, std::int64_t source, std
     edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
     return edit;
 }
+// Live's Enable All Sends (§18.4: "right-click on a Return track's Send knob and select Enable Send or
+// Enable All Sends"): every send of the return `source` switched on, to each return, itself included,
+// as one batch; a new row for each that has none, fully down, each with its own id.
+inline TrackEdit enableAllSends(const SnapshotSends &sends, std::int64_t source, const std::vector<std::int64_t> &returns) {
+    using namespace send_edits_detail;
+    constexpr const char *label = "Enable All Sends";
+    TrackEdit edit;
+    auto id = newId(sends);
+    for (const auto destination : returns) {
+        const auto *s = findSend(sends, source, destination);
+        if (s != nullptr) {
+            if (!s->enabled)
+                edit.ops.push_back(track_edits_detail::op("routing.setEnabled", {{"id", s->id}, {"enabled", true}}, label));
+            continue;
+        }
+        edit.ops.push_back(connect(id, source, destination, label));
+        if (returnPre(sends, destination))
+            edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", id}, {"pre", true}}, label));
+        edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
+        ++id;
+    }
+    if (edit.ops.empty())
+        edit.refusal = "Every send of this return is on already.";
+    return edit;
+}
 } // namespace adi::ui

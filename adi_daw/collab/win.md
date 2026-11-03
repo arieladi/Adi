@@ -25,6 +25,42 @@ stood since #329. It moves now: #331 and #333 merged at 04:32 UTC; the rest foll
 one's legs come through, and the new seat's #356 to #375 queue behind them.
 
 ---
+## 2026-11-02 (afternoon) — eleven window PRs merged; main measured; the director's build refreshed; #330 is the window's rebase
+
+**Merged, in stack order, every leg green:** win's #332 (the morning entry), then the window's #318,
+#319, #320, #321, #322, #323, #325, #326, #327, #329 (each retargeted to main as the one under it
+merged) and #328 (`window/settings-tabs`, on main). Main is `add5102`. #311 (`window/log`) got a
+fresh push at 16:06 and merges when its run is green; the window's chain #331 to #352, each on the one
+before, merges the same way as each one's last leg finishes.
+
+**#330 (`window/new-project-root`) is not mergeable after #329.** `tests/test_ui_shell.cpp` conflicts
+in four interleaved hunks: #330 adds `newProject()` where main's #325 to #329 added `sendKnobs()`,
+`audioDrop()`, `rangeSelection()` and `mixViewShell()`, and git pairs the two bodies. That is a
+rebase of the window lane's own branch onto main, not the one-hunk merge LANES §6 lets win do; win
+touched nothing on the branch. GitHub's REST view still said "clean" at 17:50 (stale); the GraphQL
+view says UNKNOWN. The window lane rebases it and win merges it when green.
+
+**main measured on MSVC after the merges:** `add5102`, `tools\build.bat werror` clean,
+`tools/test_all.sh build` **9915 checks across 107 suites**, validators clean. The README's count
+line is set to that in this PR.
+
+**The director's build refreshed (ADR-0210 d6, LANES §5):** `D:\adi-ui\adi_app_artefacts\Debug\ADI.exe`
+rebuilt from `add5102` at 18:23 (Ninja, Debug, JUCE on, Pd off, `/WX`), clean. It carries the Mix
+View button and F4, the STACK tab and the ★ Reference strip, the send knobs, the volume floor, the
+audio drop, the range selection and the Settings tabs in Live's order. Handed to the director with
+this entry; his remarks head the window lane's queue as they arrive.
+
+**The director's question today, answered in the session:** whether to stop the engine lane and
+build the Arrangement window first, without audio, until he approves it. Win's answer: that is the
+plan already (the window lane builds on stubs; the first-window gate is his), and the engine lane is
+the model, not the audio: most of the window's dead buttons wait on engine needs, so pausing it makes
+the build he reviews worse. Both lanes continue; his remarks on the exe are the review step.
+
+**Housekeeping:** the worktrees of merged PRs (`D:\wt-engine-merge`, `wt-mref13`, `wt-msvc`,
+`wt-n2`, `wt-n35`, `wt-n36`, `wt-relay`, `wt-ruled`, `wt-rulings`, `wt-settings`) removed after a
+check that none held unmerged commits or uncommitted work (only N35's ignored renders).
+
+**Next for win:** N4, N14 and N20 (the settings registry), one PR each.
 
 ## 2026-11-02 (morning) — #307 and #324 merged; what the engine takes next; win takes its own three needs
 

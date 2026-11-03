@@ -35,6 +35,7 @@ void AppCommands::reload() {
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
+    exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
@@ -97,7 +98,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Triplet Grid", "Snap to Grid", "Fixed Grid",
                                   "Wrap Tab Navigation", "Use Large Track Height",
                                   "Group Tracks", "Ungroup Tracks", "Mix View", "Mix View in a Window",
-                                  "Reference Track", "Play Reference", "Select All"};
+                                  "Reference Track", "Play Reference", "Select All", "Insert Return Track",
+                                  "Return Tracks", "Sends", "Mixer In/Out", "Solo Selected Tracks",
+                                  "Deactivate Selected Track", "Activate/Deactivate Track 1",
+                                  "Activate/Deactivate Track 2", "Activate/Deactivate Track 3",
+                                  "Activate/Deactivate Track 4", "Activate/Deactivate Track 5",
+                                  "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
+                                  "Activate/Deactivate Track 8"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -109,6 +116,15 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     const auto cmd = juce::ModifierKeys::commandModifier;
     const auto alt = juce::ModifierKeys::altModifier;
     const auto shift = juce::ModifierKeys::shiftModifier;
+    // Live's Activate/Deactivate Track 1…8 (§42.19): F1 to F8.
+    if (id >= ActivateTrack1 && id <= ActivateTrack8) {
+        static const std::array<int, 8> keys{juce::KeyPress::F1Key, juce::KeyPress::F2Key, juce::KeyPress::F3Key,
+                                             juce::KeyPress::F4Key, juce::KeyPress::F5Key, juce::KeyPress::F6Key,
+                                             juce::KeyPress::F7Key, juce::KeyPress::F8Key};
+        info.addDefaultKeypress(keys[static_cast<std::size_t>(id - ActivateTrack1)], 0);
+        info.setActive(active_ != nullptr);
+        return;
+    }
     // Live 12 manual §41.1, §41.5, §41.9 and §41.20. Esc stops nothing: in Live
     // it closes a window or a dialog, and the window lane builds Live's keys.
     switch (id) {
@@ -235,6 +251,28 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case PlayReference: // ADR-0209 d9: [REF] and Shift+R; Ctrl+R stays Rename
         info.addDefaultKeypress('r', shift);
         info.setTicked(active_ != nullptr && active_->reference().on());
+        break;
+    case InsertReturnTrack: // §18.4, §42.19: Ctrl/Cmd+Alt+T
+        info.addDefaultKeypress('t', cmd | juce::ModifierKeys::altModifier);
+        break;
+    case ToggleReturnTracks: // §18.4, §42.1: Hide/Show Return Tracks, Ctrl/Cmd+Alt+R
+        info.addDefaultKeypress('r', cmd | juce::ModifierKeys::altModifier);
+        info.setTicked(active_ != nullptr && !active_->state().hideReturns);
+        break;
+    case ToggleSends: // §42.1: Hide/Show Sends, Ctrl/Cmd+Alt+S
+        info.addDefaultKeypress('s', cmd | juce::ModifierKeys::altModifier);
+        info.setTicked(active_ != nullptr && active_->state().sends);
+        break;
+    case ToggleMixerInOut: // Live 12's Mixer Controls In/Out: the Mixer View's own; no key of its own
+        info.setTicked(active_ != nullptr && active_->state().mixerInOut);
+        break;
+    case SoloSelected: // §42.19: Solo Selected Tracks, S
+        info.addDefaultKeypress('s', 0);
+        info.setActive(active_ != nullptr);
+        break;
+    case DeactivateSelected: // §42.19: Deactivate Selected Track, 0 (the Arrangement takes 0 for clips first)
+        info.addDefaultKeypress('0', 0);
+        info.setActive(active_ != nullptr);
         break;
     case SelectAll: // §42.5: Ctrl/Cmd+A; a text field with the focus selects its own text first
         info.addDefaultKeypress('a', cmd);
@@ -394,6 +432,13 @@ StatusBar::StatusBar(AdiRootComponent &root) : root_(root) {
     mixerToggle.setTooltip("Shows or hides the Mixer. Ctrl/Cmd+Alt+M.");
     mixerToggle.setClickingTogglesState(false);
     mixerToggle.onClick = [this] { root_.command(AppCommands::ToggleMixerView); };
+    addAndMakeVisible(mixerOptions);
+    mixerOptions.setTitle("Mixer View options");
+    mixerOptions.setTooltip("Shows or hides the Mixer's In/Out, Sends and Return Tracks.");
+    mixerOptions.setColour(juce::TextButton::buttonColourId, juce::Colours::transparentBlack);
+    mixerOptions.onClick = [this] {
+        root_.mixerOptionsMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&mixerOptions));
+    };
 }
 void StatusBar::resized() {
     // Live's Status Bar at 100 %: round corner buttons, the message field, a second
@@ -401,7 +446,8 @@ void StatusBar::resized() {
     const int w = getWidth();
     infoToggle.setBounds(8, 9, 19, 19);
     detailToggle.setBounds(w - 27, 9, 19, 19);
-    mixerToggle.setBounds(w - 86, 11, 44, 16);
+    mixerToggle.setBounds(w - 86, 11, 36, 16);
+    mixerOptions.setBounds(w - 49, 11, 8, 16);
 }
 void StatusBar::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -414,6 +460,9 @@ void StatusBar::paint(juce::Graphics &g) {
         g.setColour(look::panel);
         g.fillRect(r.reduced(3));
     }
+    // The Mixer View Control's arrow, pointing down to its menu.
+    look::triangle(g, mixerOptions.getBounds().toFloat().withSizeKeepingCentre(7.f, 5.f),
+                   juce::MathConstants<float>::halfPi, look::text);
     // The corner buttons: dark and round, with Live's light triangles.
     for (auto *b : {&infoToggle, &detailToggle}) {
         const auto c = b->getBounds().toFloat();
@@ -461,6 +510,9 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     addAndMakeVisible(strip);
     strip.flip.onClick = [this] { command(AppCommands::SwapPanels); };
     strip.tracks.onClick = [this] { command(AppCommands::LargeTracks); };
+    // Live's selectors at the strip's foot repeat the View menu's toggles (manual 18.1).
+    strip.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
+    strip.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
@@ -728,6 +780,8 @@ void AdiRootComponent::resized() {
     status.mixerToggle.setToggleState(state_.mixerView, juce::dontSendNotification);
     strip.flip.setToggleState(!browserLeft, juce::dontSendNotification);
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
+    strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
+    strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
     // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
     // View and its track controls, which a lane-less view has no use for. The browser, the strip
@@ -838,6 +892,22 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
+juce::PopupMenu AdiRootComponent::mixerOptionsMenu() {
+    // Live 12's order (manual 18.1, the Mixer View Control's options menu). Volume always shows in
+    // ADI; Track Options waits on Track Delay (N22), the crossfader and Performance Impact on the
+    // engine.
+    commands_.activate(*this);
+    juce::PopupMenu menu;
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerInOut, "In/Out");
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
+    menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Track Options").setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Crossfader").setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Performance Impact").setEnabled(false));
+    menu.addSeparator();
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleReturnTracks);
+    return menu;
+}
 void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
     mixProvider_ = &provider;
     arrangement.applyView();
@@ -993,7 +1063,47 @@ bool AdiRootComponent::insertTrack(bool midi) {
         return fail(result.error);
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = id;
+    arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.picked.clear();
     publishSelection();
+    return true;
+}
+bool AdiRootComponent::insertReturnTrack() {
+    // From the CURRENT cell (ADR-0201). The new return comes after the others, as every return
+    // stands after the tracks (TrackOrder), and takes the next letter, as Live names it.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Inserting a return needs an open project.");
+    const auto &tracks = current->tracks;
+    std::int64_t id = 1, returns = 0;
+    for (const auto &t : tracks) {
+        id = std::max(id, t->id + 1);
+        if (t->kind == "return")
+            ++returns;
+    }
+    OpRequest request;
+    request.opType = "track.create";
+    request.payload = {{"id", id},
+                       {"kind", "return"},
+                       {"name", std::string(1, static_cast<char>('A' + returns % 26)) + " Return"},
+                       {"index", static_cast<std::int64_t>(tracks.size())}};
+    request.label = "Insert Return Track";
+    request.selBefore = session_.advisory();
+    const auto result = submitter_.submit(std::move(request));
+    if (!result)
+        return fail(result.error);
+    arrangement.followPaused = true;
+    if (state_.hideReturns) {
+        state_.hideReturns = false;
+        persist();
+        strip.returns.setToggleState(true, juce::dontSendNotification);
+    }
+    arrangement.geometry.selection.track = id;
+    arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.picked.clear();
+    arrangement.geometry.selection.clip = 0;
+    publishSelection();
+    arrangement.applyView();
     return true;
 }
 bool AdiRootComponent::deleteTrack() {
@@ -1033,6 +1143,8 @@ bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track
     if (!submitEdits(std::move(edit.ops)))
         return false;
     arrangement.geometry.selection.track = edit.select;
+    arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = edit.clip;
     publishSelection();
     return true;
@@ -1041,8 +1153,11 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
     // From the CURRENT cell, as every action is; the batch is one undo step, labelled as Live's
     // Edit menu names it.
     const auto current = view_.current();
+    // Group Tracks takes every selected track (Shift+click on the headers, or a selection across
+    // tracks); Ungroup the selected group.
     const auto id = arrangement.geometry.selection.track;
-    auto edit = ungroup ? ungroupTrack(current->tracks, id) : groupTrack(current->tracks, id);
+    auto edit = ungroup ? ungroupTrack(current->tracks, id)
+                        : ::adi::ui::groupTracks(current->tracks, arrangement.geometry.selectedTracks(reader()));
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     edit.ops.front().selBefore = session_.advisory();
@@ -1051,10 +1166,34 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
         return fail(result.error);
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = edit.select;
+    arrangement.geometry.selection.toTrack = 0;
+    arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = 0;
     publishSelection();
     return true;
 }
+bool AdiRootComponent::soloTrack(std::int64_t id, bool add) {
+    // From the CURRENT cell (ADR-0201); the batch is one undo step.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Soloing needs an open project.");
+    auto edit = soloTracks(current->tracks, id, arrangement.geometry.selectedTracks(reader()), commands_.exclusiveSolo(), add);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::activateTrack(std::int64_t id, bool withSelection) {
+    // From the CURRENT cell (ADR-0201); the batch is one undo step.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Deactivating needs an open project.");
+    auto edit = activateTracks(current->tracks, id,
+                               withSelection ? arrangement.geometry.selectedTracks(reader()) : std::vector<std::int64_t>{});
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
     return window != nullptr && window->isFullScreen();
@@ -1114,6 +1253,15 @@ bool AdiRootComponent::command(int id) {
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
         (id >= AppCommands::NarrowGrid && id <= AppCommands::FixedGrid))
         return arrangement.command(id);
+    // F1…F8: the first eight numbered tracks, in the arrangement's order (returns and Main have letters
+    // or none), each alone.
+    if (id >= AppCommands::ActivateTrack1 && id <= AppCommands::ActivateTrack8) {
+        auto n = id - AppCommands::ActivateTrack1;
+        for (const auto row : arrangement.geometry.rows(reader()))
+            if (row.track->kind != "return" && row.track->kind != "master" && n-- == 0)
+                return activateTrack(row.track->id, false);
+        return fail("There is no track " + std::to_string(id - AppCommands::ActivateTrack1 + 1) + ".");
+    }
     if (id == AppCommands::LargeTracks) {
         const bool done = arrangement.command(id);
         strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
@@ -1225,20 +1373,28 @@ bool AdiRootComponent::command(int id) {
         arrangement.followPaused = false;
         break;
     case AppCommands::ToggleOverview:
-    case AppCommands::ToggleInOut: {
-        auto &shown = id == AppCommands::ToggleOverview ? state_.overview : state_.inOut;
+    case AppCommands::ToggleInOut:
+    case AppCommands::ToggleSends:
+    case AppCommands::ToggleMixerInOut: {
+        auto &shown = id == AppCommands::ToggleOverview ? state_.overview
+                      : id == AppCommands::ToggleInOut  ? state_.inOut
+                      : id == AppCommands::ToggleSends  ? state_.sends
+                                                        : state_.mixerInOut;
         shown = !shown;
         if (!persist()) {
             shown = !shown;
             return fail(error_);
         }
         // The lanes, and the track controls' rows level with them, move with the Overview;
-        // each row lays its controls out again with or without In/Out.
+        // each row, and each Mixer View strip, lays its controls out again with or without In/Out
+        // and the sends.
         arrangement.resized();
-        for (const auto &row : mixer.strips()) {
-            row->resized();
-            row->repaint();
-        }
+        for (const auto *panel : {&mixer, &mixerView})
+            for (const auto &row : panel->strips()) {
+                row->resized();
+                row->repaint();
+            }
+        strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
         break;
     }
     case AppCommands::FullScreen: {
@@ -1285,6 +1441,28 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::SelectAll:
         if (!arrangement.selectAll())
             return false;
+        break;
+    case AppCommands::SoloSelected:
+        if (!soloTrack(arrangement.geometry.selection.track, false))
+            return false;
+        break;
+    case AppCommands::DeactivateSelected:
+        if (!activateTrack(arrangement.geometry.selection.track))
+            return false;
+        break;
+    case AppCommands::InsertReturnTrack:
+        if (!insertReturnTrack())
+            return false;
+        break;
+    case AppCommands::ToggleReturnTracks:
+        state_.hideReturns = !state_.hideReturns;
+        if (!persist()) {
+            state_.hideReturns = !state_.hideReturns;
+            return fail(error_);
+        }
+        arrangement.applyView();
+        arrangement.firstShownIfHidden();
+        strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
         break;
     case AppCommands::RenameTrack:
         // Rename acts on the selection: the device with the focus, else the selected track.
@@ -1345,10 +1523,10 @@ const std::vector<MenuEntries> &menuBar() {
         // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
         // Paste and Duplicate; those wait for their ops.
         {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks}},
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack}},
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
-         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut,
+         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut, C::ToggleSends, C::ToggleReturnTracks,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
           C::PlayReference, C::ToggleMixer, C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,

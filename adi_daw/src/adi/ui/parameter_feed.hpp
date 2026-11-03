@@ -8,6 +8,9 @@ struct DevicePanelData {
     std::int64_t id = 0, track = 0;
     std::string name;
     bool enabled = true;
+    // Whether it plays notes as sound: a plug-in of the instrument subtype (`plugin_refs.subtype`).
+    // A MIDI track holding one has an audio mixer, as Live's.
+    bool instrument = false;
     panel::Resolved resolved;
     std::vector<panel::Declared> declared;
     std::vector<panel::Record> records;

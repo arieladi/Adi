@@ -86,7 +86,15 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleReferenceTrack,
         PlayReference,
         SelectAll,
-        LastId = SelectAll
+        InsertReturnTrack,
+        ToggleReturnTracks,
+        ToggleSends,
+        ToggleMixerInOut,
+        SoloSelected,
+        DeactivateSelected,
+        ActivateTrack1,
+        ActivateTrack8 = ActivateTrack1 + 7,
+        LastId = ActivateTrack8
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -116,6 +124,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool arrowKeysMoveClips() const noexcept { return arrowKeysMoveClips_; }
     // Ctrl/Cmd+wheel zooms around the selection, as Live; off, around the cursor.
     bool zoomOnSelection() const noexcept { return zoomOnSelection_; }
+    // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
+    // the others unless Ctrl/Cmd is held.
+    bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
     juce::ApplicationCommandManager manager;
 
   private:
@@ -129,6 +140,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool tabMovesFocus_ = false;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
+    bool exclusiveSolo_ = true;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
@@ -138,6 +150,8 @@ class StatusBar final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
+    juce::TextButton mixerOptions{""};
 
   private:
     AdiRootComponent &root_;
@@ -239,12 +253,24 @@ class AdiRootComponent final : public juce::Component {
     juce::Rectangle<int> mixerViewArea() const noexcept { return mixerViewArea_; }
     // Drag the Mixer View's top edge: taller strips, never past one track row.
     void resizeMixerView(int height);
+    // Live 12's Mixer View Control options (manual 18.1, "show or hide mixer components"): In/Out,
+    // Sends, Volume, Track Options, Crossfader, Performance Impact, then Return Tracks.
+    juce::PopupMenu mixerOptionsMenu();
     juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
     // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
     bool submitEdit(const std::string &op, Payload payload, const char *label);
     // Several ops as one undo step (a batch lands whole or not at all); a refusal goes to the
     // Status Bar.
     bool submitEdits(std::vector<OpRequest> ops);
+    // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
+    // several (`add`), and the selected tracks together; one undo step.
+    bool soloTrack(std::int64_t id, bool add);
+    // Live's Track Activator on track `id`: with `withSelection`, the selected tracks together when
+    // `id` is among them (a switch, or 0 on the selection); without, that track alone (F1…F8).
+    bool activateTrack(std::int64_t id, bool withSelection = true);
+    // Live: "Double-clicking a track's title bar brings up the Device View" (Live 12 manual, Live
+    // Concepts): shown if it is hidden, the selected track's devices in it.
+    bool showDeviceView();
     // Hands this window's selection to the session, which every window presents.
     void publishSelection();
     SessionState &session() noexcept { return session_; }
@@ -254,6 +280,9 @@ class AdiRootComponent final : public juce::Component {
 
   private:
     bool insertTrack(bool midi);
+    // Live's Insert Return Track (§18.4; Ctrl/Cmd+Alt+T): a return after the others, named by its
+    // letter, selected; the returns shown again if they were hidden.
+    bool insertReturnTrack();
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
     bool groupTracks(bool ungroup);

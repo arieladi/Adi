@@ -83,51 +83,172 @@ inline bool canGroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
     return t != nullptr && groupable(*t);
 }
+// Live's Track Activator and its keys (Live 12 manual 18.1; §42.19 "Deactivate Selected Track", 0, and
+// "Activate/Deactivate Track 1…8", F1…F8): the clicked track's switch thrown; with several tracks
+// selected and the clicked one among them, all of them to its new state. Main has none. One batch.
+inline TrackEdit activateTracks(const SnapshotTracks &tracks, std::int64_t clicked, const std::vector<std::int64_t> &selected) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    const auto *t = find(tracks, clicked);
+    if (t == nullptr || t->kind == "master") {
+        edit.refusal = t == nullptr ? "Select a track to deactivate." : "Main has no Track Activator.";
+        return edit;
+    }
+    const bool mute = !t->muted;
+    const char *label = mute ? "Deactivate Track" : "Activate Track";
+    const bool together =
+        selected.size() > 1 && std::find(selected.begin(), selected.end(), clicked) != selected.end();
+    for (const auto &k : tracks)
+        if (k && k->kind != "master" && k->muted != mute &&
+            (together ? std::find(selected.begin(), selected.end(), k->id) != selected.end() : k->id == clicked))
+            edit.ops.push_back(op("track.setMute", {{"id", k->id}, {"muted", mute}}, label));
+    return edit;
+}
+// Live's Solo switch and its S key (Live 12 manual 18.1, §42.19 "Solo Selected Tracks"): the clicked
+// track's Solo thrown; with several tracks selected and the clicked one among them, all of them
+// together. Soloing unsolos every other track while Exclusive Solo is on (the Record, Warp & Launch
+// Settings, `record.exclusiveSolo`, on by default as Live's), unless Ctrl/Cmd is held (`add`). Main
+// has no Solo. One batch.
+inline TrackEdit soloTracks(const SnapshotTracks &tracks, std::int64_t clicked, const std::vector<std::int64_t> &selected,
+                            bool exclusive, bool add) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    const auto *t = find(tracks, clicked);
+    if (t == nullptr || t->kind == "master") {
+        edit.refusal = t == nullptr ? "Select a track to solo." : "Main has no Solo.";
+        return edit;
+    }
+    const bool on = !t->soloed;
+    const char *label = on ? "Solo Track" : "Unsolo Track";
+    const bool together =
+        selected.size() > 1 && std::find(selected.begin(), selected.end(), clicked) != selected.end();
+    for (const auto &k : tracks) {
+        if (!k || k->kind == "master")
+            continue;
+        const bool acted = together ? std::find(selected.begin(), selected.end(), k->id) != selected.end()
+                                    : k->id == clicked;
+        if (acted ? k->soloed != on : on && exclusive && !add && k->soloed)
+            edit.ops.push_back(op("track.setSolo", {{"id", k->id}, {"soloed", acted && on}}, label));
+    }
+    return edit;
+}
+// Live's colour chooser (Live 12 manual 2.3.2): the colour at `index` of Live's palette (ADR-0211) on
+// every track of `ids` whose colour differs, as one batch; no ops when none would change.
+inline TrackEdit colourTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t index,
+                              const char *label) {
+    TrackEdit edit;
+    if (ids.empty())
+        edit.refusal = "Select a track to colour.";
+    for (const auto id : ids)
+        if (const auto *t = track_edits_detail::find(tracks, id); t != nullptr && t->color != index)
+            edit.ops.push_back(track_edits_detail::op("track.setColor", {{"id", id}, {"color", index}}, label));
+    return edit;
+}
+// The tracks group `id` holds, at every depth, in the snapshot's order.
+inline std::vector<std::int64_t> heldBy(const SnapshotTracks &tracks, std::int64_t id) {
+    std::vector<std::int64_t> out;
+    for (const auto &t : tracks)
+        if (t)
+            for (const auto *up = track_edits_detail::find(tracks, t->parent); up != nullptr;
+                 up = track_edits_detail::find(tracks, up->parent))
+                if (up->id == id) {
+                    out.push_back(t->id);
+                    break;
+                }
+    return out;
+}
+// Whether a soloed track stands anywhere inside group `id`, nested groups too: Live then shows the
+// group's Solo half coloured (manual 18.3).
+inline bool holdsSoloed(const SnapshotTracks &tracks, std::int64_t id) noexcept {
+    for (const auto &t : tracks)
+        if (t && t->soloed && t->id != id)
+            for (const auto *up = track_edits_detail::find(tracks, t->parent); up != nullptr;
+                 up = track_edits_detail::find(tracks, up->parent))
+                if (up->id == id)
+                    return true;
+    return false;
+}
 inline bool canUngroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
     return t != nullptr && t->kind == "group";
 }
-// The selected track into a new group, which takes its place and is selected (manual 18.3). The
+// Live's Group Tracks (manual 18.3): the selected tracks, in their order, into a new group that
+// takes the first one's place and is selected. A track whose group is selected as well goes with
+// its group. They stand in one group, or at the top; Main and the returns are never grouped. The
 // group's name is "# Group": '#' shows its number, as a new track's does (manual 18.2).
-inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) {
+inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids) {
     using namespace track_edits_detail;
     constexpr const char *label = "Group Tracks";
     TrackEdit edit;
-    const auto *t = find(tracks, id);
-    if (t == nullptr) {
+    auto picked = [&ids](std::int64_t id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); };
+    // The selected tracks no selected group holds.
+    std::vector<const engine::TrackNode *> chosen;
+    for (const auto id : ids) {
+        const auto *t = find(tracks, id);
+        if (t == nullptr)
+            continue;
+        bool held = false;
+        for (const auto *up = find(tracks, t->parent); up != nullptr && !held; up = find(tracks, up->parent))
+            held = picked(up->id);
+        if (!held)
+            chosen.push_back(t);
+    }
+    if (chosen.empty()) {
         edit.refusal = "Select a track to group.";
         return edit;
     }
-    if (!groupable(*t)) {
-        edit.refusal = "Main and return tracks can't be grouped.";
-        return edit;
+    const auto parent = chosen.front()->parent;
+    for (const auto *t : chosen) {
+        if (!groupable(*t)) {
+            edit.refusal = "Main and return tracks can't be grouped.";
+            return edit;
+        }
+        if (t->parent != parent) {
+            edit.refusal = "Select tracks in one group to group them together.";
+            return edit;
+        }
     }
     std::int64_t group = 1;
     for (const auto &k : tracks)
         if (k)
             group = std::max(group, k->id + 1);
-    auto order = children(tracks, t->parent);
-    const auto at = static_cast<std::size_t>(std::find(order.begin(), order.end(), t) - order.begin());
+    // Into the group, in their order; the rest of their group's tracks around it, the group at the
+    // first one's place.
+    std::vector<const engine::TrackNode *> inside, rest;
+    std::size_t at = 0;
+    for (const auto *k : children(tracks, parent)) {
+        if (std::find(chosen.begin(), chosen.end(), k) == chosen.end()) {
+            rest.push_back(k);
+            continue;
+        }
+        if (inside.empty())
+            at = rest.size();
+        inside.push_back(k);
+    }
     edit.ops.push_back(op("track.create",
                           {{"id", group},
                            {"kind", "group"},
                            {"name", "# Group"},
-                           {"parent", parentValue(t->parent)},
+                           {"parent", parentValue(parent)},
                            {"index", static_cast<std::int64_t>(at)}},
                           label));
-    edit.ops.push_back(op("track.setParent", {{"id", id}, {"parent", group}}, label));
-    if (t->indexInParent != 0)
-        edit.ops.push_back(op("track.reorder", {{"id", id}, {"index", std::int64_t{0}}}, label));
-    order.erase(order.begin() + static_cast<std::ptrdiff_t>(at));
+    for (std::size_t i = 0; i < inside.size(); ++i) {
+        const auto place = static_cast<std::int64_t>(i);
+        edit.ops.push_back(op("track.setParent", {{"id", inside[i]->id}, {"parent", group}}, label));
+        if (inside[i]->indexInParent != place)
+            edit.ops.push_back(op("track.reorder", {{"id", inside[i]->id}, {"index", place}}, label));
+    }
     // The group stands at `at`; the tracks after it move up one place.
-    for (std::size_t i = 0; i < order.size(); ++i) {
+    for (std::size_t i = 0; i < rest.size(); ++i) {
         const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
-        if (order[i]->kind != "master" && order[i]->indexInParent != place)
-            edit.ops.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", place}}, label));
+        if (rest[i]->kind != "master" && rest[i]->indexInParent != place)
+            edit.ops.push_back(op("track.reorder", {{"id", rest[i]->id}, {"index", place}}, label));
     }
     edit.select = group;
     return edit;
 }
+// The selected track into a new group, which takes its place and is selected.
+inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) { return groupTracks(tracks, {id}); }
 // A group's tracks back where the group stood, in their order, and the group removed; the first
 // of them is selected. An empty group is just removed.
 inline TrackEdit ungroupTrack(const SnapshotTracks &tracks, std::int64_t id) {
