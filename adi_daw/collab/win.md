@@ -24,6 +24,14 @@ validators leg waited nine hours and twenty minutes to start. That is the whole 
 stood since #329. It moves now: #331 and #333 merged at 04:32 UTC; the rest follow in order as each
 one's legs come through, and the new seat's #356 to #375 queue behind them.
 
+**N14, N4 and N20 landed together, out of stack order, at 07:54 UTC.** Each of win's three PRs had
+its own merge waiter instead of one chained waiter, and #360's legs went green first; its branch
+carried #354 and #359, so main took all three in one merge, tested as a whole by #360's twenty-two
+checks. GitHub then refused to retarget #354 and #359 ("no new commits"), so they are closed with a
+note, not merged; nothing of theirs is missing from main. The lesson is recorded here so it is not
+repeated: stacked PRs get one waiter, in order. The window lane was told the three are on main and
+its half of each starts from main.
+
 ---
 
 ## 2026-11-02 (afternoon) — eleven window PRs merged; main measured; the director's build refreshed; #330 is the window's rebase
