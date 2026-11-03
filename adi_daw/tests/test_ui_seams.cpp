@@ -27,6 +27,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
@@ -1020,6 +1021,32 @@ void referenceTapAndHold() {
     check(!ref.on(), "latched, then held and let go: off");
 }
 
+// Live's MIDI track: no audio mixer until it holds an instrument (look-live11 difference row 3); what
+// it holds decides, not its kind's hint alone (ADR-0045).
+void midiTrackMixer() {
+    section("midi track mixer");
+    struct Dev {
+        std::int64_t track;
+        bool instrument;
+    };
+    engine::TrackNode midiTrack, audioTrack, instrumentTrack;
+    midiTrack.id = 1;
+    midiTrack.kind = "midi";
+    audioTrack.id = 2;
+    audioTrack.kind = "audio";
+    instrumentTrack.id = 3;
+    instrumentTrack.kind = "instrument";
+    const std::vector<Dev> nothing, effect{{1, false}}, synth{{1, true}, {2, false}};
+    check(ui::isMidiTrack(midiTrack) && ui::isMidiTrack(instrumentTrack) && !ui::isMidiTrack(audioTrack),
+          "a midi or instrument track is a MIDI track; an audio one is not");
+    check(!ui::hasAudioMixer(midiTrack, &nothing) && !ui::hasAudioMixer(midiTrack, &effect) &&
+              !ui::hasAudioMixer(midiTrack, static_cast<const std::vector<Dev> *>(nullptr)),
+          "a MIDI track holding no instrument has no audio mixer");
+    check(ui::hasAudioMixer(midiTrack, &synth) && !ui::hasAudioMixer(instrumentTrack, &synth),
+          "an instrument on it gives it one; an instrument on another track does not");
+    check(ui::hasAudioMixer(audioTrack, &nothing), "an audio track always has one");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -1044,6 +1071,7 @@ int main() {
     audioDropAsOneStep();
     rangeEditsAsBatches();
     referenceTapAndHold();
+    midiTrackMixer();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

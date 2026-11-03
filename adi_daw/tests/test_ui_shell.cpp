@@ -871,6 +871,29 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     auto *main = rowOf(root.mixer, 7);
     auto *reverb = rowOf(root.mixer, 5);
     check(main != nullptr && main->sendKnobs().empty(), "Main has no sends");
+    // Live's MIDI tracks with no instrument (look-live11 difference row 3): their switches, no volume,
+    // pan or sends; ADI-Q and ADI-L on the row where volume and pan would be.
+    auto *firstMidi = rowOf(root.mixer, 1);
+    check(firstMidi != nullptr && firstMidi->isMidi() && !firstMidi->hasAudio() && firstMidi->active.isVisible() &&
+              !firstMidi->volume.isVisible() && !firstMidi->pan.isVisible() && firstMidi->sendKnobs().empty() &&
+              firstMidi->eq.getY() == 20,
+          "1 MIDI: its switches, no volume, pan or sends; ADI-Q and ADI-L on the second row");
+    check(!audio->isMidi() && audio->hasAudio() && audio->volume.isVisible(), "3 Audio keeps its mixer");
+    // An instrument on 2 MIDI gives it volume, pan and a send per return.
+    auto withSynth = std::make_shared<ParameterPublication>();
+    DevicePanelData synth;
+    synth.id = 31;
+    synth.track = 2;
+    synth.name = "Synth";
+    synth.instrument = true;
+    withSynth->push_back(synth);
+    root.devices.publication = [withSynth] { return withSynth; };
+    root.frame();
+    auto *secondMidi = rowOf(root.mixer, 2);
+    check(secondMidi != nullptr && secondMidi->isMidi() && secondMidi->hasAudio() && secondMidi->volume.isVisible() &&
+              secondMidi->sendKnobs().size() == 2 && !firstMidi->hasAudio(),
+          "an instrument on 2 MIDI gives it volume, pan and its sends; 1 MIDI stays without");
+    render("adi-midi-rows.png");
     check(reverb != nullptr && reverb->sendKnobs().size() == 2 && !reverb->sendOn(0) && !reverb->sendOn(1) &&
               !takesClicks(*reverb->sendKnobs()[1]) && reverb->sendKnobs()[1]->getAlpha() < 1.f &&
               audio->sendOn(0) && takesClicks(a),
@@ -1021,8 +1044,8 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
               shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 5, 6, 8, 7} &&
               root.arrangement.geometry.selection.track == 8 && submitter.nextUndo()->label == "Insert Return Track",
           "Insert Return Track makes C Return after the others, selected, the returns shown again");
-    if (auto *first = rowOf(root.mixer, 1))
-        check(first->sendKnobs().size() == 3 && first->sendsTo(2) == 8, "and every track has a send to it");
+    if (auto *third = rowOf(root.mixer, 3))
+        check(third->sendKnobs().size() == 3 && third->sendsTo(2) == 8, "and every track has a send to it");
     render("adi-return-inserted.png");
     // Live's selectors at the strip's foot repeat the View menu: R hides the returns, I-O the In/Out;
     // each is lit while its part shows.
