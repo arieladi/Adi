@@ -663,6 +663,20 @@ void groupAndUngroupAsBatches() {
               !ui::holdsSoloed(view.current()->tracks, 3) && !ui::holdsSoloed(view.current()->tracks, 4),
           "the group holding soloed Snare holds a soloed track; Snare and Bass hold none");
     check(sub.undo().ok && !ui::holdsSoloed(view.current()->tracks, 6), "unsoloed, the group holds none");
+
+    // Live's colour chooser (manual 2.3.2): one op per track whose colour differs; what a group holds.
+    auto coloured = ui::colourTracks(view.current()->tracks, {2, 6}, 5, "Recolour Track");
+    check(coloured.refusal.empty() && coloured.ops.size() == 2 && coloured.ops[0].opType == "track.setColor" &&
+              coloured.ops[0].payload["color"] == 5 && coloured.ops[1].payload["id"] == 6,
+          "Kick and the group coloured 5: one op each");
+    check(sub.submit(std::move(coloured.ops)).ok &&
+              ui::colourTracks(view.current()->tracks, {2, 6}, 5, "Recolour Track").ops.empty(),
+          "coloured again with the same colour, nothing changes");
+    check(ui::colourTracks(view.current()->tracks, {}, 5, "Recolour Track").refusal == "Select a track to colour.",
+          "with nothing selected, the reason");
+    check(ui::heldBy(view.current()->tracks, 6) == std::vector<std::int64_t>{3} && ui::heldBy(view.current()->tracks, 2).empty(),
+          "the group holds Snare; Kick holds nothing");
+    check(sub.undo().ok, "undo");
 }
 
 void sendsAsBatches() {
