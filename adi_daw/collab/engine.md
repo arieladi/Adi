@@ -13,6 +13,83 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-03 — Freeze Group added; final track-freeze head supersedes the earlier request
+
+**PR requested / update the earlier request:** engine/track-freeze ->
+**engine/track-delete-undo**, head **c7fecf74daebd9e059b4226c413c3e61f8f24c71**,
+title **Add track and group freeze caches with native undo**. This is the SAME
+freeze topic, still two deep on N37 (945f8d0); no new third-level stack. The
+ordinary checkpoint 2f9333c below is superseded by this head. GitHub API remains
+unavailable; win/window opens the PR and relays native CI / MSVC /WX.
+
+**Final body:** implement ordinary whole-track freeze and single whole-group
+freeze with verified dry/wet cached audio, preserved original clips/device state,
+explicit tail, one native undo step and recoverable no-clobber publication. The
+group mode caches the summed bus and root inserts, parks every descendant reader
+and device, and removes child audio connections from the realized graph. Original
+routing rows are retained. Group fader/pan/sends/parent console remain live. Child
+audio routes to outside the group stop until unfreeze: an explicit capture option
+acknowledges that tradeoff. Descendant arm switches are saved/disarmed/restored
+with cache scope; undo/redo/reopen and N37 track-delete undo preserve them. A root
+deletion retains surviving children's current disarmed state; its undo restores
+the frozen group exactly. Graph filtering follows original planning and remaps
+indices, preserving explicit routing rather than creating default outputs.
+
+**Window API addition:** set FreezeCaptureSpec.wholeGroups=true and select
+non-overlapping group roots; acknowledgeChildAudioRoutes=true only after the
+user chooses the child-route tradeoff. Then use the same generation-guarded
+capture/prepareFreeze/commitFreeze/unfreeze calls from the prior entry. All actual
+contributing child device identities are captured as well as the root's.
+Snapshot children expose frozenByGroup, effective frozen=true and
+freezeMode=group-member; the owning root's mode is group. Look up the owner to
+find its cache and unfreeze the whole group. Every field is in same(), including
+an ownership change between nested groups with otherwise unchanged child data.
+The native guard rejects edits to baked child controls and rearming while
+allowing the live root controls. Cache fallback resolution now feeds the actual
+playback reader, with size/time invalidation before reusing a verified location.
+New capture jobs do not copy/open parked group originals, so other tracks can
+still be frozen with those originals and plug-ins offline. See
+**docs/ENGINE-FREEZE.md** for the final contract and supported boundaries.
+
+**Boundaries remain explicit:** capture requires Solo off for a whole group,
+no external audio/key inputs into its subtree, baked VCA controls inside it,
+and no already frozen children. A master in the scope or MIDI forwarded without
+its included instrument is refused. Nested ordinary groups work. Freeze All
+Channels with independently adjustable child balances/live keys and live-prefix
+modes are still subsequent work, not claimed closed here. Float32 cache encoding
+is an explicit precision boundary; no bit-exact 64-bit null claim. No UI, device
+production, DSP or README edits.
+
+**Format:** additive schema **1.11**, frozen_groups with captured descendant IDs
+and original arm flags, plus group.setFreezeScope and its symmetric captured
+inverse. The 1.10 cache schema is frozen separately and left intact; migration
+adds an object, not columns to an already numbered schema. Generic N37 capture
+retains the new dependent BLOB without a special undo path. Update the earlier
+PR body's schema note: **win's README table count must become 53**, not 52, for
+the strict schema gate; reconcile sibling schema numbering when combining PRs.
+
+**Verified:** full GCC **10,166 checks / 111 suites**, every C++ result and sum
+inspected and passing. CI/OPS/PD/layout validators pass; the sole schema validator
+failure is win's README **51 versus 53 tables**. Migration/canonical/schema
+checks otherwise pass. GCC + Clang: group **65**, ordinary native **79**, capture
+**27**, fingerprint **30**, Session **214**, graph host **124**, device host
+**60**, engine/snapshot **128**, track-delete **38**, migration **175**, text
+projection **213**, all pass. Actual compensated PCM at both processing widths,
+analog bus taps without double processing, missing original files/plug-ins,
+actual pruned child/send paths, saved arm restoration, late SQL rollback and
+same-job retry, fallback playback, and independent capture with group originals
+offline are exercised. A direct shadow compile caught a nested lambda's row
+name; renamed it, then rebuilt/retested group/native with GCC and Clang. Nine
+final shadow compiles pass. Ten separately compiled plants fail normally:
+child-fader fast guard (4), child arm restore (16), child prune (3), owner sharing
+(1), cached dry bus tap (1), fallback (2), parked original input copying (2), Solo
+(1), external key (1), plan-transform dispatch (3). No crash counts as a plant.
+The earlier ordinary increment's 11 shadow checks/nine plants also remain valid.
+
+**Next:** continue Freeze All Channels/live-key handling, then the remaining
+LANES queue. No director gate.
+
+
 ## 2026-11-03 — Whole-track freeze caches, original-state retention and native undo
 
 **PR requested:** engine/track-freeze -> **engine/track-delete-undo**, head
