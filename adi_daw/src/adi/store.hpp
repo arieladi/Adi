@@ -69,6 +69,12 @@ public:
     /// project is not a thing this function will do quietly.
     static std::unique_ptr<Store> create(const std::filesystem::path&, StoreError&);
 
+    /// Application New: create the project row, Main and the Live default's
+    /// two MIDI/two audio tracks, mixer strips and 120 BPM / 4/4 maps at the
+    /// history root. No ops or protected UI undo step. Window callers replace
+    /// their track.create bootstrap with this single factory.
+    static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&);
+
     /// Schema-only creation for converters and low-level fixtures that supply
     /// their own project rows. Application New commands use create().
     static std::unique_ptr<Store> createEmpty(const std::filesystem::path&, StoreError&);

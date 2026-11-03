@@ -164,7 +164,7 @@ MR § is the Master Reference's section.
 | Item | MR § | Window today |
 |---|---|---|
 | A page chooser on the left, one page at a time, a floating window that remembers itself, Esc closes; its keys (Tab, arrows, Ctrl+Tab between pages) | V.1 §1, §2 | Built |
-| Live's ten tab names in Live's order, ADI's pages after them | V.2 | Waits (N14) |
+| Live's ten tab names in Live's order, ADI's pages after them | V.2 | Built in the window (`window/settings-tabs`), from the registry and the catalogue; the registry's own names and labels are N14 |
 | The Find box | V.1 §1 | Built; related words ("beat" finds "tempo") are Missing |
 | One help line at the window's foot | V.1 §1 | Built |
 | A Defaults button per page | V.1 §1 | Built |
