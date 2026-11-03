@@ -58,8 +58,8 @@ MR § is the Master Reference's section.
 | Item | MR § | Window today |
 |---|---|---|
 | Volume, pan, Track Activator, solo, arm; In/Out with monitoring In / Auto / Off | 8.1 | Built |
-| One send knob per return on every track and group; return strips after the tracks; Insert Return Track; show and hide returns and sends from the mixer's view menu | 3.2, 8.2, 10 (ADR-0203 d3) | Waits (N11, and N6 for a track's kind) |
-| Pre/Post as one switch on each return; a return's own sends off until Enable Send / Enable All Sends | 8.2 | Waits (N11) |
+| One send knob per return on every track and group; return strips after the tracks; Insert Return Track; show and hide returns and sends from the mixer's view menu | 3.2, 8.2, 10 (ADR-0203 d3) | Built: the knobs (#325), the returns at the foot (#315), Insert Return Track and Hide/Show Return Tracks (`window/return-commands`), Hide/Show Sends and the strip's I-O and R selectors (`window/view-selectors`) |
+| Pre/Post as one switch on each return; a return's own sends off until Enable Send / Enable All Sends | 8.2 | Built: Pre/Post (#333; held while no send reaches the return waits on N42), Enable Send (#325), Enable All Sends (`window/return-commands`) |
 | A send into any track, and a pan on a send, made from the send slot | 1.3, 8.2 | Waits (N11) |
 | Sends Only in the output menu | 8.2 | Waits (N11) |
 | ADI-Q and ADI-L on every strip, present but off, one click each | 0.3, 1.3, 3.2, 8.1 | Built as Live-sized switches, off; engaging them waits (N16) |
@@ -146,7 +146,7 @@ MR § is the Master Reference's section.
 | Edit: Undo, Redo, Delete, Rename | 3.6 | Built |
 | Edit: Cut, Copy, Paste, Duplicate, Select All | — | Waits (N17, N18) |
 | Create: Insert Audio / MIDI Track | — | Built |
-| Create: Insert Return Track; Import MIDI File | 8.2, V.2 §5 | Waits (N11); Later (P2) |
+| Create: Insert Return Track; Import MIDI File | 8.2, V.2 §5 | Insert Return Track built (`window/return-commands`); Import MIDI File later (P2) |
 | View: Undo History (Ctrl+Alt+Z / Cmd+Option+Z), newest on top, pick a line to go back, with ADI's branches and snapshots; any node opens read-only in a silent tab | 1.6, 11.1, V.4 §4 | Waits: `History` lists branches and snapshots, but no undo steps (new Need) |
 | Options: Follow and the grid | 6.10 | Built |
 | Options: Chase MIDI Notes, MIDI Envelope Auto-Reset | V.2 §5 | Missing: both settings exist (`midi.chaseNotes`, `midi.envelopeAutoReset`) |
