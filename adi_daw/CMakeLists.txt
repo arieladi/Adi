@@ -727,6 +727,11 @@ add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
+# 305 s healthy in a Debug MSVC build (main, 2 November 2026); CI's --timeout 600 is there to
+# catch a HANG, and twice in one day a slow shared runner ran everything at half speed and
+# tipped this suite over it (#350, #362). Twenty minutes still names a hang; it no longer
+# fails healthy work.
+set_tests_properties(adi_mixer_tests PROPERTIES TIMEOUT 1200)
 
 # Keep the master console renders in their own suite: the combined mixer suite
 # exceeded CI's per-test timeout under MSVC Debug.
