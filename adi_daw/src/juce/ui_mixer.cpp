@@ -8,6 +8,8 @@
 #include <string_view>
 namespace adi::ui {
 namespace {
+// The Solo's half-coloured state (look::LiveLook draws it), named once.
+const juce::Identifier kHalfLit{"live.half"};
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
 // silence as the format defines it, at or below -150 dB (SPEC §6.9), never the -70 dB it stands
 // on: -70 dB is quiet, not silent.
@@ -183,6 +185,7 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     }
     // Live's switches when on: the activator orange, Solo blue, Arm red.
     solo.setColour(juce::TextButton::buttonOnColourId, look::value);
+    solo.getProperties().set(kHalfLit, false);
     arm.setColour(juce::TextButton::buttonOnColourId, juce::Colour(0xffff3a34));
     pan.addMouseListener(this, false);
     active.setClickingTogglesState(false);
@@ -279,6 +282,13 @@ void MixerStrip::frame(bool changed) noexcept {
         pan.setValue(t->pan, juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
         solo.setToggleState(t->soloed, juce::dontSendNotification);
+        // A group holding a soloed track shows its Solo half coloured (Live 12 manual 18.3). The
+        // property is set once at construction, so a frame only changes its value.
+        const bool half = kind_ == "group" && !t->soloed && holdsSoloed(panel_.root.reader().tracks(), track_);
+        if (static_cast<bool>(solo.getProperties()[kHalfLit]) != half) {
+            solo.getProperties().set(kHalfLit, half);
+            solo.repaint();
+        }
         // Each send at its row's level, fully down without one; an off one dimmed, and its clicks
         // go to the strip, which offers Enable Send.
         const auto &rows = panel_.root.reader().sends();
@@ -356,7 +366,7 @@ void MixerStrip::resized() {
         // Live's Mixer: a return has its letter and Solo but no Arm; Main none of the three.
         active.setVisible(kind_ != "master");
         solo.setVisible(kind_ != "master");
-        arm.setVisible(kind_ != "master" && kind_ != "return");
+        arm.setVisible(kind_ != "master" && kind_ != "return" && kind_ != "group");
         prePost.setVisible(false);
         // A MIDI track with no instrument has no mixer but its switches and its MIDI meter.
         volume.setVisible(audio_);
@@ -400,6 +410,10 @@ void MixerStrip::resized() {
         if (kind_ == "return") {
             arm.setVisible(false);
             place(prePost, 0, {x + 76, 3, 25, 13});
+        } else if (kind_ == "group") {
+            // A group records nothing, so it has no Arm (Live 12 manual 18.3, the group's strip).
+            arm.setVisible(false);
+            prePost.setVisible(false);
         } else {
             prePost.setVisible(false);
             place(arm, 0, {x + 78, 3, 21, 13});
@@ -581,6 +595,7 @@ void MixerStrip::paintMixerInOut(juce::Graphics &g) const {
     if (kind_ == "return" || kind_ == "group") {
         label(74, "Audio To");
         chooser(87, outputLabel(), true);
+        chooser(103, "", false);
         return;
     }
     label(2, midi_ ? "MIDI From" : "Audio From");
@@ -880,7 +895,8 @@ bool MixerPanel::focusNeighbour(bool next) {
     // Main has no activator, Solo or Arm, as Live's: the focus passes it by for those (its ADI-Q and
     // ADI-L it keeps).
     auto showing = [this, &geometry, slot](const engine::TrackNode *t) {
-        return (vertical_ ? geometry.inView(t->id) : geometry.shown(t->id)) && !(t->kind == "master" && slot < 3);
+        return (vertical_ ? geometry.inView(t->id) : geometry.shown(t->id)) && !(t->kind == "master" && slot < 3) &&
+               !(t->kind == "group" && slot == 2);
     };
     const auto i = tracks.find(from->track());
     if (i == tracks.size())

@@ -83,6 +83,17 @@ inline bool canGroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
     return t != nullptr && groupable(*t);
 }
+// Whether a soloed track stands anywhere inside group `id`, nested groups too: Live then shows the
+// group's Solo half coloured (manual 18.3).
+inline bool holdsSoloed(const SnapshotTracks &tracks, std::int64_t id) noexcept {
+    for (const auto &t : tracks)
+        if (t && t->soloed && t->id != id)
+            for (const auto *up = track_edits_detail::find(tracks, t->parent); up != nullptr;
+                 up = track_edits_detail::find(tracks, up->parent))
+                if (up->id == id)
+                    return true;
+    return false;
+}
 inline bool canUngroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
     return t != nullptr && t->kind == "group";
