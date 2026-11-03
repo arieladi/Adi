@@ -25,8 +25,13 @@ The drone (qwen on the 1070 and the A2000) keeps summarising files and manuals; 
 
 - One branch per item, prefixed `engine/`, `window/`, `devices/` or `clones/` (`collab/README.md`
   rule 1); a worktree per item; never the main checkout; never `git add -A`.
-- A PR per item, CI green on 7 ABIs, `tools/test_all.sh` green, MSVC `/WX` clean; the parity gate
-  for anything the user sees (ADR-0108). **win merges.** A lane never merges its own PR.
+- A PR per item, CI green on the PR gate, `tools/test_all.sh` green, MSVC `/WX` clean; the parity
+  gate for anything the user sees (ADR-0108). **win merges.** A lane never merges its own PR.
+  The PR gate is every Linux and Windows leg and the three light macOS legs (the validators, JUCE
+  on, the GUI shell); the two heavy macOS legs, the universal build and the apple clang sweep, run
+  on main after the merge, on dispatch, and on a PR labelled `full-ci` (since 2026-11-03: GitHub
+  serves one macOS job at a time, and those two were the queue). A heavy leg red on main is
+  win's, at the head of the queue, before any merge.
 - The docs win over the code; a decision is a new ADR, numbers from win only.
 - Live's way, additions first-class, the director's deviations stay (ADR-0203 d1, d2, d12); in the
   engine layer, copy whoever does it best (ADR-0205 d10).
