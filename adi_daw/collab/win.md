@@ -31,6 +31,105 @@ checks. GitHub then refused to retarget #354 and #359 ("no new commits"), so the
 note, not merged; nothing of theirs is missing from main. The lesson is recorded here so it is not
 repeated: stacked PRs get one waiter, in order. The window lane was told the three are on main and
 its half of each starts from main.
+## 2026-11-02 (night) — N20 done: the channel configuration has its home, one record per audio device
+
+**N20 (win's half, from the window's needs table) is in this PR.** `audio.channelConfig` was Device
+scope with a text value and no format, and nothing anywhere stored a Device-scope value. Live keeps
+its Input Config and Output Config in its own preferences, per device, with the names "always
+associated with their respective audio device" (manual 17.2), so the setting is now App scope: one
+record per audio device under the device's name, on Audio's Audio Device section under Live's label.
+The registry gains a `Record` type, an object whose shape the row's own `check` validates, and
+`channel_config.{hpp,cpp}` is that shape: mono channels and stereo pairs on each side, numbered from
+1 as Live shows them, each with its switch and its name; `defaultChannelConfig(inputs, outputs)` is
+Live's default for a device with no record (every channel and pair listed, 1, 2 and 1/2 on);
+`activeInputs()` and `activeOutputs()` are the channels a record opens the device with; `displayName`
+is Live's "1 (mono)" and "1/2 (stereo)" when a channel has no name of its own; `channelConfig` and
+`setChannelConfig` read and keep a device's record through the store, so a bad record is refused by
+the device's name and nothing changes. `audio.outputRoles` (Bitwig's speakers/headphones roles) stays
+Device scope for now; it is not Live's and has no feature behind it yet.
+
+**What the window does with it (the other half of N20):** the Audio page's Input Config and Output
+Config buttons open Live's two dialogs, each a list of the device's mono channels and stereo pairs
+with a switch and a name field (Tab moves between names, 17.2); they read `channelConfig` or the
+default for the device's counts and keep the result with `setChannelConfig`; `ui_main.cpp` then opens
+the device with the record's active channels instead of `initialise(0, 2, ...)`, through
+`AudioDeviceSetup::inputChannels` and `outputChannels` (0-based bits of the 1-based channels). The
+dialogs are a new window, so their pictures go to the director first (LANES §5). The engine's half,
+recording from a mono or a stereo input (17.2.1), stays an engine need.
+
+**Measured on MSVC in the worktree:** `tools\build.bat werror` clean, `tools/test_all.sh build`
+9931 checks across 106 suites, validators clean; `test_settings` 166 PASS
+with the new section (the row, Live's default for 4-in 2-out and for odd counts, names, the JSON
+round trip, five refusals, two devices kept and read back after a relaunch).
+
+---
+
+## 2026-11-02 (night) — N4 done: each window's interface zoom has its home, `window.zoom`
+
+**N4 (win's, from the window's needs table) is in this PR.** The registry gains a `Table` type
+(numbers keyed by text, each within the row's range) and one row of it, `window.zoom`, on Display &
+Input's Display section under Live's own label, Zoom Display (manual 2.3.1: the zoom "for Live's
+main window, as well a second window"; ADR-0129 d3 goes further: per window, per display). A row of
+the table is `"<window>@<display>"`, the display named by its geometry and DPI exactly as
+`ui_floating.cpp` names the monitors, so the window lane has one identity for both. The store has
+`windowZoom` and `setWindowZoom` (`store.hpp`); a zoom outside Live's 50 % to 200 % is refused and
+nothing changes. The catalogue's "Zoom Display" row moves from absent to answered. The settings row
+for a table is read-only and shows its rows; that is the one touch on the window's
+`ui_settings.cpp`: three `case` lines and a `setReadOnly`, so `/WX` holds with the new enum value.
+
+**What the window does with it:** on a launch, read `windowZoom(settings, "main", display)` for the
+display the window opens on and start there; on Ctrl/Cmd + and -, `setWindowZoom` and save; the
+same for the mixer window, the Mix View detached and each floating window under its own key. The
+window names the windows; win suggests `main`, `mixer`, `mixview` and `floating:<key>`.
+
+**Measured on MSVC in the worktree:** `tools\build.bat werror` clean, `tools/test_all.sh build`
+9906 checks across 106 suites, validators clean; `test_settings` 141 PASS
+with the new section (the registry row, legal and illegal tables, two windows on two displays, a
+relaunch, a display never seen).
+
+---
+
+## 2026-11-02 (evening) — N14 done: the registry speaks Live's tab names, sections and labels; the director's first remarks are in `collab/director.md`
+
+**N14 (win's, from the window's needs table) is in this PR.** The settings registry
+(`src/adi/settings/registry.{hpp,cpp}`) now names its pages in Live's ten tab names (ADR-0203 d11;
+Live 12 manual 2.3): Display & Input, Theme & Colors, Audio, Link, Tempo & MIDI, File & Folder,
+Library, Plug-Ins, Record, Warp & Launch, Licenses & Updates, in Live's order, then ADI's own pages;
+`pages()` returns them in that order. Each `Setting` carries a new `section`, Live's section within
+the tab (Display Options, Latency, Plug-In Windows, MIDI Ports, Privacy and the rest), set from one
+table (`liveSections`) at the end of `build()`. The labels of the settings Live has are Live's words
+("Use Tab Key to Move Focus", "Driver Type", "Buffer Size", "Start Stop Sync", "Create Fades on
+Clip Edges", the port columns Track/Sync/Remote/MPE). `sync.showLinkToggle` is "Show Link Toggle",
+on Link, default on, as Live's. `audio.keepMonitoringLatency` moved to Record, Warp & Launch, where
+Live keeps it. The window's `settings_tabs.hpp` takes the registry's section first, so its own
+`groupFor` table is now the fallback for ADI's unsectioned settings only. The agent rule in
+`store.cpp` names the Plug-Ins page and the Privacy section. `docs/SETTINGS.md` lists the 22 pages
+with their sections and counts (226 settings).
+
+**Three placements are win's, not Live's, and are marked `win's` in `liveSections` for the window
+to strike or keep:** `ui.zoomOnSelection` under Display, `ui.showTooltips` under Display Options,
+and the knob, slider and value-box modes under Mouse and Pen Input. Where ADI's own settings sit on
+a Live tab (the waveform, fade and meter looks on Theme & Colors; the chase and filter switches on
+Tempo & MIDI) they have no section; the window decides where its tab draws them. The window's tab
+order still draws the tab's own group first and the sections after; that is the window's call.
+
+**Measured on MSVC in the worktree before the merge of main:** `tools\build.bat werror` clean,
+`tools/test_all.sh build` 9889 checks across 106 suites, validators clean; `test_settings` 124 PASS
+with the new checks (Live's tabs lead `pages()`, every Live-answered key sits on its catalogue
+row's tab, sections only on Live tabs, the Link toggle on Link and on).
+
+**The director's first remarks on the exe are recorded in `collab/director.md` (#355, merged):**
+seven remarks on build `add5102`, each with win's reading and the window item it becomes; R4 and R5
+are answered by #339, #347 and #350 in the chain, R1, R2, R3 and R6 are window items that come
+before new ones (LANES §4 item 4). The director reads that file first on his next round; the window
+lane reads it first on its next "continue".
+
+**Chain:** #355 merged. #311 merged. #331's macOS validators leg sat queued eleven hours and was
+cancelled by the runner; rerun, and the chain merger (#331 to #352, in order) restarted on it. #353
+(the README count) and this PR wait on the macOS legs, which are the queue's bottleneck today.
+
+**Next for win:** N4 (per-window zoom home) and N20 (channel configuration home), each its own PR;
+the exe rebuilt after the chain lands, for the director's second round.
 
 ---
 
