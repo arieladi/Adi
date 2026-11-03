@@ -903,6 +903,21 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     reverb->enableSend(1, true);
     check(root.error() == "The send is on already.", "enabling it again only says so");
 
+    // Live's return and Main rows: a return's activator shows its letter and its Pre/Post sits where
+    // a track has Arm; Main has no activator, Solo or Arm, its volume where the activator is.
+    check(reverb->kind() == "return" && reverb->active.getButtonText() == "A" && reverb->prePost.isVisible() &&
+              !reverb->arm.isVisible() && reverb->prePost.getButtonText() == "Post" && reverb->prePost.getToggleState(),
+          "A Reverb's row: \"A\", Solo, and Post lit where Arm is");
+    check(main->kind() == "master" && !main->active.isVisible() && !main->solo.isVisible() && !main->arm.isVisible() &&
+              !main->prePost.isVisible() && main->volume.getY() == 3,
+          "Main's row: no activator, Solo or Arm; its volume on the first row");
+    // Pre moves every send into A before the fader (3 Audio's), one undo step.
+    reverb->prePost.onClick();
+    root.frame();
+    check(reverb->prePost.getButtonText() == "Pre" && !reverb->prePost.getToggleState() &&
+              findSend(root.reader().sends(), 3, 5)->preFader && submitter.nextUndo()->label == "Change Pre/Post",
+          "Pre/Post thrown: 3 Audio's send A taps before the fader");
+
     render("adi-sends-rows.png");
     // The Mixer View: Live's knobs under "Sends", A on the left and B lower on the right; the mixer
     // under them.
@@ -926,6 +941,18 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(mainColumn != nullptr && mainColumn->sendKnobs().empty() && mainColumn->sendsShown() == 2 &&
                   mainColumn->volume.getY() == column->volume.getY(),
               "Main has no knobs, but keeps the Sends section's room: the mixers line up");
+        // Live's Mixer: Main's Sends section holds each return's Pre/Post; Main has no activator.
+        if (mainColumn != nullptr && mainColumn->returnSwitches().size() == 2) {
+            auto &aSwitch = *mainColumn->returnSwitches()[0];
+            check(aSwitch.getButtonText() == "Pre" && mainColumn->returnSwitches()[1]->getButtonText() == "Post" &&
+                      !mainColumn->active.isVisible(),
+                  "Main's strip shows A's Pre and B's Post where a track has its knobs");
+            aSwitch.onClick();
+            root.frame();
+            check(aSwitch.getButtonText() == "Post" && !findSend(root.reader().sends(), 3, 5)->preFader,
+                  "and A's switch, thrown there, moves the send back after the fader");
+        } else
+            check(false, "Main's strip has a Pre/Post switch per return");
     }
     // A short Mixer View keeps the mixer's room and leaves out the sends that do not fit.
     root.resizeMixerView(200);
@@ -3406,10 +3433,15 @@ int main(int argc, char **argv) {
                                           lanes.scrollY == 0;
                 for (std::size_t k = 0; k < rows.size(); ++k)
                     integrated.keyPressed(nextKey);
+                // The last track with an activator: Main has none, as Live's, and the focus passes it by.
+                std::int64_t lastWithActivator = 0;
+                for (const auto row : rows)
+                    if (const auto *t = integrated.reader().findTrack(row); t != nullptr && t->kind != "master")
+                        lastWithActivator = row;
                 check(rows.size() >= 2 && reachedFirst && focusedRow() != nullptr &&
-                          focusedRow()->track() == rows.back() && lanes.scrollY > 0 &&
+                          focusedRow()->track() == lastWithActivator && lanes.scrollY > 0 &&
                           focusedRow()->getY() >= ArrangementView::kTopHeight,
-                      "a neighbour out of view is scrolled into view, its row's top showing");
+                      "a neighbour out of view is scrolled into view, its row's top showing; Main, with no activator, is passed by");
                 lanes.heights = heightsWas;
                 lanes.scrollY = scrollWas;
                 integrated.arrangement.changed();

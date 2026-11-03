@@ -6,6 +6,7 @@
 #include <functional>
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <memory>
+#include <string>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
@@ -50,12 +51,21 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     juce::Slider volume, pan;
     juce::TextButton active, solo{"S"}, eq{"Q"}, limiter{"L"};
     ArmButton arm;
+    // A return's Pre/Post switch, where a track has Arm (ADR-0203 d3: one switch on each return);
+    // lit while its sends tap after the fader, as Live's.
+    juce::TextButton prePost{"Post"};
     PeakHold peakHold; // the Mixer View's only
     // Whether the row shows its In/Out column: when the panel is wide enough.
     bool showsInOut() const noexcept;
     // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm,
     // then ADI-Q and ADI-L. A click on one does not take the focus.
-    std::array<juce::Button *, 5> switches() noexcept { return {&active, &solo, &arm, &eq, &limiter}; }
+    std::array<juce::Button *, 5> switches() noexcept {
+        return {&active, &solo, kind_ == "return" ? static_cast<juce::Button *>(&prePost) : &arm, &eq, &limiter};
+    }
+    // The track's kind, as the snapshot gives it: Live draws a return's row and Main's their own way.
+    const std::string &kind() const noexcept { return kind_; }
+    // Main's strip in the Mixer View: each return's Pre/Post switch in its Sends section, as Live's.
+    const std::vector<std::unique_ptr<juce::TextButton>> &returnSwitches() const noexcept { return returnSwitches_; }
     // One send per return, the returns in the arrangement's order (ADR-0203 d3): Live's value
     // boxes, three to a row, in the track controls; Live's knobs under "Sends", each lettered as
     // its return, in the Mixer View. Main has none. A return's own are off until Enable Send.
@@ -98,6 +108,11 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     static constexpr int kMixerRoom = 110;
     int mixerTop() const noexcept { return kMixerTop + sendsHeight(shown_); }
     std::vector<std::unique_ptr<juce::Slider>> sends_;
+    std::vector<std::unique_ptr<juce::TextButton>> returnSwitches_;
+    std::string kind_;
+    int label_ = 0; // what the activator shows: a track's number, or -1 - a return's place
+    // Throws a return's Pre/Post switch: every send into it moved, one undo step.
+    void throwPrePost(std::int64_t ret);
     // The return each send goes to; the snapshot's returns, refilled on each change; whether each
     // send is on.
     std::vector<std::int64_t> returns_, order_;
