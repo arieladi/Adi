@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/settings/registry.hpp"
 #include "adi/settings/store.hpp"
+#include "adi/ui/settings_tabs.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
 #include <memory>
@@ -41,34 +42,46 @@ class SettingsPageHead {
     // True when the head holds `key`'s row: it has taken `row` as its child at its place.
     virtual bool hold(const std::string &key, SettingRow &row) = 0;
 };
-// A page's heading, as Live's: the words in bold, a rule to the page's edge.
+// A page's or a group's heading, as Live's: the words in bold, a rule to the page's edge.
 class SettingsHeading final : public juce::Component {
   public:
     explicit SettingsHeading(const juce::String &);
     void paint(juce::Graphics &) override;
     static constexpr int kHeight = 25;
 };
-// The page chooser: Live's tabs down the left, a word to a line, the open one joined to
-// its page (R-01).
+// The page chooser: Live's ten tabs down the left, then ADI's own, a word to a line, the open
+// one joined to its page (R-01). Taller than the window, the column scrolls with the wheel and
+// keeps the open tab in view.
 class SettingsPageList final : public juce::Component {
   public:
     explicit SettingsPageList(SettingsPanel &);
     void paint(juce::Graphics &) override;
+    void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
     bool keyPressed(const juce::KeyPress &) override;
-    // Each page's tab, top to bottom.
+    // Each page's tab, top to bottom, where the column's scroll puts it.
     std::vector<juce::Rectangle<int>> tabs() const;
     // A page's name as its tab shows it: one word to a line, "&" and commas dropped.
     static juce::StringArray lines(const std::string &page);
+    // The tabs' whole height, scrolled or not; and how far they are scrolled.
+    int contentHeight() const;
+    int scroll() const noexcept { return scroll_; }
+    void scrollTo(int y);
+    // Scrolls the open tab into view.
+    void reveal();
+    // The gap between Live's ten tabs and ADI's own pages.
+    static constexpr int kOwnGap = 10;
 
   private:
     SettingsPanel &panel_;
+    int scroll_ = 0;
 };
 // Live's Settings window (ADR-0203 d11, Master Reference V.1): the page chooser on the
 // left and one page at a time, values as switches, choosers and value boxes; REAPER's Find
 // box above; the hovered setting's help in a line at the foot; every change applied and
-// written at once, with no OK button; Esc closes. The pages and their settings are the
-// registry's, in its order.
+// written at once, with no OK button; Esc closes. The pages are Live's ten tabs in Live's
+// order, then ADI's own (`settingsTabs`, ADR-0203 d11), each reading and writing the registry.
 class SettingsPanel final : public juce::Component {
   public:
     // `audioDevices` makes the Audio page's device chooser, where the application has an
