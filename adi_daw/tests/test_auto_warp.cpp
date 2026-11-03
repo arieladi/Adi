@@ -13,6 +13,14 @@
 #include <new>
 #include <stop_token>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed, so a result object returned from the
+// callback path costs one allocation per container there and none on the other
+// CRTs. The refusal checks below allow exactly what an empty result costs on this
+// CRT, measured once before the baseline is read.
+template<class Result> unsigned emptyResultCost(){const auto before=callbackAllocations.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return callbackAllocations.load()-before;}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++callbackAllocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p)noexcept{std::free(p);}
@@ -86,9 +94,10 @@ void explicitAndGuards() {
     check(!audio::autoWarpFromOnsets(duplicate,96000,48000) && !audio::autoWarpFromOnsets(onsets,72000,48000),"duplicate or out-of-source onset positions refuse");
     std::stop_source stop;stop.request_stop();
     check(audio::autoWarpFromOnsets(onsets,96000,48000,options,stop.get_token()).error==audio::AutoWarpError::Cancelled,"tempo analysis supports cooperative cancellation");
+    const auto cost=emptyResultCost<audio::AutoWarpResult>();
     const auto allocations=callbackAllocations.load(),io=audio::callbackFileIo.load();audio::AutoWarpResult callback;
     {audio::CallbackScope scope;callback=audio::autoWarpFromOnsets(onsets,96000,48000);}
-    check(callback.error==audio::AutoWarpError::Realtime && callbackAllocations.load()==allocations &&
+    check(callback.error==audio::AutoWarpError::Realtime && callbackAllocations.load()==allocations+cost &&
           audio::callbackFileIo.load()==io,"tempo analysis refuses on the callback before allocation or I/O");
 }
 }

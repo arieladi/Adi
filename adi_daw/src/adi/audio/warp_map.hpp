@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/blob.hpp"
+#include <array>
+#include <cstddef>
+#include <cstdint>
 namespace adi {
 /// AWRP v1, 16 bytes: source-window frame followed by source musical tick.
 struct WarpMarker {
