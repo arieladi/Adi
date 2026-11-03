@@ -6,6 +6,170 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-03 (afternoon) — CI: the two heavy macOS legs leave the PR gate; the engine's 41 unopened PRs
+
+**The director said go on the macOS gate change (proposed this morning, below).** GitHub serves this
+account one macOS job at a time, and the two heavy macOS legs, the universal arm64+x86_64 build at
+about 130 minutes and the apple clang warnings sweep at about 53, were the whole queue: with two
+lanes pushing, every PR waited days for a runner, never for a result. From this PR on, `ci.yml`
+has a `plan` job that computes the `build` and `strict` matrices: on a pull request the two heavy
+legs are left out; on a push to main, on dispatch, and on a PR labelled `full-ci`, every leg runs
+as before. A PR still proves itself on a Mac through the three light macOS legs (the validators,
+JUCE on, the GUI shell), and the heavy legs run once per merge on main. A heavy leg red on main is
+win's, at the head of the queue (LANES.md §2 carries the rule). Main is not branch-protected, so
+this is a convention in the workflow and the lane rules, reversible in one PR. The matrices moved
+into the `plan` job as JSON because a matrix `include` cannot be filtered by the event, only
+computed; the check names are unchanged, so nothing the lanes read moves.
+
+**The engine's PR requests, none of them opened.** The engine seat is a cloud container without the
+GitHub API; it pushes `engine/<topic>` and writes "PR requested" in its log, and win opens and merges
+(ADR-0210 d4). Win had not. From 2 November to this morning, 41 requested PRs, every engine item
+from N3 through the controller lanes, sat on origin as branches without a pull request, so the
+engine kept chaining items on top of work nobody could review. Opened this morning as #380 to #420,
+in the engine's order, each with the engine's own title and its log entry as the body, with #421 for
+the log; all 42 mergeable against their requested bases. One merger takes them in that order and
+stops at the first conflict or red leg for win. The engine's `engine/automation-editing` never
+reached origin: its container became unavailable mid-item and it stopped cleanly. The lesson is
+now a standing duty: each win session diffs the engine's log against the open PRs before anything
+else.
+
+**What follows the merge of this PR:** every open PR's queued run still carries the old workflow
+with its heavy macOS legs, so win merges main into each open lane branch and pushes; the push
+cancels the stale run through the concurrency group and the new one runs under the new gate
+against today's main. A branch that does not merge cleanly is left for the merger to stop on.
+
+---
+
+## 2026-11-03 (early) — CI: the mixer suite's timeout and the Windows test step's, raised for slow-runner days
+
+**#350 and #362 failed their Debug MSVC leg the same way:** `adi_mixer_tests` cut off at ctest's
+600 s. It takes 305 s on main and 320 s on #351 on an ordinary runner; on those two runs every
+suite ran at half speed (`adi_midi_clips_tests` 215 s and 241 s against 104 s on main), so the one
+suite that already used half its budget went over it. The timeout's own comment in `ci.yml` says
+what it is for: a hang, not healthy work, and "a timeout that fires on healthy work teaches everyone
+to ignore it". So: `adi_mixer_tests` gets its own `TIMEOUT 1200` in `CMakeLists.txt` (the
+`clip_playback` suite already has one), and the `adi_tests` step's `timeout-minutes` goes 45 → 60,
+because on those two runs the step stood at 42 minutes with the mixer suite cut short; healthy work
+at that pace needs the hour. Both still fail a hang in minutes. The two failed legs are rerun as
+their runs finish; the merger continues past them when they pass.
+
+**The macOS queue:** one macOS job at a time is all GitHub gives this account today; #331's
+validators leg waited nine hours and twenty minutes to start. That is the whole reason the chain
+stood since #329. It moves now: #331 and #333 merged at 04:32 UTC; the rest follow in order as each
+one's legs come through, and the new seat's #356 to #375 queue behind them.
+
+**N14, N4 and N20 landed together, out of stack order, at 07:54 UTC.** Each of win's three PRs had
+its own merge waiter instead of one chained waiter, and #360's legs went green first; its branch
+carried #354 and #359, so main took all three in one merge, tested as a whole by #360's twenty-two
+checks. GitHub then refused to retarget #354 and #359 ("no new commits"), so they are closed with a
+note, not merged; nothing of theirs is missing from main. The lesson is recorded here so it is not
+repeated: stacked PRs get one waiter, in order. The window lane was told the three are on main and
+its half of each starts from main.
+
+---
+
+## 2026-11-02 (night) — N20 done: the channel configuration has its home, one record per audio device
+
+**N20 (win's half, from the window's needs table) is in this PR.** `audio.channelConfig` was Device
+scope with a text value and no format, and nothing anywhere stored a Device-scope value. Live keeps
+its Input Config and Output Config in its own preferences, per device, with the names "always
+associated with their respective audio device" (manual 17.2), so the setting is now App scope: one
+record per audio device under the device's name, on Audio's Audio Device section under Live's label.
+The registry gains a `Record` type, an object whose shape the row's own `check` validates, and
+`channel_config.{hpp,cpp}` is that shape: mono channels and stereo pairs on each side, numbered from
+1 as Live shows them, each with its switch and its name; `defaultChannelConfig(inputs, outputs)` is
+Live's default for a device with no record (every channel and pair listed, 1, 2 and 1/2 on);
+`activeInputs()` and `activeOutputs()` are the channels a record opens the device with; `displayName`
+is Live's "1 (mono)" and "1/2 (stereo)" when a channel has no name of its own; `channelConfig` and
+`setChannelConfig` read and keep a device's record through the store, so a bad record is refused by
+the device's name and nothing changes. `audio.outputRoles` (Bitwig's speakers/headphones roles) stays
+Device scope for now; it is not Live's and has no feature behind it yet.
+
+**What the window does with it (the other half of N20):** the Audio page's Input Config and Output
+Config buttons open Live's two dialogs, each a list of the device's mono channels and stereo pairs
+with a switch and a name field (Tab moves between names, 17.2); they read `channelConfig` or the
+default for the device's counts and keep the result with `setChannelConfig`; `ui_main.cpp` then opens
+the device with the record's active channels instead of `initialise(0, 2, ...)`, through
+`AudioDeviceSetup::inputChannels` and `outputChannels` (0-based bits of the 1-based channels). The
+dialogs are a new window, so their pictures go to the director first (LANES §5). The engine's half,
+recording from a mono or a stereo input (17.2.1), stays an engine need.
+
+**Measured on MSVC in the worktree:** `tools\build.bat werror` clean, `tools/test_all.sh build`
+9931 checks across 106 suites, validators clean; `test_settings` 166 PASS
+with the new section (the row, Live's default for 4-in 2-out and for odd counts, names, the JSON
+round trip, five refusals, two devices kept and read back after a relaunch).
+
+---
+
+## 2026-11-02 (night) — N4 done: each window's interface zoom has its home, `window.zoom`
+
+**N4 (win's, from the window's needs table) is in this PR.** The registry gains a `Table` type
+(numbers keyed by text, each within the row's range) and one row of it, `window.zoom`, on Display &
+Input's Display section under Live's own label, Zoom Display (manual 2.3.1: the zoom "for Live's
+main window, as well a second window"; ADR-0129 d3 goes further: per window, per display). A row of
+the table is `"<window>@<display>"`, the display named by its geometry and DPI exactly as
+`ui_floating.cpp` names the monitors, so the window lane has one identity for both. The store has
+`windowZoom` and `setWindowZoom` (`store.hpp`); a zoom outside Live's 50 % to 200 % is refused and
+nothing changes. The catalogue's "Zoom Display" row moves from absent to answered. The settings row
+for a table is read-only and shows its rows; that is the one touch on the window's
+`ui_settings.cpp`: three `case` lines and a `setReadOnly`, so `/WX` holds with the new enum value.
+
+**What the window does with it:** on a launch, read `windowZoom(settings, "main", display)` for the
+display the window opens on and start there; on Ctrl/Cmd + and -, `setWindowZoom` and save; the
+same for the mixer window, the Mix View detached and each floating window under its own key. The
+window names the windows; win suggests `main`, `mixer`, `mixview` and `floating:<key>`.
+
+**Measured on MSVC in the worktree:** `tools\build.bat werror` clean, `tools/test_all.sh build`
+9906 checks across 106 suites, validators clean; `test_settings` 141 PASS
+with the new section (the registry row, legal and illegal tables, two windows on two displays, a
+relaunch, a display never seen).
+
+---
+
+## 2026-11-02 (evening) — N14 done: the registry speaks Live's tab names, sections and labels; the director's first remarks are in `collab/director.md`
+
+**N14 (win's, from the window's needs table) is in this PR.** The settings registry
+(`src/adi/settings/registry.{hpp,cpp}`) now names its pages in Live's ten tab names (ADR-0203 d11;
+Live 12 manual 2.3): Display & Input, Theme & Colors, Audio, Link, Tempo & MIDI, File & Folder,
+Library, Plug-Ins, Record, Warp & Launch, Licenses & Updates, in Live's order, then ADI's own pages;
+`pages()` returns them in that order. Each `Setting` carries a new `section`, Live's section within
+the tab (Display Options, Latency, Plug-In Windows, MIDI Ports, Privacy and the rest), set from one
+table (`liveSections`) at the end of `build()`. The labels of the settings Live has are Live's words
+("Use Tab Key to Move Focus", "Driver Type", "Buffer Size", "Start Stop Sync", "Create Fades on
+Clip Edges", the port columns Track/Sync/Remote/MPE). `sync.showLinkToggle` is "Show Link Toggle",
+on Link, default on, as Live's. `audio.keepMonitoringLatency` moved to Record, Warp & Launch, where
+Live keeps it. The window's `settings_tabs.hpp` takes the registry's section first, so its own
+`groupFor` table is now the fallback for ADI's unsectioned settings only. The agent rule in
+`store.cpp` names the Plug-Ins page and the Privacy section. `docs/SETTINGS.md` lists the 22 pages
+with their sections and counts (226 settings).
+
+**Three placements are win's, not Live's, and are marked `win's` in `liveSections` for the window
+to strike or keep:** `ui.zoomOnSelection` under Display, `ui.showTooltips` under Display Options,
+and the knob, slider and value-box modes under Mouse and Pen Input. Where ADI's own settings sit on
+a Live tab (the waveform, fade and meter looks on Theme & Colors; the chase and filter switches on
+Tempo & MIDI) they have no section; the window decides where its tab draws them. The window's tab
+order still draws the tab's own group first and the sections after; that is the window's call.
+
+**Measured on MSVC in the worktree before the merge of main:** `tools\build.bat werror` clean,
+`tools/test_all.sh build` 9889 checks across 106 suites, validators clean; `test_settings` 124 PASS
+with the new checks (Live's tabs lead `pages()`, every Live-answered key sits on its catalogue
+row's tab, sections only on Live tabs, the Link toggle on Link and on).
+
+**The director's first remarks on the exe are recorded in `collab/director.md` (#355, merged):**
+seven remarks on build `add5102`, each with win's reading and the window item it becomes; R4 and R5
+are answered by #339, #347 and #350 in the chain, R1, R2, R3 and R6 are window items that come
+before new ones (LANES §4 item 4). The director reads that file first on his next round; the window
+lane reads it first on its next "continue".
+
+**Chain:** #355 merged. #311 merged. #331's macOS validators leg sat queued eleven hours and was
+cancelled by the runner; rerun, and the chain merger (#331 to #352, in order) restarted on it. #353
+(the README count) and this PR wait on the macOS legs, which are the queue's bottleneck today.
+
+**Next for win:** N4 (per-window zoom home) and N20 (channel configuration home), each its own PR;
+the exe rebuilt after the chain lands, for the director's second round.
+
+---
+
 ## 2026-11-02 (afternoon) — eleven window PRs merged; main measured; the director's build refreshed; #330 is the window's rebase
 
 **Merged, in stack order, every leg green:** win's #332 (the morning entry), then the window's #318,
