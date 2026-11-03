@@ -13,6 +13,50 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+
+## 2026-11-03 — N17 continuation: Auto-Warp import and actual project playback
+
+**PR requested: update the existing N17 request**, engine/phase-c-editing ->
+main, head **318e4a1324f7500dc75d0b65720a9c94f06122a2** (after ee646f4),
+title **Add captured clip, range and whole-Set editing actions**. One N17 PR,
+no new stack. Add to its body: the window can now call prepareImportAudio with
+warp=true and captured mode, meter, tempo hint/optional source BPM,
+Detect Tempo Changes, From First Beat/Sample Start and cancellation. Analysis
+captures source trim, musical duration and canonical AWRP bar markers in the
+same media+clip undo group; an indeterminate beat refuses with a source-tempo
+reason. Replay and redo use literal captured bytes. ClipPlayback now plays
+all six modes through off-callback private prepared PCM and the paged reader,
+including project-tempo junctions within a bar, source-rate conversion,
+source offsets and musical loops/end markers. Old unwarped nanosecond pins do
+not override the Warp clock. Bounce forces Warp off (d16). ENGINE-WARP.md and
+ENGINE-EDIT-COMMANDS.md document the APIs, lifetime and provisional analysis.
+
+Source-grid onset detection precedes native file-rate conversion, so sinc
+pre-ringing cannot move detected attacks. Reimport after undo safely reuses
+an identical regular owned asset; a failed SQL transaction never deletes
+that existing file. Different content and symlinks still refuse. Cancellation
+is checked at commit even when media is deduplicated/no publication is needed.
+No schema version/table/opcode changes in this increment. No UI/device code.
+N17 remains open: Warp-aware split/fade retention and existing-clip Warp
+commands continue next, then the remaining import work. Native-mode sound and
+analysis are generated-signal tested, not a claim of measured Live parity.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all: **10882 checks
+across 114 C++ suites**, every binary result inspected, all passing. Sole
+validator failure is the already logged win-owned README **51 vs 53 tables**;
+other schema/frozen migrations, ops, Pd, CI and binary-layout checks pass.
+Clang19 focused: Auto-Warp 43, Warp import 33, Warp playback 76, worker warp
+91, material actions 24, ordinary playback 247; all pass. Actual callback
+allocation/file-I/O guards remain zero. Eight changed-source/test shadow
+checks pass. Compiled plants catch ignored project tempo (4 failures), a stale
+unwarped source offset (2), deletion of a reused pre-existing asset (1), and
+lost first-beat trim (6). Exact undo/redo/reopen, source attacks heard on the
+48-kHz grid from 44.1-kHz files, late SQL failure and stale-head guards pass.
+Latest fetch: main 0cadd72, window/log 49b597d; no new needs or CI relay.
+
+---
+
+
 ## 2026-11-02 — N17 continuation: six prepared warp engines, before project integration
 
 **Existing N17 PR request updated, no second PR/stack:** engine/phase-c-editing
