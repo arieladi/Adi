@@ -13,6 +13,81 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-03 — Dedicated Bounce to New Track / whole-chain Bounce in Place
+
+**PR requested:** engine/bounce-commands -> **engine/phase-c-editing**, head
+**9838783** (use the branch's exact pushed head), title **Add dedicated track
+bounce commands and retain recoverable renders**. Two deep: requires phase-C's
+complete typed clip/range capture and Warp-capable playback; win merges N17
+(engine/phase-c-editing 19d1fc6) first, then this. No freeze PR is stacked on it.
+GitHub API remains unavailable here; please open and relay native CI / MSVC /WX.
+
+**Body / what the window can call:** bounce_commands.hpp adds
+prepareBounceToNewTrack with explicit source/new-track/clip/media identities,
+render range/format/session, optional new Main-route id, name, muteOriginal and
+documentGeneration. It captures a private WAL-inclusive project, renders the
+source's direct post-fader wet output and prepares a plain audio sibling after
+the source, preserving parent, palette color and explicit Main destination.
+Later siblings shift in the same undo step; the clip is named and placed
+sample-exact, Warp off. muteOriginal defaults true and mutes the ENTIRE original
+track. prepareBounceInPlace takes a whole regular-track [0,end) range (including
+the caller's explicit tail), captures its pre-fader/post-FX output, replaces
+all clips, parks enabled inserts bypassed, resets baked input gain and disarms
+an armed source while retaining live fader/pan/width/delay/routing. commitTrackBounce
+checks the caller's current document generation; the private material edit also
+checks the actual project connection and captured head. Track/order/route/media/
+clip/source-state operations share ONE undo step. ENGINE-BOUNCE.md supplies the
+API/thread/range contracts and scope; no new opcode, schema, UI or device-tier
+code. OPS.md describes the existing native op composition.
+
+In-place playback does not run parked device DSP a second time; bypass retains
+its reported delay and the existing compensated dry line (ADR-0203 d4). The
+original params/state/blob rows remain for Undo. New Track is a direct output
+render: it does not clone sends, return effects or sidechain routes and does
+not claim to replace every parallel path. Whole-chain In Place refuses partial
+extents, a group, locked/frozen/missing source and live incoming main/send audio
+that would double a baked mix. The existing lower-level range-bounce producer
+remains available for material edits. Group freeze and the separate cached tap
+streams of Freeze All Channels remain next; no freeze parity closure is claimed.
+A chosen narrowing file encoding carries its own quantization tolerance, and
+live graph transition fades are not claimed bit-identical to offline replay.
+
+**Recovery fix:** the phase-C material publisher previously MOVED its only staged
+render before SQL COMMIT. A deferred SQL fault then removed the owned destination
+and lost the retry source. It now publishes a separate verified private COPY;
+the SAME prepared bounce/import survives late rollback and retries without
+rerendering. Copy-in also rehomes a reused valid external media identity into
+owned audio with a native relink; Undo restores its still-existing old path.
+Uncopied external sources are rehashed before commit, and changing one refuses
+the whole transaction without deleting it. Private snapshot SQLite paths now
+use UTF-8 rather than the Windows locale conversion; all dedicated bounce
+fixtures run inside a project directory with Chinese/Hebrew characters.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full runner **11062 checks /
+116 suites, ALL C++ PASS, every binary summary inspected**. The only gate
+failure is the N17 base's existing **README says 51 tables / schema has 54**;
+all schema/migration checks otherwise pass (version 1.11), and CI/ops/Pd/layout
+validators pass. README counts are win's; please update on main when merging
+the N17 schema. No README edit by this lane. GCC and Clang19 dedicated bounce
+**69** and material **29** pass, including final Unicode-path fixtures.
+Actual native playback compares wet output in BOTH widths through a parent
+and a different explicit Main destination, with source FX/gain/pan. Checks prove
+parking with zero source-DSP calls, Warp off, metadata/order/color/routing,
+source mute/disarm and retained live fader/pan, exact full-state Undo/Redo/reopen,
+generation/head/completed guards, partial/incoming refusal, late deferred SQL
+rollback and SAME-job retry, external source preservation and copy ownership.
+Four changed translation units pass extra shadow checking. Seven independently
+compiled defect plants fail: moved-only recovery source (1), unchecked external
+file (1), ignored copy-in choice (1), wrong Main route (4), unparked chain (8),
+baked fader applied twice (2), missing document-generation guard (4). Sources
+were not mutated during the proofs; no timeout increase or duplicated mixer tests.
+
+**Next:** track freeze, Freeze All Channels and Freeze Group with fingerprints,
+then history caps/daily snapshots. Continue chaining; no director gate.
+
+---
+
+
 ## 2026-11-03 — NI Stems: bounded MP4, real AAC workers, queue export and one-step group import
 
 **PR requested:** engine/ni-stems -> **main**, head
