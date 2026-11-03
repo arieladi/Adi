@@ -14,6 +14,47 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 
 
+
+## 2026-11-03 — N17 continuation: warped material edits retain musical fades
+
+**PR requested: update the same N17 PR**, engine/phase-c-editing -> main,
+head **619ccd351049f6eeb8f64e49871d6af1dd6cc6ff** (after 318e4a1). Add to its
+body: the window's existing clip/range/Time copy, split and edit producers now
+accept attached Warp audio. Split retains the original fade curve through
+both pieces, including overlapping fades, repeated splits and unrolled source
+loops, without inserting an internal edge fade. A subsequent fade handle edit
+clears just its chosen side's retained domain; undo restores the full typed
+row and future bytes. No source-window or AWRP rewrite on these material edits.
+Aliases still give their prior named refusal. N17 stays open: existing-clip
+Warp actions continue next, followed by the remaining import work.
+
+**Schema 1.11** adds optional clip_warp_fade_domains with paired nullable
+in/out begin/end ticks on the unrolled source musical clock. Schema 1.10 is
+frozen exactly; migration/read-only TEMP projection adds an empty table,
+never inventing fades for old clips. Warp playback converts these domains
+through the tempo integral; unwarped playback retains its separate nanosecond
+clocks. Model Clip and snapshot ClipNode expose fadeClockTicks (four optional
+coordinates, in begin/end then out begin/end); every coordinate participates
+in sharing and the text projection. Typed image/FK capture includes the new
+child for delete, copy, split and range/Time edits, preserving future columns.
+No UI/device files or new opcodes. SPEC/OPS and engine API docs updated.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all **10957 checks
+across 114 C++ suites**, every binary summary inspected, all passing. The sole
+validator failure remains win's README count (**51 vs 54 tables**); all other
+schema/frozen migration, ops, Pd, CI and binary-layout checks pass. GCC and
+Clang19: Warp playback/edit 125, ordinary clip edits 172, whole-Set Time 413,
+migrations 186, text projection 214, all passing. Heard PCM compares exactly
+in both widths across overlapping fades/loop/repeated splits and a linear
+split across a tempo junction; exact undo/redo/future bytes and partial-range
+edges pass. Each of the four coordinates changes structural sharing. Nine
+changed-source/test shadow checks pass. Compiled plants catch missing musical
+clock (6 failures), missing capture (4), missing sharing comparisons (4), and
+missing handle reset (2). Actual callback allocation/file I/O guards stay zero.
+
+---
+
+
 ## 2026-11-03 — N17 continuation: Auto-Warp import and actual project playback
 
 **PR requested: update the existing N17 request**, engine/phase-c-editing ->
