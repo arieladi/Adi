@@ -330,7 +330,9 @@ struct Playback {
     std::shared_ptr<MidiClipState> state = makeMidiClipState();
     std::unique_ptr<MidiClips> clips;
     Node *source = nullptr;
-    std::array<Event, 8192> storage{};
+    // On the heap: a Playback is a local in most tests here, sometimes two at once,
+    // and 8192 events inline overflowed MSVC's 1 MB default stack (CI: SegFault).
+    std::vector<Event> storage = std::vector<Event>(8192);
     std::vector<HeardControl> heard;
     explicit Playback(const rows::Model &input, double rate = 48000) {
         refresh(input, rate);
