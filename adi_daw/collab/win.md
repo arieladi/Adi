@@ -31,6 +31,9 @@ checks. GitHub then refused to retarget #354 and #359 ("no new commits"), so the
 note, not merged; nothing of theirs is missing from main. The lesson is recorded here so it is not
 repeated: stacked PRs get one waiter, in order. The window lane was told the three are on main and
 its half of each starts from main.
+
+---
+
 ## 2026-11-02 (night) — N20 done: the channel configuration has its home, one record per audio device
 
 **N20 (win's half, from the window's needs table) is in this PR.** `audio.channelConfig` was Device
