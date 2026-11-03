@@ -193,6 +193,10 @@ add_library(adi_core STATIC
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
+    src/adi/audio/mp4_aac.cpp
+    src/adi/audio/stem_manifest.cpp
+    src/adi/render/ni_stems.cpp
+    src/adi/media/stem_import.cpp
     src/adi/blob.cpp
     # Deliberately in adi_core rather than behind ADI_WITH_JUCE: device_core
     # includes no JUCE, so its tests run on all seven ABIs instead of only in
@@ -279,6 +283,40 @@ target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
 # PUBLIC: dsp/spectrum.cpp includes pffft.h, and nothing else in the tree does.
 target_link_libraries(adi_core PRIVATE adi_pffft)
+
+# AAC remains a worker/platform service, independent of JUCE (ADR-0191/0204).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(TestBigEndian)
+    test_big_endian(ADI_AAC_BIG_ENDIAN)
+    if(ADI_AAC_BIG_ENDIAN)
+        set(_adi_aac_be 1)
+    else()
+        set(_adi_aac_be 0)
+    endif()
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/aac/libavutil")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/aac/libavutil/avconfig.h"
+        "#pragma once\n#define AV_HAVE_BIGENDIAN ${_adi_aac_be}\n#define AV_HAVE_FAST_UNALIGNED 0\n")
+    foreach(_adi_aac_major 6 7)
+        if(NOT EXISTS "${ADI_THIRD_PARTY}/ffmpeg${_adi_aac_major}/libavcodec/avcodec.h")
+            message(FATAL_ERROR "AAC public headers missing: run tools/fetch_external.sh --build-only")
+        endif()
+        add_library(adi_aac${_adi_aac_major} OBJECT "src/adi/audio/aac_ffmpeg${_adi_aac_major}.cpp")
+        target_include_directories(adi_aac${_adi_aac_major} PRIVATE src)
+        target_include_directories(adi_aac${_adi_aac_major} SYSTEM PRIVATE
+            "${ADI_THIRD_PARTY}/ffmpeg${_adi_aac_major}" "${CMAKE_CURRENT_BINARY_DIR}/generated/aac")
+        target_link_libraries(adi_aac${_adi_aac_major} PRIVATE adi_warnings)
+        target_sources(adi_core PRIVATE $<TARGET_OBJECTS:adi_aac${_adi_aac_major}>)
+    endforeach()
+    target_sources(adi_core PRIVATE src/adi/audio/aac_linux.cpp)
+    target_link_libraries(adi_core PRIVATE ${CMAKE_DL_LIBS})
+elseif(APPLE)
+    target_sources(adi_core PRIVATE src/adi/audio/aac_apple.cpp)
+    target_link_libraries(adi_core PRIVATE "-framework AudioToolbox" "-framework CoreFoundation")
+elseif(WIN32)
+    target_sources(adi_core PRIVATE src/adi/audio/aac_windows.cpp)
+    target_link_libraries(adi_core PRIVATE mfplat mfreadwrite mfuuid ole32)
+endif()
+
 
 # ---------------------------------------------------------------------------
 # libpd -- the Pure Data runtime (ADR-0035, ADR-0183).
@@ -1351,3 +1389,11 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+
+add_executable(adi_mp4_aac_tests tests/test_mp4_aac.cpp)
+target_link_libraries(adi_mp4_aac_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_mp4_aac_tests COMMAND adi_mp4_aac_tests)
+
+add_executable(adi_ni_stems_tests tests/test_ni_stems.cpp)
+target_link_libraries(adi_ni_stems_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ni_stems_tests COMMAND adi_ni_stems_tests)

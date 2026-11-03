@@ -688,3 +688,14 @@ Compaction (SPEC §8.3) may drop ephemeral ops first.
    format gaps in FEATURES.md §12. No schema, therefore no ops.
 4. **Comping ops.** `lane.*` gives the structure; the comp *edit* gestures
    (swipe-to-comp, promote take) need their own verbs and are not yet named.
+
+
+The NI Stems worker producer (`media/stem_import.hpp`,
+[ENGINE-NI-STEMS.md](ENGINE-NI-STEMS.md)) captures the original container and
+aligned decoded WAVs, then submits existing `media.import`/`media.relink`,
+`track.create`/`track.setColor`, `clip.create` and `clip.attachAudio` operations
+in one native transaction. It adds no opcode or schema table. The master is
+retained in the container, excluded from the playing stem group. Document
+identity/generation/head guards and no-clobber file publication precede the
+commit point; one Undo removes the whole group. NI export remains application
+queue state, without project operations.
