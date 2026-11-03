@@ -16,6 +16,70 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 
 
+
+## 2026-11-03 — N20 engine backend: actual audio input recording and captured takes
+
+**PR requested:** engine/audio-input-recording -> main, head **0768096ec8fbfc09cb4d24b2c2389ea856bda8ab**,
+title **Record audio inputs and attach completed takes as one undo step**.
+
+**Body for the PR / what the window can call:** Session::startRecording takes
+AudioRecordingSpec (current driver rate/max block, work folder, bounded ring,
+encoding, armed destination tracks and ordered AudioIo input-channel indices).
+The callback captures actual input into preallocated SPSC buffers; one worker
+writes all target WAVs. session.recording().stop() and owner poll() return the
+finished pass after strict callback acknowledgment and finalization; poll(true)
+requires an already stopped device. Cancellation discards only owned work
+after quiescence, including a failed partial take. Result carries rate, actual
+start sample/frame count, per-track files/channels and resolved source-project
+identity. Keep the originating window document generation. Then call
+recording::prepareCommit(store, result, ClipIds[]) and recording::commit: all
+media import/relink + clip create/attach requests become one native undo step.
+Both boundaries must round-trip the current musical clock exactly at the
+capture rate. No schema/new opcode, UI or device-tier changes. See
+ENGINE-AUDIO-RECORDING.md and OPS.md for lifetime, recovery and integration.
+
+Publication stages a **separate copy**: publishFile moves its source, so moving
+the only take and then rolling SQL back would destroy the recording. The late
+SQL regression found that bug during development; the final implementation
+retains the original for a fresh prepare/retry, cleans only new publications,
+and safely reuses identical files retained by Undo. Existing pooled content
+is relocated to a verified owned recording asset; if Undo needs a prior path
+inside the private source directory, that directory stays. The command manages
+cleanup; callers must not blindly discard a retained history source. Simultaneous
+identical takes deduplicate within the captured batch, before any media row
+exists. Changed source bytes, stale head, another project, locked/missing target
+or a differing destination file refuses without losing the private take.
+Undo/Redo/reopen restores actual heard PCM without another recording pass.
+
+**Scope / remaining N20:** this is continuous linear raw-input recording,
+not the whole device configuration. Win/window still owns the device-scoped
+channel-config home/format and opening/enabling hardware inputs. The adapter
+must resolve device channels into the supplied callback indices. Monitoring,
+hardware/manual latency calibration, punch/loop takes, MIDI recording,
+quantization playback and Capture memory remain separate runtime work; N31's
+already-pushed preferences did not implement those. A seek/loop wrap, missing
+input, callback-size mismatch, bounded overflow or writer failure is explicit,
+never substituted silence or an incorrectly placed clip. No measured-Live claim.
+Next queue item: export LUFS/peak targeting (LANES 3.3); N16 native Q/L contracts
+and N38's role format remain external, with no new director gate.
+
+**Validation:** GCC14 Debug/Werror/PD ON/JUCE OFF full test_all **9980 checks
+across 108 suites, ALL PASS, validators clean**. Every binary result inspected.
+Clang19 input recorder **59**, recording commands **36**, Session **214** pass.
+Tests read actual WAVs at 44.1/48 kHz, many small queue wraps, nonadjacent/shared
+channel order, partial blocks, deterministic bounded overflow, stopped-device
+reclamation, cancellation, seeks/interior loops and worker I/O failure; actual
+Session records in either graph width with zero callback allocations/file I/O.
+Recorded audio is heard at its original exact sample range; two-track one-undo
+dedup, exact Undo/Redo/reopen, changed bytes/head/project, late SQL cleanup/retry,
+old asset reuse and external/private prior-history paths pass. Five changed
+source/test shadow checks pass. Compiled plants fail as intended: wrong channel
+2, lost final samples 12, lost project identity 1, lost head 2, publication of
+the only take 6, deletion of a reused asset 1. No source mutation during proof.
+
+---
+
+
 ## 2026-11-03 — N17 continuation: the Warp button on an existing clean import
 
 **PR requested: update the existing N17 PR**, engine/phase-c-editing -> main,
