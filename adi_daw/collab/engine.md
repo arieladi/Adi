@@ -13,6 +13,85 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+## 2026-11-03 — Whole-track freeze caches, original-state retention and native undo
+
+**PR requested:** engine/track-freeze -> **engine/track-delete-undo**, head
+**2f9333c089a6fc45015853cb29e42e12e06e93dd**, title **Add whole-track freeze
+caches with native undo**. Two deep: requires N37's generic dependent-row
+track-delete/undo capture (945f8d0). Win merges that first. GitHub API remains
+unavailable here; please open and relay native CI / MSVC /WX.
+
+**Body / behavior:** a frozen flag previously left the original readers and DSP
+running. This increment captures verified private Pre FX/Post FX WAVs from one
+WAL-inclusive snapshot and one multistream Session pass, publishes immutable
+owned media, and commits cache metadata/disarm flags in one native undo step.
+Original clips, parameters and opaque state remain intact. Playback skips parked
+plug-ins and original media; fader/pan/width/phase/delay/mute/solo/outgoing sends
+and the parent console remain live. The cached files play Warp off, with the
+chosen cache encoding (Float32 default, an encoding boundary at either graph
+width). Warm unfreeze restores fresh instances from preserved state so stale
+voices/history cannot resume. Cache topology requires a stopped callback or
+driver release; the owner reads an atomic driver observation, never Transport.
+
+**Window calls:** flush edit capture; on the rendering connection/host owner,
+call render::captureFreezeAudio with tracks, endSample from zero through ALL
+material plus the explicit tail, session format and documentGeneration. The
+private snapshot also pins/hash-verifies active audio assets so replacement of
+an external source during progress cannot contaminate later blocks. On the
+writable document owner, prepareFreeze(store, capture, currentGeneration,
+firstMediaId, importedUtc), then commitFreeze(store, edit, currentGeneration).
+Both preparation and publication check generation; filename, history head and
+causal source fingerprints are guarded too. unfreeze(store, trackIds) is another
+native undo step, with an installed-identity callback for captured actual
+format/UID/vendor/version; without it only stored source identity is checked.
+Explicit acknowledgement handles externally changed state. Snapshot TrackNode
+now exposes frozen, freezeMediaId and freezeMode, all in same(). Mode is wet,
+unverified legacy, or empty. Original clips stay visible. Details:
+docs/ENGINE-FREEZE.md.
+
+**Scope still queued:** this is ordinary whole-track wet freeze, including a
+batch of independent tracks. It refuses partial ranges, incoming audio/sidechain
+keys, groups, locked/already frozen tracks and forwarded MIDI without its own
+instrument. Freeze Group, All Channels with independent balance/live keys and
+live source-prefix caches are subsequent increments; this does not close all of
+ADR-0203 d16. A static file cannot respond to a live key or child fader. On
+combining N20, stop/finish recording before freeze/disarm; attempted recording
+material edits into a frozen source are refused by the native guard.
+
+**Persistence/recovery:** additive schema 1.10, frozen_renders; frozen 1.9 schema
+and full migration/read-only coverage. track.setFreeze has captured before/after
+states, strict shape checks and a symmetric inverse. Native commits/history and
+Session loading enforce causal state/arm/media constraints. Known live controls
+use a previously verified memo keyed by total_changes, data_version and both
+schema versions; opaque hooks, source-table triggers and unknown edits force
+validation. No SQL apply accesses files or loads devices. Publication moves a
+SEPARATE COPY, retaining original private renders for same-job retry after late
+SQL failure. Failure removes only files this attempt created; reused/colliding
+public files remain untouched. Track-delete undo preserves cache provenance.
+
+**Verified:** final GCC full runner **10,085 checks / 110 suites**, every C++
+result inspected and passing. CI/OPS/PD/layout validators pass. The sole schema
+validator issue is **README says 51 tables, schema has 52**: win owns that edit;
+please update it before the strict CI gate. README test totals are also win's.
+Older-minor migrations and canonical/schema validation pass. The first full run
+found the old migration fixture's unconditional 48 kHz expectation and the
+text projection's literal 1.9 header/missing coverage row; fixed and rerun full.
+GCC + Clang focused: native freeze **79**, capture **27**, fingerprint **30**,
+Session **214**, track-delete **38**, snapshot/engine **128**, replay **64**,
+migration **162**, text projection **210**, all pass. Eleven direct shadow
+compiles pass. Nine separately compiled plants fail normally (no crash): lost
+private source, lost generation, missing source guard, unprotected input gain,
+hardlinked input revision, dry for wet, stale instances resumed, parked plug-ins
+loaded, omitted snapshot sharing field. Actual dry/wet PCM at both widths,
+zero callback allocation/file I/O, no original DSP frames, missing original
+files/plug-ins, corruption, native edit refusal, late SQL retry, no-clobber,
+undo/redo/reopen, generation and late cancellation covered. No UI/device/DSP or
+README edits. Schema numbering must be reconciled with sibling 1.10/1.11 PRs
+when win combines them; no third-level stack was created.
+
+**Next:** continue remaining freeze modes and the LANES queue; no director gate.
+
+
 ## 2026-11-03 — Dedicated Bounce to New Track / whole-chain Bounce in Place
 
 **PR requested:** engine/bounce-commands -> **engine/phase-c-editing**, head
