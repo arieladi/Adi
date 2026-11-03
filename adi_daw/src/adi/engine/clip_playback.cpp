@@ -2,6 +2,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_fade.hpp"
+#include "adi/engine/warp_projection.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/store.hpp"
@@ -72,6 +73,7 @@ struct Clip {
     double gainWide = 1;   ///< the same gain unrounded, for a graph at 64
     fs::path path;
     fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
+    std::shared_ptr<const audio::PreparedWarp> warped;
     std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
     // The pin goes back with the clip. Every rebuild builds new clips and pins
     // the decoded copy again, so without this a session's decoded files stayed
@@ -397,9 +399,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
         try {
             const auto a=std::find_if(project->rows.audioClips.begin(),project->rows.audioClips.end(),[&](const auto& x){return x.clipId==row.id;});
             if(a==project->rows.audioClips.end()) throw std::runtime_error("no audio row; silent");
-            if(a->warpEnabled) throw std::runtime_error("warp unsupported; silent");
             if(a->reverse) throw std::runtime_error("reverse unsupported; silent");
-            if(a->transposeSemis!=0 || a->formantShift!=0) throw std::runtime_error("pitch/formant shift unsupported; silent");
+            if(!a->warpEnabled && (a->transposeSemis!=0 || a->formantShift!=0)) throw std::runtime_error("pitch/formant shift unsupported; silent");
             if(row.aliasOf) throw std::runtime_error("alias resolution unsupported; silent");
             if(row.fadeInCurve<0 || row.fadeInCurve>5 || row.fadeOutCurve<0 || row.fadeOutCurve>5) throw std::runtime_error("fade curve unsupported; silent");
             if(a->channelMode<0 || a->channelMode>3) throw std::runtime_error("unknown channel mode; silent");
@@ -428,6 +429,28 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
                 return samples(tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin),rate);
             };
+            if(row.contentOffsetTicks<0)throw std::runtime_error("negative clip content offset");
+            const auto sourceOrigin=origin-row.contentOffsetTicks;
+            auto sourceDuration=[&](std::int64_t ticks){return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);};
+            if(a->warpEnabled) {
+                if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
+                const auto map=audio::readWarpMap(*a->warpMarkers,clip->sourceLength);
+                if(!map)throw std::runtime_error("warp marker map is not readable or canonical");
+                audio::WarpRenderPlan spec;spec.source=file;spec.workFolder=fs::temp_directory_path()/"adi-warp";
+                spec.sourceStart=clip->sourceStart;spec.sourceFrames=clip->sourceLength;spec.outputRate=clip->rate;
+                spec.anchors=projectWarpAnchors(map.markers,tempo,sourceOrigin,rate);
+                const auto mode=audio::parseWarpMode(a->warpMode);if(!mode)throw std::runtime_error("warp mode is not available");
+                spec.mode=*mode;
+                if(spec.mode==audio::WarpMode::Tones)spec.grainSeconds=0.03;
+                if(!std::isfinite(a->formantShift) || std::abs(a->formantShift)>96)throw std::runtime_error("invalid warp formant shift");
+                spec.transposeSemis=a->transposeSemis;spec.formantScale=std::exp2(a->formantShift/12);
+                auto prepared=audio::prepareWarp(spec);
+                if(!prepared)throw std::runtime_error(prepared.detail.empty()?"warp preparation failed":prepared.detail);
+                clip->reader.reset();
+                clip->warped=std::move(prepared.prepared);clip->reader=std::make_unique<audio::WavReader>(clip->warped->file);
+                clip->sourceStart=0;clip->sourceLength=clip->warped->frames;clip->sourceRate=clip->rate;
+                clip->length=static_cast<std::int64_t>(clip->warped->frames);
+            }
             clip->start=samples(startSeconds,rate);
             std::int64_t endTicks=origin;
             double endSeconds=startSeconds;
@@ -449,14 +472,14 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(nanos<0)throw std::runtime_error("negative source clock");
                 return samples(static_cast<double>(nanos)*1e-9,rate);
             };
-            clip->offset=row.contentOffsetNs?fixedTime(*row.contentOffsetNs):duration(row.contentOffsetTicks);
+            clip->offset=!a->warpEnabled && row.contentOffsetNs?fixedTime(*row.contentOffsetNs):sourceDuration(row.contentOffsetTicks);
             if(!row.loopEnabled) {
-                if(row.sourceEndNs)clip->length=std::min(clip->length,fixedTime(*row.sourceEndNs));
-                else if(row.endMarkerTicks)clip->length=std::min(clip->length,duration(*row.endMarkerTicks));
+                if(!a->warpEnabled && row.sourceEndNs)clip->length=std::min(clip->length,fixedTime(*row.sourceEndNs));
+                else if(row.endMarkerTicks)clip->length=std::min(clip->length,sourceDuration(*row.endMarkerTicks));
             }
             for(std::size_t i=0;i<4;i+=2) {
                 if(row.fadeClockNs[i].has_value()!=row.fadeClockNs[i+1].has_value())throw std::runtime_error("incomplete fade clock");
-                if(row.fadeClockNs[i]) {
+                if(!a->warpEnabled && row.fadeClockNs[i]) {
                     const auto first=fixedTime(*row.fadeClockNs[i]),last=fixedTime(*row.fadeClockNs[i+1]);
                     if(last<=first)throw std::runtime_error("fade clock has no sample extent");
                     clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
@@ -473,8 +496,8 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(row.loopEnabled) {
                 const auto loopTicks=row.loopLenTicks.value_or(0);
                 if(loopTicks<0 || row.loopStartTicks<0 || row.loopStartTicks>std::numeric_limits<std::int64_t>::max()-loopTicks) throw std::runtime_error("invalid loop ticks");
-                clip->loopBegin=row.loopBeginNs?fixedTime(*row.loopBeginNs):duration(row.loopStartTicks);
-                clip->loopLength=row.loopEndNs?fixedTime(*row.loopEndNs)-clip->loopBegin:duration(row.loopStartTicks+loopTicks)-clip->loopBegin;
+                clip->loopBegin=!a->warpEnabled && row.loopBeginNs?fixedTime(*row.loopBeginNs):sourceDuration(row.loopStartTicks);
+                clip->loopLength=!a->warpEnabled && row.loopEndNs?fixedTime(*row.loopEndNs)-clip->loopBegin:sourceDuration(row.loopStartTicks+loopTicks)-clip->loopBegin;
                 if(clip->loopLength<=0 || clip->loopBegin+clip->loopLength>clip->length) throw std::runtime_error("clip loop outside source window; silent");
             }
             if(!std::isfinite(row.gainDb) || std::abs(row.gainDb)>120) throw std::runtime_error("invalid clip gain; silent");

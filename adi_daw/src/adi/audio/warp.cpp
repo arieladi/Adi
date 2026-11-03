@@ -308,6 +308,23 @@ void renderR3(const WarpRenderPlan& plan,WavReader& reader,WavWriter& writer,std
     if(written!=outputFrames || stretcher.available()!=-1)throw Failure{WarpError::Process,"R3 did not produce its declared duration"};
 }
 }
+const char* warpModeName(WarpMode mode)noexcept {
+    switch(mode) {
+        case WarpMode::Beats:return "beats";
+        case WarpMode::Tones:return "tones";
+        case WarpMode::Texture:return "texture";
+        case WarpMode::RePitch:return "re-pitch";
+        case WarpMode::Complex:return "complex";
+        case WarpMode::ComplexPro:return "complexPro";
+        default:return nullptr;
+    }
+}
+std::optional<WarpMode> parseWarpMode(std::string_view name)noexcept {
+    for(const auto mode:{WarpMode::Beats,WarpMode::Tones,WarpMode::Texture,WarpMode::RePitch,WarpMode::Complex,WarpMode::ComplexPro})
+        if(name==warpModeName(mode))return mode;
+    return std::nullopt;
+}
+
 PreparedWarp::PreparedWarp(std::filesystem::path directory,std::uint32_t sampleRate,std::uint16_t channelCount,std::uint64_t frameCount)
     :file(directory/"prepared.wav"),rate(sampleRate),channels(channelCount),frames(frameCount),directory_(std::move(directory)){}
 PreparedWarp::~PreparedWarp() {
@@ -322,6 +339,14 @@ WarpResult prepareWarp(const WarpRenderPlan& plan,std::stop_token stop) {
         Decoded decoded(plan.source);std::shared_ptr<PreparedWarp> converted;
         auto reader=std::make_unique<WavReader>(decoded.file);validate(plan,*reader);
         auto working=plan;
+        if(working.mode==WarpMode::Beats && working.transients.empty()) {
+            const auto detected=detectTransients(*reader,working.sourceStart,working.sourceFrames,50,stop);
+            cancelled(stop);if(!detected)throw Failure{WarpError::Process,"cannot read the source onset map"};
+            working.transients=detected.frames;
+            // Detect on the original file grid. Resampling first would let
+            // sinc pre-ringing move the detected attack ahead of its source.
+            if(working.transients.empty() || working.transients.front()!=0)working.transients.insert(working.transients.begin(),0);
+        }
         if((plan.mode==WarpMode::Beats || plan.mode==WarpMode::Texture) && reader->sampleRate()!=plan.outputRate) {
             const long double frames=static_cast<long double>(plan.sourceFrames)*plan.outputRate/reader->sampleRate();
             if(frames<0.5L || frames>maxFrames)throw Failure{WarpError::InvalidPlan,"native warp source conversion is outside supported duration"};

@@ -449,6 +449,16 @@ supported commands and explicit refusals.
 | `audioClip.setReverse` | e | S | sym | P1 |
 | `audioClip.setChannelMode` | e | S | sym | P2 |
 
+**Captured Warp import (N17).** `clip_edit::prepareImportAudio` with
+`ImportOptions::warp` analyzes the source off the callback, then captures
+`audio_clips.warp_markers` (AWRP), source trim, mode and musical clip length
+inside the existing `clip.duplicate` row image. `commitMaterial` groups that
+image with its optional `media.import`/`media.relink` as one undo step. Undo,
+redo and replay restore the literal marker bytes; they do not rerun detection.
+The options and six modes are described in ENGINE-WARP.md. This producer
+does not imply that the individual catalogue Warp setters above are applied.
+Bounce explicitly sets Warp off before preparing its import.
+
 ### 9.5 Notes and expression
 
 | Op | S | E | Inv | P |

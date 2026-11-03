@@ -81,7 +81,8 @@ boundary fields refuse. Clip envelopes are copied unchanged; their playback
 is still the separate phase D engine item.
 
 Split/copy of an attached warped clip and split of aliases return named
-refusals: the main renderer does not play those sources yet. Splitting through
+refusals: retaining a warped source's fade clock during editing is the next
+increment, and aliases remain unsupported by the renderer. Splitting through
 a fade retains the original envelope on both pieces, with no new internal
 edge fade. A subsequent handle edit replaces that side's retained domain;
 undo restores it exactly. The captured clip.join op restores its split; this
@@ -93,8 +94,14 @@ and deduplicates media, attaches a playing clip and pins the source clock, all
 as one undo step. Copy-in stages and verifies the file, then publishes without
 overwriting immediately before SQL commit. Failure rolls back rows and removes
 only a file this attempt published. Undo retains the owned media file for redo.
-Warp=true refuses before mutation because Auto-Warp detection/bar markers and
-the warp renderer are not built. Video likewise has no playable attachment
+Warp=true analyzes source onsets, captures a tempo/bar map and creates a
+musical clip played by the prepared warp backend (ENGINE-WARP.md). ImportOptions
+captures the six-mode selection, tempo hint/optional source BPM, meter,
+tempo-change detection, From First Beat versus Sample Start and cancellation.
+An indeterminate beat refuses before project mutation; provide a source BPM
+for short or non-percussive material. Bounce always creates Warp-off audio,
+regardless of the import preference (ADR-0203 d16).
+Video still has no playable attachment
 backend; it is not accepted as a silent audio clip.
 
 prepareBounce captures a private SQLite backup including the live WAL, renders

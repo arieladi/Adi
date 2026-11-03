@@ -46,7 +46,7 @@ void imports() {
     check(std::filesystem::exists(path) && path.parent_path().filename()=="audio","copy-in publishes into the project media folder");
     check(!clip_edit::commitMaterial(*p.store,prepared).ok && std::filesystem::exists(path),"reusing a completed material result cannot delete its committed media");
     check(db.execAndGet("SELECT fade_in_ticks+fade_out_ticks FROM clips").getInt64()==0 &&
-          db.execAndGet("SELECT warp_enabled FROM audio_clips").getInt()==0,"clean import defaults to no automatic fades and no unsupported Warp");
+          db.execAndGet("SELECT warp_enabled FROM audio_clips").getInt()==0,"clean import defaults to no automatic fades and Warp off");
     check(History(*p.store).undo().ok && db.execAndGet("SELECT count(*) FROM clips").getInt()==0 &&
           db.execAndGet("SELECT count(*) FROM media_files").getInt()==0 && std::filesystem::exists(path),"undo removes media and clip together while retaining the owned source file");
     check(History(*p.store).redo().ok && db.execAndGet("SELECT count(*) FROM audio_clips").getInt()==1,"redo needs no external source probe");
@@ -56,7 +56,7 @@ void imports() {
           db.execAndGet("SELECT count(*) FROM media_files").getInt()==1 &&
           db.execAndGet("SELECT fade_in_ticks FROM clips WHERE id=9").getInt64()>0,"reimport deduplicates media and explicit edge-fade choice acts");
     options.warp=true;auto unsupported=clip_edit::prepareImportAudio(*p.store,options,48000);
-    check(!unsupported.edit.ok && unsupported.edit.error.find("warp renderer")!=std::string::npos,"Warp refuses with the missing backend named");
+    check(!unsupported.edit.ok && unsupported.edit.error.find("source tempo")!=std::string::npos,"a short sample without a measured beat needs an explicit source tempo");
 }
 void refusalAndRollback() {
     Project p;auto options=p.options();auto& db=p.store->db();
@@ -85,13 +85,14 @@ void bounce() {
     clip_edit::BounceOptions options;options.job.source={21,engine::OfflineTap::PostFader};
     options.job.beginSample=127;options.job.endSample=639;options.job.session={2,48000,64};
     options.job.encoding.format=audio::WavFormat::Float32;
-    options.destination=p.options();options.destination.clipId=10;options.destination.mediaId=11;options.destination.at={1,1000000000};
+    options.destination=p.options();options.destination.clipId=10;options.destination.mediaId=11;options.destination.at={1,1000000000};options.destination.warp=true;
     auto material=clip_edit::prepareBounce(*p.store,options);
     if(!material.edit.ok)std::printf("bounce: %s\n",material.edit.error.c_str());
     check(material.edit.ok && db.execAndGet("SELECT count(*) FROM clips").getInt()==1,"bounce renders private WAL snapshot without changing the live project");
     const auto result=clip_edit::commitMaterial(*p.store,material);
     if(!result.ok)std::printf("bounce commit: %s\n",result.error.c_str());
-    check(result.ok && db.execAndGet("SELECT src_len_frames FROM audio_clips WHERE clip_id=10").getInt64()==512,"bounce prompt publishes and attaches exact render range");
+    check(result.ok && db.execAndGet("SELECT src_len_frames FROM audio_clips WHERE clip_id=10").getInt64()==512 &&
+          db.execAndGet("SELECT warp_enabled FROM audio_clips WHERE clip_id=10").getInt()==0,"bounce publishes the exact render range with Warp off despite an import preference");
     const auto path=media::projectFolder(*p.store)/media::pathFromUtf8(db.execAndGet("SELECT rel_path FROM media_files WHERE id=11").getString());
     audio::WavReader wave(path);std::vector<float> samples(1024);const auto read=wave.read(samples.data(),512);
     bool exact=read==512;

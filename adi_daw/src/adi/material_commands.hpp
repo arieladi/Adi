@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/clip_commands.hpp"
+#include "adi/audio/auto_warp.hpp"
+#include "adi/audio/warp.hpp"
 #include "adi/render/queue.hpp"
 namespace adi::clip_edit {
 struct MaterialFiles;
@@ -13,6 +15,9 @@ struct ImportOptions {
     std::int64_t track=0,clipId=0,mediaId=0,importedUtc=0;
     TimePoint at;
     bool copyIn=false,warp=false,edgeFades=false; // Create Fades defaults off
+    audio::WarpMode warpMode=audio::WarpMode::Beats;
+    audio::AutoWarpOptions warpAnalysis;
+    std::stop_token stop;
 };
 /// Off-callback, on this connection's owner. Does not change project rows.
 /// Keep the document generation with the job. Hosts keep their thread contract.

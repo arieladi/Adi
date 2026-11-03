@@ -51,10 +51,34 @@ checked canonical maps (SPEC 6.4). Readers accept wider future records through
 the generic stream stride and leave the original bytes untouched. A producer
 requiring new unknown record fields must refuse a rewrite. The shared
 detectTransients reader in audio/transients.hpp supplies source-relative onset
-frames to Beats and the upcoming Auto-Warp analysis; it uses bounded windows,
+frames to Beats and Auto-Warp analysis; it uses bounded windows,
 has no Store side effects and refuses on the callback.
 
-At this increment these worker APIs and marker validation are implemented.
-Auto-Warp tempo/bar analysis, its project edit producer and the ClipPlayback
-handoff are the next integration steps. The import producer continues to
-report that Warp import is unavailable until that complete path is connected.
+Auto-Warp (audio/auto_warp.hpp) fits an onset grid, optionally follows tempo
+changes and places bar anchors in the supplied meter. From First Beat trims
+the source window to the first detected attack; Sample Start retains its
+original offset. A supplied source BPM provides a straight clock for short
+or non-percussive material. Without enough reliable timing evidence the
+producer refuses with NoTempo. Grid confidence does not resolve half/double
+tempo ambiguity; the captured tempo hint selects between those candidates.
+
+clip_edit::prepareImportAudio connects this analysis to a captured AWRP blob,
+source window and musical clip length. It performs no project writes until
+commitMaterial. Replay/redo uses the captured map, never another analysis.
+Copy-in publication allows an identical regular owned file retained by undo;
+it never replaces a different file or removes an existing file on SQL failure.
+Cancellation is checked again at commit, including deduplicated imports.
+
+ClipPlayback prepares enabled Warp clips off the callback and hands their
+private PCM to the ordinary paged reader. engine/warp_projection.hpp projects
+source musical ticks through the project tempo integral, adding interior
+tempo junctions. It handles trimmed source clocks before project zero by
+extending the initial tempo. Source offsets, loop bounds and end markers use
+that musical clock; fixed nanosecond pins from earlier unwarped playback do
+not override it. A tempo change requires a new prepared playback generation.
+The formant_shift row value is an extra semitone shift (ratio 2^(value/12));
+the default is zero. Reverse and channel aliases remain unsupported here.
+
+Warp-aware split/fade editing and existing-clip Warp actions are the next
+editing increment. Import and actual playback are connected for all six modes;
+these tests establish generated-signal behavior, not measured Live parity.

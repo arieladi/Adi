@@ -8,6 +8,7 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <map>
+#include <cstring>
 
 namespace adi::rows {
 namespace {
@@ -269,7 +270,8 @@ Model readModel(const Store& store) {
 
     query(m, db, "audio_clips",
           "SELECT clip_id, media_id, src_start_frames, src_len_frames, warp_enabled, "
-          "       warp_mode, transpose_semis, formant_shift, reverse, channel_mode "
+          "       warp_mode, transpose_semis, formant_shift, reverse, channel_mode, length(warp_markers), "
+          "       CASE WHEN typeof(warp_markers)='blob' AND length(warp_markers)<=67108864 THEN warp_markers END "
           "FROM audio_clips",
           [&](const SQLite::Statement& st) {
               AudioClip a;
@@ -283,6 +285,14 @@ Model readModel(const Store& store) {
               a.formantShift = st.getColumn(7).getDouble();
               a.reverse = flag(st, 8);
               a.channelMode = st.getColumn(9).getInt64();
+              if(!st.getColumn(10).isNull()) {
+                  if(st.getColumn(11).isNull())m.problems.push_back("audio_clips#"+std::to_string(a.clipId)+": warp marker data exceeds the reader bound or has an invalid type");
+                  else {
+                      const auto column=st.getColumn(11);std::vector<std::byte> bytes(static_cast<std::size_t>(column.getBytes()));
+                      if(!bytes.empty())std::memcpy(bytes.data(),column.getBlob(),bytes.size());
+                      a.warpMarkers=std::move(bytes);
+                  }
+              }
               m.audioClips.push_back(std::move(a));
           });
 

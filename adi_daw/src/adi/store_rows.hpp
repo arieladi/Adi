@@ -160,6 +160,7 @@ struct AudioClip {
     double formantShift = 0.0;
     bool reverse = false;
     std::int64_t channelMode = 0;
+    std::optional<std::vector<std::byte>> warpMarkers{};
 };
 
 /// A note, already decoded out of its clip's `ANOT` blob. The projection never
