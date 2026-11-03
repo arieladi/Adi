@@ -1267,6 +1267,33 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.command(AppCommands::Undo);
     root.frame();
     check(muted().empty(), "three undos: every track active");
+    // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
+    check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "the Device View hidden");
+    auto &headers = root.arrangement.headers;
+    const juce::Point<float> title{20.f, static_cast<float>(laneTop(root, 2) + 8)};
+    headers.mouseDown(pressAt(headers, title));
+    headers.mouseUp(pressAt(headers, title));
+    headers.mouseDoubleClick(pressAt(headers, title));
+    check(root.state().docked && root.arrangement.geometry.selection.track == 2,
+          "a double-click on 2 MIDI's title selects it and brings up the Device View");
+    render("adi-title-double-click.png");
+    // The Mixer View strip's title does the same.
+    check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "hidden again");
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(320);
+    root.mark(DirtySet::All);
+    root.frame();
+    if (auto *strip = rowOf(root.mixerView, 3)) {
+        strip->mouseDoubleClick(pressAt(*strip, {20.f, 8.f}));
+        check(root.state().docked && root.arrangement.geometry.selection.track == 3,
+              "a double-click on 3 Audio's strip title selects it and brings up the Device View");
+        check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "hidden once more");
+        strip->mouseDoubleClick(pressAt(*strip, {20.f, 200.f}));
+        check(!root.state().docked, "below the title, a double-click leaves the Device View hidden");
+        check(root.command(AppCommands::ToggleDeviceView) && root.state().docked, "and shown again");
+    } else
+        check(false, "3 Audio's Mixer View strip");
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
     // Live's selectors at the strip's foot repeat the View menu: R hides the returns, I-O the In/Out;
     // each is lit while its part shows.
     check(root.strip.returns.getToggleState() && root.strip.inOut.getToggleState() &&

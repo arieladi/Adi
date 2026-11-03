@@ -1189,6 +1189,7 @@ bool AdiRootComponent::activateTrack(std::int64_t id, bool withSelection) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
     return window != nullptr && window->isFullScreen();

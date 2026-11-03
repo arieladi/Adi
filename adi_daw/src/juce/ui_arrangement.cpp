@@ -1230,6 +1230,19 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         view.contextMenu(e.getScreenPosition(), true);
     }
 }
+void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
+    // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
+    // The first click selected the track; a double-click on a group's fold switch only folds it twice.
+    if (e.mods.isPopupMenu())
+        return;
+    int top = 0;
+    const auto rows = view.geometry.rows(view.reader());
+    const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
+    if (at >= rows.size() ||
+        (rows[at].place.group && foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position)))
+        return;
+    view.root.showDeviceView();
+}
 void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
     if (resizeId) {
         view.geometry.resizeTrack(resizeId, initialHeight + e.getDistanceFromDragStartY(),
