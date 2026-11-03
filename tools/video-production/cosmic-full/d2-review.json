@@ -128,5 +128,21 @@
  "K120-d2": "weak",
  "K126a-d2": "moves",
  "K126b-d2": "moves",
- "K128a-d2": "weak"
+ "K128a-d2": "weak",
+ "K036b-d2r": "moves",
+ "K038b-d2r": "broken",
+ "K045b-d2r": "moves",
+ "K045b-d2rt2": "still",
+ "K058a-d2r": "weak",
+ "K058a-d2rt2": "weak",
+ "K058b-d2r": "moves",
+ "K082a-d2r": "moves",
+ "K082a-d2rt2": "still",
+ "K082b-d2r": "still",
+ "K082b-d2rt2": "still",
+ "K091b-d2r": "moves",
+ "K131b-d2r": "weak",
+ "K131b-d2rt2": "weak",
+ "K139b-d2r": "moves",
+ "K109-d2r": "weak"
 }

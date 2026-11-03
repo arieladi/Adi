@@ -1,12 +1,13 @@
 """Build the Draft 2 assembly plan: Draft 1's timeline (plan_v2.json) with every slot pointing at its best take.
 
 usage: make_d2_assembly.py <root> <eye-review.json> <d2-review.json> <out plan>
-Candidates per slot: its Draft 1 take, its redo1 take and its Draft 2 takes (<slot>-d2, -d2t2 ..., retakes <slot>-d2r ...), each with its eye
-verdict (eye-review.json for Draft 1/redo1, d2-review.json {take: verdict} for Draft 2; a Draft 1 take without frames
-that the encoded-video check found frozen counts as still). A slot alone takes its best verdict (ties: the newer
-render). A chained bar A + bar B are chosen together, only from pairs where B really starts on A's last frame, so the
-picture never jumps back at the bar line; the pair with the best combined verdict wins. Prints every slot that does
-not end on "moves" and any pair that could not be made consistent. Timing, symmetry, portals and pushes stay as Draft 1.
+Candidates per slot: its Draft 1 take, its redo1 take and its Draft 2 takes (<slot>-d2, -d2t2 ..., retakes
+<slot>-d2r, bar fixes <slot>-f2 ...), each with its eye verdict (eye-review.json for Draft 1/redo1, d2-review.json
+{take: verdict} for Draft 2; a Draft 1 take without frames that the encoded-video check found frozen counts as still).
+A slot alone takes its best verdict (ties: the newer render). A chained bar A + bar B are chosen together, only from
+pairs where B really starts on A's last frame, so the picture never jumps back at the bar line; a pair without a
+broken bar beats any with one, then the best combined verdict wins. Prints every slot that does not end on "moves"
+and any pair that could not be made consistent. Timing, symmetry, portals and pushes stay as Draft 1.
 """
 import json, sys
 from itertools import product
@@ -36,7 +37,7 @@ def candidates(sid):
     if sid in redo and redo[sid] in eye and gen(redo[sid]):
         out.append((RANK[eye[redo[sid]]], 1, redo[sid]))
     age = 2
-    for suffix in ("-d2", "-d2r"):  # Draft 2 takes, then retakes of broken ones (make_fix_plan.py)
+    for suffix in ("-d2", "-d2r", "-f2"):  # Draft 2 takes, retakes (make_fix_plan.py), bar fixes (make_bar_fix_plan.py)
         acc = R / "anim" / f"{sid}{suffix}" / "accepted.json"
         if acc.exists():
             for t in json.loads(acc.read_text())["takes"]:
@@ -65,9 +66,11 @@ for s in plan["slots"]:
         continue
     b = kids[0]["id"]
     cb = candidates(b)
-    pairs = [(x[0] + y[0], min(x[0], y[0]), x[1] + y[1], x, y) for x, y in product(ca, cb) if continues(y[2], x[2])]
+    # A pair with a broken bar loses to any pair without one; then best combined verdict, best weaker bar, newest.
+    pairs = [(min(x[0], y[0]) > 0, x[0] + y[0], min(x[0], y[0]), x[1] + y[1], x, y)
+             for x, y in product(ca, cb) if continues(y[2], x[2])]
     if pairs:
-        _, _, _, x, y = max(pairs)
+        x, y = max(pairs)[-2:]
         choice[sid], choice[b] = x, y
     else:
         choice[sid], choice[b] = max(ca), max(cb)
