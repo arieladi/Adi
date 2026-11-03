@@ -16,7 +16,7 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ## 2026-11-03 — Dedicated Bounce to New Track / whole-chain Bounce in Place
 
 **PR requested:** engine/bounce-commands -> **engine/phase-c-editing**, head
-**9838783** (use the branch's exact pushed head), title **Add dedicated track
+**98387836e5d6d1e98519e555442c50470e3591e1**, title **Add dedicated track
 bounce commands and retain recoverable renders**. Two deep: requires phase-C's
 complete typed clip/range capture and Warp-capable playback; win merges N17
 (engine/phase-c-editing 19d1fc6) first, then this. No freeze PR is stacked on it.
