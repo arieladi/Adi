@@ -11,12 +11,19 @@
 #include "adi/ops.hpp"
 #include <cstdint>
 #include <string>
+#include <vector>
 namespace adi {
 class Store;
 }
 namespace adi::ui {
 struct Selection {
     std::int64_t track = 0, clip = 0;
+    // The far track of a time selection across tracks (Live 12 manual 6.9): the selection runs from
+    // `track` to it in the lanes' order. 0, or `track` itself: the one track.
+    std::int64_t toTrack = 0;
+    // Tracks picked apart from the others with Ctrl/Cmd+click on their titles (Live: non-adjacent
+    // tracks), selected besides `track` and the run to `toTrack`. A plain click lets them go.
+    std::vector<std::int64_t> picked;
     std::int64_t start = 0, end = 0; // a time selection, in ticks; start == end is none
     std::int64_t insert = 0;         // the insert marker
     bool marked = false;             // the insert marker has been placed
