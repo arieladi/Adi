@@ -9,6 +9,9 @@ juce::Colour trackColour(std::size_t position) {
         0xff5cffe8, 0xff8bc5ff, 0xff5480e4, 0xff92a7ff, 0xffd86ce4};
     return juce::Colour(palette[position % palette.size()]);
 }
+juce::Colour paletteColour(std::int64_t index) {
+    return trackColour(static_cast<std::size_t>(index < 0 ? 0 : index));
+}
 juce::Font font(float height, bool bold) {
     return juce::Font(juce::FontOptions(height, bold ? juce::Font::bold : juce::Font::plain));
 }
@@ -75,6 +78,15 @@ void LiveLook::drawButtonBackground(juce::Graphics &g, juce::Button &b, const ju
     else if (highlighted)
         fill = fill.brighter(0.08f);
     box(g, b.getLocalBounds().toFloat().reduced(0.5f), fill);
+    // Live's half-coloured Solo on a group holding a soloed track (Live 12 manual 18.3): the box cut
+    // corner to corner, its lower right half lit.
+    if (!b.getToggleState() && b.getProperties()["live.half"]) {
+        const auto r = b.getLocalBounds().toFloat().reduced(1.5f);
+        juce::Path half;
+        half.addTriangle(r.getRight(), r.getY(), r.getRight(), r.getBottom(), r.getX(), r.getBottom());
+        g.setColour(b.findColour(juce::TextButton::buttonOnColourId));
+        g.fillPath(half);
+    }
     // Live 12's focus ring, on a switch that only the keyboard can focus.
     if (b.getProperties()["live.focusRing"] && b.hasKeyboardFocus(false)) {
         g.setColour(accent);

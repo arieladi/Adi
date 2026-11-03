@@ -125,6 +125,10 @@ public:
         return snapshot_ ? snapshot_->meters : noMeters();
     }
 
+    /// The send rows (#309), sorted by routing id; empty when invalid.
+    [[nodiscard]] const std::vector<std::shared_ptr<const engine::SendRoute>>& sends() const noexcept {
+        return snapshot_ ? snapshot_->sends : noSends();
+    }
     [[nodiscard]] std::size_t trackCount() const noexcept { return tracks().size(); }
 
     /// Null for a track this publication does not have — including every track,
@@ -155,6 +159,10 @@ public:
 private:
     static const std::vector<std::shared_ptr<const engine::TrackNode>>& empty() noexcept {
         static const std::vector<std::shared_ptr<const engine::TrackNode>> none;
+        return none;
+    }
+    static const std::vector<std::shared_ptr<const engine::SendRoute>>& noSends() noexcept {
+        static const std::vector<std::shared_ptr<const engine::SendRoute>> none;
         return none;
     }
     static const std::vector<textproj::Meter>& noMeters() noexcept {

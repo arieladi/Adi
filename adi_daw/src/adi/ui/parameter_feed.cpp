@@ -16,6 +16,13 @@ void ParameterFeed::publish(engine::Session &session) {
             data.track = *chain.trackId;
             data.name = row.name;
             data.enabled = row.enabled;
+            // A rack's kind has no values in the format yet, so only a plug-in can be an instrument.
+            if (row.pluginRefId)
+                for (const auto &ref : model.pluginRefs)
+                    if (ref.id == *row.pluginRefId) {
+                        data.instrument = ref.subtype == "instrument";
+                        break;
+                    }
             auto *instance = session.instanceFor(row.id);
             if (instance)
                 for (std::int32_t i = 0; i < instance->paramCount(); ++i) {
