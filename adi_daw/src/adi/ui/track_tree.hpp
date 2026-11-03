@@ -12,7 +12,9 @@ namespace adi::ui {
 struct TrackRow {
     std::int64_t id = 0, parent = 0; // parent: the group it sits in; 0 at the top
     bool group = false, main = false;
-    std::uint32_t colour = 0; // 0xRRGGBB; 0 when the project gives none
+    // Its own colour: an index into Live's palette, 0 to 69 (ADR-0211); -1 when it has none, and
+    // the window colours it by place.
+    std::int32_t colour = -1;
     std::string name;
     std::int64_t index = 0; // its place among what its parent holds (index_in_parent)
     bool ret = false;       // a return track: after the rest, before Main

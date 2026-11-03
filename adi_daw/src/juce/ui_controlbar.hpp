@@ -71,7 +71,9 @@ class TransportBar final : public juce::Component {
         punchIn{{}, BarItem::Glyph::PunchIn}, loop{{}, BarItem::Glyph::Loop},
         punchOut{{}, BarItem::Glyph::PunchOut}, loopLength{"4.  0.  0"},
         draw{{}, BarItem::Glyph::Draw}, keyboard{{}, BarItem::Glyph::Keyboard}, key{"Key"},
-        midi{"MIDI"}, cpu{"0 %", BarItem::Glyph::None, true, true}, indicators{{}};
+        midi{"MIDI"}, cpu{"0 %", BarItem::Glyph::None, true, true}, indicators{{}},
+        // ADI's: the Mix View's button (ADR-0209 d9), beside Live's switches; F4 too.
+        mix{"Mix"};
 
   private:
     std::vector<BarItem *> items();
