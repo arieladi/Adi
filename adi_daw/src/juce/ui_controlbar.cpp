@@ -182,7 +182,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&key, "Key Map Mode", "Assigns computer keys to controls."},
         {&midi, "MIDI Map Mode", "Assigns MIDI controllers to controls."},
         {&cpu, "CPU Load Meter", "How much of the audio thread's time is used."},
-        {&indicators, "MIDI Indicators", "Light when MIDI comes in or goes out."}};
+        {&indicators, "MIDI Indicators", "Light when MIDI comes in or goes out."},
+        {&mix, "Mix View", "Every channel's ADI-Q and ADI-L in one view (F4)."}};
     for (const auto &info : infos) {
         info.item->setTitle(info.title);
         info.item->setTooltip(juce::String(info.title) + ". " + info.tip);
@@ -193,8 +194,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     play.onClick = [this] { root_.command(AppCommands::PlayStop); };
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
     follow.onClick = [this] { root_.command(AppCommands::Follow); };
+    mix.onClick = [this] { root_.command(AppCommands::ToggleMixView); };
     for (auto *item : items())
-        if (item != &play && item != &stop && item != &follow)
+        if (item != &play && item != &stop && item != &follow && item != &mix)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -205,7 +207,7 @@ std::vector<BarItem *> TransportBar::items() {
             &metronome, &quantize,     &follow,   &position,      &play,      &stop,
             &record,   &overdub,       &automationArm, &reEnable, &capture,   &sessionRecord,
             &loopStart, &punchIn,      &loop,     &punchOut,      &loopLength, &draw,
-            &keyboard, &key,           &midi,     &cpu,           &indicators};
+            &keyboard, &key,           &midi,     &cpu,           &indicators, &mix};
 }
 void TransportBar::resized() {
     // Live's widths, in points; the left group from the left, the right group from the
@@ -241,7 +243,8 @@ void TransportBar::resized() {
     place(loop, 21, 1);
     place(punchOut, 20, 1);
     place(loopLength, 85);
-    x = getWidth() - 215;
+    x = getWidth() - 251;
+    place(mix, 28, 8);
     place(draw, 17, 2);
     place(keyboard, 17, 2);
     place(key, 26, 12);
