@@ -207,10 +207,14 @@ static void decodeNative(const AacTrack &track, const std::filesystem::path &wav
     writeAacMovie(path, std::span<const AacTrack>(&track, 1));
     ComPtr<IMFSourceReader> reader;
     check(MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader), "source reader");
-    check(reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE), "deselect");
-    check(reader->SetStreamSelection(MF_SOURCE_READER_FIRST_AUDIO_STREAM, TRUE), "select");
+    // MSVC /WX: the MF_SOURCE_READER_* stream ids are an enum, and passing one as the DWORD
+    // parameter is C4245 (signed/unsigned) on MSVC 14.51; the cast is what the SDK samples do.
+    constexpr DWORD allStreams = static_cast<DWORD>(MF_SOURCE_READER_ALL_STREAMS);
+    constexpr DWORD audioStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
+    check(reader->SetStreamSelection(allStreams, FALSE), "deselect");
+    check(reader->SetStreamSelection(audioStream, TRUE), "select");
     auto type = mediaType(MFAudioFormat_Float, track.sampleRate, 32);
-    check(reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, type.Get()),
+    check(reader->SetCurrentMediaType(audioStream, nullptr, type.Get()),
           "decode format");
     WavWriter writer(wav, track.sampleRate, 2, WavFormat::Float32);
     std::uint64_t done = 0;
@@ -219,7 +223,7 @@ static void decodeNative(const AacTrack &track, const std::filesystem::path &wav
         DWORD flags = 0;
         LONGLONG time = 0;
         ComPtr<IMFSample> sample;
-        check(reader->ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, nullptr, &flags, &time, &sample),
+        check(reader->ReadSample(audioStream, 0, nullptr, &flags, &time, &sample),
               "decode");
         if (flags & MF_SOURCE_READERF_ERROR)
             throw std::runtime_error("native AAC reader reported an error");
@@ -245,8 +249,8 @@ static void decodeNative(const AacTrack &track, const std::filesystem::path &wav
                         throw std::runtime_error("AAC PCM block exceeds bound");
                     std::vector<float> aligned(static_cast<std::size_t>(count) * 2);
                     std::memcpy(aligned.data(), bytes, static_cast<std::size_t>(count) * 8);
-                    for (const auto sample : aligned)
-                        if (!std::isfinite(sample))
+                    for (const auto value : aligned)
+                        if (!std::isfinite(value))
                             throw std::runtime_error("nonfinite native AAC decode");
                     writer.write(aligned.data(), count);
                 }
