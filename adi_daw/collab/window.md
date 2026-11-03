@@ -73,6 +73,24 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 
 ---
 
+## 2026-11-03, cloud — Driver Error Compensation among the latencies [#370](https://github.com/arieladi/Adi/pull/370) `window/latency-compensation`, on #369
+
+**Built: the Audio page's Driver Error Compensation where Live 11 has it** (parity-settings row 7).
+The page's head holds the Settings' own row between Output and Overall Latency, under Live's name
+(`SettingsPageHead`); the panel still owns, refreshes and writes it. Live 12's online manual has no
+figure of the page, so its place is marked to confirm on Live. Channel Configuration is open.
+
+**Tests.** shell 841; `test_all.sh` PASS (10082 checks, 106 suites). No golden moved. Checked in the
+app with a device manager under Xvfb.
+
+**CI check-in, 00:12 UTC.** #330 to #369: no new failures or conflicts. #337's macOS re-run went
+green. Four more macOS jobs were cancelled after hours without a runner: #338's, #340's and #348's
+were re-run once; #347's waits while its run has a job queued. #350's and #362's MSVC
+`adi_mixer_tests` timeouts (not these PRs': `adi_core` only) wait on their runs' queued macOS jobs
+before a re-run; #362 has a comment saying so.
+
+---
+
 ## 2026-11-02, cloud, continued — the grid in the project's meters [#369](https://github.com/arieladi/Adi/pull/369) `window/meter-grid`, on #368
 
 **Built: the editing grid follows the meters** (parity 7.3 row 11; Live 12 manual 6.10, 6.5). In any
