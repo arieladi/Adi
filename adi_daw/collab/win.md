@@ -6,6 +6,40 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-03 (afternoon) — CI: the two heavy macOS legs leave the PR gate; the engine's 41 unopened PRs
+
+**The director said go on the macOS gate change (proposed this morning, below).** GitHub serves this
+account one macOS job at a time, and the two heavy macOS legs, the universal arm64+x86_64 build at
+about 130 minutes and the apple clang warnings sweep at about 53, were the whole queue: with two
+lanes pushing, every PR waited days for a runner, never for a result. From this PR on, `ci.yml`
+has a `plan` job that computes the `build` and `strict` matrices: on a pull request the two heavy
+legs are left out; on a push to main, on dispatch, and on a PR labelled `full-ci`, every leg runs
+as before. A PR still proves itself on a Mac through the three light macOS legs (the validators,
+JUCE on, the GUI shell), and the heavy legs run once per merge on main. A heavy leg red on main is
+win's, at the head of the queue (LANES.md §2 carries the rule). Main is not branch-protected, so
+this is a convention in the workflow and the lane rules, reversible in one PR. The matrices moved
+into the `plan` job as JSON because a matrix `include` cannot be filtered by the event, only
+computed; the check names are unchanged, so nothing the lanes read moves.
+
+**The engine's PR requests, none of them opened.** The engine seat is a cloud container without the
+GitHub API; it pushes `engine/<topic>` and writes "PR requested" in its log, and win opens and merges
+(ADR-0210 d4). Win had not. From 2 November to this morning, 41 requested PRs, every engine item
+from N3 through the controller lanes, sat on origin as branches without a pull request, so the
+engine kept chaining items on top of work nobody could review. Opened this morning as #380 to #420,
+in the engine's order, each with the engine's own title and its log entry as the body, with #421 for
+the log; all 42 mergeable against their requested bases. One merger takes them in that order and
+stops at the first conflict or red leg for win. The engine's `engine/automation-editing` never
+reached origin: its container became unavailable mid-item and it stopped cleanly. The lesson is
+now a standing duty: each win session diffs the engine's log against the open PRs before anything
+else.
+
+**What follows the merge of this PR:** every open PR's queued run still carries the old workflow
+with its heavy macOS legs, so win merges main into each open lane branch and pushes; the push
+cancels the stale run through the concurrency group and the new one runs under the new gate
+against today's main. A branch that does not merge cleanly is left for the merger to stop on.
+
+---
+
 ## 2026-11-03 (early) — CI: the mixer suite's timeout and the Windows test step's, raised for slow-runner days
 
 **#350 and #362 failed their Debug MSVC leg the same way:** `adi_mixer_tests` cut off at ctest's
