@@ -25,6 +25,7 @@ stood since #329. It moves now: #331 and #333 merged at 04:32 UTC; the rest foll
 one's legs come through, and the new seat's #356 to #375 queue behind them.
 
 ---
+
 ## 2026-11-02 (afternoon) — eleven window PRs merged; main measured; the director's build refreshed; #330 is the window's rebase
 
 **Merged, in stack order, every leg green:** win's #332 (the morning entry), then the window's #318,
