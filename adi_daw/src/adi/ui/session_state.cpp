@@ -5,8 +5,13 @@
 namespace adi::ui {
 namespace {
 Payload toJson(const Selection &s) {
-    return {{"track", s.track}, {"clip", s.clip},     {"start", s.start},
-            {"end", s.end},     {"insert", s.insert}, {"marked", s.marked}};
+    Payload j{{"track", s.track}, {"clip", s.clip},     {"start", s.start},   {"end", s.end},
+              {"insert", s.insert}, {"marked", s.marked}, {"toTrack", s.toTrack}};
+    // The tracks picked with Ctrl/Cmd+click, so an undo puts them back with the rest; written only
+    // when there are some.
+    if (!s.picked.empty())
+        j["picked"] = s.picked;
+    return j;
 }
 Selection fromJson(const Payload &j) {
     Selection s;
@@ -16,6 +21,11 @@ Selection fromJson(const Payload &j) {
     s.end = j.value("end", std::int64_t{0});
     s.insert = j.value("insert", std::int64_t{0});
     s.marked = j.value("marked", false);
+    s.toTrack = j.value("toTrack", std::int64_t{0}); // absent in a selection written before it
+    if (const auto picked = j.find("picked"); picked != j.end() && picked->is_array())
+        for (const auto &id : *picked)
+            if (id.is_number_integer())
+                s.picked.push_back(id.get<std::int64_t>());
     return s;
 }
 } // namespace
