@@ -153,6 +153,69 @@ int main(int argc, char **argv) {
             opened->release();
         }
     }
+    {
+        // A dropped audio file (#308, N5): the document reads it and captures its pool row without
+        // writing anything; the window's batch adds the clip; one commit, one undo step.
+        auto dropped = ui::ProjectDocument::open(temp.path() / "drop.adi", true, {}, error);
+        check(dropped != nullptr, "a project for the drop");
+        if (dropped) {
+            OpRequest audioTrack;
+            audioTrack.opType = "track.create";
+            audioTrack.payload = {{"id", 2}, {"kind", "audio"}, {"name", "Drums"}};
+            check(dropped->ops().submit(audioTrack).ok && dropped->synchronise(), "an audio track");
+            const auto wav = temp.path() / "kick.wav";
+            {
+                std::array<float, 24000> samples{};
+                for (std::size_t i = 0; i < samples.size(); ++i)
+                    samples[i] = static_cast<float>(std::sin(static_cast<double>(i) * .05) * .5);
+                audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+                writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+            }
+            const auto opsBeforeDrop = dropped->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            ui::AudioImport import;
+            check(dropped->prepareImport(wav.string(), 1'700'000'000'000'000, import) && import.mediaId == 1 &&
+                      import.sampleRate == 48000 && import.frames == 24000 && import.media.opType == "media.import" &&
+                      dropped->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeDrop &&
+                      dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
+                  "prepareImport reads the file and captures its row, writing nothing");
+            auto edit = ui::dropAudio(*dropped->view().current(), 2, 0, "kick", import);
+            check(edit.refusal.empty() && edit.ops.size() == 3 && dropped->ops().submit(std::move(edit.ops)).ok &&
+                      dropped->synchronise(),
+                  "the pool row, the clip and its audio commit together");
+            const auto *track = dropped->view().current()->findTrack(2);
+            check(track != nullptr && track->clips.size() == 1 && track->clips[0]->name == "kick" &&
+                      dropped->ops().nextUndo() && dropped->ops().nextUndo()->opCount == 3 &&
+                      dropped->ops().nextUndo()->label == "Insert Audio Clip",
+                  "the clip is on the track, one undo step");
+            dropped->prepare(48000, 64);
+            check(dropped->mailbox().post(ui::TransportMailbox::Command::Play), "play");
+            std::array<float, 64> left{}, right{};
+            float *dropChannels[] = {left.data(), right.data()};
+            engine::AudioIo out;
+            out.out = dropChannels;
+            out.numOut = 2;
+            out.frames = 64;
+            bool heard = false;
+            for (int block = 0; block < 64 && !heard; ++block) {
+                out.streamTimeSamples = block * 64;
+                dropped->process(out);
+                // The clip's reader fills on the message thread, as #308's own test primes it.
+                if (dropped->session().clips() != nullptr)
+                    dropped->session().clips()->prime();
+                for (const float v : left)
+                    heard = heard || std::abs(v) > 1.e-4f;
+            }
+            check(heard, "and it plays");
+            dropped->release();
+            check(dropped->ops().undo().ok && dropped->synchronise() &&
+                      dropped->view().current()->findTrack(2)->clips.empty() &&
+                      dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
+                  "one undo removes the clip, its audio and the new pool row");
+            ui::AudioImport none;
+            check(!dropped->prepareImport((temp.path() / "missing.wav").string(), 1, none) && !dropped->error().empty(),
+                  "a file that can't be read is refused, with a reason");
+        }
+    }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
