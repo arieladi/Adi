@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 namespace adi::engine {
@@ -101,6 +102,16 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
 
     r->graph_.setChannels(opts.channels);
 
+    // A caller's node is placed ONCE. Twice -- in two chains, or twice in one
+    // -- the graph would run it twice a block, and an edge keyed by its
+    // address (ADR-0092) would name two edges. The second is dropped, named.
+    std::unordered_set<const Node*> placed;
+    auto placeOnce = [&](const Node* n, const std::string& where, const char* what) {
+        if (placed.insert(n).second) return true;
+        r->problems_.push_back(where + ": " + what + " given twice; the second was dropped");
+        return false;
+    };
+
     // --- one chain per planned node ----------------------------------------
     for (const PlannedNode& pn : plan.nodes) {
         // A VCA controls; it does not carry audio. The planner emits one
@@ -124,12 +135,21 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                                            ": a null source was dropped");
                     continue;
                 }
+                if (!placeOnce(s, trackRef(pn.trackId), "a source")) continue;
                 if (auto owner = s->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
                 if (const auto& owner = s->eventSourceLifetime()) r->sourceOwners_.push_back(owner);
                 const NodeId id = r->graph_.addNode(*s);
-                r->graph_.connect(id, head);
+                // A source the session builds afresh at every rebuild names
+                // itself; any other is keyed by the object it is.
+                const std::uint64_t name = s->historyName();
+                if (r->graph_.connect(id, head))
+                    r->chainEdges_.push_back({{pn.trackId, RealizedGraph::ChainKey::Leg::Into,
+                                               name != 0 ? nullptr : s, name},
+                                              id, head, Bus::Main});
             }
         }
+        const Node* prev = nullptr;   // the junction
+        RealizedGraph::Chain built;
         if (opts.devicesFor) {
             const std::vector<Node*> chain = opts.devicesFor(pn.trackId);
             for (Node* d : chain) {
@@ -142,16 +162,24 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                                            ": a null device in the chain was dropped");
                     continue;
                 }
+                if (!placeOnce(d, trackRef(pn.trackId), "a chain node")) continue;
                 // ADR-0164: a chain node may hold data the audio thread reads
                 // -- a strip's automation lanes -- and this graph keeps it alive.
                 if (auto owner = d->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
                 if (const auto& owner = d->eventSourceLifetime()) r->sourceOwners_.push_back(owner);   // ADR-0165
                 const NodeId id = r->graph_.addNode(*d);
-                r->graph_.connect(tail, id);
+                if (r->graph_.connect(tail, id))
+                    r->chainEdges_.push_back({{pn.trackId, RealizedGraph::ChainKey::Leg::Next, prev, 0},
+                                              tail, id, Bus::Main});
                 tail = id;
+                prev = d;
+                built.nodes.emplace_back(d, id);
             }
         }
-        r->chains_[pn.trackId] = RealizedGraph::Chain{head, tail};
+        built.head = head;
+        built.tail = tail;
+        built.tailNode = prev;
+        r->chains_[pn.trackId] = std::move(built);
     }
 
     // --- the plan's edges, between chains ----------------------------------
@@ -180,6 +208,98 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
                                    "connection was not made");
             continue;
         }
+        // ADR-0203 d3: a SEND leaves its source at its tap, plays through a
+        // node of its own -- its level, pan and switch -- and enters the
+        // destination's junction beside everything else that feeds it. Both
+        // of its edges have one of the caller's nodes at an end, so they are
+        // keyed as a chain's edges are and keep their history across a
+        // rebuild (ADR-0092).
+        if (e.routingId != 0) {
+            const std::string ref = "routing#" + std::to_string(e.routingId);
+            Node* send = opts.sendFor ? opts.sendFor(e.routingId) : nullptr;
+            if (send == nullptr) {
+                r->problems_.push_back(ref + ": no node to play the send through, so it was not made");
+                continue;
+            }
+            const RealizedGraph::Chain& chain = r->chains_.at(srcId);
+            const Node* tapNode = chain.nodes.empty() ? nullptr : chain.nodes.back().first;
+            NodeId at = chain.tail;
+            if (e.tap != Tap::Tail && opts.tapFor) {
+                tapNode = opts.tapFor(srcId, e.tap);
+                at = tapNode == nullptr ? chain.head : kInvalidNode;
+                for (const auto& [n, id] : chain.nodes)
+                    if (n == tapNode) at = id;
+                if (at == kInvalidNode) {
+                    r->problems_.push_back(ref + ": its tap is not a node of " + trackRef(srcId) +
+                                           "'s chain, so it was not made");
+                    continue;
+                }
+            }
+            if (!placeOnce(send, ref, "a send's node")) continue;
+            // A return's send into itself, Live's feedback loop: the send
+            // ends in the loop's writer, and the loop's reader feeds the
+            // return's junction a block later. Neither edge closes a cycle --
+            // the writer is a sink, the reader a source -- and neither delays,
+            // so their keys only keep them apart.
+            if (e.feedback) {
+                const FeedbackNodes loop = opts.feedbackFor ? opts.feedbackFor(e.routingId) : FeedbackNodes{};
+                if (loop.writer == nullptr || loop.reader == nullptr) {
+                    r->problems_.push_back(ref + ": no loop to close the return's send into itself, so it was not made");
+                    continue;
+                }
+                if (!placeOnce(loop.writer, ref, "a loop's writer") || !placeOnce(loop.reader, ref, "a loop's reader"))
+                    continue;
+                const NodeId sid = r->graph_.addNode(*send);
+                const NodeId wid = r->graph_.addNode(*loop.writer);
+                const NodeId rid = r->graph_.addNode(*loop.reader);
+                if (!r->graph_.connect(at, sid) || !r->graph_.connect(sid, wid) || !r->graph_.connect(rid, to)) {
+                    r->problems_.push_back(ref + ": the graph refused the loop");
+                    continue;
+                }
+                r->chainEdges_.push_back({{srcId, RealizedGraph::ChainKey::Leg::Send, tapNode,
+                                           static_cast<std::uint64_t>(e.routingId)},
+                                          at, sid, Bus::Main});
+                r->chainEdges_.push_back({{srcId, RealizedGraph::ChainKey::Leg::Next, send, 0}, sid, wid, Bus::Main});
+                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, loop.reader, 0}, rid, to, Bus::Main});
+                r->loopReaders_.push_back(loop.reader);
+                continue;
+            }
+            // ADR-0174: a send into a summing group enters it through a
+            // channel half of its own, as a child does, so the group's buss
+            // half decodes what a channel half encoded and the send's level
+            // is the same with summing on or off. Null for any other place.
+            Node* half = opts.sendTailFor ? opts.sendTailFor(e.routingId) : nullptr;
+            if (half != nullptr && !placeOnce(half, ref, "a send's channel half")) continue;
+            for (Node* n : {send, half}) {
+                if (n == nullptr) continue;
+                if (auto owner = n->sourceLifetime()) r->sourceOwners_.push_back(std::move(owner));
+                if (const auto& owner = n->eventSourceLifetime()) r->sourceOwners_.push_back(owner);
+            }
+            const NodeId sid = r->graph_.addNode(*send);
+            const NodeId hid = half != nullptr ? r->graph_.addNode(*half) : kInvalidNode;
+            const bool joined = r->graph_.connect(at, sid) &&
+                                (half == nullptr ? r->graph_.connect(sid, to)
+                                                 : r->graph_.connect(sid, hid) && r->graph_.connect(hid, to));
+            if (!joined) {
+                r->problems_.push_back(ref + ": the graph refused the send");
+                continue;
+            }
+            r->chainEdges_.push_back({{srcId, RealizedGraph::ChainKey::Leg::Send, tapNode,
+                                       static_cast<std::uint64_t>(e.routingId)},
+                                      at, sid, Bus::Main});
+            if (half == nullptr) {
+                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, 0}, sid, to, Bus::Main});
+            } else {
+                // Into the junction keyed by the send it carries, and named
+                // by its wire: a console's, so a rebuild that turns summing
+                // off or on never plays one wire's history as the other's,
+                // and one that changes the flavour keeps it, as a child's does.
+                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Next, send, 0}, sid, hid, Bus::Main});
+                r->chainEdges_.push_back({{dstId, RealizedGraph::ChainKey::Leg::Into, send, half->wireKind()},
+                                          hid, to, Bus::Main});
+            }
+            continue;
+        }
         if (!r->graph_.connect(from, to, e.bus)) {
             r->problems_.push_back(trackRef(srcId) + " -> " + trackRef(dstId) +
                                    ": the graph refused the connection");
@@ -189,6 +309,8 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         rec.key.fromTrack = srcId;
         rec.key.toTrack = dstId;
         rec.key.bus = static_cast<std::uint8_t>(e.bus);
+        const Node* tailNode = r->chains_.at(srcId).tailNode;
+        rec.key.wire = tailNode != nullptr ? tailNode->wireKind() : 0;
         rec.from = from;
         rec.to = to;
         rec.bus = e.bus;
@@ -200,6 +322,11 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
               [](const RealizedGraph::EdgeRecord& a, const RealizedGraph::EdgeRecord& b) {
                   return a.key < b.key;
               });
+    std::sort(r->chainEdges_.begin(), r->chainEdges_.end(),
+              [](const RealizedGraph::ChainRecord& a, const RealizedGraph::ChainRecord& b) {
+                  return a.key < b.key;
+              });
+    std::sort(r->loopReaders_.begin(), r->loopReaders_.end(), std::less<Node*>());
 
     // --- the output ---------------------------------------------------------
     const std::int64_t masterId = plan.nodes[*plan.output].trackId;

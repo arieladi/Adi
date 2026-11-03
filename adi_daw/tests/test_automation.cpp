@@ -269,7 +269,7 @@ void notPlayedYet() {
 void throughTheStore() {
     const test::TempDirectory scratch("automation", "store");
     StoreError e = StoreError::Ok;
-    const auto store = Store::create(scratch.path() / "auto.adi", e);
+    const auto store = Store::createEmpty(scratch.path() / "auto.adi", e);
     check(store != nullptr, "a store to read from");
     if (!store) return;
     store->db().exec(

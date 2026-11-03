@@ -192,13 +192,19 @@ public:
     /// default: the device is handed float in every graph, converted either
     /// side in a graph at 64, which is Cubase's rule for a plug-in that cannot
     /// take 64-bit. A CLAP whose every port says `SUPPORTS_64BITS` answers
-    /// true; VST3 `kSample64` and the Pd tier in double each come with their
-    /// own host's PR. Known at construction, because the graph asks before it
-    /// prepares. A device may revise it in a `prepare` (a CLAP reads its ports
-    /// only while deactivated, and a rescan can move them) and is handed the
-    /// width the graph kept until the graph is next built, so it takes both;
-    /// one that does moves `shapeEpoch`, which asks for that build.
+    /// true, and a VST3 that says `canProcessSampleSize(kSample64)`; the Pd
+    /// tier in double comes with its own PR. Known at construction, because
+    /// the graph asks before it prepares. A device may revise it in a
+    /// `prepare` (a CLAP reads its ports only while deactivated, and a rescan
+    /// can move them) and is handed the width the graph kept until the graph
+    /// is next built, so it takes both; one that does moves `shapeEpoch`,
+    /// which asks for that build.
     [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
+
+    /// `engine::Node::willBeHanded`, for a device: the width the next
+    /// `prepare` is for. Message thread, just before `prepare`. A VST3 needs
+    /// it, because it is set up at one sample size when it is activated.
+    virtual void willBeHanded(engine::Precision /*width*/) {}
 
     // --- what the scheduler asks (ADR-0043, ADR-0058) ----------------------
 
@@ -482,8 +488,8 @@ private:
 ///   * `always_process` (`devices.always_process`) forces `kInfiniteTail`,
 ///     which is ADR-0043's escape hatch for a plugin that reports no tail and
 ///     then produces one.
-///   * a bypassed device passes audio through and declares no tail and no
-///     latency, because it is not running.
+///   * a bypassed device runs no DSP; the graph supplies delayed dry audio
+///     and retains its latency (ADR-0203 d4).
 class DeviceNode final : public engine::Node {
 public:
     explicit DeviceNode(DeviceInstance& inst) : inst_(&inst) {}
@@ -492,32 +498,43 @@ public:
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
 
+    [[nodiscard]] bool hasBypass() const noexcept override { return true; }
+    void processActive(const engine::NodeIo& io) noexcept override;
+
     [[nodiscard]] std::int64_t tailSamples() const noexcept override;
     [[nodiscard]] std::int32_t latencySamples() const noexcept override;
-    [[nodiscard]] bool alwaysProcess() const noexcept override { return always_; }
+    [[nodiscard]] bool alwaysProcess() const noexcept override { return always_.load(std::memory_order_relaxed); }
     [[nodiscard]] engine::EventFlow eventFlow() const noexcept override;
     /// The instance's answer. Bypass passes through at whichever width the
     /// node is handed, so it does not change the answer.
     [[nodiscard]] bool processesDouble() const noexcept override {
         return inst_ != nullptr && inst_->processesDouble();
     }
+    void willBeHanded(engine::Precision width) override {
+        handed_ = width;
+        if (inst_ != nullptr) inst_->willBeHanded(width);
+    }
+    /// The width the graph that prepared this node last said it would hand
+    /// it, whatever the instance says now. Message thread.
+    [[nodiscard]] engine::Precision handed() const noexcept { return handed_; }
     [[nodiscard]] const char* name() const noexcept override { return "device"; }
 
     /// `devices.always_process`. Message thread.
-    void setAlwaysProcess(bool v) noexcept { always_ = v; }
+    void setAlwaysProcess(bool v) noexcept { always_.store(v, std::memory_order_relaxed); }
 
     /// `devices.enabled` = 0. A bypassed device stays in the graph so the
     /// topology — and therefore every other node's compensation — does not
     /// change when someone clicks bypass.
-    void setBypassed(bool v) noexcept { bypassed_ = v; }
-    [[nodiscard]] bool bypassed() const noexcept { return bypassed_; }
+    void setBypassed(bool v) noexcept { bypassed_.store(v, std::memory_order_relaxed); }
+    [[nodiscard]] bool bypassed() const noexcept override { return bypassed_.load(std::memory_order_relaxed); }
 
     [[nodiscard]] DeviceInstance& instance() const noexcept { return *inst_; }
 
 private:
     DeviceInstance* inst_ = nullptr;
-    bool always_ = false;
-    bool bypassed_ = false;
+    engine::Precision handed_ = engine::Precision::Float32;
+    std::atomic<bool> always_{false};
+    std::atomic<bool> bypassed_{false};
 };
 
 /// A device that must be DEACTIVATED to take a new layout, rate or sample

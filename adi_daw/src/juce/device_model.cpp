@@ -162,7 +162,14 @@ void DeviceNode::release() {
 }
 
 void DeviceNode::process(const engine::NodeIo& io) noexcept {
-    if (inst_ == nullptr || bypassed_) { passThrough(io); return; }
+    // Standalone calls have no graph-owned delay. The graph instead calls
+    // processActive after selecting between its primed dry line and DSP.
+    if (inst_ == nullptr || bypassed()) { passThrough(io); return; }
+    processActive(io);
+}
+
+void DeviceNode::processActive(const engine::NodeIo& io) noexcept {
+    if (inst_ == nullptr) { passThrough(io); return; }
     inst_->process(io);
 }
 
@@ -171,35 +178,29 @@ std::int64_t DeviceNode::tailSamples() const noexcept {
     // set by a user who has heard their reverb cut off, and a device that
     // reports a tail of zero is exactly the case they set it for -- so it has
     // to win over the report rather than be combined with it.
-    if (always_) return engine::kInfiniteTail;
+    if (alwaysProcess()) return engine::kInfiniteTail;
 
     // A bypassed device is not running, so it has nothing to finish. Reporting
     // a tail here would hold a whole chain awake behind a device the user
     // switched off.
-    if (bypassed_ || inst_ == nullptr) return 0;
+    if (bypassed() || inst_ == nullptr) return 0;
 
     return inst_->tailSamples();
 }
 
 engine::EventFlow DeviceNode::eventFlow() const noexcept {
     // A bypassed instrument is not running, so it consumes nothing -- the same
-    // transparency that makes bypass report no tail and no latency. Notes then
+    // transparency that makes bypass run no device DSP. Notes then
     // reach whatever follows it, which is what bypassing a synth in front of
     // a second one should do.
-    if (bypassed_ || inst_ == nullptr) return engine::EventFlow::Through;
+    if (bypassed() || inst_ == nullptr) return engine::EventFlow::Through;
     return inst_->eventFlow();
 }
 
 std::int32_t DeviceNode::latencySamples() const noexcept {
-    // Bypass reports ZERO, and this is the half most likely to be got wrong.
-    // A bypassed device delays nothing, so continuing to report its latency
-    // would compensate the rest of the graph against a delay that is no longer
-    // there -- which moves audio that was aligned, the exact failure ADR-0058
-    // decision 1 chose its default to avoid. Note this differs from the tail
-    // above: `always_process` does NOT override latency, because forcing a
-    // device to keep processing says nothing about how far it shifts its
-    // output.
-    if (bypassed_ || inst_ == nullptr) return 0;
+    // ADR-0203 d4: only deleting the device releases its delay. The graph
+    // substitutes a plain delay line while bypassed, without running DSP.
+    if (inst_ == nullptr) return 0;
     return inst_->latencySamples();
 }
 

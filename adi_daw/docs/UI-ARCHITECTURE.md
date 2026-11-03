@@ -93,17 +93,31 @@ The map and its refusal are `adi::ui::PanelLayout`
 arithmetic of "does this swap fit" is where a layout is actually wrong, and it
 needs no window to be checked.
 
+*(The director, 2026-10-28.)* Swapped, the track names lead: names, the track
+controls, the strip, then the lanes, as Bitwig and Cubase have them, so a
+track's name stays beside its controls. The arrangement leaves a gap between its
+names and its lanes and the root puts the track controls in it
+(`ArrangementView::setNamesFirst`). The swap is shown, not hidden (ADR-0203 d2):
+small arrows under the two view switches at the head of Live's strip down the
+arrangement's outer edge, "Flip sides" on hovering, lit while flipped; the View
+menu's Flip Sides does the same and is its keyboard path (the arrows take no
+focus). Flipped, the strip moves to the window's left edge so the track controls
+meet the lanes: the strip is its own component, `SideStrip`, beside the track
+controls on Live's sides (the director, 28 October 2026).
+
 ### The device strip's height (ADR-0184)
 
 Live 12 lets its Clip View grow (§10a) and keeps its Device View at one
 height. ADI lets the device strip grow too: a dated departure from Live under
 ADR-0108, approved by the director on 2026-09-27.
 
-- **The floor is Live's default device area: 169 pixels** (ADR-0188 d6),
-  logical pixels at 100 % zoom, scaled with the UI zoom and the display's
-  scale factor. The number is the director's; mac checks it against a live
-  copy of Live, and a difference goes back to the director. The strip can
-  only be made bigger.
+- **The floor is Live's default device area** (ADR-0188 d6), in logical
+  pixels at 100 % zoom, scaled with the UI zoom and the display's scale
+  factor. The director's figure was 169 for the device body. Measured on Live
+  11.2.7 on 2026-10-27, the whole Device View panel is 196 with its 4-pixel
+  edges, and the body under the title bars is about 170. ADI's strip is that
+  whole panel, so its floor is 196 (`collab/window/look-live11.md`), to be
+  read again on Live 12. The strip can only be made bigger.
 - **The ceiling** leaves the transport, the ruler and one track row visible.
 - **The height is view state,** kept per project in `ui_view` (SPEC §8.4)
   like the other panel sizes.
@@ -139,6 +153,13 @@ colleague's zoom level turning up in a `git diff`.
 and `DetailEditor` follow `session_state`, per ADR-0021. Neither of them decides
 what is selected, and no op they emit reads it.
 
+*Built (window lane, 2026-10-27):* `adi::ui::SessionState`
+(`src/adi/ui/session_state.hpp`) holds the one selection a project has, in
+`session_state`'s `selection` row. Each window presents a copy at the top of its
+frame, as it presents one snapshot, and writes go back through it, so two windows
+never disagree about what is selected. An edit carries the selection as its
+transaction's advisory `sel_before`, and undo puts it back.
+
 ## 3. `ArrangementCanvas` is one component, and that is the load-bearing decision
 
 Not one `Component` per clip. JUCE's hit-testing, z-order and repaint bookkeeping
@@ -167,6 +188,32 @@ insertion. One model, two readers, no second ordering anywhere.
 Collapsing a group hides its children in the timeline. It does **not** hide them
 in the mixer by default; that is what the group/stem focus view state is for.
 
+*Built (window lane, 2026-10-29): Live's group tracks (manual 18.3).* The model is
+`adi::ui::TrackOrder` (`src/adi/ui/track_order.hpp`), held by `ArrangementGeometry`
+and built again in place for each new snapshot: each group followed by what it
+holds, by `index_in_parent` then id, at any depth; then the returns, then Main, as
+Live draws them. Every walk down the tracks reads it through `ArrangementGeometry::rows`
+(the lanes, the names, the track controls, the Mixer View, the Overview, the Channel EQ
+window, the keys, the Status Bar's number), so no panel orders tracks itself. The
+snapshot's own order (`index_in_parent, id`) mixes one group's tracks with another's
+and is not used for display.
+
+*Built (window lane, 2026-11-01): Live's foot.* The returns and Main are pinned at the
+bottom of the lanes, below the drop area, whatever the scroll (`ArrangementGeometry::
+footStart`, `footTop`). A walk down the rows starts at `-scrollY` and jumps to
+`footTop` at the foot's first row; `rowAt` gives a point in the foot to the foot, never
+to a track scrolled under it; the track controls' foot strips stand in front.
+
+A group's title shows Live 12's group switch (three lines, the top one out while
+open); a track in a group sits past a band in the group's colour for each group it
+is in; a group's lane is darker and shows the clips of everything it holds, a thin
+row each (the manual's figure of a folded group). The switch, U, and Alt+U (§42.16,
+§42.19) fold and unfold; the folds are one value per window in `ui_view`
+(`WindowState::foldedGroups`). `ArrangementGeometry::foldedAway` takes what a folded
+group holds out of the lanes, the names and the track controls; the Mixer View keeps
+it, as this section says. A group the project view leaves out folds nothing, so a
+view of a group inside it still shows.
+
 ## 5. The three view states
 
 | State | Shows |
@@ -178,6 +225,24 @@ in the mixer by default; that is what the group/stem focus view state is for.
 The state is one value in `ui_view`, and every panel derives visibility from it
 rather than holding its own flag — otherwise the mixer and the timeline end up
 showing different subsets and the user cannot tell which is lying.
+
+*Built (window lane, 2026-10-29): Bitwig's project view, the director's choice.* A
+button at the top of the track names opens a menu of the whole project and its
+groups as a tree, each in its folder colour; choosing a group shows it, everything
+inside it and Main. The view is one value per window in `ui_view`
+(`WindowState::viewGroup`). `adi::ui::TrackTree` (headless) answers what a view
+shows; `ArrangementGeometry::hidden` holds what it leaves out, and a hidden track's
+height is 0, so every walk down the rows (lanes, names, track controls, the Mixer
+View's columns, hit tests, the keys) passes over it from the one list. The tree is
+built only while a group is chosen or the menu is open, in buffers kept between
+frames, so a new generation with the same rows allocates nothing (§8).
+
+*From the snapshot since 1 November:* each track's parent, place in its parent and kind
+come from the snapshot (#299, window log N6; `adi::ui::rowsFromSnapshot`). The window
+read them from the project file from 29 October until then, the director's choice;
+STEP-7-PLAN §2.2 records how that ended. A track's own colour is an index into Live's
+palette (ADR-0211), drawn through `look::paletteColour`; a track with none is coloured by
+its place.
 
 **Open, and it is not a UI question:** where a *keyboard* map lives.
 `controller_maps` is project-scoped and right for MIDI and OSC. A keymap is
@@ -197,6 +262,14 @@ design for rather than discover:
   "ask the agent" is not a substitute for a focusable, announcing control. JUCE
   gives us `AccessibilityHandler` for exactly this, and clips need virtual
   children.
+
+  *Built (window lane, 2026-10-27):* JUCE gathers accessibility children only from
+  child components (`AccessibilityHandler::getChildren` is not virtual), so the
+  "virtual children" are `ClipAccessible`s: one per clip on screen, painting
+  nothing, transparent to the mouse, recycled as the view scrolls (§10). A clip's
+  title ("<track>, clip at bar 3 beat 1, 4.00 beats") is built only when a reader
+  asks, so a frame allocates nothing for it. Its press action selects the clip, and
+  moving the selection by key posts an announcement of where it landed.
 
 ---
 
@@ -403,3 +476,42 @@ rather than of this project. Nothing about it needs the format, and putting it
 there would make every project file a vector for changing a user's keyboard.
 
 ---
+
+## 12. The Mix View, the Info View's switcher and the device strip's pinned slot (ADR-0209)
+
+**Status: decided (ADR-0209 §10, 1 November).** P1 is the shell, `StackTab` and the ★ Reference
+strip with its toggle and [REF]; the other tabs, `CtzNavigator`, the ⚡ Kick SC pill, the switcher
+and the pinned slot are P2 after the first-window gate, drawn empty until then (d11). `OverviewTab`,
+`ScopePhaseTab` and `SpectrogramTab` are built from the existing analyser and the Scope (d12).
+`MixViewPanel` is the window of ADR-0209: F4 and a top-bar button open it, docked in the
+centre slot of `MainSplit` in place of the arrangement or detached through the floating-window
+host (ADR-0180 d3) onto a second display. It obeys the three rules of §2 unchanged: it reads
+project state from `ProjectView` and the snapshot only, it never holds a visibility flag of its
+own (the tab, the filter and the comparison pair live in `ui_view`), and nothing in it touches
+the audio thread. Its children, one component each, in the tab order: `OverviewTab` (the SPAN
+class overlay and the Bluprint parts, from the analyser's published arrays, ADR-0183),
+`StackTab` (every channel of the selected CTZ group or filter, dormant slots dimmed, the hovered
+row zoomed for ADI-Q editing with its drawers), `ScopePhaseTab` (the scope taps of ADR-0175, up
+to eight tracks), `SpectrogramTab` (the PerceptoMap OpenGL base) and `CascadeTab` (the group
+tree with summing and ADI-L state). Above them `CtzNavigator` (the block tree, read from the
+group metadata the engine writes per rebuild), the view-filter button with Link to Arrangement,
+the ⚡ Kick SC pill, the ★ Reference strip (the ★ Reference track against the ruler) and the track
+minimap on the right edge.
+
+**Stubs, by rule (ADR-0210 d3).** A field the engine has not written yet (a slot's state, a group's
+crest or shaving, a role) comes from a `MixViewProvider` interface with two implementations: the
+snapshot's, and a stub that returns the layout's placeholders. The tab is built and tested against
+the stub, the row goes into `collab/window.md`'s needs table, and the real provider replaces the
+stub when the field arrives; no tab waits.
+
+**The two docks.** `InfoViewPanel` gains a header switcher (`Info | SPAN | Scope | VISU | Bluprint |
+CTZ | AI Radar`); each mini-graph is the matching tab's component at a small size, sharing its
+provider, and a click inside opens `MixViewPanel` on that tab. `DeviceChainStrip` gains an optional
+pinned right-hand slot through the upward `DockResizer` of ADR-0184, showing the selected track's
+pre or post spectrum, scope, or ADI-Q / RMSC curve, again the same components. Nothing is drawn
+twice from two sources.
+
+**Keys.** F4 toggles the Mix View; **Shift+R** and the [REF] button tapped (under 200 ms) latch the
+★ Reference, held they are momentary, both through the application's command target so the Stream
+Deck's key (ADR-0181) maps to the same two commands. Ctrl+R stays Live's Rename and Ctrl+Shift+R
+Live's Export Audio/Video (ADR-0209 d9).

@@ -1,0 +1,189 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#include "window_state.hpp"
+#include "adi/store.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
+#include <cmath>
+#include <nlohmann/json.hpp>
+namespace adi::ui {
+FloatingState ViewStateStore::loadFloating(const std::string& key) const {
+    FloatingState s;
+    SQLite::Statement q(store_.db(),"SELECT value FROM ui_view WHERE scope_kind='project' AND scope_id IS NULL AND key=?");
+    q.bind(1,"floating."+key);
+    if(!q.executeStep()) return s;
+    try {
+        const auto j=nlohmann::json::parse(q.getColumn(0).getString());
+        s.monitor=j.at("monitor").get<std::string>();s.x=j.at("x");s.y=j.at("y");s.width=j.at("width");s.height=j.at("height");s.open=j.at("open");
+        if(s.width<100 || s.width>10000 || s.height<100 || s.height>10000)return {};
+    }catch(const std::exception&){return {};}
+    return s;
+}
+bool ViewStateStore::saveFloating(const std::string& key,const FloatingState& s,std::string& error){
+    try {
+        if(store_.readOnly()) {error="Project is read-only";return false;}
+        nlohmann::json j={{"monitor",s.monitor},{"x",s.x},{"y",s.y},{"width",s.width},{"height",s.height},{"open",s.open}};
+        SQLite::Statement q(store_.db(),"INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES('project',NULL,?,?) ON CONFLICT DO UPDATE SET value=excluded.value");
+        q.bind(1,"floating."+key);q.bind(2,j.dump());q.exec();error.clear();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defaults) const {
+    WindowState state(defaults);
+    SQLite::Statement query(
+        store_.db(),
+        "SELECT value FROM ui_view WHERE scope_kind='project' AND scope_id IS NULL AND key=?");
+    query.bind(1, "shell." + window);
+    if (!query.executeStep())
+        return state;
+    try {
+        const auto j = nlohmann::json::parse(query.getColumn(0).getString());
+        if (j.at("version") != 1)
+            return state;
+        const auto &slots = j.at("panels");
+        if (slots.size() != 2)
+            return state;
+        auto panel = [&](std::size_t i) {
+            const auto id = slots.at(i).at("id").get<int>();
+            if (id < 0 || id > 1)
+                throw std::runtime_error("panel id");
+            const auto width = slots.at(i).at("width").get<int>();
+            if (width < 120 || width > 10000)
+                throw std::runtime_error("width");
+            return PanelGeometry{static_cast<Panel>(id), width, 120,
+                                 slots.at(i).at("collapsed").get<bool>()};
+        };
+        auto a = panel(0), b = panel(1);
+        if (a.panel == b.panel)
+            return state;
+        const double zoom = j.at("zoom").get<double>();
+        const int height = j.at("deviceHeight").get<int>();
+        if (!std::isfinite(zoom) || zoom < .25 || zoom > 8 || height < 0 || height > 4000)
+            return state;
+        state.panels = PanelLayout(a, b, 240);
+        state.zoom = zoom;
+        state.setDeviceHeight(height);
+        state.docked = j.at("docked").get<bool>();
+        state.aiChatOpen = j.value("aiChat", false);
+        state.timelineLeft = j.value("timelineLeft", 0.);
+        state.pixelsPerQuarter = j.value("pixelsPerQuarter", 48.);
+        state.laneHeight = j.value("laneHeight", 88);
+        state.mixerView = j.value("mixerView", false);
+        state.mixerViewHeight = std::clamp(j.value("mixerViewHeight", 220), 120, 4000);
+        state.mixView = j.value("mixView", false);
+        state.mixViewTab = std::clamp(j.value("mixViewTab", 1), 0, 4);
+        state.mixViewDetached = j.value("mixViewDetached", false);
+        state.showReference = j.value("showReference", false);
+        state.hideReturns = j.value("hideReturns", false);
+        state.follow = j.value("follow", false);
+        state.overview = j.value("overview", true);
+        state.inOut = j.value("inOut", true);
+        state.sends = j.value("sends", true);
+        state.mixerInOut = j.value("mixerInOut", false);
+        state.largeTracks = j.value("largeTracks", true);
+        state.viewGroup = j.value("viewGroup", std::int64_t{0});
+        state.gridSnap = j.value("gridSnap", true);
+        state.gridFixed = j.value("gridFixed", false);
+        state.gridTriplet = j.value("gridTriplet", false);
+        // Within the widths the lanes' menu names: Widest to Narrowest, 8 Bars to 1/32.
+        state.gridNarrow = std::clamp(j.value("gridNarrow", 0), -2, 2);
+        const double fixedStep = j.value("gridFixedQuarters", .25);
+        state.gridFixedQuarters = std::isfinite(fixedStep) ? std::clamp(fixedStep, 1. / 8, 32.) : .25;
+        if (j.contains("folded"))
+            for (const auto &id : j.at("folded"))
+                state.foldedDevices.insert(id.get<std::int64_t>());
+        if (j.contains("foldedGroups"))
+            for (const auto &id : j.at("foldedGroups"))
+                state.foldedGroups.insert(id.get<std::int64_t>());
+        if (j.contains("laneHeights"))
+            for (const auto &pair : j.at("laneHeights")) {
+                const auto id = pair.at(0).get<std::int64_t>();
+                const auto h = pair.at(1).get<int>();
+                if (id <= 0 || h < 24 || h > 512)
+                    return WindowState(defaults);
+                state.laneHeights[id] = h;
+            }
+        if (!std::isfinite(state.timelineLeft) || state.timelineLeft < 0 ||
+            !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
+            state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512)
+            return WindowState(defaults);
+        return state;
+    } catch (const std::exception &) {
+        return WindowState(defaults);
+    }
+}
+bool ViewStateStore::save(const std::string &window, const WindowState &state, std::string &error) {
+    try {
+        if (store_.readOnly()) {
+            error = "Project is read-only";
+            return false;
+        }
+        if (!std::isfinite(state.timelineLeft) || state.timelineLeft < 0 ||
+            !std::isfinite(state.pixelsPerQuarter) || state.pixelsPerQuarter < 1 ||
+            state.pixelsPerQuarter > 4096 || state.laneHeight < 24 || state.laneHeight > 512 ||
+            !std::isfinite(state.zoom) || state.zoom < .25 || state.zoom > 8 ||
+            state.deviceHeight < state.deviceFloor || state.deviceHeight > 4000) {
+            error = "Invalid view geometry";
+            return false;
+        }
+        for (const auto &p : state.panels.slots())
+            if (p.width < p.minWidth || p.width > 10000) {
+                error = "Invalid panel width";
+                return false;
+            }
+        nlohmann::json j = {{"version", 1},
+                            {"zoom", state.zoom},
+                            {"deviceHeight", state.deviceHeight},
+                            {"docked", state.docked},
+                            {"aiChat", state.aiChatOpen},
+                            {"timelineLeft", state.timelineLeft},
+                            {"pixelsPerQuarter", state.pixelsPerQuarter},
+                            {"laneHeight", state.laneHeight},
+                            {"mixerView", state.mixerView},
+                            {"mixerViewHeight", state.mixerViewHeight},
+                            {"mixView", state.mixView},
+                            {"mixViewTab", state.mixViewTab},
+                            {"mixViewDetached", state.mixViewDetached},
+                            {"showReference", state.showReference},
+                            {"hideReturns", state.hideReturns},
+                            {"follow", state.follow},
+                            {"overview", state.overview},
+                            {"inOut", state.inOut},
+                            {"sends", state.sends},
+                            {"mixerInOut", state.mixerInOut},
+                            {"largeTracks", state.largeTracks},
+                            {"viewGroup", state.viewGroup},
+                            {"gridSnap", state.gridSnap},
+                            {"gridFixed", state.gridFixed},
+                            {"gridTriplet", state.gridTriplet},
+                            {"gridNarrow", state.gridNarrow},
+                            {"gridFixedQuarters", state.gridFixedQuarters},
+                            {"panels", nlohmann::json::array()}};
+        for (const auto &p : state.panels.slots())
+            j["panels"].push_back({{"id", static_cast<int>(p.panel)},
+                                   {"width", p.width},
+                                   {"collapsed", p.collapsed}});
+        j["folded"] = state.foldedDevices;
+        j["foldedGroups"] = state.foldedGroups;
+        j["laneHeights"] = nlohmann::json::array();
+        for (const auto &[id, h] : state.laneHeights) {
+            if (id <= 0 || h < 24 || h > 512) {
+                error = "Invalid lane height";
+                return false;
+            }
+            j["laneHeights"].push_back({id, h});
+        }
+        SQLite::Transaction transaction(store_.db());
+        SQLite::Statement st(store_.db(),
+                             "INSERT INTO ui_view(scope_kind,scope_id,key,value) VALUES "
+                             "('project',NULL,?,?) ON CONFLICT DO UPDATE SET value=excluded.value");
+        st.bind(1, "shell." + window);
+        st.bind(2, j.dump());
+        st.exec();
+        transaction.commit();
+        error.clear();
+        return true;
+    } catch (const std::exception &e) {
+        error = e.what();
+        return false;
+    }
+}
+} // namespace adi::ui

@@ -54,6 +54,77 @@ float toDbfs(float calibratedMagnitude) noexcept {
     return db < kDbFloor ? kDbFloor : db;
 }
 
+RealFft::RealFft(std::int32_t fftSize) : n_(fftSize > 0 ? fftSize : 0) {
+    if (n_ <= 0) return;
+    // Match Spectrum's preflight: PFFFT asserts on a bad SIMD multiple.
+    const int lane = pffft_simd_size();
+    const int multiple = 2 * lane * lane;
+    // The pinned PFFFT also asserts above 2^26 to prevent its internal int
+    // arithmetic overflowing. This cap keeps our float byte count safe on a
+    // 32-bit size_t too. Refuse before calling that asserting API.
+    constexpr std::int32_t maxSamples = 1 << 26;
+    if (multiple <= 0 || n_ % multiple != 0 || n_ > maxSamples) {
+        n_ = 0;
+        return;
+    }
+    setup_ = pffft_new_setup(n_, PFFFT_REAL);
+    if (setup_ == nullptr) { n_ = 0; return; }
+    const auto bytes = static_cast<std::size_t>(n_) * sizeof(float);
+    time_ = static_cast<float*>(pffft_aligned_malloc(bytes));
+    frequency_ = static_cast<float*>(pffft_aligned_malloc(bytes));
+    work_ = static_cast<float*>(pffft_aligned_malloc(bytes));
+    if (time_ == nullptr || frequency_ == nullptr || work_ == nullptr) {
+        pffft_aligned_free(time_);
+        pffft_aligned_free(frequency_);
+        pffft_aligned_free(work_);
+        pffft_destroy_setup(static_cast<PFFFT_Setup*>(setup_));
+        time_ = frequency_ = work_ = nullptr;
+        setup_ = nullptr;
+        n_ = 0;
+    }
+}
+
+RealFft::~RealFft() {
+    pffft_aligned_free(time_);
+    pffft_aligned_free(frequency_);
+    pffft_aligned_free(work_);
+    if (setup_ != nullptr) pffft_destroy_setup(static_cast<PFFFT_Setup*>(setup_));
+}
+
+bool RealFft::forward(std::span<const float> frame,
+                      std::span<std::complex<float>> out) noexcept {
+    if (!valid() || frame.size() < static_cast<std::size_t>(n_) ||
+        out.size() < static_cast<std::size_t>(bins())) return false;
+    std::copy_n(frame.data(), n_, time_);
+    pffft_transform_ordered(static_cast<PFFFT_Setup*>(setup_), time_, frequency_, work_,
+                            PFFFT_FORWARD);
+    out[0] = {frequency_[0], 0.f};
+    const auto last = static_cast<std::size_t>(n_ / 2);
+    out[last] = {frequency_[1], 0.f};
+    for (std::size_t k = 1; k < last; ++k)
+        out[k] = {frequency_[2 * k], frequency_[2 * k + 1]};
+    return true;
+}
+
+bool RealFft::inverse(std::span<const std::complex<float>> values,
+                      std::span<float> out) noexcept {
+    if (!valid() || values.size() < static_cast<std::size_t>(bins()) ||
+        out.size() < static_cast<std::size_t>(n_)) return false;
+    const auto last = static_cast<std::size_t>(n_ / 2);
+    frequency_[0] = values[0].real();
+    frequency_[1] = values[last].real();
+    for (std::size_t k = 1; k < last; ++k) {
+        frequency_[2 * k] = values[k].real();
+        frequency_[2 * k + 1] = values[k].imag();
+    }
+    pffft_transform_ordered(static_cast<PFFFT_Setup*>(setup_), frequency_, time_, work_,
+                            PFFFT_BACKWARD);
+    const float scale = 1.f / static_cast<float>(n_);
+    for (std::int32_t i = 0; i < n_; ++i)
+        out[static_cast<std::size_t>(i)] = time_[i] * scale;
+    return true;
+}
+
 Spectrum::Spectrum(std::int32_t fftSize, Window w) : n_(fftSize > 0 ? fftSize : 0), window_(w) {
     if (n_ <= 0) return;
 

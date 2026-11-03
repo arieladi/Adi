@@ -7,6 +7,7 @@
 
 namespace adi::audio {
 enum class WavFormat { Pcm16, Pcm24, Float32 };
+enum class WavDither { None, Triangular, Rectangular };
 struct WavMetadata {
     std::string description;
     std::string originator;
@@ -17,6 +18,9 @@ struct WavMetadata {
 // Off-callback streaming I/O. Throws on invalid arguments, unsupported formats,
 // corrupt input or I/O failure. Not thread-safe. PCM input is rounded to nearest,
 // clipped to [-1, 1), with non-finite input mapped to zero. Float32 preserves bits.
+// Optional dither is in destination LSBs, applied once before PCM rounding.
+// Its seeded stream advances in interleaved sample order, independent of write
+// boundaries. Float32 never dithers. Existing writers default to no dither.
 // A non-null metadata pointer emits a version-0 bext, plus iXML when nonempty.
 // close() reports finalization errors; destructor is best effort, never throws.
 class WavWriter {
@@ -24,11 +28,13 @@ public:
     WavWriter(const std::filesystem::path&, std::uint32_t sampleRate,
               std::uint16_t channels, WavFormat,
               const WavMetadata* = nullptr,
-              std::uint64_t promoteThresholdBytes = (std::uint64_t{1} << 32));
+              std::uint64_t promoteThresholdBytes = (std::uint64_t{1} << 32),
+              WavDither = WavDither::None, std::uint64_t ditherSeed = 0);
     ~WavWriter();
     WavWriter(const WavWriter&) = delete;
     WavWriter& operator=(const WavWriter&) = delete;
     void write(const float* interleaved, std::uint32_t frames);
+    void write(const double* interleaved, std::uint32_t frames);
     void close();
 private:
     std::fstream file_;
@@ -36,6 +42,11 @@ private:
     std::uint16_t channels_, bytes_;
     std::uint64_t threshold_, dataOffset_ = 0, factOffset_ = 0, dataBytes_ = 0;
     bool promoted_ = false;
+    WavDither dither_;
+    std::uint64_t randomState_;
+    double uniform() noexcept;
+    double noise() noexcept;
+    template<class Sample> void writeSamples(const Sample*, std::uint32_t);
     void header();
 };
 

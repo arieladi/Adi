@@ -131,6 +131,11 @@ public:
     /// `selBefore` comes back untouched: restoring the selection is the view's
     /// business and ignoring it is always correct.
     History::Result undo() {
+        if (atRoot()) {
+            History::Result none;
+            none.error = "Nothing to undo";
+            return none;
+        }
         auto r = History(store_).undo();
         if (r.ok) view_.refresh(store_);
         return r;
@@ -145,9 +150,18 @@ public:
     /// What the undo and redo menu items show and whether they are enabled.
     /// Passed through rather than wrapped: `History::Step::label` is already
     /// "what the undo menu shows".
-    [[nodiscard]] bool canUndo() const { return History(store_).canUndo(); }
+    [[nodiscard]] bool canUndo() const { return nextUndo().has_value(); }
     [[nodiscard]] bool canRedo() const { return History(store_).canRedo(); }
-    [[nodiscard]] std::optional<History::Step> nextUndo() const { return History(store_).nextUndo(); }
+    [[nodiscard]] std::optional<History::Step> nextUndo() const {
+        auto step = History(store_).nextUndo();
+        return step && isRoot(*step) ? std::nullopt : step;
+    }
+
+    /// Live's rule (manual 5.4.2): creating a project is the first entry in its
+    /// history and cannot be undone. Given that entry's label, this submitter
+    /// treats the log's first transaction under it as the floor: undo stops
+    /// there and says there is nothing to undo. Empty, nothing is protected.
+    void protectRoot(std::string label) { root_ = std::move(label); }
     [[nodiscard]] std::optional<History::Step> nextRedo() const { return History(store_).nextRedo(); }
 
     /// Several ops as ONE undo step. Empty is a no-op that reports success
@@ -195,10 +209,18 @@ private:
         return s;
     }
 
+    [[nodiscard]] bool isRoot(const History::Step& step) const {
+        return !root_.empty() && step.firstSeq == 1 && step.label == root_;
+    }
+    [[nodiscard]] bool atRoot() const {
+        const auto step = History(store_).nextUndo();
+        return step && isRoot(*step);
+    }
     Store& store_;
     engine::ProjectView& view_;
     Actor actor_;
     std::string actorDetail_;
+    std::string root_;
 };
 
 }  // namespace adi::ui

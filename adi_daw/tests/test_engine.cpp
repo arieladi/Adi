@@ -24,6 +24,7 @@
 #include <exception>
 #include <filesystem>
 #include <string>
+#include <stdexcept>
 #include <thread>
 
 namespace {
@@ -68,7 +69,7 @@ struct Scratch {
     explicit Scratch(const char* n)
         : temp("engine", n), dir(temp.path()) {
         StoreError e = StoreError::Ok;
-        store = Store::create(dir / "p.adi", e);
+        store = Store::createEmpty(dir / "p.adi", e);
     }
 };
 
@@ -261,7 +262,152 @@ void testStructuralSharing() {
           "audio thread may still be reading it");
 }
 
+void testWindowMetadata() {
+    section("N6: hierarchy, names, colors and meter edits reach immutable snapshots");
+    Scratch sc("window-metadata");
+    if (!sc.store) throw std::runtime_error("create metadata fixture");
+    auto& s = *sc.store;
+    s.db().exec("INSERT INTO project(id,name) VALUES(1,'Window');"
+                "INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
+                "(1,'group','Outer',10),(2,'group','Inner',3),(3,'midi','Child',7),(4,'master','Master',20);"
+                "UPDATE tracks SET parent_id=1 WHERE id=2;"
+                "UPDATE tracks SET parent_id=2 WHERE id=3;");
+    OpJournal journal(s);
+    for (int id : {10,11}) {
+        OpRequest q;
+        q.opType = "clip.create";
+        q.payload = {{"id",id},{"track",3},{"kind","midi"},{"pos",0},{"length",5765760}};
+        if (!journal.commit(q).ok) throw std::runtime_error("create metadata clip");
+    }
+    s.db().exec("UPDATE clips SET name='Phrase' WHERE id=10");
+    auto before = SnapshotBuilder::fromStore(s);
+    check(before->findTrack(1)->parent == 0 && before->findTrack(4)->parent == 0 &&
+          before->findTrack(2)->parent == 1 && before->findTrack(3)->parent == 2,
+          "top-level zero and both nested parents are projected");
+    check(before->findTrack(3)->indexInParent == 7 && before->findTrack(2)->kind == "group" &&
+          before->findTrack(4)->kind == "master", "sibling places and track kinds are projected");
+    check(!before->findTrack(3)->color && before->findTrack(3)->clips[0]->name == "Phrase",
+          "absent color remains absent and the clip keeps its name");
+    check(before->meters.size() == 1 && before->meters[0].start_ticks == 0 &&
+          before->meters[0].numerator == 4 && before->meters[0].denominator == 4,
+          "an empty signature map has the implicit 4/4 at zero");
+
+    auto editTrack = [&](const char* sql, auto value, const std::string& label) {
+        s.db().exec(sql);
+        auto after = SnapshotBuilder::fromStore(s, *before);
+        check(value(*after->findTrack(3)) && !value(*before->findTrack(3)), label + " changes only in the new snapshot");
+        check(after->findTrack(3) != before->findTrack(3) &&
+              after->findTrack(3)->clips == before->findTrack(3)->clips &&
+              after->findTrack(1) == before->findTrack(1) && after->findTrack(2) == before->findTrack(2) &&
+              after->findTrack(4) == before->findTrack(4) && after->tempo == before->tempo,
+              label + " replaces its track, sharing its clips and unrelated nodes");
+        auto unchanged = SnapshotBuilder::fromStore(s, *after);
+        check(unchanged->findTrack(3) == after->findTrack(3), label + " shares again when unchanged");
+        before = std::move(after);
+    };
+    editTrack("UPDATE tracks SET parent_id=1 WHERE id=3", [](const TrackNode& t) {return t.parent==1;}, "parent");
+    editTrack("UPDATE tracks SET index_in_parent=1 WHERE id=3", [](const TrackNode& t) {return t.indexInParent==1;}, "place");
+    editTrack("UPDATE tracks SET kind='audio' WHERE id=3", [](const TrackNode& t) {return t.kind=="audio";}, "kind");
+    editTrack("UPDATE tracks SET color=0 WHERE id=3", [](const TrackNode& t) {return t.color==0;}, "explicit zero color");
+    editTrack("UPDATE tracks SET color=2309737967 WHERE id=3", [](const TrackNode& t) {return t.color==2309737967LL;}, "wide color");
+    editTrack("UPDATE tracks SET color=NULL WHERE id=3", [](const TrackNode& t) {return !t.color;}, "cleared color");
+    editTrack("UPDATE tracks SET parent_id=NULL WHERE id=3", [](const TrackNode& t) {return t.parent==0;}, "top-level parent");
+
+    s.db().exec("UPDATE clips SET name='Renamed' WHERE id=10");
+    auto renamed = SnapshotBuilder::fromStore(s, *before);
+    const auto& oldClips = before->findTrack(3)->clips;
+    const auto& newClips = renamed->findTrack(3)->clips;
+    check(newClips[0]->name=="Renamed" && oldClips[0]->name=="Phrase" && newClips[0]!=oldClips[0],
+          "renaming a clip replaces its node and preserves the previous name");
+    check(renamed->findTrack(3)!=before->findTrack(3) && newClips[1]==oldClips[1] &&
+          renamed->findTrack(1)==before->findTrack(1) && renamed->tempo==before->tempo,
+          "a clip rename rebuilds only its path to the root");
+    auto unchanged = SnapshotBuilder::fromStore(s, *renamed);
+    check(unchanged->findTrack(3)==renamed->findTrack(3), "unchanged clip names retain sharing");
+    before = std::move(renamed);
+
+    auto editMeters = [&](const char* sql, auto value, const std::string& label) {
+        s.db().exec(sql);
+        auto after = SnapshotBuilder::fromStore(s, *before);
+        check(value(after->meters) && !value(before->meters), label + " is visible only in the new root");
+        check(after->tracks==before->tracks && after->tempo==before->tempo,
+              label + " shares all track, clip and tempo nodes");
+        before = std::move(after);
+    };
+    editMeters("INSERT INTO time_signature_map VALUES(1,46126080,3,4)",
+               [](const auto& m) {return m.size()==2 && m[1].start_ticks==46126080;}, "late first signature");
+    check(textproj::renderPosition(46126080,before->meters)=="3|1|0",
+          "implicit 4/4 before a late first signature preserves bar numbering");
+    editMeters("INSERT INTO time_signature_map VALUES(2,57657600,5,8)",
+               [](const auto& m) {return m.size()==3 && m[2].numerator==5;}, "signature insertion");
+    editMeters("UPDATE time_signature_map SET pos_ticks=69189120 WHERE id=1",
+               [](const auto& m) {return m[1].numerator==5 && m[2].start_ticks==69189120;}, "signature position and sorting");
+    editMeters("UPDATE time_signature_map SET numerator=255 WHERE id=1",
+               [](const auto& m) {return m.back().numerator==255;}, "signature numerator");
+    editMeters("UPDATE time_signature_map SET denominator=128 WHERE id=1",
+               [](const auto& m) {return m.back().denominator==128;}, "signature denominator");
+    editMeters("INSERT INTO time_signature_map VALUES(3,0,7,8)",
+               [](const auto& m) {return m.size()==3 && m.front().numerator==7 && m.front().denominator==8;}, "explicit signature at zero");
+    editMeters("DELETE FROM time_signature_map WHERE id=1",
+               [](const auto& m) {return m.size()==2 && m.back().numerator==5;}, "signature deletion");
+}
+
 // --- tempo ----------------------------------------------------------------------------
+
+void testSendSnapshots() {
+    section("N11 -- send rows are immutable and shared independently of tracks");
+    Scratch scratch("sends");auto& store=*scratch.store;auto& db=store.db();
+    db.exec("INSERT INTO project(id,name) VALUES(1,'Sends');"
+        "INSERT INTO tracks(id,kind,name) VALUES(1,'audio','A'),(2,'return','R'),(3,'audio','B'),(9,'master','Main');"
+        "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,ord,gain_db,pan,pre_fader,enabled) VALUES"
+        "(20,'track',1,'track',2,'send',5,-10.25,0.125,1,0),"
+        "(10,'track',2,'track',3,'send',9,-150,0,0,1),"
+        "(30,'track',1,'track',9,'main',0,0,0,0,1),"
+        "(40,'track',1,'track',3,'sidechain',0,0,0,0,1);");
+    const auto first=SnapshotBuilder::fromStore(store);
+    check(first->sends.size()==2 && first->sends[0]->id==10 && first->sends[1]->id==20,
+          "only sends, including disabled ones, are captured in routing-id order");
+    const auto original=first->sends[1];
+    check(original->sourceKind=="track" && original->sourceId==1 && original->destinationKind=="track" &&
+          original->destinationId==2 && original->order==5 && original->gainDb==-10.25 &&
+          original->pan==0.125 && original->preFader && !original->enabled,
+          "every send control value and endpoint is captured");
+    check(first->sends[0]->sourceId==2 && first->sends[0]->destinationId==3,
+          "a return's send into an ordinary track is retained");
+    auto prior=SnapshotBuilder::fromStore(store,*first);
+    check(prior->sends==first->sends && SnapshotBuilder::sharedNodeCount(*first,*prior)==
+          first->tracks.size()+first->sends.size()+1,"unchanged sends share nodes and count as shared structure");
+    for(const char* edit:{"src_kind='hw_in'","src_id=99","dst_kind='device'","dst_id=900", "ord=6",
+                         "gain_db=-10.2500000001","pan=0.25","pre_fader=0","enabled=1"}) {
+        db.exec(std::string("UPDATE routing SET ")+edit+" WHERE id=20");
+        auto next=SnapshotBuilder::fromStore(store,*prior);
+        check(next->sends.size()==2 && next->sends[1]!=prior->sends[1] && next->sends[0]==prior->sends[0] &&
+              next->tracks==prior->tracks && next->tempo==prior->tempo,
+              std::string("a send change replaces only its node: ")+edit);
+        prior=std::move(next);
+    }
+    check(original->sourceKind=="track" && original->sourceId==1 && original->destinationKind=="track" &&
+          original->destinationId==2 && original->order==5 && original->gainDb==-10.25 && original->pan==0.125 &&
+          original->preFader && !original->enabled,"an older send snapshot is immutable after every edit");
+    check(prior->sends[1]->gainDb==-10.2500000001,"send gain keeps SQL double precision");
+    db.exec("UPDATE routing SET id=21 WHERE id=20");
+    auto renamed=SnapshotBuilder::fromStore(store,*prior);
+    check(renamed->sends[1]->id==21 && renamed->sends[1]!=prior->sends[1] && prior->sends[1]->id==20,
+          "routing identity changes are visible without mutating an old node");
+    db.exec("DELETE FROM routing WHERE id=10");
+    auto removed=SnapshotBuilder::fromStore(store,*renamed);
+    check(removed->sends.size()==1 && removed->sends[0]==renamed->sends[1],"deleting one send retains the other node");
+    db.exec("INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind) "
+            "VALUES(1099511627776,'track',1099511627777,'track',1099511627778,'send');"
+            "UPDATE routing SET kind='send' WHERE id=30;");
+    auto inserted=SnapshotBuilder::fromStore(store,*removed);
+    check(inserted->sends.size()==3 && inserted->sends[0]==removed->sends[0] && inserted->sends[1]->id==30,
+          "new send rows and a main-to-send change are included");
+    check(inserted->sends[2]->id==1099511627776 && inserted->sends[2]->sourceId==1099511627777 &&
+          inserted->sends[2]->destinationId==1099511627778,"routing and endpoint IDs retain all 64 bits");
+    db.exec("UPDATE routing SET kind='cue' WHERE kind='send'");
+    check(SnapshotBuilder::fromStore(store,*inserted)->sends.empty(),"rows that stop being sends disappear from the send snapshot");
+}
 
 void testTempoConversion() {
     section("tempo: ticks to seconds across a change");
@@ -447,6 +593,8 @@ int main() {
         testStrictlyGreater();
         testConcurrentHandoff();
         testStructuralSharing();
+        testWindowMetadata();
+        testSendSnapshots();
         testTempoConversion();
         testSnapshotFromRealProject();
         testDeviceSeam();

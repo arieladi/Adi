@@ -90,7 +90,7 @@ void wav(const std::vector<float> &x, const char *path = "redux-pd-render.wav") 
 }
 void run() {
     using namespace adi;
-    device::LibPdEngine engine(ADI_REDUX_PATCH_DIR, "Redux.pd", 2, 2);
+    device::LibPdEngine engine(ADI_REDUX_PATCH_DIR, "Redux.pd", 2, 2, adi::device::LibPdEngine::Execution::PureData);
     engine.addSearchPath(ADI_PD_PATCH_DIR);
     device::PdLatencyReceiver latency;
     std::string error;

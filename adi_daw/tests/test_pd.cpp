@@ -19,6 +19,7 @@
 #include "adi/engine/host.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -439,11 +440,143 @@ void testTheLatencyReachesTheGraph() {
         "ordinary DeviceInstance contract carried it there");
 }
 
+/// An engine whose `prepare` and `process` can be held, and which counts:
+/// prepares, the audio calls that reached it, and any prepare made while an
+/// audio call was inside it. It writes 0.5, so a call that reached it is
+/// told apart from one passed through.
+class HoldablePatch final : public PdPatchEngine {
+public:
+    bool open(PdLatencyReceiver&, std::string&) override { return true; }
+    void close() noexcept override {}
+    void prepare(double, std::int32_t) override {
+        if (inProcess.load()) ++preparedUnderACall;
+        inPrepare = true;
+        while (holdPrepare.load()) std::this_thread::yield();
+        inPrepare = false;
+        ++prepares;
+    }
+    void requestLatencyReport() override {}
+    void process(const engine::NodeIo& io) noexcept override {
+        inProcess = true;
+        while (holdProcess.load()) std::this_thread::yield();
+        ++calls;
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) io.out[c][io.blockOffset + i] = 0.5f;
+        inProcess = false;
+    }
+    std::atomic<bool> holdPrepare{false}, holdProcess{false}, inPrepare{false}, inProcess{false};
+    std::atomic<int> prepares{0}, calls{0}, preparedUnderACall{0};
+};
+
+/// Wait, up to `ms`, for `pred`: a test that waits on another thread must
+/// fail, not hang, when what it waits for never comes.
+template <typename P>
+bool within(P pred, int ms = 5000) {
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (!pred()) {
+        if (std::chrono::steady_clock::now() > until) return false;
+        std::this_thread::yield();
+    }
+    return true;
+}
+
+/// One call of 64 frames of 0.25 in, one channel, from block start.
+struct OneCall {
+    std::vector<float> in = std::vector<float>(64, 0.25f), out = std::vector<float>(64, -1.0f);
+    const float* ip[1] = {in.data()};
+    float* op[1] = {out.data()};
+    engine::NodeIo io;
+    OneCall() { io.in = ip; io.out = op; io.channels = 1; io.frames = 64; io.sampleRate = 48000.0; }
+};
+
+void testAnUnchangedRebuildLeavesThePatchAlone() {
+    section("ADR-0090 -- a prepare at the rate and block it has does nothing to a Pd patch");
+
+    // Graph::prepare prepares every node on every rebuild. The engine's own
+    // prepare empties its FIFOs and forgets its notes, so a rebuild elsewhere
+    // in the project cost each Pd device a block of audio and its sounding
+    // notes.
+    auto owned = std::make_unique<HoldablePatch>();
+    HoldablePatch& f = *owned;
+    PdDevice dev(std::move(owned), pdId("holdable"));
+    dev.prepare(48000.0, 256);
+    eqi(f.prepares.load(), 1, "the first prepare reaches the engine");
+    dev.prepare(48000.0, 256);
+    dev.prepare(48000.0, 256);
+    eqi(f.prepares.load(), 1, "the same rate and block again: nothing");
+    dev.prepare(48000.0, 512);
+    eqi(f.prepares.load(), 2, "a new block reaches it");
+    dev.prepare(44100.0, 512);
+    eqi(f.prepares.load(), 3, "and a new rate");
+    dev.release();
+    dev.prepare(44100.0, 512);
+    eqi(f.prepares.load(), 4, "after a release the same format prepares it again: the stream restarted");
+}
+
+void testAReinitialisationWaitsForTheCallInFlight() {
+    section("ADR-0089 d4 -- a Pd device re-initialised during a live rebuild is held off the "
+            "audio thread");
+
+    auto owned = std::make_unique<HoldablePatch>();
+    HoldablePatch& f = *owned;
+    PdDevice dev(std::move(owned), pdId("holdable"));
+    dev.prepare(48000.0, 256);
+
+    // A call held inside the engine, as the last graph of a rebuild would be.
+    OneCall a;
+    f.holdProcess = true;
+    std::thread audio([&] { dev.process(a.io); });
+    check(within([&] { return f.inProcess.load(); }), "the audio thread is inside the engine");
+    std::thread message([&] { dev.prepare(44100.0, 256); });
+    check(within([&] { return dev.reactivating(); }), "the re-initialisation holds the gate");
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    eqi(f.prepares.load(), 1, "and does not reach the engine under the call");
+    f.holdProcess = false;
+    audio.join();
+    message.join();
+    check(f.prepares.load() == 2 && f.preparedUnderACall.load() == 0,
+          "it re-initialises once the call has left, and never under one");
+    check(!dev.reactivating(), "and lets go");
+
+    // A call made while the engine is being re-initialised passes through.
+    f.holdPrepare = true;
+    std::thread again([&] { dev.prepare(48000.0, 256); });
+    check(within([&] { return f.inPrepare.load(); }), "a second re-initialisation is under way");
+    const int calls = f.calls.load();
+    OneCall b;
+    dev.process(b.io);
+    check(f.calls.load() == calls, "a call made meanwhile does not reach the engine");
+    check(b.out[0] == 0.25f && b.out[63] == 0.25f, "and passes its audio through");
+    f.holdPrepare = false;
+    again.join();
+    OneCall c;
+    dev.process(c.io);
+    check(f.calls.load() == calls + 1 && c.out[17] == 0.5f, "prepared again, the engine plays");
+
+    // An unchanged prepare never takes the gate, so it never waits.
+    f.holdProcess = true;
+    std::thread audio2([&] { dev.process(a.io); });
+    check(within([&] { return f.inProcess.load(); }), "a call in flight again");
+    std::atomic<bool> done{false};
+    std::thread rebuild([&] { dev.prepare(48000.0, 256); done = true; });
+    check(within([&] { return done.load(); }, 1000), "an unchanged prepare returns without waiting for it");
+    f.holdProcess = false;
+    audio2.join();
+    rebuild.join();
+}
+
 }  // namespace
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf("adi_pd_tests -- the libpd latency protocol\n\n");
+    // Every wait above has a deadline, but a gate that never opens hangs in
+    // a Hold or a join. This ends the suite instead.
+    std::thread([] {
+        std::this_thread::sleep_for(std::chrono::seconds(240));
+        std::printf("\nFAILED -- still running after 240 s: a threaded test is stuck\n");
+        std::_Exit(1);
+    }).detach();
     testTheReceiverChecksWhatItIsTold();
     testTwoPatchesAreToldApart();
     testUnbindingLeavesATombstone();
@@ -452,6 +585,8 @@ int main() {
     testAPatchReportsAtTheRealRate();
     testAPatchThatFailedToOpenClaimsNothing();
     testTheLatencyReachesTheGraph();
+    testAnUnchangedRebuildLeavesThePatchAlone();
+    testAReinitialisationWaitsForTheCallInFlight();
     std::printf("\n%s -- %d checks, %d failure(s)\n",
                 g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -52,6 +52,7 @@ public:
 
     /// Linear, not dB. 0.966 is -0.3 dBFS.
     void setCeiling(double linear) noexcept { ceiling_ = linear > 0.0 ? linear : 1.0e-6; }
+    /// Retained in seconds across prepare(), including a sample-rate change.
     void setReleaseSeconds(double s) noexcept;
 
     [[nodiscard]] int latencySamples() const noexcept { return lookahead_; }
@@ -70,6 +71,7 @@ private:
     int maxLookahead_ = 0;
     int lookahead_ = 0;
     double ceiling_ = 1.0;
+    double releaseSeconds_ = 0.05;
     double releaseCoef_ = 0.0;
 
     // The delayed audio: one ring per channel, maxLookahead + 1 long.

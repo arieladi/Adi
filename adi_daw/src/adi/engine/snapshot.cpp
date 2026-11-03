@@ -11,6 +11,11 @@
 
 namespace adi::engine {
 namespace {
+bool same(const SendRoute& a, const SendRoute& b) {
+    return a.id==b.id && a.sourceKind==b.sourceKind && a.destinationKind==b.destinationKind &&
+        a.sourceId==b.sourceId && a.destinationId==b.destinationId && a.order==b.order &&
+        a.gainDb==b.gainDb && a.pan==b.pan && a.preFader==b.preFader && a.enabled==b.enabled;
+}
 
 constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 
@@ -19,12 +24,13 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// dirty flag is a second source of truth about what changed, and it is wrong
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
-    return a.id == b.id && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
+    return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
            a.muted == b.muted && a.gainDb == b.gainDb;
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
-    if (a.id != b.id || a.name != b.name || a.muted != b.muted || a.soloed != b.soloed ||
+    if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
+        a.kind != b.kind || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
@@ -122,6 +128,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
     std::map<std::int64_t, std::shared_ptr<const ClipNode>> prevClips;
+    std::map<std::int64_t, std::shared_ptr<const SendRoute>> prevSends;
+    for (const auto& send : previous.sends) prevSends[send->id] = send;
     for (const auto& t : previous.tracks) {
         prevTracks[t->id] = t;
         for (const auto& c : t->clips) prevClips[c->id] = c;
@@ -130,7 +138,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     try {
         snap->sampleRate = db.execAndGet("SELECT sample_rate FROM project WHERE id=1").getInt();
     } catch (const std::exception&) {
-        snap->sampleRate = 48000;
+        snap->sampleRate = 44100;
     }
 
     // --- tempo -----------------------------------------------------------------
@@ -157,12 +165,25 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             snap->tempo = std::move(tempo);
     }
 
+    // --- time signatures --------------------------------------------------------
+    {
+        SQLite::Statement st(db,
+            "SELECT pos_ticks, numerator, denominator FROM time_signature_map ORDER BY pos_ticks, id");
+        while (st.executeStep())
+            snap->meters.push_back({st.getColumn(0).getInt64(),
+                                    static_cast<std::uint16_t>(st.getColumn(1).getInt()),
+                                    static_cast<std::uint16_t>(st.getColumn(2).getInt())});
+        // Match textproj_store: a late first event must not reset bar numbering.
+        if (snap->meters.empty() || snap->meters.front().start_ticks != 0)
+            snap->meters.insert(snap->meters.begin(), {0, 4, 4});
+    }
+
     // --- clips, grouped by track -------------------------------------------------
     std::map<std::int64_t, std::vector<std::shared_ptr<const ClipNode>>> clipsByTrack;
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
-            "gain_db FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
+            "gain_db, name FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
             c.id = st.getColumn(0).getInt64();
@@ -171,6 +192,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.lengthTicks = st.getColumn(3).getInt64();
             c.muted = st.getColumn(4).getInt() != 0;
             c.gainDb = static_cast<float>(st.getColumn(5).getDouble());
+            c.name = st.getColumn(6).getString();
 
             const auto prev = prevClips.find(c.id);
             if (prev != prevClips.end() && same(*prev->second, c))
@@ -182,10 +204,13 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     }
 
     // --- tracks --------------------------------------------------------------------
+    // This deterministic flat traversal is not a display order. The window
+    // orders the tree using parent and indexInParent from the snapshot.
     try {
         SQLite::Statement st(db,
             "SELECT t.id, t.name, t.muted, t.soloed, "
-            "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0) "
+            "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0), "
+            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color "
             "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id "
             "ORDER BY t.index_in_parent, t.id");
         while (st.executeStep()) {
@@ -196,6 +221,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.soloed = st.getColumn(3).getInt() != 0;
             t.volumeDb = static_cast<float>(st.getColumn(4).getDouble());
             t.pan = static_cast<float>(st.getColumn(5).getDouble());
+            t.parent = st.getColumn(6).getInt64();
+            t.indexInParent = st.getColumn(7).getInt64();
+            t.kind = st.getColumn(8).getString();
+            if (!st.getColumn(9).isNull()) t.color = st.getColumn(9).getInt64();
             if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
                 t.clips = it->second;
 
@@ -208,6 +237,27 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    // --- sends ------------------------------------------------------------------
+    // Snapshot construction is off the audio thread; every control value is
+    // captured once for this rebuild, including muted/disabled send controls.
+    try {
+        SQLite::Statement st(db,
+            "SELECT id,src_kind,src_id,dst_kind,dst_id,ord,gain_db,pan,pre_fader,enabled "
+            "FROM routing WHERE kind='send' ORDER BY id");
+        while (st.executeStep()) {
+            SendRoute send;
+            send.id=st.getColumn(0).getInt64();
+            send.sourceKind=st.getColumn(1).getString();send.sourceId=st.getColumn(2).getInt64();
+            send.destinationKind=st.getColumn(3).getString();send.destinationId=st.getColumn(4).getInt64();
+            send.order=st.getColumn(5).getInt64();send.gainDb=st.getColumn(6).getDouble();
+            send.pan=st.getColumn(7).getDouble();send.preFader=st.getColumn(8).getInt()!=0;
+            send.enabled=st.getColumn(9).getInt()!=0;
+            const auto prior=prevSends.find(send.id);
+            if(prior!=prevSends.end() && same(*prior->second,send))snap->sends.push_back(prior->second);
+            else snap->sends.push_back(std::make_shared<const SendRoute>(std::move(send)));
+        }
+    } catch (const std::exception&) {
+    }
     return snap;
 }
 
@@ -226,6 +276,8 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
                 }
         }
     }
+    for (const auto& sa : a.sends)
+        if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
     return shared;
 }
 
