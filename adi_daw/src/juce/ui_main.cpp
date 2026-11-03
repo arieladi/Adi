@@ -3,7 +3,6 @@
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
 #include "app_audio_page.hpp"
-#include "ui_channel_eq.hpp"
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
@@ -158,6 +157,14 @@ class AdiApplication final : public juce::JUCEApplication,
                 return ok;
             };
         }
+        root->importAudio = [this](const std::string &path, AudioImport &out, std::string &why) {
+            // The history's clock: microseconds UTC.
+            const auto now = juce::Time::currentTimeMillis() * 1000;
+            if (document_->prepareImport(path, now, out))
+                return true;
+            why = document_->error();
+            return false;
+        };
         root->afterEdit = [this] {
             if (!document_->synchronise())
                 report(document_->error());
@@ -180,6 +187,8 @@ class AdiApplication final : public juce::JUCEApplication,
                 return e && !e->retired;
             });
         window_->setVisible(true);
+        // A Mix View kept open in its own window opens there again.
+        syncMixView(*floating_, *root_, true);
         if (!noAudio_)
             attachAudio();
         return true;
@@ -264,20 +273,12 @@ class AdiApplication final : public juce::JUCEApplication,
             root_->say("Save As is not built yet: it waits for the engine's Save As.");
             return false;
         }
-        if (id == AppCommands::ShowChannelEq) {
-            // ADI's Channel EQ window (ADR-0204 d1), floating, one for the project.
-            const std::string key = "Channel EQ";
-            if (floating_->content(key) == nullptr) {
-                auto view = std::make_unique<ChannelEqView>(*root_);
-                auto *raw = view.get();
-                if (!floating_->openView(key, 0, std::move(view),
-                                         [raw](const SnapshotReader &reader) { raw->frame(reader); }))
-                    return false;
-            }
-            if (auto *view = dynamic_cast<ChannelEqView *>(floating_->content(key)))
-                view->focus(root_->arrangement.geometry.selection.track);
-            return true;
-        }
+        // The Mix View in a window of its own, or docked back (ADR-0209 d11); F4 while it opens
+        // in a window opens or closes that window.
+        if (id == AppCommands::DetachMixView)
+            return detachMixView(*floating_, *root_, !root_->state().mixViewDetached);
+        if (id == AppCommands::ToggleMixView)
+            return toggleMixViewWindow(*floating_, *root_);
         if (id == AppCommands::Settings) {
             // Live's Settings window (ADR-0203 d11): its Audio page holds the device
             // chooser of STEP-7-PLAN §3.0, unless this run has no audio device.
@@ -350,8 +351,10 @@ class AdiApplication final : public juce::JUCEApplication,
         if (!document_)
             return;
         document_->tick(static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
-        if (floating_)
+        if (floating_) {
             floating_->collect();
+            syncMixView(*floating_, *root_);
+        }
         if (smokeOutput_ != juce::File{}) {
             // Native-window smoke: software screenshot only, never an audio device.
             if (!window_->isShowing() || window_->getPeer() == nullptr) {
