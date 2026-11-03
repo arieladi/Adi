@@ -1045,6 +1045,19 @@ void midiTrackMixer() {
     check(ui::hasAudioMixer(midiTrack, &synth) && !ui::hasAudioMixer(instrumentTrack, &synth),
           "an instrument on it gives it one; an instrument on another track does not");
     check(ui::hasAudioMixer(audioTrack, &nothing), "an audio track always has one");
+    // A clip's drag across tracks (Live 12 manual 6.7): MIDI to MIDI, audio to audio; never onto a
+    // group, a return or Main.
+    engine::TrackNode group, ret, main;
+    group.kind = "group";
+    ret.kind = "return";
+    main.kind = "master";
+    check(ui::canTakeClip(instrumentTrack, midiTrack) && ui::canTakeClip(midiTrack, midiTrack) &&
+              ui::canTakeClip(audioTrack, audioTrack),
+          "a clip moves among MIDI tracks, or among audio tracks");
+    check(!ui::canTakeClip(audioTrack, midiTrack) && !ui::canTakeClip(midiTrack, audioTrack),
+          "never from a MIDI track onto an audio one, or back");
+    check(!ui::canTakeClip(group, audioTrack) && !ui::canTakeClip(ret, audioTrack) && !ui::canTakeClip(main, midiTrack),
+          "never onto a group, a return or Main");
 }
 
 int main() {

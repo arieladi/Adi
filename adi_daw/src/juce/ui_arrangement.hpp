@@ -129,6 +129,9 @@ class ArrangementCanvas final : public juce::Component,
     juce::String lastAnnouncement;
     // The clip being moved by its bar (§6.7), and where it would land; 0 when none is.
     std::int64_t movingClip() const noexcept { return moving_; }
+    // The track a clip being dragged would land on: its own until the mouse is over another lane
+    // that can take it.
+    std::int64_t movingTrack() const noexcept { return movingTrack_; }
     std::int64_t movingTo() const noexcept { return movingTo_; }
     // The clip whose right edge is being dragged (§6.7), and its length so far; 0 when none.
     std::int64_t resizingClip() const noexcept { return resizing_; }
@@ -155,7 +158,7 @@ class ArrangementCanvas final : public juce::Component,
     void extendTo(int x, int y, bool snapToGrid);
     // Delete or 0 on a time selection, on every selected track, as one undo step.
     bool rangeEdit(bool deactivate);
-    std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0;
+    std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
     std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     bool keyResize_ = false;
     // The clip's bar under a point, and whether the point is on its right edge.
