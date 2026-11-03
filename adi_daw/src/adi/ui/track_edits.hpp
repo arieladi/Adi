@@ -83,6 +83,27 @@ inline bool canGroup(const SnapshotTracks &tracks, std::int64_t id) noexcept {
     const auto *t = track_edits_detail::find(tracks, id);
     return t != nullptr && groupable(*t);
 }
+// Live's Track Activator and its keys (Live 12 manual 18.1; §42.19 "Deactivate Selected Track", 0, and
+// "Activate/Deactivate Track 1…8", F1…F8): the clicked track's switch thrown; with several tracks
+// selected and the clicked one among them, all of them to its new state. Main has none. One batch.
+inline TrackEdit activateTracks(const SnapshotTracks &tracks, std::int64_t clicked, const std::vector<std::int64_t> &selected) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    const auto *t = find(tracks, clicked);
+    if (t == nullptr || t->kind == "master") {
+        edit.refusal = t == nullptr ? "Select a track to deactivate." : "Main has no Track Activator.";
+        return edit;
+    }
+    const bool mute = !t->muted;
+    const char *label = mute ? "Deactivate Track" : "Activate Track";
+    const bool together =
+        selected.size() > 1 && std::find(selected.begin(), selected.end(), clicked) != selected.end();
+    for (const auto &k : tracks)
+        if (k && k->kind != "master" && k->muted != mute &&
+            (together ? std::find(selected.begin(), selected.end(), k->id) != selected.end() : k->id == clicked))
+            edit.ops.push_back(op("track.setMute", {{"id", k->id}, {"muted", mute}}, label));
+    return edit;
+}
 // Live's Solo switch and its S key (Live 12 manual 18.1, §42.19 "Solo Selected Tracks"): the clicked
 // track's Solo thrown; with several tracks selected and the clicked one among them, all of them
 // together. Soloing unsolos every other track while Exclusive Solo is on (the Record, Warp & Launch

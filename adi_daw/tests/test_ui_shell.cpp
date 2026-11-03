@@ -1237,6 +1237,36 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.command(AppCommands::Undo);
     root.frame();
     check(soloed().empty(), "four undos: nothing soloed");
+    // Live's Track Activator rules (manual 18.1, §42.19): the selected tracks together; 0 on the
+    // selection; F1…F8 the first eight tracks, each alone.
+    auto muted = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->muted)
+                out.push_back(t->id);
+        return out;
+    };
+    root.arrangement.geometry.selection.track = 1;
+    root.arrangement.geometry.selection.toTrack = 2;
+    if (auto *first = rowOf(root.mixer, 1))
+        first->active.onClick();
+    root.frame();
+    check(muted() == std::vector<std::int64_t>{1, 2} && submitter.nextUndo()->label == "Deactivate Track" &&
+              submitter.nextUndo()->opCount == 2,
+          "1 MIDI's activator, with 1 and 2 MIDI selected, deactivates both, one step");
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F3Key, 0, 0)), "F3");
+    root.frame();
+    check(muted() == std::vector<std::int64_t>{1, 2, 3}, "F3 deactivates the third track, alone");
+    render("adi-activators.png");
+    root.arrangement.geometry.selection.toTrack = 0;
+    check(root.keyPressed(juce::KeyPress('0', 0, 0)), "0");
+    root.frame();
+    check(muted() == std::vector<std::int64_t>{2, 3} && submitter.nextUndo()->label == "Activate Track",
+          "0 activates the selected 1 MIDI");
+    for (int i = 0; i < 3; ++i)
+        root.command(AppCommands::Undo);
+    root.frame();
+    check(muted().empty(), "three undos: every track active");
     // Live's selectors at the strip's foot repeat the View menu: R hides the returns, I-O the In/Out;
     // each is lit while its part shows.
     check(root.strip.returns.getToggleState() && root.strip.inOut.getToggleState() &&
