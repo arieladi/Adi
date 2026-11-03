@@ -427,6 +427,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | `note.setMute` | e | S | sym | P1 |
 | `note.quantize` | e | S | cap | P0 |
 | `note.transpose` | e | S | sym | P0 |
+| `note.restoreNotes` | e | S | cap | P0 |
 | `note.applyGroove` | e | S | cap | P2 |
 | `note.legato` | e | S | cap | P2 |
 | `noteExpression.write` | e | S | cap | P1 |
@@ -434,6 +435,37 @@ silent truncation in JSON, a non-issue in CBOR.
 | `cc.write` | e | S | cap | P0 |
 | `cc.delete` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
+
+Implemented transform payloads:
+
+- `note.quantize {clip, note_ids[], grid_ticks, origin_ticks, strength, swing,
+  starts, ends}` supplies every setting explicitly. `note_ids` is a nonempty,
+  duplicate-free array of positive uint64 IDs. `grid_ticks` is positive and at
+  most INT64_MAX/2; `origin_ticks` is signed. Strength and swing are fixed-point
+  percentages from 0 to 10000 (100.00%). Swing delays odd divisions by up to half
+  a grid division. Nearest-grid ties choose the later line; fractional strength
+  rounds the integer movement toward its target on a half tick. Starts and ends
+  may be chosen independently. Start-only preserves duration. Independently
+  quantized endpoints that collapse keep a one-tick duration. Overflow refuses
+  the complete op. All arithmetic uses integers, including above 2^53 ticks.
+- `note.transpose {clip, note_ids[], semitones}` shifts only the listed pitches.
+  Semitones is an integer from -127 to 127. If any selected pitch would leave
+  0..127 the entire op refuses; intervals are never silently clipped. Tuning,
+  velocity, channel, flags, probability, note IDs and attached expression stay.
+  Its inverse uses the opposite semitone distance on the same explicit IDs.
+- `note.restoreNotes {clip, stream:{bytes}}` is the captured quantize inverse.
+  Bytes is a CBOR byte string (or an array of byte integers for a JSON caller).
+  The restored stream must contain exactly the existing note identities. This
+  captures exact ordering, stream flags, future record tails and any trailer,
+  rather than reconstructing a normalized stream. Its own inverse captures the
+  previous bytes. Unknown/malformed streams and false SortedByTime flags refuse.
+
+Quantize sorts whole raw records stably by time; each record keeps its extension
+bytes. All transforms are one native undo transaction, irrespective of selection
+size; multiple clip requests may share one transaction. Selection flag bits and
+UI selection/grid/playhead state are never read. The owner can build requests
+with `notes::quantizeRequest` / `transposeRequest` in note_transforms.hpp.
+Controller-lane write/delete remains the next Phase C increment.
 
 ### 9.6 Automation
 
@@ -650,7 +682,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**173 ops** — 67 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

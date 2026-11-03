@@ -225,6 +225,7 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
+    src/adi/note_transforms.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -1357,3 +1358,7 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+
+add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
+target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_transforms_tests COMMAND adi_note_transforms_tests)

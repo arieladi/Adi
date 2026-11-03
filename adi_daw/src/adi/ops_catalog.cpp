@@ -15,9 +15,10 @@
 //             before apply, in the same transaction.
 
 #include "adi/blob.hpp"
-#include "adi/ops.hpp"
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/note_transforms.hpp"
+#include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/summing_flavors.hpp"
 
@@ -2038,6 +2039,8 @@ const OpDescriptor kHandWritten[] = {
 std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
+        const auto noteOps = notes::transformOps();
+        v.insert(v.end(), noteOps.begin(), noteOps.end());
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
         return v;
     }();
