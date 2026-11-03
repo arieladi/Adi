@@ -18,6 +18,14 @@
 #include <type_traits>
 static_assert(!std::is_default_constructible_v<adi::audio::PreparedWarp> && !std::is_copy_constructible_v<adi::audio::PreparedWarp>);
 namespace {std::atomic<unsigned> callbackAllocations{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed, so a result object returned from the
+// callback path costs one allocation per container there and none on the other
+// CRTs. The refusal checks below allow exactly what an empty result costs on this
+// CRT, measured once before the baseline is read.
+template<class Result> unsigned emptyResultCost(){const auto before=callbackAllocations.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return callbackAllocations.load()-before;}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++callbackAllocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p)noexcept{std::free(p);}
@@ -68,10 +76,11 @@ void markerCodec() {
     check(!audio::readWarpMap(corrupt,1),"unreleased short record stride refuses");
     corrupt=encoded.bytes;corrupt.pop_back();check(!audio::readWarpMap(corrupt,1),"truncated marker data refuses");
     corrupt=encoded.bytes;corrupt[12]=std::byte{2};check(!audio::readWarpMap(corrupt,1),"nanosecond flag cannot reinterpret musical marker ticks");
+    const auto cost=emptyResultCost<audio::WarpMapRead>()+emptyResultCost<audio::WarpMapWrite>();
     const auto allocations=callbackAllocations.load(),io=audio::callbackFileIo.load();audio::WarpMapRead readResult;audio::WarpMapWrite writeResult;
     {audio::CallbackScope callback;readResult=audio::readWarpMap(encoded.bytes,1);writeResult=audio::writeWarpMap(markers,1);}
     check(readResult.error==audio::WarpMapError::Realtime && writeResult.error==audio::WarpMapError::Realtime &&
-          callbackAllocations.load()==allocations && audio::callbackFileIo.load()==io,"marker preparation refuses on callback before allocating or doing I/O");
+          callbackAllocations.load()==allocations+cost && audio::callbackFileIo.load()==io,"marker preparation refuses on callback before allocating or doing I/O");
 }
 
 void renderModes() {
@@ -167,9 +176,10 @@ void nativeModesAndOnsets() {
         }
         plan.transients.clear();const auto automatic=audio::prepareWarp(plan);
         check(static_cast<bool>(automatic),"Beats reads the same shared onset detector when no map is supplied");
+        const auto cost=emptyResultCost<audio::TransientResult>();
         const auto allocations=callbackAllocations.load(),io=audio::callbackFileIo.load();audio::TransientResult callback;
         {audio::CallbackScope scope;callback=audio::detectTransients(reader,0,frames);}
-        check(callback.error==audio::AnalysisError::Realtime && callbackAllocations.load()==allocations && audio::callbackFileIo.load()==io,"onset detection refuses on callback before allocation and I/O");
+        check(callback.error==audio::AnalysisError::Realtime && callbackAllocations.load()==allocations+cost && audio::callbackFileIo.load()==io,"onset detection refuses on callback before allocation and I/O");
         std::stop_source stop;stop.request_stop();
         check(audio::detectTransients(reader,0,frames,50,stop.get_token()).error==audio::AnalysisError::Cancelled &&
               audio::detectTransients(reader,0,frames+1).error==audio::AnalysisError::InvalidSource,"onset cancellation and source bounds refuse");
@@ -266,9 +276,10 @@ void guardsAndLifetime() {
     std::stop_source stop;stop.request_stop();changed=plan;changed.workFolder=temporary.path()/"cancelled";
     check(audio::prepareWarp(changed,stop.get_token()).error==audio::WarpError::Cancelled && !std::filesystem::exists(changed.workFolder),"cancelled work leaves no private file");
     changed=plan;changed.workFolder=temporary.path()/"callback";
+    const auto cost=emptyResultCost<audio::WarpResult>();
     const auto allocations=callbackAllocations.load(),io=audio::callbackFileIo.load();audio::WarpResult result;
     {audio::CallbackScope callback;result=audio::prepareWarp(changed);}
-    check(result.error==audio::WarpError::Realtime && callbackAllocations.load()==allocations &&
+    check(result.error==audio::WarpError::Realtime && callbackAllocations.load()==allocations+cost &&
           audio::callbackFileIo.load()==io && !std::filesystem::exists(changed.workFolder),"callback refuses before allocation or file I/O");
 }
 }

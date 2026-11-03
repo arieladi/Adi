@@ -94,7 +94,7 @@ struct RePitchInput {
                 state.position+=count;return static_cast<long>(count);
             }
             const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,state.padding));
-            std::fill(state.buffer.begin(),state.buffer.end(),0);state.padding-=count;return static_cast<long>(count);
+            std::fill(state.buffer.begin(),state.buffer.end(),0.0f);state.padding-=count;return static_cast<long>(count);
         } catch(...){state.error=std::current_exception();return 0;}
     }
 };
@@ -216,7 +216,7 @@ void renderTexture(const WarpRenderPlan& plan,WavReader& reader,WavWriter& write
     std::vector<float> output(mixed.size());
     for(std::uint64_t first=0;first<plan.anchors.back().outputFrame;) {
         cancelled(stop);const auto count=static_cast<std::uint32_t>(std::min<std::uint64_t>(blockFrames,plan.anchors.back().outputFrame-first));
-        std::fill(mixed.begin(),mixed.end(),0);std::fill(weights.begin(),weights.end(),0);
+        std::fill(mixed.begin(),mixed.end(),0.0);std::fill(weights.begin(),weights.end(),0.0);
         const auto start=static_cast<std::int64_t>(first),end=start+count;
         const auto firstGrain=static_cast<std::int64_t>(std::floor(static_cast<double>(start-half)/static_cast<double>(hop)));
         const auto lastGrain=(end+half)/hop;

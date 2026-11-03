@@ -140,6 +140,12 @@ if(APPLE)
     find_library(ADI_ACCELERATE_FRAMEWORK Accelerate REQUIRED)
     target_link_libraries(adi_rubberband PUBLIC "${ADI_ACCELERATE_FRAMEWORK}")
 endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # RubberBandSingle.cpp asks std::atomic<double>::is_lock_free(), which libstdc++
+    # answers through __atomic_is_lock_free in libatomic. gcc links it on its own;
+    # clang with libstdc++ does not, and the clang legs failed at link time without it.
+    target_link_libraries(adi_rubberband PUBLIC atomic)
+endif()
 
 # ---------------------------------------------------------------------------
 # Warnings. The whole value of choosing C++ here is that layout and lifetime
