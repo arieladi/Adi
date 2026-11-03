@@ -47,7 +47,7 @@ With `ADI_UI_PARITY=<folder>` it writes a 2x render to lay beside the capture.
 | 2 | Return tracks A and B and Main, last, with Post and the cue volume | Built 2 November 2026: the returns and Main at the foot (#315), the returns' letters and Pre/Post, Main's own row (`window/return-main-rows`) | Main's cue volume (N43) |
 | 3 | ~~MIDI tracks: All Ins, All Channels, No Output; no volume or pan; a dot meter~~ | ~~Every track drawn as an audio track~~ | Built 2 November 2026 (`window/midi-rows`, parity-7.6 row 18): a MIDI track's choosers; with no instrument, no mixer and No Output; the MIDI meter stays dark |
 | 4 | ~~The sends' -inf boxes~~ | ~~ADI-Q and ADI-L in that row~~ | Built 2 November 2026 (`window/send-knobs`): the boxes on that row, ADI-Q and ADI-L on the next |
-| 5 | In/Out choosers with the track's own routing | ADI's fixed routing: Ext. In, 1/2, Auto, Master | The routing in the snapshot (N11) |
+| 5 | In/Out choosers with the track's own routing | ADI's fixed routing: Ext. In, 1/2, Auto, Master; a grouped track to its group ("Group"), a group its output only (`window/group-rows`) | The routing in the snapshot (N11) |
 | 6 | The loop brace in the locator band, the playhead's marker | None | The transport's loop |
 | 7 | EQ Eight's and Auto Filter's own displays | The DAW-drawn knob panel | ADR-0150: ADI's devices are drawn from their parameters |
 | 8 | Live's own typeface | The platform's sans-serif, sized to Live's widths | A font choice (no licence for Live's) |

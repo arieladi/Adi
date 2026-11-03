@@ -769,6 +769,17 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.command(AppCommands::Undo), "undo");
         refresh();
         check(order() == tree, "and the tree is as it was");
+        // Live's group rows (manual 18.3): a group records nothing, so its In/Out shows its output
+        // only; a grouped track's Audio To is its group, shown as Live's "Group".
+        auto outputOf = [&root](std::int64_t id) -> std::string {
+            for (const auto &strip : root.mixer.strips())
+                if (strip->isVisible() && strip->track() == id)
+                    return strip->outputLabel();
+            return {};
+        };
+        check(outputOf(10) == "Master" && outputOf(11) == "Group" && outputOf(16) == "Group" && outputOf(17) == "Group" &&
+                  outputOf(1) == "1/2",
+              "Drums plays to Master; Clap/Snare, Fx And Hits (in Body) and Rises (in Fx And Hits) to their group; Main to 1/2");
     }
     // The Mix View's STACK lists every channel the window's project view shows: the group chosen,
     // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").
