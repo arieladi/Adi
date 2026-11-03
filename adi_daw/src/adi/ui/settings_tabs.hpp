@@ -16,16 +16,15 @@ namespace adi::ui {
 // Feel splits into Display & Input and Theme & Colors, Link has its own tab, and Updates and Privacy
 // become Licenses & Updates with a Privacy group.
 //
-// The registry still names its pages its own way (window log, N14), so until it carries Live's
-// names the window lays the registry's settings out on Live's tabs from what the registry and the
-// catalogue already say, one rule each:
+// The registry names its pages as Live's tabs and gives each setting Live has its section (N14);
+// the window lays the registry's settings out on the tabs from that and the catalogue, one rule
+// each:
 //  - a setting that answers one of the catalogue's Part II rows (Live 12's ten tabs, setting by
 //    setting) sits on that row's tab, in the catalogue's order, which is Live's order on the tab;
 //  - any other setting on a page Live has goes on Live's tab for that page, after Live's own;
 //  - the rest keep their pages, ADI's own, after the ten, in the registry's order; but the LAN
 //    audio node's defaults go on the Link tab, as ADR-0203 d11 places them.
-// When the registry takes Live's names, the second rule maps each page to itself and nothing here
-// changes.
+// With the registry's pages named as Live's tabs, the second rule maps each page to itself.
 inline constexpr std::array<const char *, 10> kLiveTabs{"Display & Input",  "Theme & Colors", "Audio",
                                                         "Link",             "Tempo & MIDI",   "File & Folder",
                                                         "Library",          "Plug-Ins",       "Record, Warp & Launch",
@@ -144,10 +143,15 @@ inline std::vector<SettingsTab> build() {
             add(*own, page, &s);
         }
     }
-    // A tab's own group comes first, whatever was added to it first.
-    for (auto &tab : tabs)
-        std::stable_partition(tab.groups.begin(), tab.groups.end(),
-                              [&tab](const SettingsGroup &g) { return g.heading == tab.name; });
+    // On Live's tabs, Live's groups first, in the order they came: a section, or the tab's own
+    // group when it holds a setting Live has (Licenses & Updates). ADI's own settings, with no
+    // section, follow them in the tab's own group.
+    for (std::size_t i = 0; i < kLiveTabs.size(); ++i)
+        std::stable_partition(tabs[i].groups.begin(), tabs[i].groups.end(), [&live](const SettingsGroup &g) {
+            return std::any_of(g.settings.begin(), g.settings.end(), [&live](const settings::Setting *s) {
+                return !s->section.empty() || live.count(s->key) != 0;
+            });
+        });
     return tabs;
 }
 } // namespace settings_tabs_detail
