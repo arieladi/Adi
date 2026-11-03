@@ -798,6 +798,38 @@ void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
             return;
         }
 }
+bool ArrangementView::selectAll() {
+    std::int64_t first = 0, last = 0, from = 0, to = 0, only = 0, clips = 0;
+    for (const auto row : geometry.rows(reader())) {
+        const auto *t = row.track;
+        if (!geometry.shown(t->id) || t->clips.empty())
+            continue;
+        for (const auto &c : t->clips) {
+            from = clips == 0 ? c->posTicks : std::min(from, c->posTicks);
+            to = clips == 0 ? c->posTicks + c->lengthTicks : std::max(to, c->posTicks + c->lengthTicks);
+            only = c->id;
+            ++clips;
+        }
+        if (first == 0)
+            first = t->id;
+        last = t->id;
+    }
+    if (clips == 0) {
+        root.say("There is nothing to select.");
+        return false;
+    }
+    auto &sel = geometry.selection;
+    sel.track = first;
+    sel.toTrack = last == first ? 0 : last;
+    sel.clip = clips == 1 ? only : 0;
+    sel.start = from;
+    sel.end = to;
+    sel.insert = from;
+    sel.marked = true;
+    locate();
+    changed();
+    return true;
+}
 void ArrangementView::contextMenu(juce::Point<int> where, bool header) {
     auto &commands = root.commands();
     commands.activate(root);

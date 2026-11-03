@@ -203,6 +203,10 @@ class ArrangementView final : public juce::Component {
     bool snaps(const juce::ModifierKeys &) const noexcept;
     // Select one clip by identity: the accessible children's press action.
     void selectClip(std::int64_t track, std::int64_t clip);
+    // Live's Select All (Ctrl/Cmd+A, manual §42.5): all the material, a time selection from the
+    // earliest clip's start to the latest one's end across every track that holds clips; one clip
+    // alone is selected as that clip. False, saying so, when there is nothing to select.
+    bool selectAll();
     void locate();
     // Live's right-click menu for the track area and the headers.
     void contextMenu(juce::Point<int> where, bool header);

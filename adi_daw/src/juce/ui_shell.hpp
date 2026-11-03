@@ -85,7 +85,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         DetachMixView,
         ToggleReferenceTrack,
         PlayReference,
-        LastId = PlayReference
+        SelectAll,
+        LastId = SelectAll
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
