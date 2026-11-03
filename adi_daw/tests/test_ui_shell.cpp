@@ -752,6 +752,23 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.command(AppCommands::Undo), "and put back");
         refresh();
         check(order() == tree, "the tree as it was");
+        // Several tracks selected (Shift+click on the headers reaches across them): Ctrl/Cmd+G groups
+        // them all into one group at the first one's place, in their order (manual 18.3).
+        lanes.selection.track = 14;
+        lanes.selection.toTrack = 15;
+        check(root.keyPressed(juce::KeyPress('g', cmd, 0)), "Ctrl/Cmd+G on Bass and Synths");
+        refresh();
+        const auto *pair = trackNamed(19);
+        check(order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {11, 1}, {12, 1}, {13, 0}, {19, 1},
+                                                                               {14, 2}, {15, 2}, {16, 1}, {17, 2}, {18, 2},
+                                                                               {1, 0}} &&
+                  pair != nullptr && pair->parent == 13 && lanes.selection.track == 19 && lanes.selection.toTrack == 0 &&
+                  root.undoTitle(false) == "Undo Group Tracks",
+              "Bass and Synths in one new group where Bass stood in Body, the group selected, one step");
+        render("adi-group-selected.png");
+        check(root.command(AppCommands::Undo), "undo");
+        refresh();
+        check(order() == tree, "and the tree is as it was");
     }
     // The Mix View's STACK lists every channel the window's project view shows: the group chosen,
     // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").
