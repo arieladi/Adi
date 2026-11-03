@@ -1,0 +1,42 @@
+# The director's remarks on the window
+
+The first-window gate (`docs/LANES.md` §5): the director opens the Windows build win hands him,
+says what is wrong, and each remark becomes a window-lane item that comes before new items
+(LANES §4 window item 4). Win writes them here the same day, in the director's words first, then
+win's reading of the cause. A remark is struck when the PR that answers it merges. Newest build at
+the top. Only win writes to this file.
+
+---
+
+## 2026-11-02 evening — build `add5102` (ADI.exe of 18:23; the chain #331 to #352 not yet in it)
+
+The director's words:
+
+> channels do not expand or get smaller when clicking on the triangle, the manual expand or make
+> smaller with the mouse works but the borders are not visible
+> transition to mix view and detach and get it docked again is terrible
+> i can't click and drag channels or groups to move them
+> select multiple channels holding shift works but grouping them not: it only groups one channel
+> and i can't add any other channels into it
+> clicking on automation and lock buttons do nothing
+> i stopped here because there must be much more. the mix view looks terrible but we can get to
+> it later
+
+| # | Remark | Win's reading | Window item |
+|---|---|---|---|
+| R1 | The triangle on a track does not expand or shrink it | On a plain track Live's triangle unfolds the automation lanes (manual 19.1), which wait on N26; ADI folds groups only (`foldedAway`). A click on a plain track's triangle did nothing and said nothing | A click on the triangle of a track with nothing to unfold says so in the Status Bar until N26 lands; the group fold stays. When N26 lands, the triangle unfolds the lanes as Live's |
+| R2 | Resizing a track with the mouse works, but the borders are not visible | The lane edge the mouse grabs is not drawn as Live draws it (the thin divider under each track header, and the cursor change over it) | Draw Live's divider under each track header and the resize cursor over it (parity 7.3); keep the drag |
+| R3 | The transition to the Mix View, and detaching it and docking it again, is terrible | ADR-0209 P1 built the panel, F4 and the top-bar button, docked or detached (#320 to #323), on the first pass | The window lane takes the Mix View's switch, detach and re-dock as one item: what "terrible" is in detail, the director says on the next build; until then, no flash on switch, the detached window keeps its place and size, docking returns it where it was, the button and F4 toggle both ways |
+| R4 | Tracks and groups cannot be dragged to move them | `window/track-move` (#347) and `window/return-move` (#350) are in the chain, not in this build | None new: #347 and #350 merge today; the next build has them |
+| R5 | Shift-click selects several tracks, but Group Tracks groups only one and nothing can be added to the group | `window/group-selected` (#339) is in the chain, not in this build; dragging a track into a group is #347 | None new: #339 and #347 merge today |
+| R6 | The automation and lock buttons do nothing | They are drawn and wait on N26 (automation data in the snapshot); a click neither acts nor says so | A click on either says what it waits for in the Status Bar (the window's own rule for every dead control) |
+| R7 | The Mix View looks terrible; later | Noted for after the Arrangement passes | The Mix View's look is a later round, after the director's next remarks on it |
+
+**For the director's next round** (the build after the chain merges tonight): the things in this
+build that take a click and are worth a look, so the remarks reach everything: New (Live's default
+set), Insert Audio/MIDI Track, Rename, Delete, Group and Ungroup with undo, the colour chooser on a
+track's menu, track height and the Optimize commands, zoom (Ctrl + wheel) and the grid menu, the
+Mixer (Ctrl+Alt+M) with its In/Out, Sends and Returns sections, the Settings window (Ctrl+,) on
+Live's ten tabs, the range selection on the lanes (drag, Delete, 0), Select All, dragging an audio
+file onto a track, the Channel EQ window, the Browser's sidebar, the Info View and the Status Bar's
+messages. Nothing plays, and the clips are drawn as their colour and name until the engine's N40.
