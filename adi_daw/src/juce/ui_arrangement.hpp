@@ -142,6 +142,9 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     // without a drag (Live keeps the selection for the drag).
     std::int64_t moveId_ = 0;
     bool moving_ = false, selectOnUp_ = false, movingReturn_ = false;
+    // Whether the press was on a fold switch, which does all it does on the press: its release keeps
+    // what the Status Bar says.
+    bool foldPressed_ = false;
     Drop drop_;
 };
 // What a screen reader finds for one clip on screen (UI-ARCHITECTURE §6). The
@@ -258,6 +261,15 @@ class ArrangementView final : public juce::Component {
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
     void paint(juce::Graphics &) override;
+    // Above the track names, Live's Set Locator, Previous and Next Locator buttons and its Automation
+    // Mode and Lock Envelopes toggles (Live 12 manual 6): where paint draws each, and where a click
+    // finds it. Each waits for the engine (locators N25, automation N26); a click says so.
+    enum class TopButton { Set, Previous, Next, Automation, Lock };
+    // What a track's Unfold Track button and U say on a track that is not a group.
+    static constexpr const char *kUnfoldWaits =
+        "Unfolding a track shows its automation lanes, which wait for the engine's automation (window log, N26).";
+    juce::Rectangle<float> topButton(TopButton) const noexcept;
+    void mouseDown(const juce::MouseEvent &) override;
     // The colour of the track at `position` down the rows: its own, an index into Live's palette
     // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
