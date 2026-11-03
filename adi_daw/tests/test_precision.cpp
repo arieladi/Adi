@@ -284,6 +284,27 @@ public:
     bool sawFloatOut = false;
 };
 
+/// Writes down what the graph tells it and when: "64" or "32" for each
+/// `willBeHanded`, "p" for each `prepare`. Says `processesDouble()` when asked to.
+class WidthProbe final : public Node {
+public:
+    explicit WidthProbe(bool doubles) : doubles_(doubles) {}
+    void willBeHanded(Precision width) override { log += width == Precision::Float64 ? "64" : "32"; }
+    void prepare(double, std::int32_t) override { log += "p"; }
+    void process(const NodeIo& io) noexcept override {
+        for (std::int32_t c = 0; c < io.channels; ++c)
+            for (std::int32_t i = 0; i < io.frames; ++i) {
+                if (io.wide()) io.out64[c][io.blockOffset + i] = 0.0;
+                else io.out[c][io.blockOffset + i] = 0.0f;
+            }
+    }
+    [[nodiscard]] bool processesDouble() const noexcept override { return doubles_; }
+    [[nodiscard]] const char* name() const noexcept override { return "width probe"; }
+    std::string log;
+private:
+    bool doubles_;
+};
+
 /// Doubles no float can hold: 24 bits of noise plus a part below float's
 /// resolution, so a value that went through float anywhere is different.
 std::vector<double> noise53(std::uint32_t seed, std::size_t frames) {
@@ -530,7 +551,7 @@ struct Project {
 
     Project() {
         StoreError error{};
-        store = Store::create(dir.path() / "session.adi", error);
+        store = Store::createEmpty(dir.path() / "session.adi", error);
         if (!store) throw std::runtime_error("create project");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1000,'master','Master',999)");
     }
@@ -621,6 +642,60 @@ struct Project {
         return out;
     }
 };
+
+void testAClipSourceCrossesARebuild() {
+    section("ADR-0092 -- a track's clips cross a rebuild where their edge is compensated: "
+            "a new reader each time, the same signal");
+
+    // The session builds every track's clip reader afresh at each rebuild.
+    // Where something else into the same junction arrives later, the clips'
+    // edge into it is a delay line, and its history has to cross the swap.
+    const std::vector<float> a = noise24(19000u, 4096), b = noise24(19001u, 4096);
+    struct Case { const char* what; bool sidechain; };
+    for (const Precision width : {Precision::Float32, Precision::Float64})
+    for (const Case& c : {Case{"a group with clips, its child 300 samples early", false},
+                          Case{"a sidechain from a track 300 samples early", true}}) {
+        auto build = [&](Project& p) {
+            if (c.sidechain) {
+                p.track(1, "audio");
+                p.track(2, "audio");
+                p.strip(2, 0.0, 0.0);
+                p.store->db().exec("UPDATE mixer_strip SET delay_samples=-300 WHERE track_id=2");
+                p.store->db().exec("INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,origin) "
+                                   "VALUES(77,'track',2,'track',1,'sidechain','user')");
+                p.clip(1, p.file(a), 4096);
+                p.clip(2, p.file(b), 4096);
+                return;
+            }
+            p.track(5, "group");
+            p.track(1, "audio", 5);
+            p.strip(1, 0.0, 0.0);
+            p.store->db().exec("UPDATE mixer_strip SET delay_samples=-300 WHERE track_id=1");
+            p.clip(1, p.file(a), 4096);
+            p.clip(5, p.file(b), 4096);
+        };
+        const bool wide = width == Precision::Float64;
+        const std::string tag = std::string(c.what) + (wide ? ", at 64" : ", at 32");
+        Project ref;
+        build(ref);
+        const Render whole = ref.play(512, 4096, width);
+        Project p;
+        build(p);
+        const Render first = p.play(512, 2048, width);
+        const Node* before = p.session.clips()->sourcesFor(c.sidechain ? 1 : 5).front();
+        p.store->db().exec("UPDATE tracks SET name='renamed' WHERE id=1");
+        check(p.session.refresh(*p.store), tag + ": refreshed");
+        check(p.session.clips()->sourcesFor(c.sidechain ? 1 : 5).front() != before,
+              tag + ": the refresh built a new clip reader");
+        const Render second = p.render(512, 2048, false);
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < 2048; ++i) {
+            if (wide ? first.l64[i] != whole.l64[i] : first.l[i] != whole.l[i]) ++differ;
+            if (wide ? second.l64[i] != whole.l64[2048 + i] : second.l[i] != whole.l[2048 + i]) ++differ;
+        }
+        check(differ == 0, tag + ": a rename moves no sample of the master (" + std::to_string(differ) + " do)");
+    }
+}
 
 void testProjectMasterCancels() {
     section("ADR-0207 d2 -- the Fact Sheet case through a project: 24-bit WAV "
@@ -915,6 +990,28 @@ void test64FloatNodeIsConverted() {
     for (std::size_t i = 0; i < a.size(); ++i)
         exact = exact && out.l64[i] == static_cast<double>(static_cast<float>(a[i])) + b[i];
     check(exact, "the master is float(a) + b in double: a rounded once at the float node, b untouched");
+}
+
+void test64TellsEachNodeItsWidth() {
+    section("ADR-0207 d2 -- the graph tells each node the width it will be handed, "
+            "before the node prepares: a VST3 fixes its sample size at activation");
+
+    WidthProbe wide(true), narrow(false);
+    SumNode master;
+    Graph g;
+    g.setPrecision(Precision::Float64);
+    const NodeId nw = g.addNode(wide), nn = g.addNode(narrow), nm = g.addNode(master);
+    g.connect(nw, nm);
+    g.connect(nn, nm);
+    g.setOutput(nm);
+    g.prepare(48000.0, 512);
+    check(wide.log == "64p", "at 64, a node that processes double is told 64, then prepared: " + wide.log);
+    check(narrow.log == "32p", "and one that does not is told 32, which is what it is handed: " + narrow.log);
+
+    g.setPrecision(Precision::Float32);
+    g.prepare(48000.0, 512);
+    check(wide.log == "64p32p", "at 32, every node is told 32, whatever it supports: " + wide.log);
+    check(narrow.log == "32p32p", "the float node too: " + narrow.log);
 }
 
 void test64CompensatesInDouble() {
@@ -1427,12 +1524,14 @@ int main() {
         testCompensatedPathsCancel();
         testSidechainCancels();
         testProjectMasterCancels();
+        testAClipSourceCrossesARebuild();
         testProjectStripsAndGroupCancel();
         testClipsOnOneTrackCancel();
         testAFoldIsASum();
         testOnlyASumGoesWide();
         test64KeepsEveryBit();
         test64FloatNodeIsConverted();
+        test64TellsEachNodeItsWidth();
         test64CompensatesInDouble();
         test64DelayLine();
         test64SleepsAndWakes();

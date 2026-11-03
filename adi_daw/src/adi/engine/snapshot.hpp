@@ -26,9 +26,11 @@
 #pragma once
 
 #include "adi/engine/publisher.hpp"
+#include "adi/textproj.hpp"
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -62,6 +64,7 @@ struct TempoMap {
 };
 
 struct ClipNode {
+    std::string name;
     std::int64_t id = 0;
     std::int64_t posTicks = 0;
     std::int64_t lengthTicks = 0;
@@ -71,6 +74,10 @@ struct ClipNode {
 
 struct TrackNode {
     std::int64_t id = 0;
+    std::int64_t parent = 0;      // 0 at the top of the tree
+    std::int64_t indexInParent = 0;
+    std::string kind;
+    std::optional<std::int64_t> color; // absent is distinct from explicit zero
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;
     bool soloed = false;
@@ -79,12 +86,29 @@ struct TrackNode {
     std::vector<std::shared_ptr<const ClipNode>> clips;
 };
 
+/// A routing row with kind='send', including disabled rows. Destinations can
+/// be any track, not just returns (ADR-0203 d3). Endpoint kinds remain explicit
+/// so a reader can also identify rows the planner cannot currently play.
+struct SendRoute {
+    std::int64_t id = 0;
+    std::string sourceKind, destinationKind;
+    std::int64_t sourceId = 0, destinationId = 0, order = 0;
+    double gainDb = 0.0, pan = 0.0;
+    bool preFader = false, enabled = true;
+};
+
 /// What the audio thread sees. Derives from Sequenced so the publisher can
 /// stamp it; nothing else touches `seq`.
 struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
-    int sampleRate = 48000;
+    int sampleRate = 44100;
+    // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
+    // build, while unchanged tracks/clips/tempo retain structural sharing.
+    std::vector<textproj::Meter> meters;
+    // Sorted by routing id for stable identity, not by the window's return
+    // order. Unchanged rows share nodes across rebuilds, as tracks/clips do.
+    std::vector<std::shared_ptr<const SendRoute>> sends;
 
     [[nodiscard]] const TrackNode* findTrack(std::int64_t id) const noexcept;
     [[nodiscard]] bool anySoloed() const noexcept;

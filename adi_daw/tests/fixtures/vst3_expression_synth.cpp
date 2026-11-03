@@ -45,6 +45,17 @@
 // (0.25 + 0.75 p) and timbre as a 3rd harmonic (0.05 + 0.95 t) -- chosen so a
 // dimension that never arrives still sounds, and reads "unchanged".
 //
+// ADR-0207: MPE and NoteExpr take kSample64, and Plain refuses it, so a host
+// meets both answers in one bundle. A voice is computed in double either way
+// and written at the width the host set up, so a 64-bit block holds samples
+// no float can hold, and its 32-bit twin is that block rounded to float. The
+// input passes through under the voices, so the host's input path is seen
+// at each width too. A block whose symbolicSampleSize is not the one
+// setupProcessing was given is refused, and writes nothing: the two widths
+// share one union, and a host that mixes them up hands the plugin pointers
+// to the wrong kind of sample. A hidden one-shot Refuse Block switch fails
+// the process call it arrives in, for a host's error path.
+//
 // Built only against Steinberg's VST3 SDK (MIT, 2025), the copy JUCE carries.
 // No JUCE code is used or linked.
 
@@ -101,7 +112,8 @@ constexpr ParamID kRpnMsb = 500, kRpnLsb = 501, kDataEntry = 502;    ///< channe
 constexpr ParamID kDrive = 4000, kGestureTrigger = 4001, kDeferredEcho = 4002;
 constexpr ParamID kPresetTrigger = 4003, kPatch = 4004, kDeferredRestart = 4005;   // ADR-0142
 constexpr ParamID kSlowBlock = 4006;   // ADR-0089 d4: this process call stays 300 ms
-constexpr int32 kExtraParams = 7;
+constexpr ParamID kRefuseBlock = 4007; // ADR-0207: this process call fails, once
+constexpr int32 kExtraParams = 8;
 constexpr auto kSlowBlockFor = std::chrono::milliseconds(300);
 
 /// Plugin objects alive: one per instance a host created and has not yet
@@ -217,8 +229,11 @@ public:
     }
     tresult PLUGIN_API getRoutingInfo(RoutingInfo&, RoutingInfo&) override { return kNotImplemented; }
     tresult PLUGIN_API activateBus(MediaType, BusDirection, int32, TBool) override { return kResultOk; }
-    tresult PLUGIN_API setActive(TBool) override {
+    /// Deactivated, it forgets its voices, as real plugins do: a host that
+    /// reactivates one (a new rate, or a new sample size) starts it silent.
+    tresult PLUGIN_API setActive(TBool state) override {
         if (inProcess_.load()) g_overlaps.fetch_add(1);
+        if (!state) voices_.fill(Voice{});
         return kResultOk;
     }
     // ADR-0142. One override serves IComponent and IEditController alike: this
@@ -262,13 +277,16 @@ public:
         return kResultOk;
     }
     tresult PLUGIN_API canProcessSampleSize(int32 size) override {
-        return size == kSample32 ? kResultTrue : kResultFalse;
+        if (size == kSample32) return kResultTrue;
+        return size == kSample64 && variant_ != Variant::Plain ? kResultTrue : kResultFalse;
     }
     uint32 PLUGIN_API getLatencySamples() override { return 0; }
     tresult PLUGIN_API setupProcessing(ProcessSetup& setup) override {
         if (inProcess_.load()) g_overlaps.fetch_add(1);
+        if (canProcessSampleSize(setup.symbolicSampleSize) != kResultTrue) return kResultFalse;
         sampleRate_ = setup.sampleRate > 0.0 ? setup.sampleRate : 48000.0;
         maxBlock_ = setup.maxSamplesPerBlock;
+        sampleSize_ = setup.symbolicSampleSize;
         return kResultOk;
     }
     tresult PLUGIN_API setProcessing(TBool) override { return kResultOk; }
@@ -281,7 +299,9 @@ public:
             ~Inside() { g_inProcess.fetch_sub(1); flag = false; }
         } inside(inProcess_);
         if (data.numSamples > maxBlock_) return kInvalidArgument;
+        if (data.symbolicSampleSize != sampleSize_) return kInvalidArgument;
         applyParameters(data.inputParameterChanges);
+        if (refuse_) { refuse_ = false; return kResultFalse; }
         if (slow_) {
             slow_ = false;
             std::this_thread::sleep_for(kSlowBlockFor);
@@ -308,12 +328,12 @@ public:
             const int32 k = index - baseParameterCount();
             static constexpr ParamID ids[kExtraParams] = {kDrive, kGestureTrigger, kDeferredEcho,
                                                           kPresetTrigger, kPatch, kDeferredRestart,
-                                                          kSlowBlock};
+                                                          kSlowBlock, kRefuseBlock};
             static constexpr const char* titles[kExtraParams] = {
                 "Drive", "Gesture Trigger", "Deferred Echo", "Preset Trigger", "Patch", "Deferred Restart",
-                "Slow Block"};
-            static constexpr const char* shorts[kExtraParams] = {"Drive", "Trigger", "Echo",
-                                                                 "Preset", "Patch", "Restart", "Slow"};
+                "Slow Block", "Refuse Block"};
+            static constexpr const char* shorts[kExtraParams] = {"Drive", "Trigger", "Echo", "Preset",
+                                                                 "Patch", "Restart", "Slow", "Refuse"};
             const bool drive = k == 0;
             info.id = ids[k];
             copy128(info.title, titles[k]);
@@ -496,6 +516,7 @@ private:
         else if (id == kDataEntry && rpnMsb_ == 0 && rpnLsb_ == 6)
             memberBend_ = std::lround(v * 127.0) > 0 ? 48.0 : 2.0;   // the MCM: MPE's +/-48
         else if (id == kSlowBlock && v > 0.5) slow_ = true;
+        else if (id == kRefuseBlock && v > 0.5) refuse_ = true;
     }
 
     Voice* voiceFor(int32 noteId, int key, int channel) {
@@ -547,11 +568,31 @@ private:
     }
 
     void render(ProcessData& data) {
-        if (data.numOutputs < 1 || data.outputs == nullptr || data.outputs[0].channelBuffers32 == nullptr) return;
+        if (data.numOutputs < 1 || data.outputs == nullptr) return;
         AudioBusBuffers& out = data.outputs[0];
-        const int32 frames = data.numSamples;
-        for (int32 c = 0; c < out.numChannels; ++c)
-            if (out.channelBuffers32[c] != nullptr) std::memset(out.channelBuffers32[c], 0, sizeof(float) * static_cast<size_t>(frames));
+        const AudioBusBuffers* in = data.numInputs > 0 ? data.inputs : nullptr;
+        const int32 numIn = in != nullptr ? in->numChannels : 0;
+        if (data.symbolicSampleSize == kSample64) {
+            if (out.channelBuffers64 != nullptr)
+                renderInto(in != nullptr ? in->channelBuffers64 : nullptr, numIn, out.channelBuffers64,
+                           out.numChannels, data.numSamples);
+        } else if (out.channelBuffers32 != nullptr) {
+            renderInto(in != nullptr ? in->channelBuffers32 : nullptr, numIn, out.channelBuffers32,
+                       out.numChannels, data.numSamples);
+        }
+    }
+
+    /// The input passes through under the voices, as an instrument with an
+    /// audio input may mix it. In place when the host hands one buffer for both.
+    template <typename Sample>
+    void renderInto(Sample** in, int32 numIn, Sample** chans, int32 numChannels, int32 frames) {
+        const auto bytes = sizeof(Sample) * static_cast<size_t>(frames);
+        for (int32 c = 0; c < numChannels; ++c) {
+            if (chans[c] == nullptr) continue;
+            const Sample* src = (in != nullptr && c < numIn) ? in[c] : nullptr;
+            if (src == nullptr) std::memset(chans[c], 0, bytes);
+            else if (src != chans[c]) std::memcpy(chans[c], src, bytes);
+        }
         for (auto& v : voices_) {
             if (!v.on) continue;
             const auto ch = static_cast<size_t>(v.channel & 15);
@@ -570,9 +611,9 @@ private:
             const double amp = 0.3 * (0.25 + 0.75 * p);
             const double third = 0.05 + 0.95 * t;
             for (int32 i = 0; i < frames; ++i) {
-                const auto s = static_cast<float>(amp * (std::sin(v.phase) + third * std::sin(3.0 * v.phase)));
-                for (int32 c = 0; c < out.numChannels; ++c)
-                    if (out.channelBuffers32[c] != nullptr) out.channelBuffers32[c][i] += s;
+                const auto s = static_cast<Sample>(amp * (std::sin(v.phase) + third * std::sin(3.0 * v.phase)));
+                for (int32 c = 0; c < numChannels; ++c)
+                    if (chans[c] != nullptr) chans[c][i] += s;
                 v.phase += step;
                 if (v.phase > 2.0 * kPi) v.phase -= 2.0 * kPi;
             }
@@ -589,6 +630,8 @@ private:
     bool hasPendingEcho_ = false;
     double sampleRate_ = 48000.0;
     int32 maxBlock_ = 0;                     ///< setupProcessing's maxSamplesPerBlock
+    int32 sampleSize_ = kSample32;           ///< ADR-0207: what setupProcessing was given
+    bool refuse_ = false;                    ///< ADR-0207: fail this process call
     bool slow_ = false;                      ///< ADR-0089 d4: hold this process call
     std::atomic<bool> inProcess_{false};     ///< a process call is inside
     std::array<Voice, 16> voices_{};

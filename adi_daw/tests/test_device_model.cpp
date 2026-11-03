@@ -54,8 +54,13 @@ public:
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return true; }
 
-    void prepare(double, std::int32_t) override { ++prepares_; }
+    void prepare(double, std::int32_t) override { ++prepares_; widths_ += "p"; }
     void release() override { ++releases_; }
+    // ADR-0207 d2.
+    [[nodiscard]] bool processesDouble() const noexcept override { return doubles_; }
+    void willBeHanded(engine::Precision w) override { widths_ += w == engine::Precision::Float64 ? "64" : "32"; }
+    void setDoubles(bool d) { doubles_ = d; }
+    [[nodiscard]] const std::string& widths() const { return widths_; }
 
     void process(const engine::NodeIo& io) noexcept override {
         ++calls_;
@@ -86,6 +91,8 @@ private:
     std::int64_t tail_ = 0;
     std::int32_t lat_ = 0;
     int prepares_ = 0, releases_ = 0, calls_ = 0;
+    bool doubles_ = false;
+    std::string widths_;
 };
 
 /// A device that overrides NOTHING, to read the base class's own answers.
@@ -180,8 +187,8 @@ void testForwardingAndOverrides() {
           "always_process does NOT change the latency -- they answer different questions");
 }
 
-void testBypassReportsNothing() {
-    section("a bypassed device declares no tail and no latency");
+void testBypassKeepsLatency() {
+    section("ADR-0203 d4 -- bypass keeps latency without a device tail");
     FakeDevice d({});
     d.setTail(9999);
     d.setLatency(512);
@@ -192,11 +199,8 @@ void testBypassReportsNothing() {
           "a bypassed device has nothing to finish -- reporting a tail would hold "
           "a whole chain awake behind a device the user switched off");
 
-    // The half most likely to be got wrong. A bypassed plugin delays nothing,
-    // so continuing to report its latency compensates the rest of the graph
-    // against a delay that is no longer there -- which moves audio that was
-    // aligned, the exact failure ADR-0058's default was chosen to avoid.
-    check(n.latencySamples() == 0, "and delays nothing, so it reports no latency");
+    check(n.latencySamples() == 512, "bypass retains the device's compensation");
+    check(n.hasBypass(), "the graph supplies delayed dry without device DSP");
 
     n.setBypassed(false);
     check(n.latencySamples() == 512, "un-bypassing restores the report");
@@ -362,6 +366,32 @@ void testPrepareAndReleaseReachTheDevice() {
     check(d.releases() == 1, "and the release");
 }
 
+void testTheWidthReachesTheDevice() {
+    section("ADR-0207 d2: a graph at 64 tells a device that processes double "
+            "so, through DeviceNode, before it prepares it");
+    FakeDevice wide({}), narrow({});
+    wide.setDoubles(true);
+    DeviceNode nw(wide), nn(narrow);
+    check(nw.processesDouble() && !nn.processesDouble(), "the node says what its device says");
+    engine::Graph g;
+    g.setPrecision(engine::Precision::Float64);
+    const engine::NodeId a = g.addNode(nw), b = g.addNode(nn);
+    g.connect(a, b);
+    g.setOutput(b);
+    g.prepare(48000.0, 512);
+    check(wide.widths() == "64p", "the device that processes double is told 64, then prepared: " + wide.widths());
+    check(narrow.widths() == "32p", "the one that does not is told 32: " + narrow.widths());
+    check(nw.handed() == engine::Precision::Float64 && nn.handed() == engine::Precision::Float32,
+          "and each node remembers what it was told");
+    // A device whose answer moves after the build: the node still says what
+    // the graph decided, which is what it is handed until the next one.
+    narrow.setDoubles(true);
+    check(nn.processesDouble() && nn.handed() == engine::Precision::Float32,
+          "a device that now says double is still handed float until a rebuild");
+    g.prepare(48000.0, 512);
+    check(nn.handed() == engine::Precision::Float64, "and the rebuild hands it double");
+}
+
 // --- the missing plugin ------------------------------------------------------
 
 void testMissingPluginIsStillADevice() {
@@ -500,11 +530,12 @@ int main() {
     std::printf("adi_device_model_tests -- the format-agnostic device contract\n\n");
     testTheDefaultsPointOppositeWays();
     testForwardingAndOverrides();
-    testBypassReportsNothing();
+    testBypassKeepsLatency();
     testBypassPassesAudioThrough();
     testPassThroughHonoursTheSegmentOffset();
     testAnInstrumentConsumesAndBypassDoesNot();
     testPrepareAndReleaseReachTheDevice();
+    testTheWidthReachesTheDevice();
     testMissingPluginIsStillADevice();
     testMissingPluginPassesAudio();
     testMissingPluginKeepsStateByteForByte();

@@ -91,7 +91,7 @@ struct Fixture {
     Session session;
     explicit Fixture() {
         StoreError error{};
-        store = Store::create(dir.path() / "transport.adi", error);
+        store = Store::createEmpty(dir.path() / "transport.adi", error);
         if (!store) throw std::runtime_error("create transport fixture");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
                         "(1,'audio','Capture',0),(9,'master','Master',1);");

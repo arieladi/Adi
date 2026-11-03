@@ -230,6 +230,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/render/queue.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
     src/adi/engine/plan.cpp
@@ -505,6 +506,10 @@ add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
 
+add_executable(adi_project_bootstrap_tests tests/test_project_bootstrap.cpp)
+target_link_libraries(adi_project_bootstrap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_bootstrap_tests COMMAND adi_project_bootstrap_tests)
+
 # Separate again, for the same reason: an ops failure and a store failure should
 # be distinguishable from the CI summary without opening the log.
 add_executable(adi_ops_tests tests/test_ops.cpp)
@@ -547,6 +552,7 @@ add_test(NAME adi_snapshots_tests COMMAND adi_snapshots_tests)
 add_library(adi_settings STATIC
     src/adi/settings/registry.cpp
     src/adi/settings/store.cpp
+    src/adi/settings/channel_config.cpp
     src/adi/settings/bundle.cpp
     src/adi/settings/catalogue.cpp)
 target_link_libraries(adi_settings PUBLIC adi_core PRIVATE adi_miniz adi_warnings)
@@ -677,6 +683,10 @@ add_executable(adi_device_model_tests tests/test_device_model.cpp)
 target_link_libraries(adi_device_model_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_model_tests COMMAND adi_device_model_tests)
 
+add_executable(adi_bypass_delay_tests tests/test_bypass_delay.cpp)
+target_link_libraries(adi_bypass_delay_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_bypass_delay_tests COMMAND adi_bypass_delay_tests)
+
 add_executable(adi_device_ops_tests tests/test_device_ops.cpp)
 target_link_libraries(adi_device_ops_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_ops_tests COMMAND adi_device_ops_tests)
@@ -717,6 +727,19 @@ add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
+# 305 s healthy in a Debug MSVC build (main, 2 November 2026); CI's --timeout 600 is there to
+# catch a HANG, and twice in one day a slow shared runner ran everything at half speed and
+# tipped this suite over it (#350, #362). Twenty minutes still names a hang; it no longer
+# fails healthy work.
+set_tests_properties(adi_mixer_tests PROPERTIES TIMEOUT 1200)
+
+# Keep the master console renders in their own suite: the combined mixer suite
+# exceeded CI's per-test timeout under MSVC Debug.
+# Both targets use the same fixtures and checks, with no shorter audio renders.
+add_executable(adi_master_summing_tests tests/test_mixer.cpp)
+target_compile_definitions(adi_master_summing_tests PRIVATE ADI_TEST_MASTER_SUMMING=1)
+target_link_libraries(adi_master_summing_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_master_summing_tests COMMAND adi_master_summing_tests)
 
 # ADR-0165: plug-in parameter automation, the engine side.
 add_executable(adi_param_automation_tests tests/test_param_automation.cpp)
@@ -1198,6 +1221,8 @@ add_test(NAME adi_zip_writer_tests COMMAND adi_zip_writer_tests)
 # linux/collect-export: only this assignment's sources and test targets.
 target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp)
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
+target_compile_definitions(adi_media_ops_tests PRIVATE
+    ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
 target_link_libraries(adi_media_ops_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_media_ops_tests COMMAND adi_media_ops_tests)
 add_executable(adi_collect_export_tests tests/test_collect_export.cpp)
@@ -1307,6 +1332,15 @@ add_executable(adi_gain_stage_tests tests/test_gain_stage.cpp)
 target_link_libraries(adi_gain_stage_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_gain_stage_tests COMMAND adi_gain_stage_tests)
 
+# ADR-0071/0205: queued offline master renders, isolated and published without replacement.
+add_executable(adi_render_queue_tests tests/test_render_queue.cpp)
+target_link_libraries(adi_render_queue_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
+
+add_executable(adi_offline_capture_tests tests/test_offline_capture.cpp)
+target_link_libraries(adi_offline_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_offline_capture_tests COMMAND adi_offline_capture_tests)
+
 
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)
@@ -1320,3 +1354,6 @@ file(GLOB ADI_DEVICE_MODULES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/cmak
 foreach(ADI_DEVICE_MODULE IN LISTS ADI_DEVICE_MODULES)
     include("${ADI_DEVICE_MODULE}")
 endforeach()
+
+# Step 7: headless state and the optional JUCE window shell.
+include(src/juce/ui_shell.cmake)

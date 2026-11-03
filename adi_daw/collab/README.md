@@ -248,6 +248,10 @@ subject, say so in your log instead of writing it twice.
 | 0205 | win | `win/adr-0205-visual-story` | the Export Page's AI Visual Story Director and the sharded `.adiviz` telemetry bundle, approved as specified; stem jobs and NI Stems export P1; the Export page with Cubase's and REAPER's abilities; the engine layer copies whoever does it best (precision back to the director); an AI companion noted (director) | used |
 | 0206 | win | `win/adr-0206-artcraft` | interoperability with the storytold ArtCraft suite: a converter plus a client of the control API; the exact time base and a schema reservation P1; the bridge P2; what waits on storytold P3 (director's request; the repositories read first) | used |
 | 0207 | win | `win/lanes` | no orchestrator: three lanes (win, engine, clones) with queues for months; 64-bit end to end; the evening's rulings of 25 October (director) | used |
+| 0208 | win | `win/lanes-5` | five lanes: the window (a Claude seat) and the devices (a Codex seat) get seats of their own; ADI-C joins the clones (director) | used |
+| 0209 | win | `win/adr-0209-mixview` | the Mix View (F4), Gemini's draft handed over by the director, recorded in full with win's critique and nine questions, ruled by him the same day (§10: the four recommendations taken, the name kept, the ★ Reference on Shift+R) | used |
+| 0210 | win | `win/adr-0209-mixview` | nobody waits: the window's needs table heads the engine lane's queue; a seat without the GitHub API pushes and logs; win merges whenever the lanes push (director) | used |
+| 0211 | win | `win/adr-0211-track-colour` | a colour column holds an index into Live's palette (0 to 69), never RGB; NULL is no colour of its own; the theme owns the RGB table (answers the window's N36) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a

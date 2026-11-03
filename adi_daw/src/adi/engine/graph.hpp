@@ -40,6 +40,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -132,6 +133,11 @@ enum class EventFlow : std::uint8_t {
     /// They stop here: an instrument turns notes into audio, and the effects
     /// after it have no use for them.
     Consume,
+    /// They stop here and nothing plays them: a send (ADR-0203 d3) carries a
+    /// track's audio into a return and never its notes. Unlike Consume, the
+    /// node holds no note awake and acknowledges no note-off, because the
+    /// track's notes are still on their way to whatever does play them.
+    Stop,
 };
 
 /// Addressed events generated FOR a node, once per block (ADR-0165): the
@@ -169,8 +175,18 @@ public:
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
 
-    /// Scope-only notification when scheduling skips a silent node. No DSP
-    /// work; a strip uses it to keep watched rings current through silence.
+    /// Opt-in device bypass (ADR-0203 d4). The graph keeps a dry delay at
+    /// graph precision, including while the node is active, and owns its
+    /// history across rebuilds. Bypass never removes the declared latency.
+    [[nodiscard]] virtual bool hasBypass() const noexcept { return false; }
+    [[nodiscard]] virtual bool bypassed() const noexcept { return false; }
+    /// Called only after the graph sampled bypass for this block. Do not
+    /// re-read the switch: a concurrent toggle must not select undelayed dry.
+    virtual void processActive(const NodeIo& io) noexcept { process(io); }
+
+    /// Notification when scheduling skips a silent node. No DSP work; a strip
+    /// uses it to keep watched rings current through silence, and to land a
+    /// gain moved while it sleeps, so it wakes at that gain.
     virtual void silenceTaps(const NodeIo&) noexcept {}
 
     /// Session retains every tap until audio stops, including after close.
@@ -228,6 +244,24 @@ public:
     /// plugin.
     [[nodiscard]] virtual std::int32_t latencySamples() const noexcept { return 0; }
 
+    /// One end of a feedback loop (ADR-0203 d3): the writer a return's send
+    /// into itself ends in, a sink, or the reader that plays it back into the
+    /// return's junction a block later, a source. Its edge is the loop's own
+    /// and never the project's compensation -- not delayed, glided or grown --
+    /// so the loop's trip is the ring's block and the chain's latency alone:
+    /// not the arrival of whatever else feeds the return, nor the return's
+    /// own track delay, which its send reports as latency. Nothing else in the
+    /// project waits for it (the reader's arrival and latency are 0). Message
+    /// thread, asked with `latencySamples`.
+    [[nodiscard]] virtual bool closesFeedback() const noexcept { return false; }
+
+    /// Audio thread, at a swap, before the new graph's first block: this
+    /// feedback loop's reader is in the graph now playing and was not in the
+    /// one played last (ADR-0203 d3), so its loop starts empty rather than
+    /// playing what it held when it left. Only a loop's reader is told
+    /// (`RealizedGraph::loopReaders`). Bounded, allocation-free.
+    virtual void enterPlay() noexcept {}
+
     /// The `devices.always_process` escape hatch (ADR-0043), for a plugin that
     /// reports no tail and then produces one.
     [[nodiscard]] virtual bool alwaysProcess() const noexcept { return false; }
@@ -243,6 +277,14 @@ public:
     /// revises it in its own `prepare` (a CLAP plug-in after a port rescan)
     /// is still handed the width the graph kept, which it takes anyway.
     [[nodiscard]] virtual bool processesDouble() const noexcept { return false; }
+
+    /// The width this build hands the node (ADR-0207 d2): `Float64` when it
+    /// said `processesDouble()` in a graph at 64, `Float32` otherwise. Told
+    /// by the graph at `prepare`, on the message thread, just before the
+    /// node's own `prepare`. A node whose plug-in fixes its sample size when
+    /// it is activated -- VST3's `setupProcessing` -- has to know then;
+    /// every other node takes the width it is handed and ignores this.
+    virtual void willBeHanded(Precision /*width*/) {}
 
     /// Whether note events stop at this node or pass on (ADR-0091).
     ///
@@ -262,6 +304,22 @@ public:
     [[nodiscard]] virtual EventFlow eventFlow() const noexcept { return EventFlow::Through; }
 
     [[nodiscard]] virtual const char* name() const noexcept { return "node"; }
+
+    /// ADR-0092: who this node is across rebuilds, when it is a NEW OBJECT in
+    /// every graph -- a track's clip reader, which the session builds afresh
+    /// at each rebuild. 0, the default, means the object itself: a device, a
+    /// strip, anything the session keeps. A node that names itself is, on the
+    /// same track in the next graph, the same signal, and the line it feeds
+    /// keeps its history.
+    [[nodiscard]] virtual std::uint64_t historyName() const noexcept { return 0; }
+
+    /// ADR-0092: what an edge carries when this node ENDS a track's chain, as
+    /// a rebuild's handover sees it. A ring's history goes only to a line
+    /// carrying the same thing. 0 by default; a summed child's channel half
+    /// (ADR-0174) says its output is a console's -- with drive, hotter than
+    /// the track by the drive, made up after the group's buss -- so turning
+    /// summing on or off never plays one as the other.
+    [[nodiscard]] virtual std::uint32_t wireKind() const noexcept { return 0; }
 
     /// The notes this node has been handed and not released (ADR-0158).
     /// Audio thread; the graph keeps it, and a node never needs to touch it.
@@ -592,7 +650,9 @@ public:
     /// unwritten (`forget`) hands on silence, not what it last had. What it
     /// hands on that is not silence is audio still due out, which keeps this
     /// line's consumer awake until it has played it (`due`).
-    void adoptHistory(const DelayLine& old) noexcept;
+    ///
+    /// True when it copied anything: what a host may count as carried.
+    bool adoptHistory(const DelayLine& old) noexcept;
 
     /// AUDIO THREAD: this edge's segment went by without its ring being
     /// written, and the source may have been playing -- `Graph::accumulate`'s
@@ -788,6 +848,15 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
+    /// Offline owner only, between process calls with no concurrent rendering,
+    /// retap or rebuild. Copies a node's last complete block at graph precision;
+    /// out64 retains double samples and extra destination channels are silence.
+    /// False (and clears output) for an invalid node, stale/unprepared graph or
+    /// a frame count different from the last successful process call.
+    [[nodiscard]] bool copyNodeOutput(NodeId, const AudioIo&) const noexcept;
+    /// Cached arrival + node latency, at the same output point. No device call.
+    [[nodiscard]] std::optional<std::int64_t> outputLatencyOf(NodeId) const noexcept;
+
     // --- what happened -----------------------------------------------------
 
     [[nodiscard]] bool ok() const noexcept { return ok_; }
@@ -935,9 +1004,17 @@ public:
     /// Sorting and random-number generation happen here, never in process().
     void permuteLevelsForTest(std::uint32_t seed);
 
+    /// Audio-thread handover, before the old graph is retired. Device nodes
+    /// retain their identity across rebuilds; the matching table is sorted
+    /// during prepare, so this walk allocates nothing.
+    std::int32_t adoptBypassHistory(const Graph& old) noexcept;
+
 private:
+    void writeNodeOutput(NodeId, const AudioIo&) const noexcept;
     struct Slot {
         Node* node = nullptr;
+        bool hasBypass = false;
+        DelayLine dryDelay;
         std::vector<NodeId> inputs;
         std::vector<NodeId> sidechains;
         std::vector<DelayLine> inDelays;     ///< parallel to `inputs`
@@ -988,6 +1065,8 @@ private:
         std::uint64_t dozeGlides = kLinesUnchecked;
     };
     static constexpr std::uint64_t kLinesUnchecked = ~std::uint64_t{0};
+
+    std::vector<std::pair<Node*, NodeId>> bypassNodes_;
 
     bool topoSort();
 
@@ -1112,6 +1191,7 @@ private:
     std::int32_t latencyHeadroom_ = 8192;
     bool ok_ = false;
     bool prepared_ = false;
+    std::int32_t renderedFrames_ = 0;
     bool reverseWithinLevel_ = false;
     std::string error_;
     GraphStats stats_;
