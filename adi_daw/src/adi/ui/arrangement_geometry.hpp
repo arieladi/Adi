@@ -151,6 +151,8 @@ struct ArrangementGeometry {
     bool inSelection(const SnapshotReader &reader, std::int64_t id) const noexcept {
         if (id == 0)
             return false;
+        if (std::find(selection.picked.begin(), selection.picked.end(), id) != selection.picked.end())
+            return true;
         if (selection.toTrack == 0 || selection.toTrack == selection.track)
             return id == selection.track;
         const auto all = rows(reader);

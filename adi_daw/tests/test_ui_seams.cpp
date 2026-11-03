@@ -27,6 +27,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
@@ -642,6 +643,40 @@ void groupAndUngroupAsBatches() {
     check(ui::canGroup(view.current()->tracks, 4) && !ui::canGroup(view.current()->tracks, 1) &&
               ui::canUngroup(view.current()->tracks, 6) && !ui::canUngroup(view.current()->tracks, 4),
           "what the menu offers follows the same rules");
+
+    // Live's Group Tracks on several selected tracks (manual 18.3): Kick and the group after it into
+    // one new group, in their order; Snare, selected with its group, goes with it.
+    auto several = ui::groupTracks(view.current()->tracks, {2, 6, 3});
+    check(several.refusal.empty() && several.select == 7 && sub.submit(std::move(several.ops)).ok &&
+              order() == Order{{7, 0}, {2, 1}, {6, 1}, {3, 2}, {4, 0}, {1, 0}} && sub.nextUndo()->label == "Group Tracks",
+          "Kick and the group holding Snare grouped together, one step; Snare goes with its group");
+    check(ui::groupTracks(view.current()->tracks, {3, 4}).refusal == "Select tracks in one group to group them together.",
+          "tracks in different groups are refused, with the reason");
+    check(sub.undo().ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}}, "undo puts them back");
+
+    // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
+    OpRequest solo;
+    solo.opType = "track.setSolo";
+    solo.payload = {{"id", 3}, {"soloed", true}};
+    solo.label = "Solo Track";
+    check(sub.submit(std::move(solo)).ok && ui::holdsSoloed(view.current()->tracks, 6) &&
+              !ui::holdsSoloed(view.current()->tracks, 3) && !ui::holdsSoloed(view.current()->tracks, 4),
+          "the group holding soloed Snare holds a soloed track; Snare and Bass hold none");
+    check(sub.undo().ok && !ui::holdsSoloed(view.current()->tracks, 6), "unsoloed, the group holds none");
+
+    // Live's colour chooser (manual 2.3.2): one op per track whose colour differs; what a group holds.
+    auto coloured = ui::colourTracks(view.current()->tracks, {2, 6}, 5, "Recolour Track");
+    check(coloured.refusal.empty() && coloured.ops.size() == 2 && coloured.ops[0].opType == "track.setColor" &&
+              coloured.ops[0].payload["color"] == 5 && coloured.ops[1].payload["id"] == 6,
+          "Kick and the group coloured 5: one op each");
+    check(sub.submit(std::move(coloured.ops)).ok &&
+              ui::colourTracks(view.current()->tracks, {2, 6}, 5, "Recolour Track").ops.empty(),
+          "coloured again with the same colour, nothing changes");
+    check(ui::colourTracks(view.current()->tracks, {}, 5, "Recolour Track").refusal == "Select a track to colour.",
+          "with nothing selected, the reason");
+    check(ui::heldBy(view.current()->tracks, 6) == std::vector<std::int64_t>{3} && ui::heldBy(view.current()->tracks, 2).empty(),
+          "the group holds Snare; Kick holds nothing");
+    check(sub.undo().ok, "undo");
 }
 
 void sendsAsBatches() {
@@ -740,6 +775,36 @@ void sendsAsBatches() {
     auto loop = ui::enableSend(view.current()->sends, 10, 10, true);
     check(sub.submit(std::move(loop.ops)).ok && ui::findSend(view.current()->sends, 10, 10) != nullptr,
           "A may send to itself (Live's feedback loop)");
+
+    // A return's Pre/Post (ADR-0203 d3): one switch on the return, every send into it moved.
+    check(!ui::returnPre(view.current()->sends, 10) && !ui::returnPre(view.current()->sends, 12),
+          "a return reads Post; one no send reaches reads Post too");
+    auto pre = ui::setReturnPre(view.current()->sends, 10, true);
+    check(pre.refusal.empty() && pre.ops.size() == 2 && pre.ops[0].opType == "routing.setPreFader" &&
+              pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
+              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 2 &&
+              ui::returnPre(view.current()->sends, 10) && ui::findSend(view.current()->sends, 2, 10)->preFader,
+          "Pre moves both sends into A before the fader, one undo step");
+    auto newPre = ui::setSend(view.current()->sends, 3, 10, -9);
+    check(newPre.ops.size() == 3 && newPre.ops[1].opType == "routing.setPreFader" && sub.submit(std::move(newPre.ops)).ok &&
+              ui::findSend(view.current()->sends, 3, 10)->preFader && ui::returnPre(view.current()->sends, 10),
+          "a new send into a Pre return taps before the fader too");
+    check(ui::setReturnPre(view.current()->sends, 12, true).refusal ==
+              "No track sends to this return yet, so there is nothing to switch.",
+          "a return no send reaches has nothing to switch, and says so");
+    check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->sends, 10), "undo puts A back to Post");
+
+    // Enable All Sends on B Delay (Live 12 §18.4): a row to A and to itself, each with its own id, fully
+    // down, one step; again, nothing to do.
+    const std::vector<std::int64_t> both{10, 11};
+    auto all = ui::enableAllSends(view.current()->sends, 11, both);
+    check(all.refusal.empty() && all.ops.size() == 4 && all.ops[0].opType == "routing.connect" &&
+              all.ops[2].opType == "routing.connect" && all.ops[2].payload["id"] != all.ops[0].payload["id"] &&
+              sub.submit(std::move(all.ops)).ok && sub.nextUndo()->label == "Enable All Sends" &&
+              ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr,
+          "Enable All Sends: B to A and B to itself, two new rows, one undo step");
+    check(ui::enableAllSends(view.current()->sends, 11, both).refusal == "Every send of this return is on already.",
+          "again: every send is on already");
 }
 
 void audioDropAsOneStep() {
@@ -901,6 +966,17 @@ void rangeEditsAsBatches() {
         check(session.select(chosen, why), "a selection across tracks is kept");
     }
     check(ui::SessionState(*store).selection().toTrack == 3, "and read back with its far track");
+    // The tracks picked with Ctrl/Cmd+click are kept too, so an undo puts them back.
+    {
+        ui::SessionState session(*store);
+        ui::Selection chosen;
+        chosen.track = 1;
+        chosen.picked = {3, 4};
+        std::string why;
+        check(session.select(chosen, why), "a selection with picked tracks is kept");
+    }
+    check(ui::SessionState(*store).selection().picked == std::vector<std::int64_t>{3, 4},
+          "and read back with them");
 }
 
 void returnsStandBeforeMain() {
@@ -990,6 +1066,99 @@ void referenceTapAndHold() {
     check(!ref.on(), "latched, then held and let go: off");
 }
 
+// Live's MIDI track: no audio mixer until it holds an instrument (look-live11 difference row 3); what
+// it holds decides, not its kind's hint alone (ADR-0045).
+void midiTrackMixer() {
+    section("midi track mixer");
+    struct Dev {
+        std::int64_t track;
+        bool instrument;
+    };
+    engine::TrackNode midiTrack, audioTrack, instrumentTrack;
+    midiTrack.id = 1;
+    midiTrack.kind = "midi";
+    audioTrack.id = 2;
+    audioTrack.kind = "audio";
+    instrumentTrack.id = 3;
+    instrumentTrack.kind = "instrument";
+    const std::vector<Dev> nothing, effect{{1, false}}, synth{{1, true}, {2, false}};
+    check(ui::isMidiTrack(midiTrack) && ui::isMidiTrack(instrumentTrack) && !ui::isMidiTrack(audioTrack),
+          "a midi or instrument track is a MIDI track; an audio one is not");
+    check(!ui::hasAudioMixer(midiTrack, &nothing) && !ui::hasAudioMixer(midiTrack, &effect) &&
+              !ui::hasAudioMixer(midiTrack, static_cast<const std::vector<Dev> *>(nullptr)),
+          "a MIDI track holding no instrument has no audio mixer");
+    check(ui::hasAudioMixer(midiTrack, &synth) && !ui::hasAudioMixer(instrumentTrack, &synth),
+          "an instrument on it gives it one; an instrument on another track does not");
+    check(ui::hasAudioMixer(audioTrack, &nothing), "an audio track always has one");
+    // A clip's drag across tracks (Live 12 manual 6.7): MIDI to MIDI, audio to audio; never onto a
+    // group, a return or Main.
+    engine::TrackNode group, ret, main;
+    group.kind = "group";
+    ret.kind = "return";
+    main.kind = "master";
+    check(ui::canTakeClip(instrumentTrack, midiTrack) && ui::canTakeClip(midiTrack, midiTrack) &&
+              ui::canTakeClip(audioTrack, audioTrack),
+          "a clip moves among MIDI tracks, or among audio tracks");
+    check(!ui::canTakeClip(audioTrack, midiTrack) && !ui::canTakeClip(midiTrack, audioTrack),
+          "never from a MIDI track onto an audio one, or back");
+    check(!ui::canTakeClip(group, audioTrack) && !ui::canTakeClip(ret, audioTrack) && !ui::canTakeClip(main, midiTrack),
+          "never onto a group, a return or Main");
+}
+
+// Live's Solo rules (manual 18.1, §42.19): Exclusive Solo, Ctrl/Cmd for several, the selected tracks
+// together; Main has no Solo.
+void soloRules() {
+    section("solo rules");
+    ui::SnapshotTracks tracks;
+    auto add = [&tracks](std::int64_t id, const char *kind, bool soloed) {
+        auto t = std::make_shared<engine::TrackNode>();
+        t->id = id;
+        t->kind = kind;
+        t->soloed = soloed;
+        tracks.push_back(t);
+    };
+    add(1, "master", false);
+    add(2, "audio", true);
+    add(3, "audio", false);
+    add(4, "midi", false);
+    auto ops = [](const ui::TrackEdit &e) {
+        std::vector<std::pair<std::int64_t, bool>> out;
+        for (const auto &o : e.ops)
+            out.emplace_back(o.payload["id"].get<std::int64_t>(), o.payload["soloed"].get<bool>());
+        return out;
+    };
+    using Ops = std::vector<std::pair<std::int64_t, bool>>;
+    check(ops(ui::soloTracks(tracks, 3, {3}, true, false)) == Ops{{2, false}, {3, true}},
+          "exclusive: soloing Snare unsolos Kick, one batch");
+    check(ops(ui::soloTracks(tracks, 3, {3}, true, true)) == Ops{{3, true}}, "Ctrl/Cmd adds Snare, Kick stays");
+    check(ops(ui::soloTracks(tracks, 3, {3}, false, false)) == Ops{{3, true}}, "Exclusive Solo off: Snare joins Kick");
+    check(ops(ui::soloTracks(tracks, 3, {3, 4}, true, false)) == Ops{{2, false}, {3, true}, {4, true}},
+          "with Snare and Bass selected, both solo together, Kick unsoloed");
+    check(ops(ui::soloTracks(tracks, 2, {3, 4}, true, false)) == Ops{{2, false}},
+          "Kick, soloed and not selected, unsolos alone");
+    check(ui::soloTracks(tracks, 1, {}, true, false).refusal == "Main has no Solo." &&
+              ui::soloTracks(tracks, 9, {}, true, false).refusal == "Select a track to solo.",
+          "Main and a missing track are refused, with the reason");
+    check(ui::soloTracks(tracks, 3, {3}, true, false).ops.front().label == "Solo Track" &&
+              ui::soloTracks(tracks, 2, {}, true, false).ops.front().label == "Unsolo Track",
+          "named Solo Track or Unsolo Track, as before");
+
+    // Live's Track Activator (manual 18.1): the selected tracks together; Main has none.
+    auto mutes = [](const ui::TrackEdit &e) {
+        std::vector<std::pair<std::int64_t, bool>> out;
+        for (const auto &o : e.ops)
+            out.emplace_back(o.payload["id"].get<std::int64_t>(), o.payload["muted"].get<bool>());
+        return out;
+    };
+    check(mutes(ui::activateTracks(tracks, 3, {3})) == Ops{{3, true}}, "Snare deactivated alone");
+    check(mutes(ui::activateTracks(tracks, 3, {2, 3, 4})) == Ops{{2, true}, {3, true}, {4, true}},
+          "with Kick, Snare and Bass selected, all three together");
+    check(mutes(ui::activateTracks(tracks, 3, {2, 4})) == Ops{{3, true}}, "Snare, not among the selected, alone");
+    check(ui::activateTracks(tracks, 1, {}).refusal == "Main has no Track Activator." &&
+              ui::activateTracks(tracks, 3, {3}).ops.front().label == "Deactivate Track",
+          "Main refused; the step named as before");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -1014,6 +1183,8 @@ int main() {
     audioDropAsOneStep();
     rangeEditsAsBatches();
     referenceTapAndHold();
+    midiTrackMixer();
+    soloRules();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

@@ -752,6 +752,120 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.command(AppCommands::Undo), "and put back");
         refresh();
         check(order() == tree, "the tree as it was");
+        // Several tracks selected (Shift+click on the headers reaches across them): Ctrl/Cmd+G groups
+        // them all into one group at the first one's place, in their order (manual 18.3).
+        lanes.selection.track = 14;
+        lanes.selection.toTrack = 15;
+        check(root.keyPressed(juce::KeyPress('g', cmd, 0)), "Ctrl/Cmd+G on Bass and Synths");
+        refresh();
+        const auto *pair = trackNamed(19);
+        check(order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {11, 1}, {12, 1}, {13, 0}, {19, 1},
+                                                                               {14, 2}, {15, 2}, {16, 1}, {17, 2}, {18, 2},
+                                                                               {1, 0}} &&
+                  pair != nullptr && pair->parent == 13 && lanes.selection.track == 19 && lanes.selection.toTrack == 0 &&
+                  root.undoTitle(false) == "Undo Group Tracks",
+              "Bass and Synths in one new group where Bass stood in Body, the group selected, one step");
+        render("adi-group-selected.png");
+        check(root.command(AppCommands::Undo), "undo");
+        refresh();
+        check(order() == tree, "and the tree is as it was");
+        // Live's group rows (manual 18.3): a group records nothing, so its In/Out shows its output
+        // only; a grouped track's Audio To is its group, shown as Live's "Group".
+        auto outputOf = [&root](std::int64_t id) -> std::string {
+            for (const auto &strip : root.mixer.strips())
+                if (strip->isVisible() && strip->track() == id)
+                    return strip->outputLabel();
+            return {};
+        };
+        check(outputOf(10) == "Master" && outputOf(11) == "Group" && outputOf(16) == "Group" && outputOf(17) == "Group" &&
+                  outputOf(1) == "1/2",
+              "Drums plays to Master; Clap/Snare, Fx And Hits (in Body) and Rises (in Fx And Hits) to their group; Main to 1/2");
+        // Live's group strip (manual 18.3, the figure of a group's strip): no Arm, and its Solo half
+        // coloured while a track inside it is soloed.
+        auto stripOf = [&root](std::int64_t id) -> MixerStrip * {
+            for (const auto &strip : root.mixer.strips())
+                if (strip->isVisible() && strip->track() == id)
+                    return strip.get();
+            return nullptr;
+        };
+        auto halfLit = [&stripOf](std::int64_t id) {
+            const auto *strip = stripOf(id);
+            return strip != nullptr && static_cast<bool>(strip->solo.getProperties()["live.half"]) &&
+                   !strip->solo.getToggleState();
+        };
+        check(stripOf(10) != nullptr && stripOf(11) != nullptr && !stripOf(10)->arm.isVisible() && stripOf(11)->arm.isVisible(),
+              "Drums, a group, has no Arm; Clap/Snare inside it has");
+        check(root.submitEdit("track.setSolo", {{"id", 11}, {"soloed", true}}, "Solo Track"), "Clap/Snare soloed");
+        refresh();
+        check(halfLit(10) && !halfLit(13) && !halfLit(11), "Drums' Solo is half coloured; Body's and Clap/Snare's are not");
+        render("adi-group-solo.png");
+        check(root.command(AppCommands::Undo), "undo");
+        refresh();
+        check(!halfLit(10), "unsoloed, Drums' Solo is whole again");
+        // Live's colour chooser at the foot of a track's menu (Live 12 manual 2.3.2): the palette's
+        // measured row; on a group, Assign Track Color to Grouped Tracks and Clips (manual 18.3).
+        auto headerItems = [&root] {
+            juce::StringArray out;
+            const auto menu = root.arrangement.headerMenu();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (!it.getItem().isSeparator)
+                    out.add(it.getItem().text + (it.getItem().customComponent != nullptr ? " (swatches)" : ""));
+            return out;
+        };
+        auto colourOf = [&trackNamed](std::int64_t id) -> std::int64_t {
+            const auto *t = trackNamed(id);
+            return t != nullptr && t->color ? *t->color : -1;
+        };
+        lanes.selection.track = 10;
+        lanes.selection.toTrack = 0;
+        check(headerItems().contains("Assign Track Color to Grouped Tracks and Clips") &&
+                  headerItems()[headerItems().size() - 1] == "Colour (swatches)",
+              "a group's menu ends with Assign Track Color to Grouped Tracks and Clips, then the colour chooser");
+        lanes.selection.track = 11;
+        check(!headerItems().contains("Assign Track Color to Grouped Tracks and Clips") &&
+                  headerItems().contains("Colour (swatches)"),
+              "a track's has the chooser only");
+        check(root.arrangement.recolour(5), "a swatch picked on Clap/Snare");
+        refresh();
+        check(colourOf(11) == 5 && root.undoTitle(false) == "Undo Recolour Track", "Clap/Snare takes colour 5, one step");
+        render("adi-colour-chosen.png");
+        // The chooser itself, drawn as the menu draws it, for the picture.
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+            const auto menu = root.arrangement.headerMenu();
+            for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                if (auto *chooser = it.getItem().customComponent.get()) {
+                    int w = 0, h = 0;
+                    chooser->getIdealSize(w, h);
+                    chooser->setSize(w, h);
+                    juce::Image image(juce::Image::ARGB, 4 * w, 4 * h, true, juce::SoftwareImageType{});
+                    {
+                        juce::Graphics g(image);
+                        g.addTransform(juce::AffineTransform::scale(4.f));
+                        g.fillAll(juce::Colour(0xff2b2b2b));
+                        chooser->paintEntireComponent(g, true);
+                    }
+                    const auto file = juce::File(pictures).getChildFile("adi-colour-chooser.png");
+                    file.deleteFile();
+                    if (auto stream = file.createOutputStream())
+                        juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+                }
+        }
+        lanes.selection.toTrack = 12;
+        check(root.arrangement.recolour(7), "a swatch picked on Clap/Snare and Hats & Percs");
+        refresh();
+        check(colourOf(11) == 7 && colourOf(12) == 7 && root.undoTitle(false) == "Undo Recolour Track",
+              "every selected track takes it, one step");
+        lanes.selection.track = 10;
+        lanes.selection.toTrack = 0;
+        check(root.arrangement.recolour(3) && root.arrangement.assignGroupColour(), "Drums coloured, then its colour assigned");
+        refresh();
+        check(colourOf(10) == 3 && colourOf(11) == 3 && colourOf(12) == 3 &&
+                  root.undoTitle(false) == "Undo Assign Track Color to Grouped Tracks and Clips",
+              "the tracks Drums holds take its colour, one step named as Live's");
+        for (int i = 0; i < 4; ++i)
+            root.command(AppCommands::Undo);
+        refresh();
+        check(colourOf(10) != 3 && colourOf(11) != 7 && colourOf(12) != 7, "four undos put the colours back");
     }
     // The Mix View's STACK lists every channel the window's project view shows: the group chosen,
     // what it holds, and Main (ADR-0209 d11: "every channel of the selected group or filter").
@@ -871,6 +985,29 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     auto *main = rowOf(root.mixer, 7);
     auto *reverb = rowOf(root.mixer, 5);
     check(main != nullptr && main->sendKnobs().empty(), "Main has no sends");
+    // Live's MIDI tracks with no instrument (look-live11 difference row 3): their switches, no volume,
+    // pan or sends; ADI-Q and ADI-L on the row where volume and pan would be.
+    auto *firstMidi = rowOf(root.mixer, 1);
+    check(firstMidi != nullptr && firstMidi->isMidi() && !firstMidi->hasAudio() && firstMidi->active.isVisible() &&
+              !firstMidi->volume.isVisible() && !firstMidi->pan.isVisible() && firstMidi->sendKnobs().empty() &&
+              firstMidi->eq.getY() == 20,
+          "1 MIDI: its switches, no volume, pan or sends; ADI-Q and ADI-L on the second row");
+    check(!audio->isMidi() && audio->hasAudio() && audio->volume.isVisible(), "3 Audio keeps its mixer");
+    // An instrument on 2 MIDI gives it volume, pan and a send per return.
+    auto withSynth = std::make_shared<ParameterPublication>();
+    DevicePanelData synth;
+    synth.id = 31;
+    synth.track = 2;
+    synth.name = "Synth";
+    synth.instrument = true;
+    withSynth->push_back(synth);
+    root.devices.publication = [withSynth] { return withSynth; };
+    root.frame();
+    auto *secondMidi = rowOf(root.mixer, 2);
+    check(secondMidi != nullptr && secondMidi->isMidi() && secondMidi->hasAudio() && secondMidi->volume.isVisible() &&
+              secondMidi->sendKnobs().size() == 2 && !firstMidi->hasAudio(),
+          "an instrument on 2 MIDI gives it volume, pan and its sends; 1 MIDI stays without");
+    render("adi-midi-rows.png");
     check(reverb != nullptr && reverb->sendKnobs().size() == 2 && !reverb->sendOn(0) && !reverb->sendOn(1) &&
               !takesClicks(*reverb->sendKnobs()[1]) && reverb->sendKnobs()[1]->getAlpha() < 1.f &&
               audio->sendOn(0) && takesClicks(a),
@@ -903,6 +1040,36 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     reverb->enableSend(1, true);
     check(root.error() == "The send is on already.", "enabling it again only says so");
 
+    // Enable All Sends on B Delay (§18.4): both of its sends on, A and itself, fully down, one step.
+    auto *delay = rowOf(root.mixer, 6);
+    check(delay != nullptr && !delay->sendOn(0) && !delay->sendOn(1), "B Delay's sends start off");
+    if (delay != nullptr) {
+        delay->enableAllSends();
+        root.frame();
+        check(delay->sendOn(0) && delay->sendOn(1) && findSend(root.reader().sends(), 6, 5) != nullptr &&
+                  findSend(root.reader().sends(), 6, 6) != nullptr && submitter.nextUndo()->label == "Enable All Sends",
+              "Enable All Sends switches every send of B Delay on, one undo step");
+        render("adi-enable-all.png");
+        delay->enableAllSends();
+        check(root.error() == "Every send of this return is on already.", "and again only says so");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+    }
+    // Live's return and Main rows: a return's activator shows its letter and its Pre/Post sits where
+    // a track has Arm; Main has no activator, Solo or Arm, its volume where the activator is.
+    check(reverb->kind() == "return" && reverb->active.getButtonText() == "A" && reverb->prePost.isVisible() &&
+              !reverb->arm.isVisible() && reverb->prePost.getButtonText() == "Post" && reverb->prePost.getToggleState(),
+          "A Reverb's row: \"A\", Solo, and Post lit where Arm is");
+    check(main->kind() == "master" && !main->active.isVisible() && !main->solo.isVisible() && !main->arm.isVisible() &&
+              !main->prePost.isVisible() && main->volume.getY() == 3,
+          "Main's row: no activator, Solo or Arm; its volume on the first row");
+    // Pre moves every send into A before the fader (3 Audio's), one undo step.
+    reverb->prePost.onClick();
+    root.frame();
+    check(reverb->prePost.getButtonText() == "Pre" && !reverb->prePost.getToggleState() &&
+              findSend(root.reader().sends(), 3, 5)->preFader && submitter.nextUndo()->label == "Change Pre/Post",
+          "Pre/Post thrown: 3 Audio's send A taps before the fader");
+
     render("adi-sends-rows.png");
     // The Mixer View: Live's knobs under "Sends", A on the left and B lower on the right; the mixer
     // under them.
@@ -926,6 +1093,18 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(mainColumn != nullptr && mainColumn->sendKnobs().empty() && mainColumn->sendsShown() == 2 &&
                   mainColumn->volume.getY() == column->volume.getY(),
               "Main has no knobs, but keeps the Sends section's room: the mixers line up");
+        // Live's Mixer: Main's Sends section holds each return's Pre/Post; Main has no activator.
+        if (mainColumn != nullptr && mainColumn->returnSwitches().size() == 2) {
+            auto &aSwitch = *mainColumn->returnSwitches()[0];
+            check(aSwitch.getButtonText() == "Pre" && mainColumn->returnSwitches()[1]->getButtonText() == "Post" &&
+                      !mainColumn->active.isVisible(),
+                  "Main's strip shows A's Pre and B's Post where a track has its knobs");
+            aSwitch.onClick();
+            root.frame();
+            check(aSwitch.getButtonText() == "Post" && !findSend(root.reader().sends(), 3, 5)->preFader,
+                  "and A's switch, thrown there, moves the send back after the fader");
+        } else
+            check(false, "Main's strip has a Pre/Post switch per return");
     }
     // A short Mixer View keeps the mixer's room and leaves out the sends that do not fit.
     root.resizeMixerView(200);
@@ -939,7 +1118,198 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.mark(DirtySet::All);
     root.frame();
     render("adi-sends.png");
+    // Hide/Show Sends (§42.1, Ctrl/Cmd+Alt+S): the sends out of the track controls and the Mixer
+    // View; ADI-Q and ADI-L move up under volume and pan, the mixer to the strip's head.
+    const auto sendsKey = juce::KeyPress('s', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0);
+    check(root.keyPressed(sendsKey) && !root.state().sends, "Ctrl/Cmd+Alt+S hides the sends");
+    column = rowOf(root.mixerView, 3);
+    auto *mainStrip = rowOf(root.mixerView, 7);
+    check(!a.isVisible() && !b.isVisible() && audio->eq.getY() == 37 && audio->limiter.getY() == 37,
+          "the row's -inf boxes go; ADI-Q and ADI-L take their row");
+    check(column != nullptr && column->sendsShown() == 0 && !column->sendKnobs()[0]->isVisible() &&
+              column->volume.getY() == 40 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
+              !mainStrip->returnSwitches()[0]->isVisible(),
+          "the Mixer View strips lose their Sends section, Main's Pre/Post switches with it");
+    render("adi-sends-hidden.png");
+    check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && audio->eq.getY() == 54 &&
+              column->sendsShown() == 2 && column->sendKnobs()[0]->isVisible(),
+          "and again shows them");
+    // Live 12's Mixer View Control options (manual 18.1): In/Out, Sends, Volume, Track Options,
+    // Crossfader, Performance Impact, then Return Tracks; what ADI has not built is dimmed.
+    auto mixerOptions = [&root] {
+        juce::StringArray out;
+        const auto menu = root.mixerOptionsMenu();
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (!it.getItem().isSeparator)
+                out.add(it.getItem().text + (it.getItem().isTicked ? " *" : "") + (it.getItem().isEnabled ? "" : " -"));
+        return out.joinIntoString(", ");
+    };
+    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options -, Crossfader -, Performance Impact -, Return Tracks *",
+          "the Mixer View's options in Live's order, In/Out off");
+    // Its In/Out: Live 12's section under ADI's slots and over the sends; as many sends as still
+    // leave the mixer its room, then the rest when the strip is taller.
+    check(root.command(AppCommands::ToggleMixerInOut) && root.state().mixerInOut && mixerOptions().startsWith("In/Out *"),
+          "the Mixer's In/Out shows, and its item is ticked");
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && column->showsMixerInOut() && column->sendsShown() < 2 &&
+              (column->sendsShown() == 0 || column->sendKnobs()[0]->getY() == 40 + MixerStrip::kInOutHeight + 6),
+          "at 320 points the strip shows its In/Out over the sends, and leaves out the sends that do not fit");
+    root.resizeMixerView(440);
+    root.mark(DirtySet::All);
+    root.frame();
+    column = rowOf(root.mixerView, 3);
+    mainStrip = rowOf(root.mixerView, 7);
+    check(column != nullptr && column->showsMixerInOut() && column->sendsShown() == 2 &&
+              column->volume.getY() == 40 + MixerStrip::kInOutHeight + 72 + 6 && mainStrip != nullptr &&
+              mainStrip->showsMixerInOut() && mainStrip->returnSwitches()[0]->isVisible(),
+          "taller, both sends come back under it, Main's Pre/Post switches with them");
+    render("adi-mixer-inout.png");
+    root.resizeMixerView(200);
+    root.mark(DirtySet::All);
+    root.frame();
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && !column->showsMixerInOut(), "short, the strip leaves its In/Out out to keep the mixer");
+    check(root.command(AppCommands::ToggleMixerInOut) && !root.state().mixerInOut, "and the In/Out hides again");
+    root.resizeMixerView(320);
+    root.mark(DirtySet::All);
+    root.frame();
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+    // Hide/Show Return Tracks (§18.4, Ctrl/Cmd+Alt+R): the returns out of the lanes and the controls.
+    auto shownLanes = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto row : root.arrangement.geometry.rows(root.reader()))
+            if (root.arrangement.geometry.shown(row.track->id))
+                out.push_back(row.track->id);
+        return out;
+    };
+    check(root.keyPressed(juce::KeyPress('r', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)) &&
+              root.state().hideReturns && shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 7},
+          "Ctrl/Cmd+Alt+R hides the returns");
+    root.frame();
+    render("adi-returns-hidden.png");
+    // Insert Return Track (§18.4, Ctrl/Cmd+Alt+T): C Return after B Delay, selected, the returns shown
+    // again; every track gets a send to it.
+    check(root.keyPressed(juce::KeyPress('t', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),
+          "Ctrl/Cmd+Alt+T");
+    root.frame();
+    const auto *inserted = root.reader().findTrack(8);
+    check(inserted != nullptr && inserted->kind == "return" && inserted->name == "C Return" && !root.state().hideReturns &&
+              shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 5, 6, 8, 7} &&
+              root.arrangement.geometry.selection.track == 8 && submitter.nextUndo()->label == "Insert Return Track",
+          "Insert Return Track makes C Return after the others, selected, the returns shown again");
+    if (auto *third = rowOf(root.mixer, 3))
+        check(third->sendKnobs().size() == 3 && third->sendsTo(2) == 8, "and every track has a send to it");
+    render("adi-return-inserted.png");
+    // Live's Solo rules (manual 18.1, §42.19): S solos the selected track; a Solo switch solos its
+    // track and unsolos the others (Exclusive Solo, on by default); Ctrl/Cmd adds.
+    auto soloed = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->soloed)
+                out.push_back(t->id);
+        return out;
+    };
+    // The track controls realise rows for the lanes on screen only: 1 and 2 MIDI here.
+    root.arrangement.geometry.selection.track = 1;
+    root.arrangement.geometry.selection.toTrack = 0;
+    check(root.keyPressed(juce::KeyPress('s', 0, 0)), "S");
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{1} && submitter.nextUndo()->label == "Solo Track",
+          "S solos the selected track, one step");
+    auto *second = rowOf(root.mixer, 2);
+    check(second != nullptr, "2 MIDI's row is on screen");
+    if (second != nullptr)
+        second->solo.onClick();
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{2} && submitter.nextUndo()->opCount == 2,
+          "2 MIDI's Solo solos it and unsolos 1 MIDI, one step");
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys(juce::ModifierKeys::commandModifier);
+    if (auto *first = rowOf(root.mixer, 1))
+        first->solo.onClick();
+    juce::ModifierKeys::currentModifiers = juce::ModifierKeys();
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{1, 2}, "Ctrl/Cmd+click adds 1 MIDI");
+    render("adi-solo-rules.png");
+    check(root.keyPressed(juce::KeyPress('s', 0, 0)), "S again");
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{2}, "S on the soloed, selected 1 MIDI unsolos it alone");
+    for (int i = 0; i < 4; ++i)
+        root.command(AppCommands::Undo);
+    root.frame();
+    check(soloed().empty(), "four undos: nothing soloed");
+    // Live's Track Activator rules (manual 18.1, §42.19): the selected tracks together; 0 on the
+    // selection; F1…F8 the first eight tracks, each alone.
+    auto muted = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->muted)
+                out.push_back(t->id);
+        return out;
+    };
+    root.arrangement.geometry.selection.track = 1;
+    root.arrangement.geometry.selection.toTrack = 2;
+    if (auto *first = rowOf(root.mixer, 1))
+        first->active.onClick();
+    root.frame();
+    check(muted() == std::vector<std::int64_t>{1, 2} && submitter.nextUndo()->label == "Deactivate Track" &&
+              submitter.nextUndo()->opCount == 2,
+          "1 MIDI's activator, with 1 and 2 MIDI selected, deactivates both, one step");
+    check(root.keyPressed(juce::KeyPress(juce::KeyPress::F3Key, 0, 0)), "F3");
+    root.frame();
+    check(muted() == std::vector<std::int64_t>{1, 2, 3}, "F3 deactivates the third track, alone");
+    render("adi-activators.png");
+    root.arrangement.geometry.selection.toTrack = 0;
+    check(root.keyPressed(juce::KeyPress('0', 0, 0)), "0");
+    root.frame();
+    check(muted() == std::vector<std::int64_t>{2, 3} && submitter.nextUndo()->label == "Activate Track",
+          "0 activates the selected 1 MIDI");
+    for (int i = 0; i < 3; ++i)
+        root.command(AppCommands::Undo);
+    root.frame();
+    check(muted().empty(), "three undos: every track active");
+    // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
+    check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "the Device View hidden");
+    auto &headers = root.arrangement.headers;
+    const juce::Point<float> title{20.f, static_cast<float>(laneTop(root, 2) + 8)};
+    headers.mouseDown(pressAt(headers, title));
+    headers.mouseUp(pressAt(headers, title));
+    headers.mouseDoubleClick(pressAt(headers, title));
+    check(root.state().docked && root.arrangement.geometry.selection.track == 2,
+          "a double-click on 2 MIDI's title selects it and brings up the Device View");
+    render("adi-title-double-click.png");
+    // The Mixer View strip's title does the same.
+    check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "hidden again");
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View opens");
+    root.resizeMixerView(320);
+    root.mark(DirtySet::All);
+    root.frame();
+    if (auto *strip = rowOf(root.mixerView, 3)) {
+        strip->mouseDoubleClick(pressAt(*strip, {20.f, 8.f}));
+        check(root.state().docked && root.arrangement.geometry.selection.track == 3,
+              "a double-click on 3 Audio's strip title selects it and brings up the Device View");
+        check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "hidden once more");
+        strip->mouseDoubleClick(pressAt(*strip, {20.f, 200.f}));
+        check(!root.state().docked, "below the title, a double-click leaves the Device View hidden");
+        check(root.command(AppCommands::ToggleDeviceView) && root.state().docked, "and shown again");
+    } else
+        check(false, "3 Audio's Mixer View strip");
+    check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+    // Live's selectors at the strip's foot repeat the View menu: R hides the returns, I-O the In/Out;
+    // each is lit while its part shows.
+    check(root.strip.returns.getToggleState() && root.strip.inOut.getToggleState() &&
+              root.strip.mixer.getToggleState() && !root.strip.delay.getToggleState(),
+          "I-O, R and M lit, D not, as Live's");
+    root.strip.returns.onClick();
+    check(root.state().hideReturns && !root.strip.returns.getToggleState() &&
+              shownLanes() == std::vector<std::int64_t>{1, 2, 3, 4, 7},
+          "R hides the returns and goes dark");
+    root.strip.returns.onClick();
+    root.strip.inOut.onClick();
+    check(!root.state().hideReturns && root.strip.returns.getToggleState() && !root.state().inOut &&
+              !root.strip.inOut.getToggleState() && !rowOf(root.mixer, 1)->showsInOut(),
+          "R shows them again; I-O hides the In/Out");
+    root.strip.inOut.onClick();
+    check(root.state().inOut && root.strip.inOut.getToggleState(), "and shows it again");
 }
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
@@ -1008,6 +1378,10 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
               submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip" &&
               submitter.nextUndo()->opCount == 3,
           "the clip is selected; one undo step");
+    geometry.selection.clip = 0;
+    check(root.command(AppCommands::SelectAll) && geometry.selection.clip == drums->clips[0]->id &&
+              geometry.selection.toTrack == 0 && geometry.selection.start == bar2,
+          "Select All with one clip selects that clip");
     canvas.filesDropped(juce::StringArray{path}, x, laneTop(root, 2) + 10);
     root.frame();
     check(root.reader().findTrack(2)->clips.empty() && root.error().find("audio track") != std::string::npos,
@@ -1050,6 +1424,95 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
 // the clips inside it on all of them, as one undo step each.
+// Live's clip drag across tracks (Live 12 manual 6.7, "to another song position or track"): a clip
+// dragged by its bar follows the lane under the mouse when that track can take it, MIDI to MIDI and
+// audio to audio, and lands there as one undo step; over a track that cannot, it stays on the last
+// that could.
+void clipToTrack(AppCommands &commands, const std::filesystem::path &dir) {
+    StoreError err{};
+    auto store = Store::createEmpty(dir / "clip-to-track.adi", err);
+    check(store != nullptr, "the clip drag's project opens");
+    if (!store)
+        return;
+    store->db().exec("INSERT INTO project(id,name) VALUES(1,'Clip To Track')");
+    engine::ProjectView view;
+    view.refresh(*store);
+    OpSubmitter submitter(*store, view);
+    TransportMailbox mailbox;
+    ViewStateStore persistence(*store);
+    SessionState session(*store);
+    const auto bar = textproj::kWhole;
+    bool madeAll = true;
+    for (const auto &[id, kind] : {std::pair<std::int64_t, const char *>{1, "midi"}, {2, "midi"}, {3, "audio"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", kind}, {"name", kind == std::string("midi") ? "# MIDI" : "# Audio"}, {"index", id - 1}};
+        r.label = "Create track";
+        madeAll = submitter.submit(std::move(r)).ok && madeAll;
+    }
+    OpRequest clip;
+    clip.opType = "clip.create";
+    clip.payload = {{"id", 11}, {"track", 1}, {"kind", "midi"}, {"pos", bar}, {"length", bar}};
+    clip.label = "Create clip";
+    madeAll = submitter.submit(std::move(clip)).ok && madeAll;
+    check(madeAll, "two MIDI tracks and an audio track; a MIDI clip in bar 2 of the first");
+    AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "clip-to-track");
+    root.setSize(1200, 720);
+    for (std::int64_t id = 1; id <= 3; ++id)
+        root.arrangement.geometry.resizeTrack(id, 48);
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &geo = root.arrangement.geometry;
+    auto &canvas = root.arrangement.canvas;
+    const auto x = [&geo](std::int64_t tick) { return static_cast<float>(geo.x(tick)); };
+    const auto barOf = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 5); };
+    const auto lane = [&root](std::int64_t id) { return static_cast<float>(laneTop(root, id) + 30); };
+    auto trackOf = [&root](std::int64_t clipId) -> std::int64_t {
+        for (const auto &t : root.reader().tracks())
+            for (const auto &c : t->clips)
+                if (c->id == clipId)
+                    return t->id;
+        return 0;
+    };
+    // Its bar picked, then dragged down onto 2 MIDI's lane: drawn there while dragging, landing there
+    // on release, at the same place in time.
+    canvas.mouseDown(pressAt(canvas, {x(bar) + 6, barOf(1)}));
+    canvas.mouseUp(pressAt(canvas, {x(bar) + 6, barOf(1)}));
+    canvas.mouseDown(pressAt(canvas, {x(bar) + 6, barOf(1)}));
+    canvas.mouseDrag(pressAt(canvas, {x(bar) + 6, lane(2)}));
+    check(canvas.movingClip() == 11 && canvas.movingTrack() == 2, "dragged over 2 MIDI, the clip would land there");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-clip-to-track.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    // Over the audio track it stays on 2 MIDI: Live keeps MIDI clips on MIDI tracks.
+    canvas.mouseDrag(pressAt(canvas, {x(bar) + 6, lane(3)}));
+    check(canvas.movingTrack() == 2, "over the audio track it stays on the last MIDI track");
+    canvas.mouseUp(pressAt(canvas, {x(bar) + 6, lane(3)}));
+    root.frame();
+    check(trackOf(11) == 2 && root.reader().findTrack(2)->clips.front()->posTicks == bar &&
+              submitter.nextUndo()->label == "Move Clip" && submitter.nextUndo()->opCount == 1 &&
+              geo.selection.track == 2 && geo.selection.clip == 11,
+          "released, the clip is on 2 MIDI at bar 2, one undo step, and the selection follows it");
+    // Back up to 1 MIDI and a bar later: track and time in one step.
+    canvas.mouseDown(pressAt(canvas, {x(bar) + 6, barOf(2)}));
+    canvas.mouseDrag(pressAt(canvas, {x(2 * bar) + 6, barOf(1)}));
+    canvas.mouseUp(pressAt(canvas, {x(2 * bar) + 6, barOf(1)}));
+    root.frame();
+    check(trackOf(11) == 1 && root.reader().findTrack(1)->clips.front()->posTicks == 2 * bar,
+          "dragged up and a bar on, it moves track and time in one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(trackOf(11) == 2 && root.reader().findTrack(2)->clips.front()->posTicks == bar, "and undo puts it back");
+}
 void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "range.adi", err);
@@ -1156,11 +1619,87 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(root.reader().findTrack(1)->clips.size() == 1 && root.reader().findTrack(2)->clips.size() == 1,
           "brings it all back");
+    // Select All (Ctrl/Cmd+A, §42.5): all the material, every track holding clips, from the earliest
+    // clip's start to the latest's end; a text field with the focus keeps its own Ctrl/Cmd+A.
+    check(root.keyPressed(juce::KeyPress('a', juce::ModifierKeys::commandModifier, 0)) && geo.selection.track == 1 &&
+              geo.selection.toTrack == 4 && geo.selection.start == bar && geo.selection.end == 3 * bar &&
+              geo.selection.clip == 0 && geo.inSelection(root.reader(), 3),
+          "Select All selects every track's material, bar 2 to the fourth track's end");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        root.frame();
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-select-all.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    check(canvas.keyPressed(juce::KeyPress('0')), "0 on all of it");
+    root.frame();
+    check(clipOf(1)->muted && clipOf(4)->muted && submitter.nextUndo()->opCount == 4, "deactivates every clip, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
     // A plain click starts over: one track.
     canvas.mouseDown(pressAt(canvas, {x(bar) + 1, lane(4)}));
     canvas.mouseUp(pressAt(canvas, {x(bar) + 1, lane(4)}));
     check(geo.selection.track == 4 && geo.selection.toTrack == 0 && !geo.inSelection(root.reader(), 1),
           "a plain click selects in one track again");
+    // Live's Ctrl/Cmd+click on track titles picks tracks apart from one another; Solo and Group Tracks
+    // take them all; a plain click lets them go.
+    auto &headers = root.arrangement.headers;
+    const auto title = [&root](std::int64_t id) { return juce::Point<float>{20.f, static_cast<float>(laneTop(root, id) + 8)}; };
+    const auto cmd = juce::ModifierKeys::commandModifier;
+    headers.mouseDown(pressAt(headers, title(1)));
+    headers.mouseUp(pressAt(headers, title(1)));
+    headers.mouseDown(pressAt(headers, title(3), cmd));
+    headers.mouseUp(pressAt(headers, title(3), cmd));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1, 3} && !geo.inSelection(root.reader(), 2),
+          "1 MIDI, then Ctrl/Cmd+click on 3: the two selected, 2 not");
+    if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+        root.frame();
+        juce::Image picked(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picked);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(pictures).getChildFile("adi-picked-tracks.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picked, *stream);
+    }
+    check(root.keyPressed(juce::KeyPress('s', 0, 0)), "S");
+    root.frame();
+    auto soloedOnes = [&root] {
+        std::vector<std::int64_t> out;
+        for (const auto &t : root.reader().tracks())
+            if (t->soloed)
+                out.push_back(t->id);
+        return out;
+    };
+    check(soloedOnes() == std::vector<std::int64_t>{1, 3}, "S solos both picked tracks, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(root.keyPressed(juce::KeyPress('g', cmd, 0)), "Ctrl/Cmd+G");
+    root.frame();
+    const auto *group = root.reader().findTrack(5);
+    check(group != nullptr && group->kind == "group" && root.reader().findTrack(1)->parent == 5 &&
+              root.reader().findTrack(3)->parent == 5 && root.reader().findTrack(2)->parent == 0,
+          "Group Tracks puts the two picked tracks in one group, 2 MIDI left outside");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    headers.mouseDown(pressAt(headers, title(1)));
+    headers.mouseDown(pressAt(headers, title(3), cmd));
+    headers.mouseDown(pressAt(headers, title(3), cmd));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1}, "Ctrl/Cmd+click again lets 3 go");
+    headers.mouseDown(pressAt(headers, title(3), cmd));
+    headers.mouseDown(pressAt(headers, title(2)));
+    check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{2} && geo.selection.picked.empty(),
+          "a plain click on 2 selects it alone");
 }
 // Live's foot (Live 12 manual 6.1, its demo arrangement): the returns and Main pinned at the
 // bottom of the lanes, below the drop area, whatever the scroll.
@@ -1194,6 +1733,9 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
     check(madeAll, "twelve tracks, two returns and Main");
     AdiRootComponent root(view, submitter, mailbox, commands, persistence, session, "foot");
     root.setSize(1200, 720);
+    root.frame();
+    check(!root.command(AppCommands::SelectAll) && root.error() == "There is nothing to select.",
+          "Select All with no clips says there is nothing to select");
     root.arrangement.geometry.resizeTrack(0, 48, true);
     root.mark(DirtySet::All);
     root.frame();
@@ -2346,10 +2888,11 @@ int main(int argc, char **argv) {
               "the Options menu: Follow (§6.2), the grid (§6.10), then Settings off the Mac (§2.3)");
 #endif
         check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
-                                                C::RenameTrack, 0, C::GroupTracks, C::UngroupTracks},
-              "the Edit menu deletes the selected track, before Rename (§18.2), then Group and Ungroup Tracks");
-        check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack},
-              "the Create menu inserts tracks");
+                                                C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks},
+              "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Group and "
+              "Ungroup Tracks");
+        check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack},
+              "the Create menu inserts tracks, returns too (§18.4)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
@@ -3374,10 +3917,15 @@ int main(int argc, char **argv) {
                                           lanes.scrollY == 0;
                 for (std::size_t k = 0; k < rows.size(); ++k)
                     integrated.keyPressed(nextKey);
+                // The last track with an activator: Main has none, as Live's, and the focus passes it by.
+                std::int64_t lastWithActivator = 0;
+                for (const auto row : rows)
+                    if (const auto *t = integrated.reader().findTrack(row); t != nullptr && t->kind != "master")
+                        lastWithActivator = row;
                 check(rows.size() >= 2 && reachedFirst && focusedRow() != nullptr &&
-                          focusedRow()->track() == rows.back() && lanes.scrollY > 0 &&
+                          focusedRow()->track() == lastWithActivator && lanes.scrollY > 0 &&
                           focusedRow()->getY() >= ArrangementView::kTopHeight,
-                      "a neighbour out of view is scrolled into view, its row's top showing");
+                      "a neighbour out of view is scrolled into view, its row's top showing; Main, with no activator, is passed by");
                 lanes.heights = heightsWas;
                 lanes.scrollY = scrollWas;
                 integrated.arrangement.changed();
@@ -4026,6 +4574,7 @@ int main(int argc, char **argv) {
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     rangeSelection(commands, temp.path());
+    clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
