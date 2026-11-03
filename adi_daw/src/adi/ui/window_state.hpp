@@ -60,6 +60,9 @@ struct WindowState {
     // Live's View menu (§42.1): the Overview above the ruler, the track controls' In/Out, and the
     // sends (Hide/Show Sends, Ctrl/Cmd+Alt+S) in the track controls and the Mixer View.
     bool overview = true, inOut = true, sends = true;
+    // Live 12's Mixer Controls In/Out (the Mixer View Control's options menu): the Mixer View's own
+    // In/Out section, apart from the track controls' In/Out; hidden until shown.
+    bool mixerInOut = false;
     // Bitwig's Use Large Track Height (Master Reference 10): off, every track at half height.
     bool largeTracks = true;
     // Bitwig's project view (Master Reference 10, ADR-0112 d2): the group this window shows,

@@ -89,7 +89,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         InsertReturnTrack,
         ToggleReturnTracks,
         ToggleSends,
-        LastId = ToggleSends
+        ToggleMixerInOut,
+        LastId = ToggleMixerInOut
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -141,6 +142,8 @@ class StatusBar final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     juce::TextButton infoToggle{""}, detailToggle{""}, mixerToggle{"Mixer"};
+    // Live 12's arrow beside the Mixer View Control: its options menu (manual 18.1).
+    juce::TextButton mixerOptions{""};
 
   private:
     AdiRootComponent &root_;
@@ -242,6 +245,9 @@ class AdiRootComponent final : public juce::Component {
     juce::Rectangle<int> mixerViewArea() const noexcept { return mixerViewArea_; }
     // Drag the Mixer View's top edge: taller strips, never past one track row.
     void resizeMixerView(int height);
+    // Live 12's Mixer View Control options (manual 18.1, "show or hide mixer components"): In/Out,
+    // Sends, Volume, Track Options, Crossfader, Performance Impact, then Return Tracks.
+    juce::PopupMenu mixerOptionsMenu();
     juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
     // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
     bool submitEdit(const std::string &op, Payload payload, const char *label);

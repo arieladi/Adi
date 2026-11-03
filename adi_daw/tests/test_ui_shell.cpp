@@ -1020,6 +1020,45 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && audio->eq.getY() == 54 &&
               column->sendsShown() == 2 && column->sendKnobs()[0]->isVisible(),
           "and again shows them");
+    // Live 12's Mixer View Control options (manual 18.1): In/Out, Sends, Volume, Track Options,
+    // Crossfader, Performance Impact, then Return Tracks; what ADI has not built is dimmed.
+    auto mixerOptions = [&root] {
+        juce::StringArray out;
+        const auto menu = root.mixerOptionsMenu();
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (!it.getItem().isSeparator)
+                out.add(it.getItem().text + (it.getItem().isTicked ? " *" : "") + (it.getItem().isEnabled ? "" : " -"));
+        return out.joinIntoString(", ");
+    };
+    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options -, Crossfader -, Performance Impact -, Return Tracks *",
+          "the Mixer View's options in Live's order, In/Out off");
+    // Its In/Out: Live 12's section under ADI's slots and over the sends; as many sends as still
+    // leave the mixer its room, then the rest when the strip is taller.
+    check(root.command(AppCommands::ToggleMixerInOut) && root.state().mixerInOut && mixerOptions().startsWith("In/Out *"),
+          "the Mixer's In/Out shows, and its item is ticked");
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && column->showsMixerInOut() && column->sendsShown() < 2 &&
+              (column->sendsShown() == 0 || column->sendKnobs()[0]->getY() == 40 + MixerStrip::kInOutHeight + 6),
+          "at 320 points the strip shows its In/Out over the sends, and leaves out the sends that do not fit");
+    root.resizeMixerView(440);
+    root.mark(DirtySet::All);
+    root.frame();
+    column = rowOf(root.mixerView, 3);
+    mainStrip = rowOf(root.mixerView, 7);
+    check(column != nullptr && column->showsMixerInOut() && column->sendsShown() == 2 &&
+              column->volume.getY() == 40 + MixerStrip::kInOutHeight + 72 + 6 && mainStrip != nullptr &&
+              mainStrip->showsMixerInOut() && mainStrip->returnSwitches()[0]->isVisible(),
+          "taller, both sends come back under it, Main's Pre/Post switches with them");
+    render("adi-mixer-inout.png");
+    root.resizeMixerView(200);
+    root.mark(DirtySet::All);
+    root.frame();
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && !column->showsMixerInOut(), "short, the strip leaves its In/Out out to keep the mixer");
+    check(root.command(AppCommands::ToggleMixerInOut) && !root.state().mixerInOut, "and the In/Out hides again");
+    root.resizeMixerView(320);
+    root.mark(DirtySet::All);
+    root.frame();
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
     // Hide/Show Return Tracks (§18.4, Ctrl/Cmd+Alt+R): the returns out of the lanes and the controls.
     auto shownLanes = [&root] {
