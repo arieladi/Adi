@@ -8,6 +8,8 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/engine/audio_recording.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
 #include <cmath>
@@ -37,8 +39,24 @@ device::ParamValue valueOf(const rows::PluginParam& p) noexcept {
 
 }  // namespace
 
-Session::Session() = default;
+Session::Session():recording_(std::make_unique<AudioInputRecorder>()) {}
 Session::~Session() = default;
+
+AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
+    if(!live_){error="No active audio session for recording";return false;}
+    if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
+        error="Recording format must match the active audio device";return false;
+    }
+    for(const auto& target:options.targets) {
+        const auto track=std::find_if(model_.tracks.begin(),model_.tracks.end(),[&](const auto& row){return row.id==target.trackId;});
+        if(track==model_.tracks.end() || !track->recordArmed || (track->kind!="audio" && track->kind!="midi")) {
+            error="Recording target must be an armed audio or MIDI track";return false;
+        }
+    }
+    auto captured=options;captured.sourceProject=recordingProject_;
+    return recording_->start(captured,error);
+}
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -555,6 +573,8 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
     stats_ = Stats{};
     model_ = rows::readModel(store);
+    SQLite::Statement recordingIdentity(store.db(),"PRAGMA database_list");
+    while(recordingIdentity.executeStep())if(recordingIdentity.getColumn(1).getString()=="main")recordingProject_=recordingIdentity.getColumn(2).getString();
     clipProject_ = readClipProject(store, model_);
     loaded_ = true;
     resolveNewRows(store);
@@ -763,6 +783,7 @@ bool Session::tick(std::int64_t nowMs) {
 void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     ++stats_.prepares;
     const bool changed = (sampleRate != spec_.sampleRate) || (maxFrames != spec_.maxFrames);
+    if(changed)recording_->stop();
 
     // Decision 3, second half: same format, graph live, nothing to do. A driver
     // that stops and restarts at the same size -- a device-list change, a
@@ -821,6 +842,7 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
 
 void Session::process(const AudioIo& io) noexcept {
     audio::CallbackScope callback;
+    recording_->capture(io,transport_);
     SnapshotPublisher<TimingView>::AudioRead timing(timing_);
     TransportInfo info;
     if (timing.valid()) info = timing->at(transport_);
@@ -835,6 +857,7 @@ void Session::process(const AudioIo& io) noexcept {
 }
 
 void Session::release() {
+    recording_->stop();
     // The device has stopped; nothing is rendering. Release the plugins so a
     // later `prepare` -- at the same format or not -- prepares them again
     // rather than finding ADR-0090 d5's guard satisfied on a released

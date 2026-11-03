@@ -73,6 +73,9 @@ class Store;
 
 namespace adi::engine {
 
+class AudioInputRecorder;
+struct AudioRecordingSpec;
+
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
 struct SessionSpec {
@@ -250,6 +253,10 @@ public:
 
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
+    /// Owner-thread recording control. Channels address the driver's current
+    /// AudioIo inputs; per-device channel configuration remains the adapter's.
+    bool startRecording(const AudioRecordingSpec&,std::string& error);
+    [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Message/offline driver inspection. Pointer valid until the next rebuild.
     [[nodiscard]] ClipPlayback* clips() noexcept { return clips_.get(); }
     [[nodiscard]] MidiClips* midiClips() noexcept { return midi_.get(); }
@@ -296,6 +303,8 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    std::unique_ptr<AudioInputRecorder> recording_;
+    std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
     struct TimingView final : Sequenced {
