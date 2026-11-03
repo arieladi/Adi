@@ -16,6 +16,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/controller_maps.hpp"
+#include "adi/freeze_groups.hpp"
 #include "adi/freeze_state.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/ops.hpp"
@@ -1918,6 +1919,8 @@ const OpDescriptor kHandWritten[] = {
     {"group.setSummingDrive", "Set how hard a group's summing is driven", Scope::Edit, EngineImpact::Snapshot,
      kFSummingDrive, true, false, summingDriveApply, summingDriveInverse, ""},
 
+    {"group.setFreezeScope", "Set captured whole-group freeze scope", Scope::Edit, EngineImpact::GraphRebuild,
+     kFFreeze, false, false, freeze::groupApply, freeze::groupInverse, ""},
     {"track.setFreeze", "Set captured track freeze state", Scope::Edit, EngineImpact::GraphRebuild, kFFreeze,
      false, false, freeze::apply, freeze::inverse, ""},
     {"track.create", "Create a track", Scope::Edit, EngineImpact::GraphRebuild, kFTrackCreate, false, false,

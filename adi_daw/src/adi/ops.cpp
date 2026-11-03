@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_groups.hpp"
 #include "adi/freeze_state.hpp"
 
 #include "adi/ops.hpp"
@@ -448,6 +449,7 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
         freeze::validate(
             store_,
             !(frozenWasValid && !options.beforeCommit && freeze::liveControlBatch(reqs) &&
+              freeze::groupControlsLive(db, reqs) &&
               db.execAndGet(
                     "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE "
                     "NOCASE IN ('tracks','mixer_strip','project') UNION ALL SELECT 1 FROM sqlite_temp_master "
