@@ -506,6 +506,10 @@ add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
 
+add_executable(adi_project_bootstrap_tests tests/test_project_bootstrap.cpp)
+target_link_libraries(adi_project_bootstrap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_bootstrap_tests COMMAND adi_project_bootstrap_tests)
+
 # Separate again, for the same reason: an ops failure and a store failure should
 # be distinguishable from the CI summary without opening the log.
 add_executable(adi_ops_tests tests/test_ops.cpp)
@@ -548,6 +552,7 @@ add_test(NAME adi_snapshots_tests COMMAND adi_snapshots_tests)
 add_library(adi_settings STATIC
     src/adi/settings/registry.cpp
     src/adi/settings/store.cpp
+    src/adi/settings/channel_config.cpp
     src/adi/settings/bundle.cpp
     src/adi/settings/catalogue.cpp)
 target_link_libraries(adi_settings PUBLIC adi_core PRIVATE adi_miniz adi_warnings)
@@ -722,6 +727,11 @@ add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
+# 305 s healthy in a Debug MSVC build (main, 2 November 2026); CI's --timeout 600 is there to
+# catch a HANG, and twice in one day a slow shared runner ran everything at half speed and
+# tipped this suite over it (#350, #362). Twenty minutes still names a hang; it no longer
+# fails healthy work.
+set_tests_properties(adi_mixer_tests PROPERTIES TIMEOUT 1200)
 
 # Keep the master console renders in their own suite: the combined mixer suite
 # exceeded CI's per-test timeout under MSVC Debug.

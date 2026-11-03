@@ -5298,16 +5298,50 @@ int main(int argc, char **argv) {
     {
         SettingsPanel panel(settings);
         panel.setSize(560, 680);
-        const auto pages = settings::pages();
-        check(!pages.empty() && panel.pageNames() == pages && panel.page() == pages.front(),
-              "the Settings window lists the registry's pages in its order and opens on the first");
+        const auto &pages = panel.pageNames();
+        bool liveFirst = pages.size() > kLiveTabs.size();
+        for (std::size_t i = 0; liveFirst && i < kLiveTabs.size(); ++i)
+            liveFirst = pages[i] == kLiveTabs[i];
+        check(liveFirst && panel.page() == "Display & Input",
+              "Live's ten tabs in Live's order, ADI's own pages after them; it opens on Display & Input");
+        // Every setting on exactly one tab; the tabs are the registry's settings, rearranged.
+        std::size_t placed = 0;
+        bool once = true;
+        for (const auto &tab : settingsTabs())
+            for (const auto &group : tab.groups)
+                for (const auto *setting : group.settings) {
+                    ++placed;
+                    once = once && tabOf(*setting) == tab.name;
+                }
+        check(once && placed == settings::registry().size(), "every setting is on one tab, once");
+        auto onTab = [](const char *key) {
+            const auto *setting = settings::find(key);
+            return setting != nullptr ? tabOf(*setting) : std::string{};
+        };
+        check(onTab("lookfeel.language") == "Display & Input" && onTab("lookfeel.theme") == "Theme & Colors" &&
+                  onTab("sync.ptpEnabled") == "Link" && onTab("project.sampleRate") == "Audio" &&
+                  onTab("audio.keepMonitoringLatency") == "Record, Warp & Launch",
+              "a setting Live has sits on the tab where Live has it: Look & Feel split, Link's own");
+        const auto *linkTab = settingsTab("Link");
+        check(linkTab != nullptr && linkTab->groups.size() == 3 && linkTab->groups[0].heading == "Link" &&
+                  linkTab->groups[0].settings.size() == 2 && linkTab->groups[1].heading == "PTP" &&
+                  linkTab->groups[2].heading == "LAN Audio (not Link Audio)" && onTab("sync.lanCodec") == "Link",
+              "the Link tab: Live's two settings under Link, then PTP, then the LAN audio node, labelled as not Link Audio");
+        const auto *licenses = settingsTab("Licenses & Updates");
+        check(licenses != nullptr && licenses->groups.size() == 2 && licenses->groups[0].heading == "Licenses & Updates" &&
+                  licenses->groups[1].heading == "Privacy",
+              "Updates and Privacy become Licenses & Updates, with a Privacy group");
+        const auto *editing = settingsTab("Editing");
+        check(editing != nullptr && !editing->live &&
+                  std::find(pages.begin(), pages.end(), "Editing") - pages.begin() >=
+                      static_cast<std::ptrdiff_t>(kLiveTabs.size()),
+              "ADI's own pages come after the ten");
         std::size_t onAudio = 0;
-        for (const auto &s : settings::registry())
-            if (s.page == "Audio")
-                ++onAudio;
+        for (const auto &group : settingsTab("Audio")->groups)
+            onAudio += group.settings.size();
         panel.showPage("Audio");
         check(panel.page() == "Audio" && panel.rows().size() == onAudio && panel.audioDevices() == nullptr,
-              "one page at a time, every setting on it in the registry's order");
+              "one page at a time, every setting on its tab");
         {
             // A page's head holds the rows Live has among its own controls (the Audio page's Driver
             // Error Compensation among the latencies); the panel keeps them, out of its list.
@@ -5346,7 +5380,7 @@ int main(int argc, char **argv) {
         auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
             if (s == nullptr)
                 return nullptr;
-            panel.showPage(s->page);
+            panel.showPage(tabOf(*s));
             for (const auto &row : panel.rows())
                 if (&row->setting == s)
                     return row.get();
@@ -5418,11 +5452,15 @@ int main(int argc, char **argv) {
         if (auto *row = rowFor(projectSetting))
             check(!row->control->isEnabled(), "a project's setting is shown with its mark, changed by its op");
         const auto pageBefore = panel.page();
+        // The editor posts its change as a message, which nothing dispatches here: run what it runs.
+        // (Until now this check passed by chance: the page it was on held as many settings as match.)
         panel.search.setText("buffer", true);
+        panel.search.onTextChange();
         check(panel.finding() && !panel.rows().empty() &&
                   panel.rows().size() == settings::search("buffer").size(),
               "the Find box lists every matching setting, from every page");
         panel.search.setText({}, true);
+        panel.search.onTextChange();
         check(!panel.finding() && panel.page() == pageBefore, "clearing it goes back to the page");
         panel.showPage(pages.front());
         const auto ctrl = juce::ModifierKeys::ctrlModifier;
@@ -5438,6 +5476,24 @@ int main(int argc, char **argv) {
         bool closed = false;
         panel.onClose = [&closed] { closed = true; };
         check(panel.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey)) && closed, "Esc closes the window");
+        // Restore Defaults puts the open tab back, settings moved onto it from other pages included.
+        if (const auto *toggle = settings::find("sync.showLinkToggle")) {
+            panel.showPage("Link");
+            const auto was = settings.get(toggle->key);
+            panel.change(*toggle, !toggle->defaultValue.get<bool>());
+            panel.defaults.onClick();
+            check(settings.get(toggle->key) == toggle->defaultValue, "Restore Defaults puts the open tab back");
+            panel.change(*toggle, was);
+        }
+        // Taller than the window, the tab column scrolls; the open tab is kept in view.
+        panel.pageList.resized();
+        panel.showPage(pages.back());
+        const auto lastTab = panel.pageList.tabs().back();
+        check(panel.pageList.contentHeight() > panel.pageList.getHeight() && panel.pageList.scroll() > 0 &&
+                  lastTab.getBottom() <= panel.pageList.getHeight(),
+              "the last tab, scrolled into view");
+        panel.showPage(pages.front());
+        check(panel.pageList.scroll() == 0 && panel.pageList.tabs().front().getY() == 6, "and the first, back at the top");
         const settings::Setting *ranged = nullptr;
         for (const auto &s : settings::registry())
             if (!ranged && s.type == settings::Type::Int && s.scope == settings::Scope::App && s.max > s.min)
@@ -5505,6 +5561,20 @@ int main(int argc, char **argv) {
             file.deleteFile();
             if (auto stream = file.createOutputStream())
                 juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            // Live 12's manual shows its Settings on the Link tab: ADI's, for the picture beside it.
+            panel.showPage("Link");
+            panel.setHelp({});
+            juce::Image linkImage(juce::Image::ARGB, 2 * panel.getWidth(), 2 * panel.getHeight(), true,
+                                  juce::SoftwareImageType{});
+            {
+                juce::Graphics g(linkImage);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                panel.paintEntireComponent(g, true);
+            }
+            const auto linkFile = juce::File(folder).getChildFile("adi-settings-link.png");
+            linkFile.deleteFile();
+            if (auto stream = linkFile.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(linkImage, *stream);
         }
     }
     liveParity(commands, temp.path(), write);
