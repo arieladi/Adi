@@ -3666,6 +3666,27 @@ int main(int argc, char **argv) {
     check(zoomed.keyPressed(juce::KeyPress('-', cmd, 0)) &&
               zoomed.keyPressed(juce::KeyPress('-', cmd, 0)) && zoomed.interfaceZoom() == .75f,
           "Ctrl/Cmd+- zooms out");
+    {
+        // Kept per window and per display (window.zoom, N4), saved at once, and read when the
+        // window opens again on that display.
+        const auto display = displayAt(zoomed.getScreenBounds().getCentre());
+        settings::AppSettings reread(appdata::App::Daw, settings.file());
+        check(commands.keptZoom("zoomed", display) == .75f && !commands.keptZoom("tips", display) &&
+                  settings::windowZoom(reread, "zoomed", display) == .75 &&
+                  settings.get("window.zoom").contains(settings::windowZoomKey("zoomed", display)),
+              "each window's zoom is kept for its display in the App settings, saved at once");
+        AdiWindow again(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands, persistence, session,
+                                                           "zoomed"),
+                        commands, false);
+        again.setBounds(40, 40, 1200, 720);
+        AdiWindow other(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands, persistence, session,
+                                                           "fresh"),
+                        commands, false);
+        other.setBounds(40, 40, 1200, 720);
+        check(displayAt(again.root().getScreenBounds().getCentre()) == display &&
+                  again.root().interfaceZoom() == .75f && other.root().interfaceZoom() == 1.f,
+              "a window opens at the zoom kept for it on its display; one with none kept at 100 %");
+    }
     check(zoomed.deviceArea().getHeight() == floor, "the floor is in zoom-independent units");
     AdiWindow window(std::make_unique<AdiRootComponent>(view, submitter, mailbox, commands,
                                                         persistence, session, "tips"),
@@ -5088,6 +5109,13 @@ int main(int argc, char **argv) {
                                  commands.infoView() != infoShown;
             check(toggled && windowKeys->keyPressed(infoKey, floatWindow) && commands.infoView() == infoShown,
                   "other keys in it are still the main window's");
+            const auto floatDisplay = displayAt(floatWindow->getBounds().getCentre());
+            check(commands.keptZoom("floating:analyser", floatDisplay) == .5f,
+                  "a floating view's zoom is kept for its display (window.zoom, N4)");
+            floating.close("analyser");
+            auto again = std::make_unique<AnalyserView>(model);
+            check(floating.openView("analyser", 11, std::move(again)) && floating.zoomOf(analyserKey) == .5f,
+                  "and it opens again at that zoom");
             floating.close("analyser");
         }
         integrated.devices.publication = {};

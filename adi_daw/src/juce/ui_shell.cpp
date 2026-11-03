@@ -58,6 +58,15 @@ bool AppCommands::setInfoView(bool on, std::string &why) {
     infoView_ = on;
     return true;
 }
+std::optional<float> AppCommands::keptZoom(const std::string &window, const std::string &display) const {
+    const auto kept = settings::windowZoom(settings_, window, display);
+    if (!kept)
+        return std::nullopt;
+    return static_cast<float>(*kept);
+}
+bool AppCommands::keepZoom(const std::string &window, const std::string &display, float zoom, std::string &why) {
+    return settings::setWindowZoom(settings_, window, display, zoom, {}, why) && settings_.save(why);
+}
 bool AppCommands::setTabMovesFocus(bool on, std::string &why) {
     if (!settings_.set("lookfeel.tabMovesFocus", on, {}, why) || !settings_.save(why))
         return false;
@@ -1796,6 +1805,12 @@ bool AdiRootComponent::command(int id) {
         interfaceZoom_ = *next;
         if (auto *host = getParentComponent())
             host->resized();
+        // Kept for this window on the display it stands on, for the next launch (N4).
+        zoomDisplay_ = displayAt(getScreenBounds().getCentre());
+        if (std::string why; !commands_.keepZoom(window_, *zoomDisplay_, interfaceZoom_, why)) {
+            say("The zoom is not kept for the next launch: " + why);
+            return true;
+        }
         break;
     }
     default:
@@ -1913,6 +1928,27 @@ std::optional<float> nextZoom(float now, bool in) noexcept {
         return std::nullopt;
     return kZoomSteps[static_cast<std::size_t>(next)];
 }
+std::string displayId(const juce::Displays::Display &d) {
+    const auto a = d.logicalBounds.toNearestInt();
+    return std::to_string(a.getX()) + ":" + std::to_string(a.getY()) + ":" + std::to_string(a.getWidth()) + ":" +
+           std::to_string(a.getHeight()) + ":" + std::to_string(static_cast<int>(d.dpi));
+}
+std::string displayAt(juce::Point<int> screen) {
+    const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());
+    return d != nullptr ? displayId(*d) : std::string();
+}
+void AdiRootComponent::followDisplay() {
+    const auto display = displayAt(getScreenBounds().getCentre());
+    if (zoomDisplay_ == display)
+        return;
+    zoomDisplay_ = display;
+    const auto kept = commands_.keptZoom(window_, display);
+    if (!kept || juce::approximatelyEqual(*kept, interfaceZoom_))
+        return;
+    interfaceZoom_ = *kept;
+    if (auto *host = getParentComponent())
+        host->resized();
+}
 ZoomHost::ZoomHost(std::unique_ptr<AdiRootComponent> root) : root_(std::move(root)) {
     setOpaque(true);
     addAndMakeVisible(*root_);
@@ -1950,6 +1986,10 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
 #else
     setMenuBar(menu_.get());
 #endif
+}
+void AdiWindow::moved() {
+    DocumentWindow::moved();
+    root_->followDisplay();
 }
 AdiWindow::~AdiWindow() {
 #if JUCE_MAC

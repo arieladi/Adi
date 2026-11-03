@@ -20,14 +20,8 @@ juce::Rectangle<int> restoreFloating(const FloatingState &s,
 }
 std::vector<MonitorArea> currentMonitors() {
     std::vector<MonitorArea> result;
-    for (const auto &d : juce::Desktop::getInstance().getDisplays().displays) {
-        // JUCE exposes no stable EDID identifier; geometry + physical DPI is its portable identity.
-        const auto a = d.logicalBounds.toNearestInt();
-        result.push_back({std::to_string(a.getX()) + ":" + std::to_string(a.getY()) + ":" +
-                              std::to_string(a.getWidth()) + ":" + std::to_string(a.getHeight()) +
-                              ":" + std::to_string(static_cast<int>(d.dpi)),
-                          d.userBounds.toNearestInt()});
-    }
+    for (const auto &d : juce::Desktop::getInstance().getDisplays().displays)
+        result.push_back({displayId(d), d.userBounds.toNearestInt()});
     return result;
 }
 AnalyserModel::AnalyserModel(std::shared_ptr<const engine::ScopeTap> tap) : tap_(std::move(tap)) {
@@ -116,6 +110,8 @@ struct Zoomed final : juce::Component {
     juce::Component &view;
     float zoom = 1;
 };
+// A floating window's name in `window.zoom` (N4): "floating:" and its key.
+std::string zoomKey(const std::string &key) { return "floating:" + key; }
 } // namespace
 struct FloatingHost::Entry {
     std::string key;
@@ -187,6 +183,12 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
         raw->window->setBounds(raw->window->getContentComponentBorder().addedTo(raw->first));
     } else
         raw->window->setBounds(restoreFloating(kept, currentMonitors()));
+    // An ADI view's window opens at the zoom kept for it on its display (N4).
+    if (raw->zoomed)
+        if (const auto kept = commands_.keptZoom(zoomKey(key), displayAt(raw->window->getBounds().getCentre()))) {
+            raw->zoomed->zoom = *kept;
+            raw->zoomed->resized();
+        }
     if (native_)
         raw->window->setVisible(true);
     save(*raw, true);
@@ -241,6 +243,10 @@ bool FloatingHost::zoom(const std::string &key, bool in) {
         return false;
     zoomed.zoom = *next;
     zoomed.resized();
+    // Kept for this window on the display it stands on, for the next time it opens (N4).
+    if (std::string why; !commands_.keepZoom(zoomKey(key), displayAt(it->second->window->getBounds().getCentre()),
+                                             zoomed.zoom, why))
+        root_.say("The zoom is not kept for the next launch: " + why);
     return true;
 }
 float FloatingHost::zoomOf(const std::string &key) const {
