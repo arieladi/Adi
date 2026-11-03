@@ -52,10 +52,17 @@ struct WindowState {
     // The ★ Reference track (ADR-0209 §4, d11): hidden from the project view until its
     // [Reference Track] toggle shows it.
     bool showReference = false;
+    // Live's Hide/Show Return Tracks (§18.4, the View menu's Mixer Controls, Ctrl/Cmd+Alt+R): the
+    // returns left out of the lanes, the track controls and the Mixer View; shown by default.
+    bool hideReturns = false;
     // Live's Follow (manual §6.2): the arrangement keeps the playhead on screen while it plays.
     bool follow = false;
-    // Live's View menu (§42.1): the Overview above the ruler, and the track controls' In/Out.
-    bool overview = true, inOut = true;
+    // Live's View menu (§42.1): the Overview above the ruler, the track controls' In/Out, and the
+    // sends (Hide/Show Sends, Ctrl/Cmd+Alt+S) in the track controls and the Mixer View.
+    bool overview = true, inOut = true, sends = true;
+    // Live 12's Mixer Controls In/Out (the Mixer View Control's options menu): the Mixer View's own
+    // In/Out section, apart from the track controls' In/Out; hidden until shown.
+    bool mixerInOut = false;
     // Bitwig's Use Large Track Height (Master Reference 10): off, every track at half height.
     bool largeTracks = true;
     // Bitwig's project view (Master Reference 10, ADR-0112 d2): the group this window shows,
