@@ -102,6 +102,12 @@ tempo-change detection, From First Beat versus Sample Start and cancellation.
 An indeterminate beat refuses before project mutation; provide a source BPM
 for short or non-percussive material. Bounce always creates Warp-off audio,
 regardless of the import preference (ADR-0203 d16).
+For an existing clean import, prepareSetWarp in warp_commands.hpp analyzes
+and captures the Warp button's action. Enabling keeps its clip identity and
+captures a musical source length; disabling restores physical duration and
+source pins. Edited source offsets, loops, aliases, End markers, reverse,
+pitch and trimmed extents give named refusals in this producer. Keep the
+document generation and commit with commitPrepared; redo never analyzes.
 Video still has no playable attachment
 backend; it is not accepted as a silent audio clip.
 

@@ -466,6 +466,18 @@ The options and six modes are described in ENGINE-WARP.md. This producer
 does not imply that the individual catalogue Warp setters above are applied.
 Bounce explicitly sets Warp off before preparing its import.
 
+**Existing clean clip's Warp button (N17).** Call
+`clip_edit::prepareSetWarp(store, clipId, WarpOptions, referenceRate)` off the
+callback, retaining the document generation, then `commitPrepared`.
+The producer captures an `arranger.splice` full-row edit of the existing clip,
+its audio source and playback/fade metadata; no file analysis runs in apply,
+undo or redo. Enable captures trim/map/mode and musical duration; disable
+captures the actual physical source duration/pins. Cancellation, changed head
+or changed source bytes rejects commit. This clean-import API refuses edited
+source offsets, loops, aliases, End markers, reverse/pitch, trimmed extents
+and unknown future marker rewrites (ENGINE-WARP.md). Individual catalogue
+Warp setters remain separate from this captured producer.
+
 ### 9.5 Notes and expression
 
 | Op | S | E | Inv | P |

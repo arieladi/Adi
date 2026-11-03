@@ -82,6 +82,20 @@ the default is zero. Reverse and channel aliases remain unsupported here.
 Split, copy and range/Time material edits retain warped fade shapes on the
 unrolled source musical clock (clip_warp_fade_domains, schema 1.11), including
 repeated splits inside overlapping fades and source loops. Handle edits replace
-only the selected side; undo restores its full typed metadata. Existing-clip
-Warp actions are the next increment. Import and playback connect all six modes;
+only the selected side; undo restores its full typed metadata.
+
+clip_edit::prepareSetWarp (warp_commands.hpp) supplies the Warp button for a
+clean, full-source existing import (ADR-0203 d7). Enabling captures detected
+trim, AWRP, mode and musical length on the same clip identity. Disabling pins
+the actual physical source clock and restores its unstretched duration; it
+does not leave a stretched placement with only its flag changed. Both directions
+retain the rest of the full typed rows and undo exactly. Expected journal head,
+document generation, cancellation and a commit-time file hash protect analysis.
+An unknown future marker layout refuses a rewrite. A clip already in the
+requested state, or with edited source offsets, loop, End marker, reverse,
+pitch or trimmed extent, currently refuses this clean-import producer. Use the
+separate material APIs for split/copy; this API does not promise arbitrary
+edited-clip Warp toggling or individual catalogue marker setters.
+
+Import and playback connect all six modes;
 these tests establish generated-signal behavior, not measured Live parity.

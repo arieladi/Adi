@@ -282,7 +282,7 @@ target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cp
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
   src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
-  src/adi/material_commands.cpp)
+  src/adi/material_commands.cpp src/adi/warp_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(adi_core PUBLIC
     ADI_VERSION_STRING="${PROJECT_VERSION}")
@@ -1286,6 +1286,10 @@ add_test(NAME adi_edit_rows_tests COMMAND adi_edit_rows_tests)
 add_executable(adi_warp_import_tests tests/test_warp_import.cpp)
 target_link_libraries(adi_warp_import_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_warp_import_tests COMMAND adi_warp_import_tests)
+
+add_executable(adi_warp_actions_tests tests/test_warp_actions.cpp)
+target_link_libraries(adi_warp_actions_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_warp_actions_tests COMMAND adi_warp_actions_tests)
 
 add_executable(adi_warp_playback_tests tests/test_warp_playback.cpp)
 target_link_libraries(adi_warp_playback_tests PRIVATE adi_core adi_warnings)
