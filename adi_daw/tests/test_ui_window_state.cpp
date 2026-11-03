@@ -36,6 +36,8 @@ int main() {
     state.follow = true;
     state.overview = false;
     state.inOut = false;
+    state.sends = false;
+    state.mixerInOut = true;
     state.largeTracks = false;
     state.viewGroup = 42;
     state.foldedGroups = {7, 13};
@@ -43,6 +45,7 @@ int main() {
     state.mixViewTab = 3;
     state.mixViewDetached = true;
     state.showReference = true;
+    state.hideReturns = true;
     state.gridSnap = false;
     state.gridFixed = true;
     state.gridTriplet = true;
@@ -53,6 +56,9 @@ int main() {
     check(restored.follow && !views.load("other").follow, "Follow is kept per window, off until switched on");
     check(!restored.overview && !restored.inOut && views.load("other").overview && views.load("other").inOut,
           "the Overview and In/Out are kept per window, shown until hidden");
+    check(!restored.sends && views.load("other").sends, "so are the sends (Hide/Show Sends, §42.1)");
+    check(restored.mixerInOut && !views.load("other").mixerInOut,
+          "the Mixer View's own In/Out is kept per window, hidden until shown (Live 12's Mixer Controls)");
     check(!restored.largeTracks && views.load("other").largeTracks,
           "Use Large Track Height is kept per window, on until switched off");
     check(restored.viewGroup == 42 && views.load("other").viewGroup == 0,
@@ -66,6 +72,8 @@ int main() {
           "and where it opens: docked until moved into a window of its own");
     check(restored.showReference && !views.load("other").showReference,
           "the Reference track's toggle is kept per window: hidden until shown (ADR-0209 d11)");
+    check(restored.hideReturns && !views.load("other").hideReturns,
+          "Hide/Show Return Tracks is kept per window: shown until hidden (§18.4)");
     check(!restored.gridSnap && restored.gridFixed && restored.gridTriplet && restored.gridNarrow == 2 &&
               restored.gridFixedQuarters == .125 && views.load("other").gridSnap && !views.load("other").gridFixed,
           "the editing grid is kept per window, snapping and adaptive until changed");
