@@ -75,6 +75,7 @@ struct ClipNode {
     std::optional<double> fadeInTension,fadeOutTension;
     std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
     std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
+    std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain
 };
 
 struct TrackNode {

@@ -79,6 +79,9 @@ not override it. A tempo change requires a new prepared playback generation.
 The formant_shift row value is an extra semitone shift (ratio 2^(value/12));
 the default is zero. Reverse and channel aliases remain unsupported here.
 
-Warp-aware split/fade editing and existing-clip Warp actions are the next
-editing increment. Import and actual playback are connected for all six modes;
+Split, copy and range/Time material edits retain warped fade shapes on the
+unrolled source musical clock (clip_warp_fade_domains, schema 1.11), including
+repeated splits inside overlapping fades and source loops. Handle edits replace
+only the selected side; undo restores its full typed metadata. Existing-clip
+Warp actions are the next increment. Import and playback connect all six modes;
 these tests establish generated-signal behavior, not measured Live parity.

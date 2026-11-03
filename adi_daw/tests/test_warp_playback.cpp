@@ -7,6 +7,10 @@
 #include "adi/engine/warp_projection.hpp"
 #include "adi/store.hpp"
 #include "adi/store_rows.hpp"
+#include "adi/clip_commands.hpp"
+#include "adi/digest.hpp"
+#include "adi/history.hpp"
+#include "adi/textproj_store.hpp"
 #include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -123,5 +127,80 @@ void trimmedMusicalOffset() {
               "heard trimmed Warp audio uses the musical source offset and ignores its old nanosecond pin");
     }
 }
+bool applyEdit(Fixture& fixture,const clip_edit::PreparedEdit& edit,const char* label) {
+    if(!edit.ok){std::printf("%s: %s\n",label,edit.error.c_str());check(false,label);return false;}
+    const auto committed=clip_edit::commitPrepared(*fixture.store,edit);
+    if(!committed.ok)std::printf("%s: %s\n",label,committed.error.c_str());
+    check(committed.ok,label);return committed.ok;
 }
-int main(){try{modesAndLoops();sourceRatesAndTempoBoundary();modelAndRefusals();trimmedMusicalOffset();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual warped audio callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+void warpedEditsKeepHeardFades() {
+    for(const auto width:{Precision::Float32,Precision::Float64}) {
+        Fixture f;auto& db=f.store->db();
+        db.exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=0,loop_len_ticks=5765760,length_ticks=11531520,fade_in_ticks=8648640,fade_out_ticks=8648640,fade_in_curve=2,fade_out_curve=4");
+        db.exec("UPDATE clip_playback_details SET in_tension=0.35,out_tension=-0.4");
+        db.exec("ALTER TABLE clip_warp_fade_domains ADD COLUMN future_blob BLOB NOT NULL DEFAULT X'00FF01'");
+        f.load(width);const auto original=f.render(50000,width);const auto before=digestProject(*f.store).text;
+        if(!applyEdit(f,clip_edit::prepareSplit(*f.store,7,17,{0,q/2},48000),"split a warped loop inside overlapping fades"))return;
+        check(db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains WHERE in_begin_ticks=0 AND in_end_ticks=8648640 AND out_begin_ticks=2882880 AND out_end_ticks=11531520 AND hex(future_blob)='00FF01'").getInt()==2,
+              "both split pieces retain the original source musical fade domains and future bytes");
+        check(f.session.refresh(*f.store),"refresh after Warp split");f.session.transport().locate(0);
+        check(f.session.problems().empty() && f.render(50000,width)==original,"Warp split preserves every heard sample through overlapping fades and source-loop wrapping");
+        if(!applyEdit(f,clip_edit::prepareSplit(*f.store,17,18,{0,3*q/4},48000),"split an already retained Warp fade again"))return;
+        check(f.session.refresh(*f.store),"refresh after repeated Warp split");f.session.transport().locate(0);
+        check(f.session.problems().empty() && f.render(50000,width)==original,"repeated split retains the first fade's shape and unrolled clock exactly");
+        const auto after=digestProject(*f.store).text;History history(*f.store);
+        check(history.undo().ok && history.undo().ok && digestProject(*f.store).text==before,"undo both Warp splits restores exact rows and absent domain metadata");
+        check(history.redo().ok && history.redo().ok && digestProject(*f.store).text==after,"redo restores literal Warp maps, retained fades and source offsets");
+        const auto copy=clip_edit::copyClip(*f.store,18,48000);
+        check(copy.ok,"copy a trimmed warped loop with retained fades");
+        if(!applyEdit(f,clip_edit::preparePaste(*f.store,copy,27,1,{0,4*q},48000),"paste warped material at a new musical position"))return;
+        check(db.execAndGet("SELECT hex(warp_markers) FROM audio_clips WHERE clip_id=27").getString()==db.execAndGet("SELECT hex(warp_markers) FROM audio_clips WHERE clip_id=18").getString() &&
+              db.execAndGet("SELECT out_end_ticks FROM clip_warp_fade_domains WHERE clip_id=27").getInt64()==2*q,
+              "paste preserves the map byte-for-byte and remaps the full typed fade child to the new clip");
+        const auto beforeHandle=digestProject(*f.store).text;
+        OpRequest handle;handle.opType="clip.setFades";handle.payload={{"id",18},{"out",{{"ticks",q/8},{"tension",0.2}}}};
+        check(OpJournal(*f.store).commit(handle).ok && db.execAndGet("SELECT out_begin_ticks IS NULL AND in_begin_ticks=0 FROM clip_warp_fade_domains WHERE clip_id=18").getInt()!=0,
+              "a Warp fade handle replaces only its chosen side's retained domain");
+        check(history.undo().ok && digestProject(*f.store).text==beforeHandle,"handle undo restores all retained domains and future bytes exactly");
+    }
+}
+void warpFadeProjectionAndSharing() {
+    Fixture f;auto& db=f.store->db();
+    db.exec("INSERT INTO clip_warp_fade_domains VALUES(7,0,100,200,300)");
+    auto old=SnapshotBuilder::fromStore(*f.store);
+    constexpr std::array<const char*,4> columns={"in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks"};
+    for(std::size_t field=0;field<4;++field) {
+        db.exec(std::string("UPDATE clip_warp_fade_domains SET ")+columns[field]+"="+columns[field]+"+1");
+        auto next=SnapshotBuilder::fromStore(*f.store,*old);const auto model=rows::readModel(*f.store);
+        check(next->tracks[0]->clips[0]!=old->tracks[0]->clips[0] && next->tracks[0]->clips[0]->fadeClockTicks[field]==model.clips[0].fadeClockTicks[field] &&
+              next->tracks[0]->clips[0]->fadeClockTicks[field]!=old->tracks[0]->clips[0]->fadeClockTicks[field],"each musical Warp fade coordinate participates in coherent projection and structural sharing");
+        old=std::move(next);
+    }
+    check(SnapshotBuilder::fromStore(*f.store,*old)->tracks[0]==old->tracks[0],"unchanged Warp fade metadata shares its complete track");
+    const auto text=textproj::projectStore(*f.store).text;
+    check(text.find("fadeInBeginTicks 1")!=std::string::npos && text.find("fadeOutEndTicks 301")!=std::string::npos,"text projection retains source musical domains including explicit zero/absence distinctions");
+    bool incomplete=false,backwards=false;
+    try{db.exec("UPDATE clip_warp_fade_domains SET in_end_ticks=NULL");}catch(const std::exception&){incomplete=true;}
+    try{db.exec("UPDATE clip_warp_fade_domains SET out_end_ticks=out_begin_ticks");}catch(const std::exception&){backwards=true;}
+    check(incomplete && backwards,"schema refuses partial or nonincreasing musical fade pairs");
+}
+void warpFadesAcrossTempoAndLinearSplit() {
+    for(const auto width:{Precision::Float32,Precision::Float64}) {
+        Fixture f;auto& db=f.store->db();
+        db.exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(2882880,60)");
+        db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=0,length_ns=750000000,fade_in_ticks=4324320,fade_out_ticks=4324320");
+        f.load(width);const auto original=f.render(38000,width);const auto before=digestProject(*f.store).text;
+        if(!applyEdit(f,clip_edit::prepareSplit(*f.store,7,17,{1,500000000},48000),"split linear placement inside a warped fade after a tempo junction"))return;
+        check(f.session.refresh(*f.store),"refresh a split linear Warp placement");f.session.transport().locate(0);
+        check(f.session.problems().empty() && f.render(38000,width)==original,"linear Warp split preserves heard fades across the project's tempo junction");
+        check(History(*f.store).undo().ok && digestProject(*f.store).text==before,"undo linear Warp split restores exact source clocks and placement domain");
+        const auto range=clip_edit::copyRange(*f.store,{{1},{0,q/4},{0,3*q/4}},48000);
+        check(range.ok && range.images.size()==1,"copy a partial Warp range through both fades");
+        const auto deletion=clip_edit::prepareDeleteRange(*f.store,{{1},{0,q/4},{0,3*q/4}},48000);
+        if(!applyEdit(f,deletion,"delete a partial Warp range with retained edges"))return;
+        check(db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains").getInt()==2 && History(*f.store).undo().ok && digestProject(*f.store).text==before,
+              "range deletion captures both edge domains and undoes without losing the original fade");
+    }
+}
+}
+int main(){try{modesAndLoops();sourceRatesAndTempoBoundary();modelAndRefusals();trimmedMusicalOffset();warpedEditsKeepHeardFades();warpFadeProjectionAndSharing();warpFadesAcrossTempoAndLinearSplit();}catch(const std::exception& error){check(false,error.what());}check(callbackAllocations.load()==0 && audio::callbackFileIo.load()==0,"actual warped audio callback allocates nothing and performs no file I/O");std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

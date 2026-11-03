@@ -126,7 +126,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 53> kTables{{
+    static constexpr std::array<TableCoverage, 54> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -137,6 +137,7 @@ std::span<const TableCoverage> coverage() {
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
         {"clip_playback_details", Coverage::Projected, "inlined onto its clip"},
+        {"clip_warp_fade_domains", Coverage::Projected, "retained musical fade clocks on the clip"},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
         {"event_streams", Coverage::Projected, "notes decoded; other stream kinds excluded"},
         {"markers", Coverage::Projected, ""},
@@ -448,6 +449,8 @@ Tree buildTree(const rows::Model& m) {
         if(c.sourceEndNs)a.raw("sourceEndNs "+std::to_string(*c.sourceEndNs));
         constexpr std::array<const char*,4> fadeClockNames={"fadeInBeginNs","fadeInEndNs","fadeOutBeginNs","fadeOutEndNs"};
         for(std::size_t i=0;i<4;++i)if(c.fadeClockNs[i])a.raw(std::string(fadeClockNames[i])+" "+std::to_string(*c.fadeClockNs[i]));
+        constexpr std::array<const char*,4> warpFadeNames={"fadeInBeginTicks","fadeInEndTicks","fadeOutBeginTicks","fadeOutEndTicks"};
+        for(std::size_t i=0;i<4;++i)if(c.fadeClockTicks[i])a.raw(std::string(warpFadeNames[i])+" "+std::to_string(*c.fadeClockTicks[i]));
         a.flag("loop", c.loopEnabled);
         if (c.loopStartTicks) a.raw("loopStart " + renderDuration(c.loopStartTicks));
         if (c.loopLenTicks) a.raw("loopLen " + renderDuration(*c.loopLenTicks));

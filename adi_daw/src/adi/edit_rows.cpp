@@ -12,9 +12,9 @@
 
 namespace adi::edit {
 namespace {
-constexpr std::array<RowSpec,18> specs={{
+constexpr std::array<RowSpec,19> specs={{
     {"clips","id"},{"event_streams","id"},{"note_expression","id"},{"audio_clips","clip_id"},
-    {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_playback_details","clip_id"},{"clip_properties","clip_id"},
+    {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"},{"clip_properties","clip_id"},
     {"tempo_map","id"},{"time_signature_map","id"},{"key_map","id"},{"markers","id"},
     {"marker_details","marker_id"},{"project","id"},{"arranger_sections","id"},
     {"key_map_tunings","key_map_id"},{"key_map_degrees","key_map_id","degree"},{"arranger_chain","id"}

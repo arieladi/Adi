@@ -103,13 +103,41 @@ Payload& ensurePlayback(Store& store,Payload& image) {
     image["children"]["clip_playback_details"].push_back(std::move(row));
     return image["children"]["clip_playback_details"][0];
 }
+void retainDetails(edit::RowEdits& plan,const Payload& image) {
+    const auto id=detail::signedInteger(image.at("id"));
+    for(const char* table:{"clip_playback_details","clip_warp_fade_domains"})
+        if(image.at("children").contains(table))
+            for(const auto& row:image.at("children").at(table))plan.set(table,id,row);
+}
+void freezeWarpFades(Store& store,Payload& image,const edit::TimeMap& time) {
+    const auto& row=image.at("row");
+    const auto offset=detail::signedInteger(row.at("content_offset_ticks"));
+    const auto origin=originTicks(row,time);
+    const auto last=row.at("time_base")==0?edit::addTime(origin,detail::signedInteger(row.at("length_ticks"))):
+        time.ticks(edit::addTime(detail::signedInteger(row.at("pos_ns")),detail::signedInteger(row.at("length_ns"))));
+    if(offset<0 || last<origin)throw std::runtime_error("warped clip needs a valid source clock");
+    const auto in=detail::signedInteger(row.at("fade_in_ticks")),out=detail::signedInteger(row.at("fade_out_ticks"));
+    const auto span=last-origin;
+    if(in<0 || out<0 || in>span || out>span)throw std::runtime_error("warped clip fades exceed its visible musical span");
+    if(in==0 && out==0)return;
+    auto& records=image["children"]["clip_warp_fade_domains"];
+    if(records.empty())records.push_back(edit::defaultRow(store.db(),"clip_warp_fade_domains",{{"clip_id",image.at("id")}}));
+    auto& domain=records[0];
+    if(in>0 && domain.at("in_begin_ticks").is_null()) {
+        domain["in_begin_ticks"]=offset;domain["in_end_ticks"]=edit::addTime(offset,in);
+    }
+    if(out>0 && domain.at("out_begin_ticks").is_null()) {
+        const auto end=edit::addTime(offset,span);
+        domain["out_begin_ticks"]=end-out;domain["out_end_ticks"]=end;
+    }
+}
 void freezeAudio(Store& store,Payload& image,const edit::TimeMap& time,double rate) {
     const auto& row=image.at("row");
     if(row.at("kind")!="audio")return;
     if(!row.at("alias_of").is_null())throw std::runtime_error("audio alias editing needs alias resolution");
     const auto& sources=image.at("children").at("audio_clips");
     if(sources.empty())return; // keep unattached/missing metadata editable
-    if(sources[0].at("warp_enabled")!=0)throw std::runtime_error("warped source editing needs the warp renderer");
+    if(sources[0].at("warp_enabled")!=0){freezeWarpFades(store,image,time);return;}
     const auto origin=originTicks(row,time);
     auto& clock=ensurePlayback(store,image);
     auto readSample=[&](const char* column,std::int64_t ticks) {
@@ -228,7 +256,7 @@ void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelect
             if(first<begin) {
                 auto tail=splitImage(store,image,ids.next("clips"),{base,begin},time,rate,ids);
                 plan.set("clips",id,image.at("row"));
-                if(const auto* clock=playback(image))plan.set("clip_playback_details",id,*clock);
+                retainDetails(plan,image);
                 if(last>end) {
                     auto after=splitImage(store,tail,ids.next("clips"),{base,end},time,rate,ids);createImage(plan,after);
                 }
@@ -291,7 +319,7 @@ PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t rightI
         auto image=captureDeleted(context,sourceId);edit::TimeMap time(store.db());
         CopyIds ids(store.db());auto right=splitImage(store,image,rightId,point,time,referenceRate,ids);
         edit::RowEdits plan(store.db());plan.set("clips",sourceId,image.at("row"));
-        if(const auto* clock=playback(image))plan.set("clip_playback_details",sourceId,*clock);
+        retainDetails(plan,image);
         createImage(plan,right);packet(store,result,"clip.split","Split Clip",sourceId,plan);
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
@@ -328,7 +356,7 @@ PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t tic
                 right["row"][position]=edit::addTime(at,gap);createImage(plan,right);
             }
             plan.set("clips",id,image.at("row"));
-            if(const auto* clock=playback(image))plan.set("clip_playback_details",id,*clock);
+            retainDetails(plan,image);
         }
         for(const char* table:{"tempo_map","time_signature_map","key_map"}) {
             SQLite::Statement points(db,"SELECT id FROM "+std::string(table)+" WHERE pos_ticks>=? AND pos_ticks<>0 ORDER BY pos_ticks");
@@ -427,7 +455,7 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
             }
             if(first<end)continue;
             Payload image={{"id",id},{"row",*core},{"children",Payload::object()}};
-            for(const char* child:{"audio_clips","clip_playback_details","clip_properties"}) {
+            for(const char* child:{"audio_clips","clip_playback_details","clip_warp_fade_domains","clip_properties"}) {
                 image["children"][child]=Payload::array();
                 if(std::string(child)=="clip_properties" && !properties)continue;
                 if(const auto value=plan.current(child,id))image["children"][child].push_back(*value);
@@ -435,7 +463,7 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
             // Resolve the old source clock before changing its timeline origin.
             freezeAudio(store,image,time,referenceRate);
             image["row"][position]=first-(end-begin);plan.set("clips",id,image.at("row"));
-            if(const auto* clock=playback(image))plan.set("clip_playback_details",id,*clock);
+            retainDetails(plan,image);
         }
         for(const char* table:{"tempo_map","time_signature_map","key_map"}) {
             std::vector<Payload> points;

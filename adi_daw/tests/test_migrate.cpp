@@ -161,6 +161,8 @@ void testUpgradeEachMinor() {
             if (!s) continue;
             check(s->upgradedFromMinor() == minor, v + ": reports what it upgraded from");
             check(s->schemaMinor() == kSchemaMinor, v + ": now reports the current minor");
+            check(s->db().execAndGet("SELECT count(*) FROM clip_warp_fade_domains").getInt() == 0,
+                  v + ": migration creates no retained Warp fades for existing clips");
             check(s->db().execAndGet("PRAGMA user_version").getInt() == kUserVersion,
                   v + ": user_version is current");
             check(s->db().execAndGet("SELECT value FROM adi_meta WHERE key = 'schema_minor'")

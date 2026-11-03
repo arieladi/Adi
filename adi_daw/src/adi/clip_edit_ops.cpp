@@ -67,6 +67,10 @@ bool fadeInverse(OpContext& context,const Payload& payload,Payload& inverse,std:
         if(shape) {
             const auto row=detail::captureRow(context.db,"clip_playback_details","clip_id",clip.id);
             before["shape"]=row?*row:Payload{};
+            if(!payload.contains("_restore") || payload.at("_restore").contains("warpShape")) {
+                const auto warp=detail::captureRow(context.db,"clip_warp_fade_domains","clip_id",clip.id);
+                before["warpShape"]=warp?*warp:Payload{};
+            }
         }
         inverse={{"id",clip.id},{"_restore",before}};return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
@@ -97,6 +101,8 @@ bool fadeApply(OpContext& context,const Payload& payload,std::string& error) {
                 const std::string prefix=side==0?"in":"out";
                 SQLite::Statement reset(context.db,"UPDATE clip_playback_details SET "+prefix+"_begin_ns=NULL,"+prefix+"_end_ns=NULL WHERE clip_id=?");
                 reset.bind(1,clip.id);reset.exec();
+                SQLite::Statement resetWarp(context.db,"UPDATE clip_warp_fade_domains SET "+prefix+"_begin_ticks=NULL,"+prefix+"_end_ticks=NULL WHERE clip_id=?");
+                resetWarp.bind(1,clip.id);resetWarp.exec();
             }
             if(!restoring && edit.contains("tension")) {
                 SQLite::Statement insert(context.db,"INSERT OR IGNORE INTO clip_playback_details(clip_id) VALUES(?)");insert.bind(1,clip.id);insert.exec();
@@ -117,10 +123,20 @@ bool fadeApply(OpContext& context,const Payload& payload,std::string& error) {
                 detail::restoreRow(context.db,"clip_playback_details",shape,exists?"clip_id":"");
             }
         }
+        if(restoring && payload.at("_restore").contains("warpShape")) {
+            const auto& shape=payload.at("_restore").at("warpShape");
+            if(shape.is_null()) {
+                SQLite::Statement erase(context.db,"DELETE FROM clip_warp_fade_domains WHERE clip_id=?");erase.bind(1,clip.id);erase.exec();
+            } else {
+                if(detail::signedInteger(shape.at("clip_id"))!=clip.id)throw std::runtime_error("captured Warp fade belongs to another clip");
+                const bool exists=detail::captureRow(context.db,"clip_warp_fade_domains","clip_id",clip.id).has_value();
+                detail::restoreRow(context.db,"clip_warp_fade_domains",shape,exists?"clip_id":"");
+            }
+        }
         return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
 }
-const std::set<std::string> clipTables={"clips","event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_playback_details"};
+const std::set<std::string> clipTables={"clips","event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_playback_details","clip_warp_fade_domains"};
 void validDuplicate(const Payload& payload) {
     const auto id=detail::signedInteger(payload.at("id"));std::size_t roots=0;
     for(const auto& change:payload.at("changes")) {
@@ -165,7 +181,7 @@ void validSplit(const Payload& payload,bool joining) {
     for(auto it=sourceBefore->begin();it!=sourceBefore->end();++it)
         if(!changedCore.contains(it.key()) && sourceAfter->at(it.key())!=it.value())
             throw std::runtime_error("split cannot change unrelated clip fields");
-    const std::set<std::string> clocks={"content_offset_ns","loop_begin_ns","loop_end_ns","source_end_ns","in_begin_ns","in_end_ns","out_begin_ns","out_end_ns"};
+    const std::set<std::string> clocks={"content_offset_ns","loop_begin_ns","loop_end_ns","source_end_ns","in_begin_ns","in_end_ns","out_begin_ns","out_end_ns","in_begin_ticks","in_end_ticks","out_begin_ticks","out_end_ticks"};
     for(const auto& change:payload.at("changes")) {
         const auto table=change.at("table").get<std::string>();
         if(!clipTables.contains(table))throw std::runtime_error("split cannot change unrelated tables");
@@ -173,7 +189,7 @@ void validSplit(const Payload& payload,bool joining) {
         for(const auto* row:{&change.at("before"),&change.at("after")})if(!row->is_null()) {
             const auto owner=detail::signedInteger(row->at("clip_id"));
             if(owner!=id && owner!=rightId)throw std::runtime_error("split child belongs to another clip");
-            if(owner==id && table!="clip_playback_details")throw std::runtime_error("split cannot rewrite the original material");
+            if(owner==id && table!="clip_playback_details" && table!="clip_warp_fade_domains")throw std::runtime_error("split cannot rewrite the original material");
         }
         const auto& before=change.at("before");const auto& after=change.at("after");
         if(before.is_object() && after.is_object() && detail::signedInteger(before.at("clip_id"))==id)

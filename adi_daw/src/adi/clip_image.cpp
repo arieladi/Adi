@@ -9,9 +9,9 @@
 
 namespace adi::clip_edit {
 namespace {
-constexpr std::array<ChildTable,7> children={{
+constexpr std::array<ChildTable,8> children={{
     {"event_streams","id"},{"note_expression","id"},{"audio_clips","clip_id"},
-    {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_properties","clip_id"},{"clip_playback_details","clip_id"}
+    {"automation_data","id"},{"automation_segment_ranges","id"},{"clip_properties","clip_id"},{"clip_playback_details","clip_id"},{"clip_warp_fade_domains","clip_id"}
 }};
 }
 std::span<const ChildTable> childTables(){return children;}

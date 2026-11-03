@@ -80,9 +80,10 @@ raw time, including coincident points. Future record strides requiring unknown
 boundary fields refuse. Clip envelopes are copied unchanged; their playback
 is still the separate phase D engine item.
 
-Split/copy of an attached warped clip and split of aliases return named
-refusals: retaining a warped source's fade clock during editing is the next
-increment, and aliases remain unsupported by the renderer. Splitting through
+Split/copy also supports attached Warp audio. Its retained fade domains use
+source musical ticks (schema 1.11); unwarped audio retains nanoseconds. The
+source map and window stay unchanged, and a new placement follows its tempo.
+Aliases still return a named refusal. Splitting through
 a fade retains the original envelope on both pieces, with no new internal
 edge fade. A subsequent handle edit replaces that side's retained domain;
 undo restores it exactly. The captured clip.join op restores its split; this

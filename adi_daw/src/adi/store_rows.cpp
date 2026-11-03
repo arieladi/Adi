@@ -252,6 +252,12 @@ Model readModel(const Store& store) {
               }
           });
 
+    query(m,db,"clip_warp_fade_domains","SELECT clip_id,in_begin_ticks,in_end_ticks,out_begin_ticks,out_end_ticks FROM clip_warp_fade_domains",
+          [&](const SQLite::Statement& st) {
+              if(const auto it=fadeClipOf.find(st.getColumn(0).getInt64());it!=fadeClipOf.end())
+                  for(std::size_t side=0;side<4;++side)it->second->fadeClockTicks[side]=optInt(st,1+static_cast<int>(side));
+          });
+
     // N33 is an independent additive schema branch. Honor a present End
     // marker when a combined file is read; no properties row means legacy.
     bool clipPropertiesPresent=false;

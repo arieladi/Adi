@@ -449,6 +449,13 @@ supported commands and explicit refusals.
 | `audioClip.setReverse` | e | S | sym | P1 |
 | `audioClip.setChannelMode` | e | S | sym | P2 |
 
+**Warp material edits (N17).** The captured clip/range/Time producers also
+accept attached Warp audio. They preserve AWRP/source windows and capture
+source musical fade domains in clip_warp_fade_domains (schema 1.11), so Split
+retains the original curve on both pieces with no new internal edge fade.
+clip.setFades clears the selected side's retained domain and captures its
+complete typed row in the inverse, alongside the existing nanosecond shape.
+
 **Captured Warp import (N17).** `clip_edit::prepareImportAudio` with
 `ImportOptions::warp` analyzes the source off the callback, then captures
 `audio_clips.warp_markers` (AWRP), source trim, mode and musical clip length

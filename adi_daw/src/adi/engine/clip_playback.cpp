@@ -477,10 +477,12 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(!a->warpEnabled && row.sourceEndNs)clip->length=std::min(clip->length,fixedTime(*row.sourceEndNs));
                 else if(row.endMarkerTicks)clip->length=std::min(clip->length,sourceDuration(*row.endMarkerTicks));
             }
+            const auto& fadeClock=a->warpEnabled?row.fadeClockTicks:row.fadeClockNs;
             for(std::size_t i=0;i<4;i+=2) {
-                if(row.fadeClockNs[i].has_value()!=row.fadeClockNs[i+1].has_value())throw std::runtime_error("incomplete fade clock");
-                if(!a->warpEnabled && row.fadeClockNs[i]) {
-                    const auto first=fixedTime(*row.fadeClockNs[i]),last=fixedTime(*row.fadeClockNs[i+1]);
+                if(fadeClock[i].has_value()!=fadeClock[i+1].has_value())throw std::runtime_error("incomplete fade clock");
+                if(fadeClock[i]) {
+                    const auto first=a->warpEnabled?sourceDuration(*fadeClock[i]):fixedTime(*fadeClock[i]);
+                    const auto last=a->warpEnabled?sourceDuration(*fadeClock[i+1]):fixedTime(*fadeClock[i+1]);
                     if(last<=first)throw std::runtime_error("fade clock has no sample extent");
                     clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
                 }

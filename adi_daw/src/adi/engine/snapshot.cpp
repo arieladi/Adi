@@ -29,7 +29,7 @@ bool same(const ClipNode& a, const ClipNode& b) {
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
            a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
-           a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs;
+           a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks;
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
@@ -182,7 +182,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             snap->meters.insert(snap->meters.begin(), {0, 4, 4});
     }
 
-    struct FadeShape {std::optional<double> in,out;std::optional<std::int64_t> offset,loopBegin,loopLength,end;std::array<std::optional<std::int64_t>,4> clock{};};
+    struct FadeShape {std::optional<double> in,out;std::optional<std::int64_t> offset,loopBegin,loopLength,end;std::array<std::optional<std::int64_t>,4> clock{},warpClock{};};
     std::map<std::int64_t,FadeShape> fadeShapes;
     try {
         SQLite::Statement st(db,"SELECT clip_id,in_tension,out_tension,content_offset_ns,loop_begin_ns,loop_end_ns,source_end_ns,in_begin_ns,in_end_ns,out_begin_ns,out_end_ns FROM clip_playback_details");
@@ -195,6 +195,14 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if(!st.getColumn(5).isNull())shape.loopLength=st.getColumn(5).getInt64();
             if(!st.getColumn(6).isNull())shape.end=st.getColumn(6).getInt64();
             for(std::size_t i=0;i<4;++i)if(!st.getColumn(7+static_cast<int>(i)).isNull())shape.clock[i]=st.getColumn(7+static_cast<int>(i)).getInt64();
+        }
+    } catch(const std::exception&) {}
+
+    try {
+        SQLite::Statement st(db,"SELECT clip_id,in_begin_ticks,in_end_ticks,out_begin_ticks,out_end_ticks FROM clip_warp_fade_domains");
+        while(st.executeStep()) {
+            auto& shape=fadeShapes[st.getColumn(0).getInt64()];
+            for(std::size_t i=0;i<4;++i)if(!st.getColumn(1+static_cast<int>(i)).isNull())shape.warpClock[i]=st.getColumn(1+static_cast<int>(i)).getInt64();
         }
     } catch(const std::exception&) {}
 
@@ -219,7 +227,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if(const auto it=fadeShapes.find(c.id);it!=fadeShapes.end()) {
                 c.fadeInTension=it->second.in;c.fadeOutTension=it->second.out;
                 c.contentOffsetNs=it->second.offset;c.loopBeginNs=it->second.loopBegin;
-                c.loopEndNs=it->second.loopLength;c.sourceEndNs=it->second.end;c.fadeClockNs=it->second.clock;
+                c.loopEndNs=it->second.loopLength;c.sourceEndNs=it->second.end;c.fadeClockNs=it->second.clock;c.fadeClockTicks=it->second.warpClock;
             }
 
             const auto prev = prevClips.find(c.id);

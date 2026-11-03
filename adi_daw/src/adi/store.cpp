@@ -78,6 +78,7 @@ const std::vector<MigrationStep>& migrationSteps() {
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
         {10, {"clip_playback_details","automation_segment_ranges"}}, // continuous fade handles (N17)
+        {11, {"clip_warp_fade_domains"}}, // retained musical Warp fades (N17)
     };
     return steps;
 }

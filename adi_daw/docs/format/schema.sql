@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.10 (see SPEC.md and frozen history/)
+--  Normative schema, version 1.11 (see SPEC.md and frozen history/)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1010;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1011;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '10'),
+    ('schema_minor',        '11'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -404,6 +404,20 @@ CREATE TABLE clip_playback_details (
            (out_begin_ns IS NOT NULL AND out_end_ns IS NOT NULL AND out_end_ns > out_begin_ns)),
     CHECK ((loop_begin_ns IS NULL) = (loop_end_ns IS NULL)),
     CHECK (loop_end_ns > loop_begin_ns)
+) STRICT;
+
+-- Since 1.11 (N17): retained Warp fades use the unrolled source's musical
+-- clock. They remain musical when a tempo edit rebuilds prepared PCM.
+CREATE TABLE clip_warp_fade_domains (
+    clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    in_begin_ticks INTEGER CHECK (in_begin_ticks >= 0),
+    in_end_ticks INTEGER CHECK (in_end_ticks >= 0),
+    out_begin_ticks INTEGER CHECK (out_begin_ticks >= 0),
+    out_end_ticks INTEGER CHECK (out_end_ticks >= 0),
+    CHECK ((in_begin_ticks IS NULL AND in_end_ticks IS NULL) OR
+           (in_begin_ticks IS NOT NULL AND in_end_ticks IS NOT NULL AND in_end_ticks > in_begin_ticks)),
+    CHECK ((out_begin_ticks IS NULL AND out_end_ticks IS NULL) OR
+           (out_begin_ticks IS NOT NULL AND out_end_ticks IS NOT NULL AND out_end_ticks > out_begin_ticks))
 ) STRICT;
 
 CREATE TABLE event_streams (

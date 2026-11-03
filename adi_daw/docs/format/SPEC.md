@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1010;          -- schema 1.10
+PRAGMA user_version   = 1011;          -- schema 1.11
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -1054,6 +1054,19 @@ is absent together or has end > begin >= 0. Fade-in progress is
 even when Split cuts through it. A fade handle edit clears that side's retained
 domain and uses its new local length. Snapshots expose all clocks and tensions;
 the projection includes explicit zero. Every field participates in sharing.
+
+Since schema **1.11**, clip_warp_fade_domains carries the corresponding
+in_begin_ticks/in_end_ticks/out_begin_ticks/out_end_ticks pairs for Warp audio.
+They name the unrolled source musical clock, with the same nullable-pair and
+nonnegative increasing constraints. They never reuse the nanosecond columns.
+Playback projects them through the tempo integral at placement minus the
+source content offset; a tempo edit therefore rebuilds their sample domains.
+Split/copy retains both original pairs on every piece without creating an
+internal edge fade, including inside a loop or an overlapping fade. A handle
+edit clears only that side's musical pair; its inverse captures the complete
+optional typed row. No row preserves local fade behavior. All four values
+participate in snapshot sharing and the textual projection. Schema 1.10 is
+frozen unchanged, and older read-only files receive an empty TEMP projection.
 
 The automation_segment_ranges table identifies a native automation_data row
 and its zero-based storage record ordinal, with the same nullable clip owner.
