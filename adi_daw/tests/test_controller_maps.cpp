@@ -103,9 +103,45 @@ void run() {
     remove.payload["id"]=5;
     check(journal.commit(remove).ok && history.undo().ok && readControllerBindings(*s)[0].binding==b,"null protocol fields restored exactly");
 }
+void directTargets() {
+    test::TempDirectory temporary("controller","direct");auto store=project(temporary.path()/"direct.adi");auto replay=project(temporary.path()/"replay.adi");
+    ControllerPolicy policy;policy.remoteEnabled=true;const ControllerCc source{"Remote knobs",3,12};const std::array observations{0,20,70,127};std::string error;
+    const auto before=digestProject(*store).text;
+    auto pan=learnControllerTarget(10,"track",1,"pan",source,observations,policy,error);
+    check(pan && readControllerBindings(*store).empty() && digestProject(*store).text==before && store->db().execAndGet("SELECT count(*) FROM automation_lanes WHERE param_ref='pan'").getInt()==0,
+        "control target is prepared without an automation lane or project writes");
+    if(!pan)return;
+    check(pan->payload.at("binding").at("target_kind")=="track" && pan->payload.at("binding").at("target_id")==1 && pan->payload.at("binding").at("target_param")=="pan", "direct Learn captures the exact target address");
+    auto lane=learnController(*store,11,2,source,observations,policy,error);auto direct=learnControllerTarget(11,"track",1,"volume",source,observations,policy,error);
+    check(lane && direct && lane->payload==direct->payload,"lane and direct Learn share one detection and policy implementation");
+    policy.takeover=ControllerTakeover::Scale;policy.remoteEnabled=false;policy.focusDial=source;
+    check(OpJournal(*store).commit(*pan).ok && OpJournal(*replay).commit(*pan).ok && readControllerBindings(*store).front().binding==readControllerBindings(*replay).front().binding && digestProject(*store).text==digestProject(*replay).text,
+        "captured direct binding replays independently of later machine policy");
+    check(readControllerBindings(*store).front().binding.at("takeover")==1 && controllerBindingShadowed(readControllerBindings(*store).front(),policy),
+        "captured absolute takeover stays intact and current Focus reservation still shadows dispatch");
+    check(History(*store).undo().ok && readControllerBindings(*store).empty() && digestProject(*store).text==before && History(*store).redo().ok,"direct binding undo restores absence and redo restores the target");
+    policy.remoteEnabled=true;policy.focusDial.reset();
+    const auto relative=learnControllerTarget(12,"track",1,"volume",source,std::array{127,1},policy,error);
+    check(relative && relative->payload.at("binding").at("mode")==1 && relative->payload.at("binding").at("takeover")==0,"relative direct Learn bypasses absolute takeover");
+    policy.focusDial=source;check(!learnControllerTarget(13,"track",1,"pan",source,observations,policy,error),"direct target refuses reserved Focus Dial");
+    policy.focusDial.reset();policy.remoteEnabled=false;check(!learnControllerTarget(13,"track",1,"pan",source,observations,policy,error),"direct target requires a Remote-enabled port");
+    policy.remoteEnabled=true;
+    check(!learnControllerTarget(0,"track",1,"pan",source,observations,policy,error) &&
+        !learnControllerTarget(13,"unknown",1,"pan",source,observations,policy,error) &&
+        !learnControllerTarget(13,"track",0,"pan",source,observations,policy,error) &&
+        !learnControllerTarget(13,"track",1,"",source,observations,policy,error) &&
+        !learnControllerTarget(13,"track",1,"pan",{"Remote knobs",0,12},observations,policy,error) &&
+        !learnControllerTarget(13,"track",1,"pan",source,std::array{128},policy,error) &&
+        !learnControllerTarget(13,"track",1,"pan",source,std::span<const int>{},policy,error),"invalid binding/address/CC/observations refuse during preparation");
+    policy.takeover=static_cast<ControllerTakeover>(99);check(!learnControllerTarget(13,"track",1,"pan",source,observations,policy,error),"unknown takeover policy refuses");
+    policy.takeover=ControllerTakeover::Pickup;
+    const auto missing=learnControllerTarget(13,"track",999,"pan",source,observations,policy,error);const auto current=digestProject(*store).text;
+    check(missing && !OpJournal(*store).commit(*missing).ok && digestProject(*store).text==current,"commit validates current target existence without creating a lane");
+}
+
 }
 int main() {
-    try { run(); } catch(const std::exception& e) { check(false,e.what()); }
+    try { run(); directTargets(); } catch(const std::exception& e) { check(false,e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);
     return failures?1:0;
 }
