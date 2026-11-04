@@ -2877,6 +2877,37 @@ void footRows(AppCommands &commands, const std::filesystem::path &dir) {
             juce::PNGImageFormat{}.writeImageToStream(cut, *stream);
     }
 }
+// New, in the window: Live's default Set as the store makes it (#307, ADR-0209 §10 d10), the
+// tracks then Main, and nothing to undo.
+void newProject(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "new.adi", true, {}, error);
+    check(document != nullptr, "New opens a project");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "new");
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 1} &&
+              root.reader().findTrack(2)->name == "1 MIDI" && root.reader().findTrack(5)->name == "4 Audio",
+          "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, then Main");
+    check(!root.canUndo(false) && root.undoTitle(false) == "Undo", "and has nothing to undo, as Live");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-new.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
@@ -3933,7 +3964,25 @@ int main(int argc, char **argv) {
     }
     // Step 7.2's application half (#198): a real document, its engine and its keys.
     std::string documentError;
-    auto document = ProjectDocument::open(temp.path() / "integrated.adi", true, {}, documentError);
+    // The scene opens a project as an earlier build made it: Main by a first "New project" step,
+    // the floor undo stops at, and nothing else. New itself, Live's default Set at the history's
+    // root (#307), is the document test's.
+    {
+        StoreError made{};
+        auto earlier = Store::create(temp.path() / "integrated.adi", made);
+        check(earlier != nullptr, "the integrated scene's project is made");
+        if (earlier) {
+            engine::ProjectView earlierView;
+            earlierView.refresh(*earlier);
+            OpSubmitter earlierOps(*earlier, earlierView);
+            OpRequest main;
+            main.opType = "track.create";
+            main.payload = {{"id", 1}, {"kind", "master"}, {"name", "Main"}};
+            main.label = kNewProjectLabel;
+            check(earlierOps.submit(std::move(main)).ok, "with Main, by its first step");
+        }
+    }
+    auto document = ProjectDocument::open(temp.path() / "integrated.adi", false, {}, documentError);
     check(document != nullptr, "application document opens");
     if (document) {
         AdiRootComponent integrated(document->view(), document->ops(), document->mailbox(),
@@ -5624,6 +5673,7 @@ int main(int argc, char **argv) {
     liveParity(commands, temp.path(), write);
     groupTracks(commands, temp.path());
     footRows(commands, temp.path());
+    newProject(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     rangeSelection(commands, temp.path());
