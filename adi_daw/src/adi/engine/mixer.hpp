@@ -114,6 +114,14 @@ struct StripConfig {
     std::int64_t delayRate = 48000;   ///< the project's rate
 };
 
+/// Linear post-fader levels, independent relaxed loads for the UI frame.
+/// Peak is the largest channel magnitude; RMS averages all channel samples.
+/// No scope subscription, snapshot rebuild or SQL read is needed.
+struct StripMeter {
+    std::atomic<float> peak{0}, rms{0};
+};
+static_assert(std::atomic<float>::is_always_lock_free);
+
 class StripNode final : public Node {
 public:
     /// Message thread: the model's values. `audible` is mute and solo together.
@@ -162,6 +170,9 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
+    [[nodiscard]] const StripMeter& meter() const noexcept { return meter_; }
+    /// Driver stopped: clear the published readout without touching render state.
+    void release() override;
 
     /// Message thread: the next block starts AT the target, as a new strip
     /// does, rather than ramping from whatever this one last played.
@@ -191,6 +202,13 @@ private:
     template <typename T>
     void writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
                   const T* const* audio) noexcept;
+    template <typename T>
+    void writeMeter(const NodeIo& io, const T* const* audio) noexcept;
+
+    StripMeter meter_;
+    // Audio thread only. Accumulate segments of one callback; offset zero
+    // starts the next. Publication after each segment describes its prefix.
+    double meterPeak_ = 0, meterEnergy_ = 0, meterCount_ = 0;
 
     std::atomic<ScopeTap*> tap_{nullptr};
     std::atomic<ScopeTap*> preFaderTap_{nullptr};
@@ -552,6 +570,9 @@ public:
 
     /// The strip for a track the plan realises, or null.
     [[nodiscard]] StripNode* stripFor(std::int64_t trackId) noexcept;
+    [[nodiscard]] const StripNode* stripFor(std::int64_t trackId) const noexcept {
+        return const_cast<MixerStrips*>(this)->stripFor(trackId);
+    }
 
     /// The node a planned send plays through (ADR-0203 d3), by its routing
     /// row, or null. One per row, kept for the session as a strip is, so a

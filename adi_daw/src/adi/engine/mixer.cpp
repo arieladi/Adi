@@ -191,14 +191,17 @@ void StripNode::process(const NodeIo& io) noexcept {
         writeTap<double>(preFaderTap_, io, io.in64);
         processGains<double>(io, io.in64, io.out64);
         writeTap<double>(tap_, io, io.out64);
+        writeMeter<double>(io, io.out64);
         return;
     }
     writeTap<float>(preFaderTap_, io, io.in);
     processGains<float>(io, io.in, io.out);
     writeTap<float>(tap_, io, io.out);
+    writeMeter<float>(io, io.out);
 }
 
 void StripNode::silenceTaps(const NodeIo& io) noexcept {
+    writeMeter<float>(io, nullptr);
     writeTap<float>(preFaderTap_, io, nullptr);
     writeTap<float>(tap_, io, nullptr);
     // Asleep (ADR-0043): the input is silent, so a gain set meanwhile -- a
@@ -208,6 +211,32 @@ void StripNode::silenceTaps(const NodeIo& io) noexcept {
     const Gains d = desired(lanes_.load(std::memory_order_acquire), io.blockOffset);
     if (lastWidth_ == 32) ramp32_.land(d.g);
     else if (lastWidth_ == 64) ramp64_.land(d.w);
+}
+
+void StripNode::release() {
+    meter_.peak.store(0, std::memory_order_relaxed);
+    meter_.rms.store(0, std::memory_order_relaxed);
+}
+
+template <typename T>
+void StripNode::writeMeter(const NodeIo& io, const T* const* audio) noexcept {
+    if (io.frames <= 0 || io.channels <= 0) return;
+    if (io.blockOffset == 0) meterPeak_ = meterEnergy_ = meterCount_ = 0;
+    constexpr double ceiling = std::numeric_limits<float>::max();
+    for (std::int32_t c = 0; c < io.channels; ++c) {
+        if (audio == nullptr || audio[c] == nullptr) continue;
+        for (std::int32_t i = 0; i < io.frames; ++i) {
+            const double sample = static_cast<double>(audio[c][io.blockOffset+i]);
+            // Bound only the readout, never the audio. Wide audio can exceed
+            // float's range; neither that nor a bad device may publish NaN/Inf.
+            const double magnitude = std::isnan(sample) ? 0.0 : std::min(std::abs(sample), ceiling);
+            meterPeak_ = std::max(meterPeak_, magnitude);
+            meterEnergy_ += magnitude*magnitude;
+        }
+    }
+    meterCount_ += static_cast<double>(io.frames)*io.channels;
+    meter_.peak.store(static_cast<float>(meterPeak_), std::memory_order_relaxed);
+    meter_.rms.store(static_cast<float>(std::sqrt(meterEnergy_/meterCount_)), std::memory_order_relaxed);
 }
 
 template <typename T>

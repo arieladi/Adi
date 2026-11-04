@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <chrono>
 namespace adi::ui {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
@@ -11,7 +12,10 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
                                                        std::string &error) {
     try {
         StoreError result{};
-        auto store = create ? Store::create(path, result) : Store::open(path, result);
+        // New is the store's: the project row, Main and Live's default Set (two MIDI and two audio
+        // tracks), their strips and the 120 BPM, 4/4 maps, written as the history's root, not an
+        // undo step (#307, N2; Live 12 manual 5.4.2; ADR-0209 §10 d10).
+        auto store = create ? Store::createNewProject(path, result) : Store::open(path, result);
         if (!store) {
             error = "Cannot open project: " + std::string(toString(result));
             return {};
@@ -20,21 +24,9 @@ std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::pa
         auto document = std::unique_ptr<ProjectDocument>(new ProjectDocument(
             std::move(store), std::string(reinterpret_cast<const char *>(stem.data()), stem.size())));
         document->view_.refresh(*document->store_);
+        // A project made by an earlier build began its history with a "New project" step that made
+        // Main; that step stays the floor undo stops at. A project made now has no such step.
         document->ops_.protectRoot(kNewProjectLabel);
-        if (create) {
-            // A new project gets its Main track through the op every track is made
-            // with: step 7 writes no rows of its own (STEP-7-PLAN §3.0). Store::create
-            // writes neither the project row nor the Main track, and a bootstrap that
-            // is not an undo step is the engine lane's (collab/window.md).
-            OpRequest main;
-            main.opType = "track.create";
-            main.payload = {{"id", 1}, {"kind", "master"}, {"name", "Main"}};
-            main.label = kNewProjectLabel;
-            if (const auto made = document->ops_.submit(std::move(main)); !made) {
-                error = made.error;
-                return {};
-            }
-        }
         engine::SessionSpec spec;
         spec.sampleRate = document->view_.current()->sampleRate;
         if (!document->session_.load(*document->store_, std::move(loader), spec)) {
@@ -123,7 +115,9 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
 bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).
-    const auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
+    const auto id = std::max(out.firstFreeId,
+                             store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64());
     OpRequest captured;
     const auto result = media::prepareImport(*store_, pathFromUtf8(utf8Path), id, nowUtc, captured);
     if (!result.ok) {
