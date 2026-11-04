@@ -29,6 +29,10 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
+#include "adi/ui/meter_edits.hpp"
+#include "adi/ui/momentary_latch.hpp"
+#include "adi/ui/tap_tempo.hpp"
+#include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/send_edits.hpp"
@@ -654,6 +658,92 @@ void groupAndUngroupAsBatches() {
           "tracks in different groups are refused, with the reason");
     check(sub.undo().ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}}, "undo puts them back");
 
+    // Live's track drag (the Arrangement View: "dragging them above or below other tracks"; 18.3:
+    // "dragged into or out of the group"): one batch, one step.
+    const Order before{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}};
+    auto moved = ui::moveTracks(view.current()->tracks, {4}, {0, 2});
+    check(moved.refusal.empty() && sub.submit(std::move(moved.ops)).ok &&
+              order() == Order{{4, 0}, {2, 0}, {6, 0}, {3, 1}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "Bass dragged above Kick: first, one step named Move Track; Main stays last");
+    check(sub.undo().ok && order() == before, "undo puts Bass back");
+    auto into = ui::moveTracks(view.current()->tracks, {2}, {6, 0});
+    check(into.refusal.empty() && into.ops.front().opType == "track.setParent" && into.ops.front().payload["parent"] == 6 &&
+              sub.submit(std::move(into.ops)).ok && order() == Order{{6, 0}, {3, 1}, {2, 1}, {4, 0}, {1, 0}},
+          "Kick dragged into the group: after Snare in it, routed by track.setParent");
+    check(sub.undo().ok && order() == before, "undo takes Kick out again");
+    auto out = ui::moveTracks(view.current()->tracks, {3}, {0, 0});
+    check(out.refusal.empty() && out.ops.front().payload["parent"].is_null() && sub.submit(std::move(out.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {4, 0}, {3, 0}, {1, 0}},
+          "Snare dragged out of the group below the last track: at the top level, before Main");
+    check(sub.undo().ok && order() == before, "undo puts Snare back in its group");
+    auto pair = ui::moveTracks(view.current()->tracks, {4, 2}, {0, 6});
+    check(pair.refusal.empty() && sub.submit(std::move(pair.ops)).ok &&
+              order() == Order{{2, 0}, {4, 0}, {6, 0}, {3, 1}, {1, 0}} && sub.nextUndo()->label == "Move Tracks",
+          "Kick and Bass selected and dragged above the group: side by side, in their order, one step");
+    check(sub.undo().ok && order() == before, "undo");
+    auto whole = ui::moveTracks(view.current()->tracks, {3, 6}, {0, 0});
+    check(whole.refusal.empty() && sub.submit(std::move(whole.ops)).ok &&
+              order() == Order{{2, 0}, {4, 0}, {6, 0}, {3, 1}, {1, 0}},
+          "the group dragged below Bass, Snare selected with it: Snare goes with its group");
+    check(sub.undo().ok && order() == before, "undo");
+    check(ui::moveTracks(view.current()->tracks, {2}, {0, 2}).ops.empty() &&
+              ui::moveTracks(view.current()->tracks, {2}, {0, 6}).ops.empty() &&
+              ui::moveTracks(view.current()->tracks, {3}, {6, 0}).ops.empty(),
+          "dropped where they stand, nothing moves and no step is made");
+    // Live's Insert Track (manual 18.2): right after the selected track, in its group; the tracks
+    // after it move down one, in the same step.
+    auto inserted = ui::insertTrack(view.current()->tracks, 2, false);
+    check(inserted.refusal.empty() && inserted.select == 7 && inserted.ops.front().payload["index"] == 1 &&
+              inserted.ops.front().payload["parent"].is_null() && sub.submit(std::move(inserted.ops)).ok &&
+              order() == Order{{2, 0}, {7, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}} &&
+              sub.nextUndo()->label == "Insert Audio Track",
+          "an audio track inserted with Kick selected: right after Kick, the group and Bass after it, one step");
+    check(sub.undo().ok && order() == before, "undo removes it");
+    auto inGroup = ui::insertTrack(view.current()->tracks, 3, true);
+    check(inGroup.ops.front().payload["parent"] == 6 && sub.submit(std::move(inGroup.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {7, 1}, {4, 0}, {1, 0}} &&
+              view.current()->findTrack(7)->kind == "midi" && sub.nextUndo()->label == "Insert MIDI Track",
+          "a MIDI track inserted with Snare selected: in Snare's group, after it");
+    check(sub.undo().ok, "undo");
+    for (const std::int64_t selected : {std::int64_t{1}, std::int64_t{0}}) {
+        auto last = ui::insertTrack(view.current()->tracks, selected, false);
+        check(sub.submit(std::move(last.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {7, 0}, {1, 0}},
+              selected == 1 ? "with Main selected, after the last track, before Main"
+                            : "with nothing selected, after the last track");
+        check(sub.undo().ok && order() == before, "undo");
+    }
+    check(ui::moveTracks(view.current()->tracks, {6}, {6, 0}).refusal == "A group can't go inside itself." &&
+              ui::moveTracks(view.current()->tracks, {1}, {0, 2}).refusal == "Main stays last." &&
+              ui::moveTracks(view.current()->tracks, {2}, {4, 0}).refusal == "Tracks go into a group track only." &&
+              ui::moveTracks(view.current()->tracks, {}, {0, 0}).refusal == "Select a track to move.",
+          "a group into itself, Main, a track that is not a group and nothing are refused, with the reason");
+
+    // The returns are reordered among themselves, at the foot (Live drags them as it drags tracks).
+    bool returnsMade = true;
+    for (const auto& [id, name] : {std::pair{20, "A Return"}, std::pair{21, "B Return"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "return"}, {"name", name}, {"index", id}};
+        r.label = "Insert Return Track";
+        returnsMade = sub.submit(std::move(r)).ok && returnsMade;
+    }
+    const Order withReturns{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {20, 0}, {21, 0}, {1, 0}};
+    check(returnsMade && order() == withReturns, "two returns, after the tracks, before Main");
+    auto swapped = ui::moveTracks(view.current()->tracks, {21}, {0, 20});
+    check(swapped.refusal.empty() && sub.submit(std::move(swapped.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {21, 0}, {20, 0}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "B dragged above A: first of the returns, one step; the tracks and Main stay");
+    check(sub.undo().ok && order() == withReturns, "undo");
+    auto last = ui::moveTracks(view.current()->tracks, {20}, {0, 0});
+    check(sub.submit(std::move(last.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {21, 0}, {20, 0}, {1, 0}},
+          "A dragged below the last return: after B, before Main");
+    check(sub.undo().ok && ui::moveTracks(view.current()->tracks, {21}, {0, 0}).ops.empty(),
+          "B dropped where it stands: no step");
+    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only." &&
+              ui::moveTracks(view.current()->tracks, {20}, {6, 0}).refusal == "Return tracks move among the returns only.",
+          "a return with a track, or into a group, is refused, with the reason");
+    check(sub.undo().ok && sub.undo().ok && order() == before, "the returns undone");
+
     // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
     OpRequest solo;
     solo.opType = "track.setSolo";
@@ -977,6 +1067,73 @@ void rangeEditsAsBatches() {
     }
     check(ui::SessionState(*store).selection().picked == std::vector<std::int64_t>{3, 4},
           "and read back with them");
+
+    // Clips picked with Ctrl/Cmd+click (Live's "Select Multiple Items", §42.5): the geometry counts
+    // them, Delete and 0 act on them all, and the session keeps them.
+    geo.selection = {};
+    geo.selection.clip = 1;
+    geo.selection.pickedClips = {3, 1};
+    check(geo.clipSelected(1) && geo.clipSelected(3) && !geo.clipSelected(2) &&
+              geo.selectedClips() == std::vector<std::int64_t>{1, 3},
+          "the clicked clip and the one picked besides it are selected, the clicked one first");
+    auto quiet = ui::deactivateClips(view.current()->tracks, geo.selectedClips());
+    check(quiet.refusal.empty() && quiet.ops.size() == 2 && quiet.ops[0].label == "Deactivate Clips" &&
+              sub.submit(std::move(quiet.ops)).ok && view.current()->findTrack(1)->clips[0]->muted &&
+              view.current()->findTrack(3)->clips[0]->muted && !view.current()->findTrack(2)->clips[0]->muted,
+          "0 deactivates both picked clips, one step; the third stays");
+    auto loud = ui::deactivateClips(view.current()->tracks, geo.selectedClips());
+    check(loud.ops.size() == 2 && loud.ops[0].label == "Activate Clips" && loud.ops[0].payload["muted"] == false,
+          "0 again, both off: activates them");
+    auto one = ui::deactivateClips(view.current()->tracks, {2});
+    check(one.ops.size() == 1 && one.ops[0].label == "Deactivate Clip", "one clip is named as one");
+    auto both = ui::deleteClips(view.current()->tracks, geo.selectedClips());
+    check(both.ops.size() == 2 && both.ops[0].label == "Delete Clips" && sub.submit(std::move(both.ops)).ok &&
+              view.current()->findTrack(1)->clips.empty() && view.current()->findTrack(3)->clips.empty() &&
+              view.current()->findTrack(2)->clips.size() == 1,
+          "Delete removes both picked clips, one step");
+    check(sub.undo().ok && sub.undo().ok && view.current()->findTrack(1)->clips.size() == 1 &&
+              !view.current()->findTrack(1)->clips[0]->muted,
+          "two undos bring them back, active");
+    check(ui::deleteClips(view.current()->tracks, {99}).refusal == "Select a clip to delete.",
+          "no clip left to act on: refused, with the reason");
+    // Dragged together (§6.7): each keeps its track, by the same offset; none before the start.
+    auto later = ui::moveClips(view.current()->tracks, {1, 3}, bar);
+    check(later.ops.size() == 2 && later.ops[0].label == "Move Clips" && later.ops[0].payload["to"] == bar &&
+              later.ops[0].payload["track"] == 1 && later.ops[1].payload["to"] == bar + bar / 2 + bar &&
+              later.ops[1].payload["track"] == 3 && sub.submit(std::move(later.ops)).ok &&
+              view.current()->findTrack(1)->clips[0]->posTicks == bar,
+          "two clips moved a bar later together, each on its own track, one step");
+    check(sub.undo().ok && view.current()->findTrack(1)->clips[0]->posTicks == 0, "undo");
+    auto early = ui::moveClips(view.current()->tracks, {2, 3}, -2 * bar);
+    check(early.ops.size() == 2 && early.ops[0].payload["to"] == 0 && early.ops[1].payload["to"] == bar / 2,
+          "moved earlier than the start allows: the offset stops where the earliest reaches bar 1");
+    check(ui::moveClips(view.current()->tracks, {1}, -bar).ops.empty() &&
+              ui::moveClips(view.current()->tracks, {99}, bar).refusal == "Select a clip to move.",
+          "a clip already at the start moves nowhere; a missing one is refused");
+    // Across tracks, each by the same rows, while every one lands on a track that can take it.
+    const std::vector<std::int64_t> lanes{1, 2, 3};
+    const auto down = ui::clipsAcross(view.current()->tracks, lanes, {1, 2}, 1);
+    check(down && *down == ui::ClipTracks{{1, 2}, {2, 3}}, "two clips a row down: track 1's to 2, track 2's to 3");
+    check(!ui::clipsAcross(view.current()->tracks, lanes, {1, 2}, 2) &&
+              !ui::clipsAcross(view.current()->tracks, {1, 2}, {3}, 0) &&
+              ui::clipsAcross(view.current()->tracks, lanes, {1}, 0)->empty(),
+          "past the last lane, or from a track not in the lanes: none moves across; no rows: none changes track");
+    auto lower = ui::moveClips(view.current()->tracks, {1, 2}, 0, *down);
+    check(lower.ops.size() == 2 && lower.ops[0].payload["track"] == 2 && lower.ops[1].payload["track"] == 3 &&
+              sub.submit(std::move(lower.ops)).ok && view.current()->findTrack(1)->clips.empty() &&
+              view.current()->findTrack(3)->clips.size() == 2,
+          "moved a row down with no change of time: each on the next track, one step");
+    check(sub.undo().ok && view.current()->findTrack(1)->clips.size() == 1, "undo");
+    {
+        ui::SessionState session(*store);
+        ui::Selection chosen;
+        chosen.track = 1;
+        chosen.clip = 1;
+        chosen.pickedClips = {3};
+        std::string why;
+        check(session.select(chosen, why), "a selection with picked clips is kept");
+    }
+    check(ui::SessionState(*store).selection().pickedClips == std::vector<std::int64_t>{3}, "and read back with them");
 }
 
 void returnsStandBeforeMain() {
@@ -1064,6 +1221,250 @@ void referenceTapAndHold() {
     ref.press(4000);
     ref.release(5000);
     check(!ref.on(), "latched, then held and let go: off");
+}
+
+void meterGrid() {
+    section("the editing grid in the project's meters: from each bar line, bars of the meter (Live 12 manual 6.10)");
+    const auto q = textproj::kPPQ;
+    ui::ArrangementGeometry geo;
+    geo.scale = 60;
+    geo.grid.fixed = true;
+    geo.grid.fixedQuarters = 4; // 1 Bar
+    check(geo.snap(5 * q, false) == 4 * q && geo.snap(5 * q, true) == 8 * q, "no meters: 1 Bar is four quarters");
+    const std::vector<textproj::Meter> plain{{0, 4, 4}};
+    geo.meters = &plain;
+    check(!geo.metered() && geo.snap(5 * q, true) == 8 * q, "4/4 throughout: the same");
+    const std::vector<textproj::Meter> threeFour{{0, 3, 4}};
+    geo.meters = &threeFour;
+    check(geo.metered() && geo.snap(4 * q, false) == 3 * q && geo.snap(4 * q, true) == 6 * q && geo.snap(6 * q, true) == 6 * q,
+          "3/4: 1 Bar is three quarters");
+    geo.grid.fixedQuarters = 2; // 1/2
+    check(geo.snap(5 * q / 2, false) == 2 * q && geo.snap(5 * q / 2, true) == 3 * q && geo.snap(4 * q, true) == 5 * q,
+          "a half in 3/4 runs from each bar line: 0, 2, 3, 5, 6");
+    std::vector<std::int64_t> lines;
+    geo.forEachGridLine(0, 6 * q, [&](std::int64_t t) { lines.push_back(t); });
+    check(lines == std::vector<std::int64_t>{0, 2 * q, 3 * q, 5 * q, 6 * q}, "the lines drawn are the same");
+    check(geo.nextGridLine(3 * q, true) == 5 * q && geo.nextGridLine(3 * q, false) == 2 * q, "the arrows step by them");
+    geo.grid.fixedQuarters = 8; // 2 Bars
+    check(geo.snap(4 * q, true) == 6 * q && geo.snap(7 * q, false) == 6 * q && geo.snap(7 * q, true) == 12 * q,
+          "2 Bars in 3/4: every second bar line from bar 1");
+    geo.grid.fixedQuarters = 4;
+    geo.grid.triplet = true;
+    check(geo.snap(q, true) == 2 * q && geo.snap(5 * q, false) == 4 * q, "1 Bar triplet in 3/4: two thirds of a bar, two quarters");
+    geo.grid.triplet = false;
+    const std::vector<textproj::Meter> changing{{0, 4, 4}, {6 * q, 3, 4}};
+    geo.meters = &changing;
+    check(geo.snap(5 * q, true) == 6 * q && geo.snap(7 * q, true) == 9 * q && geo.snap(10 * q, false) == 9 * q,
+          "a change part-way through bar 2 ends it there, and 3/4's bars run on from it");
+    check(geo.barHolding(5 * q).index == 1 && geo.barHolding(5 * q).end == 6 * q && geo.barHolding(7 * q).index == 2,
+          "bar 2 is cut short; the next is bar 3");
+}
+
+void positionsTyped() {
+    section("Arrangement Position fields: a typed position in the project's meters (Live 12 manual 6.1)");
+    const auto q = textproj::kPPQ;
+    const std::vector<textproj::Meter> meters{{0, 4, 4}, {8 * q, 6, 8}, {12 * q, 5, 4}};
+    using P = ui::BarPosition;
+    for (const auto &[text, ok, bar, beat, sixteenth] :
+         {std::tuple<const char *, bool, int, int, int>{"5", true, 5, 1, 1}, {"5.2", true, 5, 2, 1}, {"5.2.3", true, 5, 2, 3},
+          {" 5 2 3 ", true, 5, 2, 3}, {"5:2,3", true, 5, 2, 3}, {"5 . 2", true, 5, 2, 1}, {"", false, 0, 0, 0},
+          {"5.", false, 0, 0, 0}, {"0.1.1", false, 0, 0, 0}, {"5.2.3.4", false, 0, 0, 0}, {"5x", false, 0, 0, 0},
+          {"123456", false, 0, 0, 0}}) {
+        const auto at = ui::parsePosition(text);
+        check(at.has_value() == ok && (!ok || *at == P{bar, beat, sixteenth}), text);
+    }
+    check(ui::tickOf(P{1, 1, 1}, meters) == 0 && ui::tickOf(P{2, 3, 2}, meters) == 4 * q + 2 * q + q / 4,
+          "4/4: bar 2, beat 3, sixteenth 2");
+    check(ui::tickOf(P{3, 1, 1}, meters) == 8 * q && ui::tickOf(P{3, 4, 2}, meters) == 8 * q + 3 * q / 2 + q / 4,
+          "6/8 from bar 3: its beats are eighths, of two sixteenths each");
+    check(!ui::tickOf(P{3, 7, 1}, meters) && !ui::tickOf(P{3, 1, 3}, meters), "6/8 has no beat 7, nor an eighth a third sixteenth");
+    check(ui::tickOf(P{4, 2, 1}, meters) == 11 * q + q / 2 && !ui::tickOf(P{4, 3, 1}, meters),
+          "bar 4, cut short by the 5/4 on quarter 12: beat 2 there, beat 3 past it");
+    check(ui::tickOf(P{5, 1, 1}, meters) == 12 * q && ui::tickOf(P{7, 5, 4}, meters) == 22 * q + 4 * q + 3 * q / 4,
+          "5/4 from bar 5, on and on");
+    for (const auto tick : {std::int64_t{0}, 7 * q, 11 * q + q / 2, 30 * q + q / 4})
+        check(ui::tickOf(ui::barPosition(tick, meters), meters) == tick, "tickOf undoes barPosition");
+}
+
+void fragmentaryBars() {
+    section("fragmentary bars: a change before the previous bar is complete cuts it short (Live 12 manual 6.5)");
+    const auto q = textproj::kPPQ;
+    // 4/4 from the start; 6/8 at bar 3 (a whole bar line); 5/4 a quarter into 6/8's second bar.
+    const std::vector<textproj::Meter> meters{{0, 4, 4}, {8 * q, 6, 8}, {12 * q, 5, 4}};
+    std::vector<std::pair<std::int64_t, std::int64_t>> found;
+    ui::forEachFragmentaryBar(meters, [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found == std::vector<std::pair<std::int64_t, std::int64_t>>{{11 * q, 12 * q}},
+          "6/8's bars are three quarters: its second bar, from quarter 11, is cut at the 5/4 on 12");
+    check(ui::fragmentAt(11 * q, meters) == std::pair<std::int64_t, std::int64_t>{11 * q, 12 * q} &&
+              ui::fragmentAt(12 * q, meters).first == -1 && ui::fragmentAt(8 * q, meters).first == -1,
+          "the fragment holds its start, not the change");
+    found.clear();
+    ui::forEachFragmentaryBar(std::vector<textproj::Meter>{{0, 4, 4}, {8 * q, 3, 4}},
+                              [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found.empty(), "a change on a bar line cuts nothing");
+    found.clear();
+    ui::forEachFragmentaryBar(std::vector<textproj::Meter>{}, [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found.empty(), "no meters: none");
+}
+
+void tapTempo() {
+    section("Tap Tempo: the tempo follows the taps, from a run's second (Live 12 manual 9.1.2)");
+    ui::TapTempo taps;
+    check(!taps.tap(1000) && taps.taps() == 1, "the first tap gives no tempo yet");
+    const auto second = taps.tap(1500);
+    check(second && std::abs(*second - 120) < 1e-9, "a second half a second later: 120 BPM");
+    taps.tap(1980);
+    const auto fourth = taps.tap(2500);
+    check(fourth && std::abs(*fourth - 120) < 1e-9 && taps.taps() == 4,
+          "uneven taps are averaged over the run: 1.5 s over three beats, 120");
+    check(!taps.tap(5000) && taps.taps() == 1, "after a pause of more than two seconds, a new run");
+    std::optional<double> last;
+    for (std::int64_t t = 5600; t <= 5000 + 600 * 30; t += 600)
+        last = taps.tap(t);
+    check(last && std::abs(*last - 100) < 1e-9 && taps.taps() == 17, "a long run keeps its last sixteen intervals: 100 BPM");
+    check(!taps.tap(5000 + 600 * 30) && taps.taps() == 1, "a tap at the same moment starts again");
+}
+
+void tempoField() {
+    section("the control bar's Tempo field: 20 to 999 BPM, at the play location (Live 12 manual 9.1.1)");
+    for (const auto &[text, ok, bpm] :
+         {std::tuple<const char *, bool, double>{"128", true, 128}, {"97.5", true, 97.5}, {" 97.55 ", true, 97.55},
+          {"20", true, 20}, {"999", true, 999}, {"97.555", false, 0}, {"19.99", false, 0}, {"1000", false, 0},
+          {"12a", false, 0}, {".5", false, 0}, {"", false, 0}, {"-120", false, 0}}) {
+        const auto value = ui::parseTempo(text);
+        check(value.has_value() == ok && (!ok || std::abs(*value - bpm) < 1e-9), text);
+    }
+    const auto q = textproj::kPPQ;
+    const std::vector<engine::TempoEvent> plain{{0, 120., 0}};
+    check(!ui::tempoSurelyStored(plain) && ui::tempoSurelyStored({{0, 128., 0}}) && ui::tempoSurelyStored({{0, 120., 1}}),
+          "the start's 120 jump may be the snapshot's own; any other is stored");
+    const auto inserted = ui::setTempoAt(plain, 3 * q, "128", false);
+    check(inserted.ops.size() == 1 && inserted.ops[0].opType == "project.insertTempoEvent" &&
+              inserted.ops[0].payload.at("pos").get<std::int64_t>() == 0 &&
+              std::abs(inserted.ops[0].payload.at("bpm").get<double>() - 128) < 1e-9 && inserted.ops[0].label == "Change Tempo",
+          "none stored: the start's tempo inserted, \"Change Tempo\"");
+    const auto replaced = ui::setTempoAt(plain, 0, "128", true);
+    check(replaced.ops.size() == 2 && replaced.ops[0].opType == "project.removeTempoEvent", "stored: replaced");
+    check(ui::setTempoAt(plain, 0, "120.00", false).ops.empty() && ui::setTempoAt(plain, 0, "120", false).refusal.empty(),
+          "the same tempo: no edit");
+    check(!ui::setTempoAt(plain, 0, "1000", false).refusal.empty(), "out of range: refused with the reason");
+    const std::vector<engine::TempoEvent> ramp{{0, 120., 0}, {8 * q, 140., 1}};
+    const auto later = ui::setTempoAt(ramp, 9 * q, "150", false);
+    check(later.ops.size() == 2 && later.ops[1].payload.at("pos").get<std::int64_t>() == 8 * q &&
+              later.ops[1].payload.at("curve").get<int>() == 1,
+          "past a tempo change: that change takes the value, its curve kept");
+}
+
+void meterMarkers() {
+    section("time signature markers: Insert, Edit and Delete, one step each (Live 12 manual 6.5)");
+    for (const auto &[text, ok, num, den] :
+         {std::tuple<const char *, bool, int, int>{"3/4", true, 3, 4}, {" 7 , 8 ", true, 7, 8}, {"12.16", true, 12, 16},
+          {"5   4", true, 5, 4}, {"6 / 8", true, 6, 8}, {"99/1", true, 99, 1}, {"34", false, 0, 0},
+          {"0/4", false, 0, 0}, {"100/4", false, 0, 0}, {"3/3", false, 0, 0}, {"3/32", false, 0, 0},
+          {"3//4", false, 0, 0}, {"3/4x", false, 0, 0}, {"", false, 0, 0}, {"/4", false, 0, 0}}) {
+        const auto value = ui::parseMeter(text);
+        check(value.has_value() == ok && (!ok || (value->numerator == num && value->denominator == den)), text);
+    }
+    adi::test::TempDirectory temp("ui_seams", "meters");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    const auto bar = textproj::kWhole;
+    auto meters = [&view] { return ui::SnapshotReader(view.current()).meters(); };
+    check(meters().size() <= 1 && ui::markerAt(meters(), 0) == 0, "no marker yet");
+    const auto atStart = ui::insertMeter(meters(), 0, "3/4");
+    check(atStart.ops.empty() && !atStart.refusal.empty(), "at the start: the control bar's, refused with the reason");
+    const auto badText = ui::insertMeter(meters(), 2 * bar, "3/5");
+    check(badText.ops.empty() && badText.refusal.find("3/4") != std::string::npos, "a value Live takes not: refused");
+    auto inserted = ui::insertMeter(meters(), 2 * bar, "3/4");
+    check(inserted.ops.size() == 1 && inserted.ops[0].label == "Insert Time Signature Change" &&
+              sub.submit(std::move(inserted.ops)).ok,
+          "Insert Time Signature Change at bar 3, one op");
+    check(meters().size() == 2 && meters()[1].start_ticks == 2 * bar && meters()[1].numerator == 3 &&
+              ui::markerAt(meters(), 2 * bar) == 1 && sub.nextUndo()->label == "Insert Time Signature Change",
+          "a 3/4 marker at bar 3, one step");
+    auto again = ui::insertMeter(meters(), 2 * bar, "6/8");
+    check(again.ops.size() == 2 && again.ops[0].label == "Edit Time Signature" && sub.submit(std::move(again.ops)).ok &&
+              meters().size() == 2 && meters()[1].numerator == 6 && meters()[1].denominator == 8,
+          "inserted where a marker stands: it takes the value, as an edit");
+    check(ui::editMeter(meters(), 2 * bar, "6 8").ops.empty() && ui::editMeter(meters(), 2 * bar, "6 8").refusal.empty(),
+          "the same value is no edit");
+    check(!ui::editMeter(meters(), bar, "2/4").refusal.empty() && !ui::editMeter(meters(), 0, "2/4").refusal.empty(),
+          "no marker there, or the start's: Edit is refused");
+    auto edited = ui::editMeter(meters(), 2 * bar, "5/4");
+    check(sub.submit(std::move(edited.ops)).ok && meters()[1].numerator == 5 && meters()[1].denominator == 4 &&
+              sub.nextUndo()->label == "Edit Time Signature" && sub.nextUndo()->opCount == 2,
+          "Edit Time Signature: 5/4, one step of two ops");
+    check(sub.undo().ok && meters()[1].numerator == 6 && meters()[1].denominator == 8, "undo: 6/8 again");
+    check(!ui::deleteMeter(meters(), bar).refusal.empty() && !ui::deleteMeter(meters(), 0).refusal.empty(),
+          "no marker there, or the start's: Delete is refused");
+    auto removed = ui::deleteMeter(meters(), 2 * bar);
+    check(removed.ops.size() == 1 && removed.ops[0].label == "Delete Time Signature Change" &&
+              sub.submit(std::move(removed.ops)).ok && meters().size() == 1,
+          "Delete: the marker gone, one step");
+    check(sub.undo().ok && meters().size() == 2 && meters()[1].numerator == 6, "undo: it is back");
+    // Moved by the mouse or the arrow keys: its value kept, one step; not onto the start nor onto
+    // another marker; in place, no edit.
+    auto other = ui::insertMeter(meters(), 5 * bar, "7/8");
+    check(sub.submit(std::move(other.ops)).ok && meters().size() == 3, "a 7/8 at bar 6 besides");
+    check(!ui::moveMeter(meters(), bar, 3 * bar).refusal.empty(), "no marker there: Move is refused");
+    check(ui::moveMeter(meters(), 2 * bar, 2 * bar).ops.empty() && ui::moveMeter(meters(), 2 * bar, 2 * bar).refusal.empty(),
+          "in place: no edit");
+    check(!ui::moveMeter(meters(), 2 * bar, 0).refusal.empty() && !ui::moveMeter(meters(), 2 * bar, 5 * bar).refusal.empty(),
+          "onto the start, or onto another marker: refused with the reason");
+    auto moved = ui::moveMeter(meters(), 2 * bar, 3 * bar + bar / 4);
+    check(moved.ops.size() == 2 && moved.ops[0].label == "Move Time Signature Change" && sub.submit(std::move(moved.ops)).ok &&
+              meters().size() == 3 && meters()[1].start_ticks == 3 * bar + bar / 4 && meters()[1].numerator == 6 &&
+              meters()[1].denominator == 8 && sub.nextUndo()->opCount == 2,
+          "6/8 moved a bar and a quarter later, its value kept, one step of two ops");
+    check(sub.undo().ok && meters()[1].start_ticks == 2 * bar, "undo: back at bar 3");
+    // The control bar's field (manual 6.5): the signature in force at the play location.
+    check(!ui::startSurelyStored(meters()), "the start's 4/4 may be the snapshot's own");
+    const auto inMarker = ui::setMeterAt(meters(), 2 * bar + 1, "2/4", false);
+    check(inMarker.ops.size() == 2 && inMarker.ops[0].opType == "project.removeTimeSignature" &&
+              inMarker.ops[0].payload.at("pos").get<std::int64_t>() == 2 * bar,
+          "past bar 3: the 6/8 marker's edit");
+    auto first = ui::setMeterAt(meters(), bar, "3/4", false);
+    check(first.ops.size() == 1 && first.ops[0].opType == "project.insertTimeSignature" && sub.submit(std::move(first.ops)).ok &&
+              meters()[0].numerator == 3 && ui::startSurelyStored(meters()),
+          "before it, with none stored: the start's 3/4 inserted, and now surely stored");
+    check(ui::setMeterAt(meters(), 0, "3/4", true).ops.empty(), "the same value: no edit");
+    check(!ui::setMeterAt(meters(), 0, "3/5", true).refusal.empty(), "a value Live takes not: refused");
+    auto replaced = ui::setMeterAt(meters(), 0, "4/4", ui::startSurelyStored(meters()));
+    check(replaced.ops.size() == 2 && sub.submit(std::move(replaced.ops)).ok && meters()[0].numerator == 4 &&
+              !ui::startSurelyStored(meters()),
+          "stored: replaced, 4/4 again, which may again be either");
+    auto clash = ui::setMeterAt(meters(), 0, "2/4", false);
+    check(!sub.submit(std::move(clash.ops)).ok && meters()[0].numerator == 4,
+          "a stored 4/4 refuses the insert, and nothing changes");
+}
+
+void momentaryLatch() {
+    section("momentary latching: a key held 500 ms or more goes back on release (Live 42.25)");
+    ui::MomentaryLatch latch;
+    check(!latch.held() && !latch.release('s', 0), "nothing held: an up changes nothing");
+    check(latch.press('s', 7, 1000) && latch.held() && latch.key() == 's', "down: the first press acts");
+    check(!latch.press('s', 7, 1030) && !latch.press('s', 7, 1400), "a repeat while held does nothing");
+    latch.made(42);
+    check(!latch.release('s', 1499) && !latch.held(), "up within 500 ms: a tap stays");
+    check(latch.press('s', 7, 2000), "down again: it acts again");
+    latch.made(43);
+    const auto back = latch.release('s', 2500);
+    check(back && back->command == 7 && back->step == 43 && !latch.held(),
+          "up after 500 ms: back from the command and the step it made");
+    check(latch.press('z', 9, 3000) && !latch.release('s', 4000) && latch.held(),
+          "another key's up lets nothing go");
+    check(latch.press(1, 11, 3100) && latch.key() == 1, "another key's press takes over");
+    const auto zoom = latch.release(1, 3700);
+    check(zoom && zoom->command == 11 && zoom->step == 0, "a press that made no step goes back with none");
+    check(!latch.release('z', 3800), "the first key, taken over, stays as it is");
+    latch.press('s', 7, 5000);
+    latch.made(44);
+    latch.letGo();
+    check(!latch.held() && !latch.release('s', 6000) && latch.press('s', 7, 6000),
+          "let go unseen: nothing goes back, and the next press acts");
 }
 
 // Live's MIDI track: no audio mixer until it holds an instrument (look-live11 difference row 3); what
@@ -1183,6 +1584,13 @@ int main() {
     audioDropAsOneStep();
     rangeEditsAsBatches();
     referenceTapAndHold();
+    momentaryLatch();
+    meterGrid();
+    positionsTyped();
+    fragmentaryBars();
+    tapTempo();
+    tempoField();
+    meterMarkers();
     midiTrackMixer();
     soloRules();
 
