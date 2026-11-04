@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_state.hpp"
 
 #include "adi/history.hpp"
 
@@ -8,6 +9,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <stdexcept>
 
 namespace adi {
 
@@ -218,6 +220,9 @@ std::optional<History::Step> History::nextUndo() const {
 
         const auto ops = txnOps(db, s.txnId);
         if (ops.empty()) return std::nullopt;
+        SQLite::Statement base(db, "SELECT base_seq FROM history_checkpoint WHERE id=1");
+        if (base.executeStep() && *h <= base.getColumn(0).getInt64())
+            return std::nullopt;
         s.firstSeq = ops.front().seq;
         s.lastSeq = ops.back().seq;
         s.opCount = static_cast<int>(ops.size());
@@ -307,7 +312,9 @@ History::Result History::undo() {
             return r;
         }
 
+        freeze::validate(store_);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         r.txnId = step->txnId;
         return r;
@@ -347,7 +354,9 @@ History::Result History::redo() {
             return r;
         }
 
+        freeze::validate(store_);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         r.txnId = step->txnId;
         return r;
@@ -417,7 +426,9 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         SQLite::Statement up(db, "UPDATE op_branches SET is_current = 1 WHERE id = ?");
         up.bind(1, branchId);
         up.exec();
+        freeze::validate(store_);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         return r;
     } catch (const std::exception& e) {
@@ -451,8 +462,9 @@ std::string History::defaultSnapshotName(const std::string& projectName,
     return (projectName.empty() ? std::string("Untitled") : projectName) + " " + when;
 }
 
-History::SnapshotResult History::takeSnapshot(const std::string& name, std::int64_t createdUtc,
-                                              int utcOffsetMinutes, bool automatic) {
+History::SnapshotResult History::takeSnapshot(const std::string &name, std::int64_t createdUtc,
+                                              int utcOffsetMinutes, bool automatic,
+                                              const HistorySnapshotPolicy &policy) {
     SnapshotResult r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
     try {
@@ -464,6 +476,10 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
                                                           : std::string{},
                                          createdUtc, utcOffsetMinutes);
         }
+        SQLite::Transaction transaction(db);
+        if (!history_detail::trimSnapshots(db, history_detail::snapshotLimit(policy), 1, std::nullopt,
+                                           r.error))
+            return r;
         SQLite::Statement st(db,
             "INSERT INTO history_snapshots(name, op_seq, branch_id, created_utc, auto) "
             "VALUES (?,?,?,?,?)");
@@ -474,6 +490,7 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
         st.bind(5, automatic ? 1 : 0);
         st.exec();
         r.id = db.getLastInsertRowid();
+        transaction.commit();
         r.ok = true;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -481,12 +498,36 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
     return r;
 }
 
+History::Result History::removeSnapshot(std::int64_t id) {
+    Result result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        auto &db = store_.db();
+        SQLite::Transaction transaction(db);
+        SQLite::Statement remove(db, "DELETE FROM history_snapshots WHERE id=?");
+        remove.bind(1, id);
+        if (remove.exec() != 1) {
+            result.error = "no such snapshot";
+            return result;
+        }
+        history_detail::clearDailyReference(db, id);
+        transaction.commit();
+        result.ok = true;
+    } catch (const std::exception &error) {
+        result.error = error.what();
+    }
+    return result;
+}
+
 History::Result History::renameSnapshot(std::int64_t snapshotId, const std::string& newName) {
     Result r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
     if (newName.empty()) { r.error = "a snapshot name cannot be empty"; return r; }
     try {
-        SQLite::Statement st(store_.db(), "UPDATE history_snapshots SET name = ? WHERE id = ?");
+        SQLite::Statement st(store_.db(), "UPDATE history_snapshots SET name = ?,auto=0 WHERE id = ?");
         st.bind(1, newName);
         st.bind(2, snapshotId);
         if (st.exec() == 0) { r.error = "no such snapshot"; return r; }
@@ -571,7 +612,9 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
             r.opsApplied = 0;
             return r;
         }
+        freeze::validate(store_);
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         return r;
     } catch (const std::exception& e) {
@@ -582,3 +625,91 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
 }
 
 }  // namespace adi
+
+namespace adi {
+namespace history_detail {
+Payload checkpointAt(Store &store, std::int64_t seq) {
+    auto &db = store.db();
+    db.exec("SAVEPOINT adi_history_checkpoint");
+    try {
+        OpContext ctx{store, db};
+        int applied = 0;
+        std::string error;
+        if (!moveBetween(ctx, OpJournal(store).headSeq(), seq, applied, error))
+            throw std::runtime_error(error);
+        auto state = checkpointState(store);
+        db.exec("ROLLBACK TO adi_history_checkpoint");
+        db.exec("RELEASE adi_history_checkpoint");
+        return state;
+    } catch (...) {
+        db.exec("ROLLBACK TO adi_history_checkpoint");
+        db.exec("RELEASE adi_history_checkpoint");
+        throw;
+    }
+}
+} // namespace history_detail
+UndoCompactionResult History::setUndoRetentionPolicy(const UndoRetentionPolicy &policy) {
+    UndoCompactionResult result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        SQLite::Transaction transaction(store_.db());
+        history_detail::writeUndoPolicy(store_.db(), policy);
+        result = history_detail::compactUndo(store_, policy);
+        if (result.ok)
+            transaction.commit();
+    } catch (const std::exception &error) {
+        result.ok = false;
+        result.error = error.what();
+    }
+    return result;
+}
+UndoCompactionResult History::compactUndo() {
+    UndoCompactionResult result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        SQLite::Transaction transaction(store_.db());
+        result = history_detail::compactUndo(store_, history_detail::undoPolicy(store_.db()));
+        if (result.ok)
+            transaction.commit();
+    } catch (const std::exception &error) {
+        result.ok = false;
+        result.error = error.what();
+    }
+    return result;
+}
+History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store &target) {
+    ReplayBaseResult result;
+    if (target.readOnly()) {
+        result.error = "target is open read-only";
+        return result;
+    }
+    try {
+        if (&source == &target)
+            throw std::runtime_error("replay target must be a different project");
+        SQLite::Transaction transaction(target.db());
+        if (OpJournal(target).count() != 0)
+            throw std::runtime_error("replay target journal is not empty");
+        SQLite::Statement row(const_cast<SQLite::Database &>(source.db()),
+                              "SELECT base_seq,state FROM history_checkpoint WHERE id=1");
+        if (row.executeStep()) {
+            std::string error;
+            auto state = decodeFromLog(blobOf(row.getColumn(1)), error);
+            if (!state)
+                throw std::runtime_error("invalid history checkpoint: " + error);
+            history_detail::installCheckpoint(target, *state);
+            result.baseSeq = row.getColumn(0).getInt64();
+        }
+        transaction.commit();
+        result.ok = true;
+    } catch (const std::exception &error) {
+        result.error = error.what();
+    }
+    return result;
+}
+} // namespace adi

@@ -78,6 +78,7 @@ WindowState ViewStateStore::load(const std::string &window, DesktopDefaults defa
         state.inOut = j.value("inOut", true);
         state.sends = j.value("sends", true);
         state.mixerInOut = j.value("mixerInOut", false);
+        state.mixerSends = j.value("mixerSends", true);
         state.largeTracks = j.value("largeTracks", true);
         state.viewGroup = j.value("viewGroup", std::int64_t{0});
         state.gridSnap = j.value("gridSnap", true);
@@ -149,6 +150,7 @@ bool ViewStateStore::save(const std::string &window, const WindowState &state, s
                             {"inOut", state.inOut},
                             {"sends", state.sends},
                             {"mixerInOut", state.mixerInOut},
+                            {"mixerSends", state.mixerSends},
                             {"largeTracks", state.largeTracks},
                             {"viewGroup", state.viewGroup},
                             {"gridSnap", state.gridSnap},
