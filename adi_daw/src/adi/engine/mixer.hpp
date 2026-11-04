@@ -139,6 +139,9 @@ public:
     /// realiser retains `keepAlive` with the graph (sourceLifetime), so a lane a
     /// retired graph may still read is never freed under it.
     void setLanes(const StripLanes* lanes, std::shared_ptr<void> keepAlive) noexcept;
+    /// Audio owner of a private strip only: the caller's publication protects
+    /// these lanes. Never mix this with message-thread setLanes on that strip.
+    void usePublishedLanes(const StripLanes* lanes) noexcept { lanes_.store(lanes,std::memory_order_release); }
 
     /// Where a lane is read. Driver-thread state, read at the block's origin as
     /// every source reads it (Transport's contract).
@@ -506,11 +509,13 @@ private:
     std::int64_t readEnd_ = 0;          ///< one past the last position played, or emptied
 };
 
-/// How solo reaches across sends (ADR-0203 d3). Fixed until the format has a
-/// home for them (win's question 7); a test may change them.
+/// How solo reaches across sends (ADR-0203 d3). Session supplies saved
+/// Solo in Place / Cue controls; low-level callers retain Live defaults.
 struct HearingFlags {
     /// Live's Solo in Place: a soloed track's returns, and what they feed, stay heard.
     bool soloInPlace = true;
+    bool soloIsCue = false;
+    std::int64_t referenceTrack = 0; // designated reference never enters Main or sends
     /// Another track's solo silences a Pre send with its source, as it does
     /// a Post one (the sends plan's preFollowsSolo, on until Live is measured).
     bool preFollowsSolo = true;
@@ -571,7 +576,8 @@ public:
     /// and bind its lanes. Creates strips for new tracks; a departed track's
     /// strip is kept, silent, until the session ends, as a departed device is
     /// (ADR-0122), since a retired graph may still name it.
-    void sync(const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&);
+    void sync(const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&,
+              bool delayCompensation=true, const HearingFlags& = {});
 
     /// The strip for a track the plan realises, or null.
     [[nodiscard]] StripNode* stripFor(std::int64_t trackId) noexcept;

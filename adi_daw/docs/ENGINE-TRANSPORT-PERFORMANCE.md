@@ -17,8 +17,8 @@ commands work when no saved loop owns the region.
 
 The original synthesized click follows tempo and the current signature's beat
 unit, accenting the first beat of a bar. It plays only while running. It is mixed
-into the default stereo cue pair after Main's devices/fader. The separate Cue
-Out/volume selection belongs to N23. Both float/double output pointers are
+into the default stereo cue pair after Main's devices/fader. Cue Out/volume and reference
+exclusion now use the N23 monitor mixer; see `ENGINE-CUE-MONITOR.md`. Both float/double output pointers are
 supported. The click's heard timeline follows the output latency of the graph
 that actually rendered, including loop wraps and a delay longer than one loop;
 post-start/seek history is not invented. Sound/level parity against Live is
@@ -30,7 +30,7 @@ uses it too. A monitoring choice never changes a file render. Callers implementi
 other offline render paths must choose this mode explicitly.
 
 When merging with N13, keep Main loudness measurement immediately after
-`graph_.process`, before `renderMetronome`: the click is a cue signal. No audio
+`graph_.process`, before `cueMonitor_.process`: the click is a cue signal. No audio
 callback reads SQL, allocates, locks or logs. Settings and maps are copied into
 the existing immutable TimingView publication; mutable driver state stays on the
 driver thread.

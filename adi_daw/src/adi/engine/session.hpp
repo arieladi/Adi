@@ -49,6 +49,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/engine/cue_monitor.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
@@ -74,6 +75,9 @@ class Store;
 
 namespace adi::engine {
 
+class AudioInputRecorder;
+struct AudioRecordingSpec;
+
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
 struct SessionSpec {
@@ -85,6 +89,8 @@ struct SessionSpec {
     /// Live performance controls (saved loop/click). Offline export/analysis
     /// disables these so monitor choices never alter rendered material.
     bool performanceState = true;
+    /// The app's Delay Compensation choice; its registry row is win-owned.
+    bool delayCompensation = true;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -209,6 +215,10 @@ public:
     /// does nothing. False only when a graph was due and could not be built.
     bool setPrecision(Precision p);
 
+    /// Message thread. Publish a new alignment policy without reloading
+    /// devices. Track Delay is suspended with it; stored values are retained.
+    bool setDelayCompensation(bool on);
+
     // --- inspection (message thread) ---------------------------------------
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
@@ -262,6 +272,10 @@ public:
 
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
+    /// Owner-thread recording control. Channels address the driver's current
+    /// AudioIo inputs; per-device channel configuration remains the adapter's.
+    bool startRecording(const AudioRecordingSpec&,std::string& error);
+    [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Message/offline driver inspection. Pointer valid until the next rebuild.
     [[nodiscard]] ClipPlayback* clips() noexcept { return clips_.get(); }
     [[nodiscard]] MidiClips* midiClips() noexcept { return midi_.get(); }
@@ -308,6 +322,8 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    std::unique_ptr<AudioInputRecorder> recording_;
+    std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
     struct TimingView final : Sequenced {
@@ -320,6 +336,8 @@ private:
     };
     SnapshotPublisher<TimingView> timing_;
     MainLoudness mainLoudness_;
+    CueSettings cueSettings_;
+    CueMonitor cueMonitor_;
     TransportSettings transportSettings_; // message thread, copied into TimingView
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;

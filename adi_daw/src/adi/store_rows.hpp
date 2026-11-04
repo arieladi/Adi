@@ -27,6 +27,11 @@
 #pragma once
 #include <array>
 
+#include "adi/track_recording.hpp"
+#include "adi/return_send_tap.hpp"
+
+#include "adi/controller_data.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -84,6 +89,8 @@ struct Track {
     std::optional<std::string> inputRef;
     std::int64_t automationMode = 0;
     std::optional<std::int64_t> freezeMediaId;
+    TrackRecordingOptions recording;
+    std::optional<ReturnSendTap> returnSendTap{};
 };
 
 /// One row, inlined onto its track by the projection (TEXT-PROJECTION §2): the
@@ -150,6 +157,9 @@ struct Clip {
     std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
     std::optional<std::int64_t> endMarkerTicks; // optional N33 properties, when available
     std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain
+    std::optional<std::int64_t> signatureNumerator = {}, signatureDenominator = {};
+    std::optional<std::int64_t> scaleRoot = {}, scaleMask = {};
+    std::optional<std::string> scaleId = {};
 };
 
 struct AudioClip {
@@ -226,6 +236,7 @@ struct Routing {
     /// the difference decides whether re-parenting may rewrite the row, so a
     /// planner that cannot see it cannot honour the rule.
     std::string origin = "user";
+    std::optional<bool> storedPreFader{}; // set when a return policy overrides the raw row
 };
 
 // --- the whole readable project ---------------------------------------------
@@ -380,6 +391,7 @@ struct Model {
     std::vector<Clip> clips;
     std::vector<AudioClip> audioClips;
     std::vector<Note> notes;
+    std::vector<controllers::Lane> controllers;
     std::vector<Marker> markers;
     std::vector<Media> media;
     std::vector<Routing> routing;
