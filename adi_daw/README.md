@@ -54,7 +54,7 @@ than frightening.
 | | |
 |---|---|
 | [`docs/format/SPEC.md`](docs/format/SPEC.md) | The `.adi` format specification, v0.1 draft. Written so a third party can implement a reader from it without reading our source. |
-| [`docs/format/schema.sql`](docs/format/schema.sql) | Normative DDL. Executable, and verified on every change. 52 tables. |
+| [`docs/format/schema.sql`](docs/format/schema.sql) | Normative DDL. Executable, and verified on every change. |
 | [`docs/format/RATIONALE.md`](docs/format/RATIONALE.md) | Why SQLite, what we rejected, and the three errors in the original proposal that must not come back. |
 | [`docs/FEATURES.md`](docs/FEATURES.md) | Ableton ∪ Cubase, prioritised P0–P3, each row checked against the schema. |
 | [`docs/AI-AGENT.md`](docs/AI-AGENT.md) | The agent's architecture, capability tiers and guardrails. |

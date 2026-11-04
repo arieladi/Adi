@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
+#include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
 #include "ui_shell.hpp"
+#include <limits>
 namespace adi::ui {
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTitle("Overview");
@@ -26,11 +28,24 @@ void paintLanes(juce::Graphics &g, const ArrangementGeometry &geo, int width, in
         g.setColour(lane);
         g.fillRect(static_cast<float>(x0), static_cast<float>(top), static_cast<float>(x1 - x0),
                    static_cast<float>(height));
+        if (geo.metered())
+            continue;
         g.setColour(lane.darker(0.33f));
         for (double line = q; line < q + group && line < geo.left + width / geo.scale; line += grid)
             if (line >= geo.left)
                 g.fillRect(static_cast<int>((line - geo.left) * geo.scale), top, 1, height);
     }
+    // In the project's meters the lines run from each bar line (manual 6.10), each a quarter darker
+    // than the lane under it.
+    if (geo.metered())
+        geo.forEachGridLine(geo.tick(0.), geo.tick(static_cast<double>(width)), [&](std::int64_t line) {
+            const double q = static_cast<double>(line) / textproj::kPPQ;
+            const bool alt = static_cast<std::int64_t>(std::floor(q / group)) % 2 != 0;
+            const auto lane = selected ? (alt ? look::laneSelectedAlt : look::laneSelected)
+                                       : (alt ? look::laneAlt : look::lane);
+            g.setColour(lane.darker(0.33f));
+            g.fillRect(static_cast<int>(geo.x(line)), top, 1, height);
+        });
 }
 } // namespace
 std::int64_t ArrangementOverview::span() const noexcept {
@@ -93,8 +108,38 @@ void ArrangementOverview::mouseDrag(const juce::MouseEvent &e) {
 void ArrangementOverview::mouseDoubleClick(const juce::MouseEvent &) { view.fit(false); }
 ScrubArea::ScrubArea(ArrangementView &v) : view(v) {
     setTitle("Scrub area");
-    setTooltip("Click to play from that point.");
+    setTooltip("Click to play from that point. Click a time signature marker to select it; "
+               "right-click for Insert Time Signature Change.");
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    addChildComponent(editor);
+    editor.setTitle("Time signature");
+    editor.setJustification(juce::Justification::centredLeft);
+    editor.onCommit = [this] {
+        if (editing_ < 0)
+            return;
+        const auto pos = editing_;
+        const auto text = editor.getText().toStdString();
+        // A value refused keeps the field open to type again; the Status Bar says why.
+        if (inserting_ ? view.root.insertMeter(pos, text) : view.root.editMeter(pos, text))
+            endMeterEdit();
+        else if (editor.isShowing())
+            editor.selectAll();
+    };
+    editor.onCancel = [this] { endMeterEdit(); };
+}
+juce::Rectangle<float> ScrubArea::markerBox(const textproj::Meter &m) const {
+    const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
+    const float x = static_cast<float>(view.geometry.x(m.start_ticks));
+    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
+    return {x, 3.f, w, 15.f};
+}
+std::int64_t ScrubArea::markerAt(float x) const {
+    const auto &meters = view.reader().meters();
+    // The later one is drawn over the earlier where two touch.
+    for (std::size_t i = meters.size(); i-- > 1;)
+        if (const auto box = markerBox(meters[i]); x >= box.getX() && x < box.getRight())
+            return meters[i].start_ticks;
+    return -1;
 }
 void ScrubArea::paint(juce::Graphics &g) {
     // Live's locator band: the lanes' grey and grid, where the loop brace and the
@@ -102,18 +147,37 @@ void ScrubArea::paint(juce::Graphics &g) {
     paintLanes(g, view.geometry, getWidth(), 0, getHeight(), false);
     // A marker at each change of time signature (Live 12 manual 6.4.1, its figure): a grey box
     // with a dark edge, a notch at its top left, the signature in it. The first signature is the
-    // control bar's and has none.
+    // control bar's and has none. The selected one is lit (its colour to be measured on Live).
     const auto &meters = view.reader().meters();
+    // Live's fragmentary bars (manual 6.5, its figure): a crosshatched band in the markers' row, from
+    // the bar line before a change placed too early to the change.
+    forEachFragmentaryBar(meters, [&](std::int64_t start, std::int64_t end) {
+        const float x0 = static_cast<float>(view.geometry.x(start)), x1 = static_cast<float>(view.geometry.x(end));
+        if (x1 < 0 || x0 > static_cast<float>(getWidth()))
+            return;
+        const juce::Rectangle<float> band(x0, 3.f, x1 - x0, 15.f);
+        g.setColour(juce::Colour(0xffb4b4b4));
+        g.fillRect(band);
+        {
+            juce::Graphics::ScopedSaveState clip(g);
+            g.reduceClipRegion(band.getSmallestIntegerContainer());
+            g.setColour(juce::Colour(0xff6e6e6e));
+            for (float x = x0 - band.getHeight(); x < x1; x += 6.f)
+                g.drawLine(x, band.getBottom(), x + band.getHeight(), band.getY(), 1.5f);
+        }
+        g.setColour(look::separator);
+        g.drawRect(band, 1.5f);
+    });
     g.setFont(look::font(11.5f));
     for (std::size_t i = 1; i < meters.size(); ++i) {
-        const auto &m = meters[i];
-        const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
-        const float x = static_cast<float>(view.geometry.x(m.start_ticks));
-        const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
-        if (x + w < 0 || x > static_cast<float>(getWidth()))
+        auto m = meters[i];
+        if (m.start_ticks == dragged_ && movingTo_ >= 0)
+            m.start_ticks = movingTo_; // drawn where the drag would put it
+        const auto box = markerBox(m);
+        if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
             continue;
-        const juce::Rectangle<float> box(x, 3.f, w, 15.f);
-        g.setColour(juce::Colour(0xffb4b4b4));
+        const float x = box.getX();
+        g.setColour(meters[i].start_ticks == view.selectedMeter ? look::selection : juce::Colour(0xffb4b4b4));
         g.fillRect(box);
         g.setColour(look::separator);
         g.drawRect(box, 1.5f);
@@ -122,16 +186,109 @@ void ScrubArea::paint(juce::Graphics &g) {
         g.setColour(juce::Colour(0xffe8e8e8));
         g.fillPath(notch);
         g.setColour(look::text);
-        g.drawText(text, box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
+        g.drawText(juce::String(meterText(m)), box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
     }
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu())
+    // A marker clicked is selected, and plays nothing; its menu acts on it; a drag moves it.
+    const auto marker = markerAt(e.position.x);
+    dragged_ = e.mods.isPopupMenu() ? -1 : marker;
+    movingTo_ = marker;
+    grabbed_ = marker >= 0 ? view.geometry.tick(e.position.x) - marker : 0;
+    if (marker >= 0 || view.selectedMeter >= 0) {
+        view.selectedMeter = marker;
+        if (marker >= 0) {
+            // Delete and the arrows go to the lanes, which act on the marker while it is selected.
+            auto &sel = view.geometry.selection;
+            sel.clip = 0;
+            sel.pickedClips.clear();
+            view.canvas.grabKeyboardFocus();
+        }
+        repaint();
+    }
+    if (e.mods.isPopupMenu()) {
+        menu(view.geometry.tick(e.position.x))
+            .showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+        return;
+    }
+    if (marker >= 0)
         return;
     view.followPaused = false;
     // From the point clicked; Live's global launch quantization arrives with Session
     // View's launch settings (ADR-0203 d10), so nothing is quantized yet.
     view.root.playFrom(view.geometry.tick(e.position.x));
+}
+void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
+    if (dragged_ < 0)
+        return;
+    const auto raw = view.geometry.tick(e.position.x) - grabbed_;
+    const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+    const auto snapped = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
+    // Never onto the start, which is the control bar's: at the first grid line at the earliest.
+    movingTo_ = std::max(snapped, view.snaps(e.mods) ? view.geometry.nextGridLine(0, true) : std::int64_t{1});
+    repaint();
+}
+void ScrubArea::mouseUp(const juce::MouseEvent &) {
+    const auto from = dragged_, to = movingTo_;
+    dragged_ = -1;
+    movingTo_ = -1;
+    if (from >= 0 && to >= 0 && to != from)
+        view.root.moveMeter(from, to);
+    repaint();
+}
+juce::PopupMenu ScrubArea::menu(std::int64_t at) {
+    // Live's scrub area menu (manual 6.5): Insert Time Signature Change at the insert marker; on a
+    // marker, Edit Time Signature and Delete (the Edit menu's Rename and Delete, which act on the
+    // selected marker).
+    auto &commands = view.root.commands();
+    commands.activate(view.root);
+    juce::PopupMenu out;
+    out.addCommandItem(&commands.manager, AppCommands::InsertTimeSignatureChange);
+    if (view.selectedMeter >= 0) {
+        out.addSeparator();
+        out.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+        out.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+    }
+    // On a fragmentary bar, Live's two ways to make it whole (manual 6.5, its figure). Both delete or
+    // insert time across every track, which waits for the time ops (the …Time commands' kind, N17);
+    // the Status Bar says so.
+    if (at >= 0 && fragmentAt(at, view.reader().meters()).first >= 0) {
+        out.addSeparator();
+        out.addItem(juce::PopupMenu::Item("Delete Fragmentary Bar Time").setEnabled(false));
+        out.addItem(juce::PopupMenu::Item("Complete Fragmentary Bar (Insert Time)").setEnabled(false));
+        view.root.say("Deleting or completing a fragmentary bar inserts or deletes time across the tracks, "
+                      "which waits for the time ops.");
+    }
+    return out;
+}
+bool ScrubArea::beginMeterEdit(std::int64_t pos, bool inserting) {
+    if (pos < 0)
+        return false;
+    // The marker's place on screen: the lanes scroll to it first when it is off them.
+    if (const auto x = view.geometry.x(pos); x < 0 || x > getWidth() - 64) {
+        view.geometry.left = static_cast<double>(pos) / textproj::kPPQ -
+                             static_cast<double>(getWidth()) / 4. / std::max(view.geometry.scale, 1.);
+        view.geometry.left = std::max(0., view.geometry.left);
+        view.changed();
+    }
+    editing_ = pos;
+    inserting_ = inserting;
+    const int x = std::clamp(static_cast<int>(view.geometry.x(pos)), 0, std::max(0, getWidth() - 64));
+    editor.setBounds(x, 2, 64, std::max(0, getHeight() - 4));
+    editor.setText(juce::String(meterText(meterAt(pos, view.reader().meters()))), false);
+    editor.setVisible(true);
+    editor.selectAll();
+    if (editor.isShowing())
+        editor.grabKeyboardFocus();
+    repaint();
+    return true;
+}
+void ScrubArea::endMeterEdit() {
+    editing_ = -1;
+    editor.setVisible(false);
+    if (view.canvas.isShowing())
+        view.canvas.grabKeyboardFocus();
+    repaint();
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
@@ -449,6 +606,8 @@ void ArrangementView::refreshTree() {
     geometry.order.build(reader(), tree_.rows());
 }
 void ArrangementView::applyView() {
+    // The grid follows the project's meters (manual 6.10), from this snapshot's.
+    geometry.meters = &reader().meters();
     refreshTree();
     leaveOut();
     // A title being renamed stays on its track, wherever the new rows put it.
@@ -503,6 +662,7 @@ void ArrangementView::firstShownIfHidden() {
         return;
     geometry.selection.track = 0;
     geometry.selection.clip = 0;
+    geometry.selection.pickedClips.clear();
     for (const auto row : geometry.rows(reader()))
         if (geometry.shown(row.track->id)) {
             geometry.selection.track = row.track->id;
@@ -525,6 +685,7 @@ void ArrangementView::toggleFold(std::int64_t group) {
     if (!geometry.shown(geometry.selection.track) && geometry.shown(group)) {
         geometry.selection.track = group;
         geometry.selection.clip = 0;
+        geometry.selection.pickedClips.clear();
     }
     firstShownIfHidden();
     changed();
@@ -602,15 +763,44 @@ juce::Colour ArrangementView::colourFor(std::size_t position) const {
             return look::paletteColour(*own);
     return look::trackColour(position);
 }
+juce::Rectangle<float> ArrangementView::topButton(TopButton which) const noexcept {
+    const float hx = static_cast<float>(headers.getX());
+    const float top = static_cast<float>(overviewHeight() + kRulerHeight) - 2.f;
+    switch (which) {
+    case TopButton::Set:
+        return {hx + 5, top, 28, 12};
+    case TopButton::Previous:
+        return {hx + 4, top + 15, 12, 12};
+    case TopButton::Next:
+        return {hx + 21, top + 15, 12, 12};
+    case TopButton::Automation:
+        return {hx + 45, top + 15, 22, 12};
+    case TopButton::Lock:
+        break;
+    }
+    return {hx + 72, top + 15, 22, 12};
+}
+void ArrangementView::mouseDown(const juce::MouseEvent &e) {
+    // The window's rule for a control that cannot act yet: a click says what it waits for.
+    using B = TopButton;
+    for (const auto &[button, words] :
+         {std::pair{B::Set, "Set Locator waits for the engine's locators (window log, N25)."},
+          std::pair{B::Previous, "Previous Locator waits for the engine's locators (window log, N25)."},
+          std::pair{B::Next, "Next Locator waits for the engine's locators (window log, N25)."},
+          std::pair{B::Automation, "Automation Mode waits for the engine's automation lanes (window log, N26)."},
+          std::pair{B::Lock, "Lock Envelopes waits for the engine's automation lanes (window log, N26)."}})
+        if (topButton(button).expanded(1.f).contains(e.position)) {
+            root.say(words);
+            return;
+        }
+}
 void ArrangementView::paint(juce::Graphics &g) {
     // The arrangement's frame is Live's dark band; the rulers and the header column's
     // top sit on it.
     g.fillAll(look::band);
     // Above the headers: Live's locator buttons ("Set", previous, next) and its two
-    // switches, Follow's lock and the automation's arrow.
-    const float hx = static_cast<float>(headers.getX());
-    const float top = static_cast<float>(overviewHeight() + kRulerHeight) - 2.f;
-    const juce::Rectangle<float> set(hx + 5, top, 28, 12);
+    // toggles, Automation Mode and Lock Envelopes.
+    const auto set = topButton(TopButton::Set);
     g.setColour(look::button);
     g.fillRoundedRectangle(set, 6.f);
     g.setColour(look::outline);
@@ -619,7 +809,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     g.setFont(look::font(11.f));
     g.drawText("Set", set, juce::Justification::centred);
     for (int i = 0; i < 2; ++i) {
-        const juce::Rectangle<float> c(hx + 4 + static_cast<float>(i) * 17, top + 15, 12, 12);
+        const auto c = topButton(i == 0 ? TopButton::Previous : TopButton::Next);
         g.setColour(look::button);
         g.fillEllipse(c);
         g.setColour(look::outline);
@@ -631,14 +821,18 @@ void ArrangementView::paint(juce::Graphics &g) {
         g.drawLine(cx + 3.f * dir, cy, cx, cy - 3.f, 1.5f);
         g.drawLine(cx + 3.f * dir, cy, cx, cy + 3.f, 1.5f);
     }
-    look::box(g, {hx + 45, top + 15, 22, 12}, look::button);
+    const auto automation = topButton(TopButton::Automation);
+    const float ax = automation.getX(), ay = automation.getY();
+    look::box(g, automation, look::button);
     g.setColour(look::text);
-    g.drawLine(hx + 51, top + 24, hx + 61, top + 18, 1.2f);
-    g.fillEllipse(hx + 49.5f, top + 22.5f, 3, 3);
-    g.fillEllipse(hx + 59.5f, top + 16.5f, 3, 3);
-    look::box(g, {hx + 72, top + 15, 22, 12}, juce::Colour(0xfff0773a));
-    g.fillRect(hx + 79.f, top + 20.5f, 8.f, 4.5f);
-    g.drawRoundedRectangle(hx + 80.5f, top + 17.5f, 5.f, 5.f, 2.f, 1.f);
+    g.drawLine(ax + 6, ay + 9, ax + 16, ay + 3, 1.2f);
+    g.fillEllipse(ax + 4.5f, ay + 7.5f, 3, 3);
+    g.fillEllipse(ax + 14.5f, ay + 1.5f, 3, 3);
+    const auto lock = topButton(TopButton::Lock);
+    const float lx = lock.getX(), ly = lock.getY();
+    look::box(g, lock, juce::Colour(0xfff0773a));
+    g.fillRect(lx + 7.f, ly + 5.5f, 8.f, 4.5f);
+    g.drawRoundedRectangle(lx + 8.5f, ly + 2.5f, 5.f, 5.f, 2.f, 1.f);
     // Under the lanes: the time ruler, in minutes and seconds (manual 6.1).
     const int clipsW = canvas.getWidth();
     const juce::Rectangle<int> time(canvas.getX(), canvas.getBottom(), clipsW, kTimeRulerHeight);
@@ -766,6 +960,7 @@ bool ArrangementView::command(int id) {
         const auto at = root.timelineTick();
         geometry.selection.insert = geometry.selection.start = geometry.selection.end = at;
         geometry.selection.clip = 0;
+        geometry.selection.pickedClips.clear();
         geometry.selection.marked = true;
         break;
     }
@@ -823,6 +1018,7 @@ void ArrangementView::select(int x, int y, bool snapToGrid) {
         const auto *c = geometry.hit(*t, at);
         const auto tick = snapToGrid ? geometry.snap(at, false) : at;
         geometry.selection.clip = c ? c->id : 0;
+        geometry.selection.pickedClips.clear();
         geometry.selection.insert = tick;
         geometry.selection.marked = true;
         geometry.selection.start = c ? c->posTicks : tick;
@@ -850,6 +1046,7 @@ void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
             geometry.selection.toTrack = 0;
             geometry.selection.picked.clear();
             geometry.selection.clip = clip;
+            geometry.selection.pickedClips.clear();
             geometry.selection.start = c->posTicks;
             geometry.selection.end = c->posTicks + c->lengthTicks;
             changed();
@@ -880,6 +1077,7 @@ bool ArrangementView::selectAll() {
     sel.track = first;
     sel.toTrack = last == first ? 0 : last;
     sel.clip = clips == 1 ? only : 0;
+    sel.pickedClips.clear();
     sel.start = from;
     sel.end = to;
     sel.insert = from;
@@ -994,6 +1192,34 @@ void ArrangementView::addGridItems(juce::PopupMenu &menu) {
     menu.addCommandItem(&root.commands().manager, AppCommands::TripletGrid);
     menu.addCommandItem(&root.commands().manager, AppCommands::SnapToGrid);
 }
+bool ArrangementView::edgeScroll(int x, int y, bool sideways, bool upAndDown) {
+    // How far past the edge zone's inner line, as a step: a few points at its rim, up to a track
+    // a step well past it.
+    auto step = [](int depth) { return depth == 0 ? 0 : (depth > 0 ? 1 : -1) * std::min(48, 2 + std::abs(depth) / 2); };
+    bool moved = false;
+    if (upAndDown) {
+        // The tracks scroll above the foot: its top is their bottom.
+        const int bottom = geometry.footTop(reader());
+        const int depth = y < kScrollEdge ? y - kScrollEdge : y > bottom - kScrollEdge ? y - (bottom - kScrollEdge) : 0;
+        const int before = geometry.scrollY;
+        geometry.scrollY = std::clamp(before + step(depth), 0, geometry.maxScroll(reader()));
+        moved = geometry.scrollY != before;
+    }
+    if (sideways) {
+        const int width = canvas.getWidth();
+        const int depth = x < kScrollEdge ? x - kScrollEdge : x > width - kScrollEdge ? x - (width - kScrollEdge) : 0;
+        const double before = geometry.left;
+        geometry.pan(step(depth));
+        if (geometry.left != before) {
+            moved = true;
+            followPaused = true; // a sideways scroll pauses Follow (§6.2)
+        }
+    }
+    // The mixer's rows follow the lanes: re-placed on the next frame.
+    if (moved)
+        root.mark(DirtySet::Layout);
+    return moved;
+}
 void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (e.mods.isCommandDown()) {
         // Live zooms around the selection (manual 6.2, ADR-0203 d7); around the
@@ -1062,7 +1288,15 @@ void TimelineRuler::paint(juce::Graphics &g) {
         label(tick, juce::String(bar));
         const auto &m = meterAt(tick, meters);
         const auto beatTicks = textproj::kWhole / std::max<std::int64_t>(1, m.denominator);
-        for (std::int64_t b = beatStep; b < m.numerator; b += beatStep)
+        // A change part-way through a bar cuts it short (Live's fragmentary bar, manual 6.5): its
+        // beats stop where the next signature begins. Live crosshatches the fragment; ADI does not yet.
+        auto until = std::numeric_limits<std::int64_t>::max();
+        for (const auto &next : meters)
+            if (next.start_ticks > tick) {
+                until = next.start_ticks;
+                break;
+            }
+        for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep)
             label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
     });
 }
@@ -1149,6 +1383,24 @@ void TrackHeaderList::paint(juce::Graphics &g) {
         }
         y += h;
     }
+    // Where the dragged tracks would land: a line at their depth, or the group they would go into.
+    // White, edged in black, to read on every title's colour and on the rule between rows.
+    if (moving_) {
+        const int x = nameLeft(drop_.depth);
+        if (drop_.into != 0) {
+            const juce::Rectangle<int> box(x, view.geometry.rowTop(view.reader(), drop_.into), getWidth() - x,
+                                           view.geometry.heightFor(drop_.into) - 2);
+            g.setColour(look::text);
+            g.drawRect(box, 4);
+            g.setColour(juce::Colours::white);
+            g.drawRect(box.reduced(1), 2);
+        } else {
+            g.setColour(look::text);
+            g.fillRect(x, drop_.y - 2, getWidth() - x, 4);
+            g.setColour(juce::Colours::white);
+            g.fillRect(x, drop_.y - 1, getWidth() - x, 2);
+        }
+    }
 }
 void TrackHeaderList::resized() {
     if (renaming_ != 0)
@@ -1205,20 +1457,44 @@ void TrackHeaderList::endRename() {
     repaint();
 }
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
-    // A group's fold switch folds or unfolds it (Live 12 manual 18.3), and selects nothing.
+    if (view.selectedMeter >= 0) {
+        view.selectedMeter = -1; // a click on a title lets a selected marker go
+        view.scrub.repaint();
+    }
+    // A group's fold switch folds or unfolds it (Live 12 manual 18.3), and selects nothing. Any other
+    // track's Unfold Track button shows its automation lanes (manual 6.9), which wait for the engine:
+    // a click says so.
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
+    foldPressed_ = false;
     if (const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
-        !e.mods.isPopupMenu() && at < rows.size() && rows[at].place.group &&
+        !e.mods.isPopupMenu() && at < rows.size() &&
         foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position)) {
-        resizeId = 0;
-        view.toggleFold(rows[at].track->id);
+        resizeId = moveId_ = 0;
+        foldPressed_ = true;
+        if (rows[at].place.group)
+            view.toggleFold(rows[at].track->id);
+        else
+            view.root.say(ArrangementView::kUnfoldWaits);
         return;
     }
+    resizeId = 0;
+    moveId_ = 0;
+    moving_ = selectOnUp_ = false;
     if (auto *t = view.geometry.trackAt(view.reader(), e.y)) {
+        // The split line at the row's foot resizes it; the rest of the title moves it, Main and
+        // the returns aside.
+        const auto pressed = view.geometry.rowAt(view.reader(), e.y, &top);
+        const bool split = e.y >= top + view.geometry.heightFor(t->id) - kSplitLine;
+        const bool plain = !e.mods.isCommandDown() && !e.mods.isShiftDown() && !e.mods.isPopupMenu();
         // Ctrl/Cmd+click picks a track apart from the others, or lets it go again (Live: non-adjacent
         // tracks); Shift+click on another header reaches the selection across the tracks between.
-        if (e.mods.isCommandDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu()) {
+        // A plain press on one of several selected tracks keeps them for a drag; released
+        // without one, it selects that track alone.
+        if (plain && !split && view.geometry.inSelection(view.reader(), t->id) &&
+            view.geometry.selectedTracks(view.reader()).size() > 1)
+            selectOnUp_ = true;
+        else if (e.mods.isCommandDown() && view.geometry.selection.track != 0 && !e.mods.isPopupMenu()) {
             auto &picked = view.geometry.selection.picked;
             if (t->id != view.geometry.selection.track) {
                 if (const auto at = std::find(picked.begin(), picked.end(), t->id); at != picked.end())
@@ -1233,14 +1509,135 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
         }
-        resizeId = t->id;
+        if (split)
+            resizeId = t->id;
+        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.main) {
+            moveId_ = t->id;
+            movingReturn_ = rows[pressed].place.ret;
+            // Held still at the lanes' edge, the drag repeats, so they keep scrolling.
+            beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
+        }
         initialHeight = view.geometry.heightFor(t->id);
         view.changed();
     }
     if (e.mods.isPopupMenu()) {
-        resizeId = 0;
+        resizeId = moveId_ = 0;
         view.contextMenu(e.getScreenPosition(), true);
     }
+}
+void TrackHeaderList::mouseMove(const juce::MouseEvent &e) {
+    // The split line shows the resize cursor, as Live's.
+    int top = 0;
+    const auto rows = view.geometry.rows(view.reader());
+    const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
+    const bool split = at < rows.size() && e.y >= top + view.geometry.heightFor(rows[at].track->id) - kSplitLine;
+    setMouseCursor(split ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+}
+TrackHeaderList::Drop TrackHeaderList::returnDropAt(int y) const {
+    const auto &reader = view.reader();
+    const auto rows = view.geometry.rows(reader);
+    const auto foot = view.geometry.footStart(rows);
+    Drop drop;
+    // The returns' rows, top to bottom, where the foot draws them.
+    int top = view.geometry.footTop(reader);
+    drop.y = top;
+    bool first = true;
+    for (auto i = foot; i < rows.size(); ++i) {
+        const auto row = rows[i];
+        const int h = view.geometry.heightFor(row.track->id);
+        if (!row.place.ret) {
+            top += h;
+            continue;
+        }
+        if (first && y < top) {
+            drop.to = {0, row.track->id};
+            return drop;
+        }
+        first = false;
+        if (y < top + h / 2) {
+            drop.to = {0, row.track->id};
+            drop.y = top;
+            return drop;
+        }
+        top += h;
+        drop.to = {0, 0};
+        drop.y = top;
+        // The next return, if one follows, is the one it goes before.
+        for (auto j = i + 1; j < rows.size(); ++j)
+            if (rows[j].place.ret) {
+                drop.to = {0, rows[j].track->id};
+                break;
+            }
+        if (y < top)
+            return drop;
+    }
+    return drop;
+}
+TrackHeaderList::Drop TrackHeaderList::dropAt(int y) const {
+    const auto &reader = view.reader();
+    const auto rows = view.geometry.rows(reader);
+    const auto foot = view.geometry.footStart(rows);
+    Drop drop;
+    int top = 0;
+    const auto at = view.geometry.rowAt(reader, y, &top);
+    if (at >= foot) {
+        // Below the tracks, or over the returns and Main: after the last track at the top.
+        drop.y = -view.geometry.scrollY;
+        for (std::size_t i = 0; i < foot; ++i)
+            drop.y += view.geometry.heightFor(rows[i].track->id);
+        if (foot < rows.size())
+            drop.y = std::min(drop.y, view.geometry.footTop(reader) - 2);
+        return drop;
+    }
+    const auto row = rows[at];
+    const auto &place = row.place;
+    const auto id = row.track->id;
+    const int h = view.geometry.heightFor(id);
+    const int down = y - top;
+    // What follows the row in what holds it, past everything it holds; 0 at the end.
+    auto next = [&] {
+        auto j = at + 1;
+        while (j < foot && rows[j].place.depth > place.depth)
+            ++j;
+        return j < foot && rows[j].place.parent == place.parent ? rows[j].track->id : 0;
+    };
+    auto above = [&] {
+        drop.to = {place.parent, id};
+        drop.y = top;
+        drop.depth = place.depth;
+    };
+    auto below = [&] {
+        drop.to = {place.parent, next()};
+        drop.y = top + h;
+        drop.depth = place.depth;
+    };
+    if (!place.group) {
+        // A track: above it in its upper half, below it in its lower.
+        if (down * 2 < h)
+            above();
+        else
+            below();
+        return drop;
+    }
+    // A group: above it in its top quarter. Open and holding tracks, under it, at the top of what
+    // it holds; folded or empty, into it (at the end of what it holds), or below it in its last
+    // quarter.
+    const bool open = view.root.state().foldedGroups.count(id) == 0;
+    const bool holds = at + 1 < foot && rows[at + 1].place.parent == id;
+    if (down * 4 < h)
+        above();
+    else if (open && holds) {
+        drop.to = {id, rows[at + 1].track->id};
+        drop.y = top + h;
+        drop.depth = place.depth + 1;
+    } else if (down * 4 < h * 3) {
+        drop.to = {id, 0};
+        drop.y = top;
+        drop.depth = place.depth;
+        drop.into = id;
+    } else
+        below();
+    return drop;
 }
 void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
     // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
@@ -1250,8 +1647,7 @@ void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
-    if (at >= rows.size() ||
-        (rows[at].place.group && foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position)))
+    if (at >= rows.size() || foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position))
         return;
     view.root.showDeviceView();
 }
@@ -1260,11 +1656,37 @@ void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
         view.geometry.resizeTrack(resizeId, initialHeight + e.getDistanceFromDragStartY(),
                                   e.mods.isAltDown());
         view.frame(true);
+    } else if (moveId_ != 0 && (moving_ || std::abs(e.getDistanceFromDragStartY()) > 4)) {
+        // Live: "Tracks can be reordered by selecting and dragging them above or below other
+        // tracks"; the line shows where they would land.
+        moving_ = true;
+        selectOnUp_ = false;
+        // At the lanes' top or foot they scroll, and the line follows; the returns stand still.
+        if (!movingReturn_ && view.edgeScroll(0, e.y, false))
+            view.frame(true);
+        drop_ = movingReturn_ ? returnDropAt(e.y) : dropAt(e.y);
+        repaint();
     }
 }
-void TrackHeaderList::mouseUp(const juce::MouseEvent &) {
-    resizeId = 0;
+void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(foldPressed_, false))
+        return;
+    const auto dragged = moveId_;
+    const bool moved = moving_;
+    resizeId = moveId_ = 0;
+    moving_ = false;
+    if (selectOnUp_ && !moved && dragged != 0) {
+        view.geometry.selection.track = dragged;
+        view.geometry.selection.toTrack = 0;
+        view.geometry.selection.picked.clear();
+    }
+    selectOnUp_ = false;
     view.changed();
+    // After the window's state is kept, which clears the Status Bar: a refusal stays on it.
+    if (moved) {
+        repaint();
+        view.root.moveTracks(dragged, (movingReturn_ ? returnDropAt(e.y) : dropAt(e.y)).to);
+    }
 }
 void TrackHeaderList::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     view.wheel(e, w);
@@ -1323,14 +1745,15 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         auto drawClip = [&](const engine::ClipNode &clip) {
             const auto *c = &clip;
             // A clip being moved by its bar is drawn where it would land.
-            const auto pos = c->id == moving_ ? movingTo_ : c->posTicks;
+            const bool along = moving_ != 0 && !geo.selection.pickedClips.empty() && geo.clipSelected(c->id);
+            const auto pos = c->id == moving_ ? movingTo_ : along ? c->posTicks + movingDelta() : c->posTicks;
             const auto length = c->id == resizing_ ? resizeLength_ : c->lengthTicks;
             const double x = geo.x(pos), end = geo.x(pos + length);
             if (end < 0 || x > getWidth())
                 return;
             const float left = static_cast<float>(std::max(-1., x)),
                         right = static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
-            const bool picked = c->id == geo.selection.clip;
+            const bool picked = geo.clipSelected(c->id);
             // A clip in its track's colour: a solid title strip, a lighter body. A
             // deactivated clip is grey, as Live's.
             const auto clipColour = c->muted ? juce::Colour(0xff9a9a9a) : colour;
@@ -1363,15 +1786,17 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 }
             }
         };
-        // A clip dragged onto another track is drawn on that track's lane, in its colour.
+        // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
+        // each of several selected clips dragged across tracks.
         for (const auto &c : t->clips)
-            if (c->id != moving_ || movingTrack_ == t->id)
+            if (const auto to = movingTargetOf(c->id); to == 0 || to == t->id)
                 drawClip(*c);
-        if (moving_ != 0 && movingTrack_ == t->id && movingSource_ != t->id)
-            if (const auto *source = view.reader().findTrack(movingSource_))
-                for (const auto &c : source->clips)
-                    if (c->id == moving_)
-                        drawClip(*c);
+        if (moving_ != 0)
+            for (const auto &other : view.reader().tracks())
+                if (other->id != t->id)
+                    for (const auto &c : other->clips)
+                        if (movingTargetOf(c->id) == t->id)
+                            drawClip(*c);
         y += h;
     }
     if (foot == rows.size())
@@ -1430,6 +1855,10 @@ void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y,
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
+    if (view.selectedMeter >= 0) {
+        view.selectedMeter = -1; // a click in the lanes lets a selected marker go
+        view.scrub.repaint();
+    }
     view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
     moving_ = resizing_ = 0;
@@ -1439,6 +1868,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         view.select(e.x, e.y, view.snaps(e.mods));
         view.contextMenu(e.getScreenPosition(), false);
     } else if (!panning) {
+        // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         // Only a clip's bar moves it, not its body; its right edge changes its length (§6.7).
         std::int64_t track = 0;
         bool edge = false;
@@ -1447,6 +1878,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
             view.geometry.selection.clip = c->id;
+            view.geometry.selection.pickedClips.clear();
             view.geometry.selection.start = c->posTicks;
             view.geometry.selection.end = c->posTicks + c->lengthTicks;
             resizing_ = c->id;
@@ -1455,6 +1887,34 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             view.changed();
             return;
         }
+        // Ctrl/Cmd+click on another clip picks it besides the selected one, or lets it go again
+        // (Live's "Select Multiple Items", §42.5); it moves nothing. A plain click lets them all go.
+        if (e.mods.isCommandDown() && view.geometry.selection.clip != 0)
+            if (const auto *t = view.geometry.trackAt(view.reader(), e.y))
+                if (const auto *c = view.geometry.hit(*t, view.geometry.tick(e.x));
+                    c != nullptr && c->id != view.geometry.selection.clip) {
+                    auto &picked = view.geometry.selection.pickedClips;
+                    if (const auto at = std::find(picked.begin(), picked.end(), c->id); at != picked.end())
+                        picked.erase(at);
+                    else
+                        picked.push_back(c->id);
+                    view.changed();
+                    return;
+                }
+        // A plain press on the bar of one of several selected clips keeps them all for the drag,
+        // which moves them together; released without a drag, it selects that clip alone.
+        selectOnUp_ = false;
+        if (!e.mods.isShiftDown() && !view.geometry.selection.pickedClips.empty())
+            if (const auto *c = barAt(e.x, e.y, track, edge); c != nullptr && view.geometry.clipSelected(c->id)) {
+                moving_ = c->id;
+                movingFrom_ = movingTo_ = c->posTicks;
+                movingSource_ = movingTrack_ = track;
+                movingAcross_.clear();
+                grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
+                selectOnUp_ = true;
+                pressedAt_ = e.getPosition();
+                return;
+            }
         // Shift extends the selection, in the same track or across tracks (Live 12 manual 6.9).
         if (e.mods.isShiftDown() && view.geometry.selection.marked) {
             extendTo(e.x, e.y, view.snaps(e.mods));
@@ -1468,6 +1928,17 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
         }
     }
+}
+std::int64_t ArrangementCanvas::movingTargetOf(std::int64_t clip) const noexcept {
+    // 0: drawn on its own track.
+    if (moving_ == 0)
+        return 0;
+    if (view.geometry.selection.pickedClips.empty())
+        return clip == moving_ ? movingTrack_ : 0;
+    for (const auto &[id, target] : movingAcross_)
+        if (id == clip)
+            return target;
+    return 0;
 }
 const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &track, bool &edge) const {
     const auto &geo = view.geometry;
@@ -1508,27 +1979,66 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         return;
     if (resizing_ != 0) {
         // The clip's end follows the mouse, to the nearest grid line while snapping, never
-        // shorter than one grid step.
+        // shorter than one grid step; at the lanes' side the view scrolls along.
+        const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true, false);
         const auto start = resizeStart_;
         const auto step = static_cast<std::int64_t>(view.geometry.gridQuarters() * textproj::kPPQ);
         const auto raw = view.geometry.tick(e.x);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         const auto end = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
         resizeLength_ = std::max(std::max<std::int64_t>(1, step), end - start);
+        if (scrolled)
+            view.frame(true);
         repaint();
         return;
     }
     if (moving_ != 0) {
         // The clip's start follows the mouse, to the nearest grid line while snapping, and its
         // track follows the lane under it when that track can take it (Live 12 manual 6.7);
-        // over one that cannot, it stays on the last that could.
-        if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
+        // over one that cannot, it stays on the last that could. At the lanes' edge they scroll.
+        const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true);
+        if (e.mouseWasDraggedSinceMouseDown())
+            selectOnUp_ = false;
+        // Several selected clips move together: in time, and across tracks each by the same rows
+        // when every one lands on a track that can take it; else they stay on the last rows that
+        // could.
+        const bool several = !view.geometry.selection.pickedClips.empty();
+        if (const auto *over = view.geometry.trackAt(view.reader(), e.y); over != nullptr && !several) {
             if (const auto *source = view.reader().findTrack(movingSource_);
                 source != nullptr && over->id != movingTrack_ && canTakeClip(*over, *source))
                 movingTrack_ = over->id;
+        } else if (over != nullptr) {
+            std::vector<std::int64_t> lanes;
+            std::ptrdiff_t from = -1, to = -1;
+            for (const auto row : view.geometry.rows(view.reader()))
+                if (!row.place.foot() && view.geometry.heightFor(row.track->id) > 0) {
+                    if (row.track->id == movingSource_)
+                        from = static_cast<std::ptrdiff_t>(lanes.size());
+                    if (row.track->id == over->id)
+                        to = static_cast<std::ptrdiff_t>(lanes.size());
+                    lanes.push_back(row.track->id);
+                }
+            if (from >= 0 && to >= 0)
+                if (const auto current = view.root.current())
+                    if (auto landed = clipsAcross(current->tracks, lanes, view.geometry.selectedClips(), to - from)) {
+                        movingAcross_ = std::move(*landed);
+                        movingTrack_ = over->id;
+                    }
+        }
         const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
+        if (several) {
+            // None of them goes before the arrangement's start.
+            std::int64_t earliest = movingFrom_;
+            for (const auto &t : view.reader().tracks())
+                for (const auto &c : t->clips)
+                    if (view.geometry.clipSelected(c->id))
+                        earliest = std::min(earliest, c->posTicks);
+            movingTo_ = std::max(movingTo_, movingFrom_ - earliest);
+        }
+        if (scrolled)
+            view.frame(true);
         repaint();
         return;
     }
@@ -1538,7 +2048,10 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
                                            view.geometry.maxScroll(view.reader()));
         last = e.position;
     } else {
-        // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9).
+        // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9); at
+        // the lanes' edge they scroll, and it reaches on.
+        if (e.mouseWasDraggedSinceMouseDown())
+            view.edgeScroll(e.x, e.y, true);
         if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
             view.geometry.selection.toTrack = over->id == view.geometry.selection.track ? 0 : over->id;
         // A time selection covers whole grid cells while snapping (§6.10).
@@ -1557,6 +2070,36 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
         if (length != resizeFrom_ &&
             clipEdit("clip.resize", {{"id", clip}, {"pos", resizeStart_}, {"length", length}}, "Resize Clip"))
             sel.end = resizeStart_ + length;
+        repaint();
+    }
+    if (moving_ != 0 && !view.geometry.selection.pickedClips.empty()) {
+        // Several selected clips: one drag moves them all by the same offset, one undo step; a
+        // press without a drag selects the clip pressed alone.
+        const auto delta = movingDelta();
+        const auto clip = moving_;
+        const auto across = std::move(movingAcross_);
+        movingAcross_.clear();
+        moving_ = 0;
+        auto &sel = view.geometry.selection;
+        if (delta != 0 || !across.empty()) {
+            if (const auto current = view.root.current()) {
+                auto edit = moveClips(current->tracks, view.geometry.selectedClips(), delta, across);
+                if (!edit.refusal.empty())
+                    view.root.say(edit.refusal);
+                else if (!edit.ops.empty() && view.root.submitEdits(std::move(edit.ops))) {
+                    sel.start += delta;
+                    sel.end += delta;
+                    // The selection follows the clip dragged, onto its new track.
+                    for (const auto &[id, target] : across)
+                        if (id == clip) {
+                            sel.track = target;
+                            sel.toTrack = 0;
+                        }
+                }
+            }
+        } else if (selectOnUp_)
+            view.select(pressedAt_.x, pressedAt_.y, view.snaps(juce::ModifierKeys::currentModifiers));
+        selectOnUp_ = false;
         repaint();
     }
     if (moving_ != 0) {
@@ -1595,6 +2138,7 @@ void ArrangementCanvas::extendTo(int x, int y, bool snapToGrid) {
     if (const auto *t = geo.trackAt(view.reader(), y))
         sel.toTrack = t->id == sel.track ? 0 : t->id;
     sel.clip = 0;
+    sel.pickedClips.clear();
     view.changed();
     announce(view.root.selectionText());
 }
@@ -1669,14 +2213,23 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         }
     }
     // U folds or unfolds the selected group; Alt+U unfolds them all (§42.16, §42.19). The other
-    // tracks' fold, which shows their automation, waits for the lanes.
+    // tracks' fold, which shows their automation, waits for the lanes, and says so.
     if (k == juce::KeyPress('u')) {
         if (view.tree().isGroup(sel.track))
             view.toggleFold(sel.track);
+        else if (sel.track != 0)
+            view.root.say(ArrangementView::kUnfoldWaits);
         return true;
     }
     if (k == juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) {
         view.unfoldAll();
+        return true;
+    }
+    // Left and right move a selected time signature marker by the grid (Live 12 manual 6.5).
+    if (view.selectedMeter >= 0 && (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey) &&
+        !mods.isAnyModifierKeyDown()) {
+        const auto from = view.selectedMeter;
+        view.root.moveMeter(from, view.geometry.nextGridLine(from, code == juce::KeyPress::rightKey));
         return true;
     }
     const auto tracks = view.geometry.rows(view.reader());
@@ -1711,6 +2264,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             const auto far = tracks[to].track->id;
             sel.toTrack = far == sel.track ? 0 : far;
             sel.clip = 0;
+            sel.pickedClips.clear();
             view.changed();
             announce(view.root.selectionText());
             return true;
@@ -1719,6 +2273,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         sel.toTrack = 0;
         sel.picked.clear();
         sel.clip = 0;
+        sel.pickedClips.clear();
         view.changed();
         return true;
     }
@@ -1749,6 +2304,11 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
                     return true;
                 }
         }
+    // Delete on a selected time signature marker (Live 12 manual 6.5).
+    if (view.selectedMeter >= 0 && (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)) {
+        view.root.deleteMeter(view.selectedMeter);
+        return true;
+    }
     // Live's Delete, and 0 to deactivate (§6.9), on a time selection: every selected track's
     // material, as one undo step.
     if (sel.clip == 0 && sel.start != sel.end &&
@@ -1756,24 +2316,28 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         rangeEdit(k == juce::KeyPress('0'));
         return true;
     }
-    // Live's Delete, and 0 to deactivate (§6.9), on the selected clip.
-    if (const auto clip = view.geometry.selection.clip; clip != 0) {
-        if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) {
-            if (!clipEdit("clip.delete", {{"id", clip}}, "Delete Clip"))
+    // Live's Delete, and 0 to deactivate (§6.9), on the selected clips: the one clicked and those
+    // picked besides it with Ctrl/Cmd+click, one undo step for them all, from the CURRENT cell.
+    if (view.geometry.selection.clip != 0) {
+        const bool erase = k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
+        if (erase || k == juce::KeyPress('0')) {
+            const auto current = view.root.current();
+            if (!current)
+                return true;
+            const auto ids = view.geometry.selectedClips();
+            auto edit = erase ? deleteClips(current->tracks, ids) : deactivateClips(current->tracks, ids);
+            // A refused edit is still the key's: the Status Bar says why.
+            if (!edit.refusal.empty()) {
+                view.root.say(edit.refusal);
+                return true;
+            }
+            if (!view.root.submitEdits(std::move(edit.ops)) || !erase)
                 return true;
             sel.clip = 0;
+            sel.pickedClips.clear();
             sel.end = sel.start;
             sel.insert = sel.start;
             view.changed();
-            return true;
-        }
-        if (k == juce::KeyPress('0')) {
-            // A refused edit is still the key's: the Status Bar says why.
-            if (const auto *t = view.reader().findTrack(view.geometry.selection.track))
-                for (const auto &c : t->clips)
-                    if (c->id == clip)
-                        clipEdit("clip.setMute", {{"id", clip}, {"muted", !c->muted}},
-                                 c->muted ? "Activate Clip" : "Deactivate Clip");
             return true;
         }
     }
@@ -1797,6 +2361,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
             sel.start = sel.end = sel.insert;
         sel.end = edgeKey ? clipEdge(sel.end, forward) : geo.nextGridLine(sel.end, forward);
         sel.clip = 0;
+        sel.pickedClips.clear();
         sel.marked = true;
         const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
         if (track != nullptr)
@@ -1814,6 +2379,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
                                                : std::min(sel.start, sel.end);
         sel.insert = sel.start = sel.end = clipEdge(from, forward);
         sel.clip = 0;
+        sel.pickedClips.clear();
         sel.marked = true;
         view.locate();
         view.changed();
@@ -1825,6 +2391,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         // right to its end.
         sel.insert = sel.start = sel.end = forward ? std::max(sel.start, sel.end) : std::min(sel.start, sel.end);
         sel.clip = 0;
+        sel.pickedClips.clear();
         view.locate();
         view.changed();
         announce(view.root.selectionText());
@@ -1887,7 +2454,8 @@ std::int64_t ArrangementCanvas::clipEdge(std::int64_t tick, bool forward) const 
     return best;
 }
 bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
-    return files.size() == 1;
+    // One file or several, as Live takes them; what each holds is read on the drop.
+    return !files.isEmpty();
 }
 void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int y) {
     // Live's drop (manual 6.1): the clip starts where the file was dropped, on the nearest grid
@@ -1899,8 +2467,13 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
     const auto at = !view.snaps(juce::ModifierKeys::currentModifiers) ? raw : (raw - down <= up - raw ? down : up);
     const auto *track = view.geometry.trackAt(view.reader(), y);
-    const auto file = juce::File::createFileWithoutCheckingPath(files[0]);
-    view.root.dropAudio(files[0].toStdString(), track != nullptr ? track->id : 0, at,
-                        file.getFileNameWithoutExtension().toStdString());
+    // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
+    // held, as Live places them; one undo step for them all.
+    std::vector<std::pair<std::string, std::string>> dropped;
+    for (const auto &path : files)
+        dropped.emplace_back(path.toStdString(),
+                             juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
+    view.root.dropAudioFiles(dropped, track != nullptr ? track->id : 0, at,
+                             juce::ModifierKeys::currentModifiers.isCommandDown());
 }
 } // namespace adi::ui

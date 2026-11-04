@@ -27,6 +27,7 @@
 
 #include "adi/engine/publisher.hpp"
 #include "adi/textproj.hpp"
+#include "adi/transport_settings.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -83,6 +84,7 @@ struct TrackNode {
     bool soloed = false;
     float volumeDb = 0.0f;
     float pan = 0.0f;
+    std::int64_t delaySamples = 0; // stored samples at Snapshot::sampleRate; ms = 1000 * samples / rate
     std::vector<std::shared_ptr<const ClipNode>> clips;
 };
 
@@ -112,6 +114,7 @@ struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
     int sampleRate = 44100;
+    TransportSettings transport;
     std::vector<std::shared_ptr<const MarkerNode>> markers; // id order, not a mixed-units display order
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.
