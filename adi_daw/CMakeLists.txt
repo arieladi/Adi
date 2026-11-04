@@ -1372,3 +1372,7 @@ add_test(NAME adi_midi_controllers_tests COMMAND adi_midi_controllers_tests)
 add_executable(adi_midi_memory_tests tests/test_midi_memory.cpp)
 target_link_libraries(adi_midi_memory_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_memory_tests COMMAND adi_midi_memory_tests)
+
+add_executable(adi_midi_capture_input_tests tests/test_midi_capture_input.cpp)
+target_link_libraries(adi_midi_capture_input_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_midi_capture_input_tests COMMAND adi_midi_capture_input_tests)

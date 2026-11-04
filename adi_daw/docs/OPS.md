@@ -539,6 +539,27 @@ cannot preserve every arbitrary captured double; persistence must name/refuse
 that limitation rather than silently narrow it. No schema/new opcode or measured
 Live parity claim is introduced by the RAM memory.
 
+The live `MpeParser` now tracks a plain channel's note identity per key, so
+distinct-key chords can release out of order through the router and Capture.
+An MPE member retains its existing single-note expression ownership. Unmatched
+releases keep identity zero; reset clears the per-key map without recycling IDs.
+Same-key retrigger retains the existing newest-identity release policy; this
+increment does not invent FIFO ownership for ambiguous repeated MIDI-1 keys.
+
+Ordinary CCs now emit typed Controller events on zero-based channels with their
+original 0..127 address and normalized double value. This includes zone-master
+controls and ordinary pedals on member channels. Member-channel CC74/106 retains
+the original MPE per-note timbre path and exact 14-bit combination. Outside a
+member, CC74/106 stays ordinary addressed CC. Other high-resolution CC pairs keep
+both original addressed components, without pretending a missing LSB arrived.
+The native controller route can recover their original MIDI-1 wire values.
+Consumed data bytes with their status bit set are refused before state changes,
+array indexing or normalization; a malformed timbre MSB cannot seed a later pair.
+Sink refusal remains counted/nonblocking. Parsing/reset/delivery allocates and
+performs callback I/O nowhere. Program change, SysEx, poly aftertouch and full
+native Capture composition are outside this input correction; no schema/opcode
+or measured Live parity claim is introduced.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
