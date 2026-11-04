@@ -1,5 +1,15 @@
 # Clones lane log
 
+## 2026-11-04 — export, Bitwig UI and complete Live baseline scope, milestone 4
+
+Director asks specifically about Cubase export, Bitwig selected-track auto-zoom and complete Ableton coverage as the base reference. Research commit `a8a96d8c` adds 49 documentary contracts (Cubase 19, Bitwig 6, Live 24), the full Live host/integration contents inventory and an updated prompt/coverage pointer. Live's A-BASE register accounts for 610 host/integration entries out of 871 contents entries; the remaining 261 are device implementation/credits material. Counts include parent sections/examples and do not represent independent features, body text fully read or completed measurements.
+
+Cubase export now distinguishes Quick Export, eligible channels, range sources, processing taps, file naming/conflicts, queue settings/cancellation, format/channel/metadata choices, post-export actions, AAF/OMF/DAWproject, ADM and video. The earlier active-marker-track implication is corrected: Audio Mixdown has its own marker-track chooser. Manual inconsistencies about video resolutions, FLAC depths and MP3 bitrate units remain explicit verification gaps.
+
+Official Bitwig 6 documentation confirms Auto-zoom (Shift+Z) for a selected track or automation lane and resizing the selected item to set zoom size. The v5.2 half-height description is marked historical. Selection multiplicity, normal-height restoration, group/filter interactions, state ownership and undo are still unmeasured. Live's new findings distinguish consolidate, individual/group bounce, paste-time rendering, export, session-only Undo History, linked edits, recording, envelope composition/time domains and accessibility.
+
+Private E30–E33 retain source hashes, contracts, public Bitwig snapshots, the topic inventory and 22 passing artifact checks. All 272 inventoried installed binaries remain unchanged. BASE-REFERENCE-MISSIONS.md supplies export, Auto-zoom and full Live host-audit cases; no GUI, sound or CPU measurements occurred. All ten original Live questions remain open. No product code/ADR changes, push, merge or external message. The complete-base scope is established; complete-base behavioral verification remains unfinished.
+
 ## 2026-11-04 — whole-Dream research, milestone 3
 
 Director clarified that the named audio-editing, warp/MIDI and modulation cases are only examples: the research scope is every intended Dream/current ADI feature. Research commit `3ac99a35` on `clones/daw-reference-reading-20261104` adds a 220-requirement register spanning all 15 Dream sections, an independent index of all 319 FEATURES table data rows including metadata, and an integration/contradiction document. This is coverage accounting, not 220 completed contracts. Current repository decisions govern implementation; Dream expands research without overriding them.
