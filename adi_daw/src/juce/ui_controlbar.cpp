@@ -161,7 +161,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     // The Info View's words for each item (ADR-0131), in Live's order.
     const Info infos[] = {
         {&link, "Link", "Ableton Link: tempo and phase with other applications (P1)."},
-        {&tap, "Tap Tempo", "Tap to set the tempo."},
+        {&tap, "Tap Tempo", "Click once every beat: the tempo follows your clicking."},
         {&tempo, "Tempo", "The tempo at the play location, in BPM. Click to type another, from 20 to 999."},
         {&nudgeDown, "Nudge Down", "Slows playback for as long as it is held."},
         {&nudgeUp, "Nudge Up", "Speeds playback up for as long as it is held."},
@@ -205,6 +205,9 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     follow.onClick = [this] { root_.command(AppCommands::Follow); };
     mix.onClick = [this] { root_.command(AppCommands::ToggleMixView); };
     tempo.onClick = [this] { beginTempoEdit(); };
+    // On the press, so each tap is timed when it lands.
+    tap.setTriggeredOnMouseDown(true);
+    tap.onClick = [this] { root_.tapTempo(static_cast<std::int64_t>(juce::Time::getMillisecondCounter())); };
     signature.onClick = [this] { beginSignatureEdit(); };
     addChildComponent(fieldEditor);
     fieldEditor.setJustification(juce::Justification::centred);
@@ -217,7 +220,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     fieldEditor.onEscapeKey = [this] { fieldEditor.setVisible(false); };
     fieldEditor.onFocusLost = [this] { fieldEditor.setVisible(false); };
     for (auto *item : items())
-        if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo)
+        if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo &&
+            item != &tap)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };

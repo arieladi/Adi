@@ -48,7 +48,7 @@ struct TempoEdit {
     std::string refusal;
 };
 inline TempoEdit setTempoAt(const std::vector<engine::TempoEvent> &events, std::int64_t at, std::string_view text,
-                            bool startStored) {
+                            bool startStored, const char *label = "Change Tempo") {
     TempoEdit edit;
     const auto bpm = parseTempo(text);
     if (!bpm) {
@@ -62,7 +62,6 @@ inline TempoEdit setTempoAt(const std::vector<engine::TempoEvent> &events, std::
     const engine::TempoEvent now = events.empty() ? engine::TempoEvent{} : events[in];
     if (std::abs(now.bpm - *bpm) < .005)
         return edit;
-    const char *label = "Change Tempo";
     if (in != 0 || startStored)
         edit.ops.push_back(track_edits_detail::op("project.removeTempoEvent", {{"pos", now.posTicks}}, label));
     edit.ops.push_back(track_edits_detail::op("project.insertTempoEvent",

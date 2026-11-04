@@ -6,6 +6,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
+#include "adi/ui/tap_tempo.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
@@ -301,7 +302,12 @@ class AdiRootComponent final : public juce::Component {
     bool setMeterAtPlay(const std::string &text);
     // The control bar's Tempo field (manual 9.1.1): the tempo in force at the play location takes the
     // value typed, 20 to 999 BPM, one step.
-    bool setTempoAtPlay(const std::string &text);
+    bool setTempoAtPlay(const std::string &text, const char *label = "Change Tempo");
+    // Live's Tap Tempo (manual 9.1.2): a tap at a time in milliseconds; from a run's second tap the
+    // tempo follows the taps. A run is one undo step ("Tap Tempo"): each tap replaces the run's step
+    // while it is still the latest.
+    bool tapTempo(std::int64_t nowMs);
+    const TapTempo &taps() const noexcept { return tap_; }
     // An edit of the start's tempo or signature, where the snapshot cannot tell a stored value from
     // its own: `tried` (an insert) first; refused, it changed nothing, and `otherwise` (a replace)
     // follows. One step either way.
@@ -360,6 +366,9 @@ class AdiRootComponent final : public juce::Component {
     const MixViewProvider *mixProvider_ = &mixStub_;
     ReferenceAudition reference_;
     MomentaryLatch latch_;
+    TapTempo tap_;
+    std::int64_t tapStep_ = 0; // the undo step the tap run made
+    double tapBpm_ = 0;
 };
 // The interface zoom's steps, 50 % to 200 % (ADR-0129 d3): the next one in or out of
 // `now`, or nothing at either end.

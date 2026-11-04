@@ -31,6 +31,7 @@
 #include "adi/ui/range_edits.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/momentary_latch.hpp"
+#include "adi/ui/tap_tempo.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
@@ -1243,6 +1244,24 @@ void fragmentaryBars() {
     check(found.empty(), "no meters: none");
 }
 
+void tapTempo() {
+    section("Tap Tempo: the tempo follows the taps, from a run's second (Live 12 manual 9.1.2)");
+    ui::TapTempo taps;
+    check(!taps.tap(1000) && taps.taps() == 1, "the first tap gives no tempo yet");
+    const auto second = taps.tap(1500);
+    check(second && std::abs(*second - 120) < 1e-9, "a second half a second later: 120 BPM");
+    taps.tap(1980);
+    const auto fourth = taps.tap(2500);
+    check(fourth && std::abs(*fourth - 120) < 1e-9 && taps.taps() == 4,
+          "uneven taps are averaged over the run: 1.5 s over three beats, 120");
+    check(!taps.tap(5000) && taps.taps() == 1, "after a pause of more than two seconds, a new run");
+    std::optional<double> last;
+    for (std::int64_t t = 5600; t <= 5000 + 600 * 30; t += 600)
+        last = taps.tap(t);
+    check(last && std::abs(*last - 100) < 1e-9 && taps.taps() == 17, "a long run keeps its last sixteen intervals: 100 BPM");
+    check(!taps.tap(5000 + 600 * 30) && taps.taps() == 1, "a tap at the same moment starts again");
+}
+
 void tempoField() {
     section("the control bar's Tempo field: 20 to 999 BPM, at the play location (Live 12 manual 9.1.1)");
     for (const auto &[text, ok, bpm] :
@@ -1504,6 +1523,7 @@ int main() {
     referenceTapAndHold();
     momentaryLatch();
     fragmentaryBars();
+    tapTempo();
     tempoField();
     meterMarkers();
     midiTrackMixer();

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <vector>
 namespace adi::ui {
 namespace {
@@ -1363,21 +1364,45 @@ bool AdiRootComponent::setMeterAtPlay(const std::string &text) {
         return submitStartEdit(std::move(edit.ops), setMeterAt(current->meters, at, text, true).ops);
     return submitEdits(std::move(edit.ops));
 }
-bool AdiRootComponent::setTempoAtPlay(const std::string &text) {
+bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
+    const auto bpm = tap_.tap(nowMs);
+    if (!bpm) {
+        tapStep_ = 0;
+        tapBpm_ = 0;
+        return true;
+    }
+    const double value = std::round(std::clamp(*bpm, kMinTempo, kMaxTempo) * 100) / 100;
+    if (std::abs(value - tapBpm_) < .005)
+        return true;
+    // The run's step gives way to this tap's, while it is still the latest: one step for the run.
+    if (const auto last = submitter_.nextUndo(); tapStep_ != 0 && last && last->txnId == tapStep_) {
+        const bool paused = arrangement.followPaused;
+        command(AppCommands::Undo);
+        arrangement.followPaused = paused;
+    }
+    const auto before = submitter_.nextUndo();
+    if (!setTempoAtPlay(juce::String(value, 2).toStdString(), "Tap Tempo"))
+        return false;
+    tapBpm_ = value;
+    if (const auto after = submitter_.nextUndo(); after && (!before || after->txnId != before->txnId))
+        tapStep_ = after->txnId;
+    return true;
+}
+bool AdiRootComponent::setTempoAtPlay(const std::string &text, const char *label) {
     const auto current = view_.current();
     if (!current || !current->tempo)
         return fail("The tempo needs an open project.");
     const auto at = timelineTick();
     const auto &events = current->tempo->events;
     const bool surely = tempoSurelyStored(events);
-    auto edit = setTempoAt(events, at, text, surely);
+    auto edit = setTempoAt(events, at, text, surely, label);
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     if (edit.ops.empty())
         return true;
     // A 120 at the start may be stored or the snapshot's own, as for the signature.
     if (!surely && edit.ops.size() == 1 && edit.ops.front().payload.at("pos").get<std::int64_t>() == 0)
-        return submitStartEdit(std::move(edit.ops), setTempoAt(events, at, text, true).ops);
+        return submitStartEdit(std::move(edit.ops), setTempoAt(events, at, text, true, label).ops);
     return submitEdits(std::move(edit.ops));
 }
 bool AdiRootComponent::submitStartEdit(std::vector<OpRequest> tried, std::vector<OpRequest> otherwise) {
