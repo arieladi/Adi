@@ -435,6 +435,16 @@ silent truncation in JSON, a non-issue in CBOR.
 | `cc.delete` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
 
+N34: `note.setMute {clip,note,muted}` sets the note's active flag as
+`active = !muted`. `note` is its exact uint64 ANOT id, not a row index;
+zero/unassigned, absent and duplicate targets are refused. The MIDI clip and
+its canonical notes stream must exist. Undo restores the old muted bit.
+The handler patches only bit0 in the original record stride, preserving all
+other fields/flags, unknown future tails, header and trailing bytes, row id and
+other streams. An unreadable stream is refused without an empty/lossy rewrite.
+After committing, refresh Session and N32's Clip View read. Deactivating a held
+note releases it on the next published playback callback.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
@@ -514,10 +524,14 @@ commit, lifetime, refusal and delayed-echo contract. No new vocabulary/schema.
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
-| `marker.create` | e | N | pair `marker.delete` | P1 |
-| `marker.delete` | e | N | cap | P1 |
-| `marker.move` | e | N | sym | P1 |
-| `marker.rename` | e | N | sym | P1 |
+| `marker.create` | e | S | pair `marker.delete` | P1 |
+| `marker.delete` | e | S | cap | P1 |
+| `marker.move` | e | S | sym, coalescable | P1 |
+| `marker.rename` | e | S | sym | P1 |
+| `marker.setColor` | e | S | cap | P1 |
+| `marker.resize` | e | S | cap | P1 |
+| `marker.setNote` | e | S | cap | P1 |
+| `marker.setPrompt` | e | S | cap | P1 |
 | `arranger.createSection` | e | N | pair `deleteSection` | P2 |
 | `arranger.deleteSection` | e | N | cap | P2 |
 | `arranger.resizeSection` | e | N | sym | P2 |
@@ -527,6 +541,23 @@ commit, lifetime, refusal and delayed-echo contract. No new vocabulary/schema.
 | `snapshot.recall` | e | S | cap | P2 |
 | `snapshot.delete` | e | N | cap | P2 |
 | `snapshot.rename` | e | N | sym | P2 |
+
+`marker.create {id,pos,time_base?,name?,kind?,length?,color?,note?,prompt?}`
+creates a locator or cycle marker. Time base defaults to musical (0, ticks),
+linear (1) uses nanoseconds. `pos` and `length` stay in that base's units.
+Kinds are position (default), cycle, chapter and sync. A supplied length defaults
+the kind to cycle; cycles require positive length. `marker.move {id,pos}` keeps
+its base, and `marker.resize {id,length}` resizes cycles. `marker.rename {id,name}`
+and `marker.setColor {id,color?}` edit identity/colour (omit colour to clear;
+otherwise a Live palette index 0..69). Notes/prompts use `{id,text}`, including
+an empty string to clear. Prompts are literal stored data, never executed here.
+All changes rebuild the immutable marker snapshot, without rebuilding audio.
+
+Delete's inverse captures the complete marker and optional `marker_details` row,
+including unknown columns and typed BLOBs. It never overwrites an existing id.
+Colour/resize inverse updates the row in place, retaining child rows; note/prompt
+undo restores details presence and values. A batch shares one undo transaction,
+and a later error rolls back rows and audit data together.
 
 ### 9.10 Media
 
@@ -609,7 +640,7 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.play` | t | N | — | P0 |
 | `transport.stop` | t | N | — | P0 |
 | `transport.seek` | t | N | — | P0 |
-| `transport.setLoop` | t | N | — | P0 |
+| `transport.setLoop` | t | S | — | P0 |
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
 | `controller.bind` | e | N | cap | P1 |
@@ -620,6 +651,20 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `controller.setTakeover` | h | N | sym | P2 |
 | `extension.write` | e | N | cap | P1 |
 | `extension.delete` | e | N | cap | P1 |
+
+`transport.setLoop` stores `{on, start?, end?}` in the session layer. Bounds
+are musical ticks, nonnegative start and end strictly after start. Omitted bounds
+retain the last window (initially four 4/4 bars from zero). `transport.setMetronome`
+stores `{on}` there. Both remain ephemeral performance ops: journaled for audit,
+excluded from undo and musical digests. No inverse is built. A failed batch rolls
+back session metadata along with its ops. Their Snapshot impact asks the caller
+to refresh ProjectView and Session after commit. Snapshot `transport` carries the
+saved values; Session applies loop changes on the driver at the next callback,
+and renders the metronome only while playing, aligned to the graph's actual
+compensated output latency, including loop wraps. Default output is the first stereo
+pair, outside Main's device/fader chain; Cue Out selection follows N23. Offline
+export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
+loop/click choices do not change rendered material.
 
 `controller.bind` (ADR-0195 d3) takes `{id, binding}`; binding names all
 14 non-id columns of `controller_maps`, including explicit nulls. It inserts
@@ -659,7 +704,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**176 ops** — 66 P0, 58 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
