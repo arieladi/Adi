@@ -4,6 +4,7 @@
 #include "adi/settings/store.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/op_submitter.hpp"
+#include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
@@ -167,7 +168,8 @@ class AdiRootComponent final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress &) override;
-    // The ★ Reference's key comes up: a hold ends (ADR-0209 d9).
+    // The ★ Reference's key comes up: a hold ends (ADR-0209 d9). A latching key comes up: a hold
+    // of 500 ms or more goes back (Live 42.25).
     bool keyStateChanged(bool isKeyDown) override;
     bool command(int);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
@@ -249,6 +251,13 @@ class AdiRootComponent final : public juce::Component {
     // The ★ Reference's [REF] and Shift+R, down or up at a time in milliseconds (ADR-0209 d9): a
     // tap latches, a hold auditions. True when the reference's state changed.
     bool referenceKey(bool down, std::int64_t nowMs);
+    // Live's momentary latching (§42.25) for S, F1…F8 and Z: the key goes down and its command runs,
+    // once, however long it is held; it comes up after 500 ms or more and the window goes back: the
+    // solo or the activator's step is undone, while it is still the latest, and the zoom goes back.
+    static bool latches(int command) noexcept;
+    bool latchKey(int command, int keyCode, bool down, std::int64_t nowMs);
+    const MomentaryLatch &latch() const noexcept { return latch_; }
+    void letGoUnseen() noexcept { latch_.letGo(); }
     const ReferenceAudition &reference() const noexcept { return reference_; }
     // The ★ Reference track, or 0 when no track is it.
     std::int64_t referenceTrack() const noexcept;
@@ -331,6 +340,7 @@ class AdiRootComponent final : public juce::Component {
     StubMixViewProvider mixStub_;
     const MixViewProvider *mixProvider_ = &mixStub_;
     ReferenceAudition reference_;
+    MomentaryLatch latch_;
 };
 // The interface zoom's steps, 50 % to 200 % (ADR-0129 d3): the next one in or out of
 // `now`, or nothing at either end.
@@ -366,6 +376,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     AdiWindow(std::unique_ptr<AdiRootComponent>, AppCommands &, bool onDesktop = true);
     ~AdiWindow() override;
     using juce::DocumentWindow::keyPressed;
+    using juce::DocumentWindow::keyStateChanged;
     std::function<void()> onClose;
     void closeButtonPressed() override {
         if (onClose)
@@ -382,6 +393,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
 
   private:
     bool keyPressed(const juce::KeyPress &k, juce::Component *) override;
+    bool keyStateChanged(bool isKeyDown, juce::Component *) override;
     AdiRootComponent *root_;
     AppCommands &commands_;
     std::unique_ptr<juce::TooltipWindow> tips_;

@@ -1550,6 +1550,72 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         root.command(AppCommands::Undo);
     root.frame();
     check(muted().empty(), "three undos: every track active");
+    // Live's momentary latching (§42.25): S, F1…F8 and Z held 500 ms or more go back when let go; a
+    // tap stays. The key's repeats while it is held do nothing.
+    auto lastStep = [&submitter] {
+        const auto step = submitter.nextUndo();
+        return step ? step->txnId : std::int64_t{0};
+    };
+    root.letGoUnseen();
+    root.arrangement.geometry.selection.track = 1;
+    root.arrangement.geometry.selection.toTrack = 0;
+    const auto beforeLatch = lastStep();
+    check(root.keyPressed(juce::KeyPress('s', 0, 0)) && root.latch().held() && root.latch().key() == 's',
+          "S goes down: the window times it");
+    root.frame();
+    render("adi-latch-held.png");
+    check(soloed() == std::vector<std::int64_t>{1}, "S held solos 1 MIDI while it is held");
+    check(root.latchKey(0, 's', false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()) + 600),
+          "S let go after 600 ms");
+    root.frame();
+    check(soloed().empty() && lastStep() == beforeLatch && !root.latch().held(),
+          "1 MIDI is unsoloed, the step gone");
+    render("adi-latch-released.png");
+    check(root.latchKey(AppCommands::SoloSelected, 's', true, 10000) &&
+              root.latchKey(AppCommands::SoloSelected, 's', true, 10040) &&
+              root.latchKey(AppCommands::SoloSelected, 's', true, 10400),
+          "S down, and the key's repeats");
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{1} && submitter.nextUndo()->label == "Solo Track" &&
+              submitter.nextUndo()->txnId != beforeLatch,
+          "the repeats while it is held solo nothing more: one step");
+    check(!root.latchKey(0, 's', false, 10499), "let go within 500 ms: a tap");
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{1}, "1 MIDI stays soloed");
+    root.command(AppCommands::Undo);
+    root.frame();
+    check(root.latchKey(AppCommands::ActivateTrack1 + 2, juce::KeyPress::F3Key, true, 11000), "F3 down");
+    root.frame();
+    check(muted() == std::vector<std::int64_t>{3}, "F3 held deactivates the third track while it is held");
+    check(root.latchKey(0, juce::KeyPress::F3Key, false, 11500), "F3 let go after 500 ms");
+    root.frame();
+    check(muted().empty() && lastStep() == beforeLatch, "the third track is active again");
+    check(root.latchKey(AppCommands::SoloSelected, 's', true, 12000), "S down again");
+    root.frame();
+    if (auto *two = rowOf(root.mixer, 2))
+        two->solo.onClick();
+    root.frame();
+    check(!root.latchKey(0, 's', false, 12800), "a solo clicked while S is held: let go, nothing goes back");
+    root.frame();
+    check(soloed() == std::vector<std::int64_t>{2}, "the click's solo stays");
+    root.command(AppCommands::Undo);
+    root.command(AppCommands::Undo);
+    root.frame();
+    check(soloed().empty() && lastStep() == beforeLatch, "two undos: nothing soloed");
+    root.arrangement.geometry.selection.start = 0;
+    root.arrangement.geometry.selection.end = 4 * textproj::kPPQ;
+    const double zoomScale = root.arrangement.geometry.scale, zoomLeft = root.arrangement.geometry.left;
+    check(root.latchKey(AppCommands::ZoomToSelection, 'z', true, 13000) && root.arrangement.geometry.scale != zoomScale,
+          "Z down zooms to the time selection");
+    check(root.latchKey(0, 'z', false, 13700) && root.arrangement.geometry.scale == zoomScale &&
+              root.arrangement.geometry.left == zoomLeft,
+          "let go after 700 ms: the zoom goes back");
+    check(root.latchKey(AppCommands::ZoomToSelection, 'z', true, 14000) && !root.latchKey(0, 'z', false, 14100) &&
+              root.arrangement.geometry.scale != zoomScale,
+          "a tap of Z stays zoomed");
+    root.command(AppCommands::ZoomBack);
+    root.arrangement.geometry.selection.start = root.arrangement.geometry.selection.end = 0;
+    check(root.arrangement.geometry.scale == zoomScale, "Zoom Back, as before");
     // Live 12 manual, Live Concepts: "Double-clicking a track's title bar brings up the Device View".
     check(root.command(AppCommands::ToggleDeviceView) && !root.state().docked, "the Device View hidden");
     auto &headers = root.arrangement.headers;

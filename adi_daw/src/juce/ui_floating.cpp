@@ -141,6 +141,7 @@ struct FloatingHost::Entry {
             followTooltips(*this, h.commands_, tips, tipDelayMs);
         }
         using juce::DocumentWindow::keyPressed;
+        using juce::DocumentWindow::keyStateChanged;
         bool keyPressed(const juce::KeyPress &k, juce::Component *) override {
             // The zoom keys zoom this window; every other key is the main window's.
             const auto id = h.commands_.manager.getKeyMappings()->findCommandForKeyPress(k);
@@ -150,6 +151,8 @@ struct FloatingHost::Entry {
             }
             return h.commands_.key(k, h.root_);
         }
+        // A key held from here comes up here: the main window lets it go.
+        bool keyStateChanged(bool isKeyDown, juce::Component *) override { return h.root_.keyStateChanged(isKeyDown); }
         void closeButtonPressed() override {
             e.closing = true;
             setVisible(false);
