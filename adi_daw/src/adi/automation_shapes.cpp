@@ -87,18 +87,26 @@ std::vector<AutomationPoint> generateShape(const ShapeSpec& s) {
     }
     return points;
 }
-std::optional<PreparedShape> prepareShapeInsertion(Store& store,std::int64_t data,std::int64_t lane,
-    std::optional<std::int64_t> clip,const ShapeSpec& spec,std::string& error) {
+std::optional<PreparedShape> prepareAutomationWrite(Store& store,std::int64_t data,std::int64_t lane,
+    std::optional<std::int64_t> clip,std::span<const AutomationPoint> source,std::string& error) {
     try {
         if(data<=0 || lane<=0 || (clip && *clip<=0)) throw std::runtime_error("automation: positive shape addresses required");
-        auto generated=generateShape(spec);
+        if(source.empty() || source.size()>(1u<<23))throw std::runtime_error("automation: invalid recording point count");
+        double low=source.front().value, high=low;std::int64_t previous=source.front().time;
+        for(const auto& p:source) {
+            if(p.point_id || p.flags || p.reserved || p.time<0 || p.time<previous || !std::isfinite(p.value) ||
+                !std::isfinite(p.tension) || p.tension < -1 || p.tension > 1 || p.curve>5)
+                throw std::runtime_error("automation: invalid explicit recording point");
+            previous=p.time;low=std::min(low,p.value);high=std::max(high,p.value);
+        }
+        std::vector<AutomationPoint> generated(source.begin(),source.end());
         std::optional<SQLite::Transaction> txn;
         if(sqlite3_get_autocommit(store.db().getHandle())!=0)txn.emplace(store.db(),SQLite::TransactionBehavior::DEFERRED);
         PreparedShape result;result.owner=&store;result.client=store.clientId();result.head=History(store).head();
         SQLite::Statement metadata(store.db(),"SELECT min_value,max_value,time_base FROM automation_lanes WHERE id=?");metadata.bind(1,lane);
         if(!metadata.executeStep())throw std::runtime_error("automation: missing shape lane");
-        if((!metadata.getColumn(0).isNull() && spec.low<metadata.getColumn(0).getDouble()) ||
-            (!metadata.getColumn(1).isNull() && spec.high>metadata.getColumn(1).getDouble()))
+        if((!metadata.getColumn(0).isNull() && low<metadata.getColumn(0).getDouble()) ||
+            (!metadata.getColumn(1).isNull() && high>metadata.getColumn(1).getDouble()))
             throw std::runtime_error("automation: shape exceeds lane bounds");
         if(clip) {
             SQLite::Statement q(store.db(),"SELECT 1 FROM clips WHERE id=?");q.bind(1,*clip);
@@ -119,7 +127,7 @@ std::optional<PreparedShape> prepareShapeInsertion(Store& store,std::int64_t dat
             for(std::uint32_t n=0;n<reader.count();++n) {
                 const auto p=reader.at(n);
                 if(!p || !p->point_id || !used.insert(p->point_id).second)throw std::runtime_error("automation: ambiguous shape point IDs");
-                if(p->time>=spec.start && p->time<=spec.end)remove.push_back(p->point_id);
+                if(p->time>=source.front().time && p->time<=source.back().time)remove.push_back(p->point_id);
             }
         } else {
             SQLite::Statement occupied(store.db(),"SELECT 1 FROM automation_data WHERE id=?");occupied.bind(1,data);
@@ -137,10 +145,19 @@ std::optional<PreparedShape> prepareShapeInsertion(Store& store,std::int64_t dat
             write.push_back({{"id",p.point_id},{"time",p.time},{"value",p.value},{"curve",p.curve},{"tension",p.tension}});
         }
         result.requests.push_back(writePoints(data,lane,clipValue,std::move(write)));
-        for(auto& request:result.requests)request.label="Insert Automation Shape";
+        for(auto& request:result.requests)request.label="Record Automation";
         if(txn)txn->commit();
         error.clear();return result;
     } catch(const std::exception& e) { error=e.what();return std::nullopt; }
+}
+std::optional<PreparedShape> prepareShapeInsertion(Store& store,std::int64_t data,std::int64_t lane,
+    std::optional<std::int64_t> clip,const ShapeSpec& spec,std::string& error) {
+    try {
+        const auto points=generateShape(spec);
+        auto prepared=prepareAutomationWrite(store,data,lane,clip,points,error);
+        if(prepared)for(auto& request:prepared->requests)request.label="Insert Automation Shape";
+        return prepared;
+    }catch(const std::exception& e){error=e.what();return std::nullopt;}
 }
 CommitResult commitShapeInsertion(Store& store,const PreparedShape& p) {
     if(p.owner!=&store || p.client!=store.clientId() || p.requests.empty()) {

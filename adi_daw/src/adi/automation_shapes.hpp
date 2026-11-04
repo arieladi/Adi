@@ -33,4 +33,9 @@ struct PreparedShape {
 std::optional<PreparedShape> prepareShapeInsertion(Store&, std::int64_t data,
     std::int64_t lane, std::optional<std::int64_t> clip, const ShapeSpec&, std::string& error);
 CommitResult commitShapeInsertion(Store&, const PreparedShape&);
+// Same atomic replacement mechanism for recorded, explicitly timestamped points.
+// Input IDs must be zero; preparation assigns fresh replayable IDs.
+std::optional<PreparedShape> prepareAutomationWrite(Store&, std::int64_t data,
+    std::int64_t lane, std::optional<std::int64_t> clip,
+    std::span<const AutomationPoint>, std::string& error);
 } // namespace adi::automation

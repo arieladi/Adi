@@ -541,6 +541,38 @@ nothing; exact row absence/bytes are restored in one undo. Callers keep their
 own document generation across asynchronous preparation. This adds no UI or
 Automation Arm/recording behavior.
 
+The Automation Arm recording foundation is `engine/automation_recording.hpp`:
+one `AutomationRecorder` per explicit data/lane/optional-clip target and producer.
+Arm defaults on and transport recording off. Manual parameter edits remain on
+ParamOps; only manually sourced, explicitly timestamped gestures enter this
+capture. Playback, echo and modulation events must not be submitted.
+
+Exactly one producer calls controls/push; the UI queues gate changes to that
+producer rather than racing it from another thread. A separate single consumer
+calls drain/stats. Times are nonnegative int64 in lane units, never guessed from
+drain time. Begin/Value/End preserve double values; ungestured Value begins an
+implicit gesture; equal-time samples coalesce to the last value. Disarm/Stop
+close the open gesture at the supplied time using the last value. A new Begin
+closes the prior gesture at its last timestamp; the caller must delimit loop or
+seek boundaries explicitly. Backward/nonfinite input invalidates the gesture.
+
+Producer calls use a fixed SPSC ring and perform no allocation, Store/plugin I/O,
+locks or logging. Overflow taints a whole gesture. Only completed healthy gestures
+leave drain; rejected data is counted, never silently committed as a partial
+curve. The consumer point budget also rejects the whole gesture. Gates and
+accepted/dropped/ignored statistics are inspectable, with discarded-gesture
+statistics owned by the consumer. Zero ring capacity safely rejects everything.
+
+`prepareRecordedAutomation` uses `prepareAutomationWrite` to resolve fresh point
+identities and one native delete/write transaction. Raw input must have zero IDs,
+flags/reserved bytes and ordered finite values/tensions/known curves; replacement
+uses the captured inclusive time range and preserves exact undo. Document/client
+and history-head guards are identical to shape preparation. No schema or new
+opcode is needed. This provides engine capture/commit APIs, not automatic wiring
+of every host callback or the existing UI Arm button: those producers must supply
+correct lane-unit timestamps and serialize controls on their producer thread.
+No clip-envelope playback or send-level automation is claimed by recording capture.
+
 ### 9.7 Devices, chains, macros
 
 | Op | S | E | Inv | P |
