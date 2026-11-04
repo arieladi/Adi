@@ -166,6 +166,11 @@
       "started": "2026-11-04 07:29 studio time on the A2000 (queue_animate.ps1 -> animate-weak3.log); first take K005-w3 675 s, gate failed so t2 rendering, as designed",
       "estimate": "~11 min per take, 160-320 takes: roughly 30-60 h",
       "next": "eye review of -w3 takes into d2-review.json, add -w3 to make_d2_assembly.py suffixes, assemble DRAFT 4"
+    },
+    "music_first_prep_20261104": {
+      "why": "Adi 2026-11-04: retakes move better but patch rounds look less coherent; even Draft 1 lacks the YouTube reference's continuity, recurring motifs, music-driven transitions and hits on drum/melody transients. Plan: finish weak redo -> DRAFT 4 (best-of learning draft), meanwhile music-first prep on CPU, then a 30-60 s from-scratch pilot; Adi also wants a drum-sample test (a character playing on the beat, Adi judges sync).",
+      "hit_map": "analyse_hits.py -> track-hits.json: 276 bars of 16th-note kick/mid/high onsets + 63 accents; grid phase confirmed (low band peaks on 8ths in the drop). Kick vs rolling bass not separable by band alone.",
+      "late_start": "video_onset.py on Draft 1: no shot starts late inside itself (0 of 198 moving slots onset >0.5 s). The 'still then suddenly moves' effect = frozen bar A (1.7 s) followed by moving chained bar B: 19 same-subject pairs, 30 frozen->moving cuts. Recipe rule: gate bar A before rendering bar B."
     }
   },
   "avastha": {
