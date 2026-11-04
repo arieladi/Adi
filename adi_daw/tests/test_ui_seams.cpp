@@ -1221,6 +1221,27 @@ void referenceTapAndHold() {
     check(!ref.on(), "latched, then held and let go: off");
 }
 
+void fragmentaryBars() {
+    section("fragmentary bars: a change before the previous bar is complete cuts it short (Live 12 manual 6.5)");
+    const auto q = textproj::kPPQ;
+    // 4/4 from the start; 6/8 at bar 3 (a whole bar line); 5/4 a quarter into 6/8's second bar.
+    const std::vector<textproj::Meter> meters{{0, 4, 4}, {8 * q, 6, 8}, {12 * q, 5, 4}};
+    std::vector<std::pair<std::int64_t, std::int64_t>> found;
+    ui::forEachFragmentaryBar(meters, [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found == std::vector<std::pair<std::int64_t, std::int64_t>>{{11 * q, 12 * q}},
+          "6/8's bars are three quarters: its second bar, from quarter 11, is cut at the 5/4 on 12");
+    check(ui::fragmentAt(11 * q, meters) == std::pair<std::int64_t, std::int64_t>{11 * q, 12 * q} &&
+              ui::fragmentAt(12 * q, meters).first == -1 && ui::fragmentAt(8 * q, meters).first == -1,
+          "the fragment holds its start, not the change");
+    found.clear();
+    ui::forEachFragmentaryBar(std::vector<textproj::Meter>{{0, 4, 4}, {8 * q, 3, 4}},
+                              [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found.empty(), "a change on a bar line cuts nothing");
+    found.clear();
+    ui::forEachFragmentaryBar(std::vector<textproj::Meter>{}, [&](std::int64_t a, std::int64_t b) { found.emplace_back(a, b); });
+    check(found.empty(), "no meters: none");
+}
+
 void meterMarkers() {
     section("time signature markers: Insert, Edit and Delete, one step each (Live 12 manual 6.5)");
     for (const auto &[text, ok, num, den] :
@@ -1432,6 +1453,7 @@ int main() {
     rangeEditsAsBatches();
     referenceTapAndHold();
     momentaryLatch();
+    fragmentaryBars();
     meterMarkers();
     midiTrackMixer();
     soloRules();
