@@ -37,3 +37,7 @@ Headless checks compare measured tones against an independent complex filter
 response, exercise both gates and graph widths, known intersample crests,
 format/reset lifetime, and actual post-Main-fader Session output. These are
 mathematical/runtime checks, not a claim of certified EBU or measured Live parity.
+
+The standalone measurement format also accepts 8--768 kHz, matching offline
+export. The export normalizer uses an independent instance for its selected
+range and encoded result; it does not read a live Session's accumulated meter.

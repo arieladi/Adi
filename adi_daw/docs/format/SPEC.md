@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1009;          -- schema 1.9
+PRAGMA user_version   = 1019;          -- schema 1.19
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -188,6 +188,34 @@ An unknown newer major supports **Save a Copy** verbatim, without interpreting
 or relocating its media paths; it remains read-only. Save As into an editable
 Store refuses that major.
 
+### 3.8 Collect All and Save / Collect and Export
+
+`Store::collectAllAndSave()` copies hash-verified external media into `audio/`
+beside the current project and atomically saves those locations. The collected
+set includes the current pool and media captured by imports, unlinks and relinks
+on **all history branches**, including assets absent from the current pool.
+Each content hash has one local file; names use the full hash and a safe source
+extension. Matching existing files are reused; different contents and symlinks
+are refused. Nothing is overwritten. A failed copy or SQL update rolls back
+all location changes and removes only files published by that call. A crash can
+leave unreferenced files. Legacy embedded media must first be extracted.
+
+This is location maintenance, not an undoable edit: media identity, musical
+state, op/transaction ids, branch heads and snapshot bookmarks remain intact.
+Captured paths on both sides of history ops become local, absolute hints are
+cleared and missing flags reset. Undo/Redo and branch switching keep using the
+collected files after the folder moves. It requires a writable supported Store,
+no live SQL statements and no active transaction, and runs off the audio thread.
+The caller refreshes its view/session after success. Committed WAL data is saved;
+a blocked passive checkpoint is reported as a warning, with success retained.
+
+`Store::collectAndExport(zip)` uses the existing streaming ZIP64 STORE exporter
+on a private SQLite backup, collects that copy by the same rules, checks it,
+folds its WAL and publishes the archive without replacing an existing output.
+The live source and its paths/history stay unchanged. Read-only sources are
+supported. A missing or changed current **or history-only** asset fails export
+without a partial ZIP. `media::collectExport(input, zip)` remains the path-based
+entry point used by `adi_tool collect-export`.
 
 ## 4. The time model
 
@@ -333,6 +361,25 @@ A clip is `kind ∈ {audio, midi, automation, video, marker}` and carries positi
 length, loop window, fades, gain and mute. Loop fields are separate from position
 and length so that a looping clip is *one* object rather than N repeats — the
 Ableton model, and the correct one.
+
+### Local Main Clip Properties (schema 1.16, N33)
+
+`clip_properties` is an additive optional row keyed by clip id, removed with its
+clip. A NULL end marker derives from content offset plus visible duration.
+Local signature fields are both NULL or both present; local scale fields are
+all NULL or all present. NULL means the project context at the clip's start.
+Start remains `clips.content_offset_ticks`. The op that moves Start pins the
+previous default End, making source markers independent of placement. End gates
+source playback when Loop is off. Loop's existing start/length/switch control
+repeats and ignore End while on. The audio and MIDI readers apply the same rule.
+
+Numerator is 1..255 and denominator a power of two through 128. A local scale is
+12-TET: root 0..11, nonempty id and a root-relative 12-bit mask with the tonic.
+Inherited native project tunings remain available to the window. Local fields
+are projected on their clip; an empty optional row is permitted. Inverses retain
+row presence, unknown columns and SQLite types without a scalar delete/reinsert.
+Deleting a clip captures its whole row, native stream/expression/audio/envelope/
+property child rows and the alias links the foreign key would set NULL.
 
 ### 6.3 Event streams — the BLOB contract
 
@@ -538,6 +585,16 @@ with musical ticks. Both DAWs' models fit: Ableton's always-on warp with a marke
 grid, and Cubase's AudioWarp with hitpoint-derived markers, are the same data
 with different UI over it.
 
+AWRP v1 records are 16 bytes: an i64 source_frame at offset 0 and an i64
+tick at offset 8, both little-endian. Frames are relative to the audio source
+window, at its file's sample rate; ticks are source musical coordinates, not
+absolute project positions. Canonical prepared maps begin at frame/tick zero,
+end at src_len_frames and strictly increase in both coordinates. Bar markers
+are ordinary map points. Header bit 1 (nanoseconds) is invalid for this stream.
+Readers stride by rec_size, retaining future record tails and stream trailer
+bytes in the original BLOB; a producer that needs to rewrite unknown fields
+must refuse rather than discard them.
+
 ### 6.5 There is no Session View
 
 ADI is a **linear, arrangement-timeline DAW**. There is no clip-launching matrix,
@@ -651,6 +708,20 @@ track's devices, and whatever the track feeds takes the strip's output
 
   For laws 0 and 1, with θ = (pan + 1)·π/4: law 1 gives (cos θ, sin θ), and
   law 0 gives √2 times that.
+- **Split Stereo Pan (1.11, ADR-0203 d9)** is an optional additive
+  `mixer_pan_settings(track_id,mode,pan_left,pan_right)` row, keyed to the strip.
+  Absence means `stereo`, -1, +1. `mode` is `stereo` or `split`; readers use
+  stereo for an unknown future mode and SHOULD report it. Each position is
+  -1..+1 and stays stored when dormant. The original pan is dormant in split.
+  Split applies one mono panner per input: each can reach either output, and
+  their contributions sum. Under Live's law these mono panners use constant
+  power without the stereo law's sqrt(2) boost, so the initial hard-left /
+  hard-right pair is exactly unity. Other selected laws retain their formulas.
+  Fader/mute apply to all coefficients. Changes use the strip's five-ms ramp,
+  including crossfeeds and precision handover; Post sends use the same matrix.
+  Only the first stereo pair is panned; additional channels keep their existing
+  fader-only behavior. Lanes `panLeft` / `panRight` are real -1..+1 values.
+  Width and phase retain their separate Utility placement.
 - **Mute and solo live on `tracks`** (`muted`, `soloed`, `solo_defeat`).
   - A muted track is silent.
   - While any track other than the master is soloed, a track is heard only if
@@ -727,6 +798,24 @@ The rules:
   together with `key_map`'s own ops (ADR-0178 d4).
 
 ---
+
+### Marker notes and prompts (schema 1.10, N25)
+
+`markers` retains its original position/cycle fields and both time bases.
+`marker_details(marker_id, note, prompt)` is an additive child table with a
+cascading foreign key to the marker. A missing row means empty note/prompt.
+Strings are literal UTF-8; prompt execution is outside the format and these ops.
+Existing markers are not rewritten on upgrade. Frozen 1.9 plus this table gives
+the current schema; read-only older files see the usual empty TEMP table.
+
+The marker ops capture enough state for undo, including details and unknown
+columns. In-place edits restore columns in place rather than deleting marker
+rows and cascading children. Empty details rows are permitted; undo preserves
+the difference between an absent row and an empty row. The text projection
+inlines note/prompt (omitting empty values), including linear cycle lengths.
+The window reads immutable `Snapshot::markers` by stable id. Positions/lengths
+retain their optional tick/nanosecond columns; id order is not display order.
+Every field participates in comparison/sharing, including literal note/prompt.
 
 ## 7. Layer 2 — plugin state
 
@@ -829,8 +918,12 @@ cheaper than a user discovering it with an hour of sound design at stake.
 
 These are two different lists and conflating them loses data.
 
-**Hosted by this implementation: VST3, and CLAP when it is written.** Nothing
-else, and adding to that set takes an ADR (ADR-0041). In particular ADI does not
+**Hosted by this implementation: VST3, CLAP, and supported canonical ADI
+built-ins** (internal references, ADR-0104/ADR-0188). Internal UIDs are stable
+org.adidaw.builtin.<device-slug> identities from builtinCatalog(); they do not
+name a disk binary or a user patch. A build without the backend, an unknown UID,
+or a listed unavailable device follows the same placeholder rule below.
+Adding third-party formats takes an ADR (ADR-0041). In particular ADI does not
 host **VST2**, **AU** or **AUv3**, and no build option turns that on.
 
 **Recorded by the format: whatever was there.** `plugin_refs.format` admits
@@ -850,6 +943,19 @@ prevent. Refusing to host a format costs us code we do not write; refusing to
 A third-party implementation that does host AU is conforming, and a `.adi` it
 writes is readable here. That is the point of specifying the format separately
 from the application.
+
+#### Built-in sample roles (ADR-0192 d4)
+
+A canonical built-in may persist a declared sample slot as plugin_state role
+sample:<id>. The content-addressed CBOR state is versioned independently of the
+project schema: kind=adi.builtin.sample, version=1, uid, slot and empty. An
+occupied Color Cab slot also keeps the original mediaHash, sourceRate,
+source_f32le mono backup and derived rate/kernel/target. Original media remains
+in the ordinary media pool. The derived profile plays without the original;
+the backup permits off-thread regeneration at another engine rate. Unknown
+fields and unsupported versions remain opaque state beside a placeholder.
+The decoder rejects invalid state before publishing any live change. Empty
+state represents an identity sample; absence remains distinct for undo.
 
 ### 7.5 The expression route (schema 1.4)
 
@@ -924,17 +1030,86 @@ the difference between the agent being usable and being frightening.
 
 ### 8.3 Compaction
 
-An unbounded op log grows without limit. Policy is stored in the project
-(`adi_meta`): keep at most N ops or M days, whichever is larger, with a default
-of 10,000 / 90 days. Compaction squashes the tail into a checkpoint and MUST NOT
-cross a branch point that is still reachable from a named branch, nor drop an
-op that a history snapshot names (§8.6).
+Active undo is capped at **2,000 transactions or 1,000 decimal MB**, whichever
+is reached first (ADR-0203 d13, superseding the old 10,000-op / 90-day policy).
+A transaction is one step, however many op rows it contains. A project may lower
+these budgets. `adi_meta` keys `history.undo.max_transactions`,
+`history.undo.max_bytes`, `history.undo.collaboration` and
+`history.undo.uploaded_through` hold the owner/sync policy; absent keys use the
+default local budgets. The obsolete `oplog_max_entries`/`oplog_max_age_days` keys
+remain readable extension metadata and do not control this implementation.
+
+Compaction runs inside the same SQLite transaction as a new journal commit,
+before its final caller hook. It can also be requested explicitly. It replaces
+an oldest complete prefix with one replayable checkpoint, retaining the prefix's
+last op as a root (`parent_seq`, `inverse` and `sel_before` NULL). The root is not
+an undo step. The newest complete transaction is retained even when that one
+transaction alone exceeds the byte budget. No partial transaction is pruned.
+
+A named snapshot, any other existing persistent snapshot, a branch head, and a
+reachable fork point protect their positions. Compaction can stop AT an anchor
+but MUST NOT pass it. A root snapshot/branch protects the entire prefix. In
+collaboration mode no seq after the contiguous upload acknowledgement may be
+compacted; a missing acknowledgement protects the entire log. Protections can
+leave the active history above its budget; the API reports `protectedHistory`.
+Legacy embedded-media rows also protect the log until extraction, because the
+current schema deliberately forbids reinserting their old embedded rows.
+
+The byte budget counts retained non-ephemeral payload, inverse and selection
+bytes, UTF-8 metadata bytes, and an 80-byte fixed allowance per op. It excludes
+the checkpoint, media/content pools and SQLite page/WAL overhead; it is not a
+limit on the whole project file. Ephemeral audit rows in a compacted prefix are
+removed only within the same safe uploaded/anchor boundary.
+
+Schema 1.19 adds `history_checkpoint(id, base_seq, state)`, one row with id 1.
+The CBOR state envelope has format 1, the writer's schema major/minor, and typed
+rows/column names for every project-state table covered by `digestProject`.
+Integer, REAL, TEXT, BLOB (including empty BLOB) and NULL are distinct. UI state,
+journal/audit metadata and locks are excluded. Checkpoint capture temporarily
+rewinds to the boundary inside a savepoint, reads the state, then rolls back the
+savepoint; the live project, head and UI remain unchanged. Checkpoint replacement,
+root retapping, old-op/clock pruning and orphan audit cleanup commit together.
+A checkpoint failure rolls back the edit as well as compaction.
+
+For replay, hold one read transaction on the source while copying its checkpoint
+and retained log. `History::restoreReplayBase(source, emptyJournalTarget)`
+installs the domain state atomically, preserving target UI metadata, and returns
+`baseSeq`. Replay ONLY source ops strictly greater than `baseSeq`; the retained
+root's forward payload has already been folded into the checkpoint. With no
+checkpoint, baseSeq is zero and the existing full-log replay applies. A nonempty
+or read-only target, malformed data or incompatible schema is refused without
+changing target state. Checkpoint bytes are content, never a new undo operation.
 
 ### 8.4 UI and session state
 
 `ui_view`, `window_state`, `session_state`: track heights, fold states, zoom,
 scroll offsets, selection, playhead, loop, per-plugin-window rectangles *with
 their monitor identity*, mixer layout, visible panels, last-used tool.
+
+Reserved `session_state` keys for saved performance controls:
+`transport.metronome` is a JSON boolean; `transport.loop` is JSON
+`{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.
+Absent keys mean click/loop off and an initial four-bar 4/4 window at zero.
+These are session metadata, not undoable project edits; the ephemeral transport
+ops update them and their audit rows in one transaction. Readers ignore malformed
+session values and use defaults. `Snapshot::transport` exposes them without
+sharing mutable driver state. Loop bounds stay in ticks and are converted through
+the tempo map at the session rate; no fixed-tempo sample count is persisted.
+
+
+`cue.controls` stores JSON performance controls: `cue` (mode, default false),
+`sip` (Solo in Place, default true), `first` (even stereo-pair index 0..62,
+default 0), `db` (Cue Volume -150..+6, default 0), `reference` (audition track id,
+0 for none/default role), `reference_on` (default false), and `selected` (sorted,
+unique positive Cue track ids, default empty). Missing/malformed values use
+defaults. Cue selection is independent of a track's musical solo flag. These
+commands are ephemeral and transport-scoped, saved atomically with audit rows,
+excluded from undo and musical digests. `Snapshot::cue` exposes the settings.
+Its `projectReferenceTrack` is derived from the optional native role column,
+never serialized into this metadata. `referenceFromRole` distinguishes a zero
+(default-role) preference from an explicit audition target, so changing the native
+role still takes effect after a Cue Volume/output edit. Reference designation belongs to project
+format N38; an explicit performance audition target is not a substitute role.
 
 The monitor identity matters: restoring a plugin window to `x=3200` on a machine
 that no longer has a second monitor puts it offscreen. Readers MUST clamp
@@ -974,6 +1149,15 @@ table, which holds mixer snapshots and track versions (Layer 1, OPS.md §9.9).
   "Untitled" for an unnamed project. The time and the local offset are supplied
   by the caller. A writer MUST NOT stamp `created_utc` from inside the history
   layer, so that tests and replays are exact.
+
+ADR-0203 d13 adds the owner-driven daily automatic point: one local date per
+changed day, refreshed after completed edits/undo/redo; unchanged opens create
+nothing. `DailyHistorySnapshots` receives the caller's time and UTC offset and
+persists its date marker in `adi_meta`. Renaming promotes automatic to named.
+Persistent snapshots are capped at 10,000 locally / 100,000 in collaboration;
+only oldest automatic points may be evicted. Named-only exhaustion blocks new
+points. Eviction and publication are one transaction. Explicit user removal,
+like rename, changes metadata without an op. There is no autosave timer.
 
 A file older than 1.3 has no `history_snapshots` table; a 1.3 reader treats that
 as "no snapshots".
@@ -1048,6 +1232,59 @@ Rule 3 is the one that separates this from every "we'll just ignore what we don'
 know" format. Silent degradation at render time is data loss with extra steps.
 
 ---
+
+### 9.2 Native editing metadata (schema 1.12, N17)
+
+These two core tables are additive; schema 1.9 stays frozen. They carry
+playback semantics, rather than foreign extension data.
+
+The optional clip_playback_details row carries nullable in_tension and
+out_tension in [-1,1]. NULL retains the original curve arithmetic; explicit
+zero uses the shared continuous evaluator. No row and zero fade lengths
+remain Create Fades on Clip Edges off.
+
+Nullable content_offset_ns, loop_begin_ns, loop_end_ns and source_end_ns
+pin unwarped source clocks independently of placement tempo. The loop is
+[begin,end), never a duration rounded separately. Absent clocks retain the
+legacy tick conversions. An explicit End limits nonlooped playback; the
+immutable source window still bounds every read. Editing never changes
+that source window merely to move or split a clip, preserving SRC phase.
+
+Nullable in_begin_ns, in_end_ns, out_begin_ns, out_end_ns retain the original
+fade domain on the unrolled source clock (before loop wrapping). Each pair
+is absent together or has end > begin >= 0. Fade-in progress is
+(unrolled position - begin)/(end - begin); fade-out uses
+(end - one sample - unrolled position)/(end - begin). This preserves a fade
+even when Split cuts through it. A fade handle edit clears that side's retained
+domain and uses its new local length. Snapshots expose all clocks and tensions;
+the projection includes explicit zero. Every field participates in sharing.
+
+Since schema **1.13**, clip_warp_fade_domains carries the corresponding
+in_begin_ticks/in_end_ticks/out_begin_ticks/out_end_ticks pairs for Warp audio.
+They name the unrolled source musical clock, with the same nullable-pair and
+nonnegative increasing constraints. They never reuse the nanosecond columns.
+Playback projects them through the tempo integral at placement minus the
+source content offset; a tempo edit therefore rebuilds their sample domains.
+Split/copy retains both original pairs on every piece without creating an
+internal edge fade, including inside a loop or an overlapping fade. A handle
+edit clears only that side's musical pair; its inverse captures the complete
+optional typed row. No row preserves local fade behavior. All four values
+participate in snapshot sharing and the textual projection. Schema 1.12 is
+frozen unchanged, and older read-only files receive an empty TEMP projection.
+
+The automation_segment_ranges table identifies a native automation_data row
+and its zero-based storage record ordinal, with the same nullable clip owner.
+The unique (data_id,record_index) key carries progress_begin, progress_end in
+[0,1], begin < end, and finite source_first, source_last. Interior evaluation
+uses the outgoing record's original curve/tension at begin + x*(end-begin),
+between the original source values. The stored endpoints remain authoritative
+at x=0 and x=1. It does not refit a nonlinear curve after trimming it. Ordinals
+also work for unassigned/zero point IDs. Copy remaps data/clip IDs; row edits
+remap ordinals and capture inverses. Invalid ranges refuse the entire lane.
+Direct blob replacement refuses data with retained ranges: replace the data
+and its ranges in one captured edit. Clip envelope playback remains a later
+engine item; preserving its bytes does not imply it is played.
+
 
 ## 10. Media
 
@@ -1140,6 +1377,25 @@ A minor normally only **adds** objects (tables, indexes, triggers). The explicit
 | **for writing** | Upgrade it before anything else reads or writes it: in **one transaction**, create each later minor's objects in minor order, set `adi_meta.schema_minor`, and set `user_version` **last**. If any step fails, roll back everything: the file stays at its old version and the open fails with a clear error. |
 | **read-only** | Never write. Every table the file lacks reads as **empty**. The reference implementation creates empty `TEMP` tables of the same names on its own connection, in one place (`Store::open`), so every reader is covered. |
 
+Schema 1.11 adds only `mixer_pan_settings`; the frozen mixer_strip definition
+is unchanged.
+
+Schema 1.14 adds only track_recording_options, keyed by track_id. It stores
+record_enabled/record_grid, play_enabled/play_grid/play_forgiveness_ms and
+keep_monitoring_latency. Missing rows use Rec-Q on at 1/16, Play-Q off at 1/16
+with zero forgiveness, and Keep Monitoring Latency on (ADR-0132 d8/d10,
+ADR-0133). Grid switches retain their selected grid when disabled. New-track
+producers capture inherited app defaults explicitly, never during op replay.
+Existing rows and native table definitions are unchanged; the 1.9 schema is
+frozen under history/schema-1.9.sql.
+
+Schema 1.15 adds return_send_taps, a nullable-by-absence return-owned Pre/Post
+choice (ADR-0203 d3). Migration creates the empty table and preserves legacy
+per-send taps, including mixed values. The native return command records a
+choice even with no sends and normalizes all incoming taps as one undoable edit.
+An explicit choice controls new incoming sends; legacy rows remain audible as
+stored until the return is explicitly set. Readers expose the legacy mixed state.
+
 Schema 1.9 changes `project.sample_rate`'s default from 48,000 to 44,100 Hz
 (ADR-0203 d18). Its migration rebuilds only `project`, copying every stored value
 and restoring its indexes/triggers in the same transaction. Existing rates are
@@ -1206,3 +1462,12 @@ Named here so they are visible gaps rather than accidental omissions:
 - Decision log: [`../DECISIONS.md`](../DECISIONS.md)
 - Feature scope this format must eventually carry: [`../FEATURES.md`](../FEATURES.md)
 - Agent architecture built on the op log: [`../AI-AGENT.md`](../AI-AGENT.md)
+
+Schema 1.17 adds frozen_renders: immutable whole-track dry/wet cache media,
+format, causal fingerprint, installed identities and the original arm switch.
+The original clips, parameters and state blobs remain intact. See ENGINE-FREEZE.md
+and OPS.md for preparation, native validation and undo semantics.
+
+Schema 1.18 adds frozen_groups: a cached group root and CBOR descendant
+membership with pre-freeze arm switches. It adds no columns to schema 1.17.
+See ENGINE-FREEZE.md for the inactive-child audio routing tradeoff.
