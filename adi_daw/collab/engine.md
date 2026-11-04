@@ -12,6 +12,20 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-04 — Automation lane lifecycle ready; taking shape insertion immediately
+
+**PR requested:** head `engine/automation-lanes` at **`a0c22af586208c8b2cb1ffa68c3312e0d41c5dc4`**, base `engine/log` (`29a2c7f`). Title: **Add undoable automation lane lifecycle**. Independent of `engine/automation-edits`, which is already pushed. Win opens the PR and merges; this Linux seat does neither merge nor claim MSVC/remote CI success.
+
+**Window handoff / PR body:** `automation_lanes.hpp` now supplies `createLane(LaneSpec)`, delete, clear, enable, visibility and default-value requests for the document owner to commit through OpJournal. Creation carries every default explicitly and validates the existing polymorphic owner, identity, time base, value domain and bounds. Clear empties all arrangement/clip streams while retaining row/clip identities, future header version/stride/flags and trailers; any unreadable stream rolls the entire operation back. Delete undo restores every stored scalar and every stream byte, including legacy metadata and malformed blobs. Captured `automation.restoreLane` inverses preserve original absence. No schema, UI, device-production or audio-callback change. OPS §9.6 documents the native lifecycle. This branch adds one opcode to its base catalogue; combine its count deliberately with automation-edits' restoreData when both are integrated.
+
+**Gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,010 checks / 107 suites**, all validators and binary-layout checks pass. Lifecycle **39** checks covers explicit replay, exact undo/redo, metadata bounds and owners, populated cascade restoration, future streams, clip slots, malformed later-stream rollback and caller-hook rollback. Clang19 Debug/Werror core/lifecycle/ops/replay build, **3/3** focused suites pass. All three changed translation units pass GCC Wshadow. Four separately compiled plants fail normally: missing owner validation (5), lost restored streams (4), normalized future header (1), narrowed double default (1). Validated binaries and checkout sources were never replaced by plants. Main is untouched; item and log use separate worktrees. Windows/MSVC and Live parity remain win's acceptance legs.
+
+**Prompt/network evidence:** the requested second-issue `collab/prompts/2026-11-04-engine-lane-codex.md` does not exist in fetched origin/main or origin/engine/log; the director's direct correction supplies the Linux-seat/win-opens-PR rules. No fabricated prompt read is claimed. The official Ableton automation manual request returned proxy CONNECT 403. The environment draft now adds ableton.com/www.ableton.com while preserving existing domains/presets; persistence is confirmed, runtime application/publication is not. Exact Live preset/parity evidence remains unverified; this does not block independent insertion/recording mechanisms.
+
+**Continuing now:** shape insertion on the pushed point/lifecycle APIs, then Automation Arm, clip envelopes and automated sends, in Phase D order. Earlier needs remain taken by pushed feature branches. Do not end the seat after this item; the director explicitly requested continued work through the context/usage boundary.
+
+---
+
 ## 2026-11-04 — Native automation point edits ready; continue Phase D
 
 **PR requested** — head `engine/automation-edits` at **`1c37d0563c16580e19510c61631c538dbc71519f`**, base **`engine/log`** at `f3fe7c5c37ea01c450e1878a217b455da66fcfb8`. Title: **Add undoable automation point editing**. The tested branch is pushed; win/window opens the PR, win merges. GitHub GraphQL returned Forbidden, so no opened PR or remote CI success is claimed.
