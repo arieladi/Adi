@@ -45,6 +45,12 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
     explicit ScrubArea(ArrangementView &);
     void paint(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
+    // A marker dragged follows the mouse, to the nearest grid line while snapping, never before the
+    // first grid line; let go, it moves there, one step (manual 6.5).
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    // While a marker is dragged: where it would land; else -1.
+    std::int64_t movingTo() const noexcept { return dragged_ >= 0 ? movingTo_ : -1; }
     // The position of the time signature marker drawn under `x`, or -1.
     std::int64_t markerAt(float x) const;
     // Insert Time Signature Change at `pos` (inserting), or Edit Time Signature on the marker there:
@@ -61,6 +67,8 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
     ArrangementView &view;
     std::int64_t editing_ = -1;
     bool inserting_ = false;
+    // The marker pressed, the ticks from its start to the press, and where a drag would put it.
+    std::int64_t dragged_ = -1, grabbed_ = 0, movingTo_ = -1;
 };
 // The beat-time ruler (Live 12 manual 6.1): bars-beats-sixteenths; drag sideways
 // scrolls, vertically zooms; a double-click zooms to the selection, or out to the

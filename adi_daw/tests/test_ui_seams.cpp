@@ -1271,6 +1271,21 @@ void meterMarkers() {
               sub.submit(std::move(removed.ops)).ok && meters().size() == 1,
           "Delete: the marker gone, one step");
     check(sub.undo().ok && meters().size() == 2 && meters()[1].numerator == 6, "undo: it is back");
+    // Moved by the mouse or the arrow keys: its value kept, one step; not onto the start nor onto
+    // another marker; in place, no edit.
+    auto other = ui::insertMeter(meters(), 5 * bar, "7/8");
+    check(sub.submit(std::move(other.ops)).ok && meters().size() == 3, "a 7/8 at bar 6 besides");
+    check(!ui::moveMeter(meters(), bar, 3 * bar).refusal.empty(), "no marker there: Move is refused");
+    check(ui::moveMeter(meters(), 2 * bar, 2 * bar).ops.empty() && ui::moveMeter(meters(), 2 * bar, 2 * bar).refusal.empty(),
+          "in place: no edit");
+    check(!ui::moveMeter(meters(), 2 * bar, 0).refusal.empty() && !ui::moveMeter(meters(), 2 * bar, 5 * bar).refusal.empty(),
+          "onto the start, or onto another marker: refused with the reason");
+    auto moved = ui::moveMeter(meters(), 2 * bar, 3 * bar + bar / 4);
+    check(moved.ops.size() == 2 && moved.ops[0].label == "Move Time Signature Change" && sub.submit(std::move(moved.ops)).ok &&
+              meters().size() == 3 && meters()[1].start_ticks == 3 * bar + bar / 4 && meters()[1].numerator == 6 &&
+              meters()[1].denominator == 8 && sub.nextUndo()->opCount == 2,
+          "6/8 moved a bar and a quarter later, its value kept, one step of two ops");
+    check(sub.undo().ok && meters()[1].start_ticks == 2 * bar, "undo: back at bar 3");
 }
 
 void momentaryLatch() {

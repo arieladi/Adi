@@ -1260,6 +1260,59 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.command(AppCommands::Undo);
     root.frame();
     check(meterOf(bar2).empty(), "undo: the inserted marker gone");
+    // Moved by the mouse, to the nearest grid line (a quarter at this zoom), or by the arrow keys
+    // (manual 6.5): one step each, the marker still selected.
+    const auto q = textproj::kPPQ, sevenEighths = 14 * q;
+    const auto stepsBefore = submitter.nextUndo()->txnId;
+    const juce::Point<float> grab{static_cast<float>(lanes.x(bar3)) + 6.f, 10.f};
+    const juce::Point<float> twoLater{grab.x + static_cast<float>(lanes.x(bar3 + 2 * q) - lanes.x(bar3)) + 7.f, 10.f};
+    scrub.mouseDown(pressAt(scrub, grab));
+    root.frame();
+    render("adi-meter-before-move.png");
+    scrub.mouseDrag(dragAt(scrub, grab, twoLater));
+    check(root.arrangement.selectedMeter == bar3 && scrub.movingTo() == bar3 + 2 * q,
+          "the 5/4 marker dragged two quarters on: it would land on the grid line there");
+    root.frame();
+    render("adi-meter-dragging.png");
+    scrub.mouseUp(dragAt(scrub, grab, twoLater));
+    root.frame();
+    check(meterOf(bar3).empty() && meterOf(bar3 + 2 * q) == "5/4" && submitter.nextUndo()->label == "Move Time Signature Change" &&
+              root.arrangement.selectedMeter == bar3 + 2 * q && scrub.movingTo() == -1,
+          "let go: it moves there, one step, still selected");
+    const juce::Point<float> at10{static_cast<float>(lanes.x(bar3 + 2 * q)) + 6.f, 10.f};
+    const juce::Point<float> onto78{static_cast<float>(lanes.x(sevenEighths)) + 6.f, 10.f};
+    scrub.mouseDown(pressAt(scrub, at10));
+    scrub.mouseDrag(dragAt(scrub, at10, onto78));
+    scrub.mouseUp(dragAt(scrub, at10, onto78));
+    root.frame();
+    check(meterOf(bar3 + 2 * q) == "5/4" && meterOf(sevenEighths) == "7/8" &&
+              root.error().find("Another") != std::string::npos,
+          "dropped on the 7/8: it stays, and the Status Bar says why");
+    const auto insertBefore = lanes.selection.insert;
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "right");
+    root.frame();
+    check(meterOf(bar3 + 3 * q) == "5/4" && root.arrangement.selectedMeter == bar3 + 3 * q &&
+              lanes.selection.insert == insertBefore,
+          "right moves the selected marker a grid line on, and not the insert marker");
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "left");
+    root.frame();
+    check(meterOf(bar3 + 2 * q) == "5/4", "left moves it back");
+    const juce::Point<float> farLeft{-200.f, 10.f};
+    scrub.mouseDown(pressAt(scrub, at10));
+    scrub.mouseDrag(dragAt(scrub, at10, farLeft));
+    check(scrub.movingTo() == q, "dragged past the start: it stops at the first grid line");
+    scrub.mouseUp(dragAt(scrub, at10, farLeft));
+    root.frame();
+    check(meterOf(q) == "5/4", "and lands there");
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)), "left at the first grid line");
+    root.frame();
+    check(meterOf(q) == "5/4" && root.error().find("control bar") != std::string::npos,
+          "it stays: the start is the control bar's");
+    for (int i = 0; i < 4; ++i)
+        root.command(AppCommands::Undo);
+    root.frame();
+    check(meterOf(bar3) == "5/4" && submitter.nextUndo()->txnId == stepsBefore,
+          "four undos (the two refused moves made none): back at bar 3");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
