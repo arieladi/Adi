@@ -7,6 +7,8 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
+#include <map>
+#include <cstring>
 
 namespace adi::rows {
 namespace {
@@ -111,6 +113,8 @@ Model readModel(const Store& store) {
         m.problems.push_back(std::string("read transaction: ") + e.what());
     }
 
+    const auto returnTaps=readReturnSendTaps(store);
+
     query(m, db, "project",
           "SELECT name, sample_rate, ppq, length_ticks, author, notes "
           "FROM project WHERE id = 1",
@@ -169,8 +173,21 @@ Model readModel(const Store& store) {
               t.inputRef = optText(st, 14);
               t.automationMode = st.getColumn(15).getInt64();
               t.freezeMediaId = optInt(st, 16);
+              if(const auto tap=returnTaps.find(t.id);tap!=returnTaps.end())t.returnSendTap=tap->second;
               m.tracks.push_back(std::move(t));
           });
+
+    std::map<std::int64_t,Track*> trackById;
+    for(auto& track:m.tracks)trackById.emplace(track.id,&track);
+    query(m,db,"track_recording_options",
+        "SELECT track_id,record_enabled,record_grid,play_enabled,play_grid,play_forgiveness_ms,keep_monitoring_latency FROM track_recording_options",
+        [&](const SQLite::Statement& statement) {
+            const auto found=trackById.find(statement.getColumn(0).getInt64());if(found==trackById.end())return;
+            auto& options=found->second->recording;
+            options.recordEnabled=flag(statement,1);options.recordGrid=statement.getColumn(2).getString();
+            options.playEnabled=flag(statement,3);options.playGrid=statement.getColumn(4).getString();
+            options.playForgivenessMs=statement.getColumn(5).getDouble();options.keepMonitoringLatency=flag(statement,6);
+        });
 
     query(m, db, "mixer_strip",
           "SELECT track_id, volume_db, pan, pan_law, width, input_gain_db, "
@@ -187,6 +204,19 @@ Model readModel(const Store& store) {
               s.delaySamples = st.getColumn(7).getInt64();
               s.vcaGroupId = optInt(st, 8);
               m.strips.push_back(s);
+          });
+
+    std::map<std::int64_t,MixerStrip*> panStripOf;
+    for(auto& strip:m.strips)panStripOf[strip.trackId]=&strip;
+    query(m, db, "mixer_pan_settings",
+          "SELECT track_id, mode, pan_left, pan_right FROM mixer_pan_settings ORDER BY track_id",
+          [&](const SQLite::Statement& st) {
+              const auto id=st.getColumn(0).getInt64();
+              if(const auto it=panStripOf.find(id);it!=panStripOf.end()) {
+                  it->second->panMode=st.getColumn(1).getString();
+                  it->second->panLeft=st.getColumn(2).getDouble();
+                  it->second->panRight=st.getColumn(3).getDouble();
+              }
           });
 
     query(m, db, "lanes",
@@ -237,9 +267,45 @@ Model readModel(const Store& store) {
               m.clips.push_back(std::move(c));
           });
 
+    std::map<std::int64_t,Clip*> fadeClipOf;
+    for(auto& clip:m.clips)fadeClipOf[clip.id]=&clip;
+    query(m,db,"clip_playback_details","SELECT clip_id,in_tension,out_tension,content_offset_ns,loop_begin_ns,loop_end_ns,source_end_ns,in_begin_ns,in_end_ns,out_begin_ns,out_end_ns FROM clip_playback_details",
+          [&](const SQLite::Statement& st) {
+              if(const auto it=fadeClipOf.find(st.getColumn(0).getInt64());it!=fadeClipOf.end()) {
+                  if(!st.getColumn(1).isNull())it->second->fadeInTension=st.getColumn(1).getDouble();
+                  if(!st.getColumn(2).isNull())it->second->fadeOutTension=st.getColumn(2).getDouble();
+                  it->second->contentOffsetNs=optInt(st,3);it->second->loopBeginNs=optInt(st,4);
+                  it->second->loopEndNs=optInt(st,5);it->second->sourceEndNs=optInt(st,6);
+                  for(std::size_t side=0;side<4;++side)it->second->fadeClockNs[side]=optInt(st,7+static_cast<int>(side));
+              }
+          });
+
+    query(m,db,"clip_warp_fade_domains","SELECT clip_id,in_begin_ticks,in_end_ticks,out_begin_ticks,out_end_ticks FROM clip_warp_fade_domains",
+          [&](const SQLite::Statement& st) {
+              if(const auto it=fadeClipOf.find(st.getColumn(0).getInt64());it!=fadeClipOf.end())
+                  for(std::size_t side=0;side<4;++side)it->second->fadeClockTicks[side]=optInt(st,1+static_cast<int>(side));
+          });
+
+    // N33 is an independent additive schema branch. Honor a present End
+    // marker when a combined file is read; no properties row means legacy.
+    bool clipPropertiesPresent=false;
+    {
+        SQLite::Statement tables(db,"SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='clip_properties' "
+            "UNION ALL SELECT 1 FROM sqlite_temp_master WHERE type IN ('table','view') AND name='clip_properties'");
+        clipPropertiesPresent=tables.executeStep();
+    }
+    if(clipPropertiesPresent) {
+        query(m,db,"clip_properties","SELECT clip_id,end_marker_ticks FROM clip_properties",
+              [&](const SQLite::Statement& st) {
+                  if(const auto it=fadeClipOf.find(st.getColumn(0).getInt64());it!=fadeClipOf.end())
+                      it->second->endMarkerTicks=optInt(st,1);
+              });
+    }
+
     query(m, db, "audio_clips",
           "SELECT clip_id, media_id, src_start_frames, src_len_frames, warp_enabled, "
-          "       warp_mode, transpose_semis, formant_shift, reverse, channel_mode "
+          "       warp_mode, transpose_semis, formant_shift, reverse, channel_mode, length(warp_markers), "
+          "       CASE WHEN typeof(warp_markers)='blob' AND length(warp_markers)<=67108864 THEN warp_markers END "
           "FROM audio_clips",
           [&](const SQLite::Statement& st) {
               AudioClip a;
@@ -253,12 +319,20 @@ Model readModel(const Store& store) {
               a.formantShift = st.getColumn(7).getDouble();
               a.reverse = flag(st, 8);
               a.channelMode = st.getColumn(9).getInt64();
+              if(!st.getColumn(10).isNull()) {
+                  if(st.getColumn(11).isNull())m.problems.push_back("audio_clips#"+std::to_string(a.clipId)+": warp marker data exceeds the reader bound or has an invalid type");
+                  else {
+                      const auto column=st.getColumn(11);std::vector<std::byte> bytes(static_cast<std::size_t>(column.getBytes()));
+                      if(!bytes.empty())std::memcpy(bytes.data(),column.getBlob(),bytes.size());
+                      a.warpMarkers=std::move(bytes);
+                  }
+              }
               m.audioClips.push_back(std::move(a));
           });
 
     query(m, db, "markers",
-          "SELECT id, time_base, pos_ticks, pos_ns, length_ticks, length_ns, "
-          "       name, color, kind FROM markers",
+          "SELECT m.id, m.time_base, m.pos_ticks, m.pos_ns, m.length_ticks, m.length_ns, "
+          "       m.name, m.color, m.kind, COALESCE(d.note,''), COALESCE(d.prompt,'') FROM markers m LEFT JOIN marker_details d ON d.marker_id=m.id",
           [&](const SQLite::Statement& st) {
               Marker k;
               k.id = st.getColumn(0).getInt64();
@@ -270,6 +344,7 @@ Model readModel(const Store& store) {
               k.name = st.getColumn(6).getString();
               k.color = optInt(st, 7);
               k.kind = st.getColumn(8).getString();
+              k.note = st.getColumn(9).getString();k.prompt = st.getColumn(10).getString();
               m.markers.push_back(std::move(k));
           });
 
@@ -309,6 +384,11 @@ Model readModel(const Store& store) {
               r.preFader = flag(st, 9);
               r.enabled = flag(st, 10);
               r.origin = st.getColumn(11).getString();
+              if(r.kind=="send" && r.dstKind=="track")if(const auto tap=returnTaps.find(r.dstId);tap!=returnTaps.end() && tap->second.explicitChoice) {
+                  if(r.preFader!=tap->second.preFader)r.storedPreFader=r.preFader;
+                  r.preFader=tap->second.preFader;
+              }
+
               m.routing.push_back(std::move(r));
           });
 
@@ -479,11 +559,12 @@ Model readModel(const Store& store) {
           });
     std::vector<AutomationData> keys;
     query(m, db, "automation_data",
-          "SELECT lane_id, clip_id FROM automation_data ORDER BY lane_id, IFNULL(clip_id, -1)",
+          "SELECT lane_id, clip_id, id FROM automation_data ORDER BY lane_id, IFNULL(clip_id, -1)",
           [&](const SQLite::Statement& st) {
               AutomationData d;
               d.laneId = st.getColumn(0).getInt64();
               d.clipId = optInt(st, 1);
+              d.id = st.getColumn(2).getInt64();
               keys.push_back(std::move(d));
           });
     for (AutomationData& d : keys) {
@@ -502,12 +583,23 @@ Model readModel(const Store& store) {
     for (const Clip& c : m.clips)
         if (c.kind == "midi") readNotesFor(m, store, c.id);
 
+    query(m,db,"automation_segment_ranges",
+          "SELECT id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last FROM automation_segment_ranges ORDER BY data_id,record_index",
+          [&](const SQLite::Statement& st) {
+              AutomationSegmentRange range;
+              range.id=st.getColumn(0).getInt64();range.dataId=st.getColumn(1).getInt64();range.clipId=optInt(st,2);
+              range.recordIndex=st.getColumn(3).getInt64();range.progressBegin=st.getColumn(4).getDouble();range.progressEnd=st.getColumn(5).getDouble();
+              range.sourceFirst=st.getColumn(6).getDouble();range.sourceLast=st.getColumn(7).getDouble();
+              m.automationSegmentRanges.push_back(range);
+          });
+
     if (txn) {
         try {
             txn->commit();   // a read transaction: commit and rollback are the same
         } catch (const std::exception&) {
         }
     }
+
     return m;
 }
 

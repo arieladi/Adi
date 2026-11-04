@@ -43,6 +43,7 @@
 
 #include "adi/engine/host.hpp"
 #include "adi/engine/gain_stage.hpp"
+#include "adi/engine/main_loudness.hpp"
 #include "adi/engine/input_gain.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_playback.hpp"
@@ -84,6 +85,11 @@ struct SessionSpec {
     std::int32_t maxFrames = 512;
     /// `audio.processingPrecision` (ADR-0207 d2): Live's scheme by default.
     Precision precision = Precision::Float32;
+    /// Live performance controls (saved loop/click). Offline export/analysis
+    /// disables these so monitor choices never alter rendered material.
+    bool performanceState = true;
+    /// The app's Delay Compensation choice; its registry row is win-owned.
+    bool delayCompensation = true;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -171,6 +177,11 @@ public:
     /// One lane only: the parameter's context menu in Live. False if that lane
     /// was not overridden.
     bool reenableAutomation(std::int64_t laneId);
+    /// Message thread: a live UI value overrides its device lane before the
+    /// gesture commits, so playback cannot fight the drag. No op/history row;
+    /// reenableAutomation resumes it. True for an absent/already-overridden
+    /// lane too; false if rebuilding the requested binding failed (error()).
+    bool overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId);
 
     /// ADR-0165: the device lanes this rebuild plays, per device. Message
     /// thread, for tests and the UI: null until the first rebuild.
@@ -203,6 +214,10 @@ public:
     /// does nothing. False only when a graph was due and could not be built.
     bool setPrecision(Precision p);
 
+    /// Message thread. Publish a new alignment policy without reloading
+    /// devices. Track Delay is suspended with it; stored values are retained.
+    bool setDelayCompensation(bool on);
+
     // --- inspection (message thread) ---------------------------------------
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
@@ -229,6 +244,9 @@ public:
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
     /// ADR-0163, ADR-0203 d3: the strips, sends and loops it plays. Message thread.
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
+    /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
+    /// requestReset is an off-thread command consumed at the next callback.
+    [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }
 
     /// ADR-0175/0195: a track/point tap holding `seconds` of audio. The default
     /// is after the fader; spectrum.post is PreFader, spectrum.pre ChainInput.
@@ -308,12 +326,23 @@ private:
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
     struct TimingView final : Sequenced {
+        TransportSettings settings;
+        std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         double sampleRate = 48000.0;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
     };
     SnapshotPublisher<TimingView> timing_;
+    MainLoudness mainLoudness_;
+    TransportSettings transportSettings_; // message thread, copied into TimingView
+    bool loopApplied_=false,loopOn_=false;
+    std::int64_t loopBegin_=0,loopEnd_=0;
+    // Driver-thread click state; routing moves to Cue Out when N23 arrives.
+    std::int64_t clickLastSample_=-2,clickLastBeat_=-1;
+    bool clickWasPlaying_=false;
+    double clickPhase_=0,clickEnvelope_=0,clickFrequency_=880;
+    void renderMetronome(const TimingView&,const AudioIo&) noexcept;
     std::shared_ptr<const ClipProject> clipProject_;
     // Published graphs retain their own old source generations until reclamation.
     std::unique_ptr<ClipPlayback> clips_;
