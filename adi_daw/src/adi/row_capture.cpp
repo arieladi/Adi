@@ -60,6 +60,10 @@ std::optional<Payload> captureRowKey(SQLite::Database& db,const std::string& tab
     SQLite::Statement query(db,"SELECT * FROM "+quoted(table)+" WHERE "+predicate(key));
     bindKey(query,key);
     if (!query.executeStep()) return std::nullopt;
+    return captureQueryRow(query);
+}
+
+Payload captureQueryRow(SQLite::Statement &query) {
     Payload row = Payload::object();
     for (int i = 0; i < query.getColumnCount(); ++i) {
         const auto column = query.getColumn(i);

@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.15 (prior minors frozen under history/)
+--  Normative schema, version 1.18 (prior minors frozen under history/)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1015;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1018;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '15'),
+    ('schema_minor',        '18'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -418,6 +418,20 @@ CREATE TABLE clips (
 ) STRICT;
 CREATE INDEX idx_clips_track ON clips(track_id, pos_ticks);
 CREATE INDEX idx_clips_lane  ON clips(lane_id);
+
+-- Since 1.16 (N33): local Main Clip Properties. NULL inherits the project
+-- signature/scale or the visible source end; start uses content_offset_ticks.
+CREATE TABLE clip_properties (
+    clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    end_marker_ticks INTEGER CHECK (end_marker_ticks >= 0),
+    signature_numerator INTEGER CHECK (signature_numerator BETWEEN 1 AND 255),
+    signature_denominator INTEGER CHECK (signature_denominator IN (1,2,4,8,16,32,64,128)),
+    scale_root INTEGER CHECK (scale_root BETWEEN 0 AND 11),
+    scale_id TEXT CHECK (length(scale_id) > 0),
+    scale_mask INTEGER CHECK (scale_mask BETWEEN 1 AND 4095 AND (scale_mask & 1) = 1),
+    CHECK ((signature_numerator IS NULL) = (signature_denominator IS NULL)),
+    CHECK ((scale_root IS NULL) = (scale_id IS NULL) AND (scale_id IS NULL) = (scale_mask IS NULL))
+) STRICT;
 
 -- MIDI content. One blob per clip per stream kind — the granularity rule in
 -- SPEC §6.3. Editing one note rewrites this clip's note blob and nothing else.
@@ -1094,3 +1108,22 @@ CREATE UNIQUE INDEX idx_ext ON extensions(ns, key, scope_kind, IFNULL(scope_id,-
 -- ============================================================================
 --  END
 -- ============================================================================
+
+-- Immutable whole-track cache provenance. Original material and state stay pooled.
+CREATE TABLE frozen_renders (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    pre_media_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE RESTRICT,
+    post_media_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE RESTRICT,
+    frames INTEGER NOT NULL CHECK(frames>0),
+    sample_rate INTEGER NOT NULL CHECK(sample_rate BETWEEN 8000 AND 768000),
+    channels INTEGER NOT NULL CHECK(channels BETWEEN 1 AND 64),
+    fingerprint TEXT NOT NULL,
+    identities BLOB NOT NULL,
+    original_armed INTEGER NOT NULL CHECK(original_armed IN (0,1))
+) STRICT;
+
+-- One cached whole-group bus parks its descendant sources and audio routes.
+CREATE TABLE frozen_groups (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    members BLOB NOT NULL
+) STRICT;

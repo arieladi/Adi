@@ -63,21 +63,22 @@ int main(int argc, char **argv) {
     }
     // New is the store's (#307, N2): Main and Live's default Set, at the history's root.
     const auto *made = doc->view().current().get();
-    check(made != nullptr && made->tracks.size() == 5 && made->findTrack(1) != nullptr &&
+    check(made != nullptr && made->tracks.size() == 7 && made->findTrack(1) != nullptr &&
               made->findTrack(1)->kind == "master" && made->findTrack(2)->name == "1 MIDI" &&
               made->findTrack(3)->name == "2 MIDI" && made->findTrack(4)->name == "3 Audio" &&
-              made->findTrack(5)->name == "4 Audio",
-          "New makes Main and Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio");
+              made->findTrack(5)->name == "4 Audio" && made->findTrack(6)->name == "A Reverb" &&
+              made->findTrack(7)->name == "B Delay",
+          "New makes Main and Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay (N41)");
     check(doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == 0,
           "as the history's root: no op, no undo step");
-    check(!doc->ops().canUndo() && !doc->ops().undo().ok && doc->session().model().tracks.size() == 5,
+    check(!doc->ops().canUndo() && !doc->ops().undo().ok && doc->session().model().tracks.size() == 7,
           "creating the project cannot be undone (Live 5.4.2)");
     OpRequest add;
     add.opType = "track.create";
-    add.payload = {{"id", 6}, {"kind", "audio"}, {"name", "Tone"}};
+    add.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Tone"}};
     check(doc->ops().submit(add).ok && doc->synchronise(), "edit reaches Session and ProjectView");
     doc->session().setSourcesFor([&](std::int64_t id) {
-        return id == 6 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
+        return id == 8 ? std::vector<engine::Node *>{&tone} : std::vector<engine::Node *>{};
     });
     check(doc->session().rebuild(), "source enters the real graph");
     doc->prepare(48000, 64);
@@ -117,7 +118,7 @@ int main(int argc, char **argv) {
     check(!doc->mailbox().playing() && doc->mailbox().position() == 1024,
           "stop reaches driver without advancing");
     check(doc->ops().undo().ok && doc->synchronise(), "undo refreshes the real engine");
-    check(doc->session().model().tracks.size() == 5, "undo removes the added track and keeps the rest");
+    check(doc->session().model().tracks.size() == 7, "undo removes the added track and keeps the rest");
     check(doc->ops().redo().ok && doc->synchronise(), "redo restores graph rows");
     // Ctrl/Cmd+S takes a named snapshot (ADR-0203 d6, d13): history metadata, no op.
     const std::int64_t noon = 1'761'566'400'000'000; // 2025-10-27 12:00 UTC, in microseconds
@@ -140,7 +141,7 @@ int main(int argc, char **argv) {
     doc.reset();
     {
         auto reopen = ui::ProjectDocument::open(temp.path() / "project.adi", false, {}, error);
-        check(reopen && reopen->view().current()->tracks.size() == 6,
+        check(reopen && reopen->view().current()->tracks.size() == 8,
               "every edit is in the file once it closes; there is nothing to save");
         check(reopen && reopen->ops().undo().ok, "a reopened project undoes its edits");
         check(reopen && !reopen->ops().canUndo() && !reopen->ops().undo().ok,
@@ -182,13 +183,13 @@ int main(int argc, char **argv) {
     {
         // A dropped audio file (#308, N5): the document reads it and captures its pool row without
         // writing anything; the window's batch adds the clip; one commit, one undo step. New makes
-        // Live's default Set (#307), tracks 1 to 5, so the drop's audio track is a sixth.
+        // Live's default Set (#307, with its two returns since N41), tracks 1 to 7, so the drop's audio track is an eighth.
         auto dropped = ui::ProjectDocument::open(temp.path() / "drop.adi", true, {}, error);
         check(dropped != nullptr, "a project for the drop");
         if (dropped) {
             OpRequest audioTrack;
             audioTrack.opType = "track.create";
-            audioTrack.payload = {{"id", 6}, {"kind", "audio"}, {"name", "Drums"}};
+            audioTrack.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Drums"}};
             check(dropped->ops().submit(audioTrack).ok && dropped->synchronise(), "an audio track");
             const auto wav = temp.path() / "kick.wav";
             {
@@ -205,11 +206,11 @@ int main(int argc, char **argv) {
                       dropped->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeDrop &&
                       dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
                   "prepareImport reads the file and captures its row, writing nothing");
-            auto edit = ui::dropAudio(*dropped->view().current(), 6, 0, "kick", import);
+            auto edit = ui::dropAudio(*dropped->view().current(), 8, 0, "kick", import);
             check(edit.refusal.empty() && edit.ops.size() == 3 && dropped->ops().submit(std::move(edit.ops)).ok &&
                       dropped->synchronise(),
                   "the pool row, the clip and its audio commit together");
-            const auto *track = dropped->view().current()->findTrack(6);
+            const auto *track = dropped->view().current()->findTrack(8);
             check(track != nullptr && track->clips.size() == 1 && track->clips[0]->name == "kick" &&
                       dropped->ops().nextUndo() && dropped->ops().nextUndo()->opCount == 3 &&
                       dropped->ops().nextUndo()->label == "Insert Audio Clip",
@@ -235,7 +236,7 @@ int main(int argc, char **argv) {
             check(heard, "and it plays");
             dropped->release();
             check(dropped->ops().undo().ok && dropped->synchronise() &&
-                      dropped->view().current()->findTrack(6)->clips.empty() &&
+                      dropped->view().current()->findTrack(8)->clips.empty() &&
                       dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
                   "one undo removes the clip, its audio and the new pool row");
             ui::AudioImport none;

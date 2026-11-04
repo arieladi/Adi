@@ -60,7 +60,7 @@ struct Page {
 };
 struct Clip {
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
-    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0;
+    std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0, playEnd = 0;
     std::int64_t inCurve = 1, outCurve = 1;
     std::optional<double> inTension,outTension;
     std::array<std::optional<std::int64_t>,4> fadeClock;
@@ -95,7 +95,7 @@ struct Clip {
         if (time < start || time >= end) return -1;
         auto n = time-start+offset;
         if (loopLength > 0 && n >= loopBegin) n = loopBegin+(n-loopBegin)%loopLength;
-        return n < length ? n : -1;
+        return n < length && n < playEnd ? n : -1;
     }
     template<typename V> V shaped(std::int64_t time,V gainValue)const noexcept {
         const auto local=time-start+offset;
@@ -486,6 +486,12 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                     if(last<=first)throw std::runtime_error("fade clock has no sample extent");
                     clip->fadeClock[i]=first;clip->fadeClock[i+1]=last;
                 }
+            }
+            clip->playEnd = clip->length; // after the warp length and the source-end pin (chain)
+            if (!row.loopEnabled && row.endMarkerTicks) {
+                if (*row.endMarkerTicks <= row.contentOffsetTicks)
+                    throw std::runtime_error("invalid audio clip End marker; silent");
+                clip->playEnd = std::min(clip->length, duration(*row.endMarkerTicks));
             }
             clip->fadeIn=duration(row.fadeInTicks);
             if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");

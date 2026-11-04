@@ -4,6 +4,8 @@
 #include "adi/ops.hpp"
 #include "adi/engine/mpe_output.hpp"
 #include "juce/pd_declarations.hpp"
+#include "juce/builtin_samples.hpp"
+#include <map>
 #if ADI_WITH_PD
 #include "adi/pd_builtins/native_devices.hpp"
 #include "adi/pd_builtins/sample_bridge.hpp"
@@ -93,7 +95,12 @@ public:
         const ReactivationGate::Hold hold(gate_);
         if(prepared_ && rate==rate_ && frames==frames_)return;
         if(!std::isfinite(rate) || rate<=0 || rate>768000 || frames<=0)throw std::runtime_error("invalid built-in format");
+        // Prepare every potentially throwing sample first; the old live slot remains
+        // intact if a new rate cannot be prepared.
+        std::vector<std::pair<std::int32_t,std::unique_ptr<PdSampleBuffer>>> preparedSamples;
+        for(const auto& [slot,state]:sampleStates_)preparedSamples.emplace_back(slot,restoreBuiltinSample(state,rate));
         native_->prepare(rate,frames);
+        for(auto& [slot,sample]:preparedSamples)(void)samples_.publish(slot,std::move(sample));
         std::fill(applied_.begin(),applied_.end(),std::numeric_limits<float>::quiet_NaN());
         applyParameters();publishLatency();
         router_.configure(desiredRoute(),engine::ExpressionCaps{},15);router_.reset();
@@ -120,16 +127,38 @@ public:
         route_.store(choice==engine::RouteChoice::Plain?engine::ExpressionRoute::Plain:engine::ExpressionRoute::MpeMidi,std::memory_order_release);return true;
     }
     void pumpMainThread()override{(void)samples_.collect();}
-    std::vector<std::string> stateRoles()const override{return {"state"};}
+    std::vector<std::string> stateRoles()const override {
+        std::vector<std::string> roles{"state"};
+        for(const auto& declaration:declarations_.samples)roles.push_back("sample:"+std::to_string(declaration.id));
+        return roles;
+    }
     std::vector<std::uint8_t> saveState(const std::string& role)const override {
-        if(role!="state")return {};
+        if(role!="state") {
+            for(const auto& declaration:declarations_.samples)if(role=="sample:"+std::to_string(declaration.id)) {
+                const auto found=sampleStates_.find(declaration.id);
+                return Payload::to_cbor(found==sampleStates_.end()?emptyBuiltinSample(info_.uid,declaration.id):found->second);
+            }
+            return {};
+        }
         auto value=extra_;value["version"]=1;value["uid"]=info_.uid;auto& params=value["params"];
         if(!params.is_object())params=Payload::object();
         for(std::size_t i=0;i<descriptors_.size();++i)params[descriptors_[i].id]=static_cast<double>(targets_[i].load(std::memory_order_relaxed));
         return Payload::to_cbor(value);
     }
     bool loadState(const std::string& role,const std::vector<std::uint8_t>& bytes)override {
-        if(role!="state")return false;
+        if(role!="state") {
+            try {
+                if(bytes.size()>40u*1024u*1024u)return false;
+                const auto value=Payload::from_cbor(bytes);const auto metadata=inspectBuiltinSample(value);
+                if(metadata.uid!=info_.uid || role!="sample:"+std::to_string(metadata.slot) || !samples_.has(metadata.slot))return false;
+                const double rate=prepared_?rate_:(metadata.empty?48000:value.at("derived").at("rate").get<double>());
+                auto prepared=restoreBuiltinSample(value,rate);
+                // Allocate/copy before publication; a failed state never half-applies.
+                auto pending=sampleStates_;pending[metadata.slot]=value;
+                if(!samples_.publish(metadata.slot,std::move(prepared)))return false;
+                sampleStates_.swap(pending);return true;
+            }catch(const std::exception&){return false;}
+        }
         try {
             auto value=Payload::from_cbor(bytes);
             // Compared as strings on purpose: json against std::string is ambiguous on
@@ -175,6 +204,7 @@ private:
     std::atomic<engine::ExpressionRoute> route_{engine::ExpressionRoute::MpeMidi};
     engine::MpeRouter router_;std::vector<engine::MpeOut> midi_;
     PdSampleSlots samples_;PdSampleBlock sampleBlock_;Payload extra_=Payload::object();
+    std::map<std::int32_t,Payload> sampleStates_;
 };
 #endif
 }

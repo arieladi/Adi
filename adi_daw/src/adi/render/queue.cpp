@@ -36,6 +36,7 @@ void validate(const Job& j) {
     if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
         throw std::invalid_argument("unsupported export dither");
     validateNiStems(j);
+    validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
     (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
 }
 struct Stage {
@@ -208,9 +209,18 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
         }
         Stage stage(job.directory);
         const auto staged = stage.path / "render.wav";
-        audio::WavWriter writer(staged, static_cast<std::uint32_t>(job.session.sampleRate),
-                                static_cast<std::uint16_t>(channels), job.encoding.format, nullptr,
-                                std::uint64_t{1} << 32, job.encoding.dither, job.encoding.ditherSeed ^ counter);
+        std::unique_ptr<audio::WavWriter> writer;
+        std::unique_ptr<NormalizationCapture> normalized;
+        if(job.normalization.mode==NormalizeMode::Off)
+            writer=std::make_unique<audio::WavWriter>(staged,static_cast<std::uint32_t>(job.session.sampleRate),
+                static_cast<std::uint16_t>(channels),job.encoding.format,nullptr,std::uint64_t{1}<<32,
+                job.encoding.dither,job.encoding.ditherSeed^counter);
+        else normalized=std::make_unique<NormalizationCapture>(stage.path/"capture.f64",static_cast<std::uint32_t>(job.session.sampleRate),job.session.channels,job.normalization);
+        auto write=[&](std::uint32_t frames) {
+            if(normalized)normalized->append(std::span<const double>(interleaved.data(),static_cast<std::size_t>(frames)*channels),frames);
+            else writer->write(interleaved.data(),frames);
+            result.framesWritten+=frames;
+        };
         auto progress = [&] {
             if (control.progress) control.progress(id, result.framesWritten, total);
             cancellation(control);
@@ -222,8 +232,8 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             auto silence = (std::min)(total, static_cast<std::uint64_t>(-rawBegin));
             while (silence > 0) {
                 const auto frames = static_cast<std::uint32_t>((std::min)(silence, static_cast<std::uint64_t>(block)));
-                writer.write(interleaved.data(), frames);
-                result.framesWritten += frames; silence -= frames; progress();
+                write(frames);
+                silence -= frames; progress();
             }
         }
         session.transport().loop(0, 0, false);
@@ -262,7 +272,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             for (std::int32_t f = 0; f < frames; ++f) for (std::size_t c = 0; c < channels; ++c) {
                 const auto i = static_cast<std::size_t>(f);
                 const double value = dp.empty() ? static_cast<double>(fp[c][i]) : dp[c][i];
-                if (!std::isfinite(value) || (job.encoding.format == audio::WavFormat::Float32 &&
+                if (!std::isfinite(value) || (!normalized && job.encoding.format == audio::WavFormat::Float32 &&
                     std::abs(value) > static_cast<double>(std::numeric_limits<float>::max())))
                     throw std::runtime_error("nonfinite or out-of-range audio during export");
                 if (at + f >= first)
@@ -270,14 +280,17 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             }
             if (first < last) {
                 const auto count = static_cast<std::uint32_t>(last - first);
-                writer.write(interleaved.data(), count); result.framesWritten += count;
+                write(count);
             }
             at = last;
             progress();
         }
         if (result.framesWritten != total) throw std::runtime_error("export produced an incomplete range");
         service(); // include reports raised by the final process call
-        writer.close();
+        if(normalized)result.normalization=normalized->finish(staged,job.encoding.format,job.encoding.dither,job.encoding.ditherSeed^counter,[&] {
+            cancellation(control);if(control.serviceHost)control.serviceHost();cancellation(control);
+        });
+        else writer->close();
         cancellation(control);
         const auto published = media::publishFile(staged, result.output);
         if (published.status != media::PublishStatus::published)

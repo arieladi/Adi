@@ -93,6 +93,9 @@ const std::vector<MigrationStep>& migrationSteps() {
         {14, {"track_recording_options"}},
         // 1.15: persistent return-owned send taps (ADR-0203 d3).
         {15, {"return_send_taps"}},
+        {16, {"clip_properties"}},
+        {17, {"frozen_renders"}},
+        {18, {"frozen_groups"}},
         // 1.19 (ADR-0203 d13): retained undo root and replay checkpoint.
         {19, {"history_checkpoint"}},
     };
@@ -285,10 +288,23 @@ std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path
         SQLite::Transaction root(store->db());
         // ADR-0209 section 10 d10 keeps Live's default Set. Templates such as
         // CTZ are separate; New does not silently choose the CTZ hierarchy.
+        // Returns use compiled built-in identities (N15), wet-only, with the
+        // regular tracks' sends at the mixer's -infinity floor, Post by default.
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES"
-            "(1,'master','Main',4),(2,'midi','1 MIDI',0),(3,'midi','2 MIDI',1),"
-            "(4,'audio','3 Audio',2),(5,'audio','4 Audio',3);"
+            "(1,'master','Main',6),(2,'midi','1 MIDI',0),(3,'midi','2 MIDI',1),"
+            "(4,'audio','3 Audio',2),(5,'audio','4 Audio',3),"
+            "(6,'return','A Reverb',4),(7,'return','B Delay',5);"
             "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
+            "INSERT INTO plugin_refs(id,format,uid,vendor,name,version,subtype) VALUES"
+            "(1,'internal','org.adidaw.builtin.reverb','ADI','Reverb','1','effect'),"
+            "(2,'internal','org.adidaw.builtin.delay','ADI','Delay','1','effect');"
+            "INSERT INTO device_chains(id,track_id,name) VALUES(1,6,'Devices'),(2,7,'Devices');"
+            "INSERT INTO devices(id,chain_id,plugin_ref_id,name) VALUES(1,1,1,'Reverb'),(2,2,2,'Delay');"
+            "INSERT INTO plugin_params(device_id,param_id,name,normalized_value,real_value,display,unit) VALUES"
+            "(1,'31','Mix',1.0,100.0,'100 %','%'),(2,'25','Mix',1.0,100.0,'100 %','%');"
+            "INSERT INTO routing(id,src_kind,src_id,dst_kind,dst_id,kind,ord,gain_db,pre_fader,enabled) "
+            "SELECT (t.id-2)*2+(r.id-5),'track',t.id,'track',r.id,'send',r.id-6,-150.0,0,1 "
+            "FROM tracks t CROSS JOIN tracks r WHERE t.id BETWEEN 2 AND 5 AND r.id IN(6,7);"
             "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
             "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,4,4);");
         SQLite::Statement recording(store->db(),

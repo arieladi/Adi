@@ -2,7 +2,12 @@
 #pragma once
 #include "adi/ops.hpp"
 
+namespace SQLite {
+class Statement;
+}
 namespace adi::detail {
+// A query positioned on a row; preserves SQLite storage classes and empty BLOBs.
+Payload captureQueryRow(SQLite::Statement &);
 // Owner-thread undo capture. Table/key names come from engine code, never a
 // payload. All columns and SQLite storage types survive, including extensions.
 std::optional<Payload> captureRow(SQLite::Database&, const std::string& table,

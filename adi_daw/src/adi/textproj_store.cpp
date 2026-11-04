@@ -126,7 +126,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 59> kTables{{
+    static constexpr std::array<TableCoverage, 62> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -141,6 +141,7 @@ std::span<const TableCoverage> coverage() {
         {"clips", Coverage::Projected, ""},
         {"clip_playback_details", Coverage::Projected, "inlined onto its clip"},
         {"clip_warp_fade_domains", Coverage::Projected, "retained musical fade clocks on the clip"},
+        {"clip_properties", Coverage::Projected, "Inlined on its clip; NULL inherits."},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
         {"event_streams", Coverage::Projected, "notes decoded; other stream kinds excluded"},
         {"markers", Coverage::Projected, ""},
@@ -167,6 +168,8 @@ std::span<const TableCoverage> coverage() {
         {"device_expression_routes", Coverage::Excluded, "devices are not projected yet; the route goes with them (ADR-0146)"},
         {"device_panels", Coverage::Excluded, "devices are not projected yet; the panel goes with them (ADR-0154)"},
         {"device_panel_params", Coverage::Excluded, "devices are not projected yet; the panel goes with them (ADR-0154)"},
+        {"frozen_groups", Coverage::Excluded, "whole-group cache scope and saved record-arm switches"},
+        {"frozen_renders", Coverage::Excluded, "render cache provenance; the track frozen switch and media link are projected"},
         {"adi_meta", Coverage::Excluded, "Layer 0 bookkeeping, not project content"},
 
         // --- excluded pending step 6 ----------------------------------------
@@ -471,6 +474,12 @@ Tree buildTree(const rows::Model& m) {
         if (c.loopLenTicks) a.raw("loopLen " + renderDuration(*c.loopLenTicks));
         if (c.contentOffsetTicks)
             a.raw("offset " + renderDuration(c.contentOffsetTicks));
+        if (c.endMarkerTicks) a.raw("endMarker " + renderDuration(*c.endMarkerTicks));
+        if (c.signatureNumerator) a.raw("signature " + std::to_string(*c.signatureNumerator) + "/" +
+                                      std::to_string(c.signatureDenominator.value_or(0)));
+        if (c.scaleRoot) a.raw("scaleRoot " + std::to_string(*c.scaleRoot));
+        if (c.scaleId) a.text("scale", *c.scaleId);
+        if (c.scaleMask) a.raw("scaleMask " + std::to_string(*c.scaleMask));
 
         if (const auto it = audioOf.find(c.id); it != audioOf.end()) {
             const rows::AudioClip& ac = *it->second;

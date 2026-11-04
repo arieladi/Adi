@@ -168,6 +168,9 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             if(origin<0||origin>tickLimit||length<=0||length>tickLimit||clip.contentOffsetTicks<0||clip.contentOffsetTicks>tickLimit)throw std::runtime_error("invalid MIDI clip time; silent");
             const auto loop=clip.loopLenTicks.value_or(0);
             if(clip.loopEnabled && (loop<=0||loop>tickLimit||clip.loopStartTicks<0||clip.loopStartTicks>tickLimit))throw std::runtime_error("invalid MIDI clip loop; silent");
+            if (!clip.loopEnabled && clip.endMarkerTicks &&
+                (*clip.endMarkerTicks <= clip.contentOffsetTicks || *clip.endMarkerTicks > tickLimit))
+                throw std::runtime_error("invalid MIDI clip End marker; silent");
             auto at=[&](std::int64_t local){return checkedSample(startSeconds+tempo.ticksToSeconds(origin+local)-tempo.ticksToSeconds(origin),rate);};
             const auto clipEnd=clip.timeBase==0?at(length):checkedSample(startSeconds+static_cast<double>(clip.lengthNs.value_or(0))*1e-9,rate);
             bool unsupported=false;
@@ -187,7 +190,12 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
                     if(source.notes.size()>=maxOccurrences)throw std::runtime_error("MIDI occurrence budget exceeded; clip silent");
                     source.notes.push_back(n);
                 };
-                if(!clip.loopEnabled) {add(note.startTicks-clip.contentOffsetTicks,note.startTicks+note.durTicks-clip.contentOffsetTicks);continue;}
+                if (!clip.loopEnabled) {
+                    auto off = note.startTicks + note.durTicks;
+                    if (clip.endMarkerTicks) off = std::min(off, *clip.endMarkerTicks);
+                    add(note.startTicks-clip.contentOffsetTicks, off-clip.contentOffsetTicks);
+                    continue;
+                }
                 // Prefix before the loop plays once. Notes crossing a repeat
                 // boundary are released there, and chased at the next origin.
                 const auto lb=clip.loopStartTicks, le=lb+loop, offset=clip.contentOffsetTicks;

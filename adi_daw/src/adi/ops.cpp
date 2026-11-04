@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_groups.hpp"
+#include "adi/freeze_state.hpp"
 
 #include "adi/ops.hpp"
 
@@ -255,6 +257,7 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
     if (reqs.empty()) { r.ok = true; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
+    const bool frozenWasValid = freeze::validated(store_);
     const auto& reg = OpRegistry::instance();
 
     // Validate everything BEFORE opening a transaction. A batch that cannot
@@ -452,7 +455,17 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
             }
         }
 
+        freeze::validate(
+            store_,
+            !(frozenWasValid && !options.beforeCommit && freeze::liveControlBatch(reqs) &&
+              freeze::groupControlsLive(db, reqs) &&
+              db.execAndGet(
+                    "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE "
+                    "NOCASE IN ('tracks','mixer_strip','project') UNION ALL SELECT 1 FROM sqlite_temp_master "
+                    "WHERE type='trigger' AND tbl_name COLLATE NOCASE IN ('tracks','mixer_strip','project'))")
+                      .getInt() != 0));
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         return r;
     } catch (const std::exception& e) {

@@ -371,6 +371,8 @@ silent truncation in JSON, a non-issue in CBOR.
 | `track.create` | e | G | pair `track.delete` | P0 |
 | `track.delete` | e | G | cap | P0 |
 | `track.reorder` | e | S | sym | P0 |
+| `group.setFreezeScope` | e | G | sym | P1 |
+| `track.setFreeze` | e | G | sym | P1 |
 | `track.setParent` | e | G | sym | P1 |
 | `track.rename` | e | N | sym | P0 |
 | `track.setColor` | e | N | sym | P1 |
@@ -439,7 +441,7 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.setColor` | e | N | sym | P1 |
 | `clip.setMute` | e | S | sym | P0 |
 | `clip.setGain` | e | S | sym, coalescable | P0 |
-| `clip.setLoop` | e | S | sym | P0 |
+| `clip.setLoop` | e | S | cap | P0 |
 | `clip.setContentOffset` | e | S | sym | P1 |
 | `clip.setFade` | e | S | sym | P0 |
 | `clip.setFades` | e | S | cap | P0 |
@@ -448,6 +450,34 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.makeUnique` | e | S | cap | P2 |
 | `clip.consolidate` | e | S | cap | P2 |
 | `clip.setLane` | e | S | sym | P1 |
+| `clip.setStartMarker` | e | S | cap | P1 |
+| `clip.setEndMarker` | e | S | cap | P1 |
+| `clip.setTimeSignature` | e | S | cap | P1 |
+| `clip.setScale` | e | S | cap | P1 |
+
+N17 compatibility: when the optional clip_playback_details table is present,
+Start clears its content offset and retained fade domains, End clears its
+physical source limit, and a loop-window edit clears both physical loop
+endpoints. A switch-only loop edit retains the dormant window. Inverses capture
+the full typed details row, including future fields or row absence; undo and
+redo restore it. This optional SQL seam adds no dependency on N17's schema.
+
+N33 Main Clip Properties: `clip.setStartMarker {id,ticks}` and
+`clip.setEndMarker {id,ticks}` use source-relative musical ticks (0..2^50).
+Start precedes End. Moving Start pins the old default End; placement/length
+stay fixed. End bounds non-loop playback; Loop uses its own window.
+`clip.setLoop {id,on,start?,length?}` edits the existing loop columns atomically;
+enabling needs a nonnegative start and positive length. A broken old loop can
+always be disabled without supplying a new window.
+`clip.setTimeSignature {id,num?,den?}` takes both fields (1..255, power-of-two
+1..128), or neither to inherit the project. `clip.setScale {id,root?,scale?,mask?}`
+takes all three fields, or none to inherit: root 0..11, a nonempty scale id and
+root-relative 12-bit mask including the tonic. Fields apply to this clip only.
+These ops capture the full clip and optional property row for exact undo,
+updating in place without cascading children; clearing retains extensions.
+`clip.delete` also captures all native clip cascade rows and external alias
+links. Legacy captured create payloads remain readable. No unknown child-table
+capture is claimed.
 
 The clip.setFades payload is {id,in?:{ticks?,curve?,tension?},out?:{...}}.
 It is audio-only; ticks are nonnegative and no longer than the clip's musical
@@ -720,6 +750,16 @@ The batch creates a reference/track chain only when absent, orders the device
 before the selected device or at the chain end, and commits one undo group.
 No scanning, filesystem access or ambient ID allocation occurs in handlers.
 
+N28's prepareSampleAssignment/prepareSampleClear produce ordinary media.import
+(or relink) and device.loadState requests as one undo group. The built-in
+sample:<slot-id> role stores CBOR content in state_blobs, identified by its
+captured hash; no PCM/profile bytes enter the op payload. The first assignment
+writes the empty baseline first, so live undo restores the empty slot before
+removing the originally absent state row. Existing inverses preserve that role
+and format hint exactly. See ENGINE-SAMPLE-SLOTS.md for the window's call path,
+rate conversion, missing-file snapshot and immutable-content publication limit.
+
+
 
 ### 9.8 Routing and mixer
 
@@ -909,6 +949,12 @@ commands do not invent schema migrations or rewrite historical op payloads.
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
+| `cue.setMode` | t | G | — | P1 |
+| `cue.setOutput` | t | S | — | P1 |
+| `cue.setVolume` | t | S | — | P1 |
+| `cue.setTrack` | t | G | — | P1 |
+| `cue.setReference` | t | G | — | P1 |
+| `mixer.setSoloInPlace` | t | G | — | P1 |
 | `transport.play` | t | N | — | P0 |
 | `transport.stop` | t | N | — | P0 |
 | `transport.seek` | t | N | — | P0 |
@@ -924,6 +970,25 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `extension.write` | e | N | cap | P1 |
 | `extension.delete` | e | N | cap | P1 |
 
+Cue controls are saved performance commands in Transport scope, not undo steps:
+`cue.setMode {on}` selects Solo/Cue; `cue.setTrack {id,on}` changes the Cue selection
+without editing a track's stored solo flag. `cue.setOutput {first}` selects a
+zero-based stereo pair (even 0..62); `cue.setVolume {db}` accepts -150..+6 dB.
+`cue.setReference {on,id?}` selects/engages exclusive reference audition. Omitted
+id retains the target (or the native reference role when present). Invalid or
+non-audio/Main targets fail. `mixer.setSoloInPlace {on}` controls return audibility
+in Solo mode. The caller refreshes ProjectView and Session after success.
+
+Cue is Post FX / pre-fader listening, including muted tracks. Reference audition
+keeps its source's volume/pan automation, ignores its Main mute, and bypasses Main
+and parent effects/faders with a 5 ms complementary swap. It reaches monitor and
+Cue Out; normal Cue selections and clicks are suppressed during the exclusive
+swap. Cue Volume scales both. Declaring an audition target alone does not change
+its ordinary Main route: the native `tracks.role='reference'` designates the
+permanently excluded project reference, once that format field exists (N38).
+Offline `performanceState=false` ignores Cue/selection/swap but retains native
+project-role exclusion and normal stored solo/mute behavior.
+
 `transport.setLoop` stores `{on, start?, end?}` in the session layer. Bounds
 are musical ticks, nonnegative start and end strictly after start. Omitted bounds
 retain the last window (initially four 4/4 bars from zero). `transport.setMetronome`
@@ -934,7 +999,7 @@ to refresh ProjectView and Session after commit. Snapshot `transport` carries th
 saved values; Session applies loop changes on the driver at the next callback,
 and renders the metronome only while playing, aligned to the graph's actual
 compensated output latency, including loop wraps. Default output is the first stereo
-pair, outside Main's device/fader chain; Cue Out selection follows N23. Offline
+pair, outside Main's device/fader chain; N23 routes it through Cue Out/volume. Offline
 export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
 loop/click choices do not change rendered material.
 
@@ -989,7 +1054,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**191 ops** — 70 P0, 69 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**203 ops** — 70 P0, 81 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
@@ -1002,7 +1067,9 @@ state, and appending them to undo history would bury the last real edit under
 navigation.
 
 ADR-0037 removed the four `session.*` launch ops along with Session View, so the
-transport scope is now the whole of this category.
+transport scope is the whole of this category, including Cue/monitor commands
+that save performance controls in the session layer. These do not reintroduce
+Session View or launching.
 
 They still go through the registry — same validation, same scopes, same
 attribution — and still emit an op row, tagged `ephemeral`. Undo skips ephemeral
@@ -1038,3 +1105,32 @@ retained in the container, excluded from the playing stem group. Document
 identity/generation/head guards and no-clobber file publication precede the
 commit point; one Undo removes the whole group. NI export remains application
 queue state, without project operations.
+
+### Whole-track freeze state
+
+track.setFreeze carries id, before and after objects. Each captured state holds
+armed, frozen, media and render (the complete frozen_renders row or null). The
+handler requires the current state to equal before, validates the closed after
+shape, then installs it. The inverse swaps the two captures. No filesystem or
+device loading occurs in apply. After a native batch, undo or redo, frozen
+source fingerprints and flags must remain valid; edits to baked source material
+require unfreezing first. Root fader, pan, width, phase, delay, mute, solo and
+outgoing sends stay live. Freeze preparation/publication is described in
+ENGINE-FREEZE.md.
+
+Group freeze also uses group.setFreezeScope with id and closed before/after
+objects containing members (null, or captured id/armed pairs). Installation
+checks complete current descendant membership and original arm flags, disarms
+members and stores their provenance. Removal restores those arm flags. Its
+inverse swaps captures. Root cache, scope and media changes remain one native
+transaction; group scopes are validated before commit/undo/redo.
+
+Dedicated track bounce producers (`bounce_commands.hpp`,
+[ENGINE-BOUNCE.md](ENGINE-BOUNCE.md)) compose the existing native vocabulary:
+Bounce to New Track groups sibling reorder/create/color, optional Main connect,
+media import/relink, complete clip creation, naming and optional original mute.
+Whole-track Bounce in Place groups full material replacement, parked insert
+bypass, baked input-gain reset and optional disarm. Both play Warp off and use
+one undo transaction with project/document/head guards. No new opcode or schema
+is required. In-place preparation refuses partial extents or live incoming
+main/send audio rather than applying a baked mix twice.

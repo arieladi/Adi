@@ -32,6 +32,7 @@
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/track_recording.hpp"
+#include "adi/cue_settings.hpp"
 
 #include <cstdint>
 #include <cstddef>
@@ -113,6 +114,10 @@ struct TrackNode {
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;
     bool soloed = false;
+    bool frozen = false;
+    std::int64_t frozenByGroup = 0; // the group whose cache currently replaces this track
+    std::optional<std::int64_t> freezeMediaId;
+    std::string freezeMode; // wet, unverified legacy flag, or empty
     float volumeDb = 0.0f;
     float pan = 0.0f;
     std::int64_t delaySamples = 0; // stored samples at Snapshot::sampleRate; ms = 1000 * samples / rate
@@ -153,6 +158,17 @@ struct RemarkNode {
     friend bool operator==(const RemarkNode&,const RemarkNode&)=default;
 };
 
+/// Assigned built-in media slot. State hash caches immutable metadata across
+/// rebuilds; file presence and pool metadata are refreshed off the callback.
+struct SampleSlotNode {
+    std::int64_t deviceId=0;
+    std::int32_t slot=0;
+    std::string name,uid,mediaHash,stateHash,problem;
+    std::optional<std::int64_t> mediaId;
+    bool empty=true,missing=false,hasDerivedState=false;
+    friend bool operator==(const SampleSlotNode&,const SampleSlotNode&)=default;
+};
+
 /// What the audio thread sees. Derives from Sequenced so the publisher can
 /// stamp it; nothing else touches `seq`.
 struct Snapshot : Sequenced {
@@ -164,11 +180,13 @@ struct Snapshot : Sequenced {
     // All routing kinds, including disabled rows. Zero if no positive id.
     // Observation only: caller must guard INT64_MAX and reserve pending ids.
     std::int64_t maxRoutingId = 0;
+    std::vector<std::shared_ptr<const SampleSlotNode>> sampleSlots;
     int sampleRate = 44100;
     TransportSettings transport;
     std::vector<std::shared_ptr<const MarkerNode>> markers; // id order, not a mixed-units display order
     std::vector<std::shared_ptr<const AutomationLaneNode>> automationLanes; // lane id order
     bool automationOverridden = false; // session state supplied at rebuild, never saved
+    CueSettings cue;
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.
     std::vector<textproj::Meter> meters;

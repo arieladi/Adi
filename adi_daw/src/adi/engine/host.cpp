@@ -17,11 +17,13 @@ std::int32_t GraphHost::latencyHeadroomAt(double sampleRate) const noexcept {
     return static_cast<std::int32_t>(scaled < kMax ? scaled : kMax);
 }
 
-bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
-                        double sampleRate, std::int32_t maxFrames) {
+bool GraphHost::rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
+                        std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan) {
     error_.clear();
 
-    const GraphPlan plan = planGraph(model);
+    GraphPlan plan = planGraph(model);
+    if (transformPlan)
+        transformPlan(plan);
     std::unique_ptr<RealizedGraph> rg = realize(plan, opts);
     problems_ = rg->problems();
 
@@ -191,6 +193,12 @@ void GraphHost::process(const AudioIo& io) noexcept {
 
     snap->graph().graph().process(io);
     fadeIn(io);
+}
+
+bool GraphHost::copyRenderedOutput(const Node& node,const AudioIo& io) const noexcept {
+    if(!lastSnap_)return false;
+    const auto& graph=lastSnap_->graph().graph();
+    return graph.copyNodeOutput(graph.find(node),io);
 }
 
 std::int32_t GraphHost::renderedLatency() const noexcept {
