@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include "adi/history_policy.hpp"
 #include "adi/ops.hpp"
 
 #include <cstdint>
@@ -100,6 +101,30 @@ public:
         bool automatic = false;
     };
 
+    struct TimelineStep {
+        Step step; // whole transaction, label/actor from its first edit op
+        std::optional<std::int64_t> parentSeq; // before this transaction
+        std::int64_t createdUtc = 0;
+        bool applied = false; // on the current head's ancestry
+        bool onCurrentLine = false; // ancestry plus the redo line Ctrl-Y follows
+        std::vector<std::int64_t> branchIds;
+        std::vector<std::int64_t> snapshotIds;
+    };
+    struct Timeline {
+        std::vector<TimelineStep> steps; // newest lastSeq first, every branch
+        std::vector<Branch> branches; // id order; current head moves with undo
+        std::vector<Snapshot> snapshots; // newest createdUtc/id first, including root
+        std::optional<std::int64_t> headSeq, currentBranchId;
+        std::string error; // no partial data on failure
+    };
+
+    /// Message-thread metadata read, outside journal mutations. One consistent
+    /// read transaction; no op/state blobs are loaded or decoded. Ephemeral
+    /// performance/session ops are excluded. Root snapshots remain in snapshots.
+    /// branchIds names stored-head ancestry; the current branch also includes
+    /// its redo line. No branch/snapshot metadata or undo head is changed.
+    [[nodiscard]] Timeline readTimeline() const;
+
     struct SnapshotResult {
         bool ok = false;
         std::string error;
@@ -110,11 +135,14 @@ public:
     /// Names the current head. An empty `name` becomes
     /// defaultSnapshotName(project name, createdUtc, utcOffsetMinutes), the
     /// local time being UTC plus the offset the CALLER supplies (ADR-0128 d4).
-    SnapshotResult takeSnapshot(const std::string& name, std::int64_t createdUtc,
-                                int utcOffsetMinutes, bool automatic = false);
+    SnapshotResult takeSnapshot(const std::string &name, std::int64_t createdUtc, int utcOffsetMinutes,
+                                bool automatic = false, const HistorySnapshotPolicy &policy = {});
 
-    /// Renames in place. Not an op and not undoable (ADR-0128 d5). An empty name
-    /// is refused rather than defaulted: a rename is always a typed name.
+    /// Explicit user removal of snapshot metadata; never an undo operation.
+    Result removeSnapshot(std::int64_t snapshotId);
+
+    /// Renames in place and promotes automatic points to named. Not an op and
+    /// not undoable (ADR-0128 d5). An empty name is refused.
     Result renameSnapshot(std::int64_t snapshotId, const std::string& newName);
 
     /// Every snapshot, oldest first (created_utc, then id).

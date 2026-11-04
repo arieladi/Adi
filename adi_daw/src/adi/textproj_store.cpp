@@ -126,19 +126,25 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 51> kTables{{
+    static constexpr std::array<TableCoverage, 58> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
         {"time_signature_map", Coverage::Projected, ""},
         {"tracks", Coverage::Projected, ""},
+        {"track_recording_options", Coverage::Projected, "inlined on its track; fixed defaults omitted"},
         {"mixer_strip", Coverage::Projected, "inlined on its track"},
+        {"mixer_pan_settings", Coverage::Projected, "inlined on its strip track (N12)"},
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
+        {"return_send_taps", Coverage::Projected, "inlined on its return track (ADR-0203 d3)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
+        {"clip_playback_details", Coverage::Projected, "inlined onto its clip"},
+        {"clip_warp_fade_domains", Coverage::Projected, "retained musical fade clocks on the clip"},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
         {"event_streams", Coverage::Projected, "notes decoded; other stream kinds excluded"},
         {"markers", Coverage::Projected, ""},
+        {"marker_details", Coverage::Projected, "inlined on its marker"},
         {"media_files", Coverage::Projected, "peaks excluded: regenerable, never authoritative"},
         {"routing", Coverage::Projected, ""},
         {"remarks", Coverage::Projected, "a child of the track or clip it is anchored to; a device's on its track (ADR-0139)"},
@@ -179,7 +185,8 @@ std::span<const TableCoverage> coverage() {
 
         // --- excluded pending their own ops ---------------------------------
         {"automation_lanes", Coverage::Excluded, "no automation op is implemented"},
-        {"automation_data", Coverage::Excluded, "no automation op is implemented"},
+        {"automation_data", Coverage::Excluded, "automation uses the dedicated snapshot; no point text syntax"},
+        {"automation_segment_ranges", Coverage::Excluded, "curve subranges accompany automation data"},
         {"note_expression", Coverage::Excluded, "no expression op is implemented"},
         {"arranger_sections", Coverage::Excluded, "no op writes it"},
         {"arranger_chain", Coverage::Excluded, "no op writes it"},
@@ -335,6 +342,13 @@ Tree buildTree(const rows::Model& m) {
         a.num("monitor", tr.monitorMode, 0);
         a.num("automation", tr.automationMode, 0);
         if (tr.inputRef) a.text("input", *tr.inputRef);
+        a.flag("recQuantizeOff",!tr.recording.recordEnabled);
+        a.text("recGrid",tr.recording.recordGrid,"1/16");
+        a.flag("playQuantize",tr.recording.playEnabled);
+        a.text("playGrid",tr.recording.playGrid,"1/16");
+        a.real("playForgivenessMs",tr.recording.playForgivenessMs,0.0);
+        a.flag("discardMonitoringLatency",!tr.recording.keepMonitoringLatency);
+        if(tr.returnSendTap && tr.returnSendTap->explicitChoice)a.text("sendTap",tr.returnSendTap->preFader?"pre":"post");
 
         if (const auto it = stripOf.find(tr.id); it != stripOf.end()) {
             const rows::MixerStrip& s = *it->second;
@@ -343,6 +357,9 @@ Tree buildTree(const rows::Model& m) {
             a.real("width", s.width, 1.0);
             a.real("inGain", s.inputGainDb, 0.0);
             a.num("panLaw", s.panLaw, 0);
+            a.text("panMode", s.panMode, "stereo");
+            a.real("panLeft", s.panLeft, -1.0);
+            a.real("panRight", s.panRight, 1.0);
             a.num("delay", s.delaySamples, 0);
             a.flag("phaseInvert", s.phaseInvert);
         }
@@ -438,6 +455,16 @@ Tree buildTree(const rows::Model& m) {
         if (c.fadeOutTicks) a.raw("fadeOut " + renderDuration(c.fadeOutTicks));
         a.num("fadeInCurve", c.fadeInCurve, 1);
         a.num("fadeOutCurve", c.fadeOutCurve, 1);
+        if(c.fadeInTension)a.real("fadeInTension",*c.fadeInTension,2.0);
+        if(c.fadeOutTension)a.real("fadeOutTension",*c.fadeOutTension,2.0);
+        if(c.contentOffsetNs)a.raw("contentOffsetNs "+std::to_string(*c.contentOffsetNs));
+        if(c.loopBeginNs)a.raw("loopBeginNs "+std::to_string(*c.loopBeginNs));
+        if(c.loopEndNs)a.raw("loopEndNs "+std::to_string(*c.loopEndNs));
+        if(c.sourceEndNs)a.raw("sourceEndNs "+std::to_string(*c.sourceEndNs));
+        constexpr std::array<const char*,4> fadeClockNames={"fadeInBeginNs","fadeInEndNs","fadeOutBeginNs","fadeOutEndNs"};
+        for(std::size_t i=0;i<4;++i)if(c.fadeClockNs[i])a.raw(std::string(fadeClockNames[i])+" "+std::to_string(*c.fadeClockNs[i]));
+        constexpr std::array<const char*,4> warpFadeNames={"fadeInBeginTicks","fadeInEndTicks","fadeOutBeginTicks","fadeOutEndTicks"};
+        for(std::size_t i=0;i<4;++i)if(c.fadeClockTicks[i])a.raw(std::string(warpFadeNames[i])+" "+std::to_string(*c.fadeClockTicks[i]));
         a.flag("loop", c.loopEnabled);
         if (c.loopStartTicks) a.raw("loopStart " + renderDuration(c.loopStartTicks));
         if (c.loopLenTicks) a.raw("loopLen " + renderDuration(*c.loopLenTicks));
@@ -585,6 +612,9 @@ Tree buildTree(const rows::Model& m) {
         else
             a.raw("at " + std::to_string(k.posNs.value_or(0)) + "ns");
         if (k.lengthTicks) a.raw("len " + renderDuration(*k.lengthTicks));
+        if (k.lengthNs) a.raw("len " + std::to_string(*k.lengthNs) + "ns");
+        a.text("note", k.note);
+        a.text("prompt", k.prompt);
         a.text("kind", k.kind, "position");
         a.num("color", k.color.value_or(-1), -1);
         t.roots.push_back(n);
@@ -603,7 +633,7 @@ Tree buildTree(const rows::Model& m) {
         Attrs a(t.nodes[n].attrs);
         a.real("gain", r.gainDb, 0.0);
         a.real("pan", r.pan, 0.0);
-        a.flag("preFader", r.preFader);
+        a.flag("preFader", r.storedPreFader.value_or(r.preFader));
         a.flag("disabled", !r.enabled);
 
         // A hardware port is not a row and never was (SPEC 6.7). Rendering it
