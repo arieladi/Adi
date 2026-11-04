@@ -444,7 +444,10 @@ juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
     return {53, mixerTop() + 6, 11, std::max(0, getHeight() - mixerTop() - 10 - (tall ? 15 : 0))};
 }
-bool MixerStrip::showsSends() const noexcept { return panel_.root.state().sends; }
+bool MixerStrip::showsSends() const noexcept {
+    // The Mixer View's own Sends (Live 12's Mixer Controls), apart from the track controls'.
+    return panel_.vertical() ? panel_.root.state().mixerSends : panel_.root.state().sends;
+}
 bool MixerStrip::showsInOut() const noexcept {
     // Shown when the View menu's In/Out is on (§42.1) and the panel is wide enough.
     return !panel_.vertical() && panel_.root.state().inOut &&
@@ -652,7 +655,34 @@ void MixerStrip::mouseDoubleClick(const juce::MouseEvent &e) {
     panel_.root.publishSelection();
     panel_.root.showDeviceView();
 }
+bool MixerStrip::onSplitLine(const juce::MouseEvent &e) const noexcept {
+    return !panel_.vertical() && track_ != 0 && e.eventComponent == this &&
+           e.y >= getHeight() - TrackHeaderList::kSplitLine;
+}
+void MixerStrip::mouseMove(const juce::MouseEvent &e) {
+    setMouseCursor(onSplitLine(e) ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+}
+void MixerStrip::mouseDrag(const juce::MouseEvent &e) {
+    if (resizeFrom_ < 0)
+        return;
+    auto &view = panel_.root.arrangement;
+    view.geometry.resizeTrack(track_, resizeFrom_ + e.getDistanceFromDragStartY(), e.mods.isAltDown());
+    view.frame(true);
+}
+void MixerStrip::mouseUp(const juce::MouseEvent &) {
+    if (resizeFrom_ < 0)
+        return;
+    resizeFrom_ = -1;
+    dragging_ = false;
+    panel_.root.arrangement.changed();
+}
 void MixerStrip::mouseDown(const juce::MouseEvent &e) {
+    if (onSplitLine(e) && !e.mods.isPopupMenu()) {
+        // Kept bound to its track while the drag resizes the rows (MixerPanel::place).
+        resizeFrom_ = panel_.root.arrangement.geometry.heightFor(track_);
+        dragging_ = true;
+        return;
+    }
     // A send's own clicks, and an off send's, which reach the strip: its menu, or what it waits for.
     for (std::size_t i = 0; i < sends_.size(); ++i) {
         auto &knob = *sends_[i];

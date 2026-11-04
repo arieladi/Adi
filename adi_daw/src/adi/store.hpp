@@ -23,6 +23,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace SQLite {
@@ -34,7 +35,7 @@ namespace adi {
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 9;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18)
+inline constexpr int kSchemaMinor = 15;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: marker notes/prompts (N25); 1.11: split stereo pan (N12); 1.13: retained musical Warp fade domains; 1.14: track recording options; 1.15: return send taps (ADR-0203 d3)
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {
@@ -50,6 +51,12 @@ enum class StoreError {
 };
 
 const char* toString(StoreError);
+
+struct StoreFileResult {
+    bool ok = false;
+    std::string error;
+    std::string warning;
+};
 
 /// An open `.adi`.
 ///
@@ -74,6 +81,10 @@ public:
     /// history root. No ops or protected UI undo step. Window callers replace
     /// their track.create bootstrap with this single factory.
     static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&);
+    /// Capture the caller's app recording defaults for the four initial
+    /// tracks in the history root. Invalid choices create no file.
+    static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&,
+        std::string_view recordQuantize, bool keepMonitoringLatency);
 
     /// Schema-only creation for converters and low-level fixtures that supply
     /// their own project rows. Application New commands use create().
@@ -98,6 +109,16 @@ public:
     /// destructor calls it. Safe to call explicitly to find out whether it
     /// worked, which the destructor cannot tell you.
     bool close();
+
+    /// Owner thread, outside any SQL transaction. Snapshot committed WAL data
+    /// into a new file without replacing an existing destination. Rebase media
+    /// paths in both rows and captured history so undo/redo still finds audio.
+    [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&) const;
+    /// Save a copy, then switch this same Store object to the new writable file.
+    /// Existing OpJournal/History references remain valid. Requires no live SQL
+    /// statements. Refresh ProjectView/Session and the window's filename after
+    /// success. A failed switch retains the source and a completed copy.
+    [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&);
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
@@ -125,6 +146,7 @@ public:
     [[nodiscard]] std::optional<std::vector<std::byte>>
     getNoteExpression(std::int64_t clipId, std::uint64_t noteId, int dimension) const;
 
+    /// Refuses a replacement when this data has retained curve ranges; use a captured row edit for data and ranges together.
     bool putAutomationData(std::int64_t laneId, std::optional<std::int64_t> clipId,
                            std::span<const std::byte> blob);
     [[nodiscard]] std::optional<std::vector<std::byte>>

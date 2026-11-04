@@ -151,7 +151,9 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             // Metadata, device states and playback rows describe one database
             // revision, sampled when this job starts, never when it is queued.
             SQLite::Transaction snapshot(store->db());
-            if (!session.load(*store, std::move(loader), job.session)) throw std::runtime_error(session.error());
+            auto renderSpec=job.session;
+            renderSpec.performanceState=false;
+            if (!session.load(*store, std::move(loader), renderSpec)) throw std::runtime_error(session.error());
             if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
                 std::string why = "export requires a fully resolved project";
                 for (const auto& problem : session.problems()) why += "; " + problem;

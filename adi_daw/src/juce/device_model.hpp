@@ -24,6 +24,7 @@
 #pragma once
 
 #include "adi/engine/graph.hpp"
+#include "juce/device_editor.hpp"
 #include "adi/engine/mpe_output.hpp"
 #include "adi/engine/param_edits.hpp"
 
@@ -184,6 +185,14 @@ public:
     // build never shows.
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
+
+    /// Explicit mode: CLAP's native floating window follows ADR-0076; Hosted
+    /// supplies content for ADR-0180's FloatingHost, never for the device strip.
+    [[nodiscard]] virtual std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) {
+        error = "This device has no plug-in editor";
+        return {};
+    }
+
 
     /// Audio thread. Same contract as `engine::Node::process`.
     virtual void process(const engine::NodeIo& io) noexcept = 0;
@@ -360,6 +369,9 @@ public:
     /// Message thread. The op log is the source of truth (ADR-0038); this
     /// pushes a value the log has already recorded into the live plugin.
     virtual bool setParam(const std::string& paramId, const ParamValue& v);
+    /// Message thread: an accepted control is still waiting for processing.
+    /// State recall must supersede it even if the serialized chunk is equal.
+    [[nodiscard]] virtual bool hasPendingParamChanges() const noexcept { return false; }
 
     // --- opaque state (ADR-0038) -------------------------------------------
 
