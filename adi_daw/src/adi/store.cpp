@@ -16,6 +16,11 @@
 namespace adi {
 namespace {
 
+std::string sqlitePath(const std::filesystem::path& path) {
+    const auto bytes=path.generic_u8string();
+    return {reinterpret_cast<const char*>(bytes.data()),bytes.size()};
+}
+
 std::int64_t nowUtcMicros() {
     using namespace std::chrono;
     return duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
@@ -286,7 +291,7 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
     try {
         auto db = std::make_unique<SQLite::Database>(
-            path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+            sqlitePath(path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
 
         // SPEC §3.1. page_size must be set before the first write, so it goes
         // first — after any table exists it is silently ignored, which is the
@@ -336,7 +341,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     std::unique_ptr<SQLite::Database> db;
     try {
         db = std::make_unique<SQLite::Database>(
-            path.string(), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
+            sqlitePath(path), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
     } catch (const SQLite::Exception&) {
         err = StoreError::CannotOpen;
         return nullptr;
@@ -374,7 +379,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     if (major > kSchemaMajor) {
         if (!readOnly) {
             try {
-                db = std::make_unique<SQLite::Database>(path.string(), SQLite::OPEN_READONLY);
+                db = std::make_unique<SQLite::Database>(sqlitePath(path), SQLite::OPEN_READONLY);
             } catch (const SQLite::Exception&) {
                 err = StoreError::CannotOpen;
                 return nullptr;

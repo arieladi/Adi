@@ -223,6 +223,7 @@ add_library(adi_core STATIC
     # runtime below is not.
     src/juce/pd_declarations.cpp
     src/adi/store.cpp
+    src/adi/project_files.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
     src/adi/controller_maps.cpp
@@ -505,6 +506,9 @@ add_test(NAME adi_tests COMMAND adi_tests)
 add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
+add_executable(adi_project_files_tests tests/test_project_files.cpp)
+target_link_libraries(adi_project_files_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_files_tests COMMAND adi_project_files_tests)
 
 add_executable(adi_project_bootstrap_tests tests/test_project_bootstrap.cpp)
 target_link_libraries(adi_project_bootstrap_tests PRIVATE adi_core adi_warnings)
