@@ -122,6 +122,32 @@ inline TrackEdit deactivateClips(const SnapshotTracks &tracks, const std::vector
             edit.ops.push_back(track_edits_detail::op("clip.setMute", {{"id", c->id}, {"muted", !allOff}}, label));
     return edit;
 }
+// The selected clips moved together by `delta` ticks, as Live drags several selected clips (§6.7):
+// each keeps its track; none goes before the arrangement's start, so the offset stops where the
+// earliest one reaches it. One batch, "Move Clip" or "Move Clips"; no ops when nothing moves.
+inline TrackEdit moveClips(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, std::int64_t delta) {
+    TrackEdit edit;
+    std::vector<std::pair<const engine::ClipNode *, std::int64_t>> clips;
+    for (const auto id : ids)
+        for (const auto &t : tracks)
+            if (t)
+                for (const auto &c : t->clips)
+                    if (c && c->id == id)
+                        clips.emplace_back(c.get(), t->id);
+    if (clips.empty()) {
+        edit.refusal = "Select a clip to move.";
+        return edit;
+    }
+    for (const auto &[c, track] : clips)
+        delta = std::max(delta, -c->posTicks);
+    if (delta == 0)
+        return edit;
+    const char *label = clips.size() == 1 ? "Move Clip" : "Move Clips";
+    for (const auto &[c, track] : clips)
+        edit.ops.push_back(
+            track_edits_detail::op("clip.move", {{"id", c->id}, {"to", c->posTicks + delta}, {"track", track}}, label));
+    return edit;
+}
 // What the Status Bar says after a range edit that left clips crossing its edges; empty when none did.
 inline std::string rangeNote(const SnapshotTracks &tracks, const std::vector<std::int64_t> &selected,
                              std::int64_t start, std::int64_t end) {

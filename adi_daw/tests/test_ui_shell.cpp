@@ -2099,6 +2099,41 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
               "brings the three back");
         clickClip(2);
         check(geo.selection.clip == 12 && geo.selection.pickedClips.empty(), "a plain click selects one clip again");
+        // Dragged together (§6.7): the picked clips follow the one dragged by its bar, in time, on
+        // their own tracks; one undo step. A press on a picked clip's bar without a drag selects it alone.
+        clickClip(1);
+        clickClip(3, pick);
+        const juce::Point<float> grab(x(bar) + 10, static_cast<float>(laneTop(root, 3) + 4));
+        const juce::Point<float> drop(x(2 * bar) + 10, grab.y);
+        canvas.mouseDown(pressAt(canvas, grab));
+        canvas.mouseDrag(dragAt(canvas, grab, drop));
+        const bool along = geo.selection.pickedClips == std::vector<std::int64_t>{13} && canvas.movingClip() == 13;
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+            juce::Image shot(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(shot);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile("adi-picked-clips-drag.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
+        }
+        canvas.mouseUp(dragAt(canvas, grab, drop));
+        root.frame();
+        check(along && clipOf(1)->posTicks == 2 * bar && clipOf(3)->posTicks == 2 * bar && clipOf(2)->posTicks == bar &&
+                  submitter.nextUndo()->label == "Move Clips" && submitter.nextUndo()->opCount == 2,
+              "track 3's clip dragged a bar later by its bar, track 1's picked: both move a bar, one step");
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        check(clipOf(1)->posTicks == bar && clipOf(3)->posTicks == bar, "puts them back");
+        clickClip(1);
+        clickClip(3, pick);
+        canvas.mouseDown(pressAt(canvas, grab));
+        canvas.mouseUp(pressAt(canvas, grab));
+        check(geo.selection.clip == 13 && geo.selection.pickedClips.empty(),
+              "a press on a picked clip's bar without a drag selects that clip alone");
         clickClip(4);
     }
     // Live's Ctrl/Cmd+click on track titles picks tracks apart from one another; Solo and Group Tracks

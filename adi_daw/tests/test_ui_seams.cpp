@@ -1092,6 +1092,20 @@ void rangeEditsAsBatches() {
           "two undos bring them back, active");
     check(ui::deleteClips(view.current()->tracks, {99}).refusal == "Select a clip to delete.",
           "no clip left to act on: refused, with the reason");
+    // Dragged together (§6.7): each keeps its track, by the same offset; none before the start.
+    auto later = ui::moveClips(view.current()->tracks, {1, 3}, bar);
+    check(later.ops.size() == 2 && later.ops[0].label == "Move Clips" && later.ops[0].payload["to"] == bar &&
+              later.ops[0].payload["track"] == 1 && later.ops[1].payload["to"] == bar + bar / 2 + bar &&
+              later.ops[1].payload["track"] == 3 && sub.submit(std::move(later.ops)).ok &&
+              view.current()->findTrack(1)->clips[0]->posTicks == bar,
+          "two clips moved a bar later together, each on its own track, one step");
+    check(sub.undo().ok && view.current()->findTrack(1)->clips[0]->posTicks == 0, "undo");
+    auto early = ui::moveClips(view.current()->tracks, {2, 3}, -2 * bar);
+    check(early.ops.size() == 2 && early.ops[0].payload["to"] == 0 && early.ops[1].payload["to"] == bar / 2,
+          "moved earlier than the start allows: the offset stops where the earliest reaches bar 1");
+    check(ui::moveClips(view.current()->tracks, {1}, -bar).ops.empty() &&
+              ui::moveClips(view.current()->tracks, {99}, bar).refusal == "Select a clip to move.",
+          "a clip already at the start moves nowhere; a missing one is refused");
     {
         ui::SessionState session(*store);
         ui::Selection chosen;
