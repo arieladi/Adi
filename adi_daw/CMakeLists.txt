@@ -222,7 +222,9 @@ add_library(adi_core STATIC
     # which is also why it is built on every ABI including the ones where the
     # runtime below is not.
     src/juce/pd_declarations.cpp
+    src/adi/transport_settings.cpp
     src/adi/store.cpp
+    src/adi/project_files.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
     src/adi/controller_maps.cpp
@@ -246,6 +248,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/main_loudness.cpp
     src/adi/engine/gain_stage.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/summing.cpp
@@ -505,6 +508,9 @@ add_test(NAME adi_tests COMMAND adi_tests)
 add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
+add_executable(adi_project_files_tests tests/test_project_files.cpp)
+target_link_libraries(adi_project_files_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_files_tests COMMAND adi_project_files_tests)
 
 add_executable(adi_project_bootstrap_tests tests/test_project_bootstrap.cpp)
 target_link_libraries(adi_project_bootstrap_tests PRIVATE adi_core adi_warnings)
@@ -711,6 +717,10 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 # device contract at every block size. No JUCE, so it runs on all seven
 # ABIs; the JUCE half (adi_play) only has to prove a device callback
 # reaches it.
+add_executable(adi_transport_settings_tests tests/test_transport_settings.cpp)
+target_link_libraries(adi_transport_settings_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_settings_tests COMMAND adi_transport_settings_tests)
+
 add_executable(adi_session_tests tests/test_session.cpp)
 target_link_libraries(adi_session_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_tests COMMAND adi_session_tests)
@@ -724,6 +734,14 @@ target_link_libraries(adi_analyser_taps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 
 # ADR-0163: the mixer strip in the graph.
+add_executable(adi_strip_meter_tests tests/test_strip_meter.cpp)
+target_link_libraries(adi_strip_meter_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_strip_meter_tests COMMAND adi_strip_meter_tests)
+
+add_executable(adi_main_loudness_tests tests/test_main_loudness.cpp)
+target_link_libraries(adi_main_loudness_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_main_loudness_tests COMMAND adi_main_loudness_tests)
+
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)

@@ -27,6 +27,7 @@
 
 #include "adi/engine/publisher.hpp"
 #include "adi/textproj.hpp"
+#include "adi/transport_settings.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -104,6 +105,7 @@ struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
     int sampleRate = 44100;
+    TransportSettings transport;
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.
     std::vector<textproj::Meter> meters;
