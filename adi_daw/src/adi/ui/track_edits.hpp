@@ -249,6 +249,44 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
 }
 // The selected track into a new group, which takes its place and is selected.
 inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) { return groupTracks(tracks, {id}); }
+// Live's Insert Audio Track and Insert MIDI Track (Ctrl/Cmd+T, Ctrl/Cmd+Shift+T; manual 18.2): a new
+// track right after the selected one, in the group that holds it, selected. The tracks after it move
+// down one place in the same batch, as `track.create` moves none. With nothing selected, or Main or
+// a return, it comes after the last track at the top. Named "# Audio" or "# MIDI": '#' shows its
+// number.
+inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected, bool midi) {
+    using namespace track_edits_detail;
+    const char *label = midi ? "Insert MIDI Track" : "Insert Audio Track";
+    TrackEdit edit;
+    std::int64_t id = 1;
+    for (const auto &k : tracks)
+        if (k)
+            id = std::max(id, k->id + 1);
+    const auto *t = find(tracks, selected);
+    if (t != nullptr && rank(*t) != 0)
+        t = nullptr;
+    const auto parent = t != nullptr ? t->parent : 0;
+    // What the group holds, the returns and Main aside: they keep their own places.
+    auto order = children(tracks, parent);
+    order.erase(std::remove_if(order.begin(), order.end(), [](const auto *k) { return rank(*k) != 0; }), order.end());
+    std::size_t at = order.size();
+    if (t != nullptr)
+        at = static_cast<std::size_t>(std::find(order.begin(), order.end(), t) - order.begin()) + 1;
+    edit.ops.push_back(op("track.create",
+                          {{"id", id},
+                           {"kind", midi ? "midi" : "audio"},
+                           {"name", midi ? "# MIDI" : "# Audio"},
+                           {"parent", parentValue(parent)},
+                           {"index", static_cast<std::int64_t>(at)}},
+                          label));
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
+        if (order[i]->indexInParent != place)
+            edit.ops.push_back(op("track.reorder", {{"id", order[i]->id}, {"index", place}}, label));
+    }
+    edit.select = id;
+    return edit;
+}
 // Where dragged tracks land: in `parent` (0 at the top), before its track `before`; with `before`
 // 0, after the rest it holds (before the returns and Main at the top).
 struct TrackDrop {
