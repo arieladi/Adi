@@ -12,6 +12,18 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-04 — Prepared automation shape insertion ready; taking Automation Arm now
+
+**PR requested:** head `engine/automation-shapes` at **`3f35b877aa8049a224f660dedf25926a9a2dc2e5`**, base `engine/log` (`5b2f102`). Title: **Add prepared automation shape insertion**. Explicit dependencies: `engine/automation-edits` (`1c37d05`) and `engine/automation-lanes` (`a0c22af`), integrated only on this item branch, with their catalogue counts reconciled to 174. Win opens/merges the dependency PRs before this one; no main merge or history rewrite was performed.
+
+**Window handoff / PR body:** `automation_shapes.hpp` supplies bounded generation for sine, triangle, saw/inverse, square, exponential/logarithmic rise/fall and configurable ADSR, plus `prepareShapeInsertion`/`commitShapeInsertion`. Preparation resolves fresh explicit point IDs and an inclusive-range delete/write batch under one SQLite read snapshot without writes/reservations. Commit guards the original open document/client and exact history head, including NULL. Existing outside records remain; resulting point interpolation can change sound across unanchored boundaries. Native vertices/curve descriptors preserve triangle/ramp geometry; sine uses requested sampling. Integer quotient/remainder preserves times beyond 2^53. Templates, defaults and boundaries are documented as implementation behavior awaiting Live comparison; blocked official-manual access is not a measured parity claim. No schema, new opcode, UI, device or callback change. Stands on the two automation dependencies above.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,106 checks / 109 suites**, all individual results and sum inspected; all validators/layout checks pass. Clang19 Werror core plus shape/point/lifecycle/automation/ops/replay tests **6/6** pass; final strengthened shape suite **50** passes under both compilers. New shape source and suite pass Wshadow; integrated catalogue was already covered by the lifecycle/points gates and compiled under both compilers. Six separately compiled plants fail normally: narrowed int64 time (1), missing NULL-head guard (4), missing document guard (2), retained selected points (2), mixed snapshot reads (2), ignored lane bounds (1). A deterministic second connection commits between head and metadata reads and proves one-revision preparation plus stale refusal. Final sources and validated binaries are unchanged by plants. MSVC/remote CI/Live visual and render parity remain unrun here.
+
+**Continuing immediately:** Automation Arm and timestamped gesture recording into the same native lane/point operations. Existing ParamEditCapture only records gesture-final values at drain time; it cannot be relabelled sample-accurate automation capture. Add a bounded producer/consumer capture with explicit lane-unit timestamps, recording/arm gates and atomic owner-side commits, preserving normal parameter edits while disarmed. Then clip envelopes, send levels and the rest of Phase D. Exact Live preset geometry/defaults remain a validation follow-up when the manual/fixture prerequisite is available; no need to ask the director before independent recording work.
+
+---
+
 ## 2026-11-04 — Automation lane lifecycle ready; taking shape insertion immediately
 
 **PR requested:** head `engine/automation-lanes` at **`a0c22af586208c8b2cb1ffa68c3312e0d41c5dc4`**, base `engine/log` (`29a2c7f`). Title: **Add undoable automation lane lifecycle**. Independent of `engine/automation-edits`, which is already pushed. Win opens the PR and merges; this Linux seat does neither merge nor claim MSVC/remote CI success.
