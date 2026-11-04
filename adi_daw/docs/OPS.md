@@ -170,10 +170,33 @@ produce a correct inverse, the op does not commit.
 
 ### 6.3 What state capture costs, and why it is bounded
 
-**Media is never captured.** Deleting a track unlinks `media_files` rows; it does
+**Media is never captured.** Deleting a track unlinks its media references; it does
 not delete audio. The inverse of "delete a 40-clip audio track" is the track row,
 its clips and its device state — a few hundred KB — not gigabytes. The
 content-addressed media pool (ADR-0005) is what makes this true.
+
+`track.delete {id}` captures all columns and SQLite storage types of the deleted
+track subtree and its transitive foreign-key children: clips and streams, lanes,
+mixer/summing rows, nested device chains, parameters, state hashes and panels.
+It also removes internal routing edges, automation owned by a deleted
+track/clip/device/edge, and their controller bindings. External hardware port ids
+remain hardware ids even when numerically equal to a deleted object. Surviving
+rows changed by `ON DELETE SET NULL` (for example aliases or VCA membership) are
+captured as before/after images. Media pool, shared state blobs and plug-in refs
+stay in place; the inverse carries references, not their bytes. Weak remark
+anchors remain, and can be shown as orphaned remarks.
+
+The paired inverse is `track.create` with the legacy descriptive fields plus an
+optional `contents` object (version 1, root id, ordered typed row images). Ordinary
+create and old captured inverses without `contents` remain supported. The full
+restore validates expected current rows and identities before writing, refuses
+collisions or changed surviving rows, restores under the journal transaction,
+and verifies the causal image and foreign keys. Composite keys and future keyed
+foreign-key children are included. Affected tables with triggers, generated
+columns, no declared primary key, or an affected `SET DEFAULT` reference refuse
+atomically until their effects have an explicit safe capture path; they are not
+silently dropped. Unknown extension/session rows without ownership foreign keys
+remain untouched. All capture and restoration runs on the owner thread.
 
 Where an inverse would still exceed a threshold (proposed: 4 MB), the op is
 marked `lossy_undo` and the user is told **before** it commits. Silently dropping
@@ -357,6 +380,10 @@ silent truncation in JSON, a non-issue in CBOR.
 | `track.setSoloDefeat` | e | S | sym | P2 |
 | `track.setArm` | e | G | sym | P0 |
 | `track.setMonitorMode` | e | G | sym | P0 |
+| `track.setRecordQuantize` | e | S | pair `track.restoreRecording` | P1 |
+| `track.setPlayQuantize` | e | S | pair `track.restoreRecording` | P1 |
+| `track.setKeepMonitoringLatency` | e | S | pair `track.restoreRecording` | P1 |
+| `track.restoreRecording` | e | S | cap | P1 |
 | `track.setInput` | e | G | sym | P0 |
 | `track.setTimeBase` | e | S | sym | P0 |
 | `track.setAutomationMode` | e | N | sym | P2 |
@@ -369,6 +396,19 @@ silent truncation in JSON, a non-issue in CBOR.
 | `lane.rename` | e | N | sym | P1 |
 | `lane.setMute` | e | S | sym | P1 |
 | `lane.setCompTarget` | e | S | sym | P1 |
+
+N31 per-track policy (schema 1.14): track.setRecordQuantize {id,on,grid?},
+track.setPlayQuantize {id,on,grid?,forgivenessMs?}, and
+track.setKeepMonitoringLatency {id,on}. Grid is 1/4, 1/8, 1/16 or 1/32;
+omitted/null grid retains the selected grid while on=false selects Free.
+Play-Q forgiveness is explicit 0..1000 ms, initially zero. Each inverse is
+track.restoreRecording {id,row?}: a complete typed prior optional row, including
+unknown fields/BLOBs; omitted/null row restores absence. No coalescing discards
+those captures. Snapshot TrackNode.recording exposes every field. A caller's
+new-track batch appends trackRecordingDefaults(id, record.quantize choice,
+keepMonitoringLatency) with values already read from settings; replay never
+reads app preferences. The recording writer and live Play-Q scheduling are
+separate work, not claimed implemented by these policy ops.
 
 `track.setRole {id, role?}` assigns `kick`, `bass`, `vocal` or `reference`;
 omission or explicit null clears it. It targets an audio/MIDI/instrument/group/
@@ -392,9 +432,9 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.detachAudio` | e | G | cap | P0 |
 | `clip.move` | e | S | sym | P0 |
 | `clip.resize` | e | S | sym | P0 |
-| `clip.split` | e | S | pair `clip.join` | P0 |
-| `clip.join` | e | S | cap | P1 |
-| `clip.duplicate` | e | S | pair `clip.delete` | P0 |
+| `clip.split` | e | G | pair `clip.join` | P0 |
+| `clip.join` | e | G | cap | P1 |
+| `clip.duplicate` | e | G | pair `clip.delete` | P0 |
 | `clip.setName` | e | N | sym | P1 |
 | `clip.setColor` | e | N | sym | P1 |
 | `clip.setMute` | e | S | sym | P0 |
@@ -402,10 +442,48 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `clip.setLoop` | e | S | sym | P0 |
 | `clip.setContentOffset` | e | S | sym | P1 |
 | `clip.setFade` | e | S | sym | P0 |
+| `clip.setFades` | e | S | cap | P0 |
+| `arranger.splice` | e | G | cap | P0 |
 | `clip.setAlias` | e | S | sym | P2 |
 | `clip.makeUnique` | e | S | cap | P2 |
 | `clip.consolidate` | e | S | cap | P2 |
 | `clip.setLane` | e | S | sym | P1 |
+
+The clip.setFades payload is {id,in?:{ticks?,curve?,tension?},out?:{...}}.
+It is audio-only; ticks are nonnegative and no longer than the clip's musical
+span, curve is 0..5, tension is finite [-1,1] or null for legacy arithmetic.
+Each selected side must set at least one known field. Both sides are one edit;
+its inverse captures native fields and the full typed details row or absence.
+
+The clip.split op and its captured inverse clip.join take {id,changes}:
+full typed before/after rows, never ambient ID allocation. The clip.duplicate
+op creates only one captured clip and its children; its inverse is clip.delete.
+Delete captures full native rows, opaque children and external alias links.
+The arranger.splice op applies arrangement-only captured row deltas; its inverse
+swaps them. Project changes are limited to length_ticks. Before-image mismatch,
+unknown/generated columns or uncaptured foreign-key effects refuse the edit.
+UNIQUE map positions and automation ordinals move in safe order; restore creates
+parents before children, including arranger sections and tuning bindings.
+Composite key_map_degrees targets encode id as {key_map_id,degree}; existing
+single-key packets keep their integer id. Every field of a composite FK is
+matched together. Replay uses captured values without evaluating defaults.
+Delete Time uses the same captured arranger.splice packet, including an
+optional saved-loop before/after pair. Its preparation preserves the old
+end context, full tuning children and both global automation curve domains.
+Whole-Set Copy Time captures a value without journaling. Cut/Paste/Duplicate
+Time use arranger.splice with source-relative timeline data remapped to captured
+native ids. Paste inserts the source tempo integral for linear objects, carries
+source map/automation context into the gap and restores the destination context
+at its end. Root map events may be overwritten at zero with exact typed undo.
+Clipboard tuning/lane/media contracts and the captured journal head are checked.
+These commands add no opcode; their recorded requests replay independently of
+clipboard or window state.
+
+Window callers use clip_commands.hpp and material_commands.hpp, rather
+than assembling row images. Prepared edits carry ADR-0153's expected head,
+including the empty root, and must be committed with their captured options.
+See [the editing API](ENGINE-EDIT-COMMANDS.md) for units, thread ownership,
+supported commands and explicit refusals.
 
 ### 9.4 Audio clips and warping
 
@@ -423,6 +501,35 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `audioClip.setFormant` | e | S | sym | P2 |
 | `audioClip.setReverse` | e | S | sym | P1 |
 | `audioClip.setChannelMode` | e | S | sym | P2 |
+
+**Warp material edits (N17).** The captured clip/range/Time producers also
+accept attached Warp audio. They preserve AWRP/source windows and capture
+source musical fade domains in clip_warp_fade_domains (schema 1.13), so Split
+retains the original curve on both pieces with no new internal edge fade.
+clip.setFades clears the selected side's retained domain and captures its
+complete typed row in the inverse, alongside the existing nanosecond shape.
+
+**Captured Warp import (N17).** `clip_edit::prepareImportAudio` with
+`ImportOptions::warp` analyzes the source off the callback, then captures
+`audio_clips.warp_markers` (AWRP), source trim, mode and musical clip length
+inside the existing `clip.duplicate` row image. `commitMaterial` groups that
+image with its optional `media.import`/`media.relink` as one undo step. Undo,
+redo and replay restore the literal marker bytes; they do not rerun detection.
+The options and six modes are described in ENGINE-WARP.md. This producer
+does not imply that the individual catalogue Warp setters above are applied.
+Bounce explicitly sets Warp off before preparing its import.
+
+**Existing clean clip's Warp button (N17).** Call
+`clip_edit::prepareSetWarp(store, clipId, WarpOptions, referenceRate)` off the
+callback, retaining the document generation, then `commitPrepared`.
+The producer captures an `arranger.splice` full-row edit of the existing clip,
+its audio source and playback/fade metadata; no file analysis runs in apply,
+undo or redo. Enable captures trim/map/mode and musical duration; disable
+captures the actual physical source duration/pins. Cancellation, changed head
+or changed source bytes rejects commit. This clean-import API refuses edited
+source offsets, loops, aliases, End markers, reverse/pitch, trimmed extents
+and unknown future marker rewrites (ENGINE-WARP.md). Individual catalogue
+Warp setters remain separate from this captured producer.
 
 ### 9.5 Notes and expression
 
@@ -448,6 +555,16 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `cc.delete` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
 
+N34: `note.setMute {clip,note,muted}` sets the note's active flag as
+`active = !muted`. `note` is its exact uint64 ANOT id, not a row index;
+zero/unassigned, absent and duplicate targets are refused. The MIDI clip and
+its canonical notes stream must exist. Undo restores the old muted bit.
+The handler patches only bit0 in the original record stride, preserving all
+other fields/flags, unknown future tails, header and trailing bytes, row id and
+other streams. An unreadable stream is refused without an empty/lossy rewrite.
+After committing, refresh Session and N32's Clip View read. Deactivating a held
+note releases it on the next published playback callback.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
@@ -467,6 +584,8 @@ schema. The snapshot reads null on older schemas and preserves native role text
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
+| `pluginRef.register` | e | N | pair `pluginRef.unregister` | P1 |
+| `pluginRef.unregister` | e | N | cap | P1 |
 | `device.insert` | e | G | pair `device.remove` | P0 |
 | `device.remove` | e | G | cap | P0 |
 | `device.move` | e | G | sym | P0 |
@@ -491,6 +610,47 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `macro.unmap` | e | S | cap | P2 |
 | `macro.setRange` | e | S | sym | P2 |
 
+N7's `ParamOps::uiEvent` emits the existing `device.setParam` requests with
+the same first-touch opener and normalization as a plug-in's own edit capture.
+Commit each completed gesture's batch as one transaction; unbracketed UI edits
+finish on the ordinary drain timer. Session-connected UI input overrides its
+device automation lane before gesture completion, without an extra op. Runtime
+overrides resume through Session's existing Re-Enable API. The UI and plug-in
+captures have separate producers. `docs/ENGINE-UI-PARAM-CAPTURE.md` defines the
+commit, lifetime, refusal and delayed-echo contract. No new vocabulary/schema.
+
+Device clipboard (N18): readDeviceCopy(Store&,id), in device_copy.hpp,
+returns the registered device.remove inverse as a device.insert payload, plus
+the referenced plug-in metadata. It is a read on the Store's owner, including
+read-only projects: no live plug-in call, state-byte copy or op. Stored params,
+state hashes, panel order, expression route, nullable rack kind and remote host
+reference are retained. Native order/latency/parameter flags remain signed
+64-bit; device.insert accepts optional rackKind and remoteHost (null clears).
+
+prepareDevicePaste captures an ordered batch with a caller-supplied new ID,
+destination chain and optional before-device. It normalizes that chain's
+integer ordinals in its existing (ord,id) order, inserts immediately before the
+selection (or appends), and captures every move. One undo restores exact prior
+ordinals, including legacy ties and large values. Paste checks the copied
+plug-in's format/UID/shell identity and remote endpoint identity, so ID reuse
+after history changes cannot select a different plug-in or host; labels and
+binary relocation remain compatible. commitDevicePaste preserves
+the captured expected head, including a null root. Keep the document generation
+with an asynchronous result; cross-project state/ref import and nested rack
+images are not supplied and return explicit refusals. The reader still exposes
+a rack's root metadata and hasNestedChains. Flush pending host edit capture
+before reading if the clipboard should include that gesture.
+
+The browser calls prepareBuiltinInsert(store, uid, track, beforeDevice) then
+commitBuiltinInsert with its captured expected head. Preparation allocates all
+IDs and captures the complete typed plugin_refs row (including future columns
+and BLOBs) in pluginRef.register's {id,row}; unregister takes {id} and captures
+that full row for its inverse. A used reference cannot be unregistered (FK).
+The batch creates a reference/track chain only when absent, orders the device
+before the selected device or at the chain end, and commits one undo group.
+No scanning, filesystem access or ambient ID allocation occurs in handlers.
+
+
 ### 9.8 Routing and mixer
 
 | Op | S | E | Inv | P |
@@ -504,6 +664,9 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `routing.reorder` | e | S | sym | P1 |
 | `mixer.setVolume` | e | S | sym, coalescable | P0 |
 | `mixer.setPan` | e | S | sym, coalescable | P0 |
+| `mixer.setPanMode` | e | S | cap, sym | P1 |
+| `mixer.setPanLeft` | e | S | cap, sym, coalescable | P1 |
+| `mixer.setPanRight` | e | S | cap, sym, coalescable | P1 |
 | `mixer.setWidth` | e | S | sym, coalescable | P2 |
 | `mixer.setInputGain` | e | S | sym, coalescable | P1 |
 | `mixer.setPhaseInvert` | e | S | sym | P1 |
@@ -514,14 +677,30 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `mixer.setPanLaw` | e | S | sym | P2 |
 | `mixer.setVcaGroup` | e | S | sym | P2 |
 
+N12: `mixer.setPanMode {id,mode}` selects `"stereo"` or `"split"` on an
+existing mixer strip. `mixer.setPanLeft {id,pan}` and
+`mixer.setPanRight {id,pan}` position each input of the stereo pair, finite
+-1..+1. Values persist while dormant in the other mode; existing `mixer.setPan`
+is dormant in split mode. The optional additive settings row starts at stereo,
+left -1, right +1. Inverses capture prior scalar values and first-touch absence
+(`_erase`); mode inverses use `_restore` to retain an unknown future mode exactly.
+Those bookkeeping fields are for replay, not window controls. All updates retain
+unrelated settings columns. Refresh Session and Snapshot after committing. Track
+lanes `panLeft` and `panRight` use real -1..+1 units and the existing override /
+Re-Enable Automation path. The window does not implement the panning matrix.
+
 ### 9.9 Markers, arranger, snapshots
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
-| `marker.create` | e | N | pair `marker.delete` | P1 |
-| `marker.delete` | e | N | cap | P1 |
-| `marker.move` | e | N | sym | P1 |
-| `marker.rename` | e | N | sym | P1 |
+| `marker.create` | e | S | pair `marker.delete` | P1 |
+| `marker.delete` | e | S | cap | P1 |
+| `marker.move` | e | S | sym, coalescable | P1 |
+| `marker.rename` | e | S | sym | P1 |
+| `marker.setColor` | e | S | cap | P1 |
+| `marker.resize` | e | S | cap | P1 |
+| `marker.setNote` | e | S | cap | P1 |
+| `marker.setPrompt` | e | S | cap | P1 |
 | `arranger.createSection` | e | N | pair `deleteSection` | P2 |
 | `arranger.deleteSection` | e | N | cap | P2 |
 | `arranger.resizeSection` | e | N | sym | P2 |
@@ -531,6 +710,23 @@ schema. The snapshot reads null on older schemas and preserves native role text
 | `snapshot.recall` | e | S | cap | P2 |
 | `snapshot.delete` | e | N | cap | P2 |
 | `snapshot.rename` | e | N | sym | P2 |
+
+`marker.create {id,pos,time_base?,name?,kind?,length?,color?,note?,prompt?}`
+creates a locator or cycle marker. Time base defaults to musical (0, ticks),
+linear (1) uses nanoseconds. `pos` and `length` stay in that base's units.
+Kinds are position (default), cycle, chapter and sync. A supplied length defaults
+the kind to cycle; cycles require positive length. `marker.move {id,pos}` keeps
+its base, and `marker.resize {id,length}` resizes cycles. `marker.rename {id,name}`
+and `marker.setColor {id,color?}` edit identity/colour (omit colour to clear;
+otherwise a Live palette index 0..69). Notes/prompts use `{id,text}`, including
+an empty string to clear. Prompts are literal stored data, never executed here.
+All changes rebuild the immutable marker snapshot, without rebuilding audio.
+
+Delete's inverse captures the complete marker and optional `marker_details` row,
+including unknown columns and typed BLOBs. It never overwrites an existing id.
+Colour/resize inverse updates the row in place, retaining child rows; note/prompt
+undo restores details presence and values. A batch shares one undo transaction,
+and a later error rolls back rows and audit data together.
 
 ### 9.10 Media
 
@@ -613,7 +809,7 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.play` | t | N | — | P0 |
 | `transport.stop` | t | N | — | P0 |
 | `transport.seek` | t | N | — | P0 |
-| `transport.setLoop` | t | N | — | P0 |
+| `transport.setLoop` | t | S | — | P0 |
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
 | `controller.bind` | e | N | cap | P1 |
@@ -625,6 +821,20 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `extension.write` | e | N | cap | P1 |
 | `extension.delete` | e | N | cap | P1 |
 
+`transport.setLoop` stores `{on, start?, end?}` in the session layer. Bounds
+are musical ticks, nonnegative start and end strictly after start. Omitted bounds
+retain the last window (initially four 4/4 bars from zero). `transport.setMetronome`
+stores `{on}` there. Both remain ephemeral performance ops: journaled for audit,
+excluded from undo and musical digests. No inverse is built. A failed batch rolls
+back session metadata along with its ops. Their Snapshot impact asks the caller
+to refresh ProjectView and Session after commit. Snapshot `transport` carries the
+saved values; Session applies loop changes on the driver at the next callback,
+and renders the metronome only while playing, aligned to the graph's actual
+compensated output latency, including loop wraps. Default output is the first stereo
+pair, outside Main's device/fader chain; Cue Out selection follows N23. Offline
+export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
+loop/click choices do not change rendered material.
+
 `controller.bind` (ADR-0195 d3) takes `{id, binding}`; binding names all
 14 non-id columns of `controller_maps`, including explicit nulls. It inserts
 or replaces that project row and captures the previous row for one-step undo.
@@ -635,6 +845,19 @@ lane to its owner and parameter, requires the port Remote role, and refuses
 the current Focus Dial CC before constructing an op. Runtime dispatch checks
 the live reservation first; a project binding that collides is reported as
 shadowed and cannot fire. Hardware-scope map/unmap remain separate planned ops.
+
+N10 controller Learn can address a mixer control before it has an automation
+lane: learnControllerTarget(bindingId, kind, targetId, paramRef, sourceCC,
+observedValues, policy, error) returns one resolved controller.bind request.
+It never creates a lane or reads a project, device or app setting. The existing
+lane-based learnController resolves its owner/param_ref and calls the same
+producer. Remote permission, Focus Dial reservation, source/channel/CC,
+absolute/relative detection and takeover use that explicit policy snapshot.
+Native target kinds and positive IDs are validated by the producer; the commit
+also verifies current target existence. A caller running an asynchronous Learn
+session must keep its document generation and expected-head guard, as for other
+producers. The op payload stays unchanged: captured binding fields only, no
+machine policy or display-name resolution during replay. No schema/opcode change.
 
 ### 9.12 Remarks (ADR-0131)
 
@@ -663,7 +886,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**173 ops** — 66 P0, 55 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**188 ops** — 68 P0, 68 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

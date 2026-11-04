@@ -50,7 +50,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1009   # schema 1.9 (project default, ADR-0203 d18); SPEC §3.1 and the DDL say the same
+SPEC_USER_VERSION = 1014   # schema 1.14 (track recording options); SPEC §3.1 and the DDL agree
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent
@@ -606,18 +606,24 @@ def main() -> int:
     # the tables held 174. The same class of drift had gone unnoticed here: the
     # README said 38 tables through two schema changes, and 37 ADRs through
     # eleven. A number in prose that nothing checks is a number that is wrong.
+    #
+    # The table count left the README on 2026-11-03 (the director's ruling).
+    # Checking it here had made every PR that adds a table red until win
+    # re-typed the number, and parallel branches then conflicted on that one
+    # line; six engine PRs in one day. The count lives in schema.sql and in
+    # the Master Reference, which is generated from it. The ADR count stays:
+    # ADR numbers are win's alone, so nothing races on it.
     print("[7] README's counts match reality")
     readme = (HERE.parent / "README.md").read_text(encoding="utf-8")
     decisions = (HERE.parent / "docs" / "DECISIONS.md").read_text(encoding="utf-8")
 
     real_tables = len(re.findall(r"^CREATE TABLE ", SCHEMA.read_text(encoding="utf-8"), re.M))
-    m = re.search(r"verified on every change\. (\d+) tables", readme)
-    if not m:
-        fail("README no longer states a table count where this check looks")
-    elif int(m.group(1)) != real_tables:
-        fail(f"README says {m.group(1)} tables, schema.sql has {real_tables}")
+    m = re.search(r"verified on every change\.[^|\n]*?(\d+) tables", readme)
+    if m:
+        fail(f"README states a table count again ({m.group(1)}); the count is schema.sql's, "
+             f"not the README's, since 2026-11-03 (it has {real_tables})")
     else:
-        ok(f"README and schema.sql agree: {real_tables} tables")
+        ok(f"README states no table count; schema.sql has {real_tables}")
 
     real_adrs = len(re.findall(r"^## ADR-", decisions, re.M))
     m = re.search(r"Decision log\. Append-only\. (\d+) entries", readme)
