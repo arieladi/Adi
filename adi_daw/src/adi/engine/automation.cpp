@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <cmath>
 #include <span>
+#include <map>
+#include <set>
 
 namespace adi::engine {
 namespace {
@@ -41,7 +43,7 @@ double segmentValue(const std::vector<PlacedPoint>& p, std::size_t i, std::int64
     const PlacedPoint& a = p[i - 1];
     const PlacedPoint& b = p[i];
     const double x = static_cast<double>(sample - a.sample) / static_cast<double>(b.sample - a.sample);
-    return curveValue(a.value, b.value, x, a.curve, a.tension);
+    return curveSliceValue(a.value, b.value, x, a.curve, a.tension,a.slice);
 }
 
 }  // namespace
@@ -88,6 +90,11 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
         if (d.clipId)
             problems_.push_back(laneName(d.laneId) + ": clip envelope (clips#" + std::to_string(*d.clipId) +
                                 ") not played yet");
+
+    std::map<std::int64_t,std::map<std::int64_t,const rows::AutomationSegmentRange*>> rangeIndex;
+    std::set<std::int64_t> duplicateRanges;
+    for(const auto& range:model.automationSegmentRanges)
+        if(!rangeIndex[range.dataId].emplace(range.recordIndex,&range).second)duplicateRanges.insert(range.dataId);
 
     for (const rows::AutomationLane& row : model.automationLanes) {
         const std::string name = laneName(row.id);
@@ -148,8 +155,29 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
             placed.value = rec->value;
             placed.tension = static_cast<double>(rec->tension);
             placed.curve = rec->curve;
+            const rows::AutomationSegmentRange* range=nullptr;
+            if(const auto parent=rangeIndex.find(data->id);parent!=rangeIndex.end()) {
+                const auto found=parent->second.find(static_cast<std::int64_t>(k));
+                if(found!=parent->second.end())range=found->second;
+            }
+            if(range) {
+                if(range->clipId || !std::isfinite(range->progressBegin) || !std::isfinite(range->progressEnd) ||
+                   !std::isfinite(range->sourceFirst) || !std::isfinite(range->sourceLast) ||
+                   range->progressBegin<0 || range->progressEnd>1 || range->progressEnd<=range->progressBegin) {
+                    refused=at+"invalid curve range";break;
+                }
+                auto slice=std::make_shared<const CurveSlice>(CurveSlice{range->progressBegin,range->progressEnd,range->sourceFirst,range->sourceLast});
+                placed.slice=slice.get();slices_.push_back(std::move(slice));
+            }
             points.push_back(placed);
         }
+        if(duplicateRanges.contains(data->id))refused="duplicate curve range";
+        if(const auto parent=rangeIndex.find(data->id);parent!=rangeIndex.end())
+            for(const auto& [record,range]:parent->second) {
+                (void)range;
+                if(record<0 || static_cast<std::uint64_t>(record)>=reader.count())
+                    refused="curve range refers to a missing record";
+            }
         if (!refused.empty()) {
             problems_.push_back(name + ": refused: " + refused);
             continue;
