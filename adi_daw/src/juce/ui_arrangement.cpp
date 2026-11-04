@@ -1294,8 +1294,9 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         }
         if (split)
             resizeId = t->id;
-        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.foot()) {
+        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.main) {
             moveId_ = t->id;
+            movingReturn_ = rows[pressed].place.ret;
             // Held still at the lanes' edge, the drag repeats, so they keep scrolling.
             beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         }
@@ -1314,6 +1315,46 @@ void TrackHeaderList::mouseMove(const juce::MouseEvent &e) {
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
     const bool split = at < rows.size() && e.y >= top + view.geometry.heightFor(rows[at].track->id) - kSplitLine;
     setMouseCursor(split ? juce::MouseCursor::UpDownResizeCursor : juce::MouseCursor::NormalCursor);
+}
+TrackHeaderList::Drop TrackHeaderList::returnDropAt(int y) const {
+    const auto &reader = view.reader();
+    const auto rows = view.geometry.rows(reader);
+    const auto foot = view.geometry.footStart(rows);
+    Drop drop;
+    // The returns' rows, top to bottom, where the foot draws them.
+    int top = view.geometry.footTop(reader);
+    drop.y = top;
+    bool first = true;
+    for (auto i = foot; i < rows.size(); ++i) {
+        const auto row = rows[i];
+        const int h = view.geometry.heightFor(row.track->id);
+        if (!row.place.ret) {
+            top += h;
+            continue;
+        }
+        if (first && y < top) {
+            drop.to = {0, row.track->id};
+            return drop;
+        }
+        first = false;
+        if (y < top + h / 2) {
+            drop.to = {0, row.track->id};
+            drop.y = top;
+            return drop;
+        }
+        top += h;
+        drop.to = {0, 0};
+        drop.y = top;
+        // The next return, if one follows, is the one it goes before.
+        for (auto j = i + 1; j < rows.size(); ++j)
+            if (rows[j].place.ret) {
+                drop.to = {0, rows[j].track->id};
+                break;
+            }
+        if (y < top)
+            return drop;
+    }
+    return drop;
 }
 TrackHeaderList::Drop TrackHeaderList::dropAt(int y) const {
     const auto &reader = view.reader();
@@ -1404,10 +1445,10 @@ void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
         // tracks"; the line shows where they would land.
         moving_ = true;
         selectOnUp_ = false;
-        // At the lanes' top or foot they scroll, and the line follows.
-        if (view.edgeScroll(0, e.y, false))
+        // At the lanes' top or foot they scroll, and the line follows; the returns stand still.
+        if (!movingReturn_ && view.edgeScroll(0, e.y, false))
             view.frame(true);
-        drop_ = dropAt(e.y);
+        drop_ = movingReturn_ ? returnDropAt(e.y) : dropAt(e.y);
         repaint();
     }
 }
@@ -1426,7 +1467,7 @@ void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
     // After the window's state is kept, which clears the Status Bar: a refusal stays on it.
     if (moved) {
         repaint();
-        view.root.moveTracks(dragged, dropAt(e.y).to);
+        view.root.moveTracks(dragged, (movingReturn_ ? returnDropAt(e.y) : dropAt(e.y)).to);
     }
 }
 void TrackHeaderList::mouseWheelMove(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {

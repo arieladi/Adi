@@ -1583,6 +1583,52 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
           "R shows them again; I-O hides the In/Out");
     root.strip.inOut.onClick();
     check(root.state().inOut && root.strip.inOut.getToggleState(), "and shows it again");
+    // Live drags the returns among themselves, at the foot: B above A. Their letters and the sends
+    // follow their places.
+    {
+        root.mark(DirtySet::All);
+        root.frame();
+        const juce::Point<float> from{20.f, static_cast<float>(laneTop(root, 6) + 8)};
+        const juce::Point<float> to{20.f, static_cast<float>(laneTop(root, 5) + 3)};
+        headers.mouseDown(pressAt(headers, from));
+        headers.mouseDrag(dragAt(headers, from, to));
+        const auto shown = headers.drop();
+        headers.mouseUp(dragAt(headers, from, to));
+        root.mark(DirtySet::All);
+        root.frame();
+        auto place = [&root](std::int64_t id) {
+            const auto lanesNow = laneOrder(root);
+            return std::find(lanesNow.begin(), lanesNow.end(), id) - lanesNow.begin();
+        };
+        // The first track row on screen with its sends (A, B and the C inserted above): they
+        // follow the returns' order.
+        auto firstSend = [&root]() -> std::int64_t {
+            for (const auto &strip : root.mixer.strips())
+                if (strip->isVisible() && strip->track() <= 4 && !strip->sendKnobs().empty())
+                    return strip->sendsTo(0);
+            return 0;
+        };
+        auto *moved = rowOf(root.mixer, 6);
+        check(shown && shown->to.parent == 0 && shown->to.before == 5 && place(6) < place(5) && place(5) < place(7) &&
+                  submitter.nextUndo()->label == "Move Track" && moved != nullptr &&
+                  moved->active.getButtonText() == "A" && firstSend() == 6,
+              "B Delay's title dragged above A Reverb's: first of the returns, lettered A, its send first; Main last");
+        render("adi-return-move.png");
+        root.command(AppCommands::Undo);
+        root.mark(DirtySet::All);
+        root.frame();
+        check(place(5) < place(6) && firstSend() == 5, "undo puts A Reverb first again");
+        // A return dragged up over the tracks stays among the returns, first.
+        headers.mouseDown(pressAt(headers, from));
+        headers.mouseDrag(dragAt(headers, from, {20.f, 10.f}));
+        const auto over = headers.drop();
+        headers.mouseUp(dragAt(headers, from, {20.f, 10.f}));
+        root.frame();
+        check(over && over->to.before == 5 && place(6) < place(5) && place(6) > place(4),
+              "B Delay dragged over the tracks: still a return, first of them");
+        root.command(AppCommands::Undo);
+        root.frame();
+    }
 }
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it

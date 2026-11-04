@@ -709,10 +709,36 @@ void groupAndUngroupAsBatches() {
         check(sub.undo().ok && order() == before, "undo");
     }
     check(ui::moveTracks(view.current()->tracks, {6}, {6, 0}).refusal == "A group can't go inside itself." &&
-              ui::moveTracks(view.current()->tracks, {1}, {0, 2}).refusal == "Main and the return tracks stay at the foot." &&
+              ui::moveTracks(view.current()->tracks, {1}, {0, 2}).refusal == "Main stays last." &&
               ui::moveTracks(view.current()->tracks, {2}, {4, 0}).refusal == "Tracks go into a group track only." &&
               ui::moveTracks(view.current()->tracks, {}, {0, 0}).refusal == "Select a track to move.",
           "a group into itself, Main, a track that is not a group and nothing are refused, with the reason");
+
+    // The returns are reordered among themselves, at the foot (Live drags them as it drags tracks).
+    bool returnsMade = true;
+    for (const auto& [id, name] : {std::pair{20, "A Return"}, std::pair{21, "B Return"}}) {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", id}, {"kind", "return"}, {"name", name}, {"index", id}};
+        r.label = "Insert Return Track";
+        returnsMade = sub.submit(std::move(r)).ok && returnsMade;
+    }
+    const Order withReturns{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {20, 0}, {21, 0}, {1, 0}};
+    check(returnsMade && order() == withReturns, "two returns, after the tracks, before Main");
+    auto swapped = ui::moveTracks(view.current()->tracks, {21}, {0, 20});
+    check(swapped.refusal.empty() && sub.submit(std::move(swapped.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {21, 0}, {20, 0}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "B dragged above A: first of the returns, one step; the tracks and Main stay");
+    check(sub.undo().ok && order() == withReturns, "undo");
+    auto last = ui::moveTracks(view.current()->tracks, {20}, {0, 0});
+    check(sub.submit(std::move(last.ops)).ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {21, 0}, {20, 0}, {1, 0}},
+          "A dragged below the last return: after B, before Main");
+    check(sub.undo().ok && ui::moveTracks(view.current()->tracks, {21}, {0, 0}).ops.empty(),
+          "B dropped where it stands: no step");
+    check(ui::moveTracks(view.current()->tracks, {20, 2}, {0, 0}).refusal == "Return tracks move among the returns only." &&
+              ui::moveTracks(view.current()->tracks, {20}, {6, 0}).refusal == "Return tracks move among the returns only.",
+          "a return with a track, or into a group, is refused, with the reason");
+    check(sub.undo().ok && sub.undo().ok && order() == before, "the returns undone");
 
     // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
     OpRequest solo;

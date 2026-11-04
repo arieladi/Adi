@@ -94,6 +94,10 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
         std::int64_t into = 0;
     };
     Drop dropAt(int y) const;
+    // Where a dragged return would land: among the returns at the foot, before the one under the
+    // mouse's upper half or after the one under its lower half; over the tracks, before the first;
+    // over Main or below, after the last.
+    Drop returnDropAt(int y) const;
     // The drop shown while tracks are dragged; empty otherwise.
     std::optional<Drop> drop() const { return moving_ ? std::optional<Drop>(drop_) : std::nullopt; }
 
@@ -113,7 +117,7 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     // is moving; whether the press, on one of several selected tracks, selects it alone on release
     // without a drag (Live keeps the selection for the drag).
     std::int64_t moveId_ = 0;
-    bool moving_ = false, selectOnUp_ = false;
+    bool moving_ = false, selectOnUp_ = false, movingReturn_ = false;
     Drop drop_;
 };
 // What a screen reader finds for one clip on screen (UI-ARCHITECTURE §6). The
