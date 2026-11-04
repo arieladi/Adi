@@ -10,6 +10,8 @@
 #include "adi/audio/io_audit.hpp"
 
 #include <algorithm>
+#include <numbers>
+#include <limits>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -471,13 +473,23 @@ bool Session::rebuild() {
         error_ = "no project loaded";
         return false;
     }
+    (void)mainLoudness_.prepare(spec_.sampleRate,spec_.channels);
     auto timing = std::make_unique<TimingView>();
     timing->sampleRate = spec_.sampleRate;
+    timing->settings=spec_.performanceState ? transportSettings_ : TransportSettings{};
     // Same construction as MidiClips: TempoMap integrates STEP tempos, even
     // when a stored event requests a ramp. Do not create a second converter.
     for (const auto& e : model_.tempo)
         timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
     if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
+    auto loopSample=[&](std::int64_t ticks){
+        const long double sample=static_cast<long double>(timing->tempo.ticksToSeconds(ticks))*spec_.sampleRate;
+        return sample>=static_cast<long double>(std::numeric_limits<std::int64_t>::max()) ? std::numeric_limits<std::int64_t>::max() : static_cast<std::int64_t>(std::llround(sample));
+    };
+    timing->loopBegin=loopSample(transportSettings_.loopStartTicks);
+    timing->loopEnd=loopSample(transportSettings_.loopEndTicks);
+    if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())
+        timing->loopEnd=timing->loopBegin+1; // a valid sub-sample tick window plays one frame
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
@@ -555,6 +567,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
     stats_ = Stats{};
     model_ = rows::readModel(store);
+    transportSettings_=readTransportSettings(store);
     clipProject_ = readClipProject(store, model_);
     loaded_ = true;
     resolveNewRows(store);
@@ -593,6 +606,7 @@ bool Session::refresh(const Store& store) {
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     model_ = rows::readModel(store);
+    transportSettings_=readTransportSettings(store);
     // ADR-0162: an automated strip value that changed is overridden. Compared
     // BEFORE the rebuild, so the new graph already plays the manual value.
     if (stripAutomation_) {
@@ -753,6 +767,7 @@ bool Session::reenableAutomation(std::int64_t laneId) {
 
 bool Session::tick(std::int64_t nowMs) {
     timing_.collect();
+    mainLoudness_.collect();
     return devices_.tick(nowMs);
 }
 
@@ -823,7 +838,13 @@ void Session::process(const AudioIo& io) noexcept {
     audio::CallbackScope callback;
     SnapshotPublisher<TimingView>::AudioRead timing(timing_);
     TransportInfo info;
-    if (timing.valid()) info = timing->at(transport_);
+    if (timing.valid()) {
+        if(timing->settings.hasLoop && (!loopApplied_ || loopOn_!=timing->settings.loopEnabled || loopBegin_!=timing->loopBegin || loopEnd_!=timing->loopEnd)) {
+            loopApplied_=true;loopOn_=timing->settings.loopEnabled;loopBegin_=timing->loopBegin;loopEnd_=timing->loopEnd;
+            transport_.loop(loopBegin_,loopEnd_,loopOn_);
+        }
+        info = timing->at(transport_);
+    }
     else {
         info.playing = transport_.playing();
         info.timelineSample = transport_.sampleAt(0);
@@ -831,7 +852,44 @@ void Session::process(const AudioIo& io) noexcept {
     AudioIo block = io;
     block.transport = &info;
     graph_.process(block);
+    mainLoudness_.process(block);
+    if(timing.valid())renderMetronome(*timing.get(),block);
     transport_.advance(io.frames);
+}
+
+void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexcept {
+    if(!timing.settings.metronome || !transport_.playing()) {
+        clickEnvelope_=0;clickWasPlaying_=false;return;
+    }
+    const auto& tempo=timing.tempo;const double rate=timing.sampleRate;
+    const auto latency=graph_.renderedLatency();
+    const double decay=std::exp(-1.0/(0.004*rate));
+    for(std::int32_t i=0;i<io.frames;++i) {
+        const auto sample=transport_.delayedSample(i,latency);
+        if(sample<0){clickWasPlaying_=false;clickEnvelope_=0;continue;}
+        const auto tick=tempo.secondsToTicks(static_cast<double>(sample)/rate);
+        std::int64_t signature=0,numerator=4,denominator=4;
+        for(const auto& meter:timing.signatures)if(meter.posTicks<=tick){signature=meter.posTicks;numerator=meter.numerator;denominator=meter.denominator;}else break;
+        const auto beatTicks=textproj::kWhole/denominator;
+        const auto beat=(tick-signature)/beatTicks;
+        const auto beatTick=signature+beat*beatTicks;
+        const double boundary=tempo.ticksToSeconds(beatTick)*rate;
+        const bool adjacent=clickWasPlaying_ && sample>0 && clickLastSample_==sample-1;
+        const bool atBoundary=std::abs(static_cast<double>(sample)-boundary)<=1.01;
+        if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary)) {
+            clickPhase_=0;clickEnvelope_=0.2;clickFrequency_=beat%numerator==0?1760:880;
+        }
+        const double click=clickEnvelope_*std::sin(clickPhase_);
+        clickPhase_+=2*std::numbers::pi*clickFrequency_/rate;
+        if(clickPhase_>=2*std::numbers::pi)clickPhase_-=2*std::numbers::pi;
+        clickEnvelope_*=decay;if(clickEnvelope_<1e-12)clickEnvelope_=0;
+        // Default Cue pair until the separate Cue Out routing (N23) is built.
+        for(std::int32_t c=0;c<std::min<std::int32_t>(io.numOut,2);++c) {
+            if(io.out && io.out[c])io.out[c][i]+=static_cast<float>(click);
+            if(io.out64 && io.out64[c])io.out64[c][i]+=click;
+        }
+        clickLastSample_=sample;clickLastBeat_=beatTick;clickWasPlaying_=true;
+    }
 }
 
 void Session::release() {
@@ -840,6 +898,7 @@ void Session::release() {
     // rather than finding ADR-0090 d5's guard satisfied on a released
     // instance. `live_` false is what defeats the no-op path above.
     live_ = false;
+    mainLoudness_.requestReset();
     if (Graph* g = graph_.currentGraph()) g->release();
 }
 

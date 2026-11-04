@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1009;          -- schema 1.9
+PRAGMA user_version   = 1010;          -- schema 1.10
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -158,6 +158,36 @@ older than 60 s) MAY be broken by the user after an explicit prompt.
 Any number of readers MAY open the project read-only.
 
 ---
+### 3.7 Save As and Save a Copy (ADR-0203 d6)
+
+`Store::saveCopy(path)` uses SQLite backup to capture committed WAL data; the
+source is unchanged. The destination must not exist and its parent must exist.
+A private stage is checkpointed/closed before no-replace publication. Missing
+media does not prevent a save. No save op is appended.
+
+For a supported major, relative media locations are rebased for the destination
+folder, including captured media.import/media.relink paths on **every history
+branch and their inverses**. This is a location representation change in the new
+file, preserving media identity/hash and op/transaction/branch identities; it
+prevents Undo/Redo from interpreting an old relative path against a new folder.
+Other captured fields, future fields and unrelated op bytes are preserved.
+The old implicit audio/ fallback is retained when it is the existing source.
+
+`Store::saveAs(path)` makes that copy and switches the **same Store object** to
+its new writable database. Existing History/OpJournal objects still address it.
+The caller refreshes ProjectView/Session and its displayed filename after
+success. Project name, UUID, writer identity, history, snapshots and UI/session
+state are preserved. Owner-thread use requires no active SQL transaction or
+live SQL statements; old database references must not be retained across the
+switch. Existing destinations are never overwritten by these APIs.
+
+A failed copy leaves the source active; a copy that succeeded but could not be
+opened for switching is retained and reported as such. A successful switch can
+report a warning if another reader prevented the old WAL from being folded.
+An unknown newer major supports **Save a Copy** verbatim, without interpreting
+or relocating its media paths; it remains read-only. Save As into an editable
+Store refuses that major.
+
 
 ## 4. The time model
 
@@ -698,6 +728,24 @@ The rules:
 
 ---
 
+### Marker notes and prompts (schema 1.10, N25)
+
+`markers` retains its original position/cycle fields and both time bases.
+`marker_details(marker_id, note, prompt)` is an additive child table with a
+cascading foreign key to the marker. A missing row means empty note/prompt.
+Strings are literal UTF-8; prompt execution is outside the format and these ops.
+Existing markers are not rewritten on upgrade. Frozen 1.9 plus this table gives
+the current schema; read-only older files see the usual empty TEMP table.
+
+The marker ops capture enough state for undo, including details and unknown
+columns. In-place edits restore columns in place rather than deleting marker
+rows and cascading children. Empty details rows are permitted; undo preserves
+the difference between an absent row and an empty row. The text projection
+inlines note/prompt (omitting empty values), including linear cycle lengths.
+The window reads immutable `Snapshot::markers` by stable id. Positions/lengths
+retain their optional tick/nanosecond columns; id order is not display order.
+Every field participates in comparison/sharing, including literal note/prompt.
+
 ## 7. Layer 2 — plugin state
 
 ```
@@ -905,6 +953,17 @@ op that a history snapshot names (§8.6).
 `ui_view`, `window_state`, `session_state`: track heights, fold states, zoom,
 scroll offsets, selection, playhead, loop, per-plugin-window rectangles *with
 their monitor identity*, mixer layout, visible panels, last-used tool.
+
+Reserved `session_state` keys for saved performance controls:
+`transport.metronome` is a JSON boolean; `transport.loop` is JSON
+`{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.
+Absent keys mean click/loop off and an initial four-bar 4/4 window at zero.
+These are session metadata, not undoable project edits; the ephemeral transport
+ops update them and their audit rows in one transaction. Readers ignore malformed
+session values and use defaults. `Snapshot::transport` exposes them without
+sharing mutable driver state. Loop bounds stay in ticks and are converted through
+the tempo map at the session rate; no fixed-tempo sample count is persisted.
+
 
 The monitor identity matters: restoring a plugin window to `x=3200` on a machine
 that no longer has a second monitor puts it offscreen. Readers MUST clamp

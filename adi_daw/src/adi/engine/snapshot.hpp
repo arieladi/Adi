@@ -28,6 +28,7 @@
 #include "adi/engine/publisher.hpp"
 #include "adi/engine/automation_snapshot.hpp"
 #include "adi/textproj.hpp"
+#include "adi/transport_settings.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -84,6 +85,7 @@ struct TrackNode {
     bool soloed = false;
     float volumeDb = 0.0f;
     float pan = 0.0f;
+    std::int64_t delaySamples = 0; // stored samples at Snapshot::sampleRate; ms = 1000 * samples / rate
     std::vector<std::shared_ptr<const ClipNode>> clips;
 };
 
@@ -98,12 +100,23 @@ struct SendRoute {
     bool preFader = false, enabled = true;
 };
 
+/// Locator/cycle metadata. Positions and lengths retain their stored units;
+/// only the matching time-base columns are present. Notes/prompts are literal.
+struct MarkerNode {
+    std::int64_t id = 0, timeBase = 0;
+    std::optional<std::int64_t> posTicks, posNs, lengthTicks, lengthNs, color;
+    std::string name, kind, note, prompt;
+    friend bool operator==(const MarkerNode&, const MarkerNode&) = default;
+};
+
 /// What the audio thread sees. Derives from Sequenced so the publisher can
 /// stamp it; nothing else touches `seq`.
 struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
     int sampleRate = 44100;
+    TransportSettings transport;
+    std::vector<std::shared_ptr<const MarkerNode>> markers; // id order, not a mixed-units display order
     std::vector<std::shared_ptr<const AutomationLaneNode>> automationLanes; // lane id order
     bool automationOverridden = false; // session state supplied at rebuild, never saved
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
@@ -115,6 +128,7 @@ struct Snapshot : Sequenced {
 
     [[nodiscard]] const TrackNode* findTrack(std::int64_t id) const noexcept;
     [[nodiscard]] bool anySoloed() const noexcept;
+    [[nodiscard]] const MarkerNode* findMarker(std::int64_t id) const noexcept;
     [[nodiscard]] const AutomationLaneNode* findAutomationLane(std::int64_t id) const noexcept;
 };
 

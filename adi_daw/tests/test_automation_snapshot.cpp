@@ -197,7 +197,7 @@ void runtimeOverride() {
 void retainedCurves() {
     Fixture f("retained");auto& db=f.store->db();
     // Optional N17 table; this reader remains independent of its schema PR.
-    db.exec("CREATE TABLE automation_segment_ranges(id INTEGER PRIMARY KEY,data_id INTEGER NOT NULL,clip_id INTEGER,"
+    db.exec("CREATE TABLE IF NOT EXISTS automation_segment_ranges(id INTEGER PRIMARY KEY,data_id INTEGER NOT NULL,clip_id INTEGER,"
         "record_index INTEGER NOT NULL,progress_begin REAL NOT NULL,progress_end REAL NOT NULL,source_first REAL NOT NULL,source_last REAL NOT NULL) STRICT");
     db.exec("INSERT INTO automation_segment_ranges SELECT 12,id,NULL,0,0.2,0.8,-3,-12 FROM automation_data WHERE lane_id=1 AND clip_id IS NULL");
     auto prior=SnapshotBuilder::fromStore(*f.store);
