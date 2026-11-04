@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/track_recording.hpp"
 
 #include "adi/schema_sql.hpp"  // generated from docs/format/schema.sql
 #include "adi/version.hpp"
@@ -84,6 +85,14 @@ const std::vector<MigrationStep>& migrationSteps() {
         {9, {}},
         // 1.10 (N25): literal marker notes/prompts.
         {10, {"marker_details"}},
+        // 1.11: Split Stereo Pan, additive settings (ADR-0203 d9).
+        {11, {"mixer_pan_settings"}},
+        {12, {"clip_playback_details","automation_segment_ranges"}}, // continuous fade handles (N17)
+        {13, {"clip_warp_fade_domains"}}, // retained musical Warp fades (N17)
+        // 1.14: per-track Rec-Q / Play-Q and monitoring-latency policy.
+        {14, {"track_recording_options"}},
+        // 1.15: persistent return-owned send taps (ADR-0203 d3).
+        {15, {"return_send_taps"}},
         {16, {"clip_properties"}},
     };
     return steps;
@@ -262,6 +271,13 @@ std::unique_ptr<Store> Store::create(const std::filesystem::path& path, StoreErr
 }
 
 std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path, StoreError& err) {
+    return createNewProject(path,err,"1/16",true);
+}
+std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path, StoreError& err,
+    std::string_view recordChoice,bool keepMonitoringLatency) {
+    std::vector<OpRequest> captured;
+    try {captured=trackRecordingDefaults(0,recordChoice,keepMonitoringLatency);}
+    catch(const std::exception&){err=StoreError::CannotCreate;return nullptr;}
     auto store = create(path, err);
     if (!store) return nullptr;
     try {
@@ -274,6 +290,12 @@ std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path
             "INSERT INTO mixer_strip(track_id) SELECT id FROM tracks;"
             "INSERT INTO tempo_map(id,pos_ticks,bpm) VALUES(1,0,120);"
             "INSERT INTO time_signature_map(id,pos_ticks,numerator,denominator) VALUES(1,0,4,4);");
+        SQLite::Statement recording(store->db(),
+            "INSERT INTO track_recording_options(track_id,record_enabled,record_grid,keep_monitoring_latency) "
+            "SELECT id,?,?,? FROM tracks WHERE id BETWEEN 2 AND 5");
+        recording.bind(1,captured.front().payload.at("on").get<bool>()?1:0);
+        recording.bind(2,captured.front().payload.value("grid",std::string("1/16")));
+        recording.bind(3,keepMonitoringLatency?1:0);recording.exec();
         root.commit();
         return store;
     } catch (const SQLite::Exception&) {
@@ -557,6 +579,9 @@ Store::getNoteExpression(std::int64_t clipId, std::uint64_t noteId, int dimensio
 bool Store::putAutomationData(std::int64_t laneId, std::optional<std::int64_t> clipId,
                               std::span<const std::byte> blob) {
     try {
+        SQLite::Statement ranges(*db_,"SELECT 1 FROM automation_segment_ranges r JOIN automation_data d ON d.id=r.data_id WHERE d.lane_id=? AND d.clip_id IS ? LIMIT 1");
+        ranges.bind(1,laneId);if(clipId)ranges.bind(2,*clipId);else ranges.bind(2);
+        if(ranges.executeStep()){lastError_="replace automation with its captured curve ranges";return false;}
         SQLite::Statement st(*db_,
             "INSERT INTO automation_data(lane_id, clip_id, data) VALUES (?,?,?) "
             "ON CONFLICT(lane_id, IFNULL(clip_id,-1)) DO UPDATE SET data = excluded.data");

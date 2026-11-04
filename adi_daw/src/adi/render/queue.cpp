@@ -35,6 +35,7 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export WAV encoding");
     if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
         throw std::invalid_argument("unsupported export dither");
+    validateNiStems(j);
     (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
 }
 struct Stage {
@@ -138,6 +139,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
     try {
         cancellation(control);
         validate(job);
+        if (job.niStems) throw std::invalid_argument("renderWav requires a WAV job; use renderNiStems for NI Stems");
         StoreError error = StoreError::Ok;
         auto store = Store::open(job.project, error, true);
         if (!store || error != StoreError::Ok) throw std::runtime_error(std::string("open export project: ") + toString(error));
@@ -343,7 +345,8 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
         try {
             // The enqueue ordinal is stable across removal/retry. Reusing a
             // vector index would reuse names of completed files after removal.
-            result = renderWav(job, loader, control, id, id);
+            result = job.niStems ? renderNiStems(job, loader, control, id, id)
+                                 : renderWav(job, loader, control, id, id);
         } catch (const std::exception& e) {
             result.state = JobState::Failed; result.error = e.what();
         } catch (...) {

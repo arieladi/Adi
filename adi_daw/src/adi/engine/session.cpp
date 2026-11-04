@@ -8,6 +8,9 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "juce/clap_host.hpp"
+#include "adi/engine/audio_recording.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
 #include <numbers>
@@ -39,8 +42,24 @@ device::ParamValue valueOf(const rows::PluginParam& p) noexcept {
 
 }  // namespace
 
-Session::Session() = default;
+Session::Session():recording_(std::make_unique<AudioInputRecorder>()) {}
 Session::~Session() = default;
+
+AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
+    if(!live_){error="No active audio session for recording";return false;}
+    if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
+        error="Recording format must match the active audio device";return false;
+    }
+    for(const auto& target:options.targets) {
+        const auto track=std::find_if(model_.tracks.begin(),model_.tracks.end(),[&](const auto& row){return row.id==target.trackId;});
+        if(track==model_.tracks.end() || !track->recordArmed || (track->kind!="audio" && track->kind!="midi")) {
+            error="Recording target must be an armed audio or MIDI track";return false;
+        }
+    }
+    auto captured=options;captured.sourceProject=recordingProject_;
+    return recording_->start(captured,error);
+}
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -396,6 +415,7 @@ void Session::attach() {
         }
         return nodes;
     };
+    rs.monitors=cueMonitor_.points([this](std::int64_t id,Tap tap){return tapFor(id,tap);});
     devices_.attachHost(graph_, std::move(rs));
 }
 
@@ -520,15 +540,19 @@ bool Session::rebuild() {
         }
     }
     strips_.setFormat(spec_.channels, spec_.maxFrames);    // a return's loop, for the graph built here
-    strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
+    HearingFlags hearingFlags;hearingFlags.soloInPlace=cueSettings_.soloInPlace;
+    hearingFlags.soloIsCue=spec_.performanceState && cueSettings_.cueMode;hearingFlags.referenceTrack=cueSettings_.projectReferenceTrack;
+    strips_.sync(model_, &transport_, stripAutomation_,spec_.delayCompensation,hearingFlags);   // ADR-0163: before the graph names them
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
+    cueMonitor_.configure(model_,cueSettings_,&transport_,stripAutomation_,spec_.performanceState);
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
     else {
         timing_.publish(std::move(timing));
+        cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
         live_ = true;
     }
     attachTaps();   // ADR-0175: the new graph's latencies
@@ -565,9 +589,13 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     loader_ = std::move(loader);
     spec_ = spec;
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
+    graph_.setDelayCompensation(spec_.delayCompensation);
     stats_ = Stats{};
     model_ = rows::readModel(store);
     transportSettings_=readTransportSettings(store);
+    SQLite::Statement recordingIdentity(store.db(),"PRAGMA database_list");
+    while(recordingIdentity.executeStep())if(recordingIdentity.getColumn(1).getString()=="main")recordingProject_=recordingIdentity.getColumn(2).getString();
+    cueSettings_=readCueSettings(store);
     clipProject_ = readClipProject(store, model_);
     loaded_ = true;
     resolveNewRows(store);
@@ -577,12 +605,25 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
 namespace {
 // What a user can move on a strip, per track: what an override compares.
 struct StripValues {
-    double volume = 0.0, pan = 0.0;
+    double volume = 0.0, pan = 0.0, panLeft = -1.0, panRight = 1.0;
     bool muted = false;
 };
+std::optional<std::string> automationParamRef(const std::string& format, const std::string& id) {
+    if (format != "clap") return id;
+    std::uint32_t numeric = 0;
+    if (!device::ClapDevice::paramIdFromText(id,numeric)) return {};
+    return std::to_string(numeric); // ADR-0165: lane refs stay decimal for every format
+}
 std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
     std::map<std::pair<std::int64_t, std::string>, double> v;
-    for (const rows::PluginParam& p : m.pluginParams) v[{p.deviceId, p.paramId}] = p.normalized;
+    std::set<std::int64_t> clapRefs, clapDevices;
+    for (const auto& reference : m.pluginRefs) if (reference.format == "clap") clapRefs.insert(reference.id);
+    for (const auto& item : m.devices)
+        if (item.pluginRefId && clapRefs.contains(*item.pluginRefId)) clapDevices.insert(item.id);
+    for (const rows::PluginParam& p : m.pluginParams) {
+        const auto ref = automationParamRef(clapDevices.contains(p.deviceId) ? "clap" : "",p.paramId);
+        if (ref) v[{p.deviceId,*ref}] = p.normalized;
+    }
     return v;
 }
 
@@ -592,6 +633,8 @@ std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
     for (const rows::MixerStrip& s : m.strips) {
         v[s.trackId].volume = s.volumeDb;
         v[s.trackId].pan = s.pan;
+        v[s.trackId].panLeft = s.panLeft;
+        v[s.trackId].panRight = s.panRight;
     }
     return v;
 }
@@ -607,6 +650,7 @@ bool Session::refresh(const Store& store) {
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     model_ = rows::readModel(store);
     transportSettings_=readTransportSettings(store);
+    cueSettings_=readCueSettings(store);
     // ADR-0162: an automated strip value that changed is overridden. Compared
     // BEFORE the rebuild, so the new graph already plays the manual value.
     if (stripAutomation_) {
@@ -618,6 +662,8 @@ bool Session::refresh(const Store& store) {
             if (b == before.end() || a == after.end()) continue;
             const bool changed = key.second == StripParam::Volume ? b->second.volume != a->second.volume
                                : key.second == StripParam::Pan    ? b->second.pan != a->second.pan
+                               : key.second == StripParam::PanLeft ? b->second.panLeft != a->second.panLeft
+                               : key.second == StripParam::PanRight ? b->second.panRight != a->second.panRight
                                                                   : b->second.muted != a->second.muted;
             if (changed) overridden_.insert(laneId);
         }
@@ -765,9 +811,21 @@ bool Session::reenableAutomation(std::int64_t laneId) {
     return rebuild();
 }
 
+bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId) {
+    if (!deviceAutomation_) return true;
+    const auto* instance = instanceFor(deviceId);
+    const auto ref = automationParamRef(instance ? instance->identity().format : "",paramId);
+    if (!ref) return true;
+    const auto lane = deviceAutomation_->laneFor.find({deviceId,*ref});
+    if (lane == deviceAutomation_->laneFor.end() || overridden_.contains(lane->second)) return true;
+    overridden_.insert(lane->second);
+    return rebuild();
+}
+
 bool Session::tick(std::int64_t nowMs) {
     timing_.collect();
     mainLoudness_.collect();
+    cueMonitor_.collect();
     return devices_.tick(nowMs);
 }
 
@@ -778,6 +836,7 @@ bool Session::tick(std::int64_t nowMs) {
 void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     ++stats_.prepares;
     const bool changed = (sampleRate != spec_.sampleRate) || (maxFrames != spec_.maxFrames);
+    if(changed)recording_->stop();
 
     // Decision 3, second half: same format, graph live, nothing to do. A driver
     // that stops and restarts at the same size -- a device-list change, a
@@ -801,6 +860,13 @@ bool Session::setPrecision(Precision p) {
     spec_.precision = p;
     graph_.setPrecision(p);
     if (!loaded_) return true;
+    return rebuild();
+}
+
+bool Session::setDelayCompensation(bool on) {
+    if(on==spec_.delayCompensation)return true;
+    spec_.delayCompensation=on;graph_.setDelayCompensation(on);
+    if(!loaded_)return true;
     return rebuild();
 }
 
@@ -836,6 +902,7 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
 
 void Session::process(const AudioIo& io) noexcept {
     audio::CallbackScope callback;
+    recording_->capture(io,transport_);
     SnapshotPublisher<TimingView>::AudioRead timing(timing_);
     TransportInfo info;
     if (timing.valid()) {
@@ -853,7 +920,17 @@ void Session::process(const AudioIo& io) noexcept {
     block.transport = &info;
     graph_.process(block);
     mainLoudness_.process(block);
-    if(timing.valid())renderMetronome(*timing.get(),block);
+    struct ClickContext {Session* session;const TimingView* timing;};
+    ClickContext click{this,timing.get()};
+    CueMonitor::Click renderClick;
+    if(timing.valid() && timing->settings.metronome && transport_.playing()) {
+        renderClick.context=&click;
+        renderClick.render=[](void* context,const AudioIo& cueIo) noexcept {
+            const auto& call=*static_cast<ClickContext*>(context);call.session->renderMetronome(*call.timing,cueIo);
+        };
+    }
+    else if(timing.valid())renderMetronome(*timing.get(),AudioIo{});
+    cueMonitor_.process(graph_,block,renderClick);
     transport_.advance(io.frames);
 }
 
@@ -893,6 +970,7 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
 }
 
 void Session::release() {
+    recording_->stop();
     // The device has stopped; nothing is rendering. Release the plugins so a
     // later `prepare` -- at the same format or not -- prepares them again
     // rather than finding ADR-0090 d5's guard satisfied on a released
