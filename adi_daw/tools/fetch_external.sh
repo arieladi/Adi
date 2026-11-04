@@ -60,6 +60,9 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 #          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
+  # Public headers only: independent ABI shims dynamically load Linux AAC.
+  "FFmpeg/FFmpeg ffmpeg6 LGPL-2.1-or-later n6.1.3 01d3f764f79b2f571174a4cec855e651258f20ec build headers"
+  "FFmpeg/FFmpeg ffmpeg7 LGPL-2.1-or-later n7.1.5 3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587 build headers"
   "libsndfile/libsamplerate libsamplerate BSD-2-Clause 0.2.2 c96f5e3de9c4488f4e6c97f59f5245f22fda22f7 build"
   "JuliaStrings/utf8proc utf8proc MIT v2.11.3 e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78 build"
   "BLAKE3-team/BLAKE3          BLAKE3      CC0-1.0/Apache-2.0 1.8.7 f3149ec5bb5449af877ba20377a11008ff499fa2 build"
@@ -198,8 +201,17 @@ fetch_pinned() {
         fi
     else
         printf '  %-18s cloning...    ' "$dir"
-        git clone --depth 1 --branch "$tag" -c advice.detachedHead=false -q \
-            "$(repo_url "$repo")" "$path" 2>/dev/null || true
+        if [ "$sub" = headers ]; then
+            git clone --filter=blob:none --sparse --depth 1 --branch "$tag" \
+                -c advice.detachedHead=false -q "$(repo_url "$repo")" "$path" 2>/dev/null || true
+        else
+            git clone --depth 1 --branch "$tag" -c advice.detachedHead=false -q \
+                "$(repo_url "$repo")" "$path" 2>/dev/null || true
+        fi
+    fi
+
+    if [ "$sub" = headers ] && [ -d "$path/.git" ]; then
+        git -C "$path" sparse-checkout set --no-cone '/libavcodec/*.h' '/libavutil/*.h' /COPYING.LGPLv2.1 /LICENSE.md
     fi
 
     # A submodule is fetched only where the table asks. Shallow, like the parent:

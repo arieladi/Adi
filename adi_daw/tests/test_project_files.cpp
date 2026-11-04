@@ -125,14 +125,15 @@ void historyBranches() {
     Fixture f;auto& s=*f.store;
     fs::copy_file(f.folder/"audio/tone.wav",f.folder/"moved.wav");
     check(media::relinkMedia(s,10,"moved.wav").ok,"history relink fixture");
-    History history(s);const auto firstBranch=history.branches().front().id;
+    History history(s);
     check(history.undo().ok,"relink can be undone before forking");
     OpRequest rename;rename.opType="project.setName";rename.payload={{"name","Fork"}};
     check(OpJournal(s).commit(rename).ok,"fork from the imported project");
+    std::int64_t firstBranch=0;for(const auto& branch:history.branches())if(!branch.isCurrent)firstBranch=branch.id;
     const auto target=f.target("branched");check(s.saveCopy(target).ok,"copy includes inactive branches");
     StoreError error{};auto copy=Store::open(target,error);if(!copy)return;
     History copied(*copy);
-    check(copied.switchToBranch(firstBranch).ok && resolves(*copy),"switching to the old branch replays relocated relink paths");
+    check(copied.switchToBranch(firstBranch).ok && resolves(*copy) && media::mediaRow(copy->db(),10).at("rel_path").get<std::string>().ends_with("moved.wav"),"switching to the old branch replays relocated relink paths");
     check(copied.undo().ok && resolves(*copy),"relink inverse paths are relocated too");
     check(copied.redo().ok,"restore relink for unlink capture");
     OpRequest detach;detach.opType="clip.detachAudio";detach.payload={{"id",5}};

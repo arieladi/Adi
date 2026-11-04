@@ -237,8 +237,8 @@ void migrationAndReadOnly() {
     check(readFile(path) == bytes, "read-only open did not write old file");
     {
         auto store = Store::open(path, error);
-        check(store && error == StoreError::Ok && store->schemaMinor() == 10 && store->upgradedFromMinor() == 9,
-              "1.9 writable open installs additive 1.10 migration");
+        check(store && error == StoreError::Ok && store->schemaMinor() == kSchemaMinor && store->upgradedFromMinor() == 9,
+              "1.9 writable open installs current additive migrations");
         if (!store) return;
         check(store->db().execAndGet("SELECT count(*) FROM marker_details").getInt() == 0, "upgrade creates empty optional metadata");
         check(store->db().execAndGet("SELECT name='Old marker' AND color=0 AND length_ns=12 FROM markers WHERE id=7").getInt() == 1,

@@ -49,6 +49,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/engine/cue_monitor.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
@@ -57,13 +58,14 @@
 #include "adi/store_rows.hpp"
 #include "juce/device_host.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
-#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -73,6 +75,9 @@ class Store;
 }
 
 namespace adi::engine {
+
+class AudioInputRecorder;
+struct AudioRecordingSpec;
 
 /// The format the session is asked to run at. `load` takes the expected one;
 /// `prepare` replaces it with what the driver actually granted.
@@ -85,6 +90,8 @@ struct SessionSpec {
     /// Live performance controls (saved loop/click). Offline export/analysis
     /// disables these so monitor choices never alter rendered material.
     bool performanceState = true;
+    /// The app's Delay Compensation choice; its registry row is win-owned.
+    bool delayCompensation = true;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -109,6 +116,15 @@ struct OfflineOutput {
     NodeId node = kInvalidNode;
     std::int64_t latency = 0;
 };
+struct OfflineDeviceInfo {
+    std::int64_t id = 0;
+    device::DeviceIdentity identity;
+};
+struct OfflineSourceInfo {
+    std::int64_t track = 0;
+    std::vector<OfflineDeviceInfo> devices;  // actual loaded chain order / versions
+    std::vector<std::int64_t> prefixDevices; // through the last MIDI consumer
+};
 
 class Session final : public BlockProcessor {
 public:
@@ -118,6 +134,7 @@ public:
         std::int64_t trackId = 0;      ///< the chain's track; 0 once retired
         std::string name;
         bool placeholder = false;      ///< a `MissingDevice` stands in (ADR-0011)
+        bool parked = false;           ///< freeze retirement: restore a fresh instance on unfreeze
         bool retired = false;          ///< the row is gone; the instance is kept
         std::string error;             ///< why the loader refused, when it did
         std::size_t hostIndex = 0;     ///< into `devices()`
@@ -209,6 +226,10 @@ public:
     /// does nothing. False only when a graph was due and could not be built.
     bool setPrecision(Precision p);
 
+    /// Message thread. Publish a new alignment policy without reloading
+    /// devices. Track Delay is suspended with it; stored values are retained.
+    bool setDelayCompensation(bool on);
+
     // --- inspection (message thread) ---------------------------------------
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
@@ -224,6 +245,10 @@ public:
     /// graph mutation. The result is invalidated by a rebuild or latency change.
     /// Empty for missing/non-audio tracks, unsupported taps or no prepared graph.
     [[nodiscard]] std::optional<OfflineOutput> offlineOutput(std::int64_t trackId, OfflineTap);
+    /// Owner-only cache capture. PreFx is after the instrument, before audio FX.
+    /// Returned identities come from the loaded devices AFTER state restoration.
+    [[nodiscard]] std::optional<OfflineOutput> offlineTapOutput(std::int64_t trackId, Tap);
+    [[nodiscard]] std::optional<OfflineSourceInfo> offlineSourceInfo(std::int64_t trackId);
 
     /// Everything the model read, the plan found and the session decided,
     /// in that order. A project with problems still plays where it can.
@@ -262,6 +287,10 @@ public:
 
     // Driver thread only, commands between callbacks; see transport.hpp.
     [[nodiscard]] Transport& transport() noexcept { return transport_; }
+    /// Owner-thread recording control. Channels address the driver's current
+    /// AudioIo inputs; per-device channel configuration remains the adapter's.
+    bool startRecording(const AudioRecordingSpec&,std::string& error);
+    [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Message/offline driver inspection. Pointer valid until the next rebuild.
     [[nodiscard]] ClipPlayback* clips() noexcept { return clips_.get(); }
     [[nodiscard]] MidiClips* midiClips() noexcept { return midi_.get(); }
@@ -292,6 +321,8 @@ public:
 
 private:
     void attach();
+    bool readPlayback(const Store &);
+    bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row);
     void retireDepartedRows();
@@ -308,6 +339,8 @@ private:
     // raw pointers to device nodes, and the devices must still exist while
     // it is freed. (Nothing dereferences them today; the order is the rule.)
     Transport transport_;
+    std::unique_ptr<AudioInputRecorder> recording_;
+    std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
     struct TimingView final : Sequenced {
@@ -320,6 +353,8 @@ private:
     };
     SnapshotPublisher<TimingView> timing_;
     MainLoudness mainLoudness_;
+    CueSettings cueSettings_;
+    CueMonitor cueMonitor_;
     TransportSettings transportSettings_; // message thread, copied into TimingView
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;
@@ -355,6 +390,16 @@ private:
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
+    rows::Model playbackModel_;
+    std::set<std::int64_t> frozenGroupChildren_;
+    struct FrozenMediaFile {
+        std::string row;
+        std::filesystem::path file;
+        std::uintmax_t size = 0;
+        std::filesystem::file_time_type modified{};
+    };
+    std::map<std::int64_t, FrozenMediaFile> verifiedFrozenMedia_;
+    std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> frozenSources_; // dry, wet synthetic tracks
     DeviceLoader loader_;
     SourceFn sources_;
     SessionSpec spec_;
@@ -364,6 +409,7 @@ private:
     std::vector<std::string> problems_;
     std::vector<std::string> sessionProblems_;   ///< ours, re-appended after each read
     std::string error_;
+    std::atomic<bool> playbackRunning_{false}; // driver sample; owner never reads Transport
     bool loaded_ = false;
     bool live_ = false;      ///< a graph is prepared and published for a device
 };

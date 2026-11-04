@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1013;          -- schema 1.13
+PRAGMA user_version   = 1018;          -- schema 1.18
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -188,6 +188,34 @@ An unknown newer major supports **Save a Copy** verbatim, without interpreting
 or relocating its media paths; it remains read-only. Save As into an editable
 Store refuses that major.
 
+### 3.8 Collect All and Save / Collect and Export
+
+`Store::collectAllAndSave()` copies hash-verified external media into `audio/`
+beside the current project and atomically saves those locations. The collected
+set includes the current pool and media captured by imports, unlinks and relinks
+on **all history branches**, including assets absent from the current pool.
+Each content hash has one local file; names use the full hash and a safe source
+extension. Matching existing files are reused; different contents and symlinks
+are refused. Nothing is overwritten. A failed copy or SQL update rolls back
+all location changes and removes only files published by that call. A crash can
+leave unreferenced files. Legacy embedded media must first be extracted.
+
+This is location maintenance, not an undoable edit: media identity, musical
+state, op/transaction ids, branch heads and snapshot bookmarks remain intact.
+Captured paths on both sides of history ops become local, absolute hints are
+cleared and missing flags reset. Undo/Redo and branch switching keep using the
+collected files after the folder moves. It requires a writable supported Store,
+no live SQL statements and no active transaction, and runs off the audio thread.
+The caller refreshes its view/session after success. Committed WAL data is saved;
+a blocked passive checkpoint is reported as a warning, with success retained.
+
+`Store::collectAndExport(zip)` uses the existing streaming ZIP64 STORE exporter
+on a private SQLite backup, collects that copy by the same rules, checks it,
+folds its WAL and publishes the archive without replacing an existing output.
+The live source and its paths/history stay unchanged. Read-only sources are
+supported. A missing or changed current **or history-only** asset fails export
+without a partial ZIP. `media::collectExport(input, zip)` remains the path-based
+entry point used by `adi_tool collect-export`.
 
 ## 4. The time model
 
@@ -333,6 +361,25 @@ A clip is `kind ∈ {audio, midi, automation, video, marker}` and carries positi
 length, loop window, fades, gain and mute. Loop fields are separate from position
 and length so that a looping clip is *one* object rather than N repeats — the
 Ableton model, and the correct one.
+
+### Local Main Clip Properties (schema 1.16, N33)
+
+`clip_properties` is an additive optional row keyed by clip id, removed with its
+clip. A NULL end marker derives from content offset plus visible duration.
+Local signature fields are both NULL or both present; local scale fields are
+all NULL or all present. NULL means the project context at the clip's start.
+Start remains `clips.content_offset_ticks`. The op that moves Start pins the
+previous default End, making source markers independent of placement. End gates
+source playback when Loop is off. Loop's existing start/length/switch control
+repeats and ignore End while on. The audio and MIDI readers apply the same rule.
+
+Numerator is 1..255 and denominator a power of two through 128. A local scale is
+12-TET: root 0..11, nonempty id and a root-relative 12-bit mask with the tonic.
+Inherited native project tunings remain available to the window. Local fields
+are projected on their clip; an empty optional row is permitted. Inverses retain
+row presence, unknown columns and SQLite types without a scalar delete/reinsert.
+Deleting a clip captures its whole row, native stream/expression/audio/envelope/
+property child rows and the alias links the foreign key would set NULL.
 
 ### 6.3 Event streams — the BLOB contract
 
@@ -871,8 +918,12 @@ cheaper than a user discovering it with an hour of sound design at stake.
 
 These are two different lists and conflating them loses data.
 
-**Hosted by this implementation: VST3, and CLAP when it is written.** Nothing
-else, and adding to that set takes an ADR (ADR-0041). In particular ADI does not
+**Hosted by this implementation: VST3, CLAP, and supported canonical ADI
+built-ins** (internal references, ADR-0104/ADR-0188). Internal UIDs are stable
+org.adidaw.builtin.<device-slug> identities from builtinCatalog(); they do not
+name a disk binary or a user patch. A build without the backend, an unknown UID,
+or a listed unavailable device follows the same placeholder rule below.
+Adding third-party formats takes an ADR (ADR-0041). In particular ADI does not
 host **VST2**, **AU** or **AUv3**, and no build option turns that on.
 
 **Recorded by the format: whatever was there.** `plugin_refs.format` admits
@@ -892,6 +943,19 @@ prevent. Refusing to host a format costs us code we do not write; refusing to
 A third-party implementation that does host AU is conforming, and a `.adi` it
 writes is readable here. That is the point of specifying the format separately
 from the application.
+
+#### Built-in sample roles (ADR-0192 d4)
+
+A canonical built-in may persist a declared sample slot as plugin_state role
+sample:<id>. The content-addressed CBOR state is versioned independently of the
+project schema: kind=adi.builtin.sample, version=1, uid, slot and empty. An
+occupied Color Cab slot also keeps the original mediaHash, sourceRate,
+source_f32le mono backup and derived rate/kernel/target. Original media remains
+in the ordinary media pool. The derived profile plays without the original;
+the backup permits off-thread regeneration at another engine rate. Unknown
+fields and unsupported versions remain opaque state beside a placeholder.
+The decoder rejects invalid state before publishing any live change. Empty
+state represents an identity sample; absence remains distinct for undo.
 
 ### 7.5 The expression route (schema 1.4)
 
@@ -988,6 +1052,20 @@ session values and use defaults. `Snapshot::transport` exposes them without
 sharing mutable driver state. Loop bounds stay in ticks and are converted through
 the tempo map at the session rate; no fixed-tempo sample count is persisted.
 
+
+`cue.controls` stores JSON performance controls: `cue` (mode, default false),
+`sip` (Solo in Place, default true), `first` (even stereo-pair index 0..62,
+default 0), `db` (Cue Volume -150..+6, default 0), `reference` (audition track id,
+0 for none/default role), `reference_on` (default false), and `selected` (sorted,
+unique positive Cue track ids, default empty). Missing/malformed values use
+defaults. Cue selection is independent of a track's musical solo flag. These
+commands are ephemeral and transport-scoped, saved atomically with audit rows,
+excluded from undo and musical digests. `Snapshot::cue` exposes the settings.
+Its `projectReferenceTrack` is derived from the optional native role column,
+never serialized into this metadata. `referenceFromRole` distinguishes a zero
+(default-role) preference from an explicit audition target, so changing the native
+role still takes effect after a Cue Volume/output edit. Reference designation belongs to project
+format N38; an explicit performance audition target is not a substitute role.
 
 The monitor identity matters: restoring a plugin window to `x=3200` on a machine
 that no longer has a second monitor puts it offscreen. Readers MUST clamp
@@ -1249,6 +1327,22 @@ A minor normally only **adds** objects (tables, indexes, triggers). The explicit
 Schema 1.11 adds only `mixer_pan_settings`; the frozen mixer_strip definition
 is unchanged.
 
+Schema 1.14 adds only track_recording_options, keyed by track_id. It stores
+record_enabled/record_grid, play_enabled/play_grid/play_forgiveness_ms and
+keep_monitoring_latency. Missing rows use Rec-Q on at 1/16, Play-Q off at 1/16
+with zero forgiveness, and Keep Monitoring Latency on (ADR-0132 d8/d10,
+ADR-0133). Grid switches retain their selected grid when disabled. New-track
+producers capture inherited app defaults explicitly, never during op replay.
+Existing rows and native table definitions are unchanged; the 1.9 schema is
+frozen under history/schema-1.9.sql.
+
+Schema 1.15 adds return_send_taps, a nullable-by-absence return-owned Pre/Post
+choice (ADR-0203 d3). Migration creates the empty table and preserves legacy
+per-send taps, including mixed values. The native return command records a
+choice even with no sends and normalizes all incoming taps as one undoable edit.
+An explicit choice controls new incoming sends; legacy rows remain audible as
+stored until the return is explicitly set. Readers expose the legacy mixed state.
+
 Schema 1.9 changes `project.sample_rate`'s default from 48,000 to 44,100 Hz
 (ADR-0203 d18). Its migration rebuilds only `project`, copying every stored value
 and restoring its indexes/triggers in the same transaction. Existing rates are
@@ -1315,3 +1409,12 @@ Named here so they are visible gaps rather than accidental omissions:
 - Decision log: [`../DECISIONS.md`](../DECISIONS.md)
 - Feature scope this format must eventually carry: [`../FEATURES.md`](../FEATURES.md)
 - Agent architecture built on the op log: [`../AI-AGENT.md`](../AI-AGENT.md)
+
+Schema 1.17 adds frozen_renders: immutable whole-track dry/wet cache media,
+format, causal fingerprint, installed identities and the original arm switch.
+The original clips, parameters and state blobs remain intact. See ENGINE-FREEZE.md
+and OPS.md for preparation, native validation and undo semantics.
+
+Schema 1.18 adds frozen_groups: a cached group root and CBOR descendant
+membership with pre-freeze arm switches. It adds no columns to schema 1.17.
+See ENGINE-FREEZE.md for the inactive-child audio routing tradeoff.

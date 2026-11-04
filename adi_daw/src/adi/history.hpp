@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include "adi/history_policy.hpp"
 #include "adi/ops.hpp"
 
 #include <cstdint>
@@ -134,11 +135,14 @@ public:
     /// Names the current head. An empty `name` becomes
     /// defaultSnapshotName(project name, createdUtc, utcOffsetMinutes), the
     /// local time being UTC plus the offset the CALLER supplies (ADR-0128 d4).
-    SnapshotResult takeSnapshot(const std::string& name, std::int64_t createdUtc,
-                                int utcOffsetMinutes, bool automatic = false);
+    SnapshotResult takeSnapshot(const std::string &name, std::int64_t createdUtc, int utcOffsetMinutes,
+                                bool automatic = false, const HistorySnapshotPolicy &policy = {});
 
-    /// Renames in place. Not an op and not undoable (ADR-0128 d5). An empty name
-    /// is refused rather than defaulted: a rename is always a typed name.
+    /// Explicit user removal of snapshot metadata; never an undo operation.
+    Result removeSnapshot(std::int64_t snapshotId);
+
+    /// Renames in place and promotes automatic points to named. Not an op and
+    /// not undoable (ADR-0128 d5). An empty name is refused.
     Result renameSnapshot(std::int64_t snapshotId, const std::string& newName);
 
     /// Every snapshot, oldest first (created_utc, then id).

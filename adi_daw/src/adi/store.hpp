@@ -23,6 +23,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace SQLite {
@@ -30,11 +31,13 @@ class Database;
 }
 
 namespace adi {
+class Store;
+namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
 
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 13;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: marker notes/prompts (N25); 1.11: split stereo pan (N12); 1.13: retained musical Warp fade domains
+inline constexpr int kSchemaMinor = 18;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: marker notes/prompts (N25); 1.11: split stereo pan (N12); 1.13: retained musical Warp fade domains; 1.14: track recording options; 1.15: return send taps (ADR-0203 d3); 1.16: local clip properties (N33); 1.18: whole-group freeze scope
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {
@@ -76,10 +79,15 @@ public:
     static std::unique_ptr<Store> create(const std::filesystem::path&, StoreError&);
 
     /// Application New: create the project row, Main and the Live default's
-    /// two MIDI/two audio tracks, mixer strips and 120 BPM / 4/4 maps at the
+    /// two MIDI/two audio tracks, A Reverb/B Delay returns and their sends,
+    /// native wet-only effects, mixer strips and 120 BPM / 4/4 maps at the
     /// history root. No ops or protected UI undo step. Window callers replace
     /// their track.create bootstrap with this single factory.
     static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&);
+    /// Capture the caller's app recording defaults for the four initial
+    /// tracks in the history root. Invalid choices create no file.
+    static std::unique_ptr<Store> createNewProject(const std::filesystem::path&, StoreError&,
+        std::string_view recordQuantize, bool keepMonitoringLatency);
 
     /// Schema-only creation for converters and low-level fixtures that supply
     /// their own project rows. Application New commands use create().
@@ -114,6 +122,13 @@ public:
     /// statements. Refresh ProjectView/Session and the window's filename after
     /// success. A failed switch retains the source and a completed copy.
     [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&);
+    /// Copy current and undo/branch media into audio/, verify their hashes and
+    /// save the new locations atomically. Owner thread; no live SQL statements
+    /// or transaction. Refresh readers after success. No undo step is appended.
+    [[nodiscard]] StoreFileResult collectAllAndSave();
+    /// Portable ZIP of a committed snapshot, including undo/branch media.
+    /// The active project is unchanged; the destination must not exist.
+    [[nodiscard]] StoreFileResult collectAndExport(const std::filesystem::path&) const;
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
@@ -174,6 +189,11 @@ public:
     [[nodiscard]] const std::string& clientLabel() const noexcept { return clientLabel_; }
 
 private:
+    friend bool freeze::validated(Store&) noexcept;
+    friend void freeze::remember(Store&) noexcept;
+    std::int64_t frozenValidationChanges_=-1,frozenValidationDataVersion_=-1;
+    std::int64_t frozenValidationSchema_=-1,frozenValidationTempSchema_=-1;
+
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly);
     bool applySessionPragmas();
 
