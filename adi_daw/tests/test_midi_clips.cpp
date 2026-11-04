@@ -3,6 +3,8 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
+#include "adi/ops.hpp"
+#include "adi/history.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -190,6 +192,46 @@ void musical(){
     tempo.store->db().exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(5765760,60,0)");tempo.load();while(tempo.clock<49000)tempo.render();
     check(tempo.instrument->count==3 && tempo.instrument->heard[0].clock==12000 && tempo.instrument->heard[2].clock==48000,"note duration integrates a tempo change");
 }
+void activeFlag() {
+    Fixture f(48000,128);f.clip(1,0,240240,5765760);
+    auto mute = [&] {
+        OpRequest op;op.opType="note.setMute";op.payload={{"clip",1},{"note",42},{"muted",true}};
+        if(!OpJournal(*f.store).commit(op).ok)throw std::runtime_error("note mute failed");
+    };
+    mute();f.load();f.render();
+    check(f.instrument->count==0,"a note deactivated through the op emits no playback event");
+    if(!History(*f.store).undo().ok)throw std::runtime_error("note mute undo failed");
+    f.refresh();f.session.transport().locate(0);f.clock=0;f.render();
+    check(f.instrument->balance()==1,"undo and refresh reactivate the note with its original event");
+    mute();f.refresh();f.render();
+    check(f.instrument->balance()==0 && f.instrument->count>0 && f.instrument->heard[f.instrument->count-1].e.type==EventType::NoteOff,
+          "deactivating a held note releases it on the next callback without a stuck voice");
+}
+
+void sourceMarkers() {
+    constexpr std::int64_t quarter=5765760;
+    auto set = [](Store& store,const char* name,Payload payload) {
+        OpRequest op;op.opType=name;op.payload=std::move(payload);
+        if(!OpJournal(store).commit(op).ok)throw std::runtime_error("clip property op failed");
+    };
+    Fixture plain;plain.clip(1,0,2*quarter,4*quarter);
+    set(*plain.store,"clip.setStartMarker",{{"id",1},{"ticks",quarter/2}});
+    set(*plain.store,"clip.setEndMarker",{{"id",1},{"ticks",quarter}});
+    plain.load();while(plain.clock<13000)plain.render();
+    check(plain.instrument->count==3 && plain.instrument->heard[0].clock==0 &&
+              plain.instrument->heard[2].e.type==EventType::NoteOff && plain.instrument->heard[2].clock==12000,
+          "Start chases a held note and End releases it at the exact source marker");
+    Fixture loop;loop.clip(1,0,2*quarter,4*quarter);
+    set(*loop.store,"clip.setStartMarker",{{"id",1},{"ticks",quarter/2}});
+    set(*loop.store,"clip.setEndMarker",{{"id",1},{"ticks",quarter}});
+    set(*loop.store,"clip.setLoop",{{"id",1},{"on",true},{"start",0},{"length",2*quarter}});
+    loop.load();while(loop.clock<38000)loop.render();
+    std::int64_t firstOff=-1;
+    for(std::size_t i=0;i<loop.instrument->count;++i)
+        if(loop.instrument->heard[i].e.type==EventType::NoteOff){firstOff=loop.instrument->heard[i].clock;break;}
+    check(firstOff==36000,"MIDI Loop ignores End and releases at its own repeat boundary");
+}
+
 }
 namespace {
 void sessionControllers() {
@@ -229,34 +271,7 @@ void sessionControllers() {
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
-    try {
-        if (only == "all" || only == "controllers")
-            sessionControllers();
-        if (only == "all" || only == "placement")
-            placement();
-        if (only == "all" || only == "cleanup")
-            cleanup();
-        if (only == "all" || only == "musical")
-            musical();
-        if (only == "all" || only == "pending")
-            pendingRelease();
-        if (only == "all" || only == "concurrent")
-            concurrentPublication();
-        if (only == "all" || only == "capacity")
-            capacity();
-        if (only == "all" || only == "overflow")
-            overflowRelease();
-        if (only == "all" || only == "ns")
-            nanosecondEnd();
-        if (only == "all" || only == "maximum")
-            maximumLocate();
-        if (only == "all" || only == "entry")
-            loopEntry();
-        if (only == "all" || only == "held")
-            heldNote();
-    } catch (const std::exception &e) {
-        check(false, e.what());
-    }
+    try{if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

@@ -819,6 +819,14 @@ public:
     }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
 
+    /// Build-time alignment policy. Intrinsic device latency and delayed dry
+    /// bypass remain intact. Change by building/publishing a new graph.
+    void setDelayCompensation(bool on) noexcept {
+        if(on!=delayCompensation_)prepared_=false;
+        delayCompensation_=on;
+    }
+    [[nodiscard]] bool delayCompensation() const noexcept { return delayCompensation_; }
+
     /// Per-node event capacity. At 500 Hz with heavy polyphony this is a real
     /// design number rather than a formality (events.hpp).
     /// Per-node event capacity. Zero -- the default -- DERIVES it at `prepare`
@@ -853,8 +861,9 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
-    /// Offline owner only, between process calls with no concurrent rendering,
-    /// retap or rebuild. Copies a node's last complete block at graph precision;
+    /// Processing owner only, after process and before the next process.
+    /// The graph must remain prepared/alive; GraphHost::copyRenderedOutput
+    /// provides publication lifetime inside a callback. Copies at graph precision;
     /// out64 retains double samples and extra destination channels are silence.
     /// False (and clears output) for an invalid node, stale/unprepared graph or
     /// a frame count different from the last successful process call.
@@ -956,6 +965,9 @@ public:
     /// the probe's pattern of feeding a graph and re-preparing it after a
     /// rebuild would hit on the first swap.
     [[nodiscard]] DelayLine* edgeLine(NodeId from, NodeId to, Bus bus) noexcept;
+    [[nodiscard]] const DelayLine* edgeLine(NodeId from, NodeId to, Bus bus) const noexcept {
+        return const_cast<Graph*>(this)->edgeLine(from,to,bus);
+    }
 
     /// The graph's own latency: how far behind the output is (ADR-0058).
     /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding
@@ -1181,6 +1193,7 @@ private:
     std::vector<double> delayScratch64_; ///< the same at 64
 
     Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
+    bool delayCompensation_ = true;
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;

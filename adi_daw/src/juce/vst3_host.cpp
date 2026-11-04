@@ -228,10 +228,56 @@ Vst3Device::Vst3Device(std::unique_ptr<juce::AudioPluginInstance> inst, DeviceId
 }
 
 Vst3Device::~Vst3Device() {
+    if(auto editor=editor_.lock())editor->close();
     if (inst_ != nullptr) inst_->removeListener(this);
     // Ours, from `queryInterface`, and released before JUCE tears the
     // component down. It never was, so the plug-in outlived its host.
     if (processor_ != nullptr) processor_->release();
+}
+
+namespace {
+class Vst3Editor final:public DeviceEditor {
+public:
+    Vst3Editor(juce::AudioPluginInstance& processor,juce::AudioProcessorEditor* editor)
+        :processor_(&processor),editor_(editor) {}
+    ~Vst3Editor()override{close();}
+    EditorMode mode()const noexcept override{return EditorMode::Hosted;}
+    bool valid()const noexcept override{return editor_!=nullptr;}
+    bool visible()const noexcept override{return editor_ && editor_->isVisible();}
+    EditorSize size()const noexcept override{return editor_?EditorSize{editor_->getWidth(),editor_->getHeight()}:EditorSize{};}
+    bool resizable()const noexcept override{return editor_ && editor_->isResizable();}
+    juce::Component* component()noexcept override{return editor_.get();}
+    bool attach(const EditorParent&)override{return false;} // FloatingHost reparents the component
+    bool show()override{if(!editor_)return false;editor_->setVisible(true);return true;}
+    bool hide()override{if(!editor_)return false;editor_->setVisible(false);return true;}
+    bool resize(EditorSize& requested)override {
+        if(!resizable() || requested.width<=0 || requested.height<=0)return false;
+        if(auto* constrainer=editor_->getConstrainer())
+            constrainer->setBoundsForComponent(editor_.get(),editor_->getBounds().withSize(requested.width,requested.height),false,false,true,true);
+        else editor_->setSize(requested.width,requested.height);
+        requested=size();return true;
+    }
+    bool setScale(double)override{return false;} // JUCE's peer owns native DPI, never scale DSP/editor twice
+    void close()override {
+        if(!editor_)return;
+        editor_->setVisible(false);
+        processor_->editorBeingDeleted(editor_.get());
+        editor_.reset();processor_=nullptr;
+    }
+private:
+    juce::AudioPluginInstance* processor_;
+    std::unique_ptr<juce::AudioProcessorEditor> editor_;
+};
+} // namespace
+
+std::shared_ptr<DeviceEditor> Vst3Device::createEditor(EditorMode mode,std::string& error) {
+    error.clear();
+    if(mode!=EditorMode::Hosted){error="VST3 editors use the floating host's component mode";return {};}
+    if(auto existing=editor_.lock();existing && existing->valid())return existing;
+    if(!inst_ || !inst_->hasEditor()){error="This VST3 has no editor";return {};}
+    auto* component=inst_->createEditorAndMakeActive();
+    if(!component){error="VST3 refused to create its editor";return {};}
+    auto editor=std::make_shared<Vst3Editor>(*inst_,component);editor_=editor;return editor;
 }
 
 void Vst3Device::readParameters() {
