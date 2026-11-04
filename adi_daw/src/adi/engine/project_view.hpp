@@ -32,7 +32,9 @@ public:
     /// Rebuild from the store, sharing every node that did not change with the
     /// current snapshot (SnapshotBuilder). Call after a load and after every
     /// committed op, undo and redo. Returns the new generation.
-    std::uint64_t refresh(const Store& store);
+    /// After Session::refresh/reenableAutomation, pass its overriddenLanes().
+    /// Omitting the set is the no-session/offline view, with no overrides.
+    std::uint64_t refresh(const Store& store, const std::set<std::int64_t>& overridden = {});
 
     /// The current snapshot, or null before the first refresh. A frame takes
     /// this ONCE and hands the same pointer to every component (ADR-0050 d3).

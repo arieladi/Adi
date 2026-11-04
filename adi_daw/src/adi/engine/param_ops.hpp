@@ -29,10 +29,9 @@
 //   2. **Normalized is the wire unit.** Both formats can produce 0..1 (VST3
 //      natively; CLAP from the declared range), and `device.setParam` carries
 //      `norm` always and `real` when the descriptor has a range (ADR-0057).
-//   3. **`applied` compares before it sets.** Our own ops come back through
-//      the same path as an undo, and the device already holds their value;
-//      setting it again would only manufacture an echo. A value the device
-//      already has is skipped and counted, not re-sent.
+//   3. **`applied` compares before it sets.** Matching current value AND last
+//      accepted intent is skipped. A getter can lag a queued CLAP set, so an
+//      undo back to the old audible value still supersedes that pending set.
 //   4. **The first edit of a parameter in a session writes its starting value
 //      first.** `plugin_params` has no row for a parameter that was never
 //      touched (ADR-0057), so the inverse of the first op is "delete the row",
@@ -105,6 +104,16 @@ public:
 
     // --- message thread -----------------------------------------------------
 
+    /// N7, engine lift of 537c56d: synchronous window producer, separate from
+    /// every plug-in callback ring. Values reach the plug-in immediately;
+    /// Begin/Value/End emit a gesture and its first-touch opener into out.
+    /// Unbracketed values close on drain's quiet timer. The return is whether
+    /// THIS event was accepted. Commit ALL appended requests (even on refusal:
+    /// an older gesture may have completed), writing takeBlobs/writeBlobs first
+    /// as for drain. Every call belongs to the same owner/message thread.
+    bool uiEvent(std::int64_t deviceId, const std::string& paramId, ParamEventKind,
+                 double value, std::int64_t nowMs, std::vector<OpRequest>& out);
+
     /// Give a device a ring, seed the ring with every parameter's current
     /// value, and install the sink. False when the device is already attached.
     bool attach(std::int64_t deviceId, device::DeviceInstance& inst);
@@ -114,7 +123,8 @@ public:
     void detach(std::int64_t deviceId);
 
     /// Attach every loaded, non-retired entry of a session that is not yet
-    /// attached. Returns how many were new. Call again after `Session::refresh`.
+    /// attached, detach its retired entries and retain the session owner for
+    /// live automation override. Returns new attachments; call after refresh.
     std::size_t attachSession(Session& s);
 
     /// Drain every ring into `device.setParam` requests, appended to `out`.
@@ -167,6 +177,7 @@ public:
         std::int64_t applied = 0;        ///< devices set by `applied`
         std::int64_t appliedEqual = 0;   ///< skipped: the device already held it
         std::int64_t appliedCleared = 0; ///< skipped: the payload clears the row
+        std::int64_t appliedRefused = 0; ///< setParam refused; no mirror/echo intent retained
         std::int64_t unknownDevice = 0;
         std::int64_t unknownParam = 0;
         // --- ADR-0142 -------------------------------------------------------
@@ -184,6 +195,7 @@ public:
     };
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
     [[nodiscard]] const ParamEditCapture::Stats* captureStats(std::int64_t deviceId) const noexcept;
+    [[nodiscard]] const ParamEditCapture::Stats* uiCaptureStats(std::int64_t deviceId) const noexcept;
     [[nodiscard]] bool isAttached(std::int64_t deviceId) const noexcept;
 
     /// ADR-0154: the parameter last touched in this device's own window,
@@ -204,7 +216,10 @@ private:
     };
     struct Attached {
         device::DeviceInstance* inst = nullptr;
+        Session* session = nullptr; // attachSession's owner outlives this glue
         std::unique_ptr<ParamEditCapture> capture;   ///< stable address: the device holds it
+        std::unique_ptr<ParamEditCapture> uiCapture; ///< message thread, never handed to the device
+        std::set<std::int32_t> uiExplicit, uiPending;
         std::string name;
         bool active = false;
         std::uint64_t seenEpoch = 0;
@@ -216,8 +231,13 @@ private:
         std::set<std::string> stateRoles;
         std::set<std::string> paramIds;
     };
-    bool attachImpl(std::int64_t deviceId, device::DeviceInstance& inst, const Recorded* rec);
-    std::size_t emitEdits(std::int64_t id, Attached& a, std::vector<OpRequest>& out);
+    bool attachImpl(std::int64_t deviceId, device::DeviceInstance& inst, const Recorded* rec,
+                    Session* session = nullptr);
+    std::size_t emitEdits(std::int64_t id, Attached& a, std::vector<OpRequest>& out, bool fromUi = false);
+    std::size_t drainUi(std::int64_t id, Attached&, std::int64_t nowMs, std::vector<OpRequest>& out);
+    std::size_t flushUi(std::int64_t id, Attached&, std::int64_t nowMs, std::vector<OpRequest>& out);
+    void cancelUi(std::int64_t id, Attached&, std::int32_t index);
+    bool appliedImpl(const Payload&, std::int64_t nowMs, bool fromUi);
     std::size_t snapshotOne(std::int64_t id, Attached& a, std::vector<OpRequest>& out, bool save);
     void rereadParams(std::int64_t id, Attached& a);
     [[nodiscard]] static std::string hashOf(const std::vector<std::uint8_t>& bytes);

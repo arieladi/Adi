@@ -107,6 +107,8 @@ public:
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return inst_ != nullptr; }
 
+    [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
+
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
@@ -294,6 +296,7 @@ private:
 
     void readParameters();
 
+    std::weak_ptr<DeviceEditor> editor_;
     std::unique_ptr<juce::AudioPluginInstance> inst_;
     DeviceIdentity id_;
     std::vector<ParamDescriptor> params_;

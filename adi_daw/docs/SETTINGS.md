@@ -17,9 +17,8 @@ One typed table of every setting:
 - **page**: the left-hand list (R-01). Live's ten tab names for the settings Live has
   (ADR-0203 d11; Live 12 manual 2.3), in Live's order, then ADI's own pages.
 - **section**: Live's section within the tab ("Audio Device", "Latency", "Plug-In
-  Windows"); empty for the tab's own group. A setting of ADI's on a Live tab has a
-  section only where win placed it beside Live's nearest thing (marked in
-  `liveSections`, to strike).
+  Windows"); empty for the tab's own group. A setting of ADI's on a Live tab has no
+  section: the window draws it after Live's sections, under the tab's name.
 - **label** and **help**, which the Find box searches (R-02). Every word of the
   query must match somewhere in the label, help, key or page, ignoring case.
 - **default**, the legal **choices** or **range**, the **op** for a Project
