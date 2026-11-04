@@ -503,6 +503,7 @@ void ArrangementView::firstShownIfHidden() {
         return;
     geometry.selection.track = 0;
     geometry.selection.clip = 0;
+    geometry.selection.pickedClips.clear();
     for (const auto row : geometry.rows(reader()))
         if (geometry.shown(row.track->id)) {
             geometry.selection.track = row.track->id;
@@ -525,6 +526,7 @@ void ArrangementView::toggleFold(std::int64_t group) {
     if (!geometry.shown(geometry.selection.track) && geometry.shown(group)) {
         geometry.selection.track = group;
         geometry.selection.clip = 0;
+        geometry.selection.pickedClips.clear();
     }
     firstShownIfHidden();
     changed();
@@ -766,6 +768,7 @@ bool ArrangementView::command(int id) {
         const auto at = root.timelineTick();
         geometry.selection.insert = geometry.selection.start = geometry.selection.end = at;
         geometry.selection.clip = 0;
+        geometry.selection.pickedClips.clear();
         geometry.selection.marked = true;
         break;
     }
@@ -823,6 +826,7 @@ void ArrangementView::select(int x, int y, bool snapToGrid) {
         const auto *c = geometry.hit(*t, at);
         const auto tick = snapToGrid ? geometry.snap(at, false) : at;
         geometry.selection.clip = c ? c->id : 0;
+        geometry.selection.pickedClips.clear();
         geometry.selection.insert = tick;
         geometry.selection.marked = true;
         geometry.selection.start = c ? c->posTicks : tick;
@@ -850,6 +854,7 @@ void ArrangementView::selectClip(std::int64_t track, std::int64_t clip) {
             geometry.selection.toTrack = 0;
             geometry.selection.picked.clear();
             geometry.selection.clip = clip;
+            geometry.selection.pickedClips.clear();
             geometry.selection.start = c->posTicks;
             geometry.selection.end = c->posTicks + c->lengthTicks;
             changed();
@@ -880,6 +885,7 @@ bool ArrangementView::selectAll() {
     sel.track = first;
     sel.toTrack = last == first ? 0 : last;
     sel.clip = clips == 1 ? only : 0;
+    sel.pickedClips.clear();
     sel.start = from;
     sel.end = to;
     sel.insert = from;
@@ -1534,7 +1540,7 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 return;
             const float left = static_cast<float>(std::max(-1., x)),
                         right = static_cast<float>(std::min(end, static_cast<double>(getWidth() + 1)));
-            const bool picked = c->id == geo.selection.clip;
+            const bool picked = geo.clipSelected(c->id);
             // A clip in its track's colour: a solid title strip, a lighter body. A
             // deactivated clip is grey, as Live's.
             const auto clipColour = c->muted ? juce::Colour(0xff9a9a9a) : colour;
@@ -1653,6 +1659,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             view.geometry.selection.toTrack = 0;
             view.geometry.selection.picked.clear();
             view.geometry.selection.clip = c->id;
+            view.geometry.selection.pickedClips.clear();
             view.geometry.selection.start = c->posTicks;
             view.geometry.selection.end = c->posTicks + c->lengthTicks;
             resizing_ = c->id;
@@ -1661,6 +1668,20 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             view.changed();
             return;
         }
+        // Ctrl/Cmd+click on another clip picks it besides the selected one, or lets it go again
+        // (Live's "Select Multiple Items", §42.5); it moves nothing. A plain click lets them all go.
+        if (e.mods.isCommandDown() && view.geometry.selection.clip != 0)
+            if (const auto *t = view.geometry.trackAt(view.reader(), e.y))
+                if (const auto *c = view.geometry.hit(*t, view.geometry.tick(e.x));
+                    c != nullptr && c->id != view.geometry.selection.clip) {
+                    auto &picked = view.geometry.selection.pickedClips;
+                    if (const auto at = std::find(picked.begin(), picked.end(), c->id); at != picked.end())
+                        picked.erase(at);
+                    else
+                        picked.push_back(c->id);
+                    view.changed();
+                    return;
+                }
         // Shift extends the selection, in the same track or across tracks (Live 12 manual 6.9).
         if (e.mods.isShiftDown() && view.geometry.selection.marked) {
             extendTo(e.x, e.y, view.snaps(e.mods));
@@ -1810,6 +1831,7 @@ void ArrangementCanvas::extendTo(int x, int y, bool snapToGrid) {
     if (const auto *t = geo.trackAt(view.reader(), y))
         sel.toTrack = t->id == sel.track ? 0 : t->id;
     sel.clip = 0;
+    sel.pickedClips.clear();
     view.changed();
     announce(view.root.selectionText());
 }
@@ -1926,6 +1948,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             const auto far = tracks[to].track->id;
             sel.toTrack = far == sel.track ? 0 : far;
             sel.clip = 0;
+            sel.pickedClips.clear();
             view.changed();
             announce(view.root.selectionText());
             return true;
@@ -1934,6 +1957,7 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         sel.toTrack = 0;
         sel.picked.clear();
         sel.clip = 0;
+        sel.pickedClips.clear();
         view.changed();
         return true;
     }
@@ -1971,24 +1995,28 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         rangeEdit(k == juce::KeyPress('0'));
         return true;
     }
-    // Live's Delete, and 0 to deactivate (§6.9), on the selected clip.
-    if (const auto clip = view.geometry.selection.clip; clip != 0) {
-        if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) {
-            if (!clipEdit("clip.delete", {{"id", clip}}, "Delete Clip"))
+    // Live's Delete, and 0 to deactivate (§6.9), on the selected clips: the one clicked and those
+    // picked besides it with Ctrl/Cmd+click, one undo step for them all, from the CURRENT cell.
+    if (view.geometry.selection.clip != 0) {
+        const bool erase = k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey;
+        if (erase || k == juce::KeyPress('0')) {
+            const auto current = view.root.current();
+            if (!current)
+                return true;
+            const auto ids = view.geometry.selectedClips();
+            auto edit = erase ? deleteClips(current->tracks, ids) : deactivateClips(current->tracks, ids);
+            // A refused edit is still the key's: the Status Bar says why.
+            if (!edit.refusal.empty()) {
+                view.root.say(edit.refusal);
+                return true;
+            }
+            if (!view.root.submitEdits(std::move(edit.ops)) || !erase)
                 return true;
             sel.clip = 0;
+            sel.pickedClips.clear();
             sel.end = sel.start;
             sel.insert = sel.start;
             view.changed();
-            return true;
-        }
-        if (k == juce::KeyPress('0')) {
-            // A refused edit is still the key's: the Status Bar says why.
-            if (const auto *t = view.reader().findTrack(view.geometry.selection.track))
-                for (const auto &c : t->clips)
-                    if (c->id == clip)
-                        clipEdit("clip.setMute", {{"id", clip}, {"muted", !c->muted}},
-                                 c->muted ? "Activate Clip" : "Deactivate Clip");
             return true;
         }
     }
@@ -2012,6 +2040,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
             sel.start = sel.end = sel.insert;
         sel.end = edgeKey ? clipEdge(sel.end, forward) : geo.nextGridLine(sel.end, forward);
         sel.clip = 0;
+        sel.pickedClips.clear();
         sel.marked = true;
         const auto lo = std::min(sel.start, sel.end), hi = std::max(sel.start, sel.end);
         if (track != nullptr)
@@ -2029,6 +2058,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
                                                : std::min(sel.start, sel.end);
         sel.insert = sel.start = sel.end = clipEdge(from, forward);
         sel.clip = 0;
+        sel.pickedClips.clear();
         sel.marked = true;
         view.locate();
         view.changed();
@@ -2040,6 +2070,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         // right to its end.
         sel.insert = sel.start = sel.end = forward ? std::max(sel.start, sel.end) : std::min(sel.start, sel.end);
         sel.clip = 0;
+        sel.pickedClips.clear();
         view.locate();
         view.changed();
         announce(view.root.selectionText());

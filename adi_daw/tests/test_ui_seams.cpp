@@ -1063,6 +1063,45 @@ void rangeEditsAsBatches() {
     }
     check(ui::SessionState(*store).selection().picked == std::vector<std::int64_t>{3, 4},
           "and read back with them");
+
+    // Clips picked with Ctrl/Cmd+click (Live's "Select Multiple Items", §42.5): the geometry counts
+    // them, Delete and 0 act on them all, and the session keeps them.
+    geo.selection = {};
+    geo.selection.clip = 1;
+    geo.selection.pickedClips = {3, 1};
+    check(geo.clipSelected(1) && geo.clipSelected(3) && !geo.clipSelected(2) &&
+              geo.selectedClips() == std::vector<std::int64_t>{1, 3},
+          "the clicked clip and the one picked besides it are selected, the clicked one first");
+    auto quiet = ui::deactivateClips(view.current()->tracks, geo.selectedClips());
+    check(quiet.refusal.empty() && quiet.ops.size() == 2 && quiet.ops[0].label == "Deactivate Clips" &&
+              sub.submit(std::move(quiet.ops)).ok && view.current()->findTrack(1)->clips[0]->muted &&
+              view.current()->findTrack(3)->clips[0]->muted && !view.current()->findTrack(2)->clips[0]->muted,
+          "0 deactivates both picked clips, one step; the third stays");
+    auto loud = ui::deactivateClips(view.current()->tracks, geo.selectedClips());
+    check(loud.ops.size() == 2 && loud.ops[0].label == "Activate Clips" && loud.ops[0].payload["muted"] == false,
+          "0 again, both off: activates them");
+    auto one = ui::deactivateClips(view.current()->tracks, {2});
+    check(one.ops.size() == 1 && one.ops[0].label == "Deactivate Clip", "one clip is named as one");
+    auto both = ui::deleteClips(view.current()->tracks, geo.selectedClips());
+    check(both.ops.size() == 2 && both.ops[0].label == "Delete Clips" && sub.submit(std::move(both.ops)).ok &&
+              view.current()->findTrack(1)->clips.empty() && view.current()->findTrack(3)->clips.empty() &&
+              view.current()->findTrack(2)->clips.size() == 1,
+          "Delete removes both picked clips, one step");
+    check(sub.undo().ok && sub.undo().ok && view.current()->findTrack(1)->clips.size() == 1 &&
+              !view.current()->findTrack(1)->clips[0]->muted,
+          "two undos bring them back, active");
+    check(ui::deleteClips(view.current()->tracks, {99}).refusal == "Select a clip to delete.",
+          "no clip left to act on: refused, with the reason");
+    {
+        ui::SessionState session(*store);
+        ui::Selection chosen;
+        chosen.track = 1;
+        chosen.clip = 1;
+        chosen.pickedClips = {3};
+        std::string why;
+        check(session.select(chosen, why), "a selection with picked clips is kept");
+    }
+    check(ui::SessionState(*store).selection().pickedClips == std::vector<std::int64_t>{3}, "and read back with them");
 }
 
 void returnsStandBeforeMain() {

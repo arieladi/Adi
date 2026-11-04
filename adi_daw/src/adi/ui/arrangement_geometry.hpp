@@ -148,6 +148,21 @@ struct ArrangementGeometry {
     // Whether the selection covers a track: a time selection across tracks covers every track from
     // `selection.track` to `selection.toTrack` in the lanes' order (Live 12 manual 6.9); otherwise
     // just the selected track.
+    // Whether a clip is selected: the selected one, or one picked besides it with Ctrl/Cmd+click.
+    bool clipSelected(std::int64_t id) const noexcept {
+        return id != 0 && (id == selection.clip || std::find(selection.pickedClips.begin(), selection.pickedClips.end(),
+                                                             id) != selection.pickedClips.end());
+    }
+    // The selected clips: the selected one first, then those picked besides it.
+    std::vector<std::int64_t> selectedClips() const {
+        std::vector<std::int64_t> out;
+        if (selection.clip != 0)
+            out.push_back(selection.clip);
+        for (const auto id : selection.pickedClips)
+            if (id != selection.clip)
+                out.push_back(id);
+        return out;
+    }
     bool inSelection(const SnapshotReader &reader, std::int64_t id) const noexcept {
         if (id == 0)
             return false;

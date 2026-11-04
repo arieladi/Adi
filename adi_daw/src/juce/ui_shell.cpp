@@ -1112,6 +1112,7 @@ bool AdiRootComponent::insertReturnTrack() {
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = 0;
+    arrangement.geometry.selection.pickedClips.clear();
     publishSelection();
     arrangement.applyView();
     return true;
@@ -1131,6 +1132,7 @@ bool AdiRootComponent::deleteTrack() {
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = 0;
     arrangement.geometry.selection.clip = 0;
+    arrangement.geometry.selection.pickedClips.clear();
     publishSelection();
     return true;
 }
@@ -1181,6 +1183,7 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
     sel.toTrack = 0;
     sel.picked.clear();
     sel.clip = edit.clip;
+    sel.pickedClips.clear();
     if (const auto now = view_.current())
         if (const auto *t = now->findTrack(edit.select))
             for (const auto &c : t->clips)
@@ -1211,6 +1214,7 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = 0;
+    arrangement.geometry.selection.pickedClips.clear();
     publishSelection();
     return true;
 }
