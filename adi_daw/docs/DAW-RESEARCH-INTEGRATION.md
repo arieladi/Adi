@@ -58,3 +58,7 @@ The 610-entry Live contents inventory retains stable IDs and now links 373 entri
 A7A/A7B/A7M describe device behavior and edge cases; A7R adds bounded preset/schema and Push controls; A7N records selected REA/Ghidra observations. The private DEVICE-RESEARCH-MISSIONS-7.md contains matching cases and nine device censuses. Thirteen original fixtures supply precise audio/event inputs, with all runtime results NOT RUN. Earlier host gaps and all L01–L10 questions stay open.
 
 Current FEATURES/decisions/parity remain authoritative. ADR-0169 defines the existing device priorities; ADR-0187 candidates remain candidates. ADR-0203 d7 governs randomness, and ADR-0207 d2 already sets ADI precision. These findings add no priority, DSP implementation or new ADR. The manual and bounded installed-file evidence do not prove factory defaults, exact DSP curves, numeric latency, audio equivalence or CPU advantage.
+
+## Drum Rack and Pack compatibility — milestone 8
+
+66 contracts: {'D': 25, 'P': 28, 'L': 12, 'I': 1}. D=Drum Rack; P=Pack effects; L=legacy; I=installation boundary. Each has an ADI implication and an unexecuted M8 case. Drum Rack is included; other instruments remain excluded except Sampler/Simpler. Prior decisions and priorities remain authoritative. The inspected default Packs directory is empty, so public capability research is not installed evidence. See ableton-12.md v0.8 and private PACK-RACK-MISSIONS-8.md. No GUI/audio/CPU measurements.
