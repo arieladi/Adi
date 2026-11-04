@@ -665,6 +665,15 @@ audio callbacks before allocation or OS access. See ENGINE-SCAN-PROCESS.md.
 This process boundary alone does not change the CLAP/VST3 discovery methods or
 implement their durable quarantine; those integration items remain separate.
 
+Plug-in scan quarantine is shared application data in PluginRegistry version 2,
+not a project op. Owner beginScan commits a pending marker before child launch;
+opaque connection/attempt tickets constrain completion, failures retain a named
+block, and explicit blockScan/unblockScan provide disable/re-enable. scanBlocks
+exposes bounded sorted owned rows for the window. Callback entry points refuse
+before SQL/allocation. See ENGINE-SCAN-QUARANTINE.md. Discovery/helper integration
+is separate; this persistence API alone does not move existing scans out of
+process or change project/runtime instantiation policy.
+
 The `transport.*` ops are **performance**, not editing. They write no project
 state, and appending them to undo history would bury the last real edit under
 navigation.
