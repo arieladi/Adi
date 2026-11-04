@@ -584,6 +584,17 @@ these rows in reverse order; Redo uses captured payloads without reading files.
 Existing deduplicated rows keep their stored metadata; capture still supplies
 current source dimensions to the caller.
 
+**Audio input recording (N20).** Session::startRecording captures selected
+AudioIo inputs into worker-owned WAV files. After stop/acknowledgment and owner
+poll, recording::prepareCommit(store, AudioRecordingResult, ClipIds[]) captures
+one media/import-or-relink + clip/create + audio/attach batch for the whole
+pass; recording::commit applies it as one native undo step. No new opcode or
+schema is required. Head, source-project, sample-boundary, file-hash and
+publication guards preserve a take for retry on failure. Replay/redo use the
+captured rows, never the recorder. See ENGINE-AUDIO-RECORDING.md for the caller's
+document-generation/driver contracts, publication ownership and initial linear,
+raw-input scope; per-device channel configuration remains win/window work.
+
 `clip.attachAudio {id, media, frames}` attaches source frames `[0,frames)` to
 an existing audio clip, with Warp off and all audio properties at defaults.
 `frames` must be positive and within the media's frame count when known. Missing

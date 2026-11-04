@@ -246,6 +246,8 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/audio_recording.cpp
+    src/adi/recording_commands.cpp
     src/adi/engine/gain_stage.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/audio_memory.cpp
@@ -1264,6 +1266,14 @@ function(adi_add_samplerate)
 endfunction()
 adi_add_samplerate()
 target_sources(adi_core PRIVATE src/adi/engine/transport.cpp src/adi/engine/clip_playback.cpp)
+
+add_executable(adi_audio_recording_tests tests/test_audio_recording.cpp)
+target_link_libraries(adi_audio_recording_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_audio_recording_tests COMMAND adi_audio_recording_tests)
+
+add_executable(adi_recording_commands_tests tests/test_recording_commands.cpp)
+target_link_libraries(adi_recording_commands_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_recording_commands_tests COMMAND adi_recording_commands_tests)
 target_link_libraries(adi_core PRIVATE samplerate)
 add_executable(adi_clip_playback_tests tests/test_clip_playback.cpp)
 target_link_libraries(adi_clip_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
