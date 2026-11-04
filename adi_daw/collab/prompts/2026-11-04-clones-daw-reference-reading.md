@@ -22,3 +22,13 @@ Finish with a useful, bounded milestone: independent behavior contracts now supp
 The director requests deep study of all host features beyond the initial lane questions, prioritizing Cubase F7 Direct Offline Processing and advanced fades/arrangement audio utilities, Live warp and MIDI functions, and Bitwig modular/modulation behavior. Skip built-in effect/instrument implementations. Keep editor transformations, DOP audio utilities, Grid/host modulation semantics, plug-in hosting, routing and integration in scope.
 
 Work in bounded, evidence-backed passes without claiming the entire app is understood. Maintain a coverage inventory with gaps, exact versions and unmeasured behaviors. Connect every recorded contract to ADI's existing decisions/needs. Include ownership, state transitions, persistence, failure/cancel and undo boundaries, not just control descriptions. The v0.2 app files add 127 contract rows and host-wide queues; private DEEP-CLAUDE-MISSIONS.md supplies nine reproducible missions. The no-GUI-testing instruction above continues to apply. No processor algorithm or product implementation is requested.
+
+
+
+## Director clarification — the examples are not the scope
+
+Research every intended feature in all 15 Dream Reference sections, cross-checking the whole current FEATURES list and decisions. Treat offline processing, warp/MIDI and modulation as examples, not a stopping boundary. The whole-feature register now decomposes 220 requirements and an independent index retains 319 FEATURES table data rows (including metadata). These are completeness guards, not completed measurements.
+
+Read and maintain docs/DAW-RESEARCH-COVERAGE.md, DAW-RESEARCH-FEATURE-INDEX.md and DAW-RESEARCH-INTEGRATION.md alongside the five per-app notes. Include controllers, workspace/accessibility, files/history, routing/monitoring, host lifecycle, export/interchange, AI/collaboration, telemetry, mobile and ADiJ. Where three reference DAWs have no equivalent, state that an independent ADI contract/primary-source study is needed rather than inventing parity. Preserve explicit exclusions and deferred work. Built-in reference device implementations stay excluded; host integration remains included.
+
+Each research claim needs ownership, trigger/state transition, undo, persistence, failure and relevant numerical/timing evidence. Do not close an entire feature because its description is known. Continue independent static work while separate Claude missions cover live behavior. No GUI automation, product implementation or silent ADR change is authorized by this research expansion.
