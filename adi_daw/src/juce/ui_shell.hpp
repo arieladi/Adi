@@ -198,6 +198,11 @@ class AdiRootComponent final : public juce::Component {
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.
     bool dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const std::string &name);
+    // Several files dropped at once, each a (path, clip name): one after another on that track, or
+    // with `separate` (Ctrl/Cmd held) the first there and each other on a new audio track of its own
+    // (`adi::ui::dropAudio`). Each file is read and captured first; one undo step for them all.
+    bool dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                        std::int64_t pos, bool separate);
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
     // own, and the ZoomHost around the root applies it as a transform.
     float interfaceZoom() const noexcept { return interfaceZoom_; }

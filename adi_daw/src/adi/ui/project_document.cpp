@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <algorithm>
 #include <chrono>
 namespace adi::ui {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
@@ -123,7 +124,9 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
 bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).
-    const auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64();
+    // Past what files captured before it in the same drop took (AudioImport::firstFreeId).
+    const auto id = std::max(out.firstFreeId,
+                             store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM media_files").getInt64());
     OpRequest captured;
     const auto result = media::prepareImport(*store_, pathFromUtf8(utf8Path), id, nowUtc, captured);
     if (!result.ok) {

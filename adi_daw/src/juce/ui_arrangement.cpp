@@ -2102,7 +2102,8 @@ std::int64_t ArrangementCanvas::clipEdge(std::int64_t tick, bool forward) const 
     return best;
 }
 bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
-    return files.size() == 1;
+    // One file or several, as Live takes them; what each holds is read on the drop.
+    return !files.isEmpty();
 }
 void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int y) {
     // Live's drop (manual 6.1): the clip starts where the file was dropped, on the nearest grid
@@ -2114,8 +2115,13 @@ void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int 
     const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
     const auto at = !view.snaps(juce::ModifierKeys::currentModifiers) ? raw : (raw - down <= up - raw ? down : up);
     const auto *track = view.geometry.trackAt(view.reader(), y);
-    const auto file = juce::File::createFileWithoutCheckingPath(files[0]);
-    view.root.dropAudio(files[0].toStdString(), track != nullptr ? track->id : 0, at,
-                        file.getFileNameWithoutExtension().toStdString());
+    // Several files go one after another on that track, or each on a track of its own with Ctrl/Cmd
+    // held, as Live places them; one undo step for them all.
+    std::vector<std::pair<std::string, std::string>> dropped;
+    for (const auto &path : files)
+        dropped.emplace_back(path.toStdString(),
+                             juce::File::createFileWithoutCheckingPath(path).getFileNameWithoutExtension().toStdString());
+    view.root.dropAudioFiles(dropped, track != nullptr ? track->id : 0, at,
+                             juce::ModifierKeys::currentModifiers.isCommandDown());
 }
 } // namespace adi::ui
