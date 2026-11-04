@@ -1,5 +1,19 @@
 # Clones lane log
 
+## 2026-11-04 — REAPER/Reason depth and Pd fit, milestone 11
+
+Research commit 6f09739fffefef35f6e943381669797882963b2a adds 165 entries: 58 REAPER editing, 47 export, 40 Reason rack/Combinator and 20 ADI source-audit findings. REAPER is v0.5 and Reason 14 v0.2. Each entry has evidence, an ADI implication, status and a paired unexecuted case. Six original JSON diagnostic specifications sharpen editing scope, render signal paths, queue revision/publication, macro composition, rack relationships and Pd segment timing. Instruments excluded; FEATURES, decisions and Live parity retained; no new priorities, ADRs or product code.
+
+Useful distinctions: source/take/item/comp and derivative ownership; directed grouped editing and ripple/lock/tempo scope; master-FX-only versus via-master rendering; partial presets, processing/rate/postprocess and output lifecycle; macro domains and discrete targets; graph reparent/duplicate/unwrap; asset and controller scope; feedback/compensation and missing dependencies. Reason Shift-move prose and REAPER repair/pipeline descriptions retain explicit uncertainty.
+
+Correction: M10 R10H079 incorrectly attributed an enqueue-time source snapshot to ADI. ADR0071d5 resolves names at render time; queue.cpp reads a consistent source/range/tempo/name revision at job start. Current notes correct that mapping; ERRATA-11.md supersedes the earlier design-note recommendation. Old bundles remain unchanged. Installed release notes distinguish WITH master FX from VIA master; not a measured result.
+
+The 25 source files match product baseline 5c9e1cd8. At the separate user checkout 9bd55a8e, 7 match, 12 differ and 6 are absent, so this is not a latest-remote implementation claim. The audit identifies lower-level Pd facilities plus normal-loader/parameter/state and nested-rack integration gaps. ADI host owns graph, IDs, mappings, history and assets; Pd/native code handles processing. Canonical native eligibility allows CRLF/LF equivalence, generic WholeBlocks requires every segment to fit its block contract, and feedback/adapter/effect delays remain distinct.
+
+Independent export/Pd review and 102 artifact/source checks passed, including 64 unique local source hashes, exact cases, historical preservation, citation line endpoints and six specification hashes. REAPER 7.79 and Reason 14.1.0.8292 executable hashes unchanged. Guide 7.80 and API 7.83 remain version-qualified. Public-page budgets include retained/new titles and behavior.
+
+E59–E62 retain sources, reviews, corrections, validation and reports. No DAW/plugin execution, GUI capture, audio/CPU, product build/test, new binary-analysis run, app update, push, PR, merge or external message. Separate Claude owns live missions; win's earlier Live questions remain open.
+
 ## 2026-11-04 — REAPER and Reason, milestone 10
 
 Research commit b01cc9912d66f310a475157a5404a96508491c90 adds 188 entries: 83 REAPER host, 23 JSFX/ReaScript/developer, 69 Reason documentary and 13 installed static findings. REAPER v0.4 now exceeds the earlier individually referenced scope; Reason 14 v0.1 is new. Each entry has a source, ADI consequence, status and one unexecuted case. Other standalone instruments remain excluded. Current FEATURES, decisions and Live parity remain authoritative; no new priority, editor/runtime, ADR or product code.
