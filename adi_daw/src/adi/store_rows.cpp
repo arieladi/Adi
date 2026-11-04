@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store_rows.hpp"
+#include "adi/controller_lanes.hpp"
 
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
@@ -495,6 +496,14 @@ Model readModel(const Store& store) {
         d.blob = std::move(*blob);
         m.automationData.push_back(std::move(d));
     }
+
+    auto controllerRows = controllers::readLanes(store);
+    if (!controllerRows.ok)
+        m.problems.push_back("event_streams controllers: " + controllerRows.error);
+    for (const auto &lane : controllerRows.lanes)
+        if (!lane.error.empty())
+            m.problems.push_back("event_streams controller " + std::to_string(lane.id) + ": " + lane.error);
+    m.controllers = std::move(controllerRows.lanes);
 
     // Notes come through the Store's blob accessors rather than a SELECT,
     // because ADR-0009's granularity rule lives there and this should not be a

@@ -110,6 +110,18 @@ bool noteExpressionOut(const Event& in, const ExpressionCaps& caps, MpeOut& out)
             return true;
         }
 
+        case EventType::Controller: {
+            if (in.channel > 15 || in.paramId > 127 || !std::isfinite(in.value) || in.value < 0 ||
+                in.value > 1)
+                return false;
+            out.kind = MpeOut::Kind::Control;
+            out.channel = in.channel;
+            out.ctrl = static_cast<std::uint16_t>(in.paramId);
+            out.value = in.value;
+            out.word = static_cast<std::uint16_t>(std::lround(in.value * 127.0));
+            out.paramId = caps.controllerParam[in.channel][in.paramId];
+            return true;
+        }
         case EventType::ParamValue:
         case EventType::ParamMod:
             return false;
@@ -225,7 +237,10 @@ void MpeRouter::control(std::uint8_t chan, std::uint16_t ctrl, double v, std::in
         const double u = clampUnit(v);
         o.word = static_cast<std::uint16_t>(std::lround(u * 127.0));
         o.value = u;
-        if (ctrl == kCtrlAfterTouch) o.paramId = caps_.pressureParam[c];
+        if (ctrl < 128 && caps_.controllerParam[c][ctrl] != kNoParam)
+            o.paramId = caps_.controllerParam[c][ctrl];
+        else if (ctrl == kCtrlAfterTouch)
+            o.paramId = caps_.pressureParam[c];
         else if (ctrl == kCtrlTimbre) o.paramId = caps_.timbreParam[c];
         else if (chan == 0 && ctrl == 101) o.paramId = caps_.rpnParam[0];
         else if (chan == 0 && ctrl == 100) o.paramId = caps_.rpnParam[1];
@@ -255,6 +270,12 @@ void MpeRouter::route(const Event* events, std::int32_t n, std::int32_t segmentS
             case EventType::NoteOn:         noteOn(events, n, i, out); break;
             case EventType::NoteOff:        noteOff(events[i], out); break;
             case EventType::NoteExpression: expression(events[i], out); break;
+            case EventType::Controller:
+                if (events[i].channel < 16 && events[i].paramId < 128 && std::isfinite(events[i].value) &&
+                    events[i].value >= 0 && events[i].value <= 1)
+                    control(events[i].channel, static_cast<std::uint16_t>(events[i].paramId), events[i].value,
+                            events[i].frame, events[i].noteId, out);
+                break;
             case EventType::ParamValue:
             case EventType::ParamMod:       break;   // addressed, not a note stream (ADR-0091)
         }

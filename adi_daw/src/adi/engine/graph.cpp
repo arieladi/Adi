@@ -909,6 +909,21 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
 
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
+    controllerSources_.clear();
+    controllerSources_.reserve(slots_.size());
+    for (const auto &slot : slots_)
+        if (slot.node) {
+            const auto prefix = slot.node->controllerSourcePrefix();
+            if (prefix)
+                controllerSources_.push_back({prefix, slot.node});
+        }
+    std::sort(controllerSources_.begin(), controllerSources_.end(),
+              [](const auto &left, const auto &right) { return left.first < right.first; });
+    for (std::size_t i = 1; i < controllerSources_.size(); ++i)
+        if (controllerSources_[i - 1].first == controllerSources_[i].first) {
+            error_ = "duplicate controller source prefix";
+            return;
+        }
 
     // ADR-0042's floor, clamped by ADR-0054's bound. Clamped rather than
     // rejected: a caller asking for 128 at 48 kHz wants fewer segments, and
@@ -1267,10 +1282,27 @@ bool Graph::mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& d
     return true;
 }
 
+void Graph::acknowledgeController(const Event &event, bool delivered) noexcept {
+    const auto prefix = static_cast<std::uint32_t>(event.noteId >> 32);
+    if (!prefix)
+        return;
+    const auto found = std::lower_bound(controllerSources_.begin(), controllerSources_.end(), prefix,
+                                        [](const auto &item, std::uint32_t key) { return item.first < key; });
+    if (found == controllerSources_.end() || found->first != prefix)
+        return;
+    if (delivered)
+        found->second->controllerDelivered(event);
+    else
+        found->second->controllerRejected(event);
+}
 void Graph::forwardEvents(std::int32_t frames) noexcept {
-    auto rejected = [&](const Event& e) {
+    auto rejected = [&](const Event &e) {
+        if (e.type == EventType::Controller)
+            acknowledgeController(e, false);
         if (e.type == EventType::NoteOff)
-            for (auto& source : slots_) if (source.node) source.node->noteOffRejected(e);
+            for (auto &source : slots_)
+                if (source.node)
+                    source.node->noteOffRejected(e);
     };
     const std::int64_t end = now_ + frames;
 
@@ -1816,8 +1848,14 @@ void Graph::process(const AudioIo& io) noexcept {
         const auto& delivered = slots_[i];
         if (!delivered.node || (static_cast<NodeId>(i) != output_ &&
             delivered.node->eventFlow() != EventFlow::Consume)) continue;
-        for (const auto& e : delivered.events) if (e.type == EventType::NoteOff)
-            for (auto& source : slots_) if (source.node) source.node->noteOffDelivered(e);
+        for (const auto &e : delivered.events) {
+            if (e.type == EventType::Controller)
+                acknowledgeController(e, true);
+            if (e.type == EventType::NoteOff)
+                for (auto &source : slots_)
+                    if (source.node)
+                        source.node->noteOffDelivered(e);
+        }
     }
     for (auto& s : slots_) {
         stats_.eventsDropped += s.events.dropped();

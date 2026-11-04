@@ -207,7 +207,12 @@ public:
     virtual void noteOffDelivered(const Event&) noexcept {}
     /// Forwarding refused an off; its source must retain and retry ownership.
     virtual void noteOffRejected(const Event&) noexcept {}
-
+    // Immutable owner-assigned prefix; zero means no controller acknowledgements.
+    virtual std::uint32_t controllerSourcePrefix() const noexcept {
+        return 0;
+    }
+    virtual void controllerDelivered(const Event &) noexcept {}
+    virtual void controllerRejected(const Event &) noexcept {}
 
     /// How long this node keeps producing after its input goes quiet.
     /// `kInfiniteTail` means never suspend — the right answer for a feedback
@@ -1136,6 +1141,9 @@ private:
     std::int32_t computeSplits(std::int32_t frames) noexcept;
 
     std::vector<Slot> slots_;
+    std::vector<std::pair<std::uint32_t, Node *>> controllerSources_;
+    void acknowledgeController(const Event &, bool delivered) noexcept;
+
     /// Each slot's `latencySamples()` as last asked on the message thread
     /// (prepare, retap), for the audio thread to read when it forwards events
     /// (ADR-0123). Sized at prepare, never resized on the audio thread.
