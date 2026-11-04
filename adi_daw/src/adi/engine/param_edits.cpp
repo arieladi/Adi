@@ -2,6 +2,7 @@
 #include "adi/engine/param_edits.hpp"
 
 #include <cmath>
+#include <algorithm>
 #include <stdexcept>
 
 namespace adi::engine {
@@ -45,6 +46,32 @@ void ParamEditCapture::expectEcho(std::int64_t deviceId, std::int32_t paramIndex
     p.guarded = true;
     p.echo = value;
     p.armedMs = nowMs;
+    p.echoes.clear();
+}
+void ParamEditCapture::expectAdditionalEcho(std::int64_t deviceId, std::int32_t paramIndex,
+                                          double value, std::int64_t nowMs) {
+    auto& p = parameters_[{deviceId,paramIndex}];
+    if (p.echoes.empty() && p.guarded && elapsed(nowMs,p.armedMs) <= static_cast<std::uint64_t>(echoTtlMs_))
+        p.echoes.push_back({p.echo,p.armedMs});
+    std::erase_if(p.echoes,[&](const Parameter::Echo& echo) {
+        return elapsed(nowMs,echo.armedMs) > static_cast<std::uint64_t>(echoTtlMs_);
+    });
+    constexpr std::size_t bound = 256;
+    if (p.echoes.size() == bound) p.echoes.erase(p.echoes.begin());
+    p.echoes.push_back({value,nowMs});
+    p.guarded = true; p.echo = value; p.armedMs = nowMs;
+}
+void ParamEditCapture::cancelEcho(std::int64_t deviceId, std::int32_t paramIndex) {
+    const auto found = parameters_.find({deviceId,paramIndex});
+    if (found == parameters_.end()) return;
+    found->second.guarded = false; found->second.echoes.clear();
+}
+void ParamEditCapture::cancel(std::int64_t deviceId, std::int32_t paramIndex) {
+    const auto found = parameters_.find({deviceId,paramIndex});
+    if (found == parameters_.end()) return;
+    auto& p = found->second;
+    p.open = false; p.hasValue = false; p.implicit = false;
+    p.guarded = false; p.echoes.clear();
 }
 void ParamEditCapture::setQuietMs(std::int64_t ms) {
     if (ms < 0) throw std::invalid_argument("negative quiet interval");
@@ -84,6 +111,15 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
     const auto start = out.size();
     // Expire before processing queued values, even when the queue is empty.
     for (auto& [key, p] : parameters_) {
+        if (!p.echoes.empty()) {
+            std::erase_if(p.echoes,[&](const Parameter::Echo& echo) {
+                return elapsed(nowMs,echo.armedMs) > static_cast<std::uint64_t>(echoTtlMs_);
+            });
+            if (p.echoes.empty() && p.guarded) {
+                p.guarded = false;
+                ++stats_.guardsExpired;
+            }
+        }
         if (p.guarded && elapsed(nowMs, p.armedMs) > static_cast<std::uint64_t>(echoTtlMs_)) {
             p.guarded = false;
             ++stats_.guardsExpired;
@@ -116,12 +152,20 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             else ++stats_.strayEnds;
             break;
         case ParamEventKind::Value:
-            if (p.guarded && !p.open && std::abs(event.value - p.echo) <= echoTolerance_) {
-                p.last = p.echo;
-                p.known = true;
-                p.guarded = false;
-                ++stats_.echoesSwallowed;
-                break;
+            if (p.guarded && !p.open) {
+                auto expected = std::find_if(p.echoes.begin(),p.echoes.end(),[&](const Parameter::Echo& echo) {
+                    return std::abs(event.value-echo.value) <= echoTolerance_;
+                });
+                const bool matched = p.echoes.empty() ? std::abs(event.value-p.echo) <= echoTolerance_
+                                                      : expected != p.echoes.end();
+                if (matched) {
+                    p.last = p.echoes.empty() ? p.echo : expected->value;
+                    p.known = true;
+                    if (!p.echoes.empty()) p.echoes.erase(expected);
+                    p.guarded = !p.echoes.empty();
+                    ++stats_.echoesSwallowed;
+                    break;
+                }
             }
             touched = event.paramIndex;
             touchedExplicit = p.open && !p.implicit;

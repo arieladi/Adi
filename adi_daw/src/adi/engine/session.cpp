@@ -1,4 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_groups.hpp"
+#include "adi/freeze_state.hpp"
+#include "adi/media/media_ops.hpp"
+#include "adi/row_capture.hpp"
+#include <SQLiteCpp/SQLiteCpp.h>
 //
 // The session. See session.hpp for the three decisions; this file is their
 // mechanics. ADR-0122.
@@ -8,8 +13,12 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "juce/clap_host.hpp"
+#include "adi/engine/audio_recording.hpp"
 
 #include <algorithm>
+#include <numbers>
+#include <limits>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -37,8 +46,24 @@ device::ParamValue valueOf(const rows::PluginParam& p) noexcept {
 
 }  // namespace
 
-Session::Session() = default;
+Session::Session():recording_(std::make_unique<AudioInputRecorder>()) {}
 Session::~Session() = default;
+
+AudioInputRecorder& Session::recording() noexcept{return *recording_;}
+bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
+    if(!live_){error="No active audio session for recording";return false;}
+    if(options.sampleRate!=spec_.sampleRate || options.maxFrames!=static_cast<std::uint32_t>(spec_.maxFrames)) {
+        error="Recording format must match the active audio device";return false;
+    }
+    for(const auto& target:options.targets) {
+        const auto track=std::find_if(model_.tracks.begin(),model_.tracks.end(),[&](const auto& row){return row.id==target.trackId;});
+        if(track==model_.tracks.end() || !track->recordArmed || (track->kind!="audio" && track->kind!="midi")) {
+            error="Recording target must be an armed audio or MIDI track";return false;
+        }
+    }
+    auto captured=options;captured.sourceProject=recordingProject_;
+    return recording_->start(captured,error);
+}
 
 // ---------------------------------------------------------------------------
 // Lookups
@@ -83,6 +108,8 @@ std::vector<device::DeviceNode*> Session::chainFor(std::int64_t trackId) {
     int chainsOnTrack = 0;
     for (const rows::DeviceChain& c : model_.deviceChains) {
         if (!c.trackId || *c.trackId != trackId) continue;
+        if (frozenSources_.contains(trackId))
+            continue;
         ++chainsOnTrack;
         // `devices` is sorted by chainId first, so the chain's rows are one run.
         auto first = std::lower_bound(
@@ -272,6 +299,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
 
 void Session::resolveNewRows(const Store& store) {
     for (const rows::Device& row : model_.devices) {
+        if (parkedDevice(row))
+            continue;
         const auto it = byId_.find(row.id);
         if (it == byId_.end()) {
             resolveOne(store, row);
@@ -281,6 +310,12 @@ void Session::resolveNewRows(const Store& store) {
         // waiting, state and all. That is the payoff of retiring rather than
         // destroying: the undo restores the sound, not a fresh default.
         Entry& e = entries_[it->second];
+        if (e.retired && e.parked) {
+            // Never resume voices/delay history left in an instance before its
+            // cache was installed. Restore from the preserved project state.
+            resolveOne(store, row);
+            continue;
+        }
         if (e.retired) {
             e.retired = false;
             --stats_.retired;
@@ -291,13 +326,18 @@ void Session::resolveNewRows(const Store& store) {
 void Session::retireDepartedRows() {
     for (Entry& e : entries_) {
         if (e.retired) continue;
-        const bool present = std::any_of(
-            model_.devices.begin(), model_.devices.end(),
-            [&](const rows::Device& d) { return d.id == e.deviceId; });
+        const bool present =
+            std::any_of(model_.devices.begin(), model_.devices.end(),
+                        [&](const rows::Device &d) { return d.id == e.deviceId && !parkedDevice(d); });
         if (present) continue;
+        for (const auto &row : model_.devices)
+            if (row.id == e.deviceId)
+                e.parked = parkedDevice(row);
         e.retired = true;
         e.trackId = 0;
         ++stats_.retired;
+        if (e.parked)
+            continue;
         sessionProblems_.push_back("devices#" + std::to_string(e.deviceId) + " (" + e.name +
                                    "): removed from the project; its instance is kept out "
                                    "of every chain until the session closes (ADR-0122)");
@@ -359,6 +399,13 @@ void Session::syncRoute(Entry& e, device::DeviceInstance& inst) {
 void Session::attach() {
     device::DeviceHost::RebuildSpec rs;
     rs.model = [this] { return &model_; };
+    if (!frozenGroupChildren_.empty())
+        rs.transformPlan = [this](GraphPlan &plan) {
+            std::set<std::int64_t> roots;
+            for (const auto &source : frozenSources_)
+                roots.insert(source.first);
+            freeze::pruneGroupPlan(plan, frozenGroupChildren_, roots);
+        };
     rs.channels = spec_.channels;
     rs.sampleRate = spec_.sampleRate;
     rs.maxFrames = spec_.maxFrames;
@@ -383,9 +430,10 @@ void Session::attach() {
     auto* clipSource = clips();
     auto* midiSource = midi_.get();
     rs.sourcesFor = [this, clipSource, midiSource](std::int64_t id) {
-        auto nodes = sources_ ? sources_(id) : std::vector<Node*>{};
+        auto nodes = sources_ && !frozenSources_.contains(id) ? sources_(id) : std::vector<Node *>{};
         if (clipSource) {
-            auto audio = clipSource->sourcesFor(id);
+            const auto frozen = frozenSources_.find(id);
+            auto audio = clipSource->sourcesFor(frozen == frozenSources_.end() ? id : frozen->second.first);
             nodes.insert(nodes.end(), audio.begin(), audio.end());
         }
         if (midiSource) {
@@ -394,13 +442,25 @@ void Session::attach() {
         }
         return nodes;
     };
+    rs.monitors=cueMonitor_.points([this](std::int64_t id,Tap tap){return tapFor(id,tap);});
     devices_.attachHost(graph_, std::move(rs));
 }
 
 std::vector<Node*> Session::trackChain(std::int64_t trackId) {
     std::vector<Node*> nodes;
     // ADR-0174: a summing group's buss half is first, right after its sum.
-    if (Node* buss = summing_.headFor(trackId)) nodes.push_back(buss);
+    if (!frozenSources_.contains(trackId))
+        if (Node *buss = summing_.headFor(trackId))
+            nodes.push_back(buss);
+    if (const auto frozen = frozenSources_.find(trackId); frozen != frozenSources_.end()) {
+        auto wet = clips_->sourcesFor(frozen->second.second);
+        nodes.insert(nodes.end(), wet.begin(), wet.end());
+        if (StripNode *strip = strips_.stripFor(trackId))
+            nodes.push_back(strip);
+        if (Node *channel = summing_.tailFor(trackId))
+            nodes.push_back(channel);
+        return nodes;
+    }
     const auto chain = chainFor(trackId);
     std::size_t firstAudio = 0;
     for (std::size_t i = 0; i < chain.size(); ++i)
@@ -437,6 +497,8 @@ Node* Session::tapFor(std::int64_t trackId, Tap tap) {
         case Tap::PostFx:
             return at > 0 && at <= nodes.size() ? nodes[at - 1] : nullptr;
         case Tap::PreFx: {
+            if (frozenSources_.contains(trackId))
+                return nullptr;
             // After the instrument, before the first audio effect: the last
             // node that plays the track's notes, or what comes before them.
             Node* last = summing_.headFor(trackId);
@@ -449,20 +511,53 @@ Node* Session::tapFor(std::int64_t trackId, Tap tap) {
 }
 
 std::optional<OfflineOutput> Session::offlineOutput(std::int64_t trackId, OfflineTap point) {
-    if (point != OfflineTap::PreFader && point != OfflineTap::PostFader) return std::nullopt;
+    if (point != OfflineTap::PreFader && point != OfflineTap::PostFader)
+        return std::nullopt;
+    return offlineTapOutput(trackId, point == OfflineTap::PreFader ? Tap::PostFx : Tap::PostFader);
+}
+std::optional<OfflineOutput> Session::offlineTapOutput(std::int64_t trackId, Tap point) {
+    if (point != Tap::PreFx && point != Tap::PostFx && point != Tap::PostFader && point != Tap::PostMixer &&
+        point != Tap::Tail)
+        return std::nullopt;
     const auto track = std::find_if(model_.tracks.begin(), model_.tracks.end(),
-        [trackId](const rows::Track& t) { return t.id == trackId; });
+                                    [trackId](const rows::Track &row) { return row.id == trackId; });
     if (track == model_.tracks.end() ||
         (track->kind != "audio" && track->kind != "midi" && track->kind != "instrument" &&
-         track->kind != "group" && track->kind != "return" && track->kind != "master")) return std::nullopt;
-    auto* realized = graph_.current();
-    if (!realized) return std::nullopt;
-    auto& graph = realized->graph();
-    Node* node = tapFor(trackId, point == OfflineTap::PreFader ? Tap::PostFx : Tap::PostFader);
+         track->kind != "group" && track->kind != "return" && track->kind != "master"))
+        return std::nullopt;
+    auto *realized = graph_.current();
+    if (!realized)
+        return std::nullopt;
+    auto &graph = realized->graph();
+    Node *node = tapFor(trackId, point);
     const NodeId id = node ? graph.find(*node) : realized->inputFor(trackId);
     const auto latency = graph.outputLatencyOf(id);
-    if (!latency) return std::nullopt;
+    if (!latency)
+        return std::nullopt;
     return OfflineOutput{id, *latency};
+}
+std::optional<OfflineSourceInfo> Session::offlineSourceInfo(std::int64_t trackId) {
+    if (frozenSources_.contains(trackId) || !offlineTapOutput(trackId, Tap::PostFx))
+        return std::nullopt;
+    const auto chain = chainFor(trackId);
+    std::size_t prefix = 0;
+    for (std::size_t i = 0; i < chain.size(); ++i)
+        if (chain[i]->eventFlow() == EventFlow::Consume)
+            prefix = i + 1;
+    OfflineSourceInfo info;
+    info.track = trackId;
+    for (std::size_t i = 0; i < chain.size(); ++i)
+        for (const auto &entry : entries_) {
+            if (entry.retired || &devices_.nodeAt(entry.hostIndex) != chain[i])
+                continue;
+            if (entry.placeholder || !devices_.deviceAt(entry.hostIndex).loaded())
+                return std::nullopt;
+            info.devices.push_back({entry.deviceId, devices_.deviceAt(entry.hostIndex).identity()});
+            if (i < prefix)
+                info.prefixDevices.push_back(entry.deviceId);
+            break;
+        }
+    return info;
 }
 
 bool Session::rebuild() {
@@ -471,24 +566,35 @@ bool Session::rebuild() {
         error_ = "no project loaded";
         return false;
     }
+    (void)mainLoudness_.prepare(spec_.sampleRate,spec_.channels);
     auto timing = std::make_unique<TimingView>();
     timing->sampleRate = spec_.sampleRate;
+    timing->settings=spec_.performanceState ? transportSettings_ : TransportSettings{};
     // Same construction as MidiClips: TempoMap integrates STEP tempos, even
     // when a stored event requests a ramp. Do not create a second converter.
     for (const auto& e : model_.tempo)
         timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
     if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
+    auto loopSample=[&](std::int64_t ticks){
+        const long double sample=static_cast<long double>(timing->tempo.ticksToSeconds(ticks))*spec_.sampleRate;
+        return sample>=static_cast<long double>(std::numeric_limits<std::int64_t>::max()) ? std::numeric_limits<std::int64_t>::max() : static_cast<std::int64_t>(std::llround(sample));
+    };
+    timing->loopBegin=loopSample(transportSettings_.loopStartTicks);
+    timing->loopEnd=loopSample(transportSettings_.loopEndTicks);
+    if(timing->loopEnd<=timing->loopBegin && timing->loopBegin<std::numeric_limits<std::int64_t>::max())
+        timing->loopEnd=timing->loopBegin+1; // a valid sub-sample tick window plays one frame
     // Snapshot has tempo but no meter data. rows::readModel reads this vector
     // from time_signature_map, sorted by position and id.
     timing->signatures = model_.signatures;
     try {
         clips_ = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames);
-        midi_ = std::make_unique<MidiClips>(model_, transport_, spec_.sampleRate, midiState_);
+        midi_ = std::make_unique<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every
     // lane the user overrode. An override of a lane that is gone goes with it.
-    const std::shared_ptr<const AutomationProgram> program = compileAutomation(model_, spec_.sampleRate);
+    const std::shared_ptr<const AutomationProgram> program =
+        compileAutomation(playbackModel_, spec_.sampleRate);
     auto suspended = overridden_;
     suspended.insert(writingAutomation_.begin(), writingAutomation_.end());
     stripAutomation_ = bindStripAutomation(program, suspended);
@@ -516,15 +622,19 @@ bool Session::rebuild() {
         }
     }
     strips_.setFormat(spec_.channels, spec_.maxFrames);    // a return's loop, for the graph built here
-    strips_.sync(model_, &transport_, stripAutomation_);   // ADR-0163: before the graph names them
+    HearingFlags hearingFlags;hearingFlags.soloInPlace=cueSettings_.soloInPlace;
+    hearingFlags.soloIsCue=spec_.performanceState && cueSettings_.cueMode;hearingFlags.referenceTrack=cueSettings_.projectReferenceTrack;
+    strips_.sync(model_, &transport_, stripAutomation_,spec_.delayCompensation,hearingFlags);   // ADR-0163: before the graph names them
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
+    cueMonitor_.configure(model_,cueSettings_,&transport_,stripAutomation_,spec_.performanceState);
     attach();   // the spec, the sources or the placement may have changed
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
     else {
         timing_.publish(std::move(timing));
+        cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
         live_ = true;
     }
     attachTaps();   // ADR-0175: the new graph's latencies
@@ -550,6 +660,132 @@ bool Session::rebuild() {
     return ok;
 }
 
+bool Session::parkedDevice(const rows::Device &device) const {
+    const auto *chain = chainOf(device.chainId);
+    return chain && chain->trackId &&
+           (frozenSources_.contains(*chain->trackId) || frozenGroupChildren_.contains(*chain->trackId));
+}
+bool Session::readPlayback(const Store &store) {
+    try {
+        // A malformed/stale cache never falls back to a different live sound.
+        freeze::validate(const_cast<Store &>(store));
+        freeze::remember(const_cast<Store &>(store));
+        const auto cached = freeze::renders(const_cast<SQLite::Database &>(store.db()));
+        std::set<std::int64_t> before, after;
+        for (const auto &entry : frozenSources_)
+            before.insert(entry.first);
+        for (const auto &row : cached)
+            after.insert(adi::detail::signedInteger(row.at("track_id")));
+        if (loaded_ && playbackRunning_.load(std::memory_order_acquire) && before != after)
+            throw std::runtime_error("stop playback before freezing or unfreezing");
+        playbackModel_ = model_;
+        frozenSources_.clear();
+        frozenGroupChildren_.clear();
+        for (const auto &[root, members] : freeze::groups(const_cast<SQLite::Database &>(store.db()))) {
+            (void)root;
+            for (const auto &member : members)
+                frozenGroupChildren_.insert(member.id);
+        }
+        std::erase_if(playbackModel_.clips,
+                      [&](const auto &clip) { return frozenGroupChildren_.contains(clip.trackId); });
+        std::int64_t ordinal = 0;
+        std::set<std::int64_t> used;
+        for (const auto &clip : model_.clips)
+            used.insert(clip.id);
+        for (const auto &track : model_.tracks)
+            used.insert(track.id);
+        auto synthetic = [&] {
+            while (used.contains(-1 - ordinal))
+                ++ordinal;
+            const auto id = -1 - ordinal++;
+            used.insert(id);
+            return id;
+        };
+        for (const auto &render : cached) {
+            const auto id = adi::detail::signedInteger(render.at("track_id"));
+            for (const auto *field : {"pre_media_id", "post_media_id"}) {
+                const auto mediaId = adi::detail::signedInteger(render.at(field));
+                SQLite::Statement q(
+                    store.db(),
+                    "SELECT hash_blake3,rel_path,abs_path_hint,orig_name FROM media_files WHERE id=?");
+                q.bind(1, mediaId);
+                if (!q.executeStep())
+                    throw std::runtime_error("freeze cache media is missing");
+                Payload row = {
+                    {"orig_name", q.getColumn(3).getString()},
+                    {"hash_blake3", q.getColumn(0).getString()},
+                    {"rel_path", q.getColumn(1).isNull() ? Payload() : Payload(q.getColumn(1).getString())},
+                    {"abs_path_hint",
+                     q.getColumn(2).isNull() ? Payload() : Payload(q.getColumn(2).getString())}};
+                const auto key = row.dump();
+                auto &verified = verifiedFrozenMedia_[mediaId];
+                std::error_code statusError;
+                const auto size = std::filesystem::file_size(verified.file, statusError);
+                bool current = !statusError && verified.row == key && verified.size == size;
+                const auto modified = std::filesystem::last_write_time(verified.file, statusError);
+                current = current && !statusError && modified == verified.modified;
+                if (!current) {
+                    std::string error;
+                    const auto resolved = media::resolveMedia(media::projectFolder(store), row, error);
+                    if (resolved.empty())
+                        throw std::runtime_error("freeze cache media: " + error);
+                    verified = {key, resolved, std::filesystem::file_size(resolved),
+                                std::filesystem::last_write_time(resolved)};
+                }
+                // Use the verified resolution in this private playback model;
+                // a missing relative path can have a valid original/collected fallback.
+                const auto entry = std::find_if(playbackModel_.media.begin(), playbackModel_.media.end(),
+                                                [mediaId](const auto &item) { return item.id == mediaId; });
+                if (entry == playbackModel_.media.end())
+                    throw std::runtime_error("freeze cache has no playback media row");
+                entry->relPath = media::pathUtf8(verified.file);
+            }
+            const auto dry = synthetic(), wet = synthetic();
+            frozenSources_.emplace(id, std::pair{dry, wet});
+            std::erase_if(playbackModel_.clips, [id](const auto &clip) { return clip.trackId == id; });
+            const auto frames = adi::detail::signedInteger(render.at("frames"));
+            const auto rate = adi::detail::signedInteger(render.at("sample_rate"));
+            if (static_cast<long double>(frames) * 1000000000.0L / static_cast<long double>(rate) >
+                static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
+                throw std::runtime_error("freeze duration exceeds project clock range");
+            for (unsigned point = 0; point < 2; ++point) {
+                rows::Clip clip;
+                clip.id = point ? wet : dry;
+                clip.trackId = clip.id;
+                clip.kind = "audio";
+                clip.timeBase = 1;
+                clip.posNs = 0;
+                clip.lengthNs = static_cast<std::int64_t>(
+                    std::llround(static_cast<long double>(frames) * 1000000000.0L / static_cast<long double>(rate)));
+                playbackModel_.clips.push_back(clip);
+                rows::AudioClip audio;
+                audio.clipId = clip.id;
+                audio.mediaId = adi::detail::signedInteger(render.at(point ? "post_media_id" : "pre_media_id"));
+                audio.srcLenFrames = frames;
+                audio.warpEnabled = false;
+                playbackModel_.audioClips.push_back(audio);
+            }
+        }
+        for (const auto &track : model_.tracks)
+            if (track.frozen && !frozenSources_.contains(track.id))
+                throw std::runtime_error("legacy frozen flag has no verified cache; unfreeze first");
+        std::erase_if(playbackModel_.automationLanes, [&](const auto &lane) {
+            if (lane.ownerKind == "device") {
+                for (const auto &device : model_.devices)
+                    if (device.id == lane.ownerId)
+                        return parkedDevice(device);
+            }
+            return lane.ownerKind == "track" && frozenSources_.contains(lane.ownerId) &&
+                   lane.paramRef == "input_gain";
+        });
+        clipProject_ = readClipProject(store, playbackModel_);
+        return true;
+    } catch (const std::exception &e) {
+        error_ = e.what();
+        return false;
+    }
+}
+
 bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     error_.clear();
     if (loaded_) {
@@ -561,9 +797,15 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     loader_ = std::move(loader);
     spec_ = spec;
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
+    graph_.setDelayCompensation(spec_.delayCompensation);
     stats_ = Stats{};
     model_ = rows::readModel(store);
-    clipProject_ = readClipProject(store, model_);
+    transportSettings_=readTransportSettings(store);
+    SQLite::Statement recordingIdentity(store.db(),"PRAGMA database_list");
+    while(recordingIdentity.executeStep())if(recordingIdentity.getColumn(1).getString()=="main")recordingProject_=recordingIdentity.getColumn(2).getString();
+    cueSettings_=readCueSettings(store);
+    if (!readPlayback(store))
+        return false;
     loaded_ = true;
     resolveNewRows(store);
     return rebuild();
@@ -572,12 +814,25 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
 namespace {
 // What a user can move on a strip, per track: what an override compares.
 struct StripValues {
-    double volume = 0.0, pan = 0.0;
+    double volume = 0.0, pan = 0.0, panLeft = -1.0, panRight = 1.0;
     bool muted = false;
 };
+std::optional<std::string> automationParamRef(const std::string& format, const std::string& id) {
+    if (format != "clap") return id;
+    std::uint32_t numeric = 0;
+    if (!device::ClapDevice::paramIdFromText(id,numeric)) return {};
+    return std::to_string(numeric); // ADR-0165: lane refs stay decimal for every format
+}
 std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
     std::map<std::pair<std::int64_t, std::string>, double> v;
-    for (const rows::PluginParam& p : m.pluginParams) v[{p.deviceId, p.paramId}] = p.normalized;
+    std::set<std::int64_t> clapRefs, clapDevices;
+    for (const auto& reference : m.pluginRefs) if (reference.format == "clap") clapRefs.insert(reference.id);
+    for (const auto& item : m.devices)
+        if (item.pluginRefId && clapRefs.contains(*item.pluginRefId)) clapDevices.insert(item.id);
+    for (const rows::PluginParam& p : m.pluginParams) {
+        const auto ref = automationParamRef(clapDevices.contains(p.deviceId) ? "clap" : "",p.paramId);
+        if (ref) v[{p.deviceId,*ref}] = p.normalized;
+    }
     return v;
 }
 
@@ -587,6 +842,8 @@ std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
     for (const rows::MixerStrip& s : m.strips) {
         v[s.trackId].volume = s.volumeDb;
         v[s.trackId].pan = s.pan;
+        v[s.trackId].panLeft = s.panLeft;
+        v[s.trackId].panRight = s.panRight;
     }
     return v;
 }
@@ -601,6 +858,8 @@ bool Session::refresh(const Store& store) {
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     model_ = rows::readModel(store);
+    transportSettings_=readTransportSettings(store);
+    cueSettings_=readCueSettings(store);
     // ADR-0162: an automated strip value that changed is overridden. Compared
     // BEFORE the rebuild, so the new graph already plays the manual value.
     if (stripAutomation_) {
@@ -612,6 +871,8 @@ bool Session::refresh(const Store& store) {
             if (b == before.end() || a == after.end()) continue;
             const bool changed = key.second == StripParam::Volume ? b->second.volume != a->second.volume
                                : key.second == StripParam::Pan    ? b->second.pan != a->second.pan
+                               : key.second == StripParam::PanLeft ? b->second.panLeft != a->second.panLeft
+                               : key.second == StripParam::PanRight ? b->second.panRight != a->second.panRight
                                                                   : b->second.muted != a->second.muted;
             if (changed) overridden_.insert(laneId);
         }
@@ -630,7 +891,8 @@ bool Session::refresh(const Store& store) {
             if (had != has || (had && b->second != a->second)) overridden_.insert(laneId);
         }
     }
-    clipProject_ = readClipProject(store, model_);
+    if (!readPlayback(store))
+        return false;
     resolveNewRows(store);
     retireDepartedRows();
     syncFlags();
@@ -704,6 +966,11 @@ void Session::attachTaps() {
             if (first < chain.size()) tapped = chain[first];
             const auto gain = inputGains_.find(id);
             if (gain != inputGains_.end()) tapped = gain->second.get();
+            if (frozenSources_.contains(id)) {
+                const auto cached = trackChain(id);
+                if (!cached.empty())
+                    tapped = cached.front();
+            }
             auto& previous = chainTapNodes_[id];
             if (previous && previous != tapped) previous->setInputTap(nullptr);
             previous = tapped;
@@ -784,8 +1051,21 @@ bool Session::reenableAutomation(std::int64_t laneId) {
     return rebuild();
 }
 
+bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId) {
+    if (!deviceAutomation_) return true;
+    const auto* instance = instanceFor(deviceId);
+    const auto ref = automationParamRef(instance ? instance->identity().format : "",paramId);
+    if (!ref) return true;
+    const auto lane = deviceAutomation_->laneFor.find({deviceId,*ref});
+    if (lane == deviceAutomation_->laneFor.end() || overridden_.contains(lane->second)) return true;
+    overridden_.insert(lane->second);
+    return rebuild();
+}
+
 bool Session::tick(std::int64_t nowMs) {
     timing_.collect();
+    mainLoudness_.collect();
+    cueMonitor_.collect();
     return devices_.tick(nowMs);
 }
 
@@ -796,6 +1076,7 @@ bool Session::tick(std::int64_t nowMs) {
 void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     ++stats_.prepares;
     const bool changed = (sampleRate != spec_.sampleRate) || (maxFrames != spec_.maxFrames);
+    if(changed)recording_->stop();
 
     // Decision 3, second half: same format, graph live, nothing to do. A driver
     // that stops and restarts at the same size -- a device-list change, a
@@ -819,6 +1100,13 @@ bool Session::setPrecision(Precision p) {
     spec_.precision = p;
     graph_.setPrecision(p);
     if (!loaded_) return true;
+    return rebuild();
+}
+
+bool Session::setDelayCompensation(bool on) {
+    if(on==spec_.delayCompensation)return true;
+    spec_.delayCompensation=on;graph_.setDelayCompensation(on);
+    if(!loaded_)return true;
     return rebuild();
 }
 
@@ -854,9 +1142,17 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
 
 void Session::process(const AudioIo& io) noexcept {
     audio::CallbackScope callback;
+    recording_->capture(io,transport_);
+    playbackRunning_.store(transport_.playing(), std::memory_order_release);
     SnapshotPublisher<TimingView>::AudioRead timing(timing_);
     TransportInfo info;
-    if (timing.valid()) info = timing->at(transport_);
+    if (timing.valid()) {
+        if(timing->settings.hasLoop && (!loopApplied_ || loopOn_!=timing->settings.loopEnabled || loopBegin_!=timing->loopBegin || loopEnd_!=timing->loopEnd)) {
+            loopApplied_=true;loopOn_=timing->settings.loopEnabled;loopBegin_=timing->loopBegin;loopEnd_=timing->loopEnd;
+            transport_.loop(loopBegin_,loopEnd_,loopOn_);
+        }
+        info = timing->at(transport_);
+    }
     else {
         info.playing = transport_.playing();
         info.timelineSample = transport_.sampleAt(0);
@@ -864,15 +1160,65 @@ void Session::process(const AudioIo& io) noexcept {
     AudioIo block = io;
     block.transport = &info;
     graph_.process(block);
+    mainLoudness_.process(block);
+    struct ClickContext {Session* session;const TimingView* timing;};
+    ClickContext click{this,timing.get()};
+    CueMonitor::Click renderClick;
+    if(timing.valid() && timing->settings.metronome && transport_.playing()) {
+        renderClick.context=&click;
+        renderClick.render=[](void* context,const AudioIo& cueIo) noexcept {
+            const auto& call=*static_cast<ClickContext*>(context);call.session->renderMetronome(*call.timing,cueIo);
+        };
+    }
+    else if(timing.valid())renderMetronome(*timing.get(),AudioIo{});
+    cueMonitor_.process(graph_,block,renderClick);
     transport_.advance(io.frames);
 }
 
+void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexcept {
+    if(!timing.settings.metronome || !transport_.playing()) {
+        clickEnvelope_=0;clickWasPlaying_=false;return;
+    }
+    const auto& tempo=timing.tempo;const double rate=timing.sampleRate;
+    const auto latency=graph_.renderedLatency();
+    const double decay=std::exp(-1.0/(0.004*rate));
+    for(std::int32_t i=0;i<io.frames;++i) {
+        const auto sample=transport_.delayedSample(i,latency);
+        if(sample<0){clickWasPlaying_=false;clickEnvelope_=0;continue;}
+        const auto tick=tempo.secondsToTicks(static_cast<double>(sample)/rate);
+        std::int64_t signature=0,numerator=4,denominator=4;
+        for(const auto& meter:timing.signatures)if(meter.posTicks<=tick){signature=meter.posTicks;numerator=meter.numerator;denominator=meter.denominator;}else break;
+        const auto beatTicks=textproj::kWhole/denominator;
+        const auto beat=(tick-signature)/beatTicks;
+        const auto beatTick=signature+beat*beatTicks;
+        const double boundary=tempo.ticksToSeconds(beatTick)*rate;
+        const bool adjacent=clickWasPlaying_ && sample>0 && clickLastSample_==sample-1;
+        const bool atBoundary=std::abs(static_cast<double>(sample)-boundary)<=1.01;
+        if((adjacent && beatTick!=clickLastBeat_) || (!adjacent && atBoundary)) {
+            clickPhase_=0;clickEnvelope_=0.2;clickFrequency_=beat%numerator==0?1760:880;
+        }
+        const double click=clickEnvelope_*std::sin(clickPhase_);
+        clickPhase_+=2*std::numbers::pi*clickFrequency_/rate;
+        if(clickPhase_>=2*std::numbers::pi)clickPhase_-=2*std::numbers::pi;
+        clickEnvelope_*=decay;if(clickEnvelope_<1e-12)clickEnvelope_=0;
+        // Default Cue pair until the separate Cue Out routing (N23) is built.
+        for(std::int32_t c=0;c<std::min<std::int32_t>(io.numOut,2);++c) {
+            if(io.out && io.out[c])io.out[c][i]+=static_cast<float>(click);
+            if(io.out64 && io.out64[c])io.out64[c][i]+=click;
+        }
+        clickLastSample_=sample;clickLastBeat_=beatTick;clickWasPlaying_=true;
+    }
+}
+
 void Session::release() {
+    recording_->stop();
     // The device has stopped; nothing is rendering. Release the plugins so a
     // later `prepare` -- at the same format or not -- prepares them again
     // rather than finding ADR-0090 d5's guard satisfied on a released
     // instance. `live_` false is what defeats the no-op path above.
     live_ = false;
+    mainLoudness_.requestReset();
+    playbackRunning_.store(false, std::memory_order_release);
     if (Graph* g = graph_.currentGraph()) g->release();
 }
 
