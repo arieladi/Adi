@@ -15,6 +15,8 @@
 //             before apply, in the same transaction.
 
 #include "adi/blob.hpp"
+#include "adi/automation_edits.hpp"
+#include "adi/automation_lanes.hpp"
 #include "adi/ops.hpp"
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
@@ -2039,6 +2041,10 @@ std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
+        const auto pointOps = automation::descriptors();
+        v.insert(v.end(), pointOps.begin(), pointOps.end());
+        const auto lanes = automation::laneDescriptors();
+        v.insert(v.end(), lanes.begin(), lanes.end());
         return v;
     }();
     return all;
