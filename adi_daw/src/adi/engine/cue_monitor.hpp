@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#pragma once
+#include "adi/cue_settings.hpp"
+#include "adi/engine/host.hpp"
+#include "adi/engine/mixer.hpp"
+#include <memory>
+namespace adi::engine {
+class CueMonitor {
+public:
+    CueMonitor();
+    ~CueMonitor();
+    CueMonitor(const CueMonitor&)=delete;
+    CueMonitor& operator=(const CueMonitor&)=delete;
+    /// Message thread, before realisation. Persistent nodes reuse rendered
+    /// Post FX audio; the reference keeps its fader/pan/automation, Cue is PFL.
+    void configure(const rows::Model&,const CueSettings&,const Transport*,const std::shared_ptr<StripAutomation>&,bool enabled);
+    std::vector<MonitorPoint> points(const TapFn&) const;
+    /// Publish only after the matching graph was prepared successfully.
+    void publish(const CueSettings&,double rate,int maxFrames,int channels,bool enabled,const Graph* prepared=nullptr);
+    void collect();
+    struct Click {
+        void* context=nullptr;
+        void (*render)(void*,const AudioIo&) noexcept=nullptr;
+    };
+    /// Audio thread, after GraphHost::process. One Cue bus, with a five-ms
+    /// complementary Main/reference swap; volume applies to cue and reference.
+    void process(const GraphHost&,const AudioIo&,Click) noexcept;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+}

@@ -25,6 +25,7 @@
 #include <exception>
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <stdexcept>
 #include <thread>
 
@@ -406,9 +407,17 @@ void testSendSnapshots() {
                          "gain_db=-10.2500000001","pan=0.25","pre_fader=0","enabled=1"}) {
         db.exec(std::string("UPDATE routing SET ")+edit+" WHERE id=20");
         auto next=SnapshotBuilder::fromStore(store,*prior);
+        // Moving the last incoming send away changes the return's derived
+        // legacy tap from Pre to empty/Post; its track must then be replaced.
+        const bool movedAway=std::string_view(edit)=="dst_kind='device'";
+        const bool sharedTracks=movedAway
+            ? next->findTrack(2)!=prior->findTrack(2) && !next->findTrack(2)->returnSendTap->preFader &&
+              !next->findTrack(2)->returnSendTap->explicitChoice && !next->findTrack(2)->returnSendTap->legacyMixed &&
+              next->findTrack(1)==prior->findTrack(1) && next->findTrack(3)==prior->findTrack(3) && next->findTrack(9)==prior->findTrack(9)
+            : next->tracks==prior->tracks;
         check(next->sends.size()==2 && next->sends[1]!=prior->sends[1] && next->sends[0]==prior->sends[0] &&
-              next->tracks==prior->tracks && next->tempo==prior->tempo,
-              std::string("a send change replaces only its node: ")+edit);
+              sharedTracks && next->tempo==prior->tempo,
+              std::string("send edits share unrelated nodes and refresh derived return taps: ")+edit);
         prior=std::move(next);
     }
     check(original->sourceKind=="track" && original->sourceId==1 && original->destinationKind=="track" &&
