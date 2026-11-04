@@ -26,6 +26,8 @@
 
 #pragma once
 
+#include "adi/controller_data.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -363,6 +365,7 @@ struct Model {
     std::vector<Clip> clips;
     std::vector<AudioClip> audioClips;
     std::vector<Note> notes;
+    std::vector<controllers::Lane> controllers;
     std::vector<Marker> markers;
     std::vector<Media> media;
     std::vector<Routing> routing;

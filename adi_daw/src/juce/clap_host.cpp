@@ -80,9 +80,12 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
     // transport, and a CLAP plugin filtering on channel 0 would otherwise not
     // hear an MPE controller's notes. Expression is addressed by note id.
     if (engine::isNoteStream(in.type)) {
+        static constexpr engine::ExpressionCaps nativeCaps{};
         engine::MpeOut o;
-        if (!engine::noteExpressionOut(in, engine::ExpressionCaps{}, o)) return false;
-        return addOut(o, ClapDialect::Clap, blockOffset, segmentFrames);
+        if (!engine::noteExpressionOut(in, nativeCaps, o))
+            return false;
+        return addOut(o, in.type == engine::EventType::Controller ? ClapDialect::Midi : ClapDialect::Clap,
+                      blockOffset, segmentFrames);
     }
 
     Slot slot{};
@@ -90,6 +93,7 @@ bool ClapEventList::add(const engine::Event& in, std::int32_t blockOffset,
         case engine::EventType::NoteOn:
         case engine::EventType::NoteOff:
         case engine::EventType::NoteExpression:
+        case engine::EventType::Controller:
             return false;                 // handled above
 
         case engine::EventType::ParamValue:
@@ -1281,7 +1285,25 @@ void ClapDevice::process(const engine::NodeIo& io) noexcept {
         router_.route(io.events.first, io.events.count, io.blockOffset, routed_);
         router_.route(injected_.data(), static_cast<std::int32_t>(injectedUsed_),
                       io.blockOffset, routed_);
-        for (const engine::MpeOut& o : routed_) events_.addOut(o, dialect_, io.blockOffset, n);
+        for (const engine::MpeOut &o : routed_) {
+            auto wire = dialect_;
+            if (o.kind == engine::MpeOut::Kind::Control && wire == ClapDialect::Clap) {
+                if ((notePorts_.supported & (CLAP_NOTE_DIALECT_MIDI | CLAP_NOTE_DIALECT_MIDI_MPE)) == 0) {
+                    unsupportedControllers_.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                wire = ClapDialect::Midi;
+            }
+            events_.addOut(o, wire, io.blockOffset, n);
+        }
+    }
+    if (dialect_ == ClapDialect::None) {
+        for (const auto &event : io.events)
+            if (event.type == engine::EventType::Controller)
+                unsupportedControllers_.fetch_add(1, std::memory_order_relaxed);
+        for (std::size_t i = 0; i < injectedUsed_; ++i)
+            if (injected_[i].type == engine::EventType::Controller)
+                unsupportedControllers_.fetch_add(1, std::memory_order_relaxed);
     }
     // Parameters address the plugin and are never a note stream (ADR-0091).
     for (const auto& e : io.events)

@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-#include "temp_directory.hpp"
-#include "adi/engine/session.hpp"
 #include "adi/audio/io_audit.hpp"
+#include "adi/controller_lanes.hpp"
+#include "adi/engine/session.hpp"
 #include "adi/store.hpp"
+#include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <new>
 #include <thread>
-#include <chrono>
 using namespace adi;
 using namespace adi::engine;
 namespace { std::atomic<unsigned> allocations{0}; }
@@ -190,9 +191,72 @@ void musical(){
     check(tempo.instrument->count==3 && tempo.instrument->heard[0].clock==12000 && tempo.instrument->heard[2].clock==48000,"note duration integrates a tempo change");
 }
 }
+namespace {
+void sessionControllers() {
+    Fixture f;
+    f.clip(1, 0, 5765760);
+    const std::array<controllers::Point, 1> points{{{0, 0, 0.123456789012345, 0, 0, 0}}};
+    auto prepared = controllers::prepareWrite(*f.store, 1, 3, 7, points);
+    if (!prepared.ok || !controllers::commitPrepared(*f.store, prepared).ok)
+        throw std::runtime_error("controller prepare/commit");
+    f.load();
+    f.render();
+    check(f.instrument->count >= 2 && f.instrument->heard[0].e.type == EventType::Controller &&
+              f.instrument->heard[0].e.value == points[0].value && f.instrument->heard[0].e.channel == 3 &&
+              f.instrument->heard[1].e.type == EventType::NoteOn,
+          "committed controller bytes pass through Session rows and graph before their note");
+    const std::array<controllers::Point, 1> pedal{{{0, 0, 1, 0, 0, 0}}};
+    auto sustain = controllers::prepareWrite(*f.store, 1, 3, 64, pedal);
+    if (!sustain.ok || !controllers::commitPrepared(*f.store, sustain).ok)
+        throw std::runtime_error("sustain prepare/commit");
+    f.refresh();
+    f.render();
+    const auto before = f.instrument->count;
+    f.store->db().exec("DELETE FROM clips");
+    f.refresh();
+    f.render();
+    bool zero = false, off = false;
+    for (std::size_t i = before; i < f.instrument->count; ++i) {
+        const auto &e = f.instrument->heard[i].e;
+        if (e.type == EventType::Controller && e.paramId == 64 && e.value == 0)
+            zero = true;
+        if (e.type == EventType::NoteOff && zero)
+            off = true;
+    }
+    check(zero && off, "Session refresh retains pedal ownership after cascade-deleting the stream");
+}
+} // namespace
+
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
-    try{if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
+    try {
+        if (only == "all" || only == "controllers")
+            sessionControllers();
+        if (only == "all" || only == "placement")
+            placement();
+        if (only == "all" || only == "cleanup")
+            cleanup();
+        if (only == "all" || only == "musical")
+            musical();
+        if (only == "all" || only == "pending")
+            pendingRelease();
+        if (only == "all" || only == "concurrent")
+            concurrentPublication();
+        if (only == "all" || only == "capacity")
+            capacity();
+        if (only == "all" || only == "overflow")
+            overflowRelease();
+        if (only == "all" || only == "ns")
+            nanosecondEnd();
+        if (only == "all" || only == "maximum")
+            maximumLocate();
+        if (only == "all" || only == "entry")
+            loopEntry();
+        if (only == "all" || only == "held")
+            heldNote();
+    } catch (const std::exception &e) {
+        check(false, e.what());
+    }
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

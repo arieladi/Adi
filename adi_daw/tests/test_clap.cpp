@@ -1410,6 +1410,51 @@ void testDialectsThroughTheDevice() {
     }
 }
 
+void testOrdinaryControllerPorts() {
+    section("ordinary CC lanes use MIDI on a capable port, alongside native CLAP notes");
+    for (int mode = 0; mode < 3; ++mode) {
+        Fake f;
+        f.declareNotePorts = true;
+        f.noteSupported =
+            CLAP_NOTE_DIALECT_CLAP | (mode == 0 ? static_cast<std::uint32_t>(CLAP_NOTE_DIALECT_MIDI) : 0u);
+        if (mode == 2)
+            f.noteInputs = 0;
+        DeviceIdentity id;
+        id.format = "clap";
+        ClapDevice d(&f.plugin, id);
+        d.prepare(48000, 64);
+        std::array<float, 64> inL{}, inR{}, outL{}, outR{};
+        const float *inputs[] = {inL.data(), inR.data()};
+        float *outputs[] = {outL.data(), outR.data()};
+        engine::NodeIo io;
+        io.in = inputs;
+        io.out = outputs;
+        io.channels = 2;
+        io.frames = 32;
+        io.blockOffset = 16;
+        io.sampleRate = 48000;
+        auto controller = noteOn(11, 60, 0.8, 19);
+        controller.type = engine::EventType::Controller;
+        controller.channel = 3;
+        controller.paramId = 7;
+        controller.value = 0.123456789012345;
+        d.pushEvent(controller);
+        d.pushEvent(noteOn(11, 60, 0.8, 20));
+        d.process(io);
+        if (mode == 0) {
+            check(
+                f.seenMidi.size() == 1 && f.seenMidi[0].header.time == 3 && f.seenMidi[0].data[0] == 0xb3 &&
+                    f.seenMidi[0].data[1] == 7 && f.seenMidi[0].data[2] == 16,
+                "ordinary controller reaches the MIDI-capable native CLAP port with segment-relative frame");
+            check(f.seenNotes.size() == 1 && f.seenNotes[0].header.time == 4 &&
+                      d.unsupportedControllers() == 0,
+                  "the native note and ordinary MIDI controller coexist without changing note dialect");
+        } else
+            check(f.seenMidi.empty() && d.unsupportedControllers() == 1,
+                  "a port without MIDI support refuses and counts ordinary controllers");
+    }
+}
+
 void testTheHostSaysWhichDialectsItSpeaks() {
     section("ADR-0099 -- the host's side of clap.note-ports");
 
@@ -3138,6 +3183,7 @@ int main() {
     testDialectEncodings();
     testTheListIsSortedByTime();
     testDialectsThroughTheDevice();
+    testOrdinaryControllerPorts();
     testTheHostSaysWhichDialectsItSpeaks();
     testBundleSearchIsRecursive();
     testClapHostWithoutAnyPlugin();
