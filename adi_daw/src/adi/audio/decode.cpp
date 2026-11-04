@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/decode.hpp"
+#include "adi/audio/pcm_stream.hpp"
 
 #include "adi/appdata.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -12,7 +13,6 @@
 #include "dr_mp3.h"
 #define DR_WAV_NO_STDIO
 #include "dr_wav.h"
-#define STB_VORBIS_NO_STDIO
 #define STB_VORBIS_NO_PUSHDATA_API
 #define STB_VORBIS_HEADER_ONLY
 #include "stb_vorbis.c"
@@ -21,10 +21,13 @@
 #include <array>
 #include <chrono>
 #include <climits>
+#include <cstdio>
 #include <fstream>
 #include <memory>
+#include <limits>
 #include <random>
 #include <system_error>
+#include <thread>
 
 namespace adi::audio {
 namespace fs = std::filesystem;
@@ -138,7 +141,7 @@ private:
 
 class Mp3Decoder final : public Decoder {
 public:
-    explicit Mp3Decoder(const fs::path& p) : stream_(p) {
+    explicit Mp3Decoder(const fs::path& p,bool scan=true) : stream_(p) {
         const bool ok = drmp3_init(&mp3_,
             [](void* u, void* o, std::size_t n) { return readBytes(u, o, n); },
             [](void* u, int off, drmp3_seek_origin org) -> drmp3_bool32 { return seekBytes(u, off, static_cast<int>(org)) ? DRMP3_TRUE : DRMP3_FALSE; },
@@ -147,7 +150,10 @@ public:
         if (!ok) throw DecodeError(DecodeProblem::Corrupt, display(p) + ": no MPEG audio frame decodes");
         open_ = true;
         channels = mp3_.channels; rate = mp3_.sampleRate;
-        frames = drmp3_get_pcm_frame_count(&mp3_);   // scans, then rewinds
+        // The cache's legacy exact-length mode may scan. A pull stream keeps
+        // an unknown length unknown and starts decoding immediately.
+        if(scan || mp3_.totalPCMFrameCount!=DRMP3_UINT64_MAX)
+            frames = drmp3_get_pcm_frame_count(&mp3_);
     }
     ~Mp3Decoder() override { if (open_) drmp3_uninit(&mp3_); }
     std::uint64_t read(float* out, std::uint64_t n) override { return drmp3_read_pcm_frames_f32(&mp3_, n, out); }
@@ -159,20 +165,25 @@ private:
 
 class VorbisDecoder final : public Decoder {
 public:
-    // stb_vorbis reads from memory: the compressed file is held while it
-    // decodes (about 1 MB a minute at -q 6), never the PCM.
+    // stb owns the cursor, this wrapper owns the native file. No whole-file
+    // compressed allocation; its existing 2 GiB seek bound remains explicit.
     explicit VorbisDecoder(const fs::path& p) {
         std::error_code ec;
         const auto size = fs::file_size(p, ec);
         if (ec) throw DecodeError(DecodeProblem::Unreadable, display(p) + ": " + ec.message());
         if (size > static_cast<std::uintmax_t>(INT_MAX))
             throw DecodeError(DecodeProblem::Unsupported, display(p) + ": an Ogg file over 2 GiB");
-        bytes_.resize(static_cast<std::size_t>(size));
-        Stream s(p);
-        if (!s.in || readBytes(&s, bytes_.data(), bytes_.size()) != bytes_.size())
-            throw DecodeError(DecodeProblem::Unreadable, display(p) + ": short read");
+        std::FILE* native=nullptr;
+        fileIoPoint();
+#if defined(_WIN32)
+        if(_wfopen_s(&native,p.c_str(),L"rb")!=0)native=nullptr;
+#else
+        native=std::fopen(p.c_str(),"rb");
+#endif
+        file_.reset(native);
+        if(!file_)throw DecodeError(DecodeProblem::Unreadable,display(p)+": cannot open Ogg");
         int error = 0;
-        vorbis_ = stb_vorbis_open_memory(bytes_.data(), static_cast<int>(bytes_.size()), &error, nullptr);
+        vorbis_ = stb_vorbis_open_file_section(file_.get(),0,&error,nullptr,static_cast<unsigned int>(size));
         if (!vorbis_) throw DecodeError(DecodeProblem::Corrupt, display(p) + ": not a readable Ogg Vorbis stream (stb_vorbis error " + std::to_string(error) + ")");
         const auto info = stb_vorbis_get_info(vorbis_);
         channels = static_cast<std::uint32_t>(info.channels); rate = info.sample_rate;
@@ -180,6 +191,7 @@ public:
     }
     ~VorbisDecoder() override { stb_vorbis_close(vorbis_); }
     std::uint64_t read(float* out, std::uint64_t n) override {
+        fileIoPoint();
         std::uint64_t done = 0;
         while (done < n) {
             const auto want = static_cast<int>(std::min<std::uint64_t>(n - done, 4096) * channels);
@@ -190,7 +202,8 @@ public:
         return done;
     }
 private:
-    std::vector<unsigned char> bytes_;
+    struct Close {void operator()(std::FILE* file)const noexcept{if(file)std::fclose(file);}};
+    std::unique_ptr<std::FILE,Close> file_;
     stb_vorbis* vorbis_ = nullptr;
 };
 
@@ -202,12 +215,12 @@ bool oggIsFlac(const fs::path& p) {
     return in.gcount() == static_cast<std::streamsize>(b.size()) && std::string(b.data() + 28, 5) == "\x7F" "FLAC";
 }
 
-std::unique_ptr<Decoder> openDecoder(const fs::path& p, SourceFormat f) {
+std::unique_ptr<Decoder> openDecoder(const fs::path& p, SourceFormat f,bool scan=true) {
     switch (f) {
     case SourceFormat::Flac: return std::make_unique<FlacDecoder>(p);
     case SourceFormat::Riff:
     case SourceFormat::Aiff: return std::make_unique<WavDecoder>(p);
-    case SourceFormat::Mp3: return std::make_unique<Mp3Decoder>(p);
+    case SourceFormat::Mp3: return std::make_unique<Mp3Decoder>(p,scan);
     case SourceFormat::Ogg:
         if (oggIsFlac(p)) return std::make_unique<FlacDecoder>(p);
         return std::make_unique<VorbisDecoder>(p);
@@ -264,6 +277,71 @@ std::string uniqueSuffix() {
 }
 
 }  // namespace
+
+struct PcmStream::Impl {
+    std::unique_ptr<Decoder> decoder;
+    PcmStreamInfo info;
+    const std::thread::id owner=std::this_thread::get_id();
+    std::uint64_t produced=0;
+    bool ended=false,failed=false;
+    std::optional<DecodeProblem> problem;
+    std::string error;
+};
+PcmStream::PcmStream(std::unique_ptr<Impl> impl):impl_(std::move(impl)){}
+PcmStream::~PcmStream()=default;
+const PcmStreamInfo& PcmStream::info()const noexcept{return impl_->info;}
+std::uint64_t PcmStream::framesRead()const noexcept{return impl_->produced;}
+std::optional<DecodeProblem> PcmStream::problem()const noexcept{return impl_->problem;}
+const std::string& PcmStream::error()const noexcept{return impl_->error;}
+PcmReadResult PcmStream::read(std::span<float> output,std::stop_token stop) {
+    if(onAudioThread)return {PcmReadStatus::AudioThread,0};
+    if(std::this_thread::get_id()!=impl_->owner)return {PcmReadStatus::WrongOwner,0};
+    const auto channels=impl_->info.channels;
+    if(output.empty() || output.size()%channels!=0 || output.size()/channels>65536)
+        return {PcmReadStatus::InvalidBuffer,0};
+    if(stop.stop_requested())return {PcmReadStatus::Cancelled,0};
+    if(impl_->failed)return {PcmReadStatus::Failed,0};
+    if(impl_->ended)return {PcmReadStatus::End,0};
+    try {
+        fileIoPoint();
+        const auto requested=output.size()/channels;
+        const auto got=impl_->decoder->read(output.data(),requested);
+        if(got>requested || got>std::numeric_limits<std::uint64_t>::max()-impl_->produced)
+            throw DecodeError(DecodeProblem::Corrupt,"PCM decoder exceeded its requested span/counter");
+        if(impl_->info.frames && (impl_->produced>*impl_->info.frames || got>*impl_->info.frames-impl_->produced))
+            throw DecodeError(DecodeProblem::Corrupt,"PCM decoder exceeded its declared frame count");
+        if(got==0) {
+            if(impl_->info.frames && impl_->produced!=*impl_->info.frames)
+                throw DecodeError(DecodeProblem::Corrupt,"PCM source ended before its declared frame count");
+            impl_->ended=true;return {PcmReadStatus::End,0};
+        }
+        impl_->produced+=got;return {PcmReadStatus::Frames,static_cast<std::uint32_t>(got)};
+    } catch(const DecodeError& failure){impl_->problem=failure.problem();impl_->error=failure.what();}
+    catch(const std::bad_alloc&){impl_->problem.reset();impl_->error="out of memory";}
+    catch(const std::exception& failure){impl_->problem=DecodeProblem::Corrupt;impl_->error=failure.what();}
+    impl_->failed=true;return {PcmReadStatus::Failed,0};
+}
+PcmOpenResult openPcmStream(const fs::path& source,std::stop_token stop) {
+    PcmOpenResult result;
+    if(onAudioThread){result.status=PcmOpenStatus::AudioThread;return result;}
+    if(stop.stop_requested()){result.status=PcmOpenStatus::Cancelled;return result;}
+    try {
+        fileIoPoint();std::error_code error;
+        if(!fs::is_regular_file(source,error))throw DecodeError(DecodeProblem::Unreadable,display(source)+": not a readable regular file");
+        const auto format=sniff(source);auto decoder=openDecoder(source,format,false);
+        if(decoder->channels==0 || decoder->channels>kMaxDecodeChannels || decoder->rate==0 || decoder->rate>kMaxDecodeRate)
+            throw DecodeError(DecodeProblem::Unsupported,display(source)+": unsupported PCM rate/channel count");
+        if(stop.stop_requested()){result.status=PcmOpenStatus::Cancelled;return result;}
+        auto impl=std::make_unique<PcmStream::Impl>();
+        impl->info={format,decoder->rate,decoder->channels,{}};
+        if(decoder->frames!=0 || format==SourceFormat::Riff || format==SourceFormat::Aiff)impl->info.frames=decoder->frames;
+        impl->decoder=std::move(decoder);
+        result.stream=std::unique_ptr<PcmStream>(new PcmStream(std::move(impl)));result.status=PcmOpenStatus::Ready;
+    } catch(const DecodeError& failure){result.problem=failure.problem();result.error=failure.what();}
+    catch(const std::bad_alloc&){result.error="out of memory";}
+    catch(const std::exception& failure){result.problem=DecodeProblem::Unreadable;result.error=failure.what();}
+    return result;
+}
 
 SourceFormat sniff(const fs::path& p) {
     std::ifstream in(p, std::ios::binary);
