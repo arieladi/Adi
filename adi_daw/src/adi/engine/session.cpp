@@ -703,7 +703,7 @@ bool Session::readPlayback(const Store &store) {
             std::erase_if(playbackModel_.clips, [id](const auto &clip) { return clip.trackId == id; });
             const auto frames = detail::signedInteger(render.at("frames"));
             const auto rate = detail::signedInteger(render.at("sample_rate"));
-            if (static_cast<long double>(frames) * 1000000000.0L / rate >
+            if (static_cast<long double>(frames) * 1000000000.0L / static_cast<long double>(rate) >
                 static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
                 throw std::runtime_error("freeze duration exceeds project clock range");
             for (unsigned point = 0; point < 2; ++point) {
@@ -714,7 +714,7 @@ bool Session::readPlayback(const Store &store) {
                 clip.timeBase = 1;
                 clip.posNs = 0;
                 clip.lengthNs = static_cast<std::int64_t>(
-                    std::llround(static_cast<long double>(frames) * 1000000000.0L / rate));
+                    std::llround(static_cast<long double>(frames) * 1000000000.0L / static_cast<long double>(rate)));
                 playbackModel_.clips.push_back(clip);
                 rows::AudioClip audio;
                 audio.clipId = clip.id;
