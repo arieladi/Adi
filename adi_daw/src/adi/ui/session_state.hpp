@@ -24,6 +24,9 @@ struct Selection {
     // Tracks picked apart from the others with Ctrl/Cmd+click on their titles (Live: non-adjacent
     // tracks), selected besides `track` and the run to `toTrack`. A plain click lets them go.
     std::vector<std::int64_t> picked;
+    // Clips picked apart from the selected one with Ctrl/Cmd+click (Live: "Select Multiple Items",
+    // §42.5), selected besides `clip`. Anything that selects a clip, or none, lets them go.
+    std::vector<std::int64_t> pickedClips;
     std::int64_t start = 0, end = 0; // a time selection, in ticks; start == end is none
     std::int64_t insert = 0;         // the insert marker
     bool marked = false;             // the insert marker has been placed
