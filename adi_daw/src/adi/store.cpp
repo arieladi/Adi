@@ -16,6 +16,11 @@
 namespace adi {
 namespace {
 
+std::string sqlitePath(const std::filesystem::path& path) {
+    const auto bytes=path.generic_u8string();
+    return {reinterpret_cast<const char*>(bytes.data()),bytes.size()};
+}
+
 std::int64_t nowUtcMicros() {
     using namespace std::chrono;
     return duration_cast<microseconds>(system_clock::now().time_since_epoch()).count();
@@ -77,6 +82,12 @@ const std::vector<MigrationStep>& migrationSteps() {
         {8, {"tuning_systems", "tuning_degrees", "key_map_tunings", "key_map_degrees"}},
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
+        // 1.10 (N25): literal marker notes/prompts.
+        {10, {"marker_details"}},
+        // 1.11: Split Stereo Pan, additive settings (ADR-0203 d9).
+        {11, {"mixer_pan_settings"}},
+        {12, {"clip_playback_details","automation_segment_ranges"}}, // continuous fade handles (N17)
+        {13, {"clip_warp_fade_domains"}}, // retained musical Warp fades (N17)
     };
     return steps;
 }
@@ -299,7 +310,7 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
     try {
         auto db = std::make_unique<SQLite::Database>(
-            path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+            sqlitePath(path), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
 
         // SPEC §3.1. page_size must be set before the first write, so it goes
         // first — after any table exists it is silently ignored, which is the
@@ -349,7 +360,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     std::unique_ptr<SQLite::Database> db;
     try {
         db = std::make_unique<SQLite::Database>(
-            path.string(), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
+            sqlitePath(path), readOnly ? SQLite::OPEN_READONLY : SQLite::OPEN_READWRITE);
     } catch (const SQLite::Exception&) {
         err = StoreError::CannotOpen;
         return nullptr;
@@ -387,7 +398,7 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
     if (major > kSchemaMajor) {
         if (!readOnly) {
             try {
-                db = std::make_unique<SQLite::Database>(path.string(), SQLite::OPEN_READONLY);
+                db = std::make_unique<SQLite::Database>(sqlitePath(path), SQLite::OPEN_READONLY);
             } catch (const SQLite::Exception&) {
                 err = StoreError::CannotOpen;
                 return nullptr;
@@ -562,6 +573,9 @@ Store::getNoteExpression(std::int64_t clipId, std::uint64_t noteId, int dimensio
 bool Store::putAutomationData(std::int64_t laneId, std::optional<std::int64_t> clipId,
                               std::span<const std::byte> blob) {
     try {
+        SQLite::Statement ranges(*db_,"SELECT 1 FROM automation_segment_ranges r JOIN automation_data d ON d.id=r.data_id WHERE d.lane_id=? AND d.clip_id IS ? LIMIT 1");
+        ranges.bind(1,laneId);if(clipId)ranges.bind(2,*clipId);else ranges.bind(2);
+        if(ranges.executeStep()){lastError_="replace automation with its captured curve ranges";return false;}
         SQLite::Statement st(*db_,
             "INSERT INTO automation_data(lane_id, clip_id, data) VALUES (?,?,?) "
             "ON CONFLICT(lane_id, IFNULL(clip_id,-1)) DO UPDATE SET data = excluded.data");

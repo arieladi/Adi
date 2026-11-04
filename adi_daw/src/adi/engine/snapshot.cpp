@@ -25,13 +25,19 @@ constexpr double kTicksPerQuarter = 5765760.0;   // ADI_PPQ, SPEC §4.2
 /// the first time someone forgets to set it.
 bool same(const ClipNode& a, const ClipNode& b) {
     return a.id == b.id && a.name == b.name && a.posTicks == b.posTicks && a.lengthTicks == b.lengthTicks &&
-           a.muted == b.muted && a.gainDb == b.gainDb;
+           a.muted == b.muted && a.gainDb == b.gainDb && a.fadeInTicks==b.fadeInTicks &&
+           a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
+           a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
+           a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
+           a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks;
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
         a.kind != b.kind || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
-        a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
+        a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
+        a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
+        a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
         if (a.clips[i] != b.clips[i]) return false;   // pointer identity: already shared
@@ -107,23 +113,40 @@ const TrackNode* Snapshot::findTrack(std::int64_t id) const noexcept {
     return nullptr;
 }
 
+const MarkerNode* Snapshot::findMarker(std::int64_t id) const noexcept {
+    for (const auto& marker : markers)
+        if (marker->id == id) return marker.get();
+    return nullptr;
+}
+
 bool Snapshot::anySoloed() const noexcept {
     for (const auto& t : tracks)
         if (t->soloed) return true;
     return false;
 }
 
+const AutomationLaneNode* Snapshot::findAutomationLane(std::int64_t id) const noexcept {
+    for (const auto& lane : automationLanes)
+        if (lane->id == id) return lane.get();
+    return nullptr;
+}
+
 // --- building --------------------------------------------------------------------
 
-std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store) {
+std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
+                                                    const std::set<std::int64_t>& overridden) {
     Snapshot empty;
-    return fromStore(store, empty);
+    return fromStore(store, empty, overridden);
 }
 
 std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
-                                                     const Snapshot& previous) {
+                                                     const Snapshot& previous,
+                                                     const std::set<std::int64_t>& overridden) {
     auto snap = std::make_unique<Snapshot>();
+    snap->transport=readTransportSettings(store);
     auto& db = const_cast<SQLite::Database&>(store.db());
+    snap->automationLanes = detail::readAutomationSnapshot(db, previous.automationLanes, overridden);
+    snap->automationOverridden = !overridden.empty();
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -178,12 +201,61 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             snap->meters.insert(snap->meters.begin(), {0, 4, 4});
     }
 
+    // --- marker/locator metadata ------------------------------------------------
+    {
+        std::map<std::int64_t, std::shared_ptr<const MarkerNode>> prior;
+        for (const auto& marker : previous.markers) prior[marker->id] = marker;
+        SQLite::Statement q(db, "SELECT m.id,m.time_base,m.pos_ticks,m.pos_ns,m.length_ticks,m.length_ns,m.name,m.color,m.kind,"
+            "COALESCE(d.note,''),COALESCE(d.prompt,'') FROM markers m LEFT JOIN marker_details d ON d.marker_id=m.id ORDER BY m.id");
+        while (q.executeStep()) {
+            MarkerNode marker;
+            marker.id = q.getColumn(0).getInt64(); marker.timeBase = q.getColumn(1).getInt64();
+            auto integer = [&](int column) -> std::optional<std::int64_t> {
+                if (q.getColumn(column).isNull()) return std::nullopt;
+                return q.getColumn(column).getInt64();
+            };
+            marker.posTicks = integer(2); marker.posNs = integer(3);
+            marker.lengthTicks = integer(4); marker.lengthNs = integer(5);
+            marker.name = q.getColumn(6).getString(); marker.color = integer(7);
+            marker.kind = q.getColumn(8).getString(); marker.note = q.getColumn(9).getString();
+            marker.prompt = q.getColumn(10).getString();
+            const auto found = prior.find(marker.id);
+            if (found != prior.end() && *found->second == marker) snap->markers.push_back(found->second);
+            else snap->markers.push_back(std::make_shared<const MarkerNode>(std::move(marker)));
+        }
+    }
+
+    struct FadeShape {std::optional<double> in,out;std::optional<std::int64_t> offset,loopBegin,loopLength,end;std::array<std::optional<std::int64_t>,4> clock{},warpClock{};};
+    std::map<std::int64_t,FadeShape> fadeShapes;
+    try {
+        SQLite::Statement st(db,"SELECT clip_id,in_tension,out_tension,content_offset_ns,loop_begin_ns,loop_end_ns,source_end_ns,in_begin_ns,in_end_ns,out_begin_ns,out_end_ns FROM clip_playback_details");
+        while(st.executeStep()) {
+            auto& shape=fadeShapes[st.getColumn(0).getInt64()];
+            if(!st.getColumn(1).isNull())shape.in=st.getColumn(1).getDouble();
+            if(!st.getColumn(2).isNull())shape.out=st.getColumn(2).getDouble();
+            if(!st.getColumn(3).isNull())shape.offset=st.getColumn(3).getInt64();
+            if(!st.getColumn(4).isNull())shape.loopBegin=st.getColumn(4).getInt64();
+            if(!st.getColumn(5).isNull())shape.loopLength=st.getColumn(5).getInt64();
+            if(!st.getColumn(6).isNull())shape.end=st.getColumn(6).getInt64();
+            for(std::size_t i=0;i<4;++i)if(!st.getColumn(7+static_cast<int>(i)).isNull())shape.clock[i]=st.getColumn(7+static_cast<int>(i)).getInt64();
+        }
+    } catch(const std::exception&) {}
+
+    try {
+        SQLite::Statement st(db,"SELECT clip_id,in_begin_ticks,in_end_ticks,out_begin_ticks,out_end_ticks FROM clip_warp_fade_domains");
+        while(st.executeStep()) {
+            auto& shape=fadeShapes[st.getColumn(0).getInt64()];
+            for(std::size_t i=0;i<4;++i)if(!st.getColumn(1+static_cast<int>(i)).isNull())shape.warpClock[i]=st.getColumn(1+static_cast<int>(i)).getInt64();
+        }
+    } catch(const std::exception&) {}
+
     // --- clips, grouped by track -------------------------------------------------
     std::map<std::int64_t, std::vector<std::shared_ptr<const ClipNode>>> clipsByTrack;
     try {
         SQLite::Statement st(db,
             "SELECT id, track_id, IFNULL(pos_ticks,0), IFNULL(length_ticks,0), muted, "
-            "gain_db, name FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
+            "gain_db, name, fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve "
+            "FROM clips WHERE track_id IS NOT NULL ORDER BY track_id, pos_ticks, id");
         while (st.executeStep()) {
             ClipNode c;
             c.id = st.getColumn(0).getInt64();
@@ -193,6 +265,13 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             c.muted = st.getColumn(4).getInt() != 0;
             c.gainDb = static_cast<float>(st.getColumn(5).getDouble());
             c.name = st.getColumn(6).getString();
+            c.fadeInTicks=st.getColumn(7).getInt64();c.fadeOutTicks=st.getColumn(8).getInt64();
+            c.fadeInCurve=st.getColumn(9).getInt64();c.fadeOutCurve=st.getColumn(10).getInt64();
+            if(const auto it=fadeShapes.find(c.id);it!=fadeShapes.end()) {
+                c.fadeInTension=it->second.in;c.fadeOutTension=it->second.out;
+                c.contentOffsetNs=it->second.offset;c.loopBeginNs=it->second.loopBegin;
+                c.loopEndNs=it->second.loopLength;c.sourceEndNs=it->second.end;c.fadeClockNs=it->second.clock;c.fadeClockTicks=it->second.warpClock;
+            }
 
             const auto prev = prevClips.find(c.id);
             if (prev != prevClips.end() && same(*prev->second, c))
@@ -203,6 +282,13 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    struct PanSettings {std::string mode;double left=-1.0,right=1.0;};
+    std::map<std::int64_t,PanSettings> panSettings;
+    try {
+        SQLite::Statement st(db,"SELECT track_id,mode,pan_left,pan_right FROM mixer_pan_settings");
+        while(st.executeStep())panSettings[st.getColumn(0).getInt64()]={st.getColumn(1).getString(),st.getColumn(2).getDouble(),st.getColumn(3).getDouble()};
+    } catch(const std::exception&) {} // an older read-only file has default stereo
+
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -210,7 +296,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         SQLite::Statement st(db,
             "SELECT t.id, t.name, t.muted, t.soloed, "
             "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0), "
-            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color "
+            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color, IFNULL(m.delay_samples,0) "
             "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id "
             "ORDER BY t.index_in_parent, t.id");
         while (st.executeStep()) {
@@ -221,10 +307,14 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.soloed = st.getColumn(3).getInt() != 0;
             t.volumeDb = static_cast<float>(st.getColumn(4).getDouble());
             t.pan = static_cast<float>(st.getColumn(5).getDouble());
+            if(const auto it=panSettings.find(t.id);it!=panSettings.end()) {
+                t.panMode=it->second.mode;t.panLeft=it->second.left;t.panRight=it->second.right;
+            }
             t.parent = st.getColumn(6).getInt64();
             t.indexInParent = st.getColumn(7).getInt64();
             t.kind = st.getColumn(8).getString();
             if (!st.getColumn(9).isNull()) t.color = st.getColumn(9).getInt64();
+            t.delaySamples = st.getColumn(10).getInt64();
             if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
                 t.clips = it->second;
 
@@ -278,6 +368,15 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
     }
     for (const auto& sa : a.sends)
         if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
+    for (const auto& marker : a.markers)
+        if (std::find(b.markers.begin(), b.markers.end(), marker) != b.markers.end()) ++shared;
+    for (const auto& lane : a.automationLanes) {
+        const auto* other = b.findAutomationLane(lane->id);
+        if (!other) continue;
+        if (other == lane.get()) ++shared;
+        for (const auto& envelope : lane->envelopes)
+            if (std::find(other->envelopes.begin(), other->envelopes.end(), envelope) != other->envelopes.end()) ++shared;
+    }
     return shared;
 }
 
