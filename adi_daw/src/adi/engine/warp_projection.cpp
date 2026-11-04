@@ -35,8 +35,8 @@ std::vector<audio::WarpAnchor> projectWarpAnchors(std::span<const WarpMarker> ma
         const auto next=std::lower_bound(markers.begin(),markers.end(),tick,[](const WarpMarker& point,auto at){return point.tick<at;});
         if(next->tick==tick)continue;
         const auto& a=*(next-1);const auto& b=*next;
-        const long double progress=static_cast<long double>(tick-a.tick)/(b.tick-a.tick);
-        const auto source=a.sourceFrame+static_cast<std::int64_t>(std::llround(progress*(b.sourceFrame-a.sourceFrame)));
+        const long double progress=static_cast<long double>(tick-a.tick)/static_cast<long double>(b.tick-a.tick);
+        const auto source=a.sourceFrame+static_cast<std::int64_t>(std::llround(progress*static_cast<long double>(b.sourceFrame-a.sourceFrame)));
         points.push_back({source,tick});
     }
     std::sort(points.begin(),points.end(),[](const auto& a,const auto& b){return a.tick<b.tick;});
