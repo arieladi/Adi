@@ -30,7 +30,7 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N1 | ~~`Store::create` writes no `project` row, so `project.setName` updates nothing on a new file and the snapshot falls back to 48 kHz (ADR-0203 d21 says 44.1 kHz)~~ STRUCK 2026-11-02: merged as #306 | engine (PR #306) | STEP-7-PLAN §3.0, still open on main `a57d47a` | New makes no project row; the Take Snapshot prompt names the project after its file |
 | N2 | ~~A bootstrap for a new project (the project row and the Main track) that is the history's root, not an undo step (Live manual 5.4.2)~~ STRUCK 2026-11-02: merged as #307 (`Store::createNewProject`); the window's New uses it in `window/new-project-root` | engine (PR #307, on #306) | #198 wrote both rows with raw SQL from the UI, which the plan forbids | New makes the Main track through `track.create` and the UI's `OpSubmitter::protectRoot` refuses to undo that step |
 | N3 | Save As, a true one that writes a new `.adi` and carries on in it (ADR-0203 d6, LANES §3 item 6) | engine | Ctrl/Cmd+Shift+S | the key and the menu item exist; the Status Bar says Save As waits for the engine |
-| N4 | An app-scoped home for each window's interface zoom, per window and per display (ADR-0129 d3; ADR-0203 d11 "kept with the application") | win (the settings registry) | Ctrl/Cmd + and - zoom each window, but the zoom is not remembered across launches | held per window for the session |
+| N4 | ~~An app-scoped home for each window's interface zoom, per window and per display (ADR-0129 d3; ADR-0203 d11 "kept with the application")~~ STRUCK 2026-11-03: merged as #359, through #360's merge; the window keeps and reads each window's zoom in #378 (`window/window-zoom`) | win (the settings registry) | Ctrl/Cmd + and - zoom each window, but the zoom is not remembered across launches | held per window for the session |
 | N5 | ~~An undoable path from a file and a track to a clip that plays: `importMedia` that captures without committing (so media and clip are one undo step) and fills `sample_rate`/`channels`/`frames`, and an op pair that attaches an `audio_clips` row (STEP-7-PLAN §3.0). #199's commit `3feee62` has a working version (`prepareImport`, `clip.attachAudio`/`clip.detachAudio`) in `media_ops.*` and `ops_catalog.cpp`, for the engine lane to lift~~ STRUCK 2026-11-02: merged as #308 | engine (PR #308) | dropping audio onto a track, 7.3's headline gesture | the arrangement accepts the drop and the Status Bar says it waits for the engine; nothing is written |
 | N7 | A UI producer into the edit capture: `ParamOps` has one ring per plug-in and none for the window, so a drag in the device strip cannot become an op whose first touch emits its opener (ADR-0124, ADR-0181 d5). #203's `537c56d` has `ParamOps::uiEvent` (its own `ParamEditCapture`, begin/value/end, reusing the opener machinery) for the engine lane to lift | engine | editing a parameter from the strip, 7.4 | the strip shows every value; a gesture is refused and the Status Bar says why |
 | N8 | A plug-in's editor from the hosts: VST3 (`IPlugView`, through JUCE's `createEditor`) and CLAP (`clap_plugin_gui`), as a component the floating host can place, and the editor's own size | engine (`src/juce/*host*`) | Live's wrench toggle and Ctrl/Cmd+Alt+P; the floating host's main users (ADR-0076) | the host is built and tested; nothing opens a plug-in window |
@@ -39,13 +39,13 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N11 | ~~The snapshot to carry the send rows (`routing` with `kind='send'`: source, return, gain, pre/post)~~ STRUCK 2026-11-02: merged as #309 | engine (PR #309) | one send knob per return on every row (ADR-0203 d3) | no send knobs; the routing ops exist and are ready to be called |
 | N12 | Split Stereo Pan: a pan mode and two pans per strip in the format and the mixer (ADR-0203 d9) | engine | the pan control's context menu | the menu shows the mode disabled |
 | N13 | A loudness meter's DSP: momentary, short-term and integrated LUFS and true peak, cheap enough for the Main track at all times (ADR-0203 d14) | engine or devices | the Main track's loudness meter | none yet |
-| N14 | The registry's pages in Live's ten tab names and order, then ADI's own (ADR-0203 d11, Master Reference V.2), with Live's sections within each tab and Live's labels; and `sync.showLinkToggle` on by default, as Live shows Link's switch and ADR-0203 d11 says (the registry's is off) | win (`src/adi/settings/registry.cpp`) | the Settings window's tabs, sections and labels as Live's | the window lays the registry's settings out on Live's ten tabs itself, from the catalogue's Part II rows (`adi::ui::settingsTabs`, `window/settings-tabs`); labels such as "Link start/stop sync" (Live: Start Stop Sync) and Live's own sections within a tab wait here |
+| N14 | ~~The registry's pages in Live's ten tab names and order, then ADI's own (ADR-0203 d11, Master Reference V.2), with Live's sections within each tab and Live's labels; and `sync.showLinkToggle` on by default, as Live shows Link's switch and ADR-0203 d11 says (the registry's is off)~~ STRUCK 2026-11-03: merged as #354, through #360's merge; the window draws Live's sections and strikes win's three placements in #377 (`window/live-sections`) | win (`src/adi/settings/registry.cpp`) | the Settings window's tabs, sections and labels as Live's | the window lays the registry's settings out on Live's ten tabs itself, from the catalogue's Part II rows (`adi::ui::settingsTabs`, `window/settings-tabs`); labels such as "Link start/stop sync" (Live: Start Stop Sync) and Live's own sections within a tab wait here |
 | N15 | ADR-0104's library index (the app-scoped store of samples, presets and devices) and a catalogue of ADI's own devices by category, with a way to insert one (`device.insert` needs a plug-in reference row and the track's chain, neither of which the UI can make) | engine, devices | the browser's list (Live's folders under each category, double-click or drag to load) | the browser shows its sidebar and the list's header; a click on a category says it is not listed yet |
 | N16 | The channel slots for ADI-Q and ADI-L on every channel and group (ADR-0204 d1, LANES §3 item 7): present but off, their on/off and ADI-L's mode in the snapshot, an op to switch each, and the engaged EQ's curve for the window to draw | engine (slots), clones (the plug-ins) | the Channel EQ window's switches and its display; the track rows' Q and L | every slot is shown off; a switch says what it waits for |
 | N17 | The ops of phase C's window parts: a clip split (Live's Split, and what a range edit does to a clip crossing its edge); copy, cut, paste and duplicate of material, and the …Time commands; clip fades (handles, Create Fades on Clip Edges off, d7); Insert Silence; and the import and bounce prompts' actions (Warp on import, edge fades, copying the file in; bounce needs the render path) | engine | range edits on clips crossing the selection's edge, Cut/Copy/Paste/Duplicate, the fade handles, Insert Silence, the two prompts (LANES §3b item 3) | the range selection is built (`window/range-selection`, #329): Delete and 0 act on whole clips inside it and say why one crossing its edge stays; nothing else is drawn that cannot act |
 | N18 | A device's copy the window can read: what `device.remove`'s inverse captures (the plug-in reference, the stored params, the state's hashes, the panel and the route), from the snapshot or a read the UI may call, so a paste is a `device.insert` with a new id in front of the selected device (Live manual §23, p. 443) | engine | Cut, Copy, Paste and Duplicate in a device's menu and the Edit menu (§23.2.1) | the menu lists Delete and Rename; the four wait |
 | N19 | The transport's metronome and loop: `transport.setMetronome` and `transport.setLoop` are in the catalogue but apply nothing (`transportNoop`); the snapshot carries neither the metronome's state nor the loop region, and nothing clicks or loops | engine | the control bar's Metronome and Loop switches, Live's O key (§42.20) and Ctrl/Cmd+L, the loop brace (§6.6, §42.16) | the switches are drawn and say they are not built; nothing is journaled for them |
-| N20 | A home for the channel configuration: `audio.channelConfig` is Device scope, which `AppSettings::set` refuses ("belongs to a device"), and its text has no format; the app also opens the device with no inputs (`initialise(0, 2, ...)`) | win (the store and the registry); engine for recording | Live's Input and Output Config dialogs on the Audio page: which channels are used, mono or stereo pairs, their names per device (online §17.2, Routing and I/O; parity-settings row 7) | nothing built; the dialogs are a new window, so their pictures would go to the director first |
+| N20 | ~~A home for the channel configuration: `audio.channelConfig` is Device scope, which `AppSettings::set` refuses ("belongs to a device"), and its text has no format; the app also opens the device with no inputs (`initialise(0, 2, ...)`)~~ STRUCK 2026-11-03: merged as #360; the window's Input Config and Output Config dialogs, and the device opened with the record's channels, are #379 (`window/channel-config`) | win (the store and the registry); engine for recording | Live's Input and Output Config dialogs on the Audio page: which channels are used, mono or stereo pairs, their names per device (online §17.2, Routing and I/O; parity-settings row 7) | nothing built; the dialogs are a new window, so their pictures would go to the director first |
 | N21 | WITHDRAWN 2026-10-28: both settings exist in the registry (`lookfeel.wrapTabNavigation`, `editing.arrowKeysMoveClips`); the window follows them itself (master-reference-audit.md) | — | — | — |
 | N22 | A track's delay in the snapshot (`mixer.setDelay` exists) | engine | Track Delay in ms on every strip (MR 7, 8.1) | nothing shown |
 | N23 | Solo in Place (a setting or a project field, and the engine following it) and the cue path: Solo/Cue, Cue Out, Cue Volume; with it the ★ Reference's exclusive solo, the Main bypassed (ADR-0209 Q7, d11) | engine; win for the registry row | the Solo button's menu and the Options menu (MR 8.1); [REF] and Shift+R (#323) | Solo is plain solo; [REF] latches and holds in the window, and the Status Bar says the sound waits |
@@ -70,6 +70,262 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N42 | A return's Pre/Post as one switch of the return's own in the format and an op (ADR-0203 d3: "Pre/Post is one switch on each return, not on each send"), so it holds while no send reaches the return and new sends follow it; today the tap is on each `routing` row (`pre_fader`) | engine (`docs/format`, `src/adi/ops_catalog.cpp`, the snapshot) | the return's Pre/Post on its row and in Main's Sends section (`window/return-main-rows`) | the switch reads Pre when every send into the return does, moves them all in one batch, and a new send follows it; with no send it says there is nothing to switch |
 | N43 | Main's cue volume (Live's Cue Out level) and the Solo/Cue switch in the format, the snapshot and an op, with the cue path of N23 | engine | Main's row and strip as Live's: the cue volume beside its volume, the Solo/Cue switch and the blue cue knob in the Mixer (look-live11 difference row 2, parity-7.6 row 17) | Main shows its volume only |
 | N6 | ~~The snapshot to carry what the arrangement draws: a track's `kind`, `parent`, `index_in_parent` and `color`, a clip's `name`, the time-signature map~~ STRUCK 2026-11-01: merged as #299. The window reads the tree from it (`window/n6-snapshot`); a clip's name and the meters are the window's next items; a track's own colour waits on N36 | engine | — | — |
+
+---
+
+## 2026-11-03, win (ORC-VST) — N14, N4 and N20, the window's halves [#377](https://github.com/arieladi/Adi/pull/377), [#378](https://github.com/arieladi/Adi/pull/378), [#379](https://github.com/arieladi/Adi/pull/379), on #374
+
+Win merged its N14, N4 and N20 together through #360 (07:54 UTC; #354 and #359 closed as already on
+main) and told the lane not to wait on the macOS queue (ADR-0210). The director had answered "wait for
+merges" to stacking on the unmerged PRs; with them merged, that wait was over. The three rows are
+struck above. `window/live-sections` merges origin/main into the stack first: the Settings page's
+conflict (win's tab groups against #370's held row) is resolved there, the head's row held within
+the tab's groups.
+
+- **N14, #377 `window/live-sections`.** Every Live tab draws the registry's sections in Live's order;
+  ADI's own settings on a Live tab follow them under the tab's name. Win's three placements are
+  struck (Zoom on Selection, the tooltips, the knob, slider and value-box modes: Live 12 manual 2.3.1
+  lists none of them in its sections). The Audio page's head holds every row of Audio Device, Sample
+  Rate and Latency after Live's own lines, so no section is headed twice. On Tempo & MIDI the tab's
+  own group holds Live's Master Focus Dial, chase and filter switches, which the registry gives no
+  section; it keeps their place in Live's order. The shell tests now build the real Audio page.
+  Parity settings row 4.
+- **N4, #378 `window/window-zoom`.** Ctrl/Cmd + and - keep each window's zoom in `window.zoom` as
+  `<window>@<display>` (`main`, and `floating:<key>` for an ADI view's window), saved at once. The
+  main window takes its kept zoom when placed or moved onto another display; a floating view's
+  window opens at its own. Parity 7.2 row 9, 7.5 row 10. Open: the Settings window's Zoom Display
+  row still shows the table, not Live's percentage chooser.
+- **N20, #379 `window/channel-config`.** The Channel Configuration line is Live's Input Config and
+  Output Config buttons, each opening its dialog (17.2): mono channels and stereo pairs, a switch and
+  a name each, OK and Cancel. OK keeps that side of the device's record, saved at once, and reopens
+  the device with the channels in use; at launch and on a device change the device opens with them
+  (Live's 1, 2 and 1/2 where none is kept), no longer with no inputs. A new window: its picture is
+  for the director's first look (`collab/window/pictures/2026-11-03-channel-config-input.png`).
+  Open: the names in the tracks' Input and Output Channel choosers. Parity settings row 7.
+
+**Tests.** shell 884, settings 166, window state 62, document 47, all passing on MSVC `/WX`; `adi_app`
+builds. No device was opened here: the director's desktop is live. `test_all.sh` was not run: the
+only engine-side file touched is `registry.cpp`'s section table, which `adi_settings_tests` covers.
+
+---
+
+## 2026-11-03, win (ORC-VST) — the director's R1, R2, R3 and R6 [#372](https://github.com/arieladi/Adi/pull/372), [#373](https://github.com/arieladi/Adi/pull/373), [#374](https://github.com/arieladi/Adi/pull/374), on #370
+
+**A fresh seat**, after the last one's usage limit, resuming from `collab/prompts/2026-11-03-window-lane.md`
+(#371). From today the lane runs on the director's Windows PC: worktree `D:\wt-window`, built as
+`ui.yml` builds on Windows (Ninja, Debug, MSVC `/WX`, `ADI_WITH_JUCE=ON`, `ADI_WITH_PD=OFF`) in
+`D:\bw`. The app is not driven on the desktop: that is the director's own screen, in use. Pictures
+come from the shell tests' software renders (`ADI_UI_PARITY`).
+
+**The director's remarks on build `add5102` first** (`collab/director.md`, LANES §4 window item 4),
+one PR each, stacked:
+
+- **R1 and R6, #372 `window/dead-controls`.** Unfold Track on a plain track, and U on it, say that its
+  automation lanes wait for the engine (N26) and select nothing; a group's switch still folds.
+  Set Locator, Previous and Next Locator (N25), Automation Mode and Lock Envelopes (N26) each say what
+  they wait for. A press on a fold switch no longer runs the title's release, which had cleared the
+  Status Bar. Parity 7.3 rows 38 and 39.
+- **R2, #373 `window/split-line`.** The divider was already Live 11's measured 2 pt #505050 across
+  lanes, names and controls. What was missing: the split line under the track controls did nothing.
+  It now shows the resize cursor and drags the height, as under the name. If the director still
+  cannot see the border, the next step is to measure Live 12's divider on his PC. Parity 7.3 row 7.
+- **R3, #374 `window/mix-view-switch`.** Docked, the panel is framed before it shows. A floating
+  window is hidden before its content leaves it, so no empty black window shows on docking. The
+  first window opens over the place it stood docked, at its size; after that, where it was left.
+  F4, the Mix field and the window button each go both ways. Parity Mix View row 4. What else
+  "terrible" means waits for the director's next build.
+
+**#330 needed nothing.** The last seat's merge of main (eab4b28) is clean against today's main, and
+all 22 checks are green.
+
+**N4, N14 and N20** (win's #354, #359, #360) are not merged, so their rows stand. They are the lane's
+next items, after these three.
+
+**Tests.** shell 858, window state 62, document 47, all passing on MSVC `/WX`. Each PR's own count is
+in its body. `test_all.sh` was not run here: no engine file changed, and the shell suite is not among
+its counts.
+
+---
+
+## 2026-11-03, cloud — Driver Error Compensation among the latencies [#370](https://github.com/arieladi/Adi/pull/370) `window/latency-compensation`, on #369
+
+**Built: the Audio page's Driver Error Compensation where Live 11 has it** (parity-settings row 7).
+The page's head holds the Settings' own row between Output and Overall Latency, under Live's name
+(`SettingsPageHead`); the panel still owns, refreshes and writes it. Live 12's online manual has no
+figure of the page, so its place is marked to confirm on Live. Channel Configuration is open.
+
+**Tests.** shell 841; `test_all.sh` PASS (10082 checks, 106 suites). No golden moved. Checked in the
+app with a device manager under Xvfb.
+
+**CI check-in, 00:12 UTC.** #330 to #369: no new failures or conflicts. #337's macOS re-run went
+green. Four more macOS jobs were cancelled after hours without a runner: #338's, #340's and #348's
+were re-run once; #347's waits while its run has a job queued. #350's and #362's MSVC
+`adi_mixer_tests` timeouts (not these PRs': `adi_core` only) wait on their runs' queued macOS jobs
+before a re-run; #362 has a comment saying so.
+
+---
+
+## 2026-11-02, cloud, continued — the grid in the project's meters [#369](https://github.com/arieladi/Adi/pull/369) `window/meter-grid`, on #368
+
+**Built: the editing grid follows the meters** (parity 7.3 row 11; Live 12 manual 6.10, 6.5). In any
+project but a lone 4/4, a step under a bar runs from each bar line, and "1 Bar" and wider count the
+meter's bars (a triplet two thirds of them); snapping, the arrows and the drawn lines follow. 4/4
+is as before by the same drawing path. The geometry takes the snapshot's meters in `applyView`.
+The lanes' alternate shade stays in quarters (open).
+
+**Tests.** seams 397, shell 839; `test_all.sh` PASS (10082 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — the Arrangement Position field [#368](https://github.com/arieladi/Adi/pull/368) `window/position-field`, on #367
+
+**Built: the position field typed and stepped** (parity 7.2-shell new row 31; Live 12 manual 6.1).
+A position typed (bar.beat.sixteenth, the later ones 1 when left out) puts the insert marker and the
+playhead there in the project's meters (`tickOf`, `parsePosition`); a beat the bar lacks is refused
+with the reason. Up and down step a bar from the play position. Neither is an undo step. Live's three
+separate fields and dragging are open. Under `--no-audio` the app can't show the move (no engine
+takes the locate), so the shell test drains the mailbox into a transport.
+
+**Tests.** seams 387, shell 839; `test_all.sh` PASS (10072 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — Tap Tempo [#367](https://github.com/arieladi/Adi/pull/367) `window/tap-tempo`, on #366
+
+**Built: the Tap button** (parity 7.2-shell new row 30; Live 12 manual 9.1.2). It acts on its
+press; from a run's second tap the tempo follows the mean of the run's last sixteen intervals
+(`TapTempo`), through #366's edit. A run is one step ("Tap Tempo"), each tap replacing the run's
+step while it is the latest. A two-second pause starts a new run (provisional, to measure). Key Map,
+MIDI Map and Start Playback with Tap Tempo are open.
+
+**Tests.** seams 366, shell 831; `test_all.sh` PASS (10051 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — the control bar's Tempo field [#366](https://github.com/arieladi/Adi/pull/366) `window/tempo-field`, on #365
+
+**Built: the Tempo field typed** (parity 7.2-shell new row 29; Live 12 manual 9.1.1). 20 to 999
+BPM with hundredths; the tempo in force at the play location takes it, one step ("Change Tempo"):
+a tempo change's (its curve kept), else the start's, with #365's insert-then-replace for the
+snapshot's implicit 120 (`submitStartEdit`, shared). One field editor serves both control bar
+fields. Live's drag of the coarse and fine parts, its tempo automation and Tap Tempo are open.
+
+**Tests.** seams 360, shell 825; `test_all.sh` PASS (10045 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — the control bar's Time Signature field [#365](https://github.com/arieladi/Adi/pull/365) `window/signature-field`, on #364
+
+**Built: the Time Signature field typed** (parity 7.2-shell new row 28; Live 12 manual 6.5). A
+click opens a field; the value typed changes the signature in force at the play location, one
+step: a marker's, else the start's. The snapshot can't tell a stored 4/4 at the start from its
+implicit one, so the window tries the insert first; the store's refusal changes nothing, and the
+replace follows (`setMeterAt`, `startSurelyStored`). The field's automation LED lights while the
+arrangement holds changes. Live's separate numerator and denominator fields, and dragging, are
+open.
+
+**Tests.** seams 342, shell 820; `test_all.sh` PASS (10027 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — fragmentary bars [#364](https://github.com/arieladi/Adi/pull/364) `window/fragmentary-bar`, on #363
+
+**Built: Live's fragmentary bar** (parity 7.3 row 11; Live 12 manual 6.5). A change placed before
+the previous bar is complete is drawn as a crosshatched band in the markers' row, from the bar line
+to the change (`forEachFragmentaryBar`, `fragmentAt` in `meters.hpp`). Its menu lists Delete
+Fragmentary Bar Time and Complete Fragmentary Bar (Insert Time), dimmed until the time ops (N17's
+kind); the Status Bar says so.
+
+**Tests.** seams 335, shell 811; `test_all.sh` PASS (10020 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — time signature markers moved [#363](https://github.com/arieladi/Adi/pull/363) `window/meter-move`, on #362
+
+**Built: markers moved by the mouse and the arrow keys** (parity 7.3 row 11; Live 12 manual 6.5).
+A marker dragged follows the mouse to the nearest grid line (Alt, Cmd on the Mac, frees it), drawn
+where it lands, never before the first grid line; left and right move a selected marker a grid
+line. Each move is one step that keeps the value (`moveMeter`: remove, then insert). Onto another
+marker or the start it stays, with the reason.
+
+**Tests.** seams 331, shell 809; `test_all.sh` PASS (10016 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — time signature markers from the window [#362](https://github.com/arieladi/Adi/pull/362) `window/meter-markers`, on #361
+
+**Built: Live's time signature markers inserted, edited and deleted** (parity 7.3 row 11; Live 12
+manual 6.5). A click on a marker in the scrub area selects it. Insert Time Signature Change (the
+Create menu, the scrub area's menu) opens a field at the insert marker; Ctrl/Cmd+R edits a selected
+marker in the same field; Delete removes it. Each is one step through `project.insertTimeSignature`
+and `project.removeTimeSignature`. `meter_edits.hpp` parses values as Live's manual says. The
+start's signature is left to the control bar's fields: the snapshot's implicit 4/4 at zero can't be
+told from a stored one. The ruler now stops a cut-short bar's beat labels at the change. Moving
+markers is the next item.
+
+**Tests.** seams 325, shell 797; `test_all.sh` PASS (10010 checks, 106 suites). No golden moved.
+In the app, Alt+C and the Create menu's last item made a 3/4 marker.
+
+---
+
+## 2026-11-02, cloud, continued — keys latched momentarily [#361](https://github.com/arieladi/Adi/pull/361) `window/key-latch`, on #358
+
+**Built: Live's momentary latching (§42.25) for S, F1…F8 and Z** (parity 7.6 rows 6 and 7, 7.3
+row 8). A latching key runs its command once while it is held; its repeats do nothing. A tap
+stays. A hold of 500 ms or more goes back on release: S's solo or an F-key's activator step is
+undone while it is still the latest (an edit made during the hold stays), and Z's zoom goes back
+a step. `MomentaryLatch` (`src/adi/ui/momentary_latch.hpp`) times the key, beside
+`ReferenceAudition`. The release reaches the root from the main window's and a floating window's
+key listener, so Shift+R's hold now ends in the Mix View's own window too (Mix View row 8). Live's
+A, B and Tab wait on Automation Mode, Draw Mode and the Session View.
+
+**Tests.** seams 296, shell 781; `test_all.sh` PASS (9981 checks, 106 suites). No golden moved. In
+the app under Xvfb, S and F1 held 1.1 s went back on release and a tap stayed.
+
+**CI check-in, 20:06 UTC.** #330 to #358: no failure but #350's known MSVC timeout (its run still
+has macOS jobs queued, so its re-run waits). The macOS jobs on #337 and #339 were cancelled after
+six hours without a runner, never having started; each was re-run once.
+
+---
+
+## 2026-11-02, cloud, continued — picked clips across tracks [#358](https://github.com/arieladi/Adi/pull/358) `window/picked-clips-across`, on #357
+
+**Built: several selected clips dragged across tracks, each by the same rows** (parity 7.3 rows
+27, 29; #357's open item). `clipsAcross` (`range_edits.hpp`) maps each clip to the track that many
+shown lanes from its own, or none across when any would leave the lanes or land on a track that
+can't take it; the canvas draws each on its new lane while dragging; `moveClips` lands them with
+their new tracks in one step; the selection follows the clip dragged.
+
+**Tests.** seams 285, shell 761; `test_all.sh` PASS (9970 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — picked clips dragged together [#357](https://github.com/arieladi/Adi/pull/357) `window/picked-clips-drag`, on #356
+
+**Built: several selected clips dragged together** (parity 7.3 rows 27, 29; #356's open item). With
+clips picked, a plain press on the bar of one of the selected clips keeps them all for the drag;
+it moves them in time by the same offset, each on its own track, none before the start, drawn
+there while dragging, one undo step (`moveClips` in `range_edits.hpp`, "Move Clips"). A press
+without a drag selects that clip alone.
+
+**Open:** several clips moved across tracks, each by the same rows.
+
+**Tests.** seams 281, shell 756; `test_all.sh` PASS (9966 checks, 106 suites). No golden moved.
+
+---
+
+## 2026-11-02, cloud, continued — clips picked apart [#356](https://github.com/arieladi/Adi/pull/356) `window/picked-clips`, on #352
+
+**Built: Live's "Select Multiple Items" on clips** (Ctrl/Cmd+click, §42.5; parity 7.3 row 29).
+`Selection::pickedClips` holds the clips picked besides the selected one, kept with the session's
+selection; a Ctrl/Cmd+click on another clip picks it or lets it go, and anything that selects a clip
+or none lets them go. `ArrangementGeometry::clipSelected` lights them; `deleteClips` and
+`deactivateClips` (`range_edits.hpp`) act on them all, one undo step each, named as the range edits
+name theirs.
+
+**Open:** dragging several picked clips together (a drag moves the one clicked).
+
+**Tests.** seams 277, shell 752; `test_all.sh` PASS (9962 checks, 106 suites). No golden moved.
 
 ---
 

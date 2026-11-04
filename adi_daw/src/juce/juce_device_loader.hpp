@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The loader: a `plugin_refs` row becomes a live `Vst3Device` or `ClapDevice`.
+// The loader: a `plugin_refs` row becomes a live VST3, CLAP or canonical built-in device.
 // ADR-0122 d2 -- the second of the two things JUCE contributes to a session
 // (the first is the callback, `DeviceBridge`).
 //
@@ -20,8 +20,8 @@
 //     put in it (ADR-0122 d4). So `loaded() == false` becomes null plus the
 //     host's error, and every placeholder in a session is the session's.
 //   * **A format we name but do not host is refused with the ADR that says so.**
-//     `au`, `vst2`, `lv2`, `ladspa` (ADR-0041); `internal` until native
-//     devices exist. The row still opens -- as a placeholder -- which is the
+//     AU, VST2, LV2 and LADSPA (ADR-0041). Unsupported internal UIDs
+//     also open as placeholders, which is the
 //     whole reason `plugin_refs.format` admits them (SPEC 7.4).
 #pragma once
 
@@ -56,6 +56,7 @@ public:
         std::int64_t requests = 0;
         std::int64_t vst3 = 0;       ///< instances handed out
         std::int64_t clap = 0;
+        std::int64_t builtin = 0;    ///< supported canonical built-ins
         std::int64_t unhosted = 0;   ///< a format we do not host
         std::int64_t notFound = 0;   ///< hosted format, no binary matched the uid
         std::int64_t failed = 0;     ///< matched, and did not instantiate

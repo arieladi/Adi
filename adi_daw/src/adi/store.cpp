@@ -83,8 +83,14 @@ const std::vector<MigrationStep>& migrationSteps() {
         {8, {"tuning_systems", "tuning_degrees", "key_map_tunings", "key_map_degrees"}},
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
-        // 1.10: per-track Rec-Q / Play-Q and monitoring-latency policy.
-        {10, {"track_recording_options"}},
+        // 1.10 (N25): literal marker notes/prompts.
+        {10, {"marker_details"}},
+        // 1.11: Split Stereo Pan, additive settings (ADR-0203 d9).
+        {11, {"mixer_pan_settings"}},
+        {12, {"clip_playback_details","automation_segment_ranges"}}, // continuous fade handles (N17)
+        {13, {"clip_warp_fade_domains"}}, // retained musical Warp fades (N17)
+        // 1.14: per-track Rec-Q / Play-Q and monitoring-latency policy.
+        {14, {"track_recording_options"}},
     };
     return steps;
 }
@@ -570,6 +576,9 @@ Store::getNoteExpression(std::int64_t clipId, std::uint64_t noteId, int dimensio
 bool Store::putAutomationData(std::int64_t laneId, std::optional<std::int64_t> clipId,
                               std::span<const std::byte> blob) {
     try {
+        SQLite::Statement ranges(*db_,"SELECT 1 FROM automation_segment_ranges r JOIN automation_data d ON d.id=r.data_id WHERE d.lane_id=? AND d.clip_id IS ? LIMIT 1");
+        ranges.bind(1,laneId);if(clipId)ranges.bind(2,*clipId);else ranges.bind(2);
+        if(ranges.executeStep()){lastError_="replace automation with its captured curve ranges";return false;}
         SQLite::Statement st(*db_,
             "INSERT INTO automation_data(lane_id, clip_id, data) VALUES (?,?,?) "
             "ON CONFLICT(lane_id, IFNULL(clip_id,-1)) DO UPDATE SET data = excluded.data");

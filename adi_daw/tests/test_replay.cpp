@@ -187,10 +187,16 @@ std::vector<OpRequest> corpus() {
     // CONTENT, addressed by hash and travelling with the file, exactly as
     // media does (ADR-0032, ADR-0038). An op that inlined the bytes would put
     // a sampler's embedded content into the undo log twice.
+    const Payload builtinRow={{"id",400},{"format","internal"},{"uid","org.adidaw.builtin.utility"},
+        {"vendor","ADI"},{"name","Utility"},{"version","1"},{"subtype","effect"},
+        {"path_hint",""},{"is_shell",0},{"shell_id",nullptr}};
+    op("pluginRef.register", {{"id",400},{"row",builtinRow}}, "Register Utility");
+    op("pluginRef.unregister", {{"id",400}}, "Forget unused Utility reference");
+    op("pluginRef.register", {{"id",400},{"row",builtinRow}}, "Register Utility again");
     op("chain.create", {{"id", 60}, {"track", 10}, {"name", "Rhodes FX"}},
        "A chain on Rhodes");
     op("device.insert", {{"id", 70}, {"chain", 60}, {"ord", 0},
-                         {"name", "Compressor"}}, "Insert a compressor");
+                         {"name", "Compressor"},{"ref",400}}, "Insert a compressor");
     op("device.insert", {{"id", 71}, {"chain", 60}, {"ord", 1},
                          {"name", "Reverb"}, {"always", true}}, "Insert a reverb");
     // ADR-0011: a device whose plugin did not load is STILL INSERTED. Undoing

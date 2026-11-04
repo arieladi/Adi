@@ -89,13 +89,13 @@ void inheritedDefaultsAndLegacy() {
     bool refused=false;try{(void)trackRecordingDefaults(4,"unexpected",true);}catch(const std::exception&){refused=true;}check(refused,"unknown registry defaults refuse instead of guessing");
     // This minor added only the optional table: removing it reconstructs the
     // frozen predecessor, with no other native DDL changes.
-    store.db().exec("DROP TABLE track_recording_options");store.db().exec("PRAGMA user_version=1009");store.db().exec("UPDATE adi_meta SET value='9' WHERE key='schema_minor'");
+    {auto gone=adi::tablesAddedAfter(9);for(auto it=gone.rbegin();it!=gone.rend();++it) store.db().exec("DROP TABLE "+*it);} /* every table since 1.9 (chain) */store.db().exec("PRAGMA user_version=1009");store.db().exec("UPDATE adi_meta SET value='9' WHERE key='schema_minor'");
     const auto path=store.path();project.store.reset();StoreError error{};
     project.store=Store::open(path,error,true);
     check(project.store && project.store->schemaMinor()==9 && readTrackRecordingOptions(*project.store).empty() &&
         SnapshotBuilder::fromStore(*project.store)->findTrack(1)->recording==TrackRecordingOptions{},"read-only 1.9 file remains old and exposes policy defaults");
     project.store.reset();project.store=Store::open(path,error);
-    check(project.store && project.store->schemaMinor()==10 && project.store->upgradedFromMinor()==9 && readTrackRecordingOptions(*project.store).empty(),"writing upgrades 1.9 additively without creating fake per-track overrides");
+    check(project.store && project.store->schemaMinor()==adi::kSchemaMinor && project.store->upgradedFromMinor()==9 && readTrackRecordingOptions(*project.store).empty(),"writing upgrades 1.9 additively without creating fake per-track overrides");
 }
 }
 int main(){try{historyAndSharing();rootDefaults();inheritedDefaultsAndLegacy();}catch(const std::exception& exception){check(false,exception.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

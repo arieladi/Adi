@@ -50,7 +50,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1010   # schema 1.10 (track recording options); SPEC §3.1 and the DDL agree
+SPEC_USER_VERSION = 1014   # schema 1.14 (track recording options); SPEC §3.1 and the DDL agree
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent

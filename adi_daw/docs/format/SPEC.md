@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1010;          -- schema 1.10
+PRAGMA user_version   = 1014;          -- schema 1.14
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -538,6 +538,16 @@ with musical ticks. Both DAWs' models fit: Ableton's always-on warp with a marke
 grid, and Cubase's AudioWarp with hitpoint-derived markers, are the same data
 with different UI over it.
 
+AWRP v1 records are 16 bytes: an i64 source_frame at offset 0 and an i64
+tick at offset 8, both little-endian. Frames are relative to the audio source
+window, at its file's sample rate; ticks are source musical coordinates, not
+absolute project positions. Canonical prepared maps begin at frame/tick zero,
+end at src_len_frames and strictly increase in both coordinates. Bar markers
+are ordinary map points. Header bit 1 (nanoseconds) is invalid for this stream.
+Readers stride by rec_size, retaining future record tails and stream trailer
+bytes in the original BLOB; a producer that needs to rewrite unknown fields
+must refuse rather than discard them.
+
 ### 6.5 There is no Session View
 
 ADI is a **linear, arrangement-timeline DAW**. There is no clip-launching matrix,
@@ -651,6 +661,20 @@ track's devices, and whatever the track feeds takes the strip's output
 
   For laws 0 and 1, with θ = (pan + 1)·π/4: law 1 gives (cos θ, sin θ), and
   law 0 gives √2 times that.
+- **Split Stereo Pan (1.11, ADR-0203 d9)** is an optional additive
+  `mixer_pan_settings(track_id,mode,pan_left,pan_right)` row, keyed to the strip.
+  Absence means `stereo`, -1, +1. `mode` is `stereo` or `split`; readers use
+  stereo for an unknown future mode and SHOULD report it. Each position is
+  -1..+1 and stays stored when dormant. The original pan is dormant in split.
+  Split applies one mono panner per input: each can reach either output, and
+  their contributions sum. Under Live's law these mono panners use constant
+  power without the stereo law's sqrt(2) boost, so the initial hard-left /
+  hard-right pair is exactly unity. Other selected laws retain their formulas.
+  Fader/mute apply to all coefficients. Changes use the strip's five-ms ramp,
+  including crossfeeds and precision handover; Post sends use the same matrix.
+  Only the first stereo pair is panned; additional channels keep their existing
+  fader-only behavior. Lanes `panLeft` / `panRight` are real -1..+1 values.
+  Width and phase retain their separate Utility placement.
 - **Mute and solo live on `tracks`** (`muted`, `soloed`, `solo_defeat`).
   - A muted track is silent.
   - While any track other than the master is soloed, a track is heard only if
@@ -727,6 +751,24 @@ The rules:
   together with `key_map`'s own ops (ADR-0178 d4).
 
 ---
+
+### Marker notes and prompts (schema 1.10, N25)
+
+`markers` retains its original position/cycle fields and both time bases.
+`marker_details(marker_id, note, prompt)` is an additive child table with a
+cascading foreign key to the marker. A missing row means empty note/prompt.
+Strings are literal UTF-8; prompt execution is outside the format and these ops.
+Existing markers are not rewritten on upgrade. Frozen 1.9 plus this table gives
+the current schema; read-only older files see the usual empty TEMP table.
+
+The marker ops capture enough state for undo, including details and unknown
+columns. In-place edits restore columns in place rather than deleting marker
+rows and cascading children. Empty details rows are permitted; undo preserves
+the difference between an absent row and an empty row. The text projection
+inlines note/prompt (omitting empty values), including linear cycle lengths.
+The window reads immutable `Snapshot::markers` by stable id. Positions/lengths
+retain their optional tick/nanosecond columns; id order is not display order.
+Every field participates in comparison/sharing, including literal note/prompt.
 
 ## 7. Layer 2 — plugin state
 
@@ -829,8 +871,12 @@ cheaper than a user discovering it with an hour of sound design at stake.
 
 These are two different lists and conflating them loses data.
 
-**Hosted by this implementation: VST3, and CLAP when it is written.** Nothing
-else, and adding to that set takes an ADR (ADR-0041). In particular ADI does not
+**Hosted by this implementation: VST3, CLAP, and supported canonical ADI
+built-ins** (internal references, ADR-0104/ADR-0188). Internal UIDs are stable
+org.adidaw.builtin.<device-slug> identities from builtinCatalog(); they do not
+name a disk binary or a user patch. A build without the backend, an unknown UID,
+or a listed unavailable device follows the same placeholder rule below.
+Adding third-party formats takes an ADR (ADR-0041). In particular ADI does not
 host **VST2**, **AU** or **AUv3**, and no build option turns that on.
 
 **Recorded by the format: whatever was there.** `plugin_refs.format` admits
@@ -935,6 +981,17 @@ op that a history snapshot names (§8.6).
 `ui_view`, `window_state`, `session_state`: track heights, fold states, zoom,
 scroll offsets, selection, playhead, loop, per-plugin-window rectangles *with
 their monitor identity*, mixer layout, visible panels, last-used tool.
+
+Reserved `session_state` keys for saved performance controls:
+`transport.metronome` is a JSON boolean; `transport.loop` is JSON
+`{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.
+Absent keys mean click/loop off and an initial four-bar 4/4 window at zero.
+These are session metadata, not undoable project edits; the ephemeral transport
+ops update them and their audit rows in one transaction. Readers ignore malformed
+session values and use defaults. `Snapshot::transport` exposes them without
+sharing mutable driver state. Loop bounds stay in ticks and are converted through
+the tempo map at the session rate; no fixed-tempo sample count is persisted.
+
 
 The monitor identity matters: restoring a plugin window to `x=3200` on a machine
 that no longer has a second monitor puts it offscreen. Readers MUST clamp
@@ -1049,6 +1106,59 @@ know" format. Silent degradation at render time is data loss with extra steps.
 
 ---
 
+### 9.2 Native editing metadata (schema 1.12, N17)
+
+These two core tables are additive; schema 1.9 stays frozen. They carry
+playback semantics, rather than foreign extension data.
+
+The optional clip_playback_details row carries nullable in_tension and
+out_tension in [-1,1]. NULL retains the original curve arithmetic; explicit
+zero uses the shared continuous evaluator. No row and zero fade lengths
+remain Create Fades on Clip Edges off.
+
+Nullable content_offset_ns, loop_begin_ns, loop_end_ns and source_end_ns
+pin unwarped source clocks independently of placement tempo. The loop is
+[begin,end), never a duration rounded separately. Absent clocks retain the
+legacy tick conversions. An explicit End limits nonlooped playback; the
+immutable source window still bounds every read. Editing never changes
+that source window merely to move or split a clip, preserving SRC phase.
+
+Nullable in_begin_ns, in_end_ns, out_begin_ns, out_end_ns retain the original
+fade domain on the unrolled source clock (before loop wrapping). Each pair
+is absent together or has end > begin >= 0. Fade-in progress is
+(unrolled position - begin)/(end - begin); fade-out uses
+(end - one sample - unrolled position)/(end - begin). This preserves a fade
+even when Split cuts through it. A fade handle edit clears that side's retained
+domain and uses its new local length. Snapshots expose all clocks and tensions;
+the projection includes explicit zero. Every field participates in sharing.
+
+Since schema **1.13**, clip_warp_fade_domains carries the corresponding
+in_begin_ticks/in_end_ticks/out_begin_ticks/out_end_ticks pairs for Warp audio.
+They name the unrolled source musical clock, with the same nullable-pair and
+nonnegative increasing constraints. They never reuse the nanosecond columns.
+Playback projects them through the tempo integral at placement minus the
+source content offset; a tempo edit therefore rebuilds their sample domains.
+Split/copy retains both original pairs on every piece without creating an
+internal edge fade, including inside a loop or an overlapping fade. A handle
+edit clears only that side's musical pair; its inverse captures the complete
+optional typed row. No row preserves local fade behavior. All four values
+participate in snapshot sharing and the textual projection. Schema 1.12 is
+frozen unchanged, and older read-only files receive an empty TEMP projection.
+
+The automation_segment_ranges table identifies a native automation_data row
+and its zero-based storage record ordinal, with the same nullable clip owner.
+The unique (data_id,record_index) key carries progress_begin, progress_end in
+[0,1], begin < end, and finite source_first, source_last. Interior evaluation
+uses the outgoing record's original curve/tension at begin + x*(end-begin),
+between the original source values. The stored endpoints remain authoritative
+at x=0 and x=1. It does not refit a nonlinear curve after trimming it. Ordinals
+also work for unassigned/zero point IDs. Copy remaps data/clip IDs; row edits
+remap ordinals and capture inverses. Invalid ranges refuse the entire lane.
+Direct blob replacement refuses data with retained ranges: replace the data
+and its ranges in one captured edit. Clip envelope playback remains a later
+engine item; preserving its bytes does not imply it is played.
+
+
 ## 10. Media
 
 ### 10.1 The pool
@@ -1140,7 +1250,10 @@ A minor normally only **adds** objects (tables, indexes, triggers). The explicit
 | **for writing** | Upgrade it before anything else reads or writes it: in **one transaction**, create each later minor's objects in minor order, set `adi_meta.schema_minor`, and set `user_version` **last**. If any step fails, roll back everything: the file stays at its old version and the open fails with a clear error. |
 | **read-only** | Never write. Every table the file lacks reads as **empty**. The reference implementation creates empty `TEMP` tables of the same names on its own connection, in one place (`Store::open`), so every reader is covered. |
 
-Schema 1.10 adds only track_recording_options, keyed by track_id. It stores
+Schema 1.11 adds only `mixer_pan_settings`; the frozen mixer_strip definition
+is unchanged.
+
+Schema 1.14 adds only track_recording_options, keyed by track_id. It stores
 record_enabled/record_grid, play_enabled/play_grid/play_forgiveness_ms and
 keep_monitoring_latency. Missing rows use Rec-Q on at 1/16, Play-Q off at 1/16
 with zero forgiveness, and Keep Monitoring Latency on (ADR-0132 d8/d10,

@@ -31,7 +31,7 @@ The row model and text projection also carry the policy. Fixed defaults are
 omitted; changed values render recQuantizeOff, recGrid, playQuantize, playGrid,
 playForgivenessMs and discardMonitoringLatency on the track.
 
-Schema 1.10 adds track_recording_options and freezes the exact predecessor.
+Schema 1.14 adds track_recording_options and freezes the exact predecessor.
 It rewrites no existing table or policy. Win must reconcile this additive minor
 with other unmerged engine format additions when merging; this branch starts
 at main and has no stack dependency. README table counts remain win-owned.
