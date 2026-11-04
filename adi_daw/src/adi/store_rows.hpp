@@ -186,6 +186,7 @@ struct Marker {
     std::string name;
     std::optional<std::int64_t> color;
     std::string kind;
+    std::string note = {}, prompt = {};
 };
 
 struct Media {

@@ -171,8 +171,9 @@ void testUpgradeEachMinor() {
                                     describeDiff(got, fresh));
             check(s->db().execAndGet("SELECT name FROM tracks WHERE id = 1").getString() == "Keys",
                   v + ": the existing data is untouched");
-            check(s->db().execAndGet("SELECT sample_rate FROM project").getInt() == (minor < 9 ? 48000 : 44100),
-                  v + ": the stored sample rate is preserved across migration");
+            const int storedRate = minor < 9 ? 48000 : 44100;
+            check(s->db().execAndGet("SELECT sample_rate FROM project").getInt() == storedRate,
+                  v + ": the stored sample rate is preserved across the upgrade");
 
             check(addRemark(*s), v + ": remark.add works");
             History h(*s);

@@ -8,7 +8,7 @@ The window reads `TrackNode::panMode`, `panLeft`, `panRight` after refresh;
 all three participate in structural sharing. The ordinary `pan` remains
 stored and dormant in split mode; split positions remain stored in stereo mode.
 
-Schema 1.10 adds optional `mixer_pan_settings`, keyed to `mixer_strip` with a
+Schema 1.11 adds optional `mixer_pan_settings`, keyed to `mixer_strip` with a
 cascade foreign key. A missing row means stereo, left=-1, right=+1. This follows
 ADR-0144's additive migration rule; no frozen mixer_strip column changes.
 Read-only older files get the existing empty TEMP compatibility table and stay

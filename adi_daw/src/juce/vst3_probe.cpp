@@ -1443,6 +1443,8 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
 }
 #endif
 
+bool runPluginEditorJuceTests();
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 
@@ -1468,6 +1470,7 @@ int main(int argc, char** argv) {
     std::printf("adi_vst3_probe -- VST3 hosting behind the device contract\n\n");
 
     juce::ScopedJuceInitialiser_GUI juceInit;
+    check(runPluginEditorJuceTests(), "plug-in editor ownership and FloatingHost component bridge");
     adi::device::Vst3Host host;
 
     // --dump-state <plugin> <file>: the plugin's opaque state as our host

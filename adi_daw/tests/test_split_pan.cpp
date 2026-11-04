@@ -130,14 +130,14 @@ void automationAndCompatibility() {
     check(session.reenableAutomation(90) && !session.automationOverridden(),"Re-Enable resumes split lane normally");
     p.store.reset();
     {SQLite::Database old((p.temporary.path()/"song.adi").string(),SQLite::OPEN_READWRITE);
-     old.exec("DROP TABLE mixer_pan_settings");old.exec("UPDATE adi_meta SET value='9' WHERE key='schema_minor'");old.exec("PRAGMA user_version=1009");}
+     {auto gone=adi::tablesAddedAfter(9);for(auto it=gone.rbegin();it!=gone.rend();++it) old.exec("DROP TABLE "+*it);} /* every table since 1.9: the predecessor is 1.9 itself, not this minor alone (chain) */old.exec("UPDATE adi_meta SET value='9' WHERE key='schema_minor'");old.exec("PRAGMA user_version=1009");}
     StoreError error{};p.store=Store::open(p.temporary.path()/"song.adi",error,true);
     check(p.store && p.store->schemaMinor()==9 && p.store->db().execAndGet("SELECT count(*) FROM mixer_pan_settings").getInt()==0,"old read-only project sees empty TEMP settings without migration");
     auto snapshot=SnapshotBuilder::fromStore(*p.store);check(snapshot->tracks[0]->panMode=="stereo" && snapshot->tracks[0]->panLeft==-1 && snapshot->tracks[0]->panRight==1,"old read-only snapshot uses exact stereo defaults");
     check(!p.op("mixer.setPanMode",{{"id",21},{"mode","split"}}),"read-only project refuses editing its compatibility table");
     p.store.reset();{SQLite::Database old((p.temporary.path()/"song.adi").string(),SQLite::OPEN_READONLY);check(old.execAndGet("PRAGMA user_version").getInt()==1009 && old.execAndGet("SELECT count(*) FROM sqlite_master WHERE name='mixer_pan_settings'").getInt()==0,"read-only open leaves persistent version and schema untouched");}
     p.store=Store::open(p.temporary.path()/"song.adi",error);
-    check(p.store && p.store->schemaMinor()==10 && p.store->upgradedFromMinor()==9 && p.store->db().execAndGet("SELECT count(*) FROM mixer_pan_settings").getInt()==0,"writable old project migrates additively to native pan settings");
+    check(p.store && p.store->schemaMinor()==adi::kSchemaMinor && p.store->upgradedFromMinor()==9 && p.store->db().execAndGet("SELECT count(*) FROM mixer_pan_settings").getInt()==0,"writable old project migrates additively to native pan settings");
 }
 
 } // namespace
