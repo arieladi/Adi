@@ -763,15 +763,44 @@ juce::Colour ArrangementView::colourFor(std::size_t position) const {
             return look::paletteColour(*own);
     return look::trackColour(position);
 }
+juce::Rectangle<float> ArrangementView::topButton(TopButton which) const noexcept {
+    const float hx = static_cast<float>(headers.getX());
+    const float top = static_cast<float>(overviewHeight() + kRulerHeight) - 2.f;
+    switch (which) {
+    case TopButton::Set:
+        return {hx + 5, top, 28, 12};
+    case TopButton::Previous:
+        return {hx + 4, top + 15, 12, 12};
+    case TopButton::Next:
+        return {hx + 21, top + 15, 12, 12};
+    case TopButton::Automation:
+        return {hx + 45, top + 15, 22, 12};
+    case TopButton::Lock:
+        break;
+    }
+    return {hx + 72, top + 15, 22, 12};
+}
+void ArrangementView::mouseDown(const juce::MouseEvent &e) {
+    // The window's rule for a control that cannot act yet: a click says what it waits for.
+    using B = TopButton;
+    for (const auto &[button, words] :
+         {std::pair{B::Set, "Set Locator waits for the engine's locators (window log, N25)."},
+          std::pair{B::Previous, "Previous Locator waits for the engine's locators (window log, N25)."},
+          std::pair{B::Next, "Next Locator waits for the engine's locators (window log, N25)."},
+          std::pair{B::Automation, "Automation Mode waits for the engine's automation lanes (window log, N26)."},
+          std::pair{B::Lock, "Lock Envelopes waits for the engine's automation lanes (window log, N26)."}})
+        if (topButton(button).expanded(1.f).contains(e.position)) {
+            root.say(words);
+            return;
+        }
+}
 void ArrangementView::paint(juce::Graphics &g) {
     // The arrangement's frame is Live's dark band; the rulers and the header column's
     // top sit on it.
     g.fillAll(look::band);
     // Above the headers: Live's locator buttons ("Set", previous, next) and its two
-    // switches, Follow's lock and the automation's arrow.
-    const float hx = static_cast<float>(headers.getX());
-    const float top = static_cast<float>(overviewHeight() + kRulerHeight) - 2.f;
-    const juce::Rectangle<float> set(hx + 5, top, 28, 12);
+    // toggles, Automation Mode and Lock Envelopes.
+    const auto set = topButton(TopButton::Set);
     g.setColour(look::button);
     g.fillRoundedRectangle(set, 6.f);
     g.setColour(look::outline);
@@ -780,7 +809,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     g.setFont(look::font(11.f));
     g.drawText("Set", set, juce::Justification::centred);
     for (int i = 0; i < 2; ++i) {
-        const juce::Rectangle<float> c(hx + 4 + static_cast<float>(i) * 17, top + 15, 12, 12);
+        const auto c = topButton(i == 0 ? TopButton::Previous : TopButton::Next);
         g.setColour(look::button);
         g.fillEllipse(c);
         g.setColour(look::outline);
@@ -792,14 +821,18 @@ void ArrangementView::paint(juce::Graphics &g) {
         g.drawLine(cx + 3.f * dir, cy, cx, cy - 3.f, 1.5f);
         g.drawLine(cx + 3.f * dir, cy, cx, cy + 3.f, 1.5f);
     }
-    look::box(g, {hx + 45, top + 15, 22, 12}, look::button);
+    const auto automation = topButton(TopButton::Automation);
+    const float ax = automation.getX(), ay = automation.getY();
+    look::box(g, automation, look::button);
     g.setColour(look::text);
-    g.drawLine(hx + 51, top + 24, hx + 61, top + 18, 1.2f);
-    g.fillEllipse(hx + 49.5f, top + 22.5f, 3, 3);
-    g.fillEllipse(hx + 59.5f, top + 16.5f, 3, 3);
-    look::box(g, {hx + 72, top + 15, 22, 12}, juce::Colour(0xfff0773a));
-    g.fillRect(hx + 79.f, top + 20.5f, 8.f, 4.5f);
-    g.drawRoundedRectangle(hx + 80.5f, top + 17.5f, 5.f, 5.f, 2.f, 1.f);
+    g.drawLine(ax + 6, ay + 9, ax + 16, ay + 3, 1.2f);
+    g.fillEllipse(ax + 4.5f, ay + 7.5f, 3, 3);
+    g.fillEllipse(ax + 14.5f, ay + 1.5f, 3, 3);
+    const auto lock = topButton(TopButton::Lock);
+    const float lx = lock.getX(), ly = lock.getY();
+    look::box(g, lock, juce::Colour(0xfff0773a));
+    g.fillRect(lx + 7.f, ly + 5.5f, 8.f, 4.5f);
+    g.drawRoundedRectangle(lx + 8.5f, ly + 2.5f, 5.f, 5.f, 2.f, 1.f);
     // Under the lanes: the time ruler, in minutes and seconds (manual 6.1).
     const int clipsW = canvas.getWidth();
     const juce::Rectangle<int> time(canvas.getX(), canvas.getBottom(), clipsW, kTimeRulerHeight);
@@ -1428,14 +1461,21 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         view.selectedMeter = -1; // a click on a title lets a selected marker go
         view.scrub.repaint();
     }
-    // A group's fold switch folds or unfolds it (Live 12 manual 18.3), and selects nothing.
+    // A group's fold switch folds or unfolds it (Live 12 manual 18.3), and selects nothing. Any other
+    // track's Unfold Track button shows its automation lanes (manual 6.9), which wait for the engine:
+    // a click says so.
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
+    foldPressed_ = false;
     if (const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
-        !e.mods.isPopupMenu() && at < rows.size() && rows[at].place.group &&
+        !e.mods.isPopupMenu() && at < rows.size() &&
         foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position)) {
-        resizeId = 0;
-        view.toggleFold(rows[at].track->id);
+        resizeId = moveId_ = 0;
+        foldPressed_ = true;
+        if (rows[at].place.group)
+            view.toggleFold(rows[at].track->id);
+        else
+            view.root.say(ArrangementView::kUnfoldWaits);
         return;
     }
     resizeId = 0;
@@ -1607,8 +1647,7 @@ void TrackHeaderList::mouseDoubleClick(const juce::MouseEvent &e) {
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
     const auto at = view.geometry.rowAt(view.reader(), e.y, &top);
-    if (at >= rows.size() ||
-        (rows[at].place.group && foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position)))
+    if (at >= rows.size() || foldSwitch(rows[at].place.depth, top).expanded(2.f).contains(e.position))
         return;
     view.root.showDeviceView();
 }
@@ -1630,6 +1669,8 @@ void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
     }
 }
 void TrackHeaderList::mouseUp(const juce::MouseEvent &e) {
+    if (std::exchange(foldPressed_, false))
+        return;
     const auto dragged = moveId_;
     const bool moved = moving_;
     resizeId = moveId_ = 0;
@@ -2172,10 +2213,12 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
         }
     }
     // U folds or unfolds the selected group; Alt+U unfolds them all (§42.16, §42.19). The other
-    // tracks' fold, which shows their automation, waits for the lanes.
+    // tracks' fold, which shows their automation, waits for the lanes, and says so.
     if (k == juce::KeyPress('u')) {
         if (view.tree().isGroup(sel.track))
             view.toggleFold(sel.track);
+        else if (sel.track != 0)
+            view.root.say(ArrangementView::kUnfoldWaits);
         return true;
     }
     if (k == juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) {

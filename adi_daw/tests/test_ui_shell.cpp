@@ -602,6 +602,15 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         headers.mouseDown(pressAt(headers, at));
         root.frame();
         check(root.state().foldedGroups.empty() && lanes.heightFor(17) > 0, "a second click unfolds it");
+        // A plain track's Unfold Track button shows its automation lanes, which wait for the engine.
+        lanes.selection.track = 16;
+        const auto bassUnfold = headers.foldSwitch(1, topOf(14)).getCentre();
+        headers.mouseDown(pressAt(headers, bassUnfold));
+        headers.mouseUp(pressAt(headers, bassUnfold));
+        root.frame();
+        check(root.state().foldedGroups.empty() && lanes.selection.track == 16 &&
+                  root.error() == ArrangementView::kUnfoldWaits,
+              "Bass's Unfold Track button folds nothing, selects nothing and says it waits for automation (N26)");
     }
     // The keys: U folds the selected group, Alt+U unfolds them all (§42.16, §42.19); a selected
     // track folded away gives the selection to its group.
@@ -618,8 +627,10 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13},
               "and unfolds it");
         lanes.selection.track = 1;
-        check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13},
-              "U on a track that is not a group folds nothing");
+        root.say({});
+        check(canvas.keyPressed(juce::KeyPress('u')) && root.state().foldedGroups == std::set<std::int64_t>{13} &&
+                  root.error() == ArrangementView::kUnfoldWaits,
+              "U on a track that is not a group folds nothing, and says its lanes wait (N26)");
         // A view of a group inside a folded one shows it: the folded group is left out.
         root.arrangement.chooseView(16);
         check(lanes.heightFor(16) > 0 && lanes.heightFor(17) > 0 && lanes.heightFor(13) == 0 && lanes.heightFor(1) > 0,
@@ -628,6 +639,24 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         check(canvas.keyPressed(juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) &&
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
               "Alt+U unfolds every group");
+    }
+    // Above the names, Live's locator buttons and its two toggles wait for the engine; a click on
+    // each says what for (the director's R6, 2 November).
+    {
+        auto &arr = root.arrangement;
+        using B = ArrangementView::TopButton;
+        for (const auto &[button, words] : {std::pair{B::Set, "Set Locator waits for the engine's locators"},
+                                            std::pair{B::Previous, "Previous Locator waits"},
+                                            std::pair{B::Next, "Next Locator waits"},
+                                            std::pair{B::Automation, "Automation Mode waits for the engine's automation"},
+                                            std::pair{B::Lock, "Lock Envelopes waits for the engine's automation"}}) {
+            root.say({});
+            arr.mouseDown(pressAt(arr, arr.topButton(button).getCentre()));
+            check(root.error().rfind(words, 0) == 0, (std::string("a click on it says: ") + words).c_str());
+        }
+        root.say({});
+        arr.mouseDown(pressAt(arr, arr.topButton(B::Lock).getBottomRight().translated(20.f, 0.f)));
+        check(root.error().empty(), "a click beside them says nothing");
     }
     // The tree is the snapshot's: a new generation with the same rows costs a frame nothing, groups
     // and all, and the order is built again in place.
