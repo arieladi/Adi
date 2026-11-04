@@ -1,5 +1,15 @@
 # Clones lane log
 
+## 2026-11-04 — expanded host research, milestone 2
+
+Director expanded the assignment to all host behavior, prioritizing Cubase F7 DOP/advanced fades, Live warp/MIDI and Bitwig modular/modulation semantics. Built-in effect/instrument implementations are excluded; editor utilities, hosting, routing and Grid semantics remain included. Research commit `905556ef` on `clones/daw-reference-reading-20261104` adds 127 detailed contract rows (Cubase 45, Live 43, Bitwig 39), per-app remaining-scope queues and an expanded dated prompt. No product code or ADR changed; nothing pushed or merged.
+
+Evidence distinguishes local manuals from installed behavior: Live manual revision unknown, Bitwig manual 5.2 supplemented by official 6.0/6.1 release notes, Cubase manual 15.0.30 versus installed 15.0.5. Read-only inspection added structural summaries of 25 shipped Live XML Sets, 11 installed Bitwig API documentation files and Ghidra-validated Cubase DOP-label instruction references. These do not establish complete schemas, engine architecture or runtime behavior. Raw artifacts stay in `D:\ADI-Research\2026-11-04-daws`.
+
+Private `DESIGN-IMPLICATIONS.md` maps source findings to existing ADI decisions. `HOST-COVERAGE.md` inventories 187 source chunks, including 162 host chunks; 26 have selected contracts recorded, none comprehensively measured. The separate Cubase Score Editor source is missing. `DEEP-CLAUDE-MISSIONS.md` defines nine missions for ownership, apply/cancel, fades, range edits, warp, MIDI, modulation/Grid, audio events/operators and host export. Eight synthetic MIDI fixtures supplement the 66 WAVs. No Codex GUI testing or DAW sound/CPU measurements; all ten Live window questions remain open for Claude evidence and win relay.
+
+Validation: existing 26 checks and 28 expanded artifact checks passed; all 272 inventoried installed binaries and 223 inspected resources/manual chunks unchanged; eight MIDI fixtures independently parsed. This is research-artifact validation, not product CI. Full-host completion is not claimed. Next work follows the explicit coverage queue and returned Claude measurements; no implementation is authorized by this research milestone.
+
 ## 2026-11-04 — director-assigned DAW reference reading, milestone 1
 
 Research only, on SALON-TV. Current main baseline `5c9e1cd8`; the director clarified that GitHub project documents govern and Dream Reference v0.2 is personal context. An isolated item branch `clones/daw-reference-reading-20261104` contains commit `ff7a52a8c272608aa82925a17cbb9eb530e432d4`: five app files under `docs/daws/`, the dated reference-reading prompt and a claim. This log stays on `clones/log`. Nothing pushed, no PR or merge, no external messages.
