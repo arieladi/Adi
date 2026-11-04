@@ -25,7 +25,7 @@ producer does not allocate an id inside an op or query UI selection/settings.
 A conflicting new routing.setPreFader edit on one edge of an explicitly chosen
 return refuses with the return-op name; a same-value setter remains compatible.
 
-Schema 1.10 adds only return_send_taps(track_id, pre_fader). Migration adds an
+Schema 1.15 adds only return_send_taps(track_id, pre_fader). Migration adds an
 empty table without changing existing edge taps or sound. A read-only older
 project gets the normal empty TEMP stand-in. Before the first explicit return
 choice, legacy sends keep their individual raw taps. A uniform legacy value is

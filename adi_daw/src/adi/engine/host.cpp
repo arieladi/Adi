@@ -33,6 +33,7 @@ bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
 
     rg->graph().setLatencyHeadroom(latencyHeadroomAt(sampleRate));
     rg->graph().setPrecision(precision_);
+    rg->graph().setDelayCompensation(delayCompensation_);
     rg->graph().prepare(sampleRate, maxFrames);
     if (!rg->graph().ok()) {
         error_ = rg->graph().error();
@@ -190,6 +191,10 @@ void GraphHost::process(const AudioIo& io) noexcept {
 
     snap->graph().graph().process(io);
     fadeIn(io);
+}
+
+std::int32_t GraphHost::renderedLatency() const noexcept {
+    return lastSnap_ ? lastSnap_->graph().graph().latencySamples() : 0;
 }
 
 }  // namespace adi::engine

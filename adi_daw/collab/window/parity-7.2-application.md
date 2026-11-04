@@ -9,11 +9,11 @@ Status as in `parity-7.2-shell.md`: built, partial, open, measure.
 
 | # | Live's behaviour | Manual | ADI in this PR | Status |
 |---|---|---|---|---|
-| 1 | New Live Set: Ctrl/Cmd+N | §41.3, p. 986 | A new project with its Main track, written at once into the default projects folder (`files.projectsFolder`, else the app's own folder): ADI has no unsaved state (ADR-0003) | built; a known difference: Live's new Set is untitled until saved |
+| 1 | New Live Set: Ctrl/Cmd+N | §41.3, p. 986; ADR-0209 §10 d10 | A new project as Live's default Set: Main, 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, 120 BPM in 4/4, written at once into the default projects folder (`files.projectsFolder`, else the app's own folder): ADI has no unsaved state (ADR-0003). The store writes it as the history's root (`Store::createNewProject`, #307; `window/new-project-root`) | built; a known difference: Live's new Set is untitled until saved |
 | 2 | Open Live Set: Ctrl/Cmd+O | §41.3, p. 986 | A file chooser for `.adi`; a file that fails to open leaves the current project open | built |
 | 3 | Save Live Set: Ctrl/Cmd+S | §41.3, p. 986 | **Take Snapshot**: a named point in the history, the prompt pre-filled with the project's name and the time; not an edit, not an undo step (ADR-0203 d6, d12, d13) | built (the director's deviation) |
 | 4 | Save Live Set As: Ctrl/Cmd+Shift+S, a new file the Set carries on in | §41.3, p. 986 | The key and the menu item exist; the Status Bar says Save As waits for the engine | open: the store has no Save As (LANES §3 item 6) |
-| 5 | Creating a Set is the first entry in the Undo History and cannot be undone | §5.4.2, p. 131 | Undo stops at the New-project step and says there is nothing to undo; the Edit menu greys out | built |
+| 5 | Creating a Set is the first entry in the Undo History and cannot be undone | §5.4.2, p. 131 | A new project is the history's root: nothing to undo, the Edit menu greyed out (#307). A project an earlier build made began with a "New project" step, which undo still stops at, saying there is nothing to undo | built |
 | 6 | Opening a Set starts a fresh history (Live's history is not saved with the Set) | §5.4.2, p. 131 | ADI's history is in the file, so a reopened project undoes its earlier edits | ADI's addition (ADR-0003); never its creation |
 | 7 | The Edit menu's Undo and Redo name the action | §5.4.2, p. 131; §41.5 | "Undo Create track" and the like, from the history's own labels | built |
 | 8 | Ctrl/Cmd+, opens the Settings; audio is set up on its Audio page | §40.2, p. 975; §41.1, p. 985 | Opens the Settings window; its Audio page leads with Live's Audio Device, Sample Rate and Latency sections over the device manager, stored in App scope (`audio.*`) | built (`window/settings`, `parity-settings.md`) |

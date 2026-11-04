@@ -135,7 +135,7 @@ void legacyMigration() {
     test::TempDirectory directory{"return_tap","migration"};const auto path=directory.path()/"old.adi";
     {std::ifstream file(std::filesystem::path(ADI_SCHEMA_HISTORY_DIR)/"schema-1.9.sql");std::ostringstream ddl;ddl<<file.rdbuf();SQLite::Database db(path.string(),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);db.exec(ddl.str());db.exec("INSERT INTO project(id,name) VALUES(1,'Old')");Project::seed(db);}
     StoreError error{};{auto readonly=Store::open(path,error,true);check(readonly && readonly->schemaMinor()==9 && readReturnSendTaps(*readonly).at(10).legacyMixed,"read-only old format gets an empty optional policy table without rewriting mixed audio");}
-    auto upgraded=Store::open(path,error);check(upgraded && upgraded->schemaMinor()==10 && readReturnSendTaps(*upgraded).at(10).legacyMixed && !readReturnSendTaps(*upgraded).at(10).explicitChoice,"native migration adds only an empty policy table and preserves legacy sound");
+    auto upgraded=Store::open(path,error);check(upgraded && upgraded->schemaMinor()==adi::kSchemaMinor && readReturnSendTaps(*upgraded).at(10).legacyMixed && !readReturnSendTaps(*upgraded).at(10).explicitChoice,"native migration adds only an empty policy table and preserves legacy sound");
     check(OpJournal(*upgraded).commit(tap(10,true)).ok && History(*upgraded).undo().ok && readReturnSendTaps(*upgraded).at(10).legacyMixed,"first migrated choice undoes to original legacy mixed state");
 }
 }
