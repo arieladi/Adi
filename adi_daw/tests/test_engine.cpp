@@ -13,6 +13,7 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/history.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -354,6 +355,30 @@ void testWindowMetadata() {
 
 // --- tempo ----------------------------------------------------------------------------
 
+void testTrackDelaySnapshot() {
+    Scratch scratch("track_delay_snapshot");auto& store=*scratch.store;
+    store.db().exec("INSERT INTO project(id,sample_rate) VALUES(1,96000);"
+        "INSERT INTO tracks(id,kind,name) VALUES(1,'audio','Delayed'),(2,'audio','No strip');"
+        "INSERT INTO mixer_strip(track_id,delay_samples) VALUES(1,960)");
+    auto first=SnapshotBuilder::fromStore(store);
+    check(first->findTrack(1)->delaySamples==960,"snapshot carries positive stored track delay");
+    check(first->findTrack(2)->delaySamples==0,"missing strip defaults to zero delay");
+    check(first->sampleRate==96000 && 1000.0*static_cast<double>(first->findTrack(1)->delaySamples)/first->sampleRate==10,
+          "delay units use the project's rate, so 960 at 96 kHz is 10 ms");
+    OpRequest delay;delay.opType="mixer.setDelay";delay.payload={{"id",1},{"samples",-480}};
+    check(OpJournal(store).commit(delay).ok,"existing track-delay op commits");
+    auto changed=SnapshotBuilder::fromStore(store,*first);
+    check(changed->findTrack(1)->delaySamples==-480,"snapshot preserves a negative delay");
+    check(changed->tracks[0]!=first->tracks[0] && changed->tracks[1]==first->tracks[1],"delay-only edit replaces its track and shares its sibling");
+    auto sameDelay=SnapshotBuilder::fromStore(store,*changed);
+    check(sameDelay->tracks==changed->tracks,"unchanged delay retains structural sharing");
+    check(History(store).undo().ok && SnapshotBuilder::fromStore(store,*sameDelay)->findTrack(1)->delaySamples==960,
+          "undo publishes the prior delay value");
+    store.db().exec("DELETE FROM mixer_strip WHERE track_id=1");
+    auto removed=SnapshotBuilder::fromStore(store,*changed);
+    check(removed->findTrack(1)->delaySamples==0 && removed->tracks[0]!=changed->tracks[0],"removing the strip resets delay and replaces its node");
+}
+
 void testSendSnapshots() {
     section("N11 -- send rows are immutable and shared independently of tracks");
     Scratch scratch("sends");auto& store=*scratch.store;auto& db=store.db();
@@ -595,6 +620,7 @@ int main() {
         testStructuralSharing();
         testWindowMetadata();
         testSendSnapshots();
+        testTrackDelaySnapshot();
         testTempoConversion();
         testSnapshotFromRealProject();
         testDeviceSeam();
