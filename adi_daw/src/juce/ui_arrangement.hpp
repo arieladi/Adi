@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_tree.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <optional>
 namespace adi::ui {
 class AdiRootComponent;
 class ArrangementView;
@@ -76,7 +78,24 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     void mouseDoubleClick(const juce::MouseEvent &) override;
     void mouseDrag(const juce::MouseEvent &) override;
     void mouseUp(const juce::MouseEvent &) override;
+    void mouseMove(const juce::MouseEvent &) override;
     void mouseWheelMove(const juce::MouseEvent &, const juce::MouseWheelDetails &) override;
+
+    // Live's split line at a track's foot (manual 6.9: "dragging the split line"): a press this
+    // close to a row's foot resizes the track; anywhere else on its title, a drag moves it.
+    static constexpr int kSplitLine = 5;
+    // Where tracks dragged by their titles would land with the mouse at `y` (Live: "dragging them
+    // above or below other tracks", "into or out of the group"): a line at `y`, at the depth they
+    // would stand, or the folded or empty group `into`, which they would go to the end of.
+    struct Drop {
+        TrackDrop to;
+        int y = 0;
+        std::uint32_t depth = 0;
+        std::int64_t into = 0;
+    };
+    Drop dropAt(int y) const;
+    // The drop shown while tracks are dragged; empty otherwise.
+    std::optional<Drop> drop() const { return moving_ ? std::optional<Drop>(drop_) : std::nullopt; }
 
     // Where a row's colour and name begin, past its groups' bands; and its fold switch.
     int nameLeft(std::uint32_t depth) const noexcept;
@@ -90,6 +109,12 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     ArrangementView &view;
     std::int64_t resizeId = 0, renaming_ = 0;
     int initialHeight = 0;
+    // The track whose title was pressed, to move once the mouse has gone far enough; whether it
+    // is moving; whether the press, on one of several selected tracks, selects it alone on release
+    // without a drag (Live keeps the selection for the drag).
+    std::int64_t moveId_ = 0;
+    bool moving_ = false, selectOnUp_ = false;
+    Drop drop_;
 };
 // What a screen reader finds for one clip on screen (UI-ARCHITECTURE §6). The
 // canvas paints every clip itself; JUCE gathers accessibility children only from

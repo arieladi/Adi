@@ -249,6 +249,111 @@ inline TrackEdit groupTracks(const SnapshotTracks &tracks, const std::vector<std
 }
 // The selected track into a new group, which takes its place and is selected.
 inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) { return groupTracks(tracks, {id}); }
+// Where dragged tracks land: in `parent` (0 at the top), before its track `before`; with `before`
+// 0, after the rest it holds (before the returns and Main at the top).
+struct TrackDrop {
+    std::int64_t parent = 0, before = 0;
+};
+// Live's track drag (Live 12 manual, Arrangement View: "Tracks can be reordered by selecting and
+// dragging them above or below other tracks"; 18.3: "tracks can be dragged into or out of the
+// group"): the selected tracks, in the arrangement's order, to `to`, side by side. A track whose
+// group is selected as well goes with its group. Main and the returns stay at the foot; a group
+// never goes inside itself. Tracks moved into or out of a group are routed as Group Tracks routes
+// them (`track.setParent`). One batch, so one undo step; no ops when nothing would move.
+inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std::int64_t> &ids, TrackDrop to) {
+    using namespace track_edits_detail;
+    TrackEdit edit;
+    auto picked = [&ids](std::int64_t id) { return std::find(ids.begin(), ids.end(), id) != ids.end(); };
+    // Every track in the arrangement's order (TrackOrder's): each group followed by what it holds.
+    std::vector<const engine::TrackNode *> all, stack;
+    for (auto top = children(tracks, 0); !top.empty(); top.pop_back())
+        stack.push_back(top.back());
+    while (!stack.empty() && all.size() < tracks.size()) {
+        const auto *t = stack.back();
+        stack.pop_back();
+        all.push_back(t);
+        auto held = children(tracks, t->id);
+        for (auto k = held.rbegin(); k != held.rend(); ++k)
+            stack.push_back(*k);
+    }
+    // The selected tracks no selected group holds, in that order.
+    std::vector<const engine::TrackNode *> chosen;
+    for (const auto *t : all) {
+        if (!picked(t->id))
+            continue;
+        bool held = false;
+        for (const auto *up = find(tracks, t->parent); up != nullptr && !held; up = find(tracks, up->parent))
+            held = picked(up->id);
+        if (!held)
+            chosen.push_back(t);
+    }
+    auto moving = [&chosen](const engine::TrackNode *t) {
+        return std::find(chosen.begin(), chosen.end(), t) != chosen.end();
+    };
+    if (chosen.empty()) {
+        edit.refusal = "Select a track to move.";
+        return edit;
+    }
+    for (const auto *t : chosen)
+        if (t->kind == "master" || t->kind == "return") {
+            edit.refusal = "Main and the return tracks stay at the foot.";
+            return edit;
+        }
+    if (to.parent != 0) {
+        const auto *g = find(tracks, to.parent);
+        if (g == nullptr || g->kind != "group") {
+            edit.refusal = "Tracks go into a group track only.";
+            return edit;
+        }
+        for (const auto *up = g; up != nullptr; up = find(tracks, up->parent))
+            if (moving(up)) {
+                edit.refusal = "A group can't go inside itself.";
+                return edit;
+            }
+    }
+    const char *label = chosen.size() > 1 ? "Move Tracks" : "Move Track";
+    // What the parent will hold: the rest, the moved tracks before `before` (past it while it is
+    // one of them), or after the rest's tracks and groups.
+    std::vector<const engine::TrackNode *> rest;
+    std::size_t at = 0;
+    bool placed = false, passed = false;
+    for (const auto *k : children(tracks, to.parent)) {
+        passed = passed || k->id == to.before;
+        if (moving(k))
+            continue;
+        if (!placed && passed) {
+            at = rest.size();
+            placed = true;
+        }
+        rest.push_back(k);
+    }
+    if (!placed) {
+        at = 0;
+        while (at < rest.size() && rank(*rest[at]) == 0)
+            ++at;
+    }
+    auto order = rest;
+    order.insert(order.begin() + static_cast<std::ptrdiff_t>(at), chosen.begin(), chosen.end());
+    // Dropped where they stand: nothing moves, and no step is made.
+    const bool inPlace = std::all_of(chosen.begin(), chosen.end(), [&to](const auto *t) { return t->parent == to.parent; });
+    if (inPlace && order == children(tracks, to.parent))
+        return edit;
+    // The groups they leave, each once, renumbered without them.
+    std::vector<std::int64_t> left;
+    for (const auto *t : chosen)
+        if (t->parent != to.parent) {
+            edit.ops.push_back(op("track.setParent", {{"id", t->id}, {"parent", parentValue(to.parent)}}, label));
+            if (std::find(left.begin(), left.end(), t->parent) == left.end())
+                left.push_back(t->parent);
+        }
+    renumber(edit.ops, order, label);
+    for (const auto parent : left) {
+        auto stay = children(tracks, parent);
+        stay.erase(std::remove_if(stay.begin(), stay.end(), moving), stay.end());
+        renumber(edit.ops, stay, label);
+    }
+    return edit;
+}
 // A group's tracks back where the group stood, in their order, and the group removed; the first
 // of them is selected. An empty group is just removed.
 inline TrackEdit ungroupTrack(const SnapshotTracks &tracks, std::int64_t id) {
