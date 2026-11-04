@@ -439,16 +439,161 @@ silent truncation in JSON, a non-issue in CBOR.
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
-| `automation.createLane` | e | S | pair `deleteLane` | P0 |
+| `automation.createLane` | e | S | cap | P0 |
 | `automation.deleteLane` | e | S | cap | P0 |
 | `automation.writePoints` | e | S | cap | P0 |
 | `automation.deletePoints` | e | S | cap | P0 |
-| `automation.movePoints` | e | S | sym, coalescable | P0 |
-| `automation.setCurve` | e | S | sym | P1 |
+| `automation.movePoints` | e | S | cap | P0 |
+| `automation.setCurve` | e | S | cap | P1 |
+| `automation.restoreData` | e | S | cap | P1 |
 | `automation.clearLane` | e | S | cap | P1 |
-| `automation.setLaneEnabled` | e | S | sym | P1 |
-| `automation.setLaneVisible` | e | N | sym | P1 |
-| `automation.setDefaultValue` | e | S | sym | P2 |
+| `automation.setLaneEnabled` | e | S | cap | P1 |
+| `automation.setLaneVisible` | e | N | cap | P1 |
+| `automation.setDefaultValue` | e | S | cap | P2 |
+| `automation.restoreLane` | e | S | cap | P1 |
+
+The native lane lifecycle in `automation_lanes.hpp` implements create/delete,
+clear, enable, visibility and default-value edits, all on the document owner.
+`createLane(LaneSpec)` resolves every creation default into a complete `row`
+payload. The outer `id` must match its explicit positive row ID. The polymorphic
+owner must exist; parameter reference must be nonempty; time base is 0/1;
+value domain is normalized/real/enum; finite defaults must respect optional
+min/max; height is nonnegative. No handler allocates an identity or reads a UI
+selection. An existing ID refuses creation instead of overwriting the lane.
+
+Delete and clear payloads contain `id`; setters contain `id` and `value` (boolean
+for enable/visibility, finite double within lane bounds for default value).
+Clear removes points from every arrangement/clip stream while retaining data-row
+IDs, clip addresses, header version/stride/flags and trailers. An unreadable
+stream refuses the whole transaction, including any earlier clears. Delete
+cascades all streams. `automation.restoreLane` captures a `state` object holding
+the exact original row or null and every data row (`id`, `clip`, CBOR binary
+`bytes`), and restores its own inverse. Legacy scalar metadata and malformed
+opaque stream bytes are preserved by deletion undo, without applying new-lane
+validation to the captured state. Explicit row/stream ID collisions fail within
+the journal transaction. Each setter currently captures the full lane rather
+than coalescing gestures; visibility has no forward engine impact. No schema,
+Automation Arm, shape preset or playback change is introduced by lifecycle ops.
+
+The native point-editing increment implements `writePoints`, `deletePoints`,
+`movePoints`, `setCurve` and captured `restoreData` in `automation_edits.hpp`.
+The lifecycle operations above supply lane creation and deletion.
+All edits run on the document owner through `OpJournal`, never in a callback.
+
+Every point-edit request contains `id` (explicit automation_data row ID), `lane`
+(existing automation_lanes ID), and `clip` (JSON null for arrangement, otherwise
+an existing clip ID). The complete address must match the stored row; an absent
+row can be created only by writePoints and only if its lane/clip slot is free.
+No handler generates IDs, reads UI selection, or consults the grid.
+
+- `writePoints.points`: array of `{id,time,value,curve,tension}`. Positive full
+  uint64 point IDs upsert existing points or insert new ones. Time is nonnegative
+  int64 in the lane's unit, value is finite double, curve is 0..5 (SPEC §6.3.2),
+  tension is finite -1..1 stored as float. Existing flags/reserved bytes survive.
+- `movePoints.points`: `{id,time,value}` for existing points only; times/values
+  are absolute, avoiding delta overflow and ambient snapping. Curve and tension
+  survive. This increment captures exact inverses rather than coalescing moves;
+  the UI can submit a completed gesture or a single batch.
+- `deletePoints.ids` / `setCurve.ids`: nonempty arrays of existing positive
+  uint64 IDs. setCurve also carries curve and tension. A duplicate or missing
+  selection refuses the whole edit. Empty resulting streams remain addressed.
+- `restoreData`: internal inverse packet with the same address, object `state` containing boolean
+  `present` and CBOR binary `bytes`; restores original bytes or row absence.
+  It captures its own inverse and does not normalize the original stream.
+
+Edits sort whole records stably by time, including coincident-point order. Known
+prefix edits and deletion retain header version/flags, per-record opaque suffixes,
+reserved bytes and trailing data. Insertion into a wider, newer or unknown-flag
+stream is refused because unknown fields cannot be invented. Duplicate/zero
+stored point IDs and unreadable streams refuse edits. Undo/redo retains the exact
+original layout even across reordering. Caller beforeCommit rejection rolls back
+stream and journal together. Caller-provided shape points use the existing six
+curve formulas; this increment adds no Live shape preset or parity claim, Automation Arm, clip-envelope playback, or automated send levels.
+
+`automation_shapes.hpp` adds owner-thread shape generation and prepared inclusive
+range replacement, expressed as the existing deletePoints/writePoints operations
+in one transaction (no new opcode). The named templates are sine, triangle,
+sawtooth/inverse, square, exponential rise/fall, logarithmic rise/fall and ADSR.
+Geometry/defaults are explicit implementation behavior awaiting Live parity;
+blocked official-manual access is not evidence that these presets match Live.
+
+`ShapeSpec` carries the lane-unit range, low/high values, cycles and resolution.
+Sine starts low and peaks halfway; triangle is linear; saws run to the opposite
+endpoint and restart at each cycle; square uses Hold points at its half-cycle.
+Curved ramps use the shared exponential/logarithmic formulas at tension +1.
+ADSR uses explicit attack/decay/release fractions in hundredths of a percent and
+a normalized sustain level; zero-duration phases create coincident steps. Sine is linearly sampled at the requested resolution; triangle, saws and ramps
+retain exact vertices/native curve descriptors regardless of resolution. Cycles are
+bounded 1..128 and steps/cycle 2..2048. All times are placed with integer quotient
+and remainder, including beyond 2^53. Nonfinite/reversed ranges, unknown shapes,
+overlapping ADSR phases and insufficient time resolution are refused.
+
+`prepareShapeInsertion` reads one SQLite snapshot without writing/reserving IDs,
+respects an outer read transaction, and resolves fresh positive uint64 point IDs
+that avoid every existing identity. It refuses unknown AAUT insertion layouts,
+ambiguous identities, wrong data/lane/clip addresses and lane-bound violations.
+It replaces points in inclusive [start,end], retaining outside records; the
+resulting points determine interpolation across either boundary, with no promise
+of unchanged extrapolated sound outside a boundary lacking its own point.
+`commitShapeInsertion` checks the original open Store/client and commits with an
+explicit expected head, including an expected NULL head. Stale work changes
+nothing; exact row absence/bytes are restored in one undo. Callers keep their
+own document generation across asynchronous preparation. This adds no UI or
+Automation Arm/recording behavior.
+
+The Automation Arm recording foundation is `engine/automation_recording.hpp`:
+one `AutomationRecorder` per explicit data/lane/optional-clip target and producer.
+Arm defaults on and transport recording off. Manual parameter edits remain on
+ParamOps; only manually sourced, explicitly timestamped gestures enter this
+capture. Playback, echo and modulation events must not be submitted.
+
+Exactly one producer calls controls/push; the UI queues gate changes to that
+producer rather than racing it from another thread. A separate single consumer
+calls drain/stats. Times are nonnegative int64 in lane units, never guessed from
+drain time. Begin/Value/End preserve double values; ungestured Value begins an
+implicit gesture; equal-time samples coalesce to the last value. Disarm/Stop
+close the open gesture at the supplied time using the last value. A new Begin
+closes the prior gesture at its last timestamp; the caller must delimit loop or
+seek boundaries explicitly. Backward/nonfinite input invalidates the gesture.
+
+Producer calls use a fixed SPSC ring and perform no allocation, Store/plugin I/O,
+locks or logging. Overflow taints a whole gesture. Only completed healthy gestures
+leave drain; rejected data is counted, never silently committed as a partial
+curve. The consumer point budget also rejects the whole gesture. Gates and
+accepted/dropped/ignored statistics are inspectable, with discarded-gesture
+statistics owned by the consumer. Zero ring capacity safely rejects everything.
+
+`prepareRecordedAutomation` uses `prepareAutomationWrite` to resolve fresh point
+identities and one native delete/write transaction. Raw input must have zero IDs,
+flags/reserved bytes and ordered finite values/tensions/known curves; replacement
+uses the captured inclusive time range and preserves exact undo. Document/client
+and history-head guards are identical to shape preparation. No schema or new
+opcode is needed. This provides engine capture/commit APIs, not automatic wiring
+of every host callback or the existing UI Arm button: those producers must supply
+correct lane-unit timestamps and serialize controls on their producer thread.
+No clip-envelope playback or send-level automation is claimed by recording capture.
+
+Session's document-owner write policy is separate from the SPSC producer gates.
+`setAutomationWriteState(armed,recording)` exposes the default on/off policy;
+`beginAutomationWrite(lane)` requires both gates and an existing playable strip
+or device lane. It temporarily excludes that lane from automation binding and
+clears its previous ordinary override. Manual parameter/fader ops committed while
+that lane is writing do not create an ordinary override. Other lanes retain the
+usual override behavior. Re-Enable Automation does not cancel active recording.
+
+The owner closes the producer gesture, drains and commits its captured points,
+refreshes Session, and only then calls `finishAutomationWrite(lane,true)` to follow
+the new curve. Turning a gate off prevents new writes but does not prematurely
+resume old automation while captured data is pending. On capture/commit failure,
+`finishAutomationWrite(lane,false)` explicitly leaves a normal manual override.
+Deleted/disabled/unrecognized lanes drop stale writing state at rebuild. Unknown
+or gated starts and finishing an inactive write are refused. A rebuild failure
+returns false while retaining the requested policy for a subsequent owner-side
+rebuild retry, as Re-Enable Automation does. These are owner-side
+APIs; they introduce no Store calls/allocations into audio callbacks. The UI/host
+coordinator must still map timestamps/targets and serialize matching recorder
+producer controls; no automatic host callback wiring or measured Live parity is
+claimed. No schema or opcode change is required.
 
 ### 9.7 Devices, chains, macros
 
@@ -650,7 +795,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**174 ops** — 66 P0, 56 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

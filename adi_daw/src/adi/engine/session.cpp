@@ -489,13 +489,21 @@ bool Session::rebuild() {
     // ADR-0164: the automation this graph plays, bound to strips, less every
     // lane the user overrode. An override of a lane that is gone goes with it.
     const std::shared_ptr<const AutomationProgram> program = compileAutomation(model_, spec_.sampleRate);
-    stripAutomation_ = bindStripAutomation(program, overridden_);
-    deviceAutomation_ = bindDeviceAutomation(program, overridden_, transport_, spec_.sampleRate);
+    auto suspended = overridden_;
+    suspended.insert(writingAutomation_.begin(), writingAutomation_.end());
+    stripAutomation_ = bindStripAutomation(program, suspended);
+    deviceAutomation_ = bindDeviceAutomation(program, suspended, transport_, spec_.sampleRate);
     for (auto it = overridden_.begin(); it != overridden_.end();) {
         bool known = false;
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
         it = known ? std::next(it) : overridden_.erase(it);
+    }
+    for (auto it = writingAutomation_.begin(); it != writingAutomation_.end();) {
+        bool known = false;
+        for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
+        it = known ? std::next(it) : writingAutomation_.erase(it);
     }
     for (const auto& track : model_.tracks) {
         double db = 0.0;
@@ -598,7 +606,7 @@ bool Session::refresh(const Store& store) {
     if (stripAutomation_) {
         const std::map<std::int64_t, StripValues> after = stripValues(model_);
         for (const auto& [key, laneId] : stripAutomation_->laneFor) {
-            if (overridden_.count(laneId)) continue;
+            if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
             const auto b = before.find(key.first);
             const auto a = after.find(key.first);
             if (b == before.end() || a == after.end()) continue;
@@ -615,7 +623,7 @@ bool Session::refresh(const Store& store) {
     if (deviceAutomation_) {
         const std::map<std::pair<std::int64_t, std::string>, double> paramsAfter = paramValues(model_);
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) {
-            if (overridden_.count(laneId)) continue;
+            if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
             const auto b = paramsBefore.find(key);
             const auto a = paramsAfter.find(key);
             const bool had = b != paramsBefore.end(), has = a != paramsAfter.end();
@@ -743,6 +751,31 @@ void Session::bindDeviceSources() {
 bool Session::reenableAutomation() {
     if (overridden_.empty()) return true;
     overridden_.clear();
+    return rebuild();
+}
+
+void Session::setAutomationWriteState(bool armed, bool recording) noexcept {
+    automationArmed_ = armed;
+    automationRecording_ = recording;
+}
+
+bool Session::beginAutomationWrite(std::int64_t laneId) {
+    if (!loaded_ || !automationArmed_ || !automationRecording_) return false;
+    if (writingAutomation_.contains(laneId)) return true;
+    bool known = false;
+    if (stripAutomation_)
+        for (const auto& [key, id] : stripAutomation_->laneFor) known = known || id == laneId;
+    if (deviceAutomation_)
+        for (const auto& [key, id] : deviceAutomation_->laneFor) known = known || id == laneId;
+    if (!known) return false;
+    overridden_.erase(laneId);
+    writingAutomation_.insert(laneId);
+    return rebuild();
+}
+
+bool Session::finishAutomationWrite(std::int64_t laneId, bool follow) {
+    if (writingAutomation_.erase(laneId) == 0) return false;
+    if (!follow) overridden_.insert(laneId);
     return rebuild();
 }
 
