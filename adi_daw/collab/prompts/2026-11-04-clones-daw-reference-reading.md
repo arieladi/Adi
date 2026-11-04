@@ -60,3 +60,7 @@ Use A7A/A7B/A7M/A7R/A7N, the 62-device register and private DEVICE-RESEARCH-MISS
 ## Milestone 8 directive — Drum Rack, Packs and legacy variants
 
 Read FEATURES, DECISIONS, parity checklists and Dream context first. Include Drum Rack container behavior, Pack effects and legacy variants; retain the Sampler/Simpler exceptions and skip other built-in instruments. 66 contracts: {'D': 25, 'P': 28, 'L': 12, 'I': 1}. D=Drum Rack; P=Pack effects; L=legacy; I=installation boundary. Each has an ADI implication and an unexecuted M8 case. Resolve dependencies and source versions before interpreting tests; public Pack pages are incomplete behavioral specifications. No GUI testing or product implementation in this research session.
+
+## Milestone 9 directive — Bitwig MIDI and The Grid
+
+Read FEATURES, DECISIONS, parity and Dream context first; inspect actual implementation and lane branches before making feasibility claims. Research MIDI/Note FX, non-instrument devices, modulators, containers and Grid semantics. Skip other built-in instruments. 173 additional Bitwig contracts: grid 59, midi-devices 71, audio-devices 43. Each has source, ADI implication, status and a paired unexecuted test. Evaluate native host services, Pd authoring and registered native kernels together, with explicit event/voice/rate/feedback/latency/edit/identity boundaries. No product implementation, new ADR, GUI testing or app updates. Preserve source versions and identify unavailable measurements.

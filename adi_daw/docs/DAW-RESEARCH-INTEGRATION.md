@@ -62,3 +62,7 @@ Current FEATURES/decisions/parity remain authoritative. ADR-0169 defines the exi
 ## Drum Rack and Pack compatibility — milestone 8
 
 66 contracts: {'D': 25, 'P': 28, 'L': 12, 'I': 1}. D=Drum Rack; P=Pack effects; L=legacy; I=installation boundary. Each has an ADI implication and an unexecuted M8 case. Drum Rack is included; other instruments remain excluded except Sampler/Simpler. Prior decisions and priorities remain authoritative. The inspected default Packs directory is empty, so public capability research is not installed evidence. See ableton-12.md v0.8 and private PACK-RACK-MISSIONS-8.md. No GUI/audio/CPU measurements.
+
+## Bitwig Grid and Pd feasibility — milestone 9
+
+173 additional Bitwig contracts: grid 59, midi-devices 71, audio-devices 43. Each has source, ADI implication, status and a paired unexecuted test. See [Bitwig v0.5](daws/bitwig-6.md), including its native/Pd feasibility table. Recommend native host ownership with reusable Pd/native DSP, preserving ADR-0145/0177/0188/0203 and current priorities. The branch-qualified audit identifies existing runtime pieces and a separate native MIDI-effects lane; reconcile those before new work. No complete Pd loading/editor/event bridge or Grid parity is claimed. Other built-in instruments remain excluded. Private E51–E54 and BITWIG-GRID-MISSIONS-9.md retain evidence and gaps.
