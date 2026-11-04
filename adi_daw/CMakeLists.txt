@@ -1356,6 +1356,10 @@ add_executable(adi_audio_memory_tests tests/test_audio_memory.cpp)
 target_link_libraries(adi_audio_memory_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_audio_memory_tests COMMAND adi_audio_memory_tests)
 
+add_executable(adi_audio_memory_capture_tests tests/test_audio_memory_capture.cpp)
+target_link_libraries(adi_audio_memory_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_audio_memory_capture_tests COMMAND adi_audio_memory_capture_tests)
+
 
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
 target_link_libraries(adi_controller_maps_tests PRIVATE adi_core adi_warnings)

@@ -551,9 +551,22 @@ a reader, instead dropping/counting a pinned segment and starting fresh history.
 Snapshots that encounter in-flight/overwritten chunks fail explicitly with empty
 output; callers may retry. Producer gates/copies allocate, lock and perform file
 I/O nowhere. Snapshotting, persistence and import are owner work. This API does
-not automatically attach physical inputs, wire a Capture UI command, materialize
-an undoable clip, infer MIDI tempo, or claim Live parity; those are subsequent
-Capture integration work. No new opcode/schema is needed for the RAM buffer.
+not automatically attach physical inputs, wire a Capture UI command, infer MIDI
+tempo, or claim Live parity. No new opcode/schema is needed for the RAM buffer.
+
+`recording::captureMemory(store,snapshot,track,timelineStartSample,workFolder)`
+materializes a valid snapshot as a private bit-preserving Float32 WAV take,
+resolving this open project's identity. Timeline placement is explicit and
+independent of the input stream timestamp. Then use the existing
+`recording::prepareCommit` / `recording::commit` path to publish owned media and
+create/attach the playing clip in one native undo step. Preparation and commit
+require the same still-open Store handle/client plus the captured journal head;
+a different/reopened connection requires fresh preparation. Caller document
+generation remains necessary across async work. Failed/stale commits preserve
+the private PCM for retry; failed materialization removes only its own work.
+Callbacks are refused before file/database access. This reuses N20's publication,
+dedup, rollback and exact sample-boundary musical placement rather than introducing
+another asset/journal path. See ENGINE-AUDIO-RECORDING.md for recovery and limits.
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|

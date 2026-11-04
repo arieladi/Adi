@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/engine/audio_recording.hpp"
+#include "adi/engine/audio_memory.hpp"
 #include "adi/engine/publisher.hpp"
 #include "adi/engine/transport.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -101,6 +102,34 @@ struct Job {
 };
 struct State final:Sequenced {std::shared_ptr<Job> job;};
 }
+AudioRecordingResult AudioRecordingResult::fromMemory(const AudioMemorySnapshot& memory,const AudioMemoryTakeSpec& spec) {
+    AudioRecordingResult result;result.failure=RecordingFailure::InvalidCapture;fs::path owned;
+    try {
+        if(audio::onAudioThread)throw std::runtime_error("materialize audio memory off callback");
+        if(memory.inputId<=0 || memory.epoch==0 || memory.firstSample<0 || memory.sampleRate<8000 || memory.sampleRate>768000 ||
+           memory.channels==0 || memory.channels>64 || memory.samples.empty() || memory.samples.size()%memory.channels!=0 ||
+           memory.samples.size()>256u*1024u*1024u/sizeof(float) ||
+           memory.frames()>static_cast<std::uint64_t>(memory.sampleRate)*30 ||
+           memory.frames()>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-memory.firstSample))
+            throw std::runtime_error("invalid or empty audio-memory snapshot");
+        if(spec.trackId<=0 || spec.startSample<0 || spec.sourceProject.empty() || spec.workFolder.empty() ||
+           spec.startSample>(std::int64_t{1}<<50) || memory.frames()>static_cast<std::uint64_t>((std::int64_t{1}<<50)-spec.startSample))
+            throw std::runtime_error("audio-memory take needs an explicit project, track, work folder and representable placement");
+        result.failure=RecordingFailure::Io;owned=reserve(spec.workFolder);
+        const auto file=owned/"take-0.wav";
+        audio::WavWriter writer(file,memory.sampleRate,static_cast<std::uint16_t>(memory.channels),audio::WavFormat::Float32);
+        writer.write(memory.samples.data(),static_cast<std::uint32_t>(memory.frames()));writer.close();
+        result.files_=std::make_shared<Files>();result.files_->directory=owned;
+        result.sourceProject_=spec.sourceProject;result.sampleRate=memory.sampleRate;result.startSample=spec.startSample;
+        result.frames=memory.frames();result.tracks.push_back({spec.trackId,static_cast<std::uint16_t>(memory.channels),file});
+        result.failure=RecordingFailure::None;
+    } catch(const std::exception& exception) {
+        result.error=exception.what();
+        if(!owned.empty()){std::error_code ignored;fs::remove_all(owned,ignored);}
+        result.files_.reset();result.tracks.clear();result.frames=0;
+    }
+    return result;
+}
 struct AudioInputRecorder::Impl {
     std::unique_ptr<SnapshotPublisher<State>> published=std::make_unique<SnapshotPublisher<State>>();
     std::shared_ptr<Job> job;
@@ -168,6 +197,7 @@ std::optional<AudioRecordingResult> AudioInputRecorder::poll(bool deviceStopped)
         case RecordingFailure::Cancelled:result.error="Recording cancelled";break;
         case RecordingFailure::Io:result.error="Recording writer failed";break;
         case RecordingFailure::NoFrames:result.error="No audio was recorded";break;
+        case RecordingFailure::InvalidCapture:result.error="Invalid retrospective audio capture";break;
     }
     result.files_=std::make_shared<AudioRecordingResult::Files>();result.files_->directory=job->directory;
     if(result.failure==RecordingFailure::Cancelled)result.discard();
