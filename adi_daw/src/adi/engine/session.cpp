@@ -473,6 +473,7 @@ bool Session::rebuild() {
         error_ = "no project loaded";
         return false;
     }
+    (void)mainLoudness_.prepare(spec_.sampleRate,spec_.channels);
     auto timing = std::make_unique<TimingView>();
     timing->sampleRate = spec_.sampleRate;
     timing->settings=spec_.performanceState ? transportSettings_ : TransportSettings{};
@@ -766,6 +767,7 @@ bool Session::reenableAutomation(std::int64_t laneId) {
 
 bool Session::tick(std::int64_t nowMs) {
     timing_.collect();
+    mainLoudness_.collect();
     return devices_.tick(nowMs);
 }
 
@@ -850,6 +852,7 @@ void Session::process(const AudioIo& io) noexcept {
     AudioIo block = io;
     block.transport = &info;
     graph_.process(block);
+    mainLoudness_.process(block);
     if(timing.valid())renderMetronome(*timing.get(),block);
     transport_.advance(io.frames);
 }
@@ -895,6 +898,7 @@ void Session::release() {
     // rather than finding ADR-0090 d5's guard satisfied on a released
     // instance. `live_` false is what defeats the no-op path above.
     live_ = false;
+    mainLoudness_.requestReset();
     if (Graph* g = graph_.currentGraph()) g->release();
 }
 

@@ -43,6 +43,7 @@
 
 #include "adi/engine/host.hpp"
 #include "adi/engine/gain_stage.hpp"
+#include "adi/engine/main_loudness.hpp"
 #include "adi/engine/input_gain.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/engine/clip_playback.hpp"
@@ -229,6 +230,9 @@ public:
     [[nodiscard]] const GroupSumming& summing() const noexcept { return summing_; }
     /// ADR-0163, ADR-0203 d3: the strips, sends and loops it plays. Message thread.
     [[nodiscard]] const MixerStrips& strips() const noexcept { return strips_; }
+    /// Main's post-output live LUFS/true peak. Independent relaxed scalar reads;
+    /// requestReset is an off-thread command consumed at the next callback.
+    [[nodiscard]] const MainLoudness& mainLoudness() const noexcept { return mainLoudness_; }
 
     /// ADR-0175/0195: a track/point tap holding `seconds` of audio. The default
     /// is after the fader; spectrum.post is PreFader, spectrum.pre ChainInput.
@@ -310,6 +314,7 @@ private:
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
     };
     SnapshotPublisher<TimingView> timing_;
+    MainLoudness mainLoudness_;
     TransportSettings transportSettings_; // message thread, copied into TimingView
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;

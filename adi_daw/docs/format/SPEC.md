@@ -158,6 +158,36 @@ older than 60 s) MAY be broken by the user after an explicit prompt.
 Any number of readers MAY open the project read-only.
 
 ---
+### 3.7 Save As and Save a Copy (ADR-0203 d6)
+
+`Store::saveCopy(path)` uses SQLite backup to capture committed WAL data; the
+source is unchanged. The destination must not exist and its parent must exist.
+A private stage is checkpointed/closed before no-replace publication. Missing
+media does not prevent a save. No save op is appended.
+
+For a supported major, relative media locations are rebased for the destination
+folder, including captured media.import/media.relink paths on **every history
+branch and their inverses**. This is a location representation change in the new
+file, preserving media identity/hash and op/transaction/branch identities; it
+prevents Undo/Redo from interpreting an old relative path against a new folder.
+Other captured fields, future fields and unrelated op bytes are preserved.
+The old implicit audio/ fallback is retained when it is the existing source.
+
+`Store::saveAs(path)` makes that copy and switches the **same Store object** to
+its new writable database. Existing History/OpJournal objects still address it.
+The caller refreshes ProjectView/Session and its displayed filename after
+success. Project name, UUID, writer identity, history, snapshots and UI/session
+state are preserved. Owner-thread use requires no active SQL transaction or
+live SQL statements; old database references must not be retained across the
+switch. Existing destinations are never overwritten by these APIs.
+
+A failed copy leaves the source active; a copy that succeeded but could not be
+opened for switching is retained and reported as such. A successful switch can
+report a warning if another reader prevented the old WAL from being folded.
+An unknown newer major supports **Save a Copy** verbatim, without interpreting
+or relocating its media paths; it remains read-only. Save As into an editable
+Store refuses that major.
+
 
 ## 4. The time model
 
