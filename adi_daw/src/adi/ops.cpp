@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+#include "adi/freeze_groups.hpp"
+#include "adi/freeze_state.hpp"
 
 #include "adi/ops.hpp"
 
+#include "adi/history_compaction.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -254,6 +257,7 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
     if (reqs.empty()) { r.ok = true; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
+    const bool frozenWasValid = freeze::validated(store_);
     const auto& reg = OpRegistry::instance();
 
     // Validate everything BEFORE opening a transaction. A batch that cannot
@@ -433,6 +437,14 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
             return r;
         }
 
+        // ADR-0203 d13: checkpoint and prefix pruning share the edit transaction.
+        const auto retention = history_detail::compactUndo(store_, history_detail::undoPolicy(db));
+        if (!retention.ok) {
+            r.error = "history compaction: " + retention.error;
+            r.seqs.clear();
+            return r;
+        }
+
         // ADR-0153: the caller's last word, still inside the transaction.
         if (options.beforeCommit) {
             std::string err;
@@ -443,7 +455,17 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
             }
         }
 
+        freeze::validate(
+            store_,
+            !(frozenWasValid && !options.beforeCommit && freeze::liveControlBatch(reqs) &&
+              freeze::groupControlsLive(db, reqs) &&
+              db.execAndGet(
+                    "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='trigger' AND tbl_name COLLATE "
+                    "NOCASE IN ('tracks','mixer_strip','project') UNION ALL SELECT 1 FROM sqlite_temp_master "
+                    "WHERE type='trigger' AND tbl_name COLLATE NOCASE IN ('tracks','mixer_strip','project'))")
+                      .getInt() != 0));
         txn.commit();
+        freeze::remember(store_);
         r.ok = true;
         return r;
     } catch (const std::exception& e) {
@@ -526,6 +548,10 @@ std::optional<std::int64_t> OpJournal::headSeq() const {
 
 bool OpJournal::setHeadSeq(std::optional<std::int64_t> seq) {
     try {
+        SQLite::Statement base(store_.db(), "SELECT base_seq FROM history_checkpoint WHERE id=1");
+        if (base.executeStep() && (!seq || *seq < base.getColumn(0).getInt64()))
+            return false;
+
         SQLite::Statement st(store_.db(),
             "UPDATE op_branches SET head_seq = ? WHERE is_current = 1");
         if (seq) st.bind(1, *seq); else st.bind(1);
