@@ -50,3 +50,11 @@ The [Live v0.6 notes](daws/ableton-12.md) add 445 detailed contracts across edit
 The new source review preserves ADI per-key-map tuning and flags source-valid scales that conflict with ADR-0178's current model. It separates typed time units, ephemeral API handles, deferred changes, UI versus API commands and data lost during interchange. A6Z adds bounded shipped-schema evidence; A6X/A6U/A6I address the extension/current-integration documentary gaps. These findings refine questions under the existing decisions; they authorize no model change.
 
 The 610-entry Live contents inventory retains stable IDs and now links 373 entries to exact M6 findings. Four Simpler-operation entries are explicitly excluded under the director's instruction. Links are navigation, not completion certification; all original Live measurement questions and full settings/text/menu/palette/history/audio/CPU verification remain open.
+
+## Live device expansion — milestone 7
+
+358 additional research contracts across 62 named devices, each with source, ADI implication, evidence status and a paired unexecuted case. [Live v0.7](daws/ableton-12.md) now includes all 42 native audio effects, four Max audio effects, eight native MIDI effects, six Max MIDI effects, and the explicitly named Sampler/Simpler exceptions. Other built-in instruments remain excluded. Historical exclusions describe earlier passes and are superseded for this scope.
+
+A7A/A7B/A7M describe device behavior and edge cases; A7R adds bounded preset/schema and Push controls; A7N records selected REA/Ghidra observations. The private DEVICE-RESEARCH-MISSIONS-7.md contains matching cases and nine device censuses. Thirteen original fixtures supply precise audio/event inputs, with all runtime results NOT RUN. Earlier host gaps and all L01–L10 questions stay open.
+
+Current FEATURES/decisions/parity remain authoritative. ADR-0169 defines the existing device priorities; ADR-0187 candidates remain candidates. ADR-0203 d7 governs randomness, and ADR-0207 d2 already sets ADI precision. These findings add no priority, DSP implementation or new ADR. The manual and bounded installed-file evidence do not prove factory defaults, exact DSP curves, numeric latency, audio equivalence or CPU advantage.

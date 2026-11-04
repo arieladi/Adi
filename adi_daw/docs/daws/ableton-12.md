@@ -1,4 +1,6 @@
-# Ableton Live 12 — research v0.6, 2026-11-04
+# Ableton Live 12 — research v0.7, 2026-11-04
+
+Current scope (milestone 7, director update): MIDI devices and audio effects are now included. Sampler and Simpler are explicit named exceptions to the continuing exclusion of other built-in instruments. Earlier milestone exclusions below describe those historical passes and are superseded for current work by this paragraph. Rack/host/editor research remains in scope.
 
 Baseline: `5c9e1cd8ebbb5dd940815aa733d49c1217c9aa19`. Researcher: Codex on SALON-TV. Installed: Suite executable file version 12.4; existing Live log reports `Live 12.4 Build: 2026-04-24_d85a94ab5e`, revision `d85a94ab5eb1299391a7ff9400bdb8c0dcd7cc75`. This is not a fresh-default profile. PE identity and hashes: E01; log identity: E02.
 
@@ -934,10 +936,10 @@ The manual does not settle all ten original Measure on Live questions, the 70 di
 | A-BASE-35.7: Melodic Sequencer + 32 Notes | Live 12 manual §35.7, p.910 (contents p.19) | Baseline parity; apply the completion dimensions above and map the resulting contract to current FEATURES/ADR. M6 related contracts: A6U-007. Exact topic linkage only; completion dimensions remain open. | Unknown / not tested — inventory; selected findings may exist above |
 | A-BASE-35.7.1: 32 Notes | Live 12 manual §35.7.1, p.911 (contents p.19) | Baseline parity; apply the completion dimensions above and map the resulting contract to current FEATURES/ADR. | Unknown / not tested — inventory; selected findings may exist above |
 | A-BASE-35.7.2: Sequencer | Live 12 manual §35.7.2, p.911 (contents p.19) | Baseline parity; apply the completion dimensions above and map the resulting contract to current FEATURES/ADR. M6 related contracts: A6R-028. Exact topic linkage only; completion dimensions remain open. | Unknown / not tested — inventory; selected findings may exist above |
-| A-BASE-35.8: Working with Samples | Live 12 manual §35.8, p.913 (contents p.19) | Excluded from this research pass: this section operates the built-in Simpler instrument. Stable inventory ID retained for traceability. | Excluded — built-in instrument operation; no completion claim |
-| A-BASE-35.8.1: Classic Playback Mode | Live 12 manual §35.8.1, p.914 (contents p.19) | Excluded from this research pass: this section operates the built-in Simpler instrument. Stable inventory ID retained for traceability. | Excluded — built-in instrument operation; no completion claim |
-| A-BASE-35.8.2: One-Shot Mode | Live 12 manual §35.8.2, p.915 (contents p.19) | Excluded from this research pass: this section operates the built-in Simpler instrument. Stable inventory ID retained for traceability. | Excluded — built-in instrument operation; no completion claim |
-| A-BASE-35.8.3: Slicing Mode | Live 12 manual §35.8.3, p.917 (contents p.19) | Excluded from this research pass: this section operates the built-in Simpler instrument. Stable inventory ID retained for traceability. | Excluded — built-in instrument operation; no completion claim |
+| A-BASE-35.8: Working with Samples | Live 12 manual §35.8, p.913 (contents p.19) | Reopened by the M7 director instruction naming Simpler; see A7M and A7R controller contracts. Earlier exclusion retained in historical milestone narrative. | Supported hypothesis — source research resumed; installed behavior unmeasured |
+| A-BASE-35.8.1: Classic Playback Mode | Live 12 manual §35.8.1, p.914 (contents p.19) | Reopened by the M7 director instruction naming Simpler; see A7M and A7R controller contracts. Earlier exclusion retained in historical milestone narrative. | Supported hypothesis — source research resumed; installed behavior unmeasured |
+| A-BASE-35.8.2: One-Shot Mode | Live 12 manual §35.8.2, p.915 (contents p.19) | Reopened by the M7 director instruction naming Simpler; see A7M and A7R controller contracts. Earlier exclusion retained in historical milestone narrative. | Supported hypothesis — source research resumed; installed behavior unmeasured |
+| A-BASE-35.8.3: Slicing Mode | Live 12 manual §35.8.3, p.917 (contents p.19) | Reopened by the M7 director instruction naming Simpler; see A7M and A7R controller contracts. Earlier exclusion retained in historical milestone narrative. | Supported hypothesis — source research resumed; installed behavior unmeasured |
 | A-BASE-35.9: Navigating in Note Mode | Live 12 manual §35.9, p.919 (contents p.19) | Baseline parity; apply the completion dimensions above and map the resulting contract to current FEATURES/ADR. M6 related contracts: A6R-029, A6U-004, A6U-005, A6U-009. Exact topic linkage only; completion dimensions remain open. | Unknown / not tested — inventory; selected findings may exist above |
 | A-BASE-35.10: Working With Instruments and Effects | Live 12 manual §35.10, p.920 (contents p.19) | Baseline parity; apply the completion dimensions above and map the resulting contract to current FEATURES/ADR. M6 related contracts: A6U-012. Exact topic linkage only; completion dimensions remain open. | Unknown / not tested — inventory; selected findings may exist above |
 | A-BASE-35.10.1: Adding, Deleting, and Reordering Devices | Live 12 manual §35.10.1, p.922 (contents p.19) | Baseline parity; apply the completion dimensions above and map the resulting contract to current FEATURES/ADR. M6 related contracts: A6R-041, A6U-006. Exact topic linkage only; completion dimensions remain open. | Unknown / not tested — inventory; selected findings may exist above |
@@ -3646,3 +3648,2238 @@ Scope: built-in instrument/effect implementation and operation remain excluded. 
 | What the app does | Where it says so / evidence | What ADI does with it | Status |
 |---|---|---|---|
 | A6I-014: Ableton recommends H.264 in MOV/MP4 with a keyframe every frame or every second frame for smoother playback; fewer keyframes can cause stutter. This is a preparation recommendation, not a promised acceptance limit, mandatory default or documented maximum resolution. | [Ableton Using Video](https://help.ableton.com/hc/en-us/articles/209773125-Using-Video), Optimizing playback; accessed 2026-11-04; current web revision, not pinned to installed Live 12.4 | FEATURES §3 / ADR-0206: measure scrubbing and random access independently from sequential decoding; preserve source-frame alignment while the preview catches up. Measurement case M6-A6I-014. | Supported hypothesis — current official support documentation; installed Live 12.4 behavior unmeasured |
+
+## Expanded Live device reference — milestone 7 — 2026-11-04
+
+This pass adds 358 sourced contracts with ADI implications and paired unexecuted cases, covering all 62 named devices in the requested manual scope: 42 native audio effects, four Max audio effects, eight native MIDI effects, six Max MIDI effects, Sampler and Simpler. Devices absent from current ADI priorities remain reference research; this does not add a product commitment. Private E43–E47 bind sources, reviews, resources, selected code analysis, diagnostics and follow-up missions.
+
+Source boundaries: local manual revision remains unconfirmed against installed Suite 12.4/build 2026-04-24_d85a94ab5e. A historical Live 11 release source and current MPE FAQ qualify omissions in the local Sampler chapter. Presets declare Live 12.4d1 and a different creator revision; their values and controller ranges establish neither factory defaults nor hard UI/DSP bounds. Push 2 chapter behavior keeps the integration-generation caveat from M6. No DAW GUI, hardware, sound or CPU measurement was made.
+
+Additional installed scope (private E45/installed-device-gap-audit.json): a bounded factory scan found Expression Control Legacy and eight legacy native preset families beyond the modern named-device census. Their compatibility/implementation behavior remains unexamined. The 1,225 inspected presets/racks are assets, not 1,225 processors. Installed Pack effects remain an open inventory task; no Pack root was established.
+
+Static work is deliberately narrow: REA 6.8.0 with Ghidra 12.1.4/JDK 21 inspected Corpus CalcA and SetSampleRateU; a separate direct Ghidra 12.2/JDK 25 pass inspected selected Amp exports. Module hashes and addresses identify those observations. Unresolved virtual targets, flag meaning and caller contracts stay unresolved. Scalar/packed float instructions in one path do not establish whole-engine precision or CPU performance. Raw proprietary code and presets remain private.
+
+### Device coverage register
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A-DEV-28.1: Amp (Native audio effect) — detailed entries A7A-001, A7A-002, A7A-003, A7N-002, A7N-003, A7N-004. | Live 12 local manual §§28.1, printed pp.524; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Separate input-drive and output-stage controls; a post-effect gain replacement would not preserve behavior. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.2.1: Auto Filter (Native audio effect) — detailed entries A7A-004, A7A-005, A7A-006, A7A-007, A7A-008, A7A-009, A7A-010, A7A-011, A7A-012, A7A-013. | Live 12 local manual §§28.2.1, printed pp.526–527; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. The panel requires mode-dependent units, labels and enabled states without deleting mapped parameter identities. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.3: Auto Pan-Tremolo (Native audio effect) — detailed entries A7A-014, A7A-015, A7A-016, A7A-017. | Live 12 local manual §§28.3, printed pp.533–536; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Mode changes need deliberate shared-versus-private state and adapted visualization, not a second unrelated preset. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.4: Auto Shift (Native audio effect) — detailed entries A7A-018, A7A-019, A7A-020, A7A-021, A7A-022, A7A-023, A7A-024. | Live 12 local manual §§28.4,28.4.1, printed pp.537–538; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0203 d4: distinguish necessary algorithm latency from adapter delay, and propagate range/mode latency changes through compensation. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.5: Beat Repeat (Native audio effect) — detailed entries A7A-025, A7A-026, A7A-027. | Live 12 local manual §§28.5, printed pp.545; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Capture scheduling, captured buffer and manual hold are separate state; define transport/seek and undo behavior before copying the gesture. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.6: Cabinet (Native audio effect) — detailed entries A7A-028, A7A-029. | Live 12 local manual §§28.6, printed pp.547–548; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Keep cabinet, position and mic type independent state; physical descriptions do not specify measurable response curves or actual CPU cost. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.7: Channel EQ (Native audio effect) — detailed entries A7A-030, A7A-031. | Live 12 local manual §§28.7, printed pp.549–550; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. ADR-0204 d1: this reference does not replace ADI-Q as the decided per-channel EQ. Three simple gains are insufficient to model Channel EQ’s asymmetric response. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.8: Chorus-Ensemble (Native audio effect) — detailed entries A7A-032, A7A-033, A7A-034. | Live 12 local manual §§28.8, printed pp.551–553; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Model topology, tap count and mode-specific availability separately; the introductory two-delay description does not eliminate the documented single-tap option. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.9: Compressor (Native audio effect) — detailed entries A7A-035, A7A-036, A7A-037, A7A-038, A7A-039. | Live 12 local manual §§28.9, printed pp.555–556; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Keep the documented knee convention as a measurable transfer curve rather than substituting a generic half-width definition. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.10.1: Corpus (Native audio effect) — detailed entries A7A-040, A7A-041, A7A-042, A7A-043, A7A-044, A7N-005, A7N-006, A7N-007, A7N-008, A7N-009. | Live 12 local manual §§28.10.1, printed pp.561–562; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only physical-model capability matrix; parameter hiding must not imply deletion from automation/state. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.11: Delay (Native audio effect) — detailed entries A7A-045, A7A-046, A7A-047, A7A-048. | Live 12 local manual §§28.11, printed pp.566–567; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Persist link state separately from values; linked controls do not imply every neighboring parameter is shared. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.12: Drum Buss (Native audio effect) — detailed entries A7A-049, A7A-050, A7A-051, A7R-005. | Live 12 local manual §§28.12, printed pp.570; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only stage-order contract; the qualitative compressor description does not establish numerical timings or ratio. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.13: Dynamic Tube (Native audio effect) — detailed entries A7A-052, A7A-053. | Live 12 local manual §§28.13, printed pp.572; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. The follower modulates bias rather than output gain; inactive envelope timing must remain available for later reactivation. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.14: Echo (Native audio effect) — detailed entries A7A-054, A7A-055, A7A-056, A7A-057, A7A-058. | Live 12 local manual §§28.14, printed pp.573–574; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Channel topology must not rename stored channel identities ambiguously; offsets remain independent when linked. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.15: EQ Eight (Native audio effect) — detailed entries A7A-059, A7A-060, A7A-061, A7A-062. | Live 12 local manual §§28.15, printed pp.577; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. ADR-0204 d1: this reference does not replace ADI-Q. Channel edit focus and active DSP bands are separate from parameter identity. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.16: EQ Three (Native audio effect) — detailed entries A7A-063, A7A-064. | Live 12 local manual §§28.16, printed pp.579–580; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only DJ-style band-kill behavior; detector indication must survive audio muting without implying the band is audible. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.17: Erosion (Native audio effect) — detailed entries A7A-065, A7A-066. | Live 12 local manual §§28.17, printed pp.580–581; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Do not substitute bit-depth reduction for this degradation mechanism; modulation-source width is not necessarily output stereo width. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.18: External Audio Effect (Native audio effect) — detailed entries A7A-067, A7A-068. | Live 12 local manual §§28.18, printed pp.581–582; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §2/6: model separate send and return ports/gains, driver configuration and unavailable-port state; this refines existing host integration research. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.19: Filter Delay (Native audio effect) — detailed entries A7A-069, A7A-070. | Live 12 local manual §§28.19, printed pp.583; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Represent input selection and output pan separately; the center line’s summing law and disabled-line tail policy are not specified. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.20: Gate (Native audio effect) — detailed entries A7A-071, A7A-072, A7R-006. | Live 12 local manual §§28.20, printed pp.584–585; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only hysteresis and envelope contract; closed state is not synonymous with silence, and Flip/Return interaction needs measurement. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.21: Glue Compressor (Native audio effect) — detailed entries A7A-073, A7A-074, A7A-075. | Live 12 local manual §§28.21, printed pp.586–587; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Do not substitute wet/dry blending for a gain-reduction cap or assume a single release time constant. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.22: Grain Delay (Native audio effect) — detailed entries A7A-076, A7A-077. | Live 12 local manual §§28.22, printed pp.589–590; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only granular behavior; a generic delay plus unrelated pitch randomizer is not an established equivalent. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.23.1: Hybrid Reverb (Native audio effect) — detailed entries A7A-078, A7A-079, A7A-080, A7A-081, A7A-082, A7A-083, A7A-084, A7A-085, A7A-086. | Live 12 local manual §§28.23.1,28.23.2, printed pp.591; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Keep wet-send gain separate from input trim and store both timing-mode feedback values even when one is hidden. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.24: Limiter (Native audio effect) — detailed entries A7A-087, A7A-088, A7A-089, A7A-090. | Live 12 local manual §§28.24, printed pp.597–598; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0204 d1: this reference does not replace the decided ADI-L design. Persist mode and controls without misapplying prior input gain as output gain. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.25: Looper (Native audio effect) — detailed entries A7A-091, A7A-092, A7A-093, A7A-094, A7A-095, A7A-096, A7A-097, A7A-098. | Live 12 local manual §§28.25, printed pp.599; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §8/10: separate buffer mutations from command scheduling and global playback; runtime buffer persistence is not established by the manual. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.26: Multiband Dynamics (Native audio effect) — detailed entries A7A-099, A7A-100, A7A-101, A7A-102, A7A-103. | Live 12 local manual §§28.26,28.26.1,28.26.2, printed pp.603–605; exact source revision unconfirmed against installed Live Suite 12.4 | ADR-0187 d3: OTT-style dynamics reference; no new individual device priority. Distinguish removing a crossover band from bypassing processing within a retained band; generic mute/enable fields cannot stand for both. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.27: Overdrive (Native audio effect) — detailed entries A7B-001, A7B-002, A7B-003. | Live 12 local manual §§28.27, pp.608; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0187 d3: Keep pre-emphasis separate from post-processing and expose identical parameters through gestures and typed controls. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.28: Pedal (Native audio effect) — detailed entries A7B-004, A7B-005, A7B-006. | Live 12 local manual §§28.28, pp.609; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Represent nonlinear drive, output trim, type and post-EQ independently; preserve state across type changes. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.29: Phaser-Flanger (Native audio effect) — detailed entries A7B-007, A7B-008, A7B-009, A7B-010, A7B-011. | Live 12 local manual §§28.29, pp.612–613; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Mode-specific visualization is a contract, not a reusable axis label with one meaning. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.30: Redux (Native audio effect) — detailed entries A7B-012, A7B-013, A7B-014, A7B-015, A7B-016, A7B-017, A7B-018, A7R-002, A7R-003. | Live 12 local manual §§28.30,28.30.1, pp.615–616; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3: Keep effect rate separate from device/engine rate and render conversion; evaluate the approved replacement sources against these controls. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.31: Resonators (Native audio effect) — detailed entries A7B-019, A7B-020, A7B-021, A7B-022. | Live 12 local manual §§28.31, pp.617–618; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Separate shared pitch reference from audio enablement and preserve the asymmetric channel matrix. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.32.1: Reverb (Native audio effect) — detailed entries A7B-023, A7B-024, A7B-025, A7B-026, A7B-027. | Live 12 local manual §§28.32.1,28.32.2, pp.619–620; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Input filters, early reflections and late-tail formation need separate controls and response fixtures. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.33.1: Roar (Native audio effect) — detailed entries A7B-028, A7B-029, A7B-030, A7B-031, A7B-032, A7B-033, A7B-034, A7B-035, A7B-036, A7B-037, A7B-038, A7B-039. | Live 12 local manual §§28.33.1, pp.623; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Pre/post emphasis can preserve broad balance while changing distortion; do not collapse the pair into an output EQ. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.34: Saturator (Native audio effect) — detailed entries A7B-040, A7B-041, A7B-042, A7B-043, A7B-044. | Live 12 local manual §§28.34, pp.631–632; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Curve identity and threshold must survive presets/automation; labels do not establish exact transfer equations. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.35.1: Shifter (Native audio effect) — detailed entries A7B-045, A7B-046, A7B-047, A7B-048, A7B-049, A7B-050, A7B-051, A7B-052, A7B-053, A7R-004. | Live 12 local manual §§28.35.1,28.35.4, pp.635,638; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Represent mode-specific units and control eligibility explicitly; do not normalize the three modes to one undocumented shift law. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.36.1: Spectral Resonator (Native audio effect) — detailed entries A7B-054, A7B-055, A7B-056, A7B-057, A7B-058, A7B-059. | Live 12 local manual §§28.36.1, pp.639–640; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not treat this effect as an ordinary monophonic pitch shifter; voice count, gate and input-note lifecycle are separate contracts. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.37: Spectral Time (Native audio effect) — detailed entries A7B-060, A7B-061, A7B-062, A7B-063, A7B-064, A7B-065, A7B-066. | Live 12 local manual §§28.37,28.37.2,28.37.4, pp.644,646–647; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Represent ordered stages and enable states separately; treat the introductory order as incomplete rather than overriding the later explicit chooser. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.38: Spectrum (Native audio effect) — detailed entries A7B-067, A7B-068, A7B-069. | Live 12 local manual §§28.38, pp.648; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Treat meters as observations, not processing; a reset gesture and transport restart need separate view-state handling. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.39: Tuner (Native audio effect) — detailed entries A7B-070, A7B-071, A7B-072. | Live 12 local manual §§28.39,28.39.1,28.39.2, pp.649–651; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not interpret estimated pitch as a polyphonic detector or infer numeric acceptance tolerance from colors. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.40: Utility (Native audio effect) — detailed entries A7B-073, A7B-074, A7B-075, A7B-076, A7B-077. | Live 12 local manual §§28.40, pp.655; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0203 d8: Utility parity is explicit; channel routing, polarity and width are separate controls, and no sub-sample phase nudge belongs here. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.41: Vinyl Distortion (Native audio effect) — detailed entries A7B-078, A7B-079. | Live 12 local manual §§28.41, pp.657; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Preserve modifier gestures and stage/global-drive distinctions; harmonic descriptions do not define a complete model. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-28.42: Vocoder (Native audio effect) — detailed entries A7B-080, A7B-081, A7B-082, A7B-083, A7B-084, A7B-085. | Live 12 local manual §§28.42, pp.658–659; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8: ADR-0203 specifies one Live-style Vocoder; distinguish audible carrier audio from the detector/modulator path. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.2.1: Align Delay (Max audio effect) — detailed entries A7B-086, A7B-087. | Live 12 local manual §§32.2.1, pp.810; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Reference-only: do not relocate ADR-0203’s approved sub-sample phase tool into Utility or silently add a new priority. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.2.2: Envelope Follower (Max audio effect) — detailed entries A7B-088, A7B-089, A7B-090. | Live 12 local manual §§32.2.2, pp.811–812; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Base/effective separation is central to ADR-0046/0052; exclusive remote ownership is not equivalent to a modulation offset. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.2.3: LFO (Max audio effect) — detailed entries A7B-091, A7B-092, A7B-093, A7B-094. | Live 12 local manual §§32.2.3, pp.814–815; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Preserve common mapping semantics with Envelope Follower while keeping each source’s state distinct; multiple-source combination remains ADI’s approved policy. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.2.4: Shaper (Max audio effect) — detailed entries A7B-095, A7B-096, A7B-097, A7B-098. | Live 12 local manual §§32.2.4, pp.817–818; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Distinguish curve-edit gestures, point deletion and complete replacement for undo; mathematical interpolation and endpoint constraints remain unspecified. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-29.1: Arpeggiator (Native MIDI effect) — detailed entries A7M-002, A7M-003, A7M-004, A7M-005, A7M-006, A7M-007, A7M-008, A7M-009, A7M-010, A7M-011. | Live 12 local manual §29.1, pp.663; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep held-note ordering distinct from pitch sorting and generated-event timing; every style needs its own fixture. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-29.2: CC Control (Native MIDI effect) — detailed entries A7M-012, A7M-013, A7M-014. | Live 12 local manual §29.2, pp.665; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep CC, pitch bend and channel pressure as typed messages; retain a two-state control independently of continuous dials. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-29.3: Chord (Native MIDI effect) — detailed entries A7M-015, A7M-016, A7M-017, A7M-018, A7M-019. | Live 12 local manual §29.3, pp.666; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate configured slot state, activation and generated note identity; duplicate suppression must not erase source-note ownership. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-29.4: Note Length (Native MIDI effect) — detailed entries A7M-020, A7M-021, A7M-022, A7M-023. | Live 12 local manual §29.4, pp.668; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Generate note-off timestamps from explicit duration state without conflating source note release and output release. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-29.5: Pitch (Native MIDI effect) — detailed entries A7M-024, A7M-025. | Live 12 local manual §29.5, pp.669; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep a domain-tagged transpose value and explicit step action, including clamping at limits. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-29.6: Random (Native MIDI effect) — detailed entries A7M-026, A7M-027, A7M-028, A7R-007. | Live 12 local manual §29.6, pp.670–671; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Preserve a discrete candidate set, probability gate and direction separately; ADR-0203 d7 changes the earlier ADR-0169 always-repeatable default. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-29.7: Scale (Native MIDI effect) — detailed entries A7M-029, A7M-030, A7M-031. | Live 12 local manual §29.7, pp.672; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Model a mapping relation separately from its visual grid; do not infer the purpose of an extra matrix row/column from the 13×13 label. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-29.8: Velocity (Native MIDI effect) — detailed entries A7M-032, A7M-033, A7M-034, A7M-035. | Live 12 local manual §29.8, pp.673–674; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Retain distinct onset/release fields and input/output range semantics rather than applying a single gain to note events. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.3.1: Envelope MIDI (Max MIDI effect) — detailed entries A7M-036, A7M-037, A7M-038, A7M-039. | Live 12 local manual §32.3.1, pp.819–820; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0046/ADR-0052: preserve parameter base value separately from modulation and distinguish exclusive remote ownership. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.3.2: Expression Control (Max MIDI effect) — detailed entries A7M-040, A7M-041, A7M-042, A7M-043, A7M-126. | Live 12 local manual §32.3.2, pp.822; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0046/ADR-0054: distinguish per-note expression sources from global MIDI sources and define aggregation for a shared target. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.3.3: MIDI Monitor (Max MIDI effect) — detailed entries A7M-044. | Live 12 local manual §32.3.3, pp.824–825; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep diagnostic presentation outside audio behavior and preserve typed per-note fields for future debugging. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.3.4: MPE Control (Max MIDI effect) — detailed entries A7M-045, A7M-046, A7M-047, A7M-048, A7M-049, A7M-050. | Live 12 local manual §32.3.4, pp.826–828; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0054: retain independent source transforms and per-note state; disabled-source semantics require a measured pass-through versus suppression contract. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.3.5: Note Echo (Max MIDI effect) — detailed entries A7M-051, A7M-052, A7M-053. | Live 12 local manual §32.3.5, pp.832; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Schedule echoed note identities and releases independently of source pass-through and tempo domain. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-32.3.6: Shaper MIDI (Max MIDI effect) — detailed entries A7M-054, A7M-055, A7M-056, A7M-057. | Live 12 local manual §32.3.6, pp.833–834; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0046: share mapping infrastructure with Envelope MIDI while retaining a distinct envelope generator and trigger policy. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-30.10.3: Sampler (Named instrument exception) — detailed entries A7M-058, A7M-059, A7M-060, A7M-061, A7M-062, A7M-063, A7M-064, A7M-065, A7M-066, A7M-067, A7M-068, A7M-069, A7M-070, A7M-071, A7M-072, A7M-073, A7M-074, A7M-075, A7M-076, A7M-077, A7M-078, A7M-079, A7M-080, A7M-081, A7M-082, A7M-083, A7M-084, A7M-085, A7M-086, A7M-087, A7M-088, A7M-089, A7M-090, A7M-091, A7M-092, A7M-093, A7M-094, A7M-123. | Live 12 local manual §30.10.3, §30.10.4, §30.10.5, pp.745–747; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep panel visibility, current layer, device name and modulation indicators distinct; OneShot/Sampler share the host strip but need different expanded editors. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+| A-DEV-30.11: Simpler (Named instrument exception) — detailed entries A7M-095, A7M-096, A7M-097, A7M-098, A7M-099, A7M-100, A7M-101, A7M-102, A7M-103, A7M-104, A7M-105, A7M-106, A7M-107, A7M-108, A7M-109, A7M-110, A7M-111, A7M-112, A7M-113, A7M-114, A7M-115, A7M-116, A7M-117, A7M-118, A7M-119, A7M-120, A7M-121, A7M-124, A7M-125. | Live 12 local manual §30.11, pp.762–763; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: OneShot must distinguish source media, clip-derived bounds and warp metadata; replacement is a stateful operation rather than just a filename change. Coverage navigation only; controls, defaults, history, state, signal behavior and performance require the M7 censuses. | Documented and linked; installed behavior unmeasured |
+
+### Native audio effects: Amp through Multiband Dynamics
+
+#### Amp: gain stages are not interchangeable
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-001 (Amp): Gain drives the preamplifier; Volume controls the power-amplifier output stage. Gain is the principal distortion control, while high Volume also adds substantial distortion in Blues, Heavy and Bass models. | Live 12 local manual §§28.1, printed pp.524; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Separate input-drive and output-stage controls; a post-effect gain replacement would not preserve behavior. Follow-up case M7-A7A-001. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Amp: coupled tone controls and model switching
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-002 (Amp): The seven amp models share one control set. Bass/Middle/Treble interact nonlinearly with each other and distortion; increasing Treble can reduce bass and midrange. Presence acts in the power stage and varies by model. | Live 12 local manual §§28.1,28.1.1.2, printed pp.524–525; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. A common parameter panel does not imply identical transfer functions; preserve parameter identities across model changes. Follow-up case M7-A7A-002. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Amp: mono/dual processing and cabinet composition
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-003 (Amp): Output selects mono or stereo Dual processing; the guide describes Dual as twice the CPU cost. Cabinet normally follows Amp, but either can operate independently. Dry/Wet blends processed and dry signals. | Live 12 local manual §§28.1,28.1.1.1, printed pp.524–525; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Treat Amp and Cabinet as separate ordered graph nodes, with channel mode in persistent state; the documented CPU ratio is not a measured performance guarantee. Follow-up case M7-A7A-003. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: filter type determines control capability
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-004 (Auto Filter): Ten types are available. Low-pass, High-pass, Band-pass, Notch and Notch + LP offer 12/24 dB slopes; Morph offers 6/12/24/48 dB. DJ replaces Freq with bipolar Control; Vowel replaces Freq/Res with Pitch/Formant. Resampling disables resonance. | Live 12 local manual §§28.2.1, printed pp.526–527; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. The panel requires mode-dependent units, labels and enabled states without deleting mapped parameter identities. Follow-up case M7-A7A-004. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: DJ response couples filter direction and resonance
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-005 (Auto Filter): Positive DJ Control removes lows; negative values remove highs. Resonance emphasis grows toward either extreme. Resampling instead continuously resamples at a cutoff-dependent rate and can introduce aliasing. | Live 12 local manual §§28.2.1, printed pp.526–527; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. Keep the named Auto Filter DJ mode separate from ADI’s standalone DJ Filter, whose center-bypass policy is decided elsewhere. Follow-up case M7-A7A-005. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: Morph has four distinct meanings
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-006 (Auto Filter): Morph type moves low-pass through band-pass to high-pass. Comb moves peaks toward notches. Notch + LP moves its notch toward cutoff, coinciding at 100%. Vowel Morph increasingly normalizes formant gain. | Live 12 local manual §§28.2.1, printed pp.527; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. A shared numeric control needs mode-specific meaning and value text; preserve automation through type changes. Follow-up case M7-A7A-006. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: visualization and paired edits
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-007 (Auto Filter): The display shows the base curve, separate modulated left/right curves and output spectrum. Dragging its handle edits Freq/Res, or Pitch/Formant for Vowel. Selecting LFO or Envelope changes the controls shown below it. | Live 12 local manual §§28.2.2, printed pp.527–528; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. Parity-7.4/ADR-0124: a two-parameter drag needs one bounded gesture; selected panel state is distinct from sound state. Follow-up case M7-A7A-007. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: stereo LFO mode and phase offset
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-008 (Auto Filter): Phase offsets same-rate channel LFOs; Spin detunes their rates. Phase 0° and Spin 0% give identical channel modulation. Phase Offset shifts both starts only in tempo-synced beat-division or sixteenth modes; Wander and S&H disable Spin. | Live 12 local manual §§28.2.3, printed pp.528–529; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. Make rate mode constrain available stereo controls; disabling a control need not erase its stored value. Follow-up case M7-A7A-008. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: LFO quantization and waveform shaping
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-009 (Auto Filter): Steps divides each LFO cycle into a chosen number of intervals; S&H quantization uses a beat-time interval. Rate supports Hz, seconds, beat divisions and sixteenths. Waveform Morph becomes Smooth for the S&H waveform. | Live 12 local manual §§28.2.3, printed pp.529; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. Distinguish waveform sample-and-hold from time quantization; parameter units and naming depend on the selected mode. Follow-up case M7-A7A-009. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: envelope attack hold and rhythm quantization
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-010 (Auto Filter): Envelope Hold makes attack complete before release begins. Attack/Release control rising/falling response; signed Envelope sets direction and depth. Envelope S&H quantizes the follower to selectable beat-time values. | Live 12 local manual §§28.2.4, printed pp.529–530; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. Follower state must survive short transients and mode changes without confusing a signed modulation amount with audio gain. Follow-up case M7-A7A-010. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: drive, circuit and output clipping stages
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-011 (Auto Filter): Drive precedes the filter; its 0% setting leaves that drive stage unaltered. SVF/DFM/MS2/PRD circuits affect only Low-pass, High-pass, Band-pass, Notch and Morph. Clip soft-clips the output with a clipping LED; Output changes processed level and Dry/Wet mixes processed/unprocessed signals. | Live 12 local manual §§28.2.5,28.2.6, printed pp.530–531; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. Stage-specific zero/bypass assertions must not be mistaken for whole-device transparency. Preserve circuit state while it is inapplicable. Follow-up case M7-A7A-011. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: external detector mix and audition
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-012 (Auto Filter): External selects a sidechain source and Pre FX/Post FX/Post Mixer tap. Mix 100% uses external only; 0% uses internal only. SC Gain changes detector input, not source-track loudness. Listen replaces the normal output with sidechain audio. | Live 12 local manual §§28.2.7, printed pp.531–532; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. FEATURES §2: source ownership, detector mix and audible audition are different routes; audition must not silently become permanent routing. Follow-up case M7-A7A-012. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Filter: mono detector default and sidechain filter inconsistency
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-013 (Auto Filter): Mono Sidechain is enabled by default, producing identical envelope modulation in both channels; its context-menu option can disable this. The sidechain filter chooser list includes band-pass, but the explanatory paragraph describes Notch instead. | Live 12 local manual §§28.2.7,28.2.7.1, printed pp.532–533; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6; ADR-0203 d8: the named Auto Filter parity item. Store the mono option explicitly; leave the exact sidechain filter enum unresolved until the installed device is inspected. Follow-up case M7-A7A-013. | Unknown — documentary inconsistency; installed Live 12.4 behavior unmeasured |
+
+#### Auto Pan-Tremolo: mode-specific LFOs share amount and rate
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-014 (Auto Pan-Tremolo): Panning uses two channel LFOs; Tremolo uses one amplitude LFO. Amount and rate are shared across both modes. Shape changes their overlap in Panning, but reshapes peaks in Tremolo; Invert reverses modulation polarity. | Live 12 local manual §§28.3, printed pp.533–536; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Mode changes need deliberate shared-versus-private state and adapted visualization, not a second unrelated preset. Follow-up case M7-A7A-014. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Pan-Tremolo: time and stochastic stereo controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-015 (Auto Pan-Tremolo): Time mode spans 100 ms to 200 s. Other modes include Hz and synced/dotted/triplet/sixteenth divisions. Random, Wander and S&H offer Phase rather than Spin; for these waveforms Phase Offset controls stereo width. | Live 12 local manual §§28.3, printed pp.534; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Parameter interpretation depends on waveform as well as timing mode; do not treat all Phase Offset values as phase angles. Follow-up case M7-A7A-015. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Pan-Tremolo: harmonic and vintage tremolo paths
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-016 (Auto Pan-Tremolo): Harmonic Tremolo splits at a fixed 600 Hz and modulates the bands in alternation. Vintage adds nonlinear amplitude shaping. These options belong to Tremolo mode. | Live 12 local manual §§28.3, printed pp.534–535; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Crossover and nonlinear stage are separate behavioral targets; reference-only, not a commitment to a particular filter implementation. Follow-up case M7-A7A-016. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Pan-Tremolo: transient protection and level-to-rate modulation
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-017 (Auto Pan-Tremolo): Attack Time delays full modulation after detected transients: panning initially remains centered and tremolo preserves attack. Positive Dynamic Frequency Modulation makes louder signals increase rate; negative values decrease it. | Live 12 local manual §§28.3, printed pp.537; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Envelope detection and oscillator timing need distinct state; the exact transient detector and rate law are not documented. Follow-up case M7-A7A-017. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Shift: pitch range changes device latency
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-018 (Auto Shift): Auto Shift targets monophonic audio. High/Mid/Bass input ranges optimize pitch tracking and each changes latency. Input Gain spans −24 to +24 dB. Live Mode reduces latency but may glitch at onsets or rapid pitch changes; the device displays milliseconds. | Live 12 local manual §§28.4,28.4.1, printed pp.537–538; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0203 d4: distinguish necessary algorithm latency from adapter delay, and propagate range/mode latency changes through compensation. Follow-up case M7-A7A-018. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Shift: MIDI sidechain replaces quantizer ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-019 (Auto Shift): MIDI On replaces Quantizer with MIDI controls. Its source offers Pre FX, Post FX and Post Mixer; the latter two include source MIDI effects. Scale awareness is unavailable in MIDI mode. The guide says output occurs only while MIDI notes are received. | Live 12 local manual §§28.4.1.1,28.4.3, printed pp.539–541; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §2/4/6: distinguish visible MIDI panel, enabled MIDI processing and source routing; silence/no-note behavior must coexist with release and latch. Follow-up case M7-A7A-019. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Shift: voice counts, glide and MIDI envelopes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-020 (Auto Shift): Mono uses one voice with glide between overlapping notes; Poly permits 2, 4 or 8 voices. MIDI envelope Attack spans 0–1000 ms and Release 0–5 s. Note Latch holds notes until the next Note On; pitch-bend range spans 0–48 semitones. | Live 12 local manual §§28.4.1.1,28.4.3, printed pp.539–541; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only voice allocation and note lifetime contract; voice-stealing priority and latch interaction with polyphony are undocumented. Follow-up case M7-A7A-020. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Shift: correction order and scale ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-021 (Auto Shift): Correction Strength controls attraction to target notes; Smooth retains more natural vibrato with 0–200 ms smoothing. Scale-degree Pitch Shift follows correction. Use Current Scale follows the clip and disables device Root/Scale choosers. | Live 12 local manual §§28.4.2, printed pp.540; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Separate input estimation, correction, scale-degree transposition and clip-owned scale; do not infer the correction curve from its percentage. Follow-up case M7-A7A-021. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Shift: MIDI and MPE modulation matrix
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-022 (Auto Shift): Pitch, Formant, Volume and Pan each select one source from Velocity, Pressure, Mod Wheel, Pitch Bend, Note PB or Slide, with a separate depth. | Live 12 local manual §§28.4.3, printed pp.541; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §4: channel pitch bend and per-note pitch bend must stay distinguishable through voice assignment; exact scaling and summation remain measurements. Follow-up case M7-A7A-022. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Shift: LFO onset and envelope timing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-023 (Auto Shift): With LFO Reset, quantizer onset means a detected pitch after unpitched audio; MIDI onset means a new note. LFO Delay is 0–1.5 s and Attack 0–2 s. The LFO modulates pitch/formant/volume/pan even without pitch correction. | Live 12 local manual §§28.4.4, printed pp.542; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. The reset event depends on input mode; detector onset must not be conflated with every pitch change. Follow-up case M7-A7A-023. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Auto Shift: independent pitch, formant and vibrato processing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-024 (Auto Shift): Pitch Shift uses semitones plus cents; Formant Shift spans −100% to +100%, with Formant Follow controlling its link to pitch shift. Vibrato depth spans 0–200 cents and rate 2–15 Hz; Natural Vibrato varies depth/rate. These operate without correction. | Live 12 local manual §§28.4.5,28.4.6, printed pp.543–544; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Separate controls that affect fundamental pitch from spectral formants and stochastic vibrato; undocumented randomness must not be labeled deterministic. Follow-up case M7-A7A-024. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Beat Repeat: scheduled capture and manual override
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-025 (Beat Repeat): Interval spans 1/32 to four bars; Offset moves the capture point forward. Chance gates scheduled repetition; Gate determines total repeat duration in sixteenths. Repeat overrides these controls and captures immediately until released. | Live 12 local manual §§28.5, printed pp.545; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Capture scheduling, captured buffer and manual hold are separate state; define transport/seek and undo behavior before copying the gesture. Follow-up case M7-A7A-025. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Beat Repeat: slice grid and random update cadence
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-026 (Beat Repeat): Grid determines repeated slice length; No Triplets restricts division to binary values. Variation 0 fixes the grid; Trigger, quarter/eighth/sixteenth or Auto modes refresh variation at trigger, fixed intervals or after every repeat respectively. | Live 12 local manual §§28.5, printed pp.545–546; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only random scheduling; do not infer a persisted seed from ADI’s separate MIDI-random-device policy. Follow-up case M7-A7A-026. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Beat Repeat: repitch changes duration and mix gating
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-027 (Beat Repeat): Pitch-down resampling lengthens slices without time compensation; Pitch Decay lowers successive repeats. Mix adds repeats to dry, Insert mutes dry only during repeats, and Gate emits repeats alone. Decay fades repeats; a combined high/low-pass band filter shapes them. | Live 12 local manual §§28.5, printed pp.546; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Timing, dry gating and gain decay need separate controls; do not substitute a time-preserving pitch shifter. Follow-up case M7-A7A-027. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Cabinet: mic choice and processing channels
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-028 (Cabinet): Cabinet exposes five speaker models, three mic positions and Dynamic/Condenser types. Output selects mono or Dual stereo; the guide describes Dual as twice the CPU cost. Dry/Wet blends the result. | Live 12 local manual §§28.6, printed pp.547–548; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Keep cabinet, position and mic type independent state; physical descriptions do not specify measurable response curves or actual CPU cost. Follow-up case M7-A7A-028. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Cabinet: multi-mic composition uses Rack chains
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-029 (Cabinet): The documented multi-mic workflow duplicates Cabinet-containing Rack chains, chooses mic settings per instance and mixes chain levels. Amp and Cabinet remain independent devices, normally ordered Amp then Cabinet. | Live 12 local manual §§28.6.1.1,28.6.1.2, printed pp.548–549; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §6: preserve independent instance IDs, state and gain when duplicating parallel chains; do not flatten the workflow into one hidden preset. Follow-up case M7-A7A-029. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Channel EQ: asymmetric three-band filter behavior
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-030 (Channel EQ): HP toggles at 80 Hz. Low is an adaptive 100 Hz shelf with ±15 dB. Mid is a ±12 dB peak tunable from 120 Hz to 7.5 kHz. High boost is a shelf up to +15 dB; cutting toward −15 dB also lowers a low-pass from 20 to 8 kHz. | Live 12 local manual §§28.7, printed pp.549–550; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. ADR-0204 d1: this reference does not replace ADI-Q as the decided per-channel EQ. Three simple gains are insufficient to model Channel EQ’s asymmetric response. Follow-up case M7-A7A-030. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Channel EQ: output compensation and external saturation ordering
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-031 (Channel EQ): The spectrum shows processed signal and filter curves; Output changes processed gain. The guide obtains channel-strip nonlinearity by adding a separate Saturator after Channel EQ, with low-frequency boost then driving more distortion. | Live 12 local manual §§28.7,28.7.1, printed pp.550; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Keep documented EQ response distinct from saturation produced by another device in the chain. Follow-up case M7-A7A-031. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Chorus-Ensemble: mode selects delay topology and controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-032 (Chorus-Ensemble): Chorus uses two modulated delays, Ensemble three with evenly split modulation phases, and Vibrato pitch modulation without the chorus layering. Chorus additionally offers one/two taps and Auto or fixed delay; Auto delay scales per tap with modulation amount. | Live 12 local manual §§28.8, printed pp.551–553; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Model topology, tap count and mode-specific availability separately; the introductory two-delay description does not eliminate the documented single-tap option. Follow-up case M7-A7A-032. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Chorus-Ensemble: low-frequency exclusion and stereo mix
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-033 (Chorus-Ensemble): Each mode has a 20 Hz–2 kHz high-pass option that reduces low-frequency modulation. Chorus/Ensemble Width 0% is mono, 100% equal mid/side chorus level, and 200% doubles sides relative to middle. Vibrato instead provides channel Offset and sine-to-triangle Shape. | Live 12 local manual §§28.8, printed pp.552–553; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Do not substitute a whole-output high-pass for frequency-selective modulation, or reuse unrelated device Width laws. Follow-up case M7-A7A-033. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Chorus-Ensemble: feedback and dry mix capabilities
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-034 (Chorus-Ensemble): Feedback returns each output to its input; inversion changes loop polarity. Feedback Invert and Dry/Wet are disabled in Vibrato mode. Warmth adds distortion/filtering; Output affects processed signal. | Live 12 local manual §§28.8, printed pp.553–554; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Disable controls without losing automation references; the text explicitly disables inversion, not necessarily every feedback control. Follow-up case M7-A7A-034. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Compressor: ratio, knee and makeup rules
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-035 (Compressor): Ratio 1 gives no compression; 3:1 turns 3 dB above-threshold input growth into 1 dB output growth. The guide’s knee example spans −30 to −10 dB for threshold −20 and knee 10 dB. Makeup compensates threshold/ratio changes automatically. | Live 12 local manual §§28.9, printed pp.555–556; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Keep the documented knee convention as a measurable transfer curve rather than substituting a generic half-width definition. Follow-up case M7-A7A-035. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Compressor: views and detector modes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-036 (Compressor): Collapsed, Transfer Curve and Activity views expose different controls; Lin/Log is hidden when collapsed. Peak follows short peaks, RMS is less sensitive to them, and Expand boosts above-threshold growth. Log releases heavily compressed peaks faster than lightly compressed material. | Live 12 local manual §§28.9, printed pp.556–558; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Display mode must not reset hidden detector settings. Do not infer exact RMS window or release curve from qualitative descriptions. Follow-up case M7-A7A-036. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Compressor: attack release and lookahead are separate
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-037 (Compressor): Attack controls time to full compression; Release returns toward normal gain, while Auto Release depends on input audio. Lookahead offers 0, 1 or 10 ms by delaying input. | Live 12 local manual §§28.9, printed pp.557–558; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0203 d4: actual lookahead delay must be reported separately from envelope response and retained when bypassed under ADI’s policy. Follow-up case M7-A7A-037. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Compressor: external detector disables automatic makeup
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-038 (Compressor): External sidechain chooses an internal routing point; sidechain Gain affects detection only. Its Dry/Wet blends external and original trigger signals. Automatic Makeup is unavailable with external sidechain. Detector EQ can process internal or external detection. | Live 12 local manual §§28.9.1, printed pp.559; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §2: detector selection changes parameter capability but must not change source-track gain; distinguish detector mix from output Dry/Wet. Follow-up case M7-A7A-038. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Compressor: sidechain audition is an output override
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-039 (Compressor): The headphone control auditions only sidechain input and bypasses the compressor’s normal output; without audition, sidechain audio acts only as a trigger. | Live 12 local manual §§28.9.1, printed pp.559; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Treat audition as an explicit temporary monitoring route, not as detector audio leaking through the effect. Follow-up case M7-A7A-039. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Corpus: resonator model changes valid parameters
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-040 (Corpus): Seven resonator models expose different controls. Pipe/Tube do not use Quality, Material, Bright, Inharm, Hit or listening positions; Radius replaces Material. Opening belongs only to Pipe, Ratio to Membrane/Plate. Quality reduces calculated overtones from High toward Eco. | Live 12 local manual §§28.10.1, printed pp.561–562; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only physical-model capability matrix; parameter hiding must not imply deletion from automation/state. Follow-up case M7-A7A-040. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Corpus: decay geometry and stereo resonator mix
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-041 (Corpus): Larger Pipe/Tube Radius increases decay and high-frequency sustain and can change fundamental pitch. Width 0% mixes both resonators equally to both channels; 100% assigns one per channel. Spread raises one resonator while lowering the other, reversing direction when negative. | Live 12 local manual §§28.10.1, printed pp.561–562; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Do not model Radius as a pure timbre parameter or Width as an arbitrary post-effect stereo widener. Follow-up case M7-A7A-041. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Corpus: LFO timing and filter scope
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-042 (Corpus): Corpus uses one frequency-modulating LFO per stereo channel. Sync exposes Offset; Spin is available only in Hz mode. Noise waveforms ignore Phase/Spin. A switchable band-pass processes the resonated signal with center frequency and bandwidth controls. | Live 12 local manual §§28.10.2,28.10.3, printed pp.563–564; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Separate oscillator relationship from post-resonator filtering; unsupported controls retain clear state semantics. Follow-up case M7-A7A-042. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Corpus: dry/wet controls excitation rather than killing tails
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-043 (Corpus): Lowering Dry/Wet stops new input entering processing but does not cut existing resonances. Bleed adds unprocessed signal to the resonated path and is unavailable for Pipe/Tube. An internal limiter activates at high levels with an LED. | Live 12 local manual §§28.10.4, printed pp.565; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Tail-aware suspension must use resonator activity rather than Dry/Wet alone; Bleed is distinct from the main dry path. Follow-up case M7-A7A-043. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Corpus: MIDI frequency priority and note-off damping
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-044 (Corpus): MIDI sidechain can control Frequency and Off Decay separately. Frequency uses Last or Lowest held-note priority with transpose, cents and pitch-bend range. Off Decay 0% ignores Note Off; 100% mutes resonance immediately regardless of Decay. | Live 12 local manual §§28.10.5, printed pp.565–566; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §4/6: source notes, tuning priority and damping ownership are distinct; this audio effect still requires MIDI routing and note lifetime handling. Follow-up case M7-A7A-044. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Delay: time linking preserves independent offsets
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-045 (Delay): Sync counts sixteenths; Time spans 1 ms–5 s. Signed Offset shortens or extends the chosen subdivision. Stereo Link couples delay-time changes but leaves each channel’s Offset independent. | Live 12 local manual §§28.11, printed pp.566–567; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Persist link state separately from values; linked controls do not imply every neighboring parameter is shared. Follow-up case M7-A7A-045. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Delay: feedback freeze and filter placement
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-046 (Delay): Normal feedback loops are independent per channel. Freeze cycles the current buffer and ignores new input until released. A switchable band-pass precedes the delay signal; its X-Y display edits center frequency and bandwidth. | Live 12 local manual §§28.11, printed pp.567; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Frozen audio buffer, new-input gating and persistent parameters have different lifetimes; no buffer serialization guarantee is stated. Follow-up case M7-A7A-046. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Delay: time-change smoothing has audible semantics
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-047 (Delay): Repitch is the documented default and changes pitch when delay time changes. Fade crossfades old/new times; Jump switches immediately and can click. Delay/filter LFO modulation interacts with the chosen smoothing mode. | Live 12 local manual §§28.11, printed pp.568; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Treat smoothing mode as sound state with migration/version significance, not an implementation optimization. Follow-up case M7-A7A-047. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Delay: modulation and quality options
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-048 (Delay): Delay offers Hz/time/synced/triplet/dotted/sixteenth LFO modes and seven waveforms with Morph. Hi-Quality improves interpolation in Repitch/Fade and adds tape-style delay-time smoothing to Repitch. Equal-Loudness changes the output Dry/Wet law from linear. | Live 12 local manual §§28.11,28.11.1, printed pp.568–569; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Quality changes can alter the sound of automation, while mix-law state affects gain matching; preserve both in presets and comparisons. Follow-up case M7-A7A-048. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Drum Buss: fixed compressor precedes drive distortion
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-049 (Drum Buss): Trim reduces input before processing. Comp applies a fixed fast-attack/medium-release/moderate-ratio compressor before distortion. Soft uses waveshaping, Medium limiting, Hard clipping plus bass boost; Drive acts before distortion. | Live 12 local manual §§28.12, printed pp.570; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only stage-order contract; the qualitative compressor description does not establish numerical timings or ratio. Follow-up case M7-A7A-049. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Drum Buss: transient control is not a simple attack gain
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-050 (Drum Buss): Crunch adds sine-shaped distortion to mid/high frequencies; Damp low-passes unwanted post-distortion highs. Transients acts above 100 Hz: positive values add attack and sustain, while negative values still add attack but reduce sustain. | Live 12 local manual §§28.12.0.1, printed pp.571; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Do not map negative Transients to attack reduction; verify the frequency split and interaction with distortion stages. Follow-up case M7-A7A-050. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Drum Buss: boom and decay share low-frequency material
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-051 (Drum Buss): Boom controls a resonant low-frequency enhancer; Force To Note moves its frequency to the nearest MIDI note. Decay affects post-drive/distortion lows even at Boom 0%, and affects both incoming and enhanced signals above zero. Boom Audition solos the enhancer result. | Live 12 local manual §§28.12.0.2, printed pp.571; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. A zero enhancement amount does not bypass every low-end operation; audition and quantized tuning require explicit state. Follow-up case M7-A7A-051. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Dynamic Tube: bias modulation is level-dependent distortion
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-052 (Dynamic Tube): Models A/B/C differ in distortion onset: A can remain clean at low Bias below a threshold; C distorts continuously. Signed Envelope modulates Bias; negative values reduce distortion for louder input, positive values increase it. Attack/Release have no effect at Envelope 0. | Live 12 local manual §§28.13, printed pp.572; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. The follower modulates bias rather than output gain; inactive envelope timing must remain available for later reactivation. Follow-up case M7-A7A-052. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Dynamic Tube: tone, output and quality are separate stages
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-053 (Dynamic Tube): Drive sets tube input, Tone redistributes distortion across frequency regions, and Output adjusts final level. Context-menu Hi-Quality reduces aliasing, especially at high frequencies, with additional CPU cost. | Live 12 local manual §§28.13, printed pp.572–573; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Quality mode is persistent sound state; the manual supplies no exact oversampling factor or latency. Follow-up case M7-A7A-053. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Echo: channel topology and linked timing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-054 (Echo): Stereo, Ping Pong and Mid/Side modes select channel topology; Mid/Side relabels Left/Right delay controls. Stereo Link couples time, Sync and Sync Mode but not Offset. Input gain precedes optional D distortion; feedback polarity can be inverted. | Live 12 local manual §§28.14, printed pp.573–574; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Channel topology must not rename stored channel identities ambiguously; offsets remain independent when linked. Follow-up case M7-A7A-054. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Echo: editable visualization and modulation blend
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-055 (Echo): The tunnel display edits delay times and includes fixed eighth-note reference dots. Separate HP/LP filters have resonance controls. Env Mix 0% uses LFO modulation only and 100% envelope only; Modulation ×4 multiplies delay modulation depth. | Live 12 local manual §§28.14.1,28.14.2, printed pp.574–575; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Separate display reference timing from actual delay subdivision and keep modulation blend distinct from audio Dry/Wet. Follow-up case M7-A7A-055. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Echo: gate and ducking occupy different signal roles
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-056 (Echo): Gate suppresses below-threshold input before Echo processing. Ducking reduces the wet signal while input exceeds its threshold. Each has a release control. Noise adds generated noise; Wobble irregularly modulates delay time. | Live 12 local manual §§28.14.3, printed pp.576; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Input gating must not be confused with wet-output ducking; generated noise affects tail/suspension policy. Follow-up case M7-A7A-056. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Echo: time transitions, suspension and reverb location
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-057 (Echo): Repitch changes pitch during time changes; disabling it crossfades delay times. Echo suspends no sooner than eight seconds after input silence, except it does not suspend when both Noise and Gate are enabled. Reverb may be pre-delay, post-delay or inside feedback. | Live 12 local manual §§28.14.3,28.14.4, printed pp.576–577; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. FEATURES §6: suspension depends on internal generators and routing, not only a silent input; routing location changes feedback/tail behavior. Follow-up case M7-A7A-057. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Echo: wet stereo width and output mix law
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-058 (Echo): Stereo 0% makes the wet result mono and values above 100% widen it. Output changes processed gain. The Dry/Wet parameter’s context menu selects Equal-Loudness, whose documented 50/50 result is similarly loud for most signals. | Live 12 local manual §§28.14.4, printed pp.576–577; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Keep wet-only width, output trim and mix law independent; perceived-loudness wording is not an exact gain formula. Follow-up case M7-A7A-058. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### EQ Eight: separate channel curves and edit ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-059 (EQ Eight): Stereo applies one curve to both channels; L/R and M/S retain two independent curves. Both are displayed but only the channel selected by Edit is editable. Up to eight filters per channel can be enabled individually; unused bands can be disabled to save CPU. | Live 12 local manual §§28.15, printed pp.577; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. ADR-0204 d1: this reference does not replace ADI-Q. Channel edit focus and active DSP bands are separate from parameter identity. Follow-up case M7-A7A-059. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### EQ Eight: filter type changes drag interpretation
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-060 (EQ Eight): Responses include 12/48 dB low/high cuts, shelves, peak and notch. Horizontal dragging changes frequency; vertical dragging changes gain except cut/notch types where it changes Q. Alt/Option-drag changes Q; enclosed multi-band selections move together and accept arrow keys. | Live 12 local manual §§28.15, printed pp.577–578; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Parity-7.4/ADR-0124: multi-band edits require target-stable grouped transactions and type-specific controls. Follow-up case M7-A7A-060. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### EQ Eight: adaptive Q, scale and band audition
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-061 (EQ Eight): Adaptive Q increases Q as boost/cut grows. Scale changes gains only for gain-capable bands, excluding cuts/notches. With Audition enabled, holding a filter point solos that band’s effect. Analyze displays output spectrum and is on by default in the description. | Live 12 local manual §§28.15, printed pp.578; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Distinguish gain scaling, curve adaptation and temporary monitoring; analyzer activity is presentation rather than a different EQ preset. Follow-up case M7-A7A-061. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### EQ Eight: expanded display and oversampling
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-062 (EQ Eight): The title-bar expand control moves EQ’s display between the chain and main window, exposing all eight filter controls in Device View. Context-menu Oversampling processes internally at twice the current sample rate. | Live 12 local manual §§28.15,28.15.0.1, printed pp.578–579; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. ADR-0203 d4/ADR-0207 d2: distinguish sample-rate oversampling from float precision and presentation size; measure any algorithm latency instead of assuming none. Follow-up case M7-A7A-062. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### EQ Three: band gain and crossover are separate
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-063 (EQ Three): Each band spans −∞ to +6 dB and has its own enable switch. Signal-presence LEDs use a documented −24 dB threshold and remain responsive for disabled bands. FreqLo/FreqHi define crossovers; a 24/48 dB switch changes slope. | Live 12 local manual §§28.16, printed pp.579–580; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only DJ-style band-kill behavior; detector indication must survive audio muting without implying the band is audible. Follow-up case M7-A7A-063. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### EQ Three: unity gain does not imply transparency
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-064 (EQ Three): The guide warns that EQ Three, especially its 48 dB mode, colors the input even with all gains at 0 dB; 24 dB mode is more linear and the steeper mode uses more CPU. | Live 12 local manual §§28.16, printed pp.580; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0207 d2: numerical precision cannot turn a deliberately colored filter cascade into a transparent bypass; do not use its flat controls as a host null-test reference. Follow-up case M7-A7A-064. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Erosion: noise and sine share a modulated short delay
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-065 (Erosion): Erosion modulates a short delay using sine and filtered noise. Noise Blend 0% is sine only and 100% noise only. Filter Width is disabled and ineffective at 0%; Stereo Width moves the modulation source from mono to stereo. | Live 12 local manual §§28.17, printed pp.580–581; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Do not substitute bit-depth reduction for this degradation mechanism; modulation-source width is not necessarily output stereo width. Follow-up case M7-A7A-065. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Erosion: parameter gestures and explicit legacy migration
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-066 (Erosion): The X-Y display edits Freq/Amount, with Alt/Option changing vertical movement to noise Filter Width; it shows input spectrum. Sets created before 12.4 load the previous device version as Erosion Legacy. | Live 12 local manual §§28.17, printed pp.580–581; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §6: serialize device algorithm version separately from the modern panel; old projects must not silently acquire the new response. Follow-up case M7-A7A-066. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### External Audio Effect: hardware send return and level ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-067 (External Audio Effect): Audio To/From choose enabled hardware outputs/inputs, each with Configure access, gain and resettable peak indication. Invert changes returning wet polarity; Dry/Wet blends the round trip with dry audio. | Live 12 local manual §§28.18, printed pp.581–582; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §2/6: model separate send and return ports/gains, driver configuration and unavailable-port state; this refines existing host integration research. Follow-up case M7-A7A-067. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### External Audio Effect: latency units preserve different invariants
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-068 (External Audio Effect): Hardware Latency is manually entered in samples or milliseconds. Sample mode preserves sample count across sample-rate changes; millisecond mode preserves time. Turning global Delay Compensation off disables the slider. | Live 12 local manual §§28.18, printed pp.582; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0203 d4/FEATURES §6: preserve the chosen unit and invariant instead of repeatedly converting rounded values; round-trip latency cannot be inferred solely from driver buffer size. Follow-up case M7-A7A-068. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Filter Delay: three filtered feedback lines use different inputs
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-069 (Filter Delay): Three independently enabled lines take left, left+right and right input respectively; Pan can redirect each output. Each line’s linked high/low-pass filter precedes delay and also filters feedback. | Live 12 local manual §§28.19, printed pp.583; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Represent input selection and output pan separately; the center line’s summing law and disabled-line tail policy are not specified. Follow-up case M7-A7A-069. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Filter Delay: time fields and dry level are not a single mix knob
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-070 (Filter Delay): Sync uses sixteenth divisions plus percentage offset; free timing uses milliseconds. Each line has feedback and output level up to +6 dB. A separate Dry control sets unprocessed level, with minimum recommended for return use. | Live 12 local manual §§28.19, printed pp.583; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Use independent wet-line and dry gains rather than a normalized Dry/Wet assumption; high feedback can self-oscillate. Follow-up case M7-A7A-070. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Gate: threshold return and envelope state machine
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-071 (Gate): Return sets opening/closing hysteresis; Flip passes below-threshold signals instead. Attack opens the gate; after a falling signal, Hold expires before Release closes it. Floor ranges from full mute at −∞ to no attenuation at 0 dB. | Live 12 local manual §§28.20, printed pp.584–585; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only hysteresis and envelope contract; closed state is not synonymous with silence, and Flip/Return interaction needs measurement. Follow-up case M7-A7A-071. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Gate: lookahead and detector routing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-072 (Gate): Lookahead offers 0, 1 or 10 ms. External sidechain Gain and Dry/Wet change detection, not source-track mix; detector EQ can filter internal or external input. Headphone audition replaces normal output and shows sidechain input in green. | Live 12 local manual §§28.20, printed pp.584–586; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0203 d4: report lookahead latency separately from attack; detector audition and visual source must change together. Follow-up case M7-A7A-072. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Glue Compressor: ratio-dependent knee and bounded reduction
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-073 (Glue Compressor): Knee is not user-adjustable and sharpens as Ratio rises. Range caps compression; Range 0 dB gives none. Dry/Wet controls parallel mix separately. Auto Release combines a slower base response with a faster transient response. | Live 12 local manual §§28.21, printed pp.586–587; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Do not substitute wet/dry blending for a gain-reduction cap or assume a single release time constant. Follow-up case M7-A7A-073. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Glue Compressor: soft clipping is not a strict output ceiling
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-074 (Glue Compressor): Soft Clip adds a fixed colored waveshaper; the stated maximum is −0.5 dB without the documented oversampling exception. At 2× Oversampling, peaks may exceed 0 dB even with Soft Clip. The Clip LED is red for overload and yellow for active clipping. | Live 12 local manual §§28.21,28.21.1.1, printed pp.587–588; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0207 d2: distinguish algorithm oversampling from engine precision; never treat Glue Soft Clip as a strict final true-peak limiter. Follow-up case M7-A7A-074. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Glue Compressor: external detector and listen path
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-075 (Glue Compressor): External sidechain selects an internal route and mixes with the original detector through its own Dry/Wet. Detector EQ can act on internal or external input. Sidechain Gain does not raise the source track; headphone audition substitutes detector audio for effect output. | Live 12 local manual §§28.21.1, printed pp.588; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §2: keep Glue’s manual Makeup behavior distinct from Compressor’s automatic Makeup restriction; the manual does not state the same restriction here. Follow-up case M7-A7A-075. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Grain Delay: grain timing and randomness interact
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-076 (Grain Delay): Frequency controls grain size/duration; Spray randomizes delay time, while Pitch and Random Pitch change grain pitch. The audible result of pitch and spray depends on Frequency. Feedback returns the output to the delay input. | Live 12 local manual §§28.22, printed pp.589–590; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Reference-only granular behavior; a generic delay plus unrelated pitch randomizer is not an established equivalent. Follow-up case M7-A7A-076. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Grain Delay: assignable X-Y axes and timing modes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-077 (Grain Delay): Parameters can be assigned to the X/Y controller; Delay Time can use X and Dry/Wet can use Y. Sync uses sixteenths plus fractional percentage timing; free delay uses milliseconds. | Live 12 local manual §§28.22, printed pp.589–590; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Axis assignment is configuration distinct from parameter values; a drag may edit two different targets after remapping. Follow-up case M7-A7A-077. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: input send and independent predelay feedback memories
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-078 (Hybrid Reverb): Input Send changes only the reverb feed, leaving dry audio unaffected. Predelay supports time or beat synchronization; each mode keeps an independent feedback setting. Processing proceeds through input, reverb routing, EQ and output. | Live 12 local manual §§28.23.1,28.23.2, printed pp.591; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Keep wet-send gain separate from input trim and store both timing-mode feedback values even when one is hidden. Follow-up case M7-A7A-078. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: engine routing and ambiguous serial Blend wording
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-079 (Hybrid Reverb): Parallel blends independent engines; Algorithm/Convolution use only one engine and make Blend ineffective. Serial feeds convolution into algorithmic reverb. The passage calls Blend both the amount fed into the algorithm and an output blend, so its exact serial gain law is unresolved. | Live 12 local manual §§28.23.2, printed pp.591; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Do not encode an assumed serial topology from one sentence; retain mode-specific inactive-control state and document this source ambiguity. Follow-up case M7-A7A-079. | Unknown — documentary inconsistency; installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: IR browsing crosses categories and imports folders
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-080 (Hybrid Reverb): IR next/previous arrows continue across category boundaries. Dropping an audio file into the convolution display adds it and other audio files from its folder to User. Removing and adding Hybrid Reverb anew clears that imported User list. | Live 12 local manual §§28.23.3, printed pp.592; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. FEATURES §8/9: distinguish a browsable per-instance list from selected IR ownership and persistent media; the passage does not establish project embedding or delete/Undo behavior. Follow-up case M7-A7A-080. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: IR shaping and algorithm tail controls differ
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-081 (Hybrid Reverb): Convolution Attack/Decay shape the IR envelope and Size adjusts relative IR size, with waveform feedback. Algorithmic Decay approximates T60, Size changes virtual room size and Delay adds another predelay; the algorithmic engine uses no samples. | Live 12 local manual §§28.23.3,28.23.4, printed pp.592–593; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Separate media edits from algorithm parameters and distinguish input predelay from algorithm-only Delay; exact IR resampling and normalization are unspecified. Follow-up case M7-A7A-081. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: Freeze and Freeze In have separate input rules
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-082 (Hybrid Reverb): Freeze blocks new algorithmic input and sets infinite decay. Freeze In permits input into the frozen reverberation, accumulating sound. All five algorithms expose Decay, Size, Delay and these freeze controls. | Live 12 local manual §§28.23.4, printed pp.593; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. FEATURES §6: infinite tails and accumulating input must prevent inappropriate silence suspension; serialization of the active tail is not documented. Follow-up case M7-A7A-082. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: Dark Hall and Quartz expose different decay structure
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-083 (Hybrid Reverb): Dark Hall has Bass crossover/multiplier for low-tail decay, Shape and modulation; small Size with long Decay can resonate metallically. Quartz adds low-frequency damping, Diffusion and Distance; larger Distance spreads reflections farther apart. | Live 12 local manual §§28.23.4.1,28.23.4.2, printed pp.593–594; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Treat algorithm-specific controls as distinct semantics rather than renaming one universal knob set; formulas and parameter limits remain unmeasured. Follow-up case M7-A7A-083. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: Shimmer pitches the feedback path
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-084 (Hybrid Reverb): Shimmer uses pitch shifting inside diffuse-delay feedback. Shimmer 0% removes pitch shifting; increasing it mixes more pitched feedback. Pitch is in semitones, lower Diffusion approaches delay behavior, and Size sets echo spacing for percussive input. | Live 12 local manual §§28.23.4.3, printed pp.594–595; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Pitch shifting must be evaluated over repeated circulation, not only as a post-reverb transposer. Follow-up case M7-A7A-084. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: Tides modulation and Prism band decay
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-085 (Hybrid Reverb): Tides modulates output spectrum with a multiband filter; Wave morphs noise→sine→square at 0/50/100%, with stereo Phase and beat-based Rate. Prism uses separate low/high decay multipliers around a crossover. | Live 12 local manual §§28.23.4.4,28.23.4.5, printed pp.595; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. Separate stochastic spectrum modulation from two-band decay scaling; this reference does not specify proprietary algorithms. Follow-up case M7-A7A-085. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Hybrid Reverb: EQ relocation and final spatial processing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-086 (Hybrid Reverb): Four-band EQ defaults after both engines; Pre Algo moves it before the algorithm for any routing. Edge bands can be shelves or 6–96 dB/octave cuts. Stereo affects wet width; Bass Mono sums output below 180 Hz; Vintage emulates reduced rates/bit depths. | Live 12 local manual §§28.23.5,28.23.6, printed pp.596; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6/§10.5; ADR-0187 d2: behavior reference for the DSP-source mapping, not a claim that Surge already achieves parity or a new priority. EQ placement affects excitation and feedback behavior, while Bass Mono and wet width are distinct; do not assume Bass Mono affects only wet from the general output wording. Follow-up case M7-A7A-086. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Limiter: Maximize changes control roles
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-087 (Limiter): Without Maximize, Input Gain precedes limiting and Ceiling sets maximum output. Maximize replaces Ceiling with Threshold, amplifies by its inverse, and changes Input Gain to an Output control setting the target level. | Live 12 local manual §§28.24, printed pp.597–598; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0204 d1: this reference does not replace the decided ADI-L design. Persist mode and controls without misapplying prior input gain as output gain. Follow-up case M7-A7A-087. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Limiter: channel linking and routing must be tested together
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-088 (Limiter): Link 100% shares gain reduction whenever either channel requires it; 0% processes independently. Routing selects L/R or encodes M/S before limiting and decodes afterward. The guide says M/S adds latency, while its L/R description also calls channels independent. | Live 12 local manual §§28.24, printed pp.597–598; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Do not read the L/R sentence as overriding the Link control. Measure the combined routing/link matrix and actual output ceiling in M/S. Follow-up case M7-A7A-088. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Limiter: lookahead and adaptive release affect state and latency
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-089 (Limiter): Lookahead offers 1.5, 3 or 6 ms and increases latency. Auto Release adapts to input and disables manual Release. Short lookahead can add distortion, especially on bass. | Live 12 local manual §§28.24, printed pp.598; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0203 d4: retain required lookahead latency through bypass and update compensation when it changes; disabled manual release may still need persistence. Follow-up case M7-A7A-089. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Limiter: sample ceiling, soft clipping and true peak differ
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-090 (Limiter): Standard is the documented default ceiling mode. Soft Clip colors near-ceiling transients and has an activity LED; True Peak prevents inter-sample peaks. Later effects or master gain can invalidate the limiter’s output guarantee. | Live 12 local manual §§28.24, printed pp.598; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. Treat sample-peak, reconstructed-peak and downstream gain checks separately; no exact oversampling method or installed default is established. Follow-up case M7-A7A-090. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Looper: recording and quantization depend on transport state
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-091 (Looper): Record overwrites the buffer; Overdub adds same-length layers, Play reads without recording, and Stop halts playback. While Live runs, controls obey Looper Quantization; while stopped they act immediately regardless of that setting. | Live 12 local manual §§28.25, printed pp.599; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §8/10: separate buffer mutations from command scheduling and global playback; runtime buffer persistence is not established by the manual. Follow-up case M7-A7A-091. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Looper: local undo and clear have explicit boundaries
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-092 (Looper): Looper Undo removes all overdubs since the latest entry into Overdub, preserving original and earlier passes; Redo restores them. Clear during Overdub with transport running retains tempo/length, while Clear in other modes resets both. | Live 12 local manual §§28.25, printed pp.599–600; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. ADR-0003/FEATURES §10: device-local overdub history must be distinguished from project parameter/graph undo; a Clear gesture changes different state by context. Follow-up case M7-A7A-092. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Looper: multi-purpose button is a context-sensitive gesture machine
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-093 (Looper): One click records an empty buffer, switches recording/overdub/stopped to Play, or switches Play to Overdub. Double-click stops Play/Overdub. Holding two seconds in Play invokes Undo/Redo; holding two seconds while stopped clears. | Live 12 local manual §§28.25, printed pp.600; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §9: measure whether the first click acts immediately and how later double-click/hold actions supersede it; preserve observed mouse/MIDI footswitch timing. Follow-up case M7-A7A-093. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Looper: tempo authority and fixed record length are separate
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-094 (Looper): Tempo Control can be independent, follow song tempo, or set then follow it. With Live stopped, unspecified x-bars length estimates tempo after capture; fixed bars fits recording to that length. While running, fixed length auto-switches to Play or Overdub. | Live 12 local manual §§28.25, printed pp.600–601; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §1/8: record duration, estimated tempo and global tempo ownership need distinct state; the manual gives no tempo-estimator algorithm. Follow-up case M7-A7A-094. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Looper: global transport control and buffer resizing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-095 (Looper): Song Control offers no control, Start Song, or Start & Stop Song. Starting Live via Looper adjusts Link peers’ phrase position. ×2 duplicates buffer content; ÷2 retains the currently playing half and discards the other. | Live 12 local manual §§28.25, printed pp.601; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §1/9; ADR-0185: separate local loop state from global/peer transport effects; halving is destructive and playback-position dependent. Follow-up case M7-A7A-095. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Looper: import export speed and reverse preserve different histories
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-096 (Looper): Drag me exports the buffer as audio to browser/track; new clips default to Re-Pitch. Dropping audio replaces the buffer. Speed changes pitch; octave buttons and Reverse obey Quantization. Overdubs recorded while reversed play forward then reverse when Reverse is disabled. | Live 12 local manual §§28.25, printed pp.601–602; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §3/8: exported media, original buffer and overdub orientation need explicit ownership; do not treat reverse as a destructive file rewrite. Follow-up case M7-A7A-096. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Looper: overdub feedback and monitoring are mode-dependent
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-097 (Looper): Feedback affects existing material only during Overdub and changes take effect next repetition; 100% retains level, 50% halves it each pass. Input→Output offers Always, Never, Rec/OVR or Rec/OVR/Stop, with distinct monitoring for Play and stopped states. | Live 12 local manual §§28.25, printed pp.602; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §2/8: input monitoring, stored audio attenuation and playback gain are separate paths; playing should not decay the loop. Follow-up case M7-A7A-097. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Looper: insert route exposes an external feedback path
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-098 (Looper): Insert-Looper is available as both source and destination for another audio track. With that track monitored In and Looper overdubbing, its device chain processes each loop pass before the signal returns to Looper. | Live 12 local manual §§28.25.1, printed pp.602; exact source revision unconfirmed against installed Live Suite 12.4 | FEATURES §6: reference-only comparison; no new implementation priority is assigned by this research. FEATURES §2/6: this is an intentional graph feedback route with a distinct insert endpoint, not merely track output recirculation. Follow-up case M7-A7A-098. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Multiband Dynamics: two thresholds per band and band topology
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-099 (Multiband Dynamics): Each of up to three bands supports independent Above/Below thresholds for compression or expansion. Disabling both High and Low topology switches makes Mid full-range. A band activator bypasses its dynamics and gain; Solo mutes other bands. | Live 12 local manual §§28.26,28.26.1,28.26.2, printed pp.603–605; exact source revision unconfirmed against installed Live Suite 12.4 | ADR-0187 d3: OTT-style dynamics reference; no new individual device priority. Distinguish removing a crossover band from bypassing processing within a retained band; generic mute/enable fields cannot stand for both. Follow-up case M7-A7A-099. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Multiband Dynamics: display edits ratios with grouped modifiers
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-100 (Multiband Dynamics): Dragging threshold edges horizontally sets level; dragging block interiors vertically sets ratio via loudness. Ctrl/Cmd applies the same region edit to all bands; Alt/Option couples Above/Below for one band; Shift is fine adjustment. Double-click resets a region’s ratio. | Live 12 local manual §§28.26.2, printed pp.605; exact source revision unconfirmed against installed Live Suite 12.4 | ADR-0187 d3: OTT-style dynamics reference; no new individual device priority. Parity-7.4/ADR-0124: grouped threshold/ratio gestures require a stable affected-parameter set and one coherent undo boundary. Follow-up case M7-A7A-100. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Multiband Dynamics: above and below reverse envelope threshold direction
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-101 (Multiband Dynamics): Above Attack begins on rising past its threshold and Release on falling below; Below Attack begins on falling below and Release on rising above. Soft Knee smooths onset. RMS is less responsive to brief peaks than Peak. | Live 12 local manual §§28.26.2, printed pp.605–606; exact source revision unconfirmed against installed Live Suite 12.4 | ADR-0187 d3: OTT-style dynamics reference; no new individual device priority. Do not reuse above-threshold envelope triggers unchanged for upward compression or downward expansion. Follow-up case M7-A7A-101. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Multiband Dynamics: global time and amount are not wet/dry
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-102 (Multiband Dynamics): Input/Output gains bracket each band’s dynamics. Global Time scales all attack/release durations proportionally. Amount 0% makes each effective ratio 1; global Output adjusts final gain. | Live 12 local manual §§28.26.2, printed pp.605–606; exact source revision unconfirmed against installed Live Suite 12.4 | ADR-0187 d3: OTT-style dynamics reference; no new individual device priority. A ratio-neutral Amount does not necessarily bypass crossovers or gains. ADR-0207 d2 governs summing precision independently of this behavior. Follow-up case M7-A7A-102. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+#### Multiband Dynamics: external detector mix and monitor output
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7A-103 (Multiband Dynamics): Sidechain chooses an internal route and blends external/original detector inputs through Dry/Wet; Gain affects detection without changing the source mix. Headphone listening replaces the processed output with the sidechain. | Live 12 local manual §§28.26.3, printed pp.606; exact source revision unconfirmed against installed Live Suite 12.4 | ADR-0187 d3: OTT-style dynamics reference; no new individual device priority. FEATURES §2: maintain routing, detector blend and audition separately. The cited text does not define whether sidechain crossovers exactly match audio crossovers. Follow-up case M7-A7A-103. | Supported hypothesis — documented; exact manual revision unconfirmed and installed Live 12.4 behavior unmeasured |
+
+### Native audio effects: Overdrive through Vocoder; Max audio effects
+
+#### Filter and distortion stage order
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-001 (Overdrive): The band-pass precedes distortion. Its X-Y pad maps horizontal motion to frequency-band position and vertical motion to bandwidth; the two values are also editable in the fields below. Tone is post-distortion EQ. | Live 12 local manual §§28.27, pp.608; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0187 d3: Keep pre-emphasis separate from post-processing and expose identical parameters through gestures and typed controls. Follow-up case M7-A7B-001. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Zero Drive and Dynamics are not bypass contracts
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-002 (Overdrive): Drive at 0% still produces distortion. Lower Dynamics increases internal compression and makeup gain as distortion rises; higher Dynamics reduces compression. Dynamics is therefore not described as an output-gain control alone. | Live 12 local manual §§28.27, pp.608; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0187 d3: Test the approved envelope/VCA interpretation against the reference; do not infer its detector, time constants or gain law. Follow-up case M7-A7B-002. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Mix and implementation uncertainty
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-003 (Overdrive): Dry/Wet blends dry and processed sound, with 100% recommended on returns. The chapter supplies no numeric filter slopes, waveshaper equation, compression times, exact latency or quality-mode contract. | Live 12 local manual §§28.27, pp.608; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0187 d3: ADI implementation sources in ADR-0187 are candidates, not evidence of sonic parity; distinguish documented topology from unresolved DSP. Follow-up case M7-A7B-003. | Unknown / not tested — documentary ambiguity or missing contract; installed Live 12.4 behavior unmeasured |
+
+#### Gain and adaptive EQ follow different stages
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-004 (Pedal): Gain zero is not distortion-free. Output controls overall level; the three-band EQ follows distortion and increases resonance as boost increases. Pedal type selects Overdrive, Distortion or Fuzz rather than changing the EQ controls into separate devices. | Live 12 local manual §§28.28, pp.609; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Represent nonlinear drive, output trim, type and post-EQ independently; preserve state across type changes. Follow-up case M7-A7B-004. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Band frequency and Sub contracts
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-005 (Pedal): Bass is a peak EQ centered at 100 Hz. Mid selects 500 Hz, 1 kHz or 2 kHz, with a narrower range at the low setting and broader at the high setting. Treble shelves at 3.3 kHz. Sub enables a low shelf boosting below 250 Hz. | Live 12 local manual §§28.28, pp.609–610; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Frequency choices and adaptive bandwidth are separate dimensions; Sub is additional to Bass rather than its replacement. Follow-up case M7-A7B-005. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Quality mode and upstream dynamics
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-006 (Pedal): The title context menu exposes Hi-Quality, described as reducing aliasing with extra CPU. The tips explicitly distinguish a compressor before Pedal from resonant/high-gain filtering before it; input conditioning changes the distortion response. Dry/Wet is separately adjustable. | Live 12 local manual §§28.28,28.28.1.1, pp.610–611; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not assign an oversampling factor or zero-latency guarantee from the quality label; upstream-chain order is behaviorally significant. Follow-up case M7-A7B-006. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Three modes and display direction
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-007 (Phaser-Flanger): Phaser visualizes notch count and position. Flanger visual movement to the right means less delay; Doubler is bipolar and rightward movement means more delay. Time controls the delay lines in the two latter modes. | Live 12 local manual §§28.29, pp.612–613; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Mode-specific visualization is a contract, not a reusable axis label with one meaning. Follow-up case M7-A7B-007. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Phaser controls and routing Blend
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-008 (Phaser-Flanger): Notches changes the number of all-pass filters; Center sets notch center frequency; Spread changes notch spacing through filter Q. Blend moves modulation routing from Center at 0.0 to Spread at 1.0. | Live 12 local manual §§28.29, pp.612–613; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Keep topology, static spectral layout and modulation destination distinct; the text does not specify filter equations. Follow-up case M7-A7B-008. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### LFO shape and stereo dependencies
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-009 (Phaser-Flanger): The main LFO offers ten shapes and defaults to Triangle. Triangle Analog changes shape and amplitude with rate; Triangle 8/16 are stepped. Phase changes left/right phase, while Spin detunes rates. Duty Cycle skews time from −100% to +100%, but does not affect Random or Random S&H. | Live 12 local manual §§28.29, pp.613–614; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Expose unavailable/ineffective controls by waveform; preserve rate-dependent shape behavior without inferring its filter. Follow-up case M7-A7B-009. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Second LFO and envelope are independent sources
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-010 (Phaser-Flanger): LFO2 is always triangular and has its own free/synced rate. LFO2 Mix goes from main LFO only at 0% to LFO2 only at 100%; Amount affects both. The separate envelope requires Env Fol on and nonzero amount; negative amount inverts it, with Attack/Release response controls. | Live 12 local manual §§28.29, pp.614–615; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: A source-mix control differs from parallel depth controls; envelope response must remain separate from the two oscillators. Follow-up case M7-A7B-010. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Feedback tails and protected low frequencies
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-011 (Phaser-Flanger): Feedback returns each channel to its input and can invert polarity. Doubler feedback can remain audible after playback stops. Safe Bass reduces the effect below a 5–3000 Hz cutoff. Warmth adds distortion/filtering; Output controls processed gain and Dry/Wet blends it. | Live 12 local manual §§28.29, pp.614–615; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Test tail handling independently of transport; Safe Bass is not documented as a dry-path mute. Quality/latency/smoothing remain measurements. Follow-up case M7-A7B-011. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Rate is a degraded sampling clock, not the host engine rate
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-012 (Redux): Rate selects the downsampling rate. Without filters the added inharmonic spectrum depends on both source frequencies and that rate; lower Rate increases imaging. The chapter does not say that lowering Rate changes Live’s audio-engine sample rate. | Live 12 local manual §§28.30,28.30.1, pp.615–616; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3: Keep effect rate separate from device/engine rate and render conversion; evaluate the approved replacement sources against these controls. Follow-up case M7-A7B-012. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Jitter affects clock and stereo result
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-013 (Redux): Jitter adds noise to the downsampling clock, introducing randomness and additional stereo width. Enabling the pre-filter reduces the processed bandwidth and, when Jitter is used, reduces that width. | Live 12 local manual §§28.30.1, pp.616; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3: ADR-0187 already identifies missing jitter in candidate code; this establishes a clock-level behavior target, not a particular random distribution. Follow-up case M7-A7B-013. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Pre and Post filters occupy distinct positions
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-014 (Redux): Pre filters before downsampling; Post is a low-pass after downsampling that reduces imaging. Post-Filter Octave is relative to half the current Rate frequency, with positive/negative octaves above/below that reference. | Live 12 local manual §§28.30.1, pp.616; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3: Link post cutoff to the effect clock in parameter semantics, while retaining independent enable states. Follow-up case M7-A7B-014. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Bits and Shape have different amplitude roles
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-015 (Redux): Bits specifies output quantization depth; lowering it reduces dynamic range and increases distortion/noise. Shape changes the quantizer characteristic: higher settings give finer resolution to small amplitudes, so distortion depends on input dynamics. | Live 12 local manual §§28.30.2, pp.616; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3: A linear bit-depth quantizer alone does not satisfy Shape; preserve input amplitude as part of each parity fixture. Follow-up case M7-A7B-015. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### DC Shift precedes quantization
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-016 (Redux): DC Shift introduces an amplitude offset before quantization, with especially pronounced changes at low Bits. It can increase level as well as distortion. Dry/Wet blends the result; 100% is recommended for return use. | Live 12 local manual §§28.30.2, pp.616; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3: Do not substitute an output offset for a pre-quantizer offset or assume level compensation is automatic. Follow-up case M7-A7B-016. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Unspecified bitcrusher boundaries need direct evidence
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-017 (Redux): This chapter does not supply exact Rate/Bits/Shape/Jitter ranges or defaults, rounding/saturation rules, Jitter distribution/seed, left/right clock coupling, filter slopes, smoothing, alias limits or latency. Those cannot be obtained from control names. | Live 12 local manual §§28.30.1,28.30.2, pp.616; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3: Keep undocumented values out of the implementation specification until measured; ADI’s explicit repeatability decisions for MIDI randomness do not automatically govern Redux. Follow-up case M7-A7B-017. | Unknown / not tested — documentary ambiguity or missing contract; installed Live 12.4 behavior unmeasured |
+
+#### Processor ordering across reduction types is unresolved
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-018 (Redux): The text places Pre/Post relative to downsampling and DC Shift relative to quantization, but does not explicitly order downsampling against bit reduction or locate Dry/Wet relative to every internal stage. | Live 12 local manual §§28.30.1,28.30.2, pp.616; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3: Do not turn the left/right panel layout into a serial DSP graph claim. Follow-up case M7-A7B-018. | Unknown / not tested — documentary ambiguity or missing contract; installed Live 12.4 behavior unmeasured |
+
+#### Parallel voices and channel assignment
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-019 (Resonators): A selectable low-pass/band-pass/high-pass/notch input filter feeds five parallel resonators. Resonator I receives both channels; II and IV use left, III and V right. Each has enable and gain; disabling I does not disable the others, and disabled resonators are documented as not consuming CPU. | Live 12 local manual §§28.31, pp.617–618; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Separate shared pitch reference from audio enablement and preserve the asymmetric channel matrix. Follow-up case M7-A7B-019. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Pitch units depend on scale and tuning
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-020 (Resonators): Normally I sets C−1…C5 and II–V transpose relative to it by ±24 semitones. Scale awareness anchors I to the active clip scale in octave 2 and changes relative limits to ±21 degrees. A tuning system uses its note indices; all resonators have fine tuning. | Live 12 local manual §§28.31, pp.617–618; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: ADI uses track key_map per ADR-0169/0178; label this deliberate scope mapping rather than calling Live clip scope identical. Follow-up case M7-A7B-020. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Decay depends on pitch unless Const is enabled
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-021 (Resonators): Decay normally gives lower notes longer sustain than high notes. Const makes decay independent of pitch. Color affects brightness; modes A and B select different resonation behavior without a documented transfer equation. | Live 12 local manual §§28.31, pp.617; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Distinguish a decay control value from the resulting measured tail and preserve Const across mode changes. Follow-up case M7-A7B-021. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Wet-only width and gain behavior
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-022 (Resonators): Width affects wet sound only and at 0% mixes resonators II–V to mono. Gain changes resonated level unless Dry/Wet is 0%; Dry/Wet blends the processed and original signals. | Live 12 local manual §§28.31, pp.618; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not widen the dry signal or conflate Resonator I’s center role with II–V summing. Follow-up case M7-A7B-022. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Input conditioning and early-reflection controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-023 (Reverb): Low/high cuts precede reverberation; X controls center frequency and Y bandwidth, with each filter bypassable. Spin modulates early reflections. Shape changes reflection decay and the onset/overlap of diffusion: lower values produce more overlap, higher values less. | Live 12 local manual §§28.32.1,28.32.2, pp.619–620; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Input filters, early reflections and late-tail formation need separate controls and response fixtures. Follow-up case M7-A7B-023. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Late decay shaping differs from input filtering
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-024 (Reverb): Diffusion-network shelves create frequency-dependent decay and can be disabled. Diffusion and Scale alter tail density/coarseness, particularly at small Size. Chorus separately modulates the diffusion and has Amount, Rate and an enable switch. | Live 12 local manual §§28.32.3,28.32.4, pp.620–621; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: A static post-EQ cannot be assumed equivalent to frequency-dependent decay; keep modulation and network density independent. Follow-up case M7-A7B-024. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Size smoothing and decay reference
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-025 (Reverb): Predelay is milliseconds before the first reflection; 1–25 ms is offered as a natural-sound example, not a range. Decay is time to −60 dB. Smooth=None changes diffusion delay times immediately; Fast/Slow transition over unspecified periods. | Live 12 local manual §§28.32.5, pp.621; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not mistake example values for parameter bounds or assign time constants to named smoothing modes. Follow-up case M7-A7B-025. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Freeze has independent input and spectral controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-026 (Reverb): Freeze sustains diffuse reverberation almost indefinitely. Flat bypasses decay shelves only while frozen; without Flat, attenuated bands continue losing energy. Cut prevents new input joining the frozen response; with Cut off, incoming sound adds to it. | Live 12 local manual §§28.32.5, pp.621; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Frozen content, ongoing excitation and damping are separate state dimensions; tail suspension must not assume transport stop empties the device. Follow-up case M7-A7B-026. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Output width, density and component balances
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-027 (Reverb): Stereo’s minimum produces mono and its maximum 120° is described as independent reverberant channels. Density trades CPU for richness, with Sparse lightest. Reflect and Diffuse independently scale early/late components before the overall Dry/Wet balance. | Live 12 local manual §§28.32.5,28.32.6, pp.621–622; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Quality setting and channel width are not precision or latency specifications; ADR-0207 d2 remains ADI’s engine precision policy. Follow-up case M7-A7B-027. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Input emphasis and compensation surround nonlinear stages
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-028 (Roar): Drive precedes gain stages. Positive Tone boosts highs and reduces lows; negative Tone reverses that balance, with Tone Frequency choosing the shelf frequency. Color Compensation applies a mirrored Tone filter after distortion stages. | Live 12 local manual §§28.33.1, pp.623; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Pre/post emphasis can preserve broad balance while changing distortion; do not collapse the pair into an output EQ. Follow-up case M7-A7B-028. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Serial and parallel Blend describe different paths
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-029 (Roar): Roar offers Single, Serial, Parallel, Multi Band, Mid Side, Feedback and Delay routings. Serial Blend moves between Stage 1 and Stage 1 followed by Stage 2; Parallel Blend moves between independent Stage 1 and Stage 2 paths. Single and Multi Band have no such Blend. | Live 12 local manual §§28.33.1, pp.623–624; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Routing selection changes the graph and Blend meaning; hidden controls should not acquire a guessed normalized meaning. Follow-up case M7-A7B-029. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Band and stereo routing partition the input
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-030 (Roar): Multi Band creates three separately processed bands with Low/High crossover controls. Mid Side separately processes mono and stereo components. Each routing exposes its own stages, with independently enabled Stage toggles. | Live 12 local manual §§28.33.1,28.33.2, pp.624; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Separate graph routing from per-stage bypass; no crossover slope or exact mid/side normalization is specified. Follow-up case M7-A7B-030. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Feedback and Delay routing differ at the first repetition
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-031 (Roar): Feedback routing processes input and feedback independently. Delay routing sends delayed Stage 1 output to Stage 2 without initial feedback-gain scaling; Stage 2 then feeds itself through feedback gain, allowing a single distorted repeat or longer tails. | Live 12 local manual §§28.33.1, pp.624; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: A zero feedback value must not be assumed to remove the first repeat in Delay mode. Follow-up case M7-A7B-031. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Shaper Amount, Bias and Level are different operations
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-032 (Roar): Amount can be edited by dragging the curve display. Bias offsets the signal to create asymmetric distortion and at extremes can silence it. Individual shapers can be switched off; Level compensates level changes. The chooser lists twelve distinct shaper curves. | Live 12 local manual §§28.33.2, pp.624–625; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Preserve gesture targeting, stage/shaper enable distinctions and parameter state; curve names are not equations. Follow-up case M7-A7B-032. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Several shaper choices have specific operational distinctions
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-033 (Roar): Bit Crusher Amount reduces quantization bits and increases companding. Half Wave Rectifier is asymmetric; Full Wave Rectifier raises the result an octave. Noise Injection adds stereo noise before smooth distortion. Shards continually changes stereo curve slopes. Other named curves remain qualitative descriptions. | Live 12 local manual §§28.33.2, pp.625; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Treat stochastic and time-varying curves differently from static transfer functions; do not replace them with a single waveshaper equation. Follow-up case M7-A7B-033. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Filter position and available controls depend on type
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-034 (Roar): Pre places the filter before shaping, leaving generated harmonics unfiltered by that stage. Nine types include LP, BP, HP, Notch, Peak, Morph, Comb, Resampling and Dispersion. Resampling has no Resonance; Peak adds gain and Morph adds shape. Dispersion shifts frequency components in time without changing level. | Live 12 local manual §§28.33.2, pp.625–626; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: A filter type change alters parameter eligibility and response category; amplitude-only tests miss all-pass-like dispersion. Follow-up case M7-A7B-034. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### LFO and noise modulation include explicit smoothing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-035 (Roar): Two LFOs offer sine, triangle, square, up and down with Free/Synced/Triplet/Dotted/Sixteenth timing, Morph and Smooth. Noise provides Simplex, Wander, S&H and Brown with free/synced timing and smoothing; S&H changes held values at Rate intervals, while Brown is described as filtered white noise. | Live 12 local manual §§28.33.3, pp.627; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Source types and timing modes need distinct state; the chapter does not specify random seeds or interpolation formulas. Follow-up case M7-A7B-035. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Envelope Hold and mapping UI have distinct semantics
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-036 (Roar): The follower has Attack/Release, sensitivity Threshold/Gain and a Frequency/Width detection band. Hold completes attack before release begins. While Matrix is open, clicking a parameter selects a target; vertical cell drag sets mapping. Global amount scales mappings and X erases all assignments. | Live 12 local manual §§28.33.3, pp.627–628; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Keep detector state, target selection, depth editing and destructive clear as separate operations; preserve a bounded undo gesture. Follow-up case M7-A7B-036. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Feedback loop includes compression, filtering and an input-dependent gate
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-037 (Roar): Feedback supports Time, Synced, Triplet, Dotted and Note timing. A compressor in the loop temporarily attenuates feedback on loud signals. Invert reverses feedback polarity. Gate fades feedback after input stops; with Gate off the manual describes indefinite continuation. A band-pass conditions feedback. | Live 12 local manual §§28.33.4, pp.629; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Tail and feedback state must be considered separately from ordinary feedforward processing; indefinite is a documented description, not a universal stability proof. Follow-up case M7-A7B-037. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Wet output clipping and external follower input
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-038 (Roar): Output Gain is followed by hard clipping and then Dry/Wet. Compression Amount also affects feedback; its detector can high-pass. External SC selects Post FX/Post Mixer audio, with 0–100% internal/external blend. SC Gain changes follower drive, not the source track’s volume; Listen bypasses processed output. | Live 12 local manual §§28.33.5,28.33.6, pp.629–631; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Keep gain staging, detector-only audio and audition routing distinct; clipping before the final mix does not prove a final-output ceiling. Follow-up case M7-A7B-038. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### MIDI feedback sidechain disables controls according to the text
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-039 (Roar): Input audio normally drives the follower and feedback pitch. MIDI > FB Note selects a MIDI source and Pre FX/Post FX tap for feedback pitch in Note mode. The chapter says Feedback Mode and Feedback Amount become inactive with MIDI sidechain, without explaining the replacement amount law or note priority. | Live 12 local manual §§28.33.6, pp.630; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Preserve this exact documented control dependency as a measurement question; do not silently assume only the pitch control is disabled. Follow-up case M7-A7B-039. | Unknown / not tested — documentary ambiguity or missing contract; installed Live 12.4 behavior unmeasured |
+
+#### Curve selection and Bass Shaper threshold
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-040 (Saturator): Eight curves include Analog Clip, Soft Sine, Bass Shaper, Medium/Hard Curve, Sinoid Fold, Digital Clip and Waveshaper. Digital and Analog Clip are linear below clipping; Sinoid Fold folds at larger inputs. Bass Shaper has a 0 to −50 dB threshold, moving from harder to softer clipping as threshold falls. | Live 12 local manual §§28.34, pp.631–632; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Curve identity and threshold must survive presets/automation; labels do not establish exact transfer equations. Follow-up case M7-A7B-040. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Color is a pre/inverse-post filter pair
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-041 (Saturator): Enabling Color applies an EQ before shaping and its inverse after. Amt Lo changes low-frequency saturation; Amt Hi, Frequency and Width define a second band. The expanded graph exposes draggable handles for the same parameters. | Live 12 local manual §§28.34, pp.632–633; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Preserve paired filter topology and parameter/UI identity; distinguish coloration from a conventional output-EQ edit. Follow-up case M7-A7B-041. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Post Clip and output ceiling require mix-aware tests
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-042 (Saturator): Post Clip offers Soft Clip or Hard Clip and the text says output will not exceed the Output level when selected. Soft Clip adds Analog Clip at the output. Dry/Wet is also present, but this passage does not explicitly reconcile its ceiling claim with dry contribution. | Live 12 local manual §§28.34, pp.632–633; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Avoid promising a final mixed-output ceiling before measuring stage order; output trim, post clip and mix are separate controls. Follow-up case M7-A7B-042. | Unknown / not tested — documentary ambiguity or missing contract; installed Live 12.4 behavior unmeasured |
+
+#### Waveshaper has its own six-control layer
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-043 (Saturator): Only Waveshaper activates the expanded Drive, Curve, Depth, Linear, Damp and Period controls. Its Drive scales their influence from none at 0% to full at 100%, distinct from input Drive. Depth adds a sine component; Period changes ripple density; Damp flattens the waveform center. | Live 12 local manual §§28.34.0.1, pp.633–634; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Disambiguate identically named Drive controls and inactive algorithm-specific parameters; no inferred mathematical kernel. Follow-up case M7-A7B-043. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Quality and input DC filter are contextual options
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-044 (Saturator): The title context menu enables Hi-Quality to reduce aliasing at extra CPU cost and Pre-DC Filter to remove offsets at the input. The chapter gives neither oversampling factor nor numeric delay for the quality mode. | Live 12 local manual §§28.34.0.2, pp.634; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Expose these as persistent state separate from the main panel; ADI precision follows ADR-0207, not the Hi-Quality label. Follow-up case M7-A7B-044. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Mode changes parameter units and available distortion
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-045 (Shifter): Pitch mode uses semitones for Coarse and cents for Fine. Freq shifts by Hertz; Ring adds and subtracts the selected Hertz frequency. Drive distortion and its amount are available only in Ring mode. | Live 12 local manual §§28.35.1,28.35.4, pp.635,638; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Represent mode-specific units and control eligibility explicitly; do not normalize the three modes to one undocumented shift law. Follow-up case M7-A7B-045. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Wide changes right-channel Spread sign
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-046 (Shifter): Wide inverts Spread polarity on the right channel while retaining the left direction, producing opposed shifts. Wide has no effect when Spread is zero. | Live 12 local manual §§28.35.1, pp.635; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Keep stereo spread separate from the main shift and test zero as a functional boundary. Follow-up case M7-A7B-046. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Pitch window is an exposed quality/timing tradeoff without numeric guarantee
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-047 (Shifter): Window is specific to Pitch mode. The manual recommends longer windows for low frequencies and shorter windows for high frequencies, but supplies no exact algorithm, window bounds/default or latency equation. ADR-0203’s approximately 46 ms note is not verified by this chapter. | Live 12 local manual §§28.35.1, pp.635; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Measure reference delay before satisfying ADR-0203 d4; avoid adding the former Pd adapter delay or adopting an unmeasured fixed latency. Follow-up case M7-A7B-047. | Unknown / not tested — documentary ambiguity or missing contract; installed Live 12.4 behavior unmeasured |
+
+#### Delay timing and feedback Tone are distinct
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-048 (Shifter): Delay is separately enabled, with free timing described in Hertz or synchronized beat divisions. Feedback returns delay output to delay input. Tone cuts high frequencies in the feedback path, rather than being described as a general dry-output EQ. | Live 12 local manual §§28.35.1, pp.635; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Keep delay enable/rate, feedback decay and feedback spectral filtering distinct; preserve the source’s Hertz wording until UI measurement. Follow-up case M7-A7B-048. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### LFO stereo controls depend on waveform
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-049 (Shifter): Ten LFO shapes include sine, triangular variants, saws, rectangle, Random and Random S&H. The eight nonrandom shapes allow Phase or Spin; Random uses Phase and Random S&H uses Width. Phase 180° opposes left/right cycles; Spin detunes their rates. | Live 12 local manual §§28.35.2, pp.636; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Build a control-availability matrix instead of exposing every stereo mode for every waveform. Follow-up case M7-A7B-049. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Random width and synchronized LFO offset
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-050 (Shifter): Random S&H Width is identical across channels at 0% and described as opposite peaks/valleys at 100%. Synced rates expose Offset for the cycle start; Duty Cycle and Amount shape timing and depth. Rate can use Hertz or musical subdivisions. | Live 12 local manual §§28.35.2, pp.636; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Do not equate maximum Width with two independent random streams; synchronized phase and free-rate evolution need separate tests. Follow-up case M7-A7B-050. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Follower depth changes units with shift mode
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-051 (Shifter): Env Fol enables amplitude-following modulation; Attack responds to rising input and Release to falling input. Its Amount is in semitones for Pitch and Hertz for Freq/Ring. | Live 12 local manual §§28.35.3, pp.637; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Store detector response and musical/frequency depth separately; detector type and time-constant definitions are not specified here. Follow-up case M7-A7B-051. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### MIDI sidechain replaces internal pitch control
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-052 (Shifter): The expanded sidechain selects Internal pitch from Coarse/Fine or MIDI pitch from an external MIDI source. MIDI mode adds Glide in milliseconds and pitch-bend range 0–24 semitones. The text does not define chord priority, note-off retention or MPE behavior. | Live 12 local manual §§28.35.5, pp.638; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Keep MIDI addressing and pitch state explicit; do not copy Spectral Resonator’s documented polyphony into Shifter. Follow-up case M7-A7B-052. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Dry mixture is part of phasing and tremolo behavior
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-053 (Shifter): The tips describe small Freq shifts (about 2 Hz or less) mixed with dry sound for phasing, strongest at 50% mix. Low Ring frequencies (about 20 Hz or below) create tremolo; Wide plus small Spread adds stereo motion. These are examples, not control-range limits. | Live 12 local manual §§28.35.6.2,28.35.6.3, pp.639; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0187 d3 / ADR-0203 d4: Use documented perceptual cases as probes while keeping mix law and low-frequency boundaries empirical. Follow-up case M7-A7B-053. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### MIDI voice mode changes gate and Glide availability
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-054 (Spectral Resonator): Internal mode fixes one pitch. MIDI chooses a track and pre/post MIDI-effects tap; Mono/Poly changes voice behavior, with Poly offering 2–16 voices. MIDI Gate is always active in Poly; Mono may resonate without held notes when Gate is off. Glide is Mono-only; bend range is 0–24 semitones and MPE is supported. | Live 12 local manual §§28.36.1, pp.639–640; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not treat this effect as an ordinary monophonic pitch shifter; voice count, gate and input-note lifecycle are separate contracts. Follow-up case M7-A7B-054. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Scale, tuning and input Shift use separate pitch domains
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-055 (Spectral Resonator): Internal Freq can show Hertz/pitch, or scale-degree shift with Current Scale; no active scale falls back to chromatic. MIDI transposition is ±48 semitones or ±28 degrees. Tuning systems use note indices. Separate Shift transposes incoming spectrum by ±48 semitones, not the resonator spectrum. | Live 12 local manual §§28.36.2, pp.641; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Apply ADR-0178’s ADI key-map ownership deliberately; distinguish excitation pitch, resonance pitch and display representation. Follow-up case M7-A7B-055. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Harmonic spacing, damping and quantization interact
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-056 (Spectral Resonator): Stretch compresses spacing below 0% and expands it above; 100% produces only odd harmonics. HF/LF damping bands follow current resonance pitch. Harmonics controls total count, shared evenly between polyphonic voices; higher counts increase CPU. Quantize snaps harmonics to the active scale/tuning, or chromatic pitches if neither exists. | Live 12 local manual §§28.36.2,28.36.4, pp.641,643; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Separate a shared harmonic budget from per-voice allocation; do not infer rounding when the count is indivisible by polyphony. Follow-up case M7-A7B-056. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Modulation polarity is mode-specific
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-057 (Spectral Resonator): None disables modulation; Chorus uses triangle modulation and at Mod Rate zero changes amplitudes only. Wander uses random sawtooths per partial. Granular uses randomly timed exponential amplitude envelopes, with Rate affecting density. Pitch modulation is bipolar except Granular’s positive-only envelopes despite a positive displayed amount. | Live 12 local manual §§28.36.3, pp.642; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Parameter sign display does not fully describe modulation polarity; density and periodic frequency are not interchangeable rate semantics. Follow-up case M7-A7B-057. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Limiter, unison and modulation voice independence
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-058 (Spectral Resonator): Input Send controls processed level and a built-in limiter has an activity LED. Unison creates detuned partial copies with a separate detune amount. Wander and Granular modulate each unison voice independently; Dry/Wet controls the blend. | Live 12 local manual §§28.36.5, pp.643; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Limiter visibility does not establish a true-peak ceiling, latency or algorithm; distinguish polyphony from unison copies. Follow-up case M7-A7B-058. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Spectrogram displays two differently colored signals
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-059 (Spectral Resonator): The hideable spectrogram uses yellow for dry and blue for wet, with Dry/Wet affecting their visibility. It hosts Harmonics and Quantize controls; hiding the visualization is not documented as disabling processing. | Live 12 local manual §§28.36.4,28.36.5, pp.643; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Separate view visibility, signal processing and parameter state; retain keyboard/API access when a graph is hidden. Follow-up case M7-A7B-059. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Routing order is reversible despite introductory simplification
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-060 (Spectral Time): The introduction and Delay subsection describe Freezer feeding Delay, but Global Controls explicitly offers Frz > Dly and Dly > Frz to reverse order. Both sections have independent enable switches. A fixed Freezer→Delay-only specification would omit the later control. | Live 12 local manual §§28.37,28.37.2,28.37.4, pp.644,646–647; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Represent ordered stages and enable states separately; treat the introductory order as incomplete rather than overriding the later explicit chooser. Follow-up case M7-A7B-060. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Dry-path latency and analysis resolution are separate choices
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-061 (Spectral Time): Zero Dry Signal Latency in the context menu removes dry-path delay instead of aligning dry with processed output. Resolution trades processing accuracy/fidelity for latency; lower values reduce overall delay. The chapter does not quantify resolution values or compensation samples. | Live 12 local manual §§28.37,28.37.3, pp.645,647; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: ADR-0203 d4: report intrinsic latency and dry alignment separately; zero dry delay does not mean zero wet delay. Follow-up case M7-A7B-061. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Freeze enable and trigger selection are distinct
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-062 (Spectral Time): Manual freezes on the Freeze button and exposes Fade In/Out milliseconds. Retrigger can use detected Onsets or timed Sync intervals, but Freeze must still be enabled. Onsets Sensitivity is greatest at 100% and lowest at 0%; Sync Interval can use milliseconds or beat values. | Live 12 local manual §§28.37.1, pp.645; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not equate selecting Retrigger with starting capture; expose sensitivity and time units only in their relevant modes. Follow-up case M7-A7B-062. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Freeze fade shapes differ and X-Fade units are unclear
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-063 (Spectral Time): Crossfade fades the new capture in while old capture/dry fades out. Envelope uses separate millisecond Fade In/Out and allows up to eight concurrent freezes. The Crossfade paragraph describes X-Fade both as milliseconds and as a percentage of Sync Interval, leaving its displayed unit/relationship ambiguous. | Live 12 local manual §§28.37.1, pp.645–646; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Preserve the distinct overlap models; do not select one X-Fade unit by guess or infer how a ninth envelope is retired. Follow-up case M7-A7B-063. | Unknown / not tested — documentary ambiguity or missing contract; installed Live 12.4 behavior unmeasured |
+
+#### Delay timing modes and cumulative frequency shifting
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-064 (Spectral Time): Delay Time can use milliseconds, note divisions or counts of straight/triplet/dotted sixteenths. Feedback controls repeats; Shift moves each successive repeat by the specified frequency amount. The Delay section’s Dry/Wet affects only that section, independently of global mix. | Live 12 local manual §§28.37.2,28.37.4, pp.646–647; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Keep nested mix controls and accumulated frequency movement in the graph contract; mode labels do not establish shift interpolation. Follow-up case M7-A7B-064. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Tilt, Spray, Mask and Stereo operate on frequency-dependent delays
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-065 (Spectral Time): Positive Tilt delays highs more than lows; negative Tilt reverses that. Spray randomizes delay times by frequency within a range. Positive Mask confines those effects to highs and negative Mask to lows. Stereo controls their width, rather than overall device width. | Live 12 local manual §§28.37.2, pp.646; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Preserve frequency-dependent timing and scoped stereo behavior; randomization distribution and band boundaries remain unspecified. Follow-up case M7-A7B-065. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Frozen-buffer persistence and transitions are not specified
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-066 (Spectral Time): The chapter describes sustained frozen sound and overlapping captures but not whether spectral buffers survive save/reopen, bypass, track freeze, sample-rate changes or device removal/undo, nor the smoothing law for order and resolution changes. | Live 12 local manual §§28.37.1,28.37.3,28.37.4, pp.645–647; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Treat signal memory and serialized parameter state separately under FEATURES §6/9; infinite sustain is not proof of persisted audio. Follow-up case M7-A7B-066. | Unknown / not tested — documentary ambiguity or missing contract; installed Live 12.4 behavior unmeasured |
+
+#### Analysis does not alter audio and peaks have reset rules
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-067 (Spectrum): Spectrum is documented as signal-transparent. Peak levels remain until song restart; Max displays accumulated maxima and clicking the display resets them. Channel chooses left, right or both; Block chooses samples analyzed per measurement. | Live 12 local manual §§28.38, pp.648; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Treat meters as observations, not processing; a reset gesture and transport restart need separate view-state handling. Follow-up case M7-A7B-067. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Resolution, refresh and averaging are separate controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-068 (Spectrum): Larger Block improves resolution at greater CPU cost; Refresh changes analysis frequency. Avg specifies how many sample blocks are averaged per display update. Graph switches interpolated lines versus discrete bins; logarithmic and semitone scales share spacing but change labels. | Live 12 local manual §§28.38, pp.648–649; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not equate GUI refresh cadence with FFT resolution or engine block size; expose meaningful scales and label units. Follow-up case M7-A7B-068. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Automatic range disables manual zoom and limits
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-069 (Spectrum): Hover reports amplitude, frequency and note. In Range mode vertical drag on amplitude labels scrolls and horizontal drag zooms; sliders set min/max. Auto adapts to level and disables manual sliders/zoom. The title toggle or display double-click moves the larger view into Live’s main window. | Live 12 local manual §§28.38, pp.649; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Model display expansion and scale mode independently of the analyzed signal and avoid mislabeling main-window expansion as an OS-detached panel. Follow-up case M7-A7B-069. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Monophonic analysis and two visual modes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-070 (Tuner): Tuner is signal-transparent and designed for clean monophonic input; polyphony/noise/rich harmonics can mislead it. Classic and Histogram views share green/red accuracy feedback. Classic Target positions sharp right and flat left; Strobe rotates right for sharp and faster as error grows. | Live 12 local manual §§28.39,28.39.1,28.39.2, pp.649–651; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Do not interpret estimated pitch as a polyphonic detector or infer numeric acceptance tolerance from colors. Follow-up case M7-A7B-070. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Histogram navigation and display units
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-071 (Tuner): Histogram plots pitch over time with note-center reference bars; sharp is above and flat below. Vertical drag scrolls, horizontal drag zooms; Auto centers incoming pitch. Hertz/Cents selects absolute frequency versus error from target in both main views. | Live 12 local manual §§28.39.2,28.39.3, pp.651–652; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Separate pitch history, viewport, target reference and numeric unit; a mode change should not imply retuning source audio. Follow-up case M7-A7B-071. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Reference pitch and spelling are independently configurable
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-072 (Tuner): Reference defaults to 440 Hz and ranges from 410 to 480 Hz. The display context menu selects sharps, flats or both. The chapter does not establish that loading a Set tuning system retargets Tuner’s twelve-tone note calculation. | Live 12 local manual §§28.39.4,28.39.5, pp.653–654; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Keep naming preferences and reference calibration separate from ADR-0178’s tuning model; alternative-tuning support remains a measurement question. Follow-up case M7-A7B-072. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Channel selection constrains stereo controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-073 (Utility): Independent left/right Phase buttons invert channels. Choosing Left copies left to both outputs and discards right; selecting Left or Right disables Width and Mid/Side. Width zero produces mono and values above 100% widen the signal. | Live 12 local manual §§28.40, pp.655; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0203 d8: Utility parity is explicit; channel routing, polarity and width are separate controls, and no sub-sample phase nudge belongs here. Follow-up case M7-A7B-073. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Width and Mid/Side share a contextual control position
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-074 (Utility): The Width context menu switches to Mid/Side. At 100M audio sums to mono; at 100S only side remains with opposite left/right phase. Between center and either extreme it emphasizes the corresponding component. A separate Mono switch converts stereo input to mono. | Live 12 local manual §§28.40, pp.655; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0203 d8: Do not infer gain normalization or exact order of Mono, channel mode and Mid/Side solely from labels. Follow-up case M7-A7B-074. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Bass Mono has a bounded crossover and audition
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-075 (Utility): Bass Mono converts low frequencies to mono, with cutoff adjustable from 50 to 500 Hz. Audition outputs only that low-frequency region for choosing the cutoff. | Live 12 local manual §§28.40, pp.656; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0203 d8: Keep low-band summing and audition state separate from full-spectrum Mono and output mute. Follow-up case M7-A7B-075. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Gain keyboard stepping changes below −18 dB
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-076 (Utility): Gain spans −infinity to +35 dB. Up/down keys use 1 dB steps between −18 and +35 dB, but smoothly accelerate below −18 dB toward −infinity. Balance pans the stereo signal; the manual does not specify its pan law. | Live 12 local manual §§28.40, pp.656; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0203 d8: UI step behavior is part of parity and differs from a constant dB increment; preserve the intentional infinite-mute endpoint. Follow-up case M7-A7B-076. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Mute placement preserves downstream tails and DC precedes later nonlinear effects
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-077 (Utility): Utility Mute cuts incoming signal at its position in the chain, allowing downstream delay/reverb tails to continue. Track mute is described at the chain end. DC removes offsets and very low frequencies; its audible consequence may emerge when later nonlinear processors act on the signal. | Live 12 local manual §§28.40, pp.656; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0169 d4 / ADR-0203 d8: ADR-0203 d4 bypass/latency policy is distinct from Utility’s Mute operation; preserve graph position and downstream-tail processing. Follow-up case M7-A7B-077. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Tracing and Pinch use related controls with different effects
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-078 (Vinyl Distortion): Tracing adds even harmonics; Pinch adds odd harmonics, typically opposed between stereo channels. X-Y vertical motion changes drive, horizontal frequency, and Alt/Option-vertical motion bandwidth. Global Drive affects both models; Soft/Hard choose different distortion modes and a switch makes Pinch mono/stereo. | Live 12 local manual §§28.41, pp.657; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Preserve modifier gestures and stage/global-drive distinctions; harmonic descriptions do not define a complete model. Follow-up case M7-A7B-078. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Crackle density differs from noise level
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-079 (Vinyl Distortion): The additional Crackle generator has independent Density and Volume controls: density changes event population while volume scales the noise. Its seed, distribution, free-running behavior and response to silent input are not specified. | Live 12 local manual §§28.41, pp.657–658; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Generated noise requires lifecycle and reproducibility tests separate from input-dependent distortion; no new random-policy decision is implied. Follow-up case M7-A7B-079. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Carrier and modulator routing roles must stay distinct
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-080 (Vocoder): Vocoder sits on the modulator track. Carrier options are Noise, External, Modulator and Pitch Tracking. External selects internal routing points; Modulator reuses the input as carrier. Noise’s X-Y horizontal axis lowers sample rate toward the left, while downward motion lowers density. | Live 12 local manual §§28.42, pp.658–659; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8: ADR-0203 specifies one Live-style Vocoder; distinguish audible carrier audio from the detector/modulator path. Follow-up case M7-A7B-080. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Pitch Tracking holds its last clear estimate
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-081 (Vocoder): Pitch Tracking uses a monophonic oscillator with High/Low tracking bounds, saw or three pulse shapes and coarse Pitch. It updates frequency only for a clear detected pitch and holds the last one otherwise; parameter changes or resets such as grouping the track may change the sound unexpectedly. | Live 12 local manual §§28.42, pp.659; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8: Preserve held detector state as a runtime concern; do not assume silence clears pitch or saved parameters determine its full sound. Follow-up case M7-A7B-081. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Enhance and unvoiced detection modify different components
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-082 (Vocoder): Enhance normalizes carrier spectrum/dynamics for brightness. Unvoiced adds noise for pitchless consonants; Sensitivity 100% keeps that generator always on, while 0% uses only the main carrier. Fast/Slow changes voiced/unvoiced switching speed. | Live 12 local manual §§28.42, pp.659; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8: Carrier enhancement and detection noise need independent state, level handling and timing tests. Follow-up case M7-A7B-082. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Filterbank geometry and mode are independent
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-083 (Vocoder): Bands sets filter count and CPU cost; Range sets spectral bounds. BW controls overlap, with 100% described as most accurate. Precise gives filters equal gain/bandwidth; Retro makes higher bands narrower/louder. Clicking the level display attenuates bands, and Gate silences bands below threshold. | Live 12 local manual §§28.42, pp.659; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8: Band count, spectral range, local attenuation and detector gate must not be collapsed into one EQ curve; equations and thresholds require measurements. Follow-up case M7-A7B-083. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Depth and envelopes change detector transfer
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-084 (Vocoder): Depth zero discards the modulator amplitude envelope, 100% gives standard vocoding and 200% emphasizes its high peaks. Attack/Release set response speed; very fast times can introduce distortion. Level controls output and Formant shifts carrier-filter frequencies. | Live 12 local manual §§28.42, pp.659–660; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8: Keep envelope depth, dynamics, output trim and spectral shift independent; percentages do not specify an interpolation equation. Follow-up case M7-A7B-084. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Stereo mode changes both input channel assumptions
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-085 (Vocoder): Mono treats carrier and modulator as mono; Stereo keeps carrier stereo but modulator mono; L/R treats both as stereo. Dry/Wet blends output. The singing-synth recipe uses an external Post FX carrier and both tracks armed for live sources, with the modulator track soloed to suppress ordinary carrier output. | Live 12 local manual §§28.42,28.42.1.1, pp.660–661; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8: Test channel matrix and solo/routing dependencies rather than reusing a generic stereo-width control. Follow-up case M7-A7B-085. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Delay units include physical distance and temperature
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-086 (Align Delay): Align Delay offers milliseconds, samples and distance in meters/feet. Distance mode includes temperature with Celsius/Fahrenheit selection because acoustic travel time changes with temperature. The text gives no exact conversion formula, permitted ranges or rounding rule. | Live 12 local manual §§32.2.1, pp.810; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: Reference-only: do not relocate ADR-0203’s approved sub-sample phase tool into Utility or silently add a new priority. Follow-up case M7-A7B-086. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Link L/R makes the left channel authoritative
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-087 (Align Delay): When Link L/R is enabled, right delay is grayed out and the left setting controls both channels. The chapter does not establish whether a prior independent right value is retained when linking and later restored. | Live 12 local manual §§32.2.1, pp.810; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0203 d8; reference-only detail, no priority change: A linked UI field needs explicit source-of-truth and restoration semantics distinct from two controls coincidentally having equal values. Follow-up case M7-A7B-087. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Mapping distinguishes modulation from exclusive remote control
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-088 (Envelope Follower): Map then click assigns any automatable device/mixer parameter, up to eight targets via Multimap; Unmap removes a target. Modulation is the default and preserves manual base-value edits, with bipolar/unipolar polarity and depth. Remote Control owns the parameter and disables manual changes, using Min/Max scaling. | Live 12 local manual §§32.2.2, pp.811–812; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Base/effective separation is central to ADR-0046/0052; exclusive remote ownership is not equivalent to a modulation offset. Follow-up case M7-A7B-088. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Follower shaping and delay occur before mapping result
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-089 (Envelope Follower): Gain scales the incoming signal for envelope generation; Rise and Fall smooth attack/release. Delay offsets the envelope in free time or synchronized beat divisions. The text does not define the detector metric, smoothing equation or exact mapping update cadence. | Live 12 local manual §§32.2.2, pp.812; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Keep detector dynamics, envelope delay and per-target range/depth separate; this does not prove audio-rate modulation or sample-accurate updates. Follow-up case M7-A7B-089. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Sidechain has selectable taps and a blend
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-090 (Envelope Follower): The Audio Routing panel selects external Pre FX, Post FX or Post Mixer input, including a Rack channel. Direct and S.C. meters show internal/external levels. Sidechain Mix uses only track input at 0% and only external input at 100%. | Live 12 local manual §§32.2.2, pp.812–813; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Routing identity and detector mix differ from parameter mapping; the audio source track must not be changed by follower output scaling. Follow-up case M7-A7B-090. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Mapping ownership and eight-target limit
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-091 (LFO): LFO maps up to eight automatable device/mixer parameters. Default Modulation retains manually editable base values and offers bipolar/unipolar depth; Remote Control instead determines the value exclusively with Min/Max. Multimap reveals extra slots; Unmap removes individual targets. | Live 12 local manual §§32.2.3, pp.814–815; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Preserve common mapping semantics with Envelope Follower while keeping each source’s state distinct; multiple-source combination remains ADI’s approved policy. Follow-up case M7-A7B-091. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Waveform selection governs Shape and Steps availability
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-092 (LFO): Nine waveforms are Sine, Up, Down, Triangle, Square, Random, Bin, Stray and Glider. Shape is disabled for Random/Bin/Stray/Glider; Steps, up to 24, is disabled for Random/Bin/Square. Jitter randomizes output and Smooth softens changes, including Jitter. | Live 12 local manual §§32.2.3, pp.815; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Maintain a tested parameter-eligibility table; do not infer undocumented stochastic waveform generators from their names. Follow-up case M7-A7B-092. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Rate, depth, center and phase are separate transformations
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-093 (LFO): Rate uses Hertz or tempo divisions, with ×10 available in Hertz mode. Depth scales all mappings from none at 0% to full at 100%. Offset shifts the output center; Phase selects a 0–100% position in the cycle. | Live 12 local manual §§32.2.3, pp.815–816; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: A source-wide depth is separate from each target’s modulation amount/range; parameter clipping and ordering are unproven. Follow-up case M7-A7B-093. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Hold resumes from held value while Retrigger uses Phase
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-094 (LFO): Hold freezes the current output. Disabling Hold restarts from the previously held value. R retriggers from the position selected by Phase. The paragraph does not specify how elapsed transport time affects a synchronized oscillator during Hold. | Live 12 local manual §§32.2.3, pp.816; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Keep frozen source state and retrigger intent distinct; derive neither persisted phase nor transport restart policy from parameters alone. Follow-up case M7-A7B-094. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Breakpoint editing has explicit modifiers and snapping
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-095 (Shaper): Click creates a breakpoint; Alt/Option-drag between points curves the segment; Shift-click deletes a point. Clear removes the whole envelope and six presets replace it. Grid controls division count; Snap applies to created or moved points. A smaller scope shows generated output. | Live 12 local manual §§32.2.4, pp.817–818; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Distinguish curve-edit gestures, point deletion and complete replacement for undo; mathematical interpolation and endpoint constraints remain unspecified. Follow-up case M7-A7B-095. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Mapping retains the shared modulation/remote distinction
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-096 (Shaper): Shaper maps up to eight device/mixer targets. Default Modulation permits manual base edits with bipolar/unipolar depth; Remote Control exclusively controls values with Min/Max. Global Depth scales every mapping from 0 to 100%. | Live 12 local manual §§32.2.4, pp.817–819; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Keep source shape separate from target scaling and ownership; do not equate a drawn 0–100% envelope with the target’s physical units. Follow-up case M7-A7B-096. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Phase, Retrigger and smoothing have timing-mode dependencies
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-097 (Shaper): Jitter randomizes envelope output and Smooth softens transitions including jitter. Phase selects cycle position 0–100%; R retriggers there, but is disabled when Time Mode is Sync. Offset shifts output center. Free Rate uses Hertz and synced Rate beat divisions. | Live 12 local manual §§32.2.4, pp.818–819; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Do not copy LFO’s retrigger availability blindly; distinguish envelope phase, output offset and timing source. Follow-up case M7-A7B-097. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Loop, one-shot and manual modes change the driving signal
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7B-098 (Shaper): Loop repeats at Rate. 1-Shot triggers one envelope using the mappable T button. Manual scrubs the envelope forward/backward with its Manual control. The chapter does not define retrigger collision, end-value hold or mode-switch continuity. | Live 12 local manual §§32.2.4, pp.819; extracted local reference, exact manual revision unconfirmed against installed Live 12.4 | FEATURES §6 / ADR-0046/0052/0114: Separate trigger events from continuous phase control and leave undefined terminal-state policies as probes. Follow-up case M7-A7B-098. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+### Native and Max MIDI effects; Sampler and Simpler
+
+#### Scale awareness changes the pitch-control domain
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-001 (MIDI effects): MIDI effects with pitch controls support Use Current Scale: pitch adjustments use scale degrees rather than semitones. The chapter describes transpositions constrained to the active harmonic context. | Live 12 local manual §29, pp.662; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Use ADR-0178 degree-aware tuning context instead of interpreting every stored pitch control as a fixed semitone offset. Follow-up case M7-A7M-001. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Arpeggiator order styles depend on input order
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-002 (Arpeggiator): Style determines note sequence and has a visual pattern display with previous/next buttons. Play Order follows performed input order; Chord Trigger repeats the input notes together instead of serializing them. | Live 12 local manual §29.1, pp.663; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep held-note ordering distinct from pitch sorting and generated-event timing; every style needs its own fixture. Follow-up case M7-A7M-002. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### The three random arpeggio styles have distinct lifetimes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-003 (Arpeggiator): Random continuously changes order. Random Other avoids repeating a note until all other input notes have been used. Random Once repeats one randomized pattern until incoming MIDI changes, then creates another. | Live 12 local manual §29.1, pp.663; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Represent permutation state and its invalidation independently of the PRNG. ADR-0203 d7 keeps ordinary varying playback as default; reproducibility is an explicit addition. Follow-up case M7-A7M-003. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Rate and Gate independently determine spacing and duration
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-004 (Arpeggiator): Rate uses milliseconds or synchronized beat divisions. Gate expresses note duration as a percentage of Rate; values above 100% deliberately create overlapping notes. | Live 12 local manual §29.1, pp.663; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Schedule generated note-offs independently from the next note-on so legato does not become an accidental stuck note. Follow-up case M7-A7M-004. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Distance and Steps include the original pattern
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-005 (Arpeggiator): The original pattern plays first, followed by Steps transposed repetitions using successive Distance offsets. Positive Distance ascends and negative Distance descends; two steps at +12 semitones give original, +12 and +24 passes. | Live 12 local manual §29.1, pp.663; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Distinguish number of additional passes from total pass count; retain transposition domain in preset state. Follow-up case M7-A7M-005. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Clip scale overrides local root and scale controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-006 (Arpeggiator): Arpeggiator has local Root and Scale choosers. Enabling Use Current Scale obtains those values from the clip and disables the local choosers. | Live 12 local manual §29.1, pp.663; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep local dormant settings separate from active inherited settings, with clear disabled-control state. Follow-up case M7-A7M-006. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Hold edits a persistent note collection
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-007 (Arpeggiator): Hold keeps the pattern running after keys are released. Keeping an initial group of keys held and pressing more adds notes; playing an included note again removes it. A new key can replace the repeating held pattern after release. | Live 12 local manual §29.1, pp.663; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Model physical key state and latched collection separately; do not treat Hold as merely suppressed note-offs. Follow-up case M7-A7M-007. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Pattern Offset rotates sequence without changing its membership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-008 (Arpeggiator): Pattern Offset moves the starting position by sequence steps: offset one starts at the second note and places the former first note last. | Live 12 local manual §29.1, pp.663; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep offset separate from root transposition, input ordering and beat retrigger. Follow-up case M7-A7M-008. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Arpeggiator groove follows the shared global amount
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-009 (Arpeggiator): A Groove chooser applies swing similarly to clip grooves; its intensity follows Global Groove Amount in the Groove Pool or Control Bar. | Live 12 local manual §29.1, pp.664; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Use the shared groove resource/amount rather than a detached device-only swing parameter. Follow-up case M7-A7M-009. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Retrigger and finite Repeats create separate pattern boundaries
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-010 (Arpeggiator): Retrigger Off never restarts the pattern, Note restarts on new notes, and Beat restarts at the chosen Interval. An LED marks retriggers. Repeats defaults to infinity; finite repeat counts can create pauses before later retriggers. | Live 12 local manual §29.1, pp.664; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store pattern position, repeat budget and retrigger schedule independently. Follow-up case M7-A7M-010. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Velocity decay can retrigger with the pattern
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-011 (Arpeggiator): Velocity controls move toward Target over Decay time. A separate Retrigger switch resets this velocity slope whenever the pattern retriggers. | Live 12 local manual §29.1, pp.664; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate velocity-envelope state from note-order state, including its own retrigger enable. Follow-up case M7-A7M-011. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Fixed and assignable controls generate different MIDI message classes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-012 (CC Control): The device has fixed Mod Wheel, Pitch Bend and Pressure controls, a customizable two-state Custom A button, and twelve Custom B–M dials. Custom A targets sustain/hold CC 64 by intent but can be reassigned. | Live 12 local manual §29.2, pp.665; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep CC, pitch bend and channel pressure as typed messages; retain a two-state control independently of continuous dials. Follow-up case M7-A7M-012. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Control names, assignments and learned input are reusable state
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-013 (CC Control): Custom dials can be renamed and assigned through CC choosers. Names and assignments appear on Push and can be saved as presets. Learn uses incoming CC data to assign customizable controls; title-bar switches expose controls 1–8 or 9–16. | Live 12 local manual §29.2, pp.665–666; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Persist controller assignments and names separately from panel bank selection; integrate device parameter presentation with control surfaces. Follow-up case M7-A7M-013. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Send and automation merge require event arbitration
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-014 (CC Control): Send emits all current controller values. Values may be automated or adjusted live. Existing CC automation for the same outgoing messages is merged with the device stream. | Live 12 local manual §29.2, pp.665–666; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Specify source ordering and explicit send-all behavior rather than silently replacing another CC stream. Follow-up case M7-A7M-014. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Chord has six relative slots with duplicate assignment suppression
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-015 (Chord): Each incoming note can produce up to six additional pitches at ±36 semitones. Slot order does not affect the static chord. Assigning an already-used pitch to another Shift control deactivates the duplicate assignment; per-slot LEDs indicate generated notes. | Live 12 local manual §29.3, pp.666; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate configured slot state, activation and generated note identity; duplicate suppression must not erase source-note ownership. Follow-up case M7-A7M-015. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Chord Learn uses the first held note as the reference root
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-016 (Chord): Learn treats the first held key as the root without assigning it to a Shift slot. Later held pitches fill slots in order; more can be added while original keys remain held. Learn is explicitly switched off when finished. | Live 12 local manual §29.3, pp.666–667; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Treat learning as a bounded configuration gesture distinct from ordinary performance. Follow-up case M7-A7M-016. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Per-slot velocity scaling and chance are independent
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-017 (Chord): Each generated slot has relative Velocity from 1% to 200%, with 100% matching the incoming note, and Chance from 0% to 100%, with 100% generating every time. Both can operate together. | Live 12 local manual §29.3, pp.667; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Apply ADR-0203 d7 repeat-result addition explicitly; keep source-note velocity, slot scaling and chance outcome separately reproducible. Follow-up case M7-A7M-017. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Strum follows slot order and has optional duplicate notes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-018 (Chord): Strum sets a delay of up to 400 ms between generated chord notes: positive values start with the original then Shift 1–6; negative values reverse that order. A context option permits duplicate notes while strumming. Tension changes acceleration and Crescendo applies a velocity ramp. | Live 12 local manual §29.3, pp.667; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Represent delayed note events, slot order and source releases explicitly; do not sort a strummed chord by pitch automatically. Follow-up case M7-A7M-018. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Generated-note MPE forwarding is an explicit option
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-019 (Chord): Use Current Scale changes Shift controls to degrees. Send Per Note Events to Generated Notes enables MPE forwarding; with scale awareness, per-note pitch bends follow the clip scale to keep bent chords within that harmonic context. | Live 12 local manual §29.3, pp.667; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0054/ADR-0178: generated notes need independent IDs and a defined relationship to the source expression stream, including degree-aware bend conversion. Follow-up case M7-A7M-019. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Note-on length uses Gate multiplied by the selected time
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-020 (Note Length): With Note On trigger, Length is in milliseconds or synchronized divisions; Gate scales that duration. Gate 100% uses Length, 200% doubles it and 50% halves it. | Live 12 local manual §29.4, pp.668; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Generate note-off timestamps from explicit duration state without conflating source note release and output release. Follow-up case M7-A7M-020. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Note-off triggering delays output until source release
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-021 (Note Length): With Note Off trigger, an output note begins when the input would ordinarily end, then follows Gate and Length. Release Velocity blends source onset and release velocities; Decay Time starts reducing velocity at input Note On. | Live 12 local manual §29.4, pp.668; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Retain onset metadata until source release, including pressure-free release velocity and elapsed time. Follow-up case M7-A7M-021. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Key Scale changes output length around C3
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-022 (Note Length): In Note Off mode, positive Key Scale makes notes below C3 longer and above C3 shorter; negative values reverse that relationship. | Live 12 local manual §29.4, pp.668–669; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store key scaling independently from Gate/Length and define the reference note in the device contract. Follow-up case M7-A7M-022. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Latch uses distinct onset and release state machines
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-023 (Note Length): Onset Latch sustains output until the next Note On. Release Latch triggers after all keys or sustain pedal are released and a new Note Off arrives. Latch disables Gate/Length, and in release mode also Release Velocity, Decay Time and Key Scale. | Live 12 local manual §29.4, pp.669; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Track physical keys, sustain and latched output separately; disabled controls should retain or discard values only by a defined policy. Follow-up case M7-A7M-023. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Pitch stepping is mappable and domain-dependent
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-024 (Pitch): Pitch spans ±128 semitones or ±30 scale degrees. Step Up/Down uses Step Width of 1–48 semitones or 1–30 degrees; these controls support key and MIDI mapping. | Live 12 local manual §29.5, pp.669; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep a domain-tagged transpose value and explicit step action, including clamping at limits. Follow-up case M7-A7M-024. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Out-of-range modes block, fold or clamp notes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-025 (Pitch): Lowest and Range define allowed pitches. Block removes out-of-range notes and flashes an LED; Fold transposes them into range; Limit clamps them to the nearest lower or upper boundary. | Live 12 local manual §29.5, pp.670; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate eligibility, fold policy and clamping; never forward a release using newly changed pitch parameters. Follow-up case M7-A7M-025. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Random chooses from a discrete pitch-offset domain
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-026 (Random): Chance controls whether pitch changes; Choices is 1–24 and Interval sets spacing, with their product defining the possible span. Sign selects upward Add, downward Sub or both directions Bi. Random and Add are documented defaults. | Live 12 local manual §29.6, pp.670–671; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Preserve a discrete candidate set, probability gate and direction separately; ADR-0203 d7 changes the earlier ADR-0169 always-repeatable default. Follow-up case M7-A7M-026. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Alt is a sequence with documented examples requiring edge verification
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-027 (Random): Alt cycles pitches in a fixed round-robin order. At Chance 100% it advances; at 0% it outputs the input. The text gives C3…C4 cycling for Choices 12/Interval 1, but C3/D3 alternation for Choices 2/Interval 2. | Live 12 local manual §29.6, pp.671; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Retain both examples as documentary targets instead of inferring a general candidate-count formula that contradicts one. Follow-up case M7-A7M-027. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Scale following and output LEDs expose distinct outcomes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-028 (Random): Use Current Scale constrains generated pitches to the clip scale. The plus, zero and minus LEDs distinguish an upward change, unchanged pitch and downward change. | Live 12 local manual §29.6, pp.671; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep the generated outcome available to UI feedback without feeding the display back into PRNG state. Follow-up case M7-A7M-028. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### User matrix changes mappings and can suppress a pitch class
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-029 (Scale): Columns represent input notes and rows output notes in the described 13×13 matrix. Base/Scale select the mapping; Use Current Scale disables those choosers. User initially maps notes to themselves; moving or deleting highlighted cells changes or suppresses outputs. | Live 12 local manual §29.7, pp.672; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Model a mapping relation separately from its visual grid; do not infer the purpose of an extra matrix row/column from the 13×13 label. Follow-up case M7-A7M-029. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### User Fold chooses a closer octave only beyond six semitones
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-030 (Scale): Fold is available when Scale Name is User. It folds a mapping when its distance from the original exceeds six semitones; the documented C3→A3 mapping becomes C3→A2. | Live 12 local manual §29.7, pp.673; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Preserve explicit octave choice and the six-semitone boundary, independent of the displayed pitch class. Follow-up case M7-A7M-030. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Scale range leaves outside notes unchanged
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-031 (Scale): Transpose spans ±36 semitones. Lowest/Range restrict both mapping and transposition while outside notes pass unchanged. All octaves are included by default; LowestC 2/Range+36 covers C2 through B4. | Live 12 local manual §29.7, pp.672–673; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Distinguish Scale’s range bypass from Pitch’s Block/Fold/Limit modes. Follow-up case M7-A7M-031. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Velocity maps input and output ranges independently
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-032 (Velocity): The curve maps input Lowest/Range on its horizontal axis to output Out Low/Out Hi vertically. Operation targets onset velocity, release velocity or both. | Live 12 local manual §29.8, pp.673–674; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Retain distinct onset/release fields and input/output range semantics rather than applying a single gain to note events. Follow-up case M7-A7M-032. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Clip, Gate and Fixed have different note-survival consequences
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-033 (Velocity): Clip bounds incoming velocities to the range. Gate removes outside-range notes and flashes its LED. Fixed uses Out Hi for every outgoing velocity regardless of input. | Live 12 local manual §29.8, pp.674; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Maintain matched note-off state when onset gating removes notes; release-only gating must not accidentally strand an active voice. Follow-up case M7-A7M-033. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Random velocity stays within the output range
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-034 (Velocity): Random adds positive or negative variation constrained by Out Low/Out Hi. The example OutLow 60/OutHi 127/Random 50 allows shifts up to 50 within 60–127; a shaded curve region indicates the random span. | Live 12 local manual §29.8, pp.674; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Apply the repeat-result addition explicitly and store PRNG state separately from the visual variation band. Follow-up case M7-A7M-034. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Drive and Compand reshape rather than replace the range
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-035 (Velocity): Positive Drive pushes values upward and negative Drive downward. Positive Compand expands toward high/low extremes; negative Compand compresses toward the middle. They can be combined within the overall input/output ranges. | Live 12 local manual §29.8, pp.674; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep curve controls explicit without guessing a transfer function or ordering. Follow-up case M7-A7M-035. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Envelope MIDI offers eight targets with distinct ownership modes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-036 (Envelope MIDI): Map then click assigns an automatable device or mixer parameter; Multimap reveals up to eight targets and Unmap removes each. Modulation is the default: base values stay editable, with bipolar or unipolar depth. Remote Control owns values and uses Min/Max. | Live 12 local manual §32.3.1, pp.819–820; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0046/ADR-0052: preserve parameter base value separately from modulation and distinguish exclusive remote ownership. Follow-up case M7-A7M-036. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Envelope MIDI loop modes define four timing schedules
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-037 (Envelope MIDI): Free triggers for each note; Sync retriggers at a chosen beat division; Loop repeats at Global Time; Echo repeats using Env Echo Time and feedback. An LED indicates triggers. | Live 12 local manual §32.3.1, pp.820; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep note, beat and feedback triggering independent from the ADSR shape and host transport. Follow-up case M7-A7M-037. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Global Time scales ADSR while velocity scales its peak
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-038 (Envelope MIDI): Global Time defaults to 1.00; larger/smaller values stretch/compress the envelope. Attack/Decay/Release have slope controls and can be edited graphically. Velocity enable scales peak proportionally to incoming velocity; Amount sets depth for all targets. | Live 12 local manual §32.3.1, pp.821; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store segment timing, slopes, velocity scaling and global output depth separately. Follow-up case M7-A7M-038. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Disabling Sustain creates a note-independent one-shot envelope
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-039 (Envelope MIDI): With Sustain enabled, the envelope holds at its sustain level until note release. With Sustain disabled, Attack and Decay proceed directly into Release regardless of held-note duration. | Live 12 local manual §32.3.1, pp.821; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Represent sustain enable as envelope topology, not merely sustain-level zero. Follow-up case M7-A7M-039. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Five independent sources choose among ten expression types
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-040 (Expression Control): Five source tabs each choose Velocity, Modwheel, Pitchbend, Pressure, Keytrack, Expression, Random, Increment, Slide or Sustain and map to an automatable parameter. | Live 12 local manual §32.3.2, pp.822; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0046/ADR-0054: distinguish per-note expression sources from global MIDI sources and define aggregation for a shared target. Follow-up case M7-A7M-040. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Expression mappings distinguish additive modulation and remote ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-041 (Expression Control): Modulate retains editable base values and merges device output with them; bipolar centers around the base and unipolar adds from it. Remote Control prevents base edits and exposes output Min/Max. Modulate exposes a maximum-depth control. | Live 12 local manual §32.3.2, pp.822; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Implement base, automation and modulation as separate values per ADR-0046, with mode-specific controls. Follow-up case M7-A7M-041. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Two curve topologies have linked or independent segments
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-042 (Expression Control): The two-point curve uses Curve A. The three-point S curve uses A/B for upper/lower segments, optionally inversely linked; its middle point uses X/Y. Min/Max, points and curvature can also be dragged directly. | Live 12 local manual §32.3.2, pp.823; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store breakpoint coordinates, segment shape and link state rather than a flattened lookup table only. Follow-up case M7-A7M-042. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Increment resets on transport stop; Random changes on note triggers
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-043 (Expression Control): Increment uses 1–32 triggers to traverse the modulation range; transport stop resets it so the first note after restart outputs the minimum. Random Amount controls deviation on each note trigger. Rise/Fall smoothing spans 0–1000 ms with linear or logarithmic modes. | Live 12 local manual §32.3.2, pp.823; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate trigger counter, PRNG and slew state; reset causes must be explicit. Follow-up case M7-A7M-043. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Monitor views distinguish state display from streamed messages
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-044 (MIDI Monitor): Note view shows played notes, root/chords and velocity on a keyboard. Flow displays a continuous message list including bend and aftertouch; Freeze pauses the display and Clear clears it. MPE view streams notes, velocity, slide, pressure and per-note pitch. | Live 12 local manual §32.3.3, pp.824–825; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep diagnostic presentation outside audio behavior and preserve typed per-note fields for future debugging. Follow-up case M7-A7M-044. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Three expression sources have separately enabled response curves
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-045 (MPE Control): Press, Slide and NotePB can each be transformed independently and are enabled by default. Selecting a source brings its curve forward; advanced controls unfold with a triangle. Each source has its own smoothing and Rise/Fall settings. | Live 12 local manual §32.3.4, pp.826–828; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0054: retain independent source transforms and per-note state; disabled-source semantics require a measured pass-through versus suppression contract. Follow-up case M7-A7M-045. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### MPE curve linking defaults to coupled S-curve segments
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-046 (MPE Control): The two-point curve has one shape control and Min/Max. The S curve adds a movable middle point and two segment controls, linked by default; unlinking permits independent curvature. X/Y controls are only active for the S curve. | Live 12 local manual §32.3.4, pp.827; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store curve topology and link state with source-specific endpoints and midpoint. Follow-up case M7-A7M-046. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Pressure can supply defaults, swap to slide or collapse to aftertouch
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-047 (MPE Control): Press Default supplies an MPE value for notes without MPE data. Swap to Slide redirects pressure into slide. Press to AT converts per-note pressure into monophonic aftertouch for non-MPE destinations. | Live 12 local manual §32.3.4.1, pp.828–829; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate missing-expression defaults from zero pressure and make polyphonic-to-global reduction explicit. Follow-up case M7-A7M-047. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Slide modes distinguish absolute, relative and onset-only input
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-048 (MPE Control): Slide processes CC 74. Abs is default; Rel begins at the midpoint regardless of initial finger position and changes with subsequent motion. Ons updates only on Note On and automatically disables smoothing. | Live 12 local manual §32.3.4.2, pp.829–830; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Preserve per-note onset reference state and distinguish sampled-onset expression from continuously varying expression. Follow-up case M7-A7M-048. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Slide centering and global Mod Wheel conversion are optional
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-049 (MPE Control): Slide Default supplies values for non-MPE notes. Centered maps the pad center to zero and increases modulation away from it vertically. Slide to Mod converts to global Mod Wheel CC 1. | Live 12 local manual §32.3.4.2, pp.830; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep centered response, absent-data default and global conversion as separate processing stages. Follow-up case M7-A7M-049. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### NotePB can scale bend range and convert to global pitch bend
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-050 (MPE Control): NotePB Pitch Range adjusts bend scaling; the example 2x maps a±48-semitone controller to a±24-semitone instrument. NotePB to PB translates per-note bend into ordinary global pitch-bend messages. | Live 12 local manual §32.3.4.3, pp.830–831; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Represent controller range, destination range and conversion scaling explicitly; avoid assuming numeric normalized ranges match semitone ranges. Follow-up case M7-A7M-050. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Note Echo timing and input pass-through are independent
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-051 (Note Echo): Synced delay buttons count sixteenth notes;4 means one quarter note. A percentage adjusts fractional timing. Free mode uses milliseconds. Thru plays original and echo; Mute suppresses the original while retaining echoes. | Live 12 local manual §32.3.5, pp.832; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Schedule echoed note identities and releases independently of source pass-through and tempo domain. Follow-up case M7-A7M-051. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Echo feedback changes pitch and velocity on successive repeats
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-052 (Note Echo): Pitch applies transposition with every repetition. Delay sets echo velocity amount; Fback feeds output back into the delay input, creating successive echoes with decreasing velocity. | Live 12 local manual §32.3.5, pp.832; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep feedback state separate from the source event and set an explicit termination policy after measuring reference behavior. Follow-up case M7-A7M-052. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Echoed MPE has separate feedback amounts
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-053 (Note Echo): MPE enable echoes expression alongside notes and velocities; otherwise MPE data is filtered out. When enabled, Press, Slide and NotePB feedback amounts below 100% progressively reduce expression with each echo. | Live 12 local manual §32.3.5, pp.832–833; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Each echoed note needs its own expression association and source-time translation per ADR-0054. Follow-up case M7-A7M-053. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Shaper MIDI maps note-triggered envelopes to eight targets
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-054 (Shaper MIDI): Each MIDI note triggers a breakpoint envelope; up to eight automatable targets use Map/Unmap. Default Modulation preserves editable base values with bipolar/unipolar depth; Remote Control owns parameters and uses Min/Max. | Live 12 local manual §32.3.6, pp.833–834; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0046: share mapping infrastructure with Envelope MIDI while retaining a distinct envelope generator and trigger policy. Follow-up case M7-A7M-054. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### One sustain breakpoint has explicit editing gestures
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-055 (Shaper MIDI): Click adds a point; Ctrl/Cmd-click adds the single allowed sustain point. Alt/Option-drag bends segments and Shift-click deletes points. Clear removes the envelope; six presets replace it. Grid/Snap quantizes point creation and moves. | Live 12 local manual §32.3.6, pp.834; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store sustain identity independently of point index and preserve breakpoint edits as bounded gestures. Follow-up case M7-A7M-055. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Velocity, jitter, smoothing and offset affect different envelope stages
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-056 (Shaper MIDI): Jitter randomizes output and Smooth softens abrupt changes including jitter. Velocity 0% ignores velocity; higher amounts scale envelope amplitude. Offset shifts its center, shown by a horizontal oscilloscope line; an LED marks triggers. | Live 12 local manual §32.3.6, pp.834–835; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate deterministic shape, amplitude scaling, stochastic variation and center offset; measure their composition rather than assuming an order. Follow-up case M7-A7M-056. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Loop bypasses sustain and echoes extend modulation
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-057 (Shaper MIDI): Loop repeats while a note is held and bypasses the sustain point. Rate is free Hertz or synchronized divisions. Depth scales every mapping. Echo feeds each repetition into the next and Time sets echo spacing. | Live 12 local manual §32.3.6, pp.835; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Track held-note lifetime, loop phase and post-envelope echoes independently of target depth. Follow-up case M7-A7M-057. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Sampler separates the zone workspace from parameter tabs
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-058 (Sampler): Zone toggles a dedicated editor above Device View; other tabs replace the device parameter area. Tab LEDs indicate modulation activity in their areas. The displayed name defaults to the topmost sample layer; Show Preset Name can replace it with Sampler. | Live 12 local manual §30.10.3, §30.10.4, §30.10.5, pp.745–747; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep panel visibility, current layer, device name and modulation indicators distinct; OneShot/Sampler share the host strip but need different expanded editors. Follow-up case M7-A7M-058. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Zone eligibility combines key, velocity and selector ranges
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-059 (Sampler): Every layer has Key, Velocity and Sample Select zones. Incoming notes are filtered by those zones. Auto Select temporarily selects all eligible layers in the list for the duration of the note; Key/Vel/Sel buttons choose the visible editor. | Live 12 local manual §30.10.5, pp.746–747; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Compute eligibility from three independent dimensions and keep audition-driven temporary selection separate from edit selection. Follow-up case M7-A7M-059. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Round Robin mode chooses among layers sharing a key zone
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-060 (Sampler): RR enables cycling among samples with the same key zone. Forward follows list order; Backward reverses it. Other randomly avoids the immediately previous sample, while Random permits consecutive repeats. | Live 12 local manual §30.10.5.1, pp.747–748; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Represent grouping and traversal state independently of layer IDs; sorting the list may be musically observable. Follow-up case M7-A7M-060. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Round Robin reset establishes a predictable first layer
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-061 (Sampler): Reset Interval restarts the cycle at a specified musical interval. Forward restarts from the top, Backward from the bottom, and Other/Random restart from the sample played first. | Live 12 local manual §30.10.5.1, pp.748–749; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep reset scheduling and remembered initial random sample as explicit state, separate from PRNG advancement. Follow-up case M7-A7M-061. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Range distribution has explicit non-overlap and root-key rules
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-062 (Sampler): Distribute Ranges Equally spreads layers across C-2 to G8. Distribute Ranges Around Root Key spreads differing roots as evenly as possible without overlap; layers sharing a root are distributed evenly. Layers can be deleted, duplicated or renamed. | Live 12 local manual §30.10.5.2, pp.749; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Treat distribution as a bulk zone edit retaining layer identity and preserving source media ownership. Follow-up case M7-A7M-062. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Layer sorting and matching depend on the active zone editor
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-063 (Sampler): Select All With Same Range compares the active Key, Velocity or Sample Select zone. Sorting can use names, key zones, velocity zones or selector zones in either direction. Selecting a layer loads it into Sample; hover shows sample information in Status Bar. | Live 12 local manual §30.10.5.2, pp.749–750; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Preserve stable layer IDs during reorder and explicitly define the current dimension used by selection commands. Follow-up case M7-A7M-063. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Normalize adjusts sampler gain and pan controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-064 (Sampler): Normalize Volume adjusts selected samples through Sampler Volume so their highest peaks use available headroom. Normalize Pan calculates positions giving an even stereo spread, which does not necessarily center a panned stereo sample. | Live 12 local manual §30.10.5.2, pp.750; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Treat normalization as reversible parameter edits, not destructive source-file processing; do not assume the pan calculation. Follow-up case M7-A7M-064. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### New key zones span the keyboard and zone fades have selectable laws
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-065 (Sampler): Imported key zones cover the full MIDI range by default. Zones move and resize like clips; top corners create edge fades. Lin/Pow changes all zone fades between linear and constant-power slopes. Velocity zones use Note On values 1–127 and the same editing model. | Live 12 local manual §30.10.5, §30.10.5.3, §30.10.5.4, pp.747,750–751; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Use zone geometry plus independent fade extents; distinguish zone crossfades from sample-loop crossfades. Follow-up case M7-A7M-065. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### The sample selector affects future triggers only
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-066 (Sampler): Sample Select uses a 0–127 selector independent of a particular MIDI input. Only overlapping zones are eligible. Moving it after a sample starts does not switch that already-playing sample. | Live 12 local manual §30.10.5.5, pp.751–752; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Capture selected-layer identity on note-on and retain it for the voice lifetime. Follow-up case M7-A7M-066. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Sample tab mixes layer-local settings and explicit global controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-067 (Sampler): Most Sample-tab values describe only the selected layer; the Sample chooser changes layers. RootKey, ±50-cent Detune, per-layer Pan and Volume from full attenuation to+24 dB characterize that sample. Reverse is explicitly global. | Live 12 local manual §30.10.6, pp.752–753; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate per-layer state from instrument-wide parameters so changing selection never changes ownership. Follow-up case M7-A7M-067. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Sampler Reverse changes playback without creating media
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-068 (Sampler): Reverse is global and modulatable. It begins at Sample End and plays backward through an active sustain loop toward Sample Start; unlike Clip View Reverse, it creates no new sample file. | Live 12 local manual §30.10.6, pp.752; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Represent playback direction as voice/device state and preserve source-media identity. Follow-up case M7-A7M-068. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Zero-crossing Snap uses only the stereo left channel
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-069 (Sampler): Snap aligns start/end points to zero crossings, using the left channel for stereo audio. Right-channel discontinuities may remain; an individual loop brace offers Snap Marker. Crossfade may still be needed. | Live 12 local manual §30.10.6, pp.752; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep snapped marker positions explicit and do not promise click removal on every channel. Follow-up case M7-A7M-069. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Envelope stages include initial, peak and end levels
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-070 (Sampler): Sampler envelopes provide Attack/Decay/Sustain/Release with Initial and Peak. End level is available for LFO, filter and pitch envelopes. Release begins on Note Off; sustain holds until release unless a looping mode takes over. | Live 12 local manual §30.10.6.1, pp.753; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store stage topology and explicit levels separately; do not assume every envelope terminates at zero. Follow-up case M7-A7M-070. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Envelope slopes and velocity timing are independent of beat periods
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-071 (Sampler): Positive slopes move quickly then slowly; negative slopes stay flat longer then accelerate; zero is linear. Time<Vel modulates segment durations but does not alter the Beat/Sync repeat period. | Live 12 local manual §30.10.6.1, pp.753–754; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate envelope segment clock from synchronized retrigger clock and retain a defined slope representation. Follow-up case M7-A7M-071. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Envelope looping offers distinct free and song-synchronized modes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-072 (Sampler): Loop restarts after Decay; Beat/Sync restart after a set musical period, with Sync quantized to song time. Retrigger moves from the current level toward Peak at Attack rate. Trigger mode is described as ignoring Note Off. | Live 12 local manual §30.10.6.1, pp.753; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Use distinct retrigger origin, rate and note-off policies rather than one loop boolean. Follow-up case M7-A7M-072. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Sample endpoints and time-display units are explicit
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-073 (Sampler): Time fields can display samples or minutes:seconds:milliseconds through their context menu. Sample Start sets playback origin; Sample End stops playback without a loop even when the volume envelope has not ended. | Live 12 local manual §30.10.6.1, pp.754; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep source-frame boundaries separate from envelope lifetime and UI time formatting. Follow-up case M7-A7M-073. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Sustain playback can loop forward or alternate direction
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-074 (Sampler): Without sustain looping, playback ends at Sample End or envelope release completion. Forward sustain loops jump End→Start; back-and-forth loops reverse at each boundary. With release mode off, sustain looping continues through the volume release stage. | Live 12 local manual §30.10.6.1, pp.754; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Model playback-region transitions separately from envelope stage; Note Off need not leave the sustain region. Follow-up case M7-A7M-074. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Release playback is enabled only with a sustain loop
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-075 (Sampler): Release mode becomes available when sustain looping is active. Release Enabled proceeds toward Sample End. Release Loop jumps from Sample End to the release-loop start; back-and-forth release reverses between those endpoints until the envelope finishes. | Live 12 local manual §30.10.6.1, pp.754–755; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Represent release-region entry and traversal explicitly; a release loop uses Sample End as its end boundary. Follow-up case M7-A7M-075. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Link temporarily substitutes loop start without discarding sample start
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-076 (Sampler): Link makes Sample Start equal Loop Start while disabling the Sample Start field. Its original stored value remains available and is recalled when Link is turned off. | Live 12 local manual §30.10.6.1, pp.754; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Retain dormant original values behind linked controls; do not overwrite them with the effective value. Follow-up case M7-A7M-076. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Loop crossfade law and loop detune are separate controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-077 (Sampler): Sustain and release loops offer crossfade and detune. Constant-power loop fades are default; a title-bar option selects linear fades. Loop detune adjusts loop-region pitch independently to match surrounding audio. | Live 12 local manual §30.10.3, §30.10.6.1, pp.745,755; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store each loop’s tuning and fade extent plus the global fade-law choice independently. Follow-up case M7-A7M-077. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Interpolation and RAM mode are instrument-wide choices
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-078 (Sampler): Interpolation is global and offers Normal, Good and Best quality descriptions. RAM mode is also global and loads the entire multisample into memory; the manual suggests benefits for modulated endpoints but supplies no measured cost. | Live 12 local manual §30.10.6.1, pp.755; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Integrate quality and residency with media lifecycle; preserve ADR-0207 d2 precision defaults independently of resampling quality. Follow-up case M7-A7M-078. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Waveform display transforms do not alter sample audio
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-079 (Sampler): Vertical Zoom magnifies only the waveform. B/M/L/R chooses Both, Mono, Left or Right display channels. Context zoom options depend on active sustain/release regions; Show in Browser and Manage Samples locate the source. | Live 12 local manual §30.10.6.1, pp.755; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep view state distinct from channel processing and media ownership. Follow-up case M7-A7M-079. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### The modulation oscillator is per voice and not directly audible
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-080 (Sampler): One modulation oscillator per voice offers 21 waveforms and FM or AM of the multisample; its output is not heard independently. It has its own loopable envelope, Volume depth and velocity-to-depth control. | Live 12 local manual §30.10.7.1, pp.756; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Treat this as internal voice modulation, with its own activation and envelope state, rather than another audible source lane. Follow-up case M7-A7M-080. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Fixed oscillator mode changes available frequency controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-081 (Sampler): Fixed makes frequency independent of played pitch, using Freq multiplied by Multi. With Fixed off, Coarse 0.125–48 and Fine 0–1000 control tuning; those controls are unavailable while Fixed is on. | Live 12 local manual §30.10.7.1, pp.756–757; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Persist both mode-specific parameter sets and use explicit dependency rules in the panel. Follow-up case M7-A7M-081. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Pitch envelope reaches both sample and modulation oscillator
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-082 (Sampler): The pitch envelope affects sample pitch and the enabled modulation oscillator. Amount sets its influence in semitones; actual movement depends on envelope levels. Sliders and draggable breakpoints edit the same envelope. | Live 12 local manual §30.10.7.2, pp.757; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Share the envelope signal while preserving separate destination behavior and global tuning. Follow-up case M7-A7M-082. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Key Zone Shift changes source selection without changing played pitch
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-083 (Sampler): Key Zone Shift transposes the key-zone lookup only: different source samples can be selected while output still follows the played pitch. Global Transpose and Detune instead adjust pitch in semitones and cents. | Live 12 local manual §30.10.7.2, pp.757; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep zone-lookup pitch, root-key compensation and audible pitch as distinct values. Follow-up case M7-A7M-083. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Spread and glide have separate voice consequences
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-084 (Sampler): Spread generates two detuned voices per note. Glide is monophonic pitch transition; Portamento works polyphonically, with Time setting transition length. | Live 12 local manual §30.10.7.2, pp.757; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Account for voice multiplicity and note-to-note pitch history without inferring a voice-stealing policy. Follow-up case M7-A7M-084. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Filter circuit availability depends on filter type
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-085 (Sampler): The polyphonic filter offers low-pass, high-pass, band-pass, notch and Morph at 12/24 dB slopes. Clean and OSR support all types; MS 2, SMP and PRD are offered for low/high-pass only. | Live 12 local manual §30.10.8.1, pp.758; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Implement the documented capability matrix in parameter validation and UI before evaluating filter-sound parity. Follow-up case M7-A7M-085. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Filter Drive and Morph are conditional controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-086 (Sampler): Drive is available for non-Clean low/high/band-pass configurations and adds gain before the filter. Morph continuously traverses low-pass→band-pass→high-pass→notch→low-pass; its context menu jumps to named types. | Live 12 local manual §30.10.8.1, pp.758–759; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep conditional parameter visibility and the morphological path explicit; do not substitute a guessed filter topology. Follow-up case M7-A7M-086. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Waveshaper routing can precede or follow the filter
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-087 (Sampler): The optional waveshaper has Soft, Hard, Sine and 4 bit types plus Amount. An up-pointing routing triangle means shaper→filter; down means filter→shaper. Filter envelope needs both F.Env enabled and nonzero Amount to affect cutoff. | Live 12 local manual §30.10.8.1, pp.759; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store processing order and independent stage enables as explicit device state. Follow-up case M7-A7M-087. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Global time and pitch tracking scale every envelope
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-088 (Sampler): Global Pan affects all layers and Pan<Rnd adds variation. Global Time scales all envelope durations; Time<Key changes them according to note pitch. The volume envelope has its own looping Time/Repeat controls. | Live 12 local manual §30.10.8.2, pp.759; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Distinguish global time multipliers from each envelope’s own beat clock and sample playback rate. Follow-up case M7-A7M-088. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Voice retrigger avoids adding another same-note voice
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-089 (Sampler): Sampler offers up to 32 simultaneous voices. Retrigger R makes already-playing notes retrigger rather than create additional voices, particularly relevant to repeated notes with long release. | Live 12 local manual §30.10.8.2, pp.759; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate MIDI note identity, layer count, spread voices and resource limits; the manual does not state a stealing algorithm. Follow-up case M7-A7M-089. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Auxiliary envelope and LFOs form a multi-destination modulation network
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-090 (Sampler): Modulation includes one loopable auxiliary envelope and three LFOs, able to modulate multiple parameters including themselves. Aux has A/B destinations selected from 29 choices with separate amounts. | Live 12 local manual §30.10.9, pp.760; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Use explicit routing edges and destination IDs; self-modulation needs a documented evaluation policy. Follow-up case M7-A7M-090. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### LFO timing, attack, offset and retrigger are separate controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-091 (Sampler): LFOs offer six shapes including sample-and-hold, free 0.01–30 Hz or synced 64th-note through 8-bar periods. Attack ramps intensity; Retrigger resets phase on new notes; Offset sets initial phase and Key changes rate with played pitch. | Live 12 local manual §30.10.9.2, pp.760–761; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep oscillator phase, intensity ramp, synchronized rate and note-key modulation as separate state. Follow-up case M7-A7M-091. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### LFO 1 fixed targets differ from stereo LFO 2/3 routing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-092 (Sampler): LFO 1 directly controls Volume, Pan, Filter and Pitch with separate depths. LFO 2/3 have A/B target choosers and stereo Phase or Spin: Phase offsets equal-rate channels; Spin can make the right channel up to 50% faster. | Live 12 local manual §30.10.9.2, pp.761; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Retain stereo modulation phase and target routing independently from audio pan or sample channels. Follow-up case M7-A7M-092. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### MIDI sources each address two destinations
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-093 (Sampler): Key, Velocity, Release Velocity, Aftertouch, Modulation Wheel, Foot Controller and Pitch Bend each map to two destinations with separate amounts. Pitch Bend Range 0–24 scales the 14-bit wheel to up to 24 semitones. | Live 12 local manual §30.10.10, pp.761–762; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0054/ADR-0194: preserve message precision and source type; do not infer per-note MPE support from this global-controller list. Follow-up case M7-A7M-093. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Imported sample libraries become owned presets and sometimes racks
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-094 (Sampler): The chapter lists REX, ACID Loops and Soundtrack Loops; ACID/Soundtrack tags are not accessible. Dragging a third-party multisample from Browser imports it into User Library/Sampler/Imports. Some imports become racks with several Samplers. | Live 12 local manual §30.10.11, pp.762; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate imported preset structure from referenced/copied audio; ADR-0127/FEATURES media ownership needs explicit collection and relink handling. Follow-up case M7-A7M-094. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Clip drops retain the selected sample region and warp settings
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-095 (Simpler): Samples can arrive from Browser or Session/Arrangement clips. Clip drops use the section defined by start/end or loop markers and retain Warp Markers and other warp settings. New drag-ins or Hot-Swap replace the source. | Live 12 local manual §30.11, pp.762–763; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: OneShot must distinguish source media, clip-derived bounds and warp metadata; replacement is a stateful operation rather than just a filename change. Follow-up case M7-A7M-095. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Expanded Sample view preserves simultaneous Controls access
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-096 (Simpler): Sample and Controls are separate tabs. A title-bar button moves Sample controls into the main window; Controls then fills the device in Device View. Waveform zoom uses Ctrl/Cmd plus scrolling. | Live 12 local manual §30.11, pp.763; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep device-instance focus and expanded-editor ownership consistent with the host’s panel layout. Follow-up case M7-A7M-096. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Playback modes have different topology and documented defaults
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-097 (Simpler): Classic is default and polyphonic by default, with ADSR and looping. One-Shot is monophonic without loops and ordinarily plays the complete sample on trigger regardless of key duration. Slicing non-destructively exposes chromatically played sample regions. | Live 12 local manual §30.11.1, pp.764; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: OneShot needs mode-specific state and control availability, not three presets of an identical voice graph. Follow-up case M7-A7M-097. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Classic relative bounds operate inside absolute sample flags
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-098 (Simpler): Absolute flags establish the available sample region. Start and Length are percentages within that region; Length 50% uses half the enabled span. Loop sets how much of the available sample loops and is active only with Loop enabled. | Live 12 local manual §30.11.1.1, pp.764–765; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep absolute source-frame bounds and relative playback/loop parameters distinct. Follow-up case M7-A7M-098. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Classic loop snap and fade address different discontinuities
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-099 (Simpler): Loop repeats while the note is held. Snap aligns region/loop markers to zero crossings using only the left stereo channel. Fade crossfades loop end and start to smooth transitions; Snap alone cannot guarantee stereo continuity. | Live 12 local manual §30.11.1.1, pp.765; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: OneShot should retain explicit loop marker positions and fade settings without claiming all clicks disappear. Follow-up case M7-A7M-099. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Input Gain precedes the instrument’s final Volume
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-100 (Simpler): Gain changes sample level and is available in all modes. Volume is a separate final instrument level after filter processing. | Live 12 local manual §30.11.1.1, pp.765; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep pre-processing and post-processing gain stages separate, especially around nonlinear filters. Follow-up case M7-A7M-100. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Voice stealing removes the oldest voices
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-101 (Simpler): Voices limits simultaneous playback; exceeding it drops the oldest voices in favor of new ones. Retrig cuts an already-sustaining same note; disabled Retrig allows copies to overlap. Its audible effect requires more than one voice and sufficient release. | Live 12 local manual §30.11.1.1, pp.765; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Maintain voice age and source-note identity explicitly; stealing and same-note retrigger are distinct operations. Follow-up case M7-A7M-101. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### One-Shot Trigger and Gate use different fade-out anchors
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-102 (Simpler): One-Shot has no Loop, Length or Voices control and is strictly monophonic. Trigger ignores key release; Fade Out begins before region end. Gate starts Fade Out when the note is released. Fade In rises from note onset. | Live 12 local manual §30.11.1.2, pp.766; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Store envelope anchor semantics per playback mode rather than translating these controls into ordinary ADSR unconditionally. Follow-up case M7-A7M-102. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Automatic and manual slicing have different creation rules
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-103 (Simpler): Transient mode detects slices with Sensitivity, up to 64. Beat uses musical divisions; Region uses equal time divisions and a region count. Manual creates no automatic slices and uses double-click placement. | Live 12 local manual §30.11.1.3, pp.766–767; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: OneShot must retain slice mode, detected candidates and user edits separately from source media. Follow-up case M7-A7M-103. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Slice playback supports Mono, Poly and Thru
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-104 (Simpler): Mono plays one slice. Poly permits simultaneous slices and exposes Voices/Retrig. Thru remains monophonic but continues from the triggered slice through the remaining sample region. | Live 12 local manual §30.11.1.3, pp.767; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Treat a slice trigger as a playback-region decision with mode-specific end boundary and voice policy. Follow-up case M7-A7M-104. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Slice fade duration depends on playback scope
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-105 (Simpler): Trigger/Gate behaves as in One-Shot. In Mono/Poly, fades span the individual slice; in Thru, they span from the triggered slice to region end, so the result changes with the chosen slice. | Live 12 local manual §30.11.1.3, pp.767; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Compute fade anchors from effective voice boundaries, not a fixed file-global region. Follow-up case M7-A7M-105. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Manual transient slices survive sensitivity changes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-106 (Simpler): Automatic slices are blue, manual slices white. Double-click deletes a slice or creates one between slices; dragging relocates it. In Transient mode Alt/Option-click toggles manual/automatic status, and manual slices survive Sensitivity changes. | Live 12 local manual §30.11.1.3, pp.767; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Persist slice provenance and identity so detection updates preserve intentional edits. Follow-up case M7-A7M-106. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Warp decouples sample tempo from played pitch
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-107 (Simpler): Warp off ties pitch to playback speed. Warp on follows Set tempo regardless of played note, using the audio-clip warp modes and settings. Warp as fits a guessed number of bars/beats; ÷2 and ×2 correct the interpretation by doubling/halving playback speed. | Live 12 local manual §30.11.2, pp.767–768; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Reuse ADR-0061 warp semantics while retaining sampler voice timing, loop bounds and note pitch independently. Follow-up case M7-A7M-107. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Filter type, slope and circuit constrain available processing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-108 (Simpler): Filters are low/high/band-pass, notch and Morph with 12/24 dB slopes. Clean/OSR support all types; MS 2/SMP/PRD support low/high-pass. Non-Clean low/high/band-pass offers Drive before filtering; Morph traverses low→band→high→notch→low with context jumps. | Live 12 local manual §30.11.3, pp.768–769; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Share a documented filter capability matrix with Sampler while keeping voice state independent; no DSP equivalence is implied by matching labels. Follow-up case M7-A7M-108. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Filter display editing and modulation sources target cutoff distinctly
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-109 (Simpler): Frequency/Envelope buttons choose response or envelope display. Frequency and Resonance can be edited by knobs or dragging the response curve. Cutoff accepts velocity, key tracking, filter-envelope amount and LFO modulation. | Live 12 local manual §30.11.3, pp.769; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep graphical gestures bound to the same parameters and combine modulation without changing stored base values. Follow-up case M7-A7M-109. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Three envelopes expose common ADSR editing but distinct amounts
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-110 (Simpler): Amplitude, filter and pitch each have ADSR editing via controls or draggable handles. Filter and pitch use separate amount controls. Amplitude Loop/Trigger restart after Decay while held; Beat/Sync restart after Rate, with Time returning sustain to initial level. | Live 12 local manual §30.11.4, pp.769–770; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Retain three separate envelope states and mode-specific timing; do not equate loop-mode Trigger with One-Shot’s Trigger switch. Follow-up case M7-A7M-110. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### LFO is per voice and phase offset requires retrigger
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-111 (Simpler): Each voice has an LFO with sine, square, triangle, up/down saw or random shapes, free 0.01–30 Hz or synchronized rate. Attack controls intensity ramp. R resets phase to Offset on each note; Offset has no effect when R is off. | Live 12 local manual §30.11.5, pp.770–771; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep per-voice phase and random state independent from global LFO parameter values. Follow-up case M7-A7M-111. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### LFO key tracking and four destination depths remain independent
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-112 (Simpler): Key scales LFO rate with pitch; at zero all voices have the same rate but may differ in phase. Separate sliders modulate Volume, Pitch, Pan and Filter. | Live 12 local manual §30.11.5, pp.771; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Compute voice-local rate from played pitch while sharing destination routing and base parameters. Follow-up case M7-A7M-112. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Spread creates two voices and its activation is latched at note-on
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-113 (Simpler): Spread creates detuned left/right voices per note. Whether a note uses Spread depends on the parameter at its Note On; turning Spread on only for selected onsets yields stereo notes among mono notes. Pan also accepts random and LFO variation. | Live 12 local manual §30.11.6, pp.771; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Capture voice topology on note-on while keeping current parameter state separate. Follow-up case M7-A7M-113. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Simpler tuning has a defined root and bend sensitivity
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-114 (Simpler): C3 plays the original sample pitch. Transpose spans±48 semitones and Detune±50 cents. MIDI Pitch Bend sensitivity is documented as±5 semitones; LFO/pitch envelope also modulate pitch and Transpose supports clip envelopes/controllers. | Live 12 local manual §30.11.6, pp.771; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0178/ADR-0054: separate sample root, tuning-system correction, global bend and per-note pitch expression; this chapter does not define their exact composition. Follow-up case M7-A7M-114. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Glide and Portamento use different polyphony rules
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-115 (Simpler): New notes start from the last played pitch and slide to their target. Glide is monophonic; Portamento is polyphonic. Time sets the transition duration. | Live 12 local manual §30.11.6, pp.771; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Retain pitch history separately from held-note collection and voice stealing. Follow-up case M7-A7M-115. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Warp disables loop Fade and conversion can lose sampler features
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-116 (Simpler): Constant-power fades are default; a title-bar option selects linear fades. Fade is unavailable with Warp enabled. Simpler↔Sampler preset conversion is supported, but Sampler lacks Simpler’s warp and slicing, so affected conversions behave and sound differently. | Live 12 local manual §30.11.7, pp.772; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Treat conversion as an explicit potentially lossy transform with retained source state for undo; this is a distinct operation from loading a preset. Follow-up case M7-A7M-116. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Crop and Reverse create copies while media commands expose ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-117 (Simpler): Crop removes outside Start/End and Reverse reverses the whole sample by creating processed copies, leaving the original intact. Manage Sample and Show in Browser locate media; OS reveal is unavailable for official Pack samples. Normalize Volumes adjusts sample level. | Live 12 local manual §30.11.7, pp.772; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0127: preserve original and derived media IDs and explicit operation lineage; distinguish this copied-file Reverse from Sampler’s playback-direction control. Follow-up case M7-A7M-117. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Slicing to a rack can replace the device or create a new track
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-118 (Simpler): Slice to Drum Rack replaces Simpler with a rack whose pads hold current slices. Slice to New MIDI Track retains the original device, creates another track/rack and adds a clip playing the slices in order. | Live 12 local manual §30.11.7, pp.772; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Implement each command as a graph/document transaction preserving source media and input device state for undo. Follow-up case M7-A7M-118. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Manual CPU guidance identifies variables without performance guarantees
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-119 (Simpler): The manual recommends fewer voices, zero unused Spread, disabling unused Filter/LFO and cheaper warp modes; it describes stereo and steeper filters as more costly. It provides no numerical processing budget or quality equivalence. | Live 12 local manual §30.11.8, pp.772–773; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0203 d4 and ADR-0207 d2: measure suspension, algorithm latency and both processing precisions independently; preserve compensated latency when bypassed. Follow-up case M7-A7M-119. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Legacy Push chapter describes initialization from sample length
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-120 (Simpler): The local Push 2 chapter says Simpler initializes some parameters by sample length: short samples play once, while long samples loop and warp. It gives no duration threshold. This is legacy chapter guidance, not a confirmed 12.4 load-default rule. | Live 12 local manual §35.8, pp.913; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: OneShot needs a deliberate import/default policy with context and saved-default precedence; do not derive an automatic threshold from this prose. Follow-up case M7-A7M-120. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Legato repitching can preserve sample playback position
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-121 (Simpler): The legacy Push 2 chapter describes position-preserving repitching in Classic/One-Shot: select Glide and, in Classic, set Voices 1; playing overlapping notes then changes pitch without restarting the sample. Warp is recommended but not stated as required. | Live 12 local manual §35.8.2.1, pp.916; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Separate pitch-legato behavior from sample retrigger and envelope retrigger; the host controller gesture is covered by root’s separate Push notes. Follow-up case M7-A7M-121. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; exact manual revision unknown |
+
+#### Historical MPE forwarding has an Arpeggiator exception
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-122 (MIDI effects): Live 11.0 introduced per-note expression forwarding through built-in MIDI effects. Its Arpeggiator statement applies MPE to root notes, excluding device-generated transpositions. | [Live 11 Release Notes](https://www.ableton.com/en/release-notes/live-11/), 11.0 / New Devices and Device Improvements; Historical Live 11.0 / New Devices and Device Improvements; accessed 2026-11-04; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0054: preserve source-expression associations; treat this historical limitation as a versioned probe, not proof that every current generated note copies MPE. Follow-up case M7-A7M-122. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; historical release/current FAQ scope explicitly qualified |
+
+#### Historical release notes add MPE sources absent from the local chapter
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-123 (Sampler): Live 11.0 added Sampler NotePB and Slide sources and renamed Aftertouch to Press. Press can be channel-wide or per-note depending on incoming data; MPE routing uses the MIDI tab. | [Live 11 Release Notes](https://www.ableton.com/en/release-notes/live-11/), 11.0 / Sampler; Historical Live 11.0 / New Devices and Device Improvements; accessed 2026-11-04; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: The local chapter’s controller list is incomplete for the documented MPE-era device. Use explicit per-note/global source types in ADI and inventory the current panel before freezing parity. Follow-up case M7-A7M-123. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; historical release/current FAQ scope explicitly qualified |
+
+#### Historical MPE bend and converted expression settings differ from global bend
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-124 (Simpler): Live 11.0 documents Simpler per-note bend at 48 semitones and preservation of Sampler Slide/Press settings through conversion. This is distinct from the manual’s ordinary±5-semitone MIDI bend statement. | [Live 11 Release Notes](https://www.ableton.com/en/release-notes/live-11/), 11.0 / Simpler; Historical Live 11.0 / New Devices and Device Improvements; accessed 2026-11-04; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Maintain separate global and per-note bend paths; conversion must retain hidden expression state independently of visible controls. Follow-up case M7-A7M-124. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; historical release/current FAQ scope explicitly qualified |
+
+#### Some Simpler MPE settings require a Sampler conversion round-trip
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-125 (Simpler): The FAQ says some Simpler MPE settings require converting to Sampler, editing there, then converting back. | [MPE in Live FAQ](https://help.ableton.com/hc/en-us/articles/360019144999-MPE-in-Live-FAQ), How can I change MPE settings in Simpler?; Current unversioned official FAQ accessed 2026-11-04; references Live11/12; accessed 2026-11-04; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: OneShot may expose these settings directly as an explicit addition, but must preserve imported hidden values even if the panel does not expose them. Follow-up case M7-A7M-125. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; historical release/current FAQ scope explicitly qualified |
+
+#### Effect modulation uses monophonic last-note priority
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-126 (Expression Control): Expression Control modulation of effects is monophonic with last-note priority. | [MPE in Live FAQ](https://help.ableton.com/hc/en-us/articles/360019144999-MPE-in-Live-FAQ), Why can’t I control my effects polyphonically with Expression Control?; Current unversioned official FAQ accessed 2026-11-04; references Live11/12; accessed 2026-11-04; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0046/ADR-0054: distinguish a per-note input stream from a single global effect parameter, with an explicit reduction policy. Follow-up case M7-A7M-126. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; historical release/current FAQ scope explicitly qualified |
+
+#### Sample Selector and Sample Offset update on note-on
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-127 (Sampler / Simpler): The FAQ states that Sample Selector and Sample Offset changes apply only at Note On. | [MPE in Live FAQ](https://help.ableton.com/hc/en-us/articles/360019144999-MPE-in-Live-FAQ), Why can’t I modulate Sample Selector and Sample Offset continuously?; Current unversioned official FAQ accessed 2026-11-04; references Live11/12; accessed 2026-11-04; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Capture eligible selection/offset at voice creation; avoid silently applying continuous parameter changes to an already-running voice. Follow-up case M7-A7M-127. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured; historical release/current FAQ scope explicitly qualified |
+
+#### Generated note identity and lifecycle remain measurement requirements
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-128 (MIDI effects): These chapters do not define output note IDs, same-pitch overlap matching, event ordering at equal timestamps, pending-event cancellation, sustain propagation or all-notes-off behavior through generated-note devices. | Live 12 local manual §29, §32.3.5, pp.662–674,832–833; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0054/ADR-0194: specify identity and lifecycle before implementation; parity cannot be inferred from a list of controls. Follow-up case M7-A7M-128. | Unknown — not specified or documentary ambiguity; installed Live 12.4 behavior unmeasured |
+
+#### Envelope Trigger wording requires source-qualified verification
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-129 (Sampler / Simpler): The general Sampler envelope section says Trigger ignores Note Off; the volume-envelope description groups Trigger with Loop restarting while a note remains held. Simpler’s amplitude section repeats the held-note condition without resolving release lifetime. | Live 12 local manual §30.10.6.1, §30.10.8.2, §30.11.4, pp.753,759,770; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: Keep Trigger as an unresolved state-machine branch, distinct from One-Shot playback Trigger and ordinary ADSR sustain. Follow-up case M7-A7M-129. | Unknown — not specified or documentary ambiguity; installed Live 12.4 behavior unmeasured |
+
+#### Random-state reset and persistence are undocumented at the required precision
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-130 (MIDI effects / Sampler / Simpler): The referenced controls describe randomized outcomes but do not specify PRNG algorithms, seeds, save-state capture, transport-reset policy or reproducibility across realtime and offline rendering. | Live 12 local manual §29.1, §29.3, §29.6, §29.8, §30.10.5.1, §30.11.6, §32.3.2, §32.3.6, pp.663–674,748–749,771,823,834–835; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0203 d7 overrides ADR-0169 d3’s unconditional repeatability: ordinary varying behavior is default, with a visible keep-result addition for named random MIDI effects. Do not extend that decision silently to every random control. Follow-up case M7-A7M-130. | Unknown — not specified or documentary ambiguity; installed Live 12.4 behavior unmeasured |
+
+#### Exact tuning, undo, conversion and media-state contracts remain open
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7M-131 (Sampler / Simpler): The device chapters do not establish custom-tuning precedence, all conversion fields, missing-media recovery, exact default preset values, per-gesture undo granularity or storage of transient playback/modulation state. | Live 12 local manual §30.10, §30.11, pp.744–773; exact manual revision unknown; not a measurement of installed Live 12.4 | ADR-0169 / ADR-0203 d7–d8 / FEATURES §6: ADR-0110/ADR-0127/ADR-0178: keep document parameters, source/derived media and runtime voices separate; defaults and round-trips need build-pinned evidence. Follow-up case M7-A7M-131. | Unknown — not specified or documentary ambiguity; installed Live 12.4 behavior unmeasured |
+
+### Installed device resources and Simpler controller integration
+
+#### Preset identity and version are independent of the executable
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-001 (Device hosting): The seven inspected presets declare Creator Live 12.4d1, revision 42bc084cd8152e4fb737ef3fefd04b2bea5320e7, minor schema 12.0_12402 and SchemaChangeCount 1. These resource identities differ from the executable build/revision and the earlier shipped default Set. | Seven hash-bound authored presets in private E45/preset-sources.json; installed executable identity E01/E02 | FEATURES §6/9: preserve app, document schema and authored asset versions independently; do not label a preset value a factory default. Follow-up case M7-A7R-001. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Continuous parameter metadata versus switch thresholds
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-002 (Redux): The inspected Redux2 preset separates manual values, controller mapping ranges, automation and modulation targets. SampleRate/BitDepth/Jitter/Shape/DryWet have continuous target fields; filter/DC-shift switches carry separate MIDI on/off thresholds. This proves structure in this artifact, not the GUI mapping law or smoothing. | Read-only installed Redux preset Chiptune Filter.adv, serialized type Redux2; SHA-256 cf38817e70e9064abe4c3543963bc076f967660fb2c34d98d9ee4fff05d79d36; private E45/preset-observations.json; authoring preset, not factory-default measurement | ADR-0169/ADR-0187: keep stored parameter values, controller normalization, switch thresholds and modulation ownership distinct. Follow-up case M7-A7R-002. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Controller ranges do not certify all accepted values
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-003 (Redux): This preset contains controller ranges 20–40000 for SampleRate, 1–16 for BitDepth and −4…4 for PostFilterValue. They are fields named MidiControllerRange; neither hard parameter validation nor current UI defaults follows from those fields alone. | Read-only installed Redux preset Chiptune Filter.adv, serialized type Redux2; SHA-256 cf38817e70e9064abe4c3543963bc076f967660fb2c34d98d9ee4fff05d79d36; private E45/preset-observations.json; authoring preset, not factory-default measurement | ADR-0169: validate range claims against the manual and installed control/API separately; do not clamp ADI blindly from resource metadata. Follow-up case M7-A7R-003. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Mode-specific state has distinct stored fields
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-004 (Shifter): The inspected Shifter preset has separate Pitch and modulation-based shift amounts, pitch-versus-frequency LFO and envelope-follower amounts, a pitch window field, and independent free/synced delay fields. A global mode selector exists alongside those values; transition preservation and dormant-field use remain unmeasured. | Read-only installed Shifter preset Autonomous Photon Ray.adv, serialized type Shifter; SHA-256 7c65b2df476b2a65688558d8e81a4a2b80fdb9f6fc4811819769792642554b7f; private E45/preset-observations.json; authoring preset, not factory-default measurement | ADR-0169/ADR-0187: units and inactive mode banks must remain explicit; one normalized amount is not a complete state model. Follow-up case M7-A7R-004. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Stage controls and audition are distinct stored state
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-005 (Drum Buss): The inspected DrumBuss preset separately declares compression enable, drive type/amount, crunch, damping, transient shaping, boom frequency/amount/decay/audition, input trim, output gain and DryWet. This is a stored-control inventory, not evidence of processing order or nonlinear formulas. | Read-only installed Drum Buss preset Bonzo on the Dials.adv, serialized type DrumBuss; SHA-256 a3c526ecd8a8885e9414fd08dc48e2f628db13bc12c5c31172cc656d0d159480; private E45/preset-observations.json; authoring preset, not factory-default measurement | FEATURES §6; ADR-0187: distinguish sound-path stages, audition routing and gain compensation; this research adds no new priority for Drum Buss. Follow-up case M7-A7R-005. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Numeric storage and enum encoding need separate contracts
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-006 (Gate): The inspected Gate preset stores Threshold as a fractional value, Return/Gain as other numeric values, and LookAhead with a controller index range 0…2. The artifact does not identify the enum-to-milliseconds mapping or prove all controls use the same value domain. | Read-only installed Gate preset Flipside.adv, serialized type Gate; SHA-256 744cb3db7b23e1a17131df6baaff3602b3f78786a6d198b4b904759ba54174e4; private E45/preset-observations.json; authoring preset, not factory-default measurement | FEATURES §6/7; ADR-0110: typed parameter conversion must precede automation and API exposure; a display label is not storage. Follow-up case M7-A7R-006. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Randomness parameters are distinct from seed evidence
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-007 (Random): The inspected MidiRandom preset declares Chance, Choices, Scale, Sign, Alternate and UseCurrentScale. No conclusion about PRNG seeding, reset or reproducibility can be drawn from those visible fields or from an omitted seed in this one artifact. | Read-only installed Random preset Blue.adv, serialized type MidiRandom; SHA-256 6c69459500a2cf93f5263ed638c96d294233c041079afe236757a0fdf366eb6c; private E45/preset-observations.json; authoring preset, not factory-default measurement | ADR-0203 d7 supersedes ADR-0169 d3: ADI keeps Live-like changing results by default and offers its explicit repeatable-result switch. Follow-up case M7-A7R-007. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Shared schema vocabulary is not a shared DSP proof
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-008 (Sampler / Simpler): The inspected presets use MultiSampler and OriginalSimpler types but expose the same selected top-level Player, Pitch, Filter, Shaper, VolumeAndPan, envelope/LFO, MIDI routing, Globals, ViewSettings and SimplerSlicing fields. Shared declarations do not establish shared runtime code or equivalent supported controls. | Read-only installed Sampler preset Ambient Feeling.adv, serialized type MultiSampler; SHA-256 e87a9973498d061828c67017211ac4f789badb8bfa442f33dfc34bde669d1627; private E45/preset-observations.json; authoring preset, not factory-default measurement; Read-only installed Simpler preset Ambient Swells.adv, serialized type OriginalSimpler; SHA-256 b39ccefe4f8a80c8852de1c90d038b2e2e04ea123aff272600030fed891a17a1; private E45/preset-observations.json; authoring preset, not factory-default measurement | ADR-0169: ADI already plans a shared OneShot/Sampler engine; keep that product choice separate from evidence about Live. Follow-up case M7-A7R-008. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Media references are separate from playback controls
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-009 (Sampler / Simpler): Each selected sampler preset contains one SampleRef and one MultiSamplePart despite its many modulation and playback fields. This is only these two presets; it does not limit zone count or establish whether media is embedded, copied or deduplicated when loaded. | Read-only installed Sampler preset Ambient Feeling.adv, serialized type MultiSampler; SHA-256 e87a9973498d061828c67017211ac4f789badb8bfa442f33dfc34bde669d1627; private E45/preset-observations.json; authoring preset, not factory-default measurement; Read-only installed Simpler preset Ambient Swells.adv, serialized type OriginalSimpler; SHA-256 b39ccefe4f8a80c8852de1c90d038b2e2e04ea123aff272600030fed891a17a1; private E45/preset-observations.json; authoring preset, not factory-default measurement | FEATURES §6/8/9; ADR-0127: retain sample identity, region/zone state and dependency collection separately. Follow-up case M7-A7R-009. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Stored target IDs do not prove durable cross-preset identity
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-010 (Device hosting): The inspected authored resources repeat zero-valued target and object IDs. Their presence does not establish final per-instance identity after insertion, and copying a serialized value is not proof that automation should refer to the same target. | Private E45: seven hash-bound preset-observations and underlying authored resources | FEATURES §6/7/10; ADR-0110: distinguish asset-local placeholders, instance identity and restored target references. Follow-up case M7-A7R-010. | Confirmed by static analysis — selected shipped resource only; runtime meaning/defaults unmeasured |
+
+#### Sample loading has capability and import-default context
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-011 (Simpler on Push): An empty Simpler cannot play until a sample is loaded. The chapter describes short samples playing once and long samples looping/warping; imported warped clips retain their existing settings/markers. It gives no length threshold or override precedence for user defaults. | Live 12 local manual §35.8 pp.913–918; exact revision unconfirmed; Push 2 chapter/current integration distinction retained; private E45/push-sampler-sources.json | ADR-0169; FEATURES §6/9: loading, readiness, mode and inherited sample analysis are distinct states. Follow-up case M7-A7R-011. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Zoom follows the last touched sample-position control
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-012 (Simpler on Push): The Zoom encoder uses the last-touched Start, End, S Start or S Length control as its focus. The main display separately depicts the complete sample and active region. | Live 12 local manual §35.8 pp.913–918; exact revision unconfirmed; Push 2 chapter/current integration distinction retained; private E45/push-sampler-sources.json | FEATURES §6/9: view anchor, selected parameter and audio region must remain separate; zoom is not a musical edit. Follow-up case M7-A7R-012. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Edit mode changes button roles
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-013 (Simpler on Push): The device’s upper display button enters/exits Edit Mode. Inside Edit Mode, lower display buttons select parameter pages while upper buttons toggle options. | Live 12 local manual §35.8 pp.913–918; exact revision unconfirmed; Push 2 chapter/current integration distinction retained; private E45/push-sampler-sources.json | ADR-0181; FEATURES §9: controller layout is a mode-dependent action map with explicit focus and escape behavior. Follow-up case M7-A7R-013. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### One-shot stop is a separate controller action
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-014 (Simpler on Push): Trigger mode continues after pad release; the chapter explicitly gives Shift+Play/Stop to stop a one-shot immediately. The effect on other voices, clips and transport is not fully specified by that sentence. | Live 12 local manual §35.8 pp.913–918; exact revision unconfirmed; Push 2 chapter/current integration distinction retained; private E45/push-sampler-sources.json | ADR-0169/ADR-0181: distinguish note release, voice termination, transport and panic scope. Follow-up case M7-A7R-014. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Pad Slicing insertion can reassign later pads
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-015 (Simpler on Push): With Manual and Pad Slicing enabled, touching an empty pad during playback inserts a slice at that playback point; existing slices after it shift upward in the pad layout. The created time is not simply the empty pad’s previous index. | Live 12 local manual §35.8 pp.913–918; exact revision unconfirmed; Push 2 chapter/current integration distinction retained; private E45/push-sampler-sources.json | ADR-0169; FEATURES §6/9: slice identity, note mapping and controller cell are different objects. Follow-up case M7-A7R-015. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Slice pad order differs from a plain row-major grid
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-016 (Simpler on Push): Slices fill left-to-right groups of four from the lower left, upward through the left half, then from the bottom of the right half upward. Layout cycles among 64-pad, Loop Selector and 16 Velocities views. | Live 12 local manual §35.8 pp.913–918; exact revision unconfirmed; Push 2 chapter/current integration distinction retained; private E45/push-sampler-sources.json | ADR-0181: describe mapping and view transformation explicitly; desktop note numbers alone do not specify physical pad placement. Follow-up case M7-A7R-016. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+#### Slice refinement has distinct fine, split and delete actions
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7R-017 (Simpler on Push): Nudge moves the selected slice marker; Shift makes smaller changes. Split Slice inserts at the selected slice’s midpoint. Delete+pad removes that slice. The chapter does not give nudge units, rounding or minimum-spacing rules. | Live 12 local manual §35.8 pp.913–918; exact revision unconfirmed; Push 2 chapter/current integration distinction retained; private E45/push-sampler-sources.json | ADR-0169: region edits need defined units, boundaries, identity and undo; zoom-dependent precision must be measured. Follow-up case M7-A7R-017. | Supported hypothesis — documented; installed Live 12.4 behavior unmeasured |
+
+### Bounded REA/Ghidra observations of installed modules
+
+#### Processor modules expose separate lifecycle entry points
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-001 (Device hosting): Amp, Cabinet and Corpus each export CalcA, CreateInstanceU, DestroyInstanceU, GetPlugInfoU, ResetA, SetParameterA and SetSampleRateU. Identical export names do not establish identical ABI semantics, latency, processing precision or state behavior. | Read-only PE export inventory, private E46/device-module-inventory.json; each record binds exact path/hash | FEATURES §6; ADR-0187: define create/prepare/reset/parameter/process/destroy contracts explicitly rather than infer one from a processing callback. Follow-up case M7-A7N-001. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
+
+#### Calculation wrapper contains two unresolved virtual dispatches
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-002 (Amp): CalcA at 0x180001be4 guards a null object and dispatches through object-table offsets 0x160 and 0x1b8, then stores a boolean derived from the second result through an output pointer. Those target methods were not resolved here; the second result is not proven to mean silence. | Amp_64.dll SHA-256 6618c6f754c9e33bfde2fb1fc02b14befee6c685552385fea2e7ba32964fcd2a; Ghidra 12.2 selected export analysis, private E46/amp-targeted-12.2.txt | FEATURES §6; ADR-0187: processing output and activity/tail reporting may be separate interfaces; preserve that as an investigation question, not a recovered engine model. Follow-up case M7-A7N-002. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
+
+#### Reset and sample-rate configuration are distinct dispatch paths
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-003 (Amp): ResetA at 0x180001f98 dispatches through offset 0x168 when the object exists. SetSampleRateU at 0x18000201c uses offsets 0x8 and 0x18. This establishes distinct code paths, not equivalence between reset, reprepare or preset restoration. | Amp_64.dll SHA-256 6618c6f754c9e33bfde2fb1fc02b14befee6c685552385fea2e7ba32964fcd2a; Ghidra 12.2 selected export analysis, private E46/amp-targeted-12.2.txt | FEATURES §6; ADR-0187: test state history across reset and sample-rate changes rather than treating both as a fresh instance. Follow-up case M7-A7N-003. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
+
+#### Parameter storage and update calls are both visible
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-004 (Amp): In SetParameterA at 0x180001fb8, a nonzero index reaches a direct helper and a 32-bit scalar store indexed by index−1; index zero takes a separate helper path. The inspected code does not map indices to UI parameters or establish normalized units, bounds or smoothing. | Amp_64.dll SHA-256 6618c6f754c9e33bfde2fb1fc02b14befee6c685552385fea2e7ba32964fcd2a; Ghidra 12.2 selected export analysis, private E46/amp-targeted-12.2.txt | ADR-0110; FEATURES §6/7: separate immediate stored values, notifications/recalculation and time-varying interpolation. Follow-up case M7-A7N-004. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
+
+#### One selected callback has scalar and packed float paths
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-005 (Corpus): CalcA at 0x180001b60 contains MULSS and MULPS operations on two arrays, with sample-count and overlap guards selecting a packed path or scalar remainder. This establishes local single-precision/vectorized work, not Corpus-wide precision or measured efficiency. | Corpus_64.dll SHA-256 082e19a54f33a7d030586dded90e280125e7c3bb50080ba0e8c92935d97b95cc; REA 6.8.0/Ghidra 12.1.4 complete selected function dossiers, private E46/corpus-rea-calc.json and corpus-rea-rate.json | ADR-0207 d2: ADI precision is already decided; use block-size, remainder and channel-layout cases when validating equivalent optimizations. Follow-up case M7-A7N-005. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
+
+#### A conditional buffer ramp is visible but its trigger is unresolved
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-006 (Corpus): A conditional CalcA branch multiplies two arrays by a descending factor derived from 1 and reciprocal count. The branch reads an internal field whose semantic trigger is not established; this is not proof of bypass smoothing, note release or a universal fade curve. | Corpus_64.dll SHA-256 082e19a54f33a7d030586dded90e280125e7c3bb50080ba0e8c92935d97b95cc; REA 6.8.0/Ghidra 12.1.4 complete selected function dossiers, private E46/corpus-rea-calc.json and corpus-rea-rate.json | FEATURES §6; ADR-0187: investigate transition-specific ramps and preserve their state prerequisites. Follow-up case M7-A7N-006. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
+
+#### A low-level status path tracks quiet samples across callbacks
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-007 (Corpus): When a preceding result and output-pointer condition permit it, CalcA compares both arrays with approximately ±1e−5. An above-threshold value restores a counter from another field; otherwise it subtracts the visited sample count and clears the output flag when exhausted. The flag’s host meaning and complete trigger conditions remain unresolved. | Corpus_64.dll SHA-256 082e19a54f33a7d030586dded90e280125e7c3bb50080ba0e8c92935d97b95cc; REA 6.8.0/Ghidra 12.1.4 complete selected function dossiers, private E46/corpus-rea-calc.json and corpus-rea-rate.json | FEATURES §6/8: tail/activity reporting can require cross-block state; a fixed block count is not a sample-rate-independent policy. Follow-up case M7-A7N-007. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
+
+#### Quiet-counter initialization is linked to rate configuration
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-008 (Corpus): SetSampleRateU at 0x1800015f0 writes a signed-integer divide-by-ten result from its rate argument to offset 0xe04f8, the limit read by CalcA’s quiet-counter path. This supports a candidate rate-scaled interval; it does not prove an audible 100-ms tail cutoff in Live. | Corpus_64.dll SHA-256 082e19a54f33a7d030586dded90e280125e7c3bb50080ba0e8c92935d97b95cc; REA 6.8.0/Ghidra 12.1.4 complete selected function dossiers, private E46/corpus-rea-calc.json and corpus-rea-rate.json | FEATURES §6; ADR-0187: separate a rate-derived activity horizon from the physical resonator decay and graph scheduling. Follow-up case M7-A7N-008. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
+
+#### Rate configuration touches locale state and initialization
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| A7N-009 (Corpus): The selected SetSampleRateU code saves the thread-locale configuration mode, calls setlocale with C and later with a copied returned string, and restores the prior thread-locale configuration mode. Restoration of the previous locale string is not established. Which Live thread calls this path and whether rate changes occur during playback remain unresolved. | Corpus_64.dll SHA-256 082e19a54f33a7d030586dded90e280125e7c3bb50080ba0e8c92935d97b95cc; REA 6.8.0/Ghidra 12.1.4 complete selected function dossiers, private E46/corpus-rea-calc.json and corpus-rea-rate.json | FEATURES §6: preparation and real-time processing need separate threading contracts; setup work must not be assumed safe in the callback. Follow-up case M7-A7N-009. | Confirmed by static analysis — exact inspected bytes only; host execution and audio/CPU behavior unmeasured |
