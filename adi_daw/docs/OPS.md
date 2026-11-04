@@ -443,12 +443,49 @@ silent truncation in JSON, a non-issue in CBOR.
 | `automation.deleteLane` | e | S | cap | P0 |
 | `automation.writePoints` | e | S | cap | P0 |
 | `automation.deletePoints` | e | S | cap | P0 |
-| `automation.movePoints` | e | S | sym, coalescable | P0 |
-| `automation.setCurve` | e | S | sym | P1 |
+| `automation.movePoints` | e | S | cap | P0 |
+| `automation.setCurve` | e | S | cap | P1 |
+| `automation.restoreData` | e | S | cap | P1 |
 | `automation.clearLane` | e | S | cap | P1 |
 | `automation.setLaneEnabled` | e | S | sym | P1 |
 | `automation.setLaneVisible` | e | N | sym | P1 |
 | `automation.setDefaultValue` | e | S | sym | P2 |
+
+The native point-editing increment implements `writePoints`, `deletePoints`,
+`movePoints`, `setCurve` and captured `restoreData` in `automation_edits.hpp`.
+Lane creation and the remaining lane operations in this table are separate work.
+All edits run on the document owner through `OpJournal`, never in a callback.
+
+Every point-edit request contains `id` (explicit automation_data row ID), `lane`
+(existing automation_lanes ID), and `clip` (JSON null for arrangement, otherwise
+an existing clip ID). The complete address must match the stored row; an absent
+row can be created only by writePoints and only if its lane/clip slot is free.
+No handler generates IDs, reads UI selection, or consults the grid.
+
+- `writePoints.points`: array of `{id,time,value,curve,tension}`. Positive full
+  uint64 point IDs upsert existing points or insert new ones. Time is nonnegative
+  int64 in the lane's unit, value is finite double, curve is 0..5 (SPEC §6.3.2),
+  tension is finite -1..1 stored as float. Existing flags/reserved bytes survive.
+- `movePoints.points`: `{id,time,value}` for existing points only; times/values
+  are absolute, avoiding delta overflow and ambient snapping. Curve and tension
+  survive. This increment captures exact inverses rather than coalescing moves;
+  the UI can submit a completed gesture or a single batch.
+- `deletePoints.ids` / `setCurve.ids`: nonempty arrays of existing positive
+  uint64 IDs. setCurve also carries curve and tension. A duplicate or missing
+  selection refuses the whole edit. Empty resulting streams remain addressed.
+- `restoreData`: internal inverse packet with the same address, object `state` containing boolean
+  `present` and CBOR binary `bytes`; restores original bytes or row absence.
+  It captures its own inverse and does not normalize the original stream.
+
+Edits sort whole records stably by time, including coincident-point order. Known
+prefix edits and deletion retain header version/flags, per-record opaque suffixes,
+reserved bytes and trailing data. Insertion into a wider, newer or unknown-flag
+stream is refused because unknown fields cannot be invented. Duplicate/zero
+stored point IDs and unreadable streams refuse edits. Undo/redo retains the exact
+original layout even across reordering. Caller beforeCommit rejection rolls back
+stream and journal together. Caller-provided shape points use the existing six
+curve formulas; this increment adds no Live shape preset or parity claim, lane
+creation, Automation Arm, clip-envelope playback, or automated send levels.
 
 ### 9.7 Devices, chains, macros
 
@@ -650,7 +687,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**173 ops** — 66 P0, 55 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
