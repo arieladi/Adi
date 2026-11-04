@@ -1106,6 +1106,20 @@ void rangeEditsAsBatches() {
     check(ui::moveClips(view.current()->tracks, {1}, -bar).ops.empty() &&
               ui::moveClips(view.current()->tracks, {99}, bar).refusal == "Select a clip to move.",
           "a clip already at the start moves nowhere; a missing one is refused");
+    // Across tracks, each by the same rows, while every one lands on a track that can take it.
+    const std::vector<std::int64_t> lanes{1, 2, 3};
+    const auto down = ui::clipsAcross(view.current()->tracks, lanes, {1, 2}, 1);
+    check(down && *down == ui::ClipTracks{{1, 2}, {2, 3}}, "two clips a row down: track 1's to 2, track 2's to 3");
+    check(!ui::clipsAcross(view.current()->tracks, lanes, {1, 2}, 2) &&
+              !ui::clipsAcross(view.current()->tracks, {1, 2}, {3}, 0) &&
+              ui::clipsAcross(view.current()->tracks, lanes, {1}, 0)->empty(),
+          "past the last lane, or from a track not in the lanes: none moves across; no rows: none changes track");
+    auto lower = ui::moveClips(view.current()->tracks, {1, 2}, 0, *down);
+    check(lower.ops.size() == 2 && lower.ops[0].payload["track"] == 2 && lower.ops[1].payload["track"] == 3 &&
+              sub.submit(std::move(lower.ops)).ok && view.current()->findTrack(1)->clips.empty() &&
+              view.current()->findTrack(3)->clips.size() == 2,
+          "moved a row down with no change of time: each on the next track, one step");
+    check(sub.undo().ok && view.current()->findTrack(1)->clips.size() == 1, "undo");
     {
         ui::SessionState session(*store);
         ui::Selection chosen;

@@ -1574,15 +1574,17 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 }
             }
         };
-        // A clip dragged onto another track is drawn on that track's lane, in its colour.
+        // A clip dragged onto another track is drawn on that track's lane, in its colour; so is
+        // each of several selected clips dragged across tracks.
         for (const auto &c : t->clips)
-            if (c->id != moving_ || movingTrack_ == t->id)
+            if (const auto to = movingTargetOf(c->id); to == 0 || to == t->id)
                 drawClip(*c);
-        if (moving_ != 0 && movingTrack_ == t->id && movingSource_ != t->id)
-            if (const auto *source = view.reader().findTrack(movingSource_))
-                for (const auto &c : source->clips)
-                    if (c->id == moving_)
-                        drawClip(*c);
+        if (moving_ != 0)
+            for (const auto &other : view.reader().tracks())
+                if (other->id != t->id)
+                    for (const auto &c : other->clips)
+                        if (movingTargetOf(c->id) == t->id)
+                            drawClip(*c);
         y += h;
     }
     if (foot == rows.size())
@@ -1691,6 +1693,7 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
                 moving_ = c->id;
                 movingFrom_ = movingTo_ = c->posTicks;
                 movingSource_ = movingTrack_ = track;
+                movingAcross_.clear();
                 grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
                 selectOnUp_ = true;
                 pressedAt_ = e.getPosition();
@@ -1709,6 +1712,17 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
             grabTicks_ = view.geometry.tick(e.x) - c->posTicks;
         }
     }
+}
+std::int64_t ArrangementCanvas::movingTargetOf(std::int64_t clip) const noexcept {
+    // 0: drawn on its own track.
+    if (moving_ == 0)
+        return 0;
+    if (view.geometry.selection.pickedClips.empty())
+        return clip == moving_ ? movingTrack_ : 0;
+    for (const auto &[id, target] : movingAcross_)
+        if (id == clip)
+            return target;
+    return 0;
 }
 const engine::ClipNode *ArrangementCanvas::barAt(int x, int y, std::int64_t &track, bool &edge) const {
     const auto &geo = view.geometry;
@@ -1769,13 +1783,32 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true);
         if (e.mouseWasDraggedSinceMouseDown())
             selectOnUp_ = false;
-        // Several selected clips move in time together and keep their tracks; moving them across
-        // tracks, each by the same rows, waits.
+        // Several selected clips move together: in time, and across tracks each by the same rows
+        // when every one lands on a track that can take it; else they stay on the last rows that
+        // could.
         const bool several = !view.geometry.selection.pickedClips.empty();
-        if (const auto *over = view.geometry.trackAt(view.reader(), e.y); over != nullptr && !several)
+        if (const auto *over = view.geometry.trackAt(view.reader(), e.y); over != nullptr && !several) {
             if (const auto *source = view.reader().findTrack(movingSource_);
                 source != nullptr && over->id != movingTrack_ && canTakeClip(*over, *source))
                 movingTrack_ = over->id;
+        } else if (over != nullptr) {
+            std::vector<std::int64_t> lanes;
+            std::ptrdiff_t from = -1, to = -1;
+            for (const auto row : view.geometry.rows(view.reader()))
+                if (!row.place.foot() && view.geometry.heightFor(row.track->id) > 0) {
+                    if (row.track->id == movingSource_)
+                        from = static_cast<std::ptrdiff_t>(lanes.size());
+                    if (row.track->id == over->id)
+                        to = static_cast<std::ptrdiff_t>(lanes.size());
+                    lanes.push_back(row.track->id);
+                }
+            if (from >= 0 && to >= 0)
+                if (const auto current = view.root.current())
+                    if (auto landed = clipsAcross(current->tracks, lanes, view.geometry.selectedClips(), to - from)) {
+                        movingAcross_ = std::move(*landed);
+                        movingTrack_ = over->id;
+                    }
+        }
         const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
@@ -1827,16 +1860,25 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
         // Several selected clips: one drag moves them all by the same offset, one undo step; a
         // press without a drag selects the clip pressed alone.
         const auto delta = movingDelta();
+        const auto clip = moving_;
+        const auto across = std::move(movingAcross_);
+        movingAcross_.clear();
         moving_ = 0;
         auto &sel = view.geometry.selection;
-        if (delta != 0) {
+        if (delta != 0 || !across.empty()) {
             if (const auto current = view.root.current()) {
-                auto edit = moveClips(current->tracks, view.geometry.selectedClips(), delta);
+                auto edit = moveClips(current->tracks, view.geometry.selectedClips(), delta, across);
                 if (!edit.refusal.empty())
                     view.root.say(edit.refusal);
                 else if (!edit.ops.empty() && view.root.submitEdits(std::move(edit.ops))) {
                     sel.start += delta;
                     sel.end += delta;
+                    // The selection follows the clip dragged, onto its new track.
+                    for (const auto &[id, target] : across)
+                        if (id == clip) {
+                            sel.track = target;
+                            sel.toTrack = 0;
+                        }
                 }
             }
         } else if (selectOnUp_)

@@ -199,6 +199,10 @@ class ArrangementCanvas final : public juce::Component,
     // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
     // of them reaches the arrangement's start.
     std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }
+    // While several selected clips are dragged across tracks, the ones that change track, each
+    // with the track it lands on (`clipsAcross`); the track a clip is drawn on while dragging.
+    std::vector<std::pair<std::int64_t, std::int64_t>> movingAcross_;
+    std::int64_t movingTargetOf(std::int64_t clip) const noexcept;
     // The clip's bar under a point, and whether the point is on its right edge.
     const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
     // A group's lane, row `at`: Live's overview of the clips of what it holds.
