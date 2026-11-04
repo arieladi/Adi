@@ -231,6 +231,7 @@ add_library(adi_core STATIC
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
     src/adi/engine/clip_details.cpp
+    src/adi/engine/scale_context.cpp
     src/adi/render/queue.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
@@ -782,6 +783,10 @@ add_test(NAME adi_engine_tests COMMAND adi_engine_tests)
 add_executable(adi_clip_details_tests tests/test_clip_details.cpp)
 target_link_libraries(adi_clip_details_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clip_details_tests COMMAND adi_clip_details_tests)
+
+add_executable(adi_scale_context_tests tests/test_scale_context.cpp)
+target_link_libraries(adi_scale_context_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scale_context_tests COMMAND adi_scale_context_tests)
 # ADR-0201: the UI's project-state cell, message thread only.
 add_executable(adi_project_view_tests tests/test_project_view.cpp)
 target_link_libraries(adi_project_view_tests PRIVATE adi_core adi_warnings)

@@ -5,6 +5,7 @@
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -90,11 +91,12 @@ void localProperties(SQLite::Database& db, ClipDetails& clip) {
 }
 } // namespace
 
-ClipDetailsRead readClipDetails(const Store& store, std::int64_t clipId) {
+ClipDetailsRead readClipDetails(const Store& store, std::int64_t clipId,bool includeNotes) {
     ClipDetailsRead result;
     try {
         auto& db = const_cast<SQLite::Database&>(store.db());
-        SQLite::Transaction transaction(db);
+        std::optional<SQLite::Transaction> transaction;
+        if(sqlite3_get_autocommit(db.getHandle())!=0)transaction.emplace(db,SQLite::TransactionBehavior::DEFERRED);
         SQLite::Statement query(db,
             "SELECT id,track_id,lane_id,kind,name,color,time_base,pos_ticks,pos_ns,length_ticks,length_ns,"
             "loop_enabled,loop_start_ticks,loop_len_ticks,content_offset_ticks,muted,gain_db,"
@@ -144,10 +146,10 @@ ClipDetailsRead readClipDetails(const Store& store, std::int64_t clipId) {
             }
         }
         localProperties(db, clip);
-        if (clip.kind == "midi") readNotes(clip, db);
+        if (includeNotes && clip.kind == "midi") readNotes(clip, db);
         // Finish the active single-row statement before ending the read view.
         query.reset();
-        transaction.commit();
+        if(transaction)transaction->commit();
         result.clip = std::move(clip);
     } catch (const std::exception& error) { result.error = error.what(); }
     return result;
