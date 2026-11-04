@@ -595,6 +595,37 @@ coordinator must still map timestamps/targets and serialize matching recorder
 producer controls; no automatic host callback wiring or measured Live parity is
 claimed. No schema or opcode change is required.
 
+Clip-relative `automation_data` now plays as absolute-value overlays on existing
+track/device lanes. Values remain in the lane's declared normalized/real/enum
+domain; this does not invent a relative-modulation mode absent from the format.
+The arrangement stream (or default value) remains the fallback outside active
+half-open clip placements. Latest audible clip start wins overlap, with higher
+clip ID as the tie breaker; ending/muting/deleting the winner exposes the
+underlying clip at its ongoing phase, then the arrangement.
+
+Owner-thread compilation reads clip-relative points with their original curves,
+content offset and musical loop window. It handles musical/linear placements,
+tick/nanosecond envelopes, the pre-loop intro, loops starting inside their window,
+and step tempos. Native curve phase survives trimming and tempo changes rather
+than being renormalized between cropped samples. Nanosecond envelopes use elapsed
+seconds plus the musical content offset; while looping, the musical loop phase
+maps back through the source-relative step-tempo clock. All six shared curves and
+coincident-point ordering are preserved. Device-event emission includes exact
+rounded clip/point/wrap boundaries between the existing cadence ticks. Strip
+processing retains its existing control grid and smoothing; both graph widths
+read the same immutable envelope values. Transport seeks/wraps use the pure
+sample-position lookup, with no callback allocations or Store access.
+
+Compilation is bounded per lane: 1,048,576 native clip points/change boundaries,
+16,384 accepted placements, and a corresponding repeat budget. Over-budget or
+invalid clip streams are refused whole and named while valid neighbors and
+arrangement playback remain. Empty streams do not mask arrangement data. The clip
+must belong to the lane owner's track (including nested-device chains). Unknown
+clocks, aliases, unsupported owners and loops shorter than one session sample
+remain explicitly refused; clip-owned relative gain/modulation semantics are not
+claimed. Ramp tempos remain a reported step-tempo fallback, as in arrangement
+playback. No schema/opcode/UI change or measured Live parity claim is introduced.
+
 ### 9.7 Devices, chains, macros
 
 | Op | S | E | Inv | P |
