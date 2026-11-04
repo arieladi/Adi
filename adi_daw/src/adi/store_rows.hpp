@@ -63,6 +63,24 @@ struct TimeSignature {
     std::int64_t denominator = 4;
 };
 
+// ADR-0178: complete relational scale context for deterministic projection.
+struct TuningSystem {
+    std::int64_t id=0;
+    std::string name,source,description;
+    double periodCents=1200;
+};
+struct TuningDegree {
+    std::int64_t tuningId=0,degree=0;
+    double cents=0;
+    std::string name;
+};
+struct KeyEvent {
+    std::int64_t id=0,posTicks=0,root=0,mask=2741;
+    std::string scaleId="major";
+};
+struct KeyTuning {std::int64_t keyId=0,tuningId=0;};
+struct KeyDegree {std::int64_t keyId=0,degree=0;};
+
 // --- Layer 1: tracks and their mixer strip ----------------------------------
 
 struct Track {
@@ -357,6 +375,11 @@ struct Model {
     Project project;
     std::vector<TempoEvent> tempo;
     std::vector<TimeSignature> signatures;
+    std::vector<TuningSystem> tunings;
+    std::vector<TuningDegree> tuningDegrees;
+    std::vector<KeyEvent> keyEvents;
+    std::vector<KeyTuning> keyTunings;
+    std::vector<KeyDegree> keyDegrees;
     std::vector<Track> tracks;
     std::vector<MixerStrip> strips;
     std::vector<Lane> lanes;

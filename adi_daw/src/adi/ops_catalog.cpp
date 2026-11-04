@@ -20,6 +20,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/summing_flavors.hpp"
+#include "adi/tuning_ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -2039,6 +2040,8 @@ std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
+        const auto tuningOps=tunings::ops();
+        v.insert(v.end(),tuningOps.begin(),tuningOps.end());
         return v;
     }();
     return all;
