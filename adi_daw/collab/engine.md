@@ -12,6 +12,20 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-04 — Send levels automate like faders; taking Capture audio memory
+
+**PR requested:** head `engine/send-automation` at **`8e6d4ff11833490f7180052c55df8d20ed46ec7e`**, base `engine/log` (`c28b547`). Title: **Play automated send levels through fader and recording policy**. Explicit dependency: `engine/clip-envelopes` (`7ca44d0`) and its declared automation dependencies. Win opens and merges in dependency order; this Linux seat never touches main.
+
+**Window/host handoff / PR body:** Existing native lane/point APIs can address a track-origin send with owner_kind=routing, owner_id=its routing row ID, param_ref=gain_db, value_domain=real (dB). Session refresh binds arrangement and source-track absolute clip envelopes to the send's existing second strip stage, preserving +24 dB ceiling, silence threshold, control cadence, five-millisecond ramps and both graph precisions. Enable Send/solo stay gates; source mute, Pre/Post fader/automation and track-delay/PDC stay in the first stage. Graph holders retain both programs independently. Ordinary routing.setGain edits override only that send lane, even when a track shares its numeric ID; Re-Enable resumes it. Send lanes join the existing Arm/write/commit/refresh/finish policy without permanent recorded overrides. Unsupported domains/parameters/non-send targets are named. No schema/new opcode/UI/device-production change; timestamp producers still need the prior explicit coordinator handoff.
+
+**Solo policy:** Reachability conservatively includes an enabled send if its arrangement/default or any clip point can rise above silence anywhere in its program. Actual audio follows its current curve. This avoids callback topology/PDC changes, but can keep an arbitrary destination reachable in silent portions of an otherwise audible send. Wholly silent automation does not open it. This explicit policy is not a measured Live parity claim.
+
+**Gate:** GCC14 full Debug/Werror/PD-on/JUCE-off build and test_all.sh **10,266 checks / 113 suites**, every result row and sum inspected, zero failures, all validators/layout green. New send suite **45** checks covers real Store→Session float/double playback, ceiling, source mute, Pre/Post, seek/clip fallback, disabled sends, equal track/routing IDs, ordinary override and timestamped captured-data commit/resumption, solo reachability, target refusals, independent graph lifetimes, PDC and callback no-allocation. Clang19 send/mixer/Session/clip/write-policy **5/5** pass. Five translation units pass Wshadow. Six compiled plants fail normally: absent ceiling (2), absent binding (16), stored-knob solo reachability (1), wrong clip source (3), missing manual override (2), missing send write recognition (4). MSVC/JUCE, physical inputs/plugins and measured Live parity remain unrun here. README count remains win-owned.
+
+**Next immediately:** Phase D Capture, starting its default 30-second RAM audio memory per armed or monitored input (ADR-0132 d9), then owner-side materialization and MIDI retrospective capture, before Scale Mode and the rest of the brief. Keep input identity/clock explicit, exact source samples, bounded producer work and memory, no callback allocation/lock/file I/O, and a race-safe owner snapshot. Do not confuse this retrospective buffer with transport recording or claim hardware/UI hookup from an engine API. Capture can branch independently from engine/log; it does not need the automation dependency stack. Standing order remains gate, push, log, next in this same turn; no stop at this checkpoint.
+
+---
+
 ## 2026-11-04 — Absolute clip envelopes play; taking automated send levels now
 
 **PR requested:** head `engine/clip-envelopes` at **`7ca44d02c1227560d9b49ea785b107a6aee0673d`**, base `engine/log` (`5aa99b0`). Title: **Play absolute clip automation envelopes through native lanes**. Explicit dependency: `engine/automation-write-policy` (`875c820`) and the preceding automation stack, integrated only into this item worktree. Win opens/merges; main is untouched.
