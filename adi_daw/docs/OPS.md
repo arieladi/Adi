@@ -521,6 +521,40 @@ silent truncation in JSON, a non-issue in CBOR.
 
 ### 9.10 Media
 
+**Retrospective audio memory (ADR-0132 d9).** `engine/audio_memory.hpp`
+provides one `AudioMemory(inputId, sampleRate, channels, seconds=30)` per physical
+input that may be captured. This is separate from transport recording. Exactly
+one producer serializes `setListening(armed,monitored)` and `push(planarInput,
+frames,firstStreamSample)`; UI gate changes must be queued to that producer.
+The driver clock is explicit and independent of playhead seeks/loops. Either
+gate keeps memory listening; switching between armed and monitored preserves
+continuity. Switching listening on/off clears the logical retained history.
+Discontinuities, clock restarts and rejected input begin a new epoch, so the
+latest capture is always a contiguous suffix rather than spliced unrelated audio.
+
+Storage is allocated before callbacks, with a 256 MiB per-input cap; invalid
+identity/format/duration is refused at construction. Default stereo 48 kHz holds
+11.52 MB of float sample payload plus chunk metadata and one spare chunk. The
+latest configured duration is retained exactly, including irregular callbacks
+and callbacks larger than the ring. Null input channels mean digital silence.
+Counts/timestamps that overflow, negative values and callbacks over 1,048,576
+frames are rejected and counted; zero frames is a no-op. The source is the
+physical driver's float input, not a narrowed internal double graph bus.
+
+The document owner calls `snapshot(output,error)` off callback. It returns an
+immutable interleaved copy with input ID, epoch, first stream sample, format and
+frames. Float bits, including signed zero/NaN payloads and above-unity samples,
+are preserved without normalization, quantization or dither. The existing Float32
+WAV writer can persist it on the owner before `media::prepareImport` below.
+Chunk ownership prevents concurrent sample access: the producer never waits for
+a reader, instead dropping/counting a pinned segment and starting fresh history.
+Snapshots that encounter in-flight/overwritten chunks fail explicitly with empty
+output; callers may retry. Producer gates/copies allocate, lock and perform file
+I/O nowhere. Snapshotting, persistence and import are owner work. This API does
+not automatically attach physical inputs, wire a Capture UI command, materialize
+an undoable clip, infer MIDI tempo, or claim Live parity; those are subsequent
+Capture integration work. No new opcode/schema is needed for the RAM buffer.
+
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
 | `media.import` | e | N | pair `media.unlink` | P0 |
