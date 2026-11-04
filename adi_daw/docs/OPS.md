@@ -674,6 +674,14 @@ before SQL/allocation. See ENGINE-SCAN-QUARANTINE.md. Discovery/helper integrati
 is separate; this persistence API alone does not move existing scans out of
 process or change project/runtime instantiation policy.
 
+The integration in ENGINE-PLUGIN-SCANNER.md now connects both foundations:
+ClapHost/Vst3Host directory discovery and the VST3 loader's direct path hint
+always use the dedicated bounded helper, with whole path-bound metadata/format
+validation before successful quarantine completion. Reports expose failures,
+cancelled/unavailable service retains the old catalogue, and CMake places the
+mandatory helper beside its consumers. Runtime instantiation remains in process;
+no project op, project schema or blob layout changes.
+
 The `transport.*` ops are **performance**, not editing. They write no project
 state, and appending them to undo history would bury the last real edit under
 navigation.

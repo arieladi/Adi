@@ -3,6 +3,7 @@
 // See clap_host.hpp for why this file has no JUCE in it.
 
 #include "juce/clap_host.hpp"
+#include "adi/audio/io_audit.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1445,9 +1446,14 @@ bool ClapLibrary::open(const std::string& path, std::string& error) {
     const std::string load = resolveLoadPath(path);
 
 #if defined(_WIN32)
-    lib_ = static_cast<void*>(::LoadLibraryA(load.c_str()));
+    try {
+        const std::filesystem::path native(std::u8string(load.begin(),load.end()));
+        lib_ = static_cast<void*>(::LoadLibraryW(native.c_str()));
+    } catch (const std::filesystem::filesystem_error&) {
+        error = "invalid UTF-8 CLAP path";return false;
+    }
     if (lib_ == nullptr) {
-        error = "LoadLibrary failed, error " + std::to_string(::GetLastError());
+        error = "LoadLibraryW failed, error " + std::to_string(::GetLastError());
         return false;
     }
     entry_ = reinterpret_cast<const clap_plugin_entry_t*>(
@@ -1745,33 +1751,39 @@ ClapHost::ClapHost() = default;
 
 namespace {
 
-/// `std::getenv`, with MSVC's C4996 silenced at ONE site instead of four.
-///
-/// MSVC deprecates it because the returned pointer is invalidated by a later
-/// `getenv`/`putenv` on another thread. We read a handful of variables once, at
-/// startup, on the message thread, and copy each into a `std::string`
-/// immediately -- so the hazard it warns about cannot arise. The suggested
-/// replacement, `_dupenv_s`, is Windows-only and would put an `#ifdef` at every
-/// call site rather than in this one function.
-const char* envOr(const char* name) noexcept {
+std::string pathBytes(const std::filesystem::path& path) {
+    const auto bytes=path.u8string();return {bytes.begin(),bytes.end()};
+}
+// Environment paths are copied once on the owner, wide on Windows. No ANSI
+// profile-folder conversion and no process-global environment mutation.
+std::string pathEnvironment(const char* name) {
 #if defined(_MSC_VER)
 #pragma warning(push)
 #pragma warning(disable : 4996)
 #endif
-    return std::getenv(name);
+#if defined(_WIN32)
+    const std::wstring wideName(name,name+std::strlen(name));
+    const auto* value=::_wgetenv(wideName.c_str());
+    const auto result=value!=nullptr?pathBytes(std::filesystem::path(value)):std::string{};
+#else
+    const auto* value=std::getenv(name);
+    const std::string result=value!=nullptr?value:"";
+#endif
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
+    return result;
 }
 
 }  // namespace
 
 std::vector<std::string> ClapHost::defaultSearchPaths() {
+    if(audio::onAudioThread)return {};
     std::vector<std::string> out;
 
     // CLAP_PATH first, because a user who sets it means it. Colon-separated
     // on POSIX, semicolon on Windows -- the same convention as PATH itself.
-    if (const char* env = envOr("CLAP_PATH")) {
+    if (const auto env = pathEnvironment("CLAP_PATH"); !env.empty()) {
 #if defined(_WIN32)
         const char sep = ';';
 #else
@@ -1789,20 +1801,20 @@ std::vector<std::string> ClapHost::defaultSearchPaths() {
     // initialised-but-unreferenced local is C4189 -- fatal under -Werror, and
     // invisible on a platform that does read it.
 #if !defined(_WIN32)
-    const char* home = envOr("HOME");
+    const auto home = pathEnvironment("HOME");
 #endif
 #if defined(__APPLE__)
     out.emplace_back("/Library/Audio/Plug-Ins/CLAP");
-    if (home != nullptr) out.emplace_back(std::string(home) + "/Library/Audio/Plug-Ins/CLAP");
+    if (!home.empty()) out.emplace_back(home + "/Library/Audio/Plug-Ins/CLAP");
 #elif defined(_WIN32)
-    if (const char* pf = envOr("COMMONPROGRAMFILES"))
-        out.emplace_back(std::string(pf) + "\\CLAP");
-    if (const char* la = envOr("LOCALAPPDATA"))
-        out.emplace_back(std::string(la) + "\\Programs\\Common\\CLAP");
+    if (const auto pf = pathEnvironment("COMMONPROGRAMFILES"); !pf.empty())
+        out.emplace_back(pf + "\\CLAP");
+    if (const auto la = pathEnvironment("LOCALAPPDATA"); !la.empty())
+        out.emplace_back(la + "\\Programs\\Common\\CLAP");
 #else
     out.emplace_back("/usr/lib/clap");
     out.emplace_back("/usr/local/lib/clap");
-    if (home != nullptr) out.emplace_back(std::string(home) + "/.clap");
+    if (!home.empty()) out.emplace_back(home + "/.clap");
 #endif
     return out;
 }
@@ -1818,9 +1830,11 @@ ClapLibrary* ClapHost::libraryFor(const std::string& path, std::string& error) {
 }
 
 std::vector<std::string> ClapHost::findBundles(const std::vector<std::string>& paths) {
+    if(audio::onAudioThread)return {};
     namespace fs = std::filesystem;
     std::vector<std::string> out;
-    for (const auto& dir : paths) {
+    for (const auto& bytes : paths) {
+        const fs::path dir(std::u8string(bytes.begin(),bytes.end()));
         std::error_code ec;
         if (!fs::is_directory(dir, ec)) continue;
         // skip_permission_denied: one unreadable vendor folder must not end
@@ -1828,10 +1842,10 @@ std::vector<std::string> ClapHost::findBundles(const std::vector<std::string>& p
         fs::recursive_directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
         const fs::recursive_directory_iterator end;
         for (; !ec && it != end; it.increment(ec)) {
-            std::string ext = it->path().extension().string();
+            std::string ext = pathBytes(it->path().extension());
             for (char& c : ext) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
             if (ext != ".clap") continue;
-            out.push_back(it->path().string());
+            out.push_back(pathBytes(it->path()));
             std::error_code dirEc;
             if (it->is_directory(dirEc)) it.disable_recursion_pending();   // a macOS bundle
         }
@@ -1841,32 +1855,33 @@ std::vector<std::string> ClapHost::findBundles(const std::vector<std::string>& p
     return out;
 }
 
-void ClapHost::scan(const std::vector<std::string>& paths) {
-    found_.clear();
-    for (const std::string& p : findBundles(paths)) {
-        std::string err;
-        ClapLibrary* lib = libraryFor(p, err);
-        if (lib == nullptr) continue;      // not ours to report; a browser shows what loaded
-
-        const std::uint32_t n = lib->pluginCount();
-        for (std::uint32_t i = 0; i < n; ++i) {
-            const clap_plugin_descriptor_t* d = lib->descriptorAt(i);
-            if (d == nullptr || d->id == nullptr) continue;
-            ClapPluginRef r;
-            r.bundlePath = p;
-            r.id      = d->id;
-            r.name    = d->name    != nullptr ? d->name    : "";
-            r.vendor  = d->vendor  != nullptr ? d->vendor  : "";
-            r.version = d->version != nullptr ? d->version : "";
-            for (const char* const* f = d->features; f != nullptr && *f != nullptr; ++f) {
-                if (!r.features.empty()) r.features += ',';
-                r.features += *f;
-                if (std::strcmp(*f, CLAP_PLUGIN_FEATURE_INSTRUMENT) == 0)
-                    r.isInstrument = true;
+scan::Report ClapHost::scan(const std::vector<std::string>& paths,const scan::Config& config) {
+    scan::Report report;
+    if(audio::onAudioThread){report.complete=false;return report;}
+    const auto bundles=findBundles(paths);
+    if(bundles.empty()){found_.clear();return report;}
+    std::string error;auto scanner=scan::Scanner::open(config,error);
+    if(!scanner){report.complete=false;report.failures.push_back({"",error,scan::State::Unavailable});return report;}
+    std::vector<ClapPluginRef> found;
+    for(const auto& path:bundles) {
+        const auto result=scanner->probe("clap",std::filesystem::path(std::u8string(path.begin(),path.end())));
+        if(result.state!=scan::State::Ready) {
+            report.failures.push_back({result.path.empty()?path:result.path,result.error,result.state});
+            if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
+                report.complete=false;report.cancelled=result.state==scan::State::Cancelled;return report;
             }
-            found_.push_back(std::move(r));
+            continue;
+        }
+        if(result.plugins.size()>scan::kMaximumPlugins-found.size()) {
+            report.complete=false;report.failures.push_back({path,"CLAP catalogue descriptor bound",scan::State::Invalid});return report;
+        }
+        for(const auto& plugin:result.plugins) {
+            ClapPluginRef value;value.bundlePath=result.path;value.id=plugin.id;value.name=plugin.name;
+            value.vendor=plugin.vendor;value.version=plugin.version;value.features=plugin.features;
+            value.isInstrument=plugin.instrument;found.push_back(std::move(value));
         }
     }
+    found_=std::move(found);return report;
 }
 
 std::unique_ptr<DeviceInstance> ClapHost::makeDevice(const ClapPluginRef& ref,

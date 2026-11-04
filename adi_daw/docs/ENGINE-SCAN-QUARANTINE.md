@@ -65,8 +65,8 @@ row/text read bounds and later invalid data. External recovery review additional
 uses a real `_Exit` after begin, bypassing all database destructors, then verifies
 blocked reopen and explicit re-enable through the actual API.
 
-This branch provides persistence and owner handoff. It does not yet change CLAP
-or VST3 scan calls, launch children, parse metadata, cache descriptors or draw a
-blocklist UI. The next scanner integration must use this marker before every
-probe, including path-hint discovery, and the separately gated process runner;
-there must be no in-process discovery fallback.
+This component provides persistence and owner handoff. ENGINE-PLUGIN-SCANNER.md
+now connects it to the dedicated helper and all CLAP/VST3 discovery paths,
+including direct VST3 path hints, without an in-process discovery fallback.
+Descriptor caching and a visible blocklist UI remain consumer work; runtime
+plug-in instantiation stays in process under D-03.

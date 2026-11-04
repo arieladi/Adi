@@ -41,6 +41,7 @@
 #pragma once
 
 #include "juce/device_model.hpp"
+#include "adi/plugin_scanner.hpp"
 #include "juce/vst3_events.hpp"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -68,9 +69,14 @@ public:
     /// Where the OS keeps VST3s. Read from JUCE rather than hardcoded.
     [[nodiscard]] juce::FileSearchPath defaultSearchPaths() const;
 
-    /// Blocking scan. Message thread; a plugin's factory runs arbitrary code
-    /// and some of them are slow.
-    void scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into);
+    /// Blocking owner discovery, always in the dedicated child with quarantine.
+    /// Directory enumeration is filesystem-only. No in-process fallback.
+    scan::Report scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into,
+                      const scan::Config& config = {});
+    /// Same boundary for a project's explicit path hint. Replaces `into` only
+    /// after a completed scan; failed/cancelled service retains the old list.
+    scan::Report scanFile(const juce::String& file, juce::KnownPluginList& into,
+                          const scan::Config& config = {});
 
     /// Instantiate, or return nullptr and set `error`.
     ///

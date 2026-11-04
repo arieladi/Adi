@@ -34,6 +34,7 @@
 
 #pragma once
 
+#include "adi/plugin_scanner.hpp"
 #include "adi/blob.hpp"          // ExpressionDim
 #include "adi/engine/mpe_output.hpp"
 #include "juce/device_model.hpp"
@@ -793,6 +794,7 @@ public:
     /// duplicates (CLAP_PATH may repeat a default). A `.clap` that is a
     /// directory is a macOS bundle: it is a candidate, and it is not entered.
     /// Pure filesystem; nothing is loaded.
+    /// Paths are UTF-8, including on Windows. Refuses callbacks.
     ///
     /// One level was searched until ADR-0098, which is every CLAP on Windows
     /// whose installer uses a vendor folder -- Surge XT's does,
@@ -800,9 +802,10 @@ public:
     [[nodiscard]] static std::vector<std::string> findBundles(
         const std::vector<std::string>& paths);
 
-    /// `findBundles`, then read each bundle's factory. Opening a bundle runs
-    /// its `init`, so a scan is not free and is not a loop to put on a timer.
-    void scan(const std::vector<std::string>& paths);
+    /// Owner-only child discovery with durable quarantine; parent loads no
+    /// libraries. Cancellation/service failure retains the previous catalogue.
+    /// Failures are named in the returned report, never an in-process fallback.
+    scan::Report scan(const std::vector<std::string>& paths, const scan::Config& config = {});
 
     [[nodiscard]] const std::vector<ClapPluginRef>& plugins() const noexcept {
         return found_;

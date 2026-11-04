@@ -3,6 +3,7 @@
 // See vst3_host.hpp, in particular for what JUCE's host path cannot carry.
 
 #include "juce/vst3_host.hpp"
+#include "juce/vst3_scan_host.hpp"
 
 #include <pluginterfaces/vst/ivsteditcontroller.h>
 #include <pluginterfaces/vst/ivstphysicalui.h>
@@ -56,15 +57,52 @@ juce::FileSearchPath Vst3Host::defaultSearchPaths() const {
     return fmt.getDefaultLocationsToSearch();
 }
 
-void Vst3Host::scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into) {
-    for (int i = 0; i < formats_.getNumFormats(); ++i) {
-        auto* fmt = formats_.getFormat(i);
-        juce::PluginDirectoryScanner scanner(into, *fmt, paths,
-                                             /*recursive*/ true,
-                                             /*deadMansPedal*/ juce::File());
-        juce::String name;
-        while (scanner.scanNextFile(true, name)) { /* one plugin per turn */ }
+namespace {
+scan::Report scanVst3Files(const std::vector<juce::String>& files,juce::KnownPluginList& into,
+                           const scan::Config& config) {
+    scan::Report report;
+    if(audio::onAudioThread){report.complete=false;return report;}
+    if(files.empty()){into.clear();return report;}
+    std::string error;auto scanner=scan::Scanner::open(config,error);
+    if(!scanner){report.complete=false;report.failures.push_back({"",error,scan::State::Unavailable});return report;}
+    std::vector<juce::PluginDescription> found;
+    for(const auto& file:files) {
+        const auto bytes=file.toStdString();
+        std::vector<juce::PluginDescription> descriptions;
+        const auto result=scanVst3File(*scanner,file,descriptions);
+        if(result.state!=scan::State::Ready) {
+            report.failures.push_back({result.path.empty()?bytes:result.path,result.error,result.state});
+            if(result.state==scan::State::Cancelled || result.state==scan::State::Unavailable || result.state==scan::State::Invalid) {
+                report.complete=false;report.cancelled=result.state==scan::State::Cancelled;return report;
+            }
+            continue;
+        }
+        if(descriptions.size()>scan::kMaximumPlugins-found.size()) {
+            report.complete=false;report.failures.push_back({bytes,"VST3 catalogue descriptor bound",scan::State::Invalid});return report;
+        }
+        for(auto& description:descriptions)found.push_back(std::move(description));
     }
+    into.clear();for(const auto& description:found)into.addType(description);return report;
+}
+} // namespace
+
+scan::Report Vst3Host::scan(const juce::FileSearchPath& paths,juce::KnownPluginList& into,
+                            const scan::Config& config) {
+    if(audio::onAudioThread){scan::Report report;report.complete=false;return report;}
+    std::vector<juce::String> files;
+    for (int i = 0; i < formats_.getNumFormats(); ++i) {
+        // Pinned JUCE VST3 searchPathsForPlugins only walks files/bundles;
+        // findAllTypesForFile (factory code) belongs solely to the child.
+        const auto candidates=formats_.getFormat(i)->searchPathsForPlugins(paths,true,false);
+        for(const auto& file:candidates)files.push_back(file);
+    }
+    std::sort(files.begin(),files.end());files.erase(std::unique(files.begin(),files.end()),files.end());
+    return scanVst3Files(files,into,config);
+}
+scan::Report Vst3Host::scanFile(const juce::String& file,juce::KnownPluginList& into,
+                                const scan::Config& config) {
+    if(audio::onAudioThread){scan::Report report;report.complete=false;return report;}
+    return scanVst3Files({file},into,config);
 }
 
 std::unique_ptr<juce::AudioPluginInstance> Vst3Host::instantiate(

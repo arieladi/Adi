@@ -2,8 +2,8 @@
 
 `adi/scan_process.hpp` provides the owner-side process boundary for Phase D's
 always-out-of-process scanner (R-17/D-03). It does not itself enumerate or load
-plug-ins. CLAP/VST3 discovery and durable quarantine are the next integration
-items; their existing scan methods are still in process on this branch.
+plug-ins. ENGINE-PLUGIN-SCANNER.md now integrates this boundary with CLAP/VST3
+child discovery and durable quarantine.
 
 Call `scan::runProcess(absoluteExecutable, utf8Arguments, options)` on an owner
 worker. The executable is explicit, with no PATH lookup, shell, command string
@@ -18,7 +18,7 @@ and I/O failure. `succeeded()` requires normal exit zero. Output is raw stdout
 bytes, including NUL; never parse a failed result as successful metadata. stderr
 and stdin use the null device. Normal output is drained while the child runs;
 there is no wait-before-read pipe deadlock. Each drain is bounded so output
-cannot starve deadline/cancellation checks. A future scanner helper must reserve
+cannot starve deadline/cancellation checks. Scanner helpers must reserve
 its metadata channel before plug-in code runs, so incidental plug-in stdout
 does not become metadata.
 
