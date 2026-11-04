@@ -136,7 +136,7 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
                 frames = static_cast<std::int64_t>(wave.frames());
                 rate = wave.sampleRate();
                 channels = wave.channels();
-                if (frames <= 0 || static_cast<long double>(frames) * 1000000000.0L / rate >
+                if (frames <= 0 || static_cast<long double>(frames) * 1000000000.0L / static_cast<long double>(rate) >
                                        static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
                     throw std::runtime_error("unsupported freeze duration");
                 const auto hash = media::blake3File(source);
@@ -171,9 +171,9 @@ FreezeEdit prepareFreeze(Store &store, render::FreezeAudioCapture capture, std::
                     const auto end =
                         clip.timeBase == 0
                             ? tempo.ticksToSeconds(clip.posTicks.value_or(0) + clip.lengthTicks.value_or(0))
-                            : (static_cast<long double>(clip.posNs.value_or(0)) + clip.lengthNs.value_or(0)) *
+                            : (static_cast<long double>(clip.posNs.value_or(0)) + static_cast<long double>(clip.lengthNs.value_or(0))) *
                                   1e-9L;
-                    if (std::llround(end * rate) > frames)
+                    if (std::llround(end * static_cast<long double>(rate)) > frames)
                         throw std::runtime_error(
                             "freeze range must include every clip and its requested tail");
                 }
