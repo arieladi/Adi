@@ -219,6 +219,7 @@ add_library(adi_core STATIC
     src/adi/audio/stem_manifest.cpp
     src/adi/render/ni_stems.cpp
     src/adi/media/stem_import.cpp
+    src/adi/media/separated_stems.cpp
     src/adi/blob.cpp
     # Deliberately in adi_core rather than behind ADI_WITH_JUCE: device_core
     # includes no JUCE, so its tests run on all seven ABIs instead of only in
@@ -1636,6 +1637,10 @@ add_test(NAME adi_mp4_aac_tests COMMAND adi_mp4_aac_tests)
 add_executable(adi_ni_stems_tests tests/test_ni_stems.cpp)
 target_link_libraries(adi_ni_stems_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ni_stems_tests COMMAND adi_ni_stems_tests)
+
+add_executable(adi_separated_stems_tests tests/test_separated_stems.cpp)
+target_link_libraries(adi_separated_stems_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_separated_stems_tests COMMAND adi_separated_stems_tests)
 
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
 target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)
