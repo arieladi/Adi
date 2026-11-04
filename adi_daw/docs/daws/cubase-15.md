@@ -1,4 +1,4 @@
-# Cubase 15 — research v0.4, 2026-11-04
+# Cubase 15 — research v0.5, 2026-11-04
 
 Baseline: `5c9e1cd8ebbb5dd940815aa733d49c1217c9aa19`. Researcher: Codex on SALON-TV. Installed Cubase15.exe file version 15.0.5.114. Activated edition was not verified. The available manual is Cubase Pro 15.0.30: documented features below may depend on edition and may differ from installed 15.0.5.
 
@@ -263,3 +263,354 @@ Research scope now explicitly requires complete Live host coverage as the ADI ba
 | C4-017: OMF export excludes MIDI, video and unused Pool audio; OMF 2 has optional clip gain, fades and names. Handles and frame quantization are explicit. | Cubase Pro 15.0.30 manual, pp.1551–1553; installed 15.0.5.114 | Publish a per-field loss report and test a second importer, rather than treating successful open as a faithful round trip. | Supported hypothesis — documented; installed behavior unmeasured |
 | C4-018: Cubase documents DAWproject export/import for specified track types, routing, mixer data and automation; insert plug-ins are limited to VST3 in the listed support. ADM BWF is a separate bed/object/metadata export. | Cubase Pro 15.0.30 manual, pp.1547–1548; installed 15.0.5.114 | Keep native interchange, object audio and rendered delivery separate. Test unsupported plug-in state, note expression and routing rather than assuming format-level support proves host support. | Supported hypothesis — documented; installed behavior unmeasured |
 | C4-019: Video export uses locator range and a selected stereo output. The detailed section offers H.264/MP4 resolutions through UHD, project frame rate and AAC audio at 44.1/48 kHz; this conflicts with the chapter introduction’s Full-HD-only wording. | Cubase Pro 15.0.30 manual, pp.1526,1540–1541; installed 15.0.5.114 | ADR-0205: retain version-qualified codec/capability tests, frame/sample alignment and exact selected audio path. Do not silently adopt the introductory restriction. | Supported hypothesis — documented; installed behavior unmeasured |
+
+## Deep host research — VariAudio, workspaces and Live priority — 2026-11-04
+
+This pass prioritizes Live as the base reference and expands Cubase VariAudio, multi-display/workspace behavior, key commands and preferences. All new entries are documentary or explicitly unresolved; none is a new installed-app measurement. Source hashes and per-row cases are in private E34–E36 and DEEP-HOST-MISSIONS-5.md. Existing ADI priorities/deviations remain unchanged.
+
+Source manual: Cubase Pro 15.0.30; installed: 15.0.5.114. VariAudio research preserves its current ADI priority and does not authorize a segment model implementation. Separate windows, lower-zone editors, linked mixers and arbitrary detachment are different capabilities; do not describe every panel as detachable.
+
+### VariAudio — VariAudio scope and prerequisites
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-001: VariAudio targets monophonic material, especially vocals. Analysis must segment it before pitch/timing edits. The manual describes edits as undoable in both the Sample Editor window and lower-zone editor. | Cubase Pro 15.0.30 Operation Manual, Pitch Editing and Time Correction with VariAudio p.659; installed Cubase 15.0.5.114 requires verification | FEATURES §3 lists VariAudio as P3 with no segment model; this research identifies contracts without promoting implementation priority or claiming measured quality. Measurement case M5-C5V-001. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Analysis invalidation by other edits
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-002: Length-changing file edits can invalidate VariAudio data. The guide says most offline processes, plug-in processing, and Sample Editor cut/paste/delete/draw may trigger reanalysis; Envelope, Fade In/Out, Normalize and Silence are excluded from the listed built-in trigger set. | Cubase Pro 15.0.30 Operation Manual, VariAudio and Offline Processes p.659; installed Cubase 15.0.5.114 requires verification | ADR-0069: preserve original media and authored pitch state separately from analysis derivatives; invalidation needs operation-specific dependency rules. Measurement case M5-C5V-002. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Segments, gaps and pitch representation
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-003: Segments represent tonal portions and retain pitch curves; gaps represent unpitched regions. Weak consonants/breaths may require manual inclusion to receive edits. Segment pitch is derived from the curve average; the displayed waveform is mono even for stereo/multichannel files. | Cubase Pro 15.0.30 Operation Manual, Segments and Gaps pp.662–663; installed Cubase 15.0.5.114 requires verification | A future segment model needs tonal confidence/gaps, curve and representative pitch independently of source channel count. The display does not prove mono processing. Measurement case M5-C5V-003. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Segment boundary correction versus time warp
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-004: Alt/Option-dragging the start/end control changes segmentation boundaries without allowing overlap into the next segment. Ordinary use of the same smart control warps timing. Boundary correction recalculates average pitch. | Cubase Pro 15.0.30 Operation Manual, Smart Controls pp.667–668; Changing the Start and End Point of Segments p.671; installed Cubase 15.0.5.114 requires verification | Separate analysis-region editing from source-to-timeline mapping; a common handle must not imply one data operation. Measurement case M5-C5V-004. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Split/glue and representative pitch
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-005: Splitting or gluing segments recalculates average pitch. Glue targets the preceding/following segment or a contiguous selected group; splitting can change the resulting displayed pitch. | Cubase Pro 15.0.30 Operation Manual, Splitting Segments p.669; Gluing Segments p.670; installed Cubase 15.0.5.114 requires verification | Maintain parent/child lineage for segment edits; preserve intended pitch changes when representation changes. Do not assume note identity survives split/glue unchanged. Measurement case M5-C5V-005. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Segment deletion is a distinct unresolved operation
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-006: Backspace deletes selected VariAudio segments. The cited procedure does not establish whether removal resets prior edits, creates an unpitched gap or changes rendered source audio. | Cubase Pro 15.0.30 Operation Manual, Deleting Segments p.670; installed Cubase 15.0.5.114 requires verification | Keep segment deletion distinct from event deletion and sample deletion; define its audio and history consequences before ADI implements it. Measurement case M5-C5V-006. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Pitch snapping and temporary modifiers
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-007: Absolute pitch snap targets semitones; Relative retains the original cents deviation; Off allows free movement. Shift plus arrow keys moves in cents. Drag modifiers can temporarily select Off, Absolute or Relative. | Cubase Pro 15.0.30 Operation Manual, Pitch Snap Mode / Raising or Lowering Pitches p.674; installed Cubase 15.0.5.114 requires verification | Pitch coordinates need separate note center, cents offset and snapping policy; keyboard and drag gestures may have different override semantics. Measurement case M5-C5V-007. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — MIDI-driven pitch assignment
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-008: MIDI Input changes selected pitches, ignores controller data and restricts the documented pitch range to E0–C5. For multiple segments, the first selected segment moves to the incoming note and all others move by the same interval. | Cubase Pro 15.0.30 Operation Manual, Changing Pitches using MIDI Input pp.675–676; installed Cubase 15.0.5.114 requires verification | Reuse explicit selection anchor and transposition semantics; do not treat MIDI input as replacing all selected notes with one pitch. Measurement case M5-C5V-008. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — MIDI step assignment
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-009: With MIDI Input and Step enabled, assigning a note selects the next segment automatically. The guide treats this as a stopped-mode sequential pitch-entry workflow. | Cubase Pro 15.0.30 Operation Manual, Step Mode p.676; installed Cubase 15.0.5.114 requires verification | Step entry needs a cursor/selection transition separate from transport and actual recorded note events. Measurement case M5-C5V-009. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Partial pitch correction versus command quantization
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-010: Correct Pitch can be adjusted with a slider or segment handle. Its assigned key command immediately quantizes segments to the nearest semitone; pitch operations automatically select Solo processing. | Cubase Pro 15.0.30 Operation Manual, Correcting Pitches pp.676–677; Raising or Lowering Pitches p.675; installed Cubase 15.0.5.114 requires verification | Separate correction amount from target pitch and from one-shot quantization. Renderer/algorithm changes are state that must be represented and undoable. Measurement case M5-C5V-010. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Pitch-curve anchors, tilt and rotation
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-011: Tilt can affect the beginning or end of a curve. The default reference anchor is the segment center, can move horizontally and can be reset. Alt/Option plus the tilt control rotates around the anchor. | Cubase Pro 15.0.30 Operation Manual, Setting Tilt/Rotate Anchors / Tilting / Rotating pp.680–681; installed Cubase 15.0.5.114 requires verification | Store curve transformation and anchor as distinct authored state; do not collapse rotation into an absolute pitch offset. Measurement case M5-C5V-011. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Straightening ranges preserves transitions
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-012: Pitch straightening reduces curve fluctuation. Separate range handles restrict it to a subrange, allowing surrounding transitions to remain; multiple selected segments can receive a common range setting. | Cubase Pro 15.0.30 Operation Manual, Smart Controls p.668; Straightening Pitch Curves / Ranges pp.681–682; installed Cubase 15.0.5.114 requires verification | Pitch-center correction and local expressive-curve shaping need independent operations and per-segment normalized-range semantics. Measurement case M5-C5V-012. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Timing edits and tempo following
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-013: VariAudio timing edits create warp markers also visible in AudioWarp and alter adjacent segment timing. These edits do not themselves follow project tempo; Musical Mode is needed. Warp comparison uses AudioWarp bypass, distinct from VariAudio pitch/formant/volume bypass. | Cubase Pro 15.0.30 Operation Manual, Timing Modifications / Warping Segments pp.682–683; VariAudio Inspector p.660; installed Cubase 15.0.5.114 requires verification | ADR-0061/0176: share source-to-musical mapping instead of adding an unrelated timing engine; keep tempo-lock state and bypass domains explicit. Measurement case M5-C5V-013. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Formant state is separate from pitch and timing
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-014: Formant shift uses positive/negative percentages with zero unchanged; it can apply to a selection and is documented not to alter pitch or timing. Solo processing is selected automatically. | Cubase Pro 15.0.30 Operation Manual, Formant Shifting pp.684–685; installed Cubase 15.0.5.114 requires verification | Keep formant control, pitch trajectory and time map independent; the numerical transfer function and quality still require audio measurements. Measurement case M5-C5V-014. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Segment volume and mute
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-015: Segment volume can be changed through the Inspector or the segment handle; reducing it to mute or using Edit > Mute silences the segment. | Cubase Pro 15.0.30 Operation Manual, Editing Volume p.685; installed Cubase 15.0.5.114 requires verification | Keep segment gain/mute separate from clip gain, event-volume envelope and track gain. Define composition order and boundaries. Measurement case M5-C5V-015. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Scale suggestion scope and linked editor state
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-016: Scale suggestions use selected segments, or all displayed segments when none are selected. The Editor Scale selection is shared between Sample Editor and Key Editor. | Cubase Pro 15.0.30 Operation Manual, VariAudio Inspector p.661; Selecting a Musical Scale pp.671–672; installed Cubase 15.0.5.114 requires verification | Selection-scoped analysis and project/editor scale ownership are separate; changing a view preference can affect another editor. Measurement case M5-C5V-016. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Chord-derived pitch targets and edit snapping
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-017: Scale Assistant can derive targets from chord events, scale events or both. Quantize Pitches and live pitch snapping use the chosen source plus Pitch Snap Mode; chord/scale matching depends on the current event at that time. | Cubase Pro 15.0.30 Operation Manual, Using Chord Track pp.672–673; Quantizing / Snapping pp.677–679; installed Cubase 15.0.5.114 requires verification | FEATURES §3/4: musical guidance is time-varying data, not one global set of allowed semitones; preserve Relative cents offsets separately. Measurement case M5-C5V-017. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — MIDI reference ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-018: MIDI reference notes are read-only lines in Sample Editor. The reference-track selection applies to all Sample Editors in the project and is saved with it; the reference is unavailable when the editor is opened from the Pool. | Cubase Pro 15.0.30 Operation Manual, Showing MIDI Reference Tracks pp.683–684; installed Cubase 15.0.5.114 requires verification | Separate project-wide comparison target from window-local display state and editable segment data. Measurement case M5-C5V-018. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Pitch extraction representations
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-019: MIDI extraction offers note-only, static pitchbend, continuous pitchbend, Note Expression pitchbend and VST3 Tuning curves. Ordinary pitchbend uses a configurable range of 1–24 that must match the destination. | Cubase Pro 15.0.30 Operation Manual, Extract MIDI Dialog pp.687–688; installed Cubase 15.0.5.114 requires verification | ADR-0054: preserve note-relative pitch versus channel-wide bend and destination capability. Use a loss/capability matrix for each route. Measurement case M5-C5V-019. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Amplitude extraction representations
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-020: Extract MIDI can produce fixed velocity, amplitude-dependent velocity, a channel controller curve, per-note controller expression or VST3 Volume expression; VST3 expression requires a compatible destination. | Cubase Pro 15.0.30 Operation Manual, Extract MIDI Dialog pp.688–689; installed Cubase 15.0.5.114 requires verification | Do not equate source amplitude, note-on velocity and continuous gain; ADI expression should preserve the original semantic dimension. Measurement case M5-C5V-020. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Extraction destination and replacement semantics
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-021: Extraction can place a part on the first selected MIDI/instrument track, a new track or the clipboard. First Selected Track deletes prior extraction parts on that track. Pool-only source material is inserted at project start. | Cubase Pro 15.0.30 Operation Manual, Extract MIDI Dialog Destination p.689; Functions Menu p.686; installed Cubase 15.0.5.114 requires verification | Make generated-output ownership explicit; replacing prior derived parts is different from appending arbitrary user notes. Extract uses the whole event according to the function overview. Measurement case M5-C5V-021. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Dimension-specific reset
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-022: Functions can reset pitch centers, pitch curves, formants, volume, warp or all changes. With a selection, the reset targets selected segments; without one, it targets all. | Cubase Pro 15.0.30 Operation Manual, Functions Menu p.686; installed Cubase 15.0.5.114 requires verification | Separate edit dimensions and selection scope in typed operations; reset should not require rerunning unrelated analysis. Measurement case M5-C5V-022. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Reanalysis is not a parameter reset
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-023: Reanalyze Audio clears segmentation and analyzes the whole event again, whereas individual reset commands target edit dimensions. | Cubase Pro 15.0.30 Operation Manual, Functions Menu p.686; installed Cubase 15.0.5.114 requires verification | Cache analysis revision and user-authored segmentation independently; explicit reanalysis needs a declared retention policy for authored edits. Measurement case M5-C5V-023. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Flatten scope contradiction
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-024: The Functions Menu description says Flatten Real Time Processing considers the entire event; the detailed procedure permits selecting segments and says none selected means all. The true installed selection scope is unresolved. | Cubase Pro 15.0.30 Operation Manual, Functions Menu p.686 versus Flattening Real Time Processing p.689; installed Cubase 15.0.5.114 requires verification | ADR-0069: do not infer full-event or selection-only commit from one passage; represent proposed scope clearly and preserve sources. Measurement case M5-C5V-024. | Unknown / not tested — conflicting manual scope descriptions |
+
+### VariAudio — Flatten algorithm and loss of editable state
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-025: Flattening allows Realtime or MPEX for stretch factors 0.5–2 and forces Realtime outside that range; MPEX is unavailable on Apple silicon. The result disables Musical Mode and loses VariAudio pitch/volume/formant data. | Cubase Pro 15.0.30 Operation Manual, Flattening Real Time Processing pp.689–690; installed Cubase 15.0.5.114 requires verification | ADR-0069 retains original and redo render: ADI can preserve editable recipes even if the reference flattening discards them. Platform capability and algorithm are render inputs. Measurement case M5-C5V-025. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Harmony generation creates independent editing copies
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-026: Generate Harmony Voices analyzes the selected event and creates up to four corresponding track copies with independent events. Chord-track mode uses voicing; without it the guide specifies +3, −3, −6 and −9 semitones. Vibrato reduction is selectable. | Cubase Pro 15.0.30 Operation Manual, Harmony Voices / Generate Harmony Voices pp.690–691; installed Cubase 15.0.5.114 requires verification | Represent generated tracks/events as attributed derived objects, with source lineage and independent editable pitch state rather than assumed shared aliases. Measurement case M5-C5V-026. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Multi-clip display and editing scope differ
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-027: Sample Editor separates visible clips from editable scope: All Clips, Active Clip or All Clips on Active Track. Showing only the active clip is a separate display choice. | Cubase Pro 15.0.30 Operation Manual, Sample Editor Toolbar, View Options p.632; installed Cubase 15.0.5.114 requires verification | Avoid deriving the target edit set solely from visible waveforms; ADI needs explicit active clip, display set and edit set. Measurement case M5-C5V-027. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Segment display, navigation and selection
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-028: Segment colors can follow voice, event, pitch or scale/chord membership; pitch/scale colors share Key Editor schemes. Arrow keys step segments, Alt/Option gestures zoom, and Ctrl/Cmd-click on a piano key selects matching pitches including slight deviations. | Cubase Pro 15.0.30 Operation Manual, Segment Colors pp.664–665; Navigation/Selection p.666; installed Cubase 15.0.5.114 requires verification | Window parity should distinguish semantic coloring, tolerance-based selection and view history. Exact pitch tolerance and persisted zoom remain unmeasured. Measurement case M5-C5V-028. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Bypass, audition and editor location
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-029: VariAudio bypass is described for pitch/formant/volume; warp bypass lives in AudioWarp. Audition can loop selected segments. The editor can move between lower zone and a separate window; their Info/Overview visibility states are independent. | Cubase Pro 15.0.30 Operation Manual, VariAudio Inspector p.660; Auditioning p.666; Sample Editor pp.613–615,633; installed Cubase 15.0.5.114 requires verification | Separate comparison path from persistent edits and from workspace state; moving a panel must preserve data identity while allowing view-specific layout. Measurement case M5-C5V-029. | Supported hypothesis — documented in Cubase Pro 15.0.30; installed 15.0.5.114 behavior unmeasured |
+
+### VariAudio — Unestablished sharing, persistence and journal details
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5V-030: The cited VariAudio chapter does not establish the full native serialization schema, shared-clip edit fan-out, every gesture undo boundary or recovery after interrupted analysis/flattening. General undoability is not that evidence. | Cubase Pro 15.0.30 Operation Manual, VariAudio pp.659–691; source gaps explicitly retained; installed Cubase 15.0.5.114 requires verification | FEATURES §3 VariAudio remains unspecified. Future design needs immutable source identity, analysis/version ownership, authored segment/curve data, deterministic derived renders and operation journaling; these are proposed ADI questions, not recovered Cubase internals. Measurement case M5-C5V-030. | Unknown / not tested — ownership, serialization and full gesture behavior require evidence |
+
+### Multiple screens, command customization and preferences — Multiple windows and displays
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-001: Multiple MixConsole windows can show different channel types or link their scrolling, visibility configurations, filters and fader-related toolbar behavior across displays. The lower-zone MixConsole is excluded from that link. | Cubase Pro 15.0.30 manual, MixConsole pp.434,437,462; installed 15.0.5.114 requires verification | ADR-0063/0180: Cubase permits multiple concurrent views; ADI ordinary panel detachment reparents one component. Do not silently replace ADI ownership with cloned mixers. Measurement case M5-C5W-001. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-002: The lower-zone MixConsole is a fixed Project-window area with independently controlled visibility. Some separate-window facilities, such as Channel Overview and Meter Bridge, are unavailable there. | Cubase Pro 15.0.30 manual, MixConsole pp.434,439; installed 15.0.5.114 requires verification | Detachment is not proven to be a universal operation with identical controls. Inventory docked/separate capability differences before choosing ADI parity. Measurement case M5-C5W-002. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Editor opening and focus
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-003: Double-click/open-close-editor commands and explicit Audio/MIDI editor-opening commands have independently configurable destinations: separate window or lower zone. Drum-map preference can override the default MIDI editor. | Cubase Pro 15.0.30 manual, Editors p.1603; Project Window pp.87–89; installed 15.0.5.114 requires verification | ADR-0063 and window parity: command identity, chosen editor and host destination are separate decisions. Preserve Live baseline defaults unless an ADR already chooses otherwise. Measurement case M5-C5W-003. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-004: Changing the lower-zone MIDI editor via its local chooser is temporary; next opening uses the default editor. Editor Content Follows Event Selection separately controls whether open editors change content with Project selection. | Cubase Pro 15.0.30 manual, Project Window pp.88–89; Editors p.1603; installed 15.0.5.114 requires verification | Separate transient view choice, default preference, pinned content and active selection. A window remaining open does not prove it stays attached to the same clip. Measurement case M5-C5W-004. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-005: Link Project and Lower Zone Editor Cursors links cursors and zoom for Key, Drum and Audio Part editors, excluding Sample Editor; ruler time formats remain independent. | Cubase Pro 15.0.30 manual, Project Window p.89; installed 15.0.5.114 requires verification | ADR-0112/0129: linked position, linked scale and displayed time units are independent state. Preserve ADI current selection-centered zoom ruling under ADR-0203. Measurement case M5-C5W-005. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-006: Channel Settings selection can follow MixConsole edits/selection, with a separate follow toggle. Project-to-MixConsole selection synchronization is controlled by another preference. | Cubase Pro 15.0.30 manual, Channel Settings p.500; Editing—Project & MixConsole p.1600; installed 15.0.5.114 requires verification | One shared selected object is not sufficient for every floating inspector; model pin/follow policy explicitly without adding the rejected dedicated ADI Inspector. Measurement case M5-C5W-006. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-007: Project zones receive command focus separately. Tab/Shift+Tab cycle zones; opening the lower editor transfers focus, and touching a zone toolbar or info line focuses that zone. | Cubase Pro 15.0.30 manual, Project Window pp.99–101; installed 15.0.5.114 requires verification | ADR-0180: global transport keys and local editing commands need an explicit focus hierarchy, particularly across detached windows. Measurement case M5-C5W-007. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Workspaces and persistence
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-008: Global workspaces belong to the computer; project workspaces travel with the project. A workspace stores important window/dialog sizes, positions and layouts. External projects ordinarily use the last local view. | Cubase Pro 15.0.30 manual, Workspaces pp.1576–1577; installed 15.0.5.114 requires verification | ADR-0063/0129/0180: distinguish portable layout intentions from workstation display geometry. Manual evidence does not establish monitor-ID storage or missing-display clamping. Measurement case M5-C5W-008. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-009: Open Projects in Last Used View offers Never, Only External Projects and Always. No Workspace restores the last saved unassigned view; edited workspaces require Update Workspace or saving another workspace/type. | Cubase Pro 15.0.30 manual, Workspaces pp.1577–1578; General p.1609; installed 15.0.5.114 requires verification | Separate current unsaved view, named saved layout, project-saved view and local restore policy. Avoid ambiguous automatic profile writes. Measurement case M5-C5W-009. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-010: Workspace key assignments stay at their list positions when workspaces are moved/deleted; global/project lists are separate, and changing scope requires saving another workspace type. | Cubase Pro 15.0.30 manual, Workspaces Organizer pp.1578–1579; installed 15.0.5.114 requires verification | Shortcut binding by ordinal differs from binding by workspace identity. ADI must choose deliberately and show resulting reassignment in its command editor. Measurement case M5-C5W-010. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-011: Windows management can act on the selected window, associated windows in Cascaded mode, or all windows. It provides activation, minimize/restore, close and selected-window layout reset. | Cubase Pro 15.0.30 manual, Windows Dialog pp.1583–1584; installed 15.0.5.114 requires verification | A recovery path for hidden/off-screen views is valuable independently of detachment. Cascaded here describes operation scope, not an assumed geometric window layout. Measurement case M5-C5W-011. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Display scaling and stacking
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-012: Application Scaling is relative to OS scaling. Windows HiDPI documents supported factors; Plug-in Editors Always on Top is a separate preference affecting plug-in panels. | Cubase Pro 15.0.30 manual, General p.1608; User Interface p.1618; VST—Plug-ins p.1624; installed 15.0.5.114 requires verification | ADR-0129/0203 retain independent ADI-window scaling and third-party ownership. Cubase documentation does not prove per-monitor/per-window scale persistence or universal always-on-top behavior. Measurement case M5-C5W-012. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Profiles and settings ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-013: Profiles include preferences, toolbar/track-control settings, global workspaces, bus presets, format presets, collections, quantize/crossfade presets and key commands. Studio Setup, live Audio Connections, Control Room presets, track/device presets and templates are excluded. | Cubase Pro 15.0.30 manual, Profiles p.1579; installed 15.0.5.114 requires verification | ADR-0125/0203 profiles need an explicit inclusion matrix. A portable profile is not a complete workstation backup, and bus presets are not active hardware routing. Measurement case M5-C5W-013. | Supported hypothesis — documented; installed behavior unmeasured |
+| C5W-014: Edits to included settings save in the active profile. New Profile starts from factory settings, Duplicate copies a selected profile, and activation requires application restart; the active profile cannot be deleted. | Cubase Pro 15.0.30 manual, Profiles pp.1579–1583; installed 15.0.5.114 requires verification | Keep desired and effective profile explicit and expose restart requirements. ADI settings remain outside musical undo under current ADRs. Measurement case M5-C5W-014. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Shortcut discovery and multiple bindings
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-015: The key-command search switches between capturing a pressed key and searching a command name; filters distinguish all, assigned, customized and unassigned commands. One function can retain multiple alternative key bindings. | Cubase Pro 15.0.30 manual, Key Commands pp.1555–1558; installed 15.0.5.114 requires verification | ADR-0125/0203: search both directions, show inherited/custom assignments and avoid replacing a binding when the user intends an alternative. Measurement case M5-C5W-015. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Shortcut persistence and reset
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-016: Key commands apply across projects and save as XML presets; loading a preset replaces previous key settings and macros. Per-command reset, reset-all and clear-all are distinct. Export Key Command Assignments produces an HTML listing. | Cubase Pro 15.0.30 manual, Key Commands pp.1554,1556,1559–1560; installed 15.0.5.114 requires verification | Command shortcuts are App scope under ADR-0203; distinguish importable configuration from readable documentation and merge versus replace. Measurement case M5-C5W-016. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Macros and transaction boundaries
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-017: Macros are ordered command lists; insertion occurs after the selected command, ordering is editable, and macros can be duplicated, executed from the editor/Edit menu or assigned keys. The text does not establish atomic undo or failure handling. | Cubase Pro 15.0.30 manual, Key Commands pp.1556–1559; installed 15.0.5.114 requires verification | ADI scripting/command planning should reuse validated commands; do not assume a macro is one journal operation merely because one key runs it. Measurement case M5-C5W-017. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Shortcut interception
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-018: Displaying the On-Screen Keyboard reserves usual shortcuts, with a documented exception set including Save, transport/record, delete, cycle, Transport panel and keyboard visibility. | Cubase Pro 15.0.30 manual, Default Key Commands p.1560; installed 15.0.5.114 requires verification | Define command dispatch priority and exemptions for note-entry mode; a global assignment alone does not guarantee execution in every context. Measurement case M5-C5W-018. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Mouse modifiers and context access
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-019: Tool modifiers are edited separately by category/action; assignment replaces prior modifiers and can prompt. Right-click may show a toolbox instead of the context menu; adding a modifier accesses the context menu. | Cubase Pro 15.0.30 manual, Editing—Tool Modifiers/Tools pp.1601–1602; installed 15.0.5.114 requires verification | ADR-0125 approves modifier presets, but Live remains default. Keep gesture mappings separate from command shortcuts and preserve keyboard/accessibility access to menus. Measurement case M5-C5W-019. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Preferences transactions and partial presets
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-020: Preferences provide Apply, OK and Cancel; Defaults resets only the active page. Partial preference presets store marked pages and leave other pages unchanged when loaded. | Cubase Pro 15.0.30 manual, Preferences pp.1593–1595; installed 15.0.5.114 requires verification | ADI intentionally uses immediate application in its current settings parity; adopt scoped presets/reset semantics without silently copying Cubase staged Apply/Cancel behavior. Measurement case M5-C5W-020. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Control interaction modes
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-021: Knobs support circular, relative circular and linear input; sliders support jump, touch, ramp and relative modes. Mouse-wheel behavior can change parameters everywhere, only outside scrollable areas, or only scroll. | Cubase Pro 15.0.30 manual, Editing—Controls pp.1598–1599; installed 15.0.5.114 requires verification | ADR-0125/0203 keep Live vertical drag and wheel-scroll defaults, with documented optional modes. Gesture coalescing and accidental edits matter to journal semantics. Measurement case M5-C5W-021. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Selection-driven workspace behavior
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-022: Enlarge Selected Track enlarges the current selection and restores the previously selected track to its original size. Selection-sync, scroll-to-track, auto-arm for MIDI/audio, and solo-on-selection are separate preferences. | Cubase Pro 15.0.30 manual, Editing—Project & MixConsole p.1600; installed 15.0.5.114 requires verification | This is a concrete comparison for Bitwig Auto-zoom restoration. Selection is not purely visual when optional arm/solo policies are active. Measurement case M5-C5W-022. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Selection, locking and range semantics
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-023: Lock Event Attributes independently covers position, length and other edits. Range Tool Splits Partly Selected Events can split material during move/nudge/mute/phase inversion; Delete Overlaps removes hidden sections and Shift temporarily overrides it. | Cubase Pro 15.0.30 manual, Editing pp.1595–1596; installed 15.0.5.114 requires verification | FEATURES §3: command scope is a function of preferences and event locks. Preserve a reproducible effective-settings snapshot in tests. Measurement case M5-C5W-023. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Audio editing policy and source ownership
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-024: Preferences control import prompts/conversion, bounce replacement versus keeping current audio, removing regions/hitpoints during offline processing, and creating a new version versus processing an existing shared clip. | Cubase Pro 15.0.30 manual, Editing—Audio pp.1597–1598; installed 15.0.5.114 requires verification | ADR-0069/0203: DOP/shared-clip behavior depends on app policy. ADI’s explicit import/bounce prompt default remains its own decision. Measurement case M5-C5W-024. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Overlap playback versus mute
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-025: Treat Muted Audio Events like Deleted allows an underlying overlapped event to play when the top event is muted. Simple Crossfade Editor selects a reduced dialog rather than deleting advanced fade capability. | Cubase Pro 15.0.30 manual, Editing—Audio p.1597; installed 15.0.5.114 requires verification | Mute may change which event supplies audio, not just gate the top event. Keep simplified/advanced editor preference separate from stored fade representation. Measurement case M5-C5W-025. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — MIDI split and controller continuity
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-026: Split MIDI Events can split crossing notes into new notes. Split MIDI Controllers inserts a nonzero controller value at the second part start; the difference becomes audible when the first part is removed or the second moved. | Cubase Pro 15.0.30 manual, Editing—MIDI pp.1599–1600; installed 15.0.5.114 requires verification | FEATURES §4: preserve event identity and initial controller state explicitly across split, move and deletion; uninterrupted playback alone cannot validate the edit. Measurement case M5-C5W-026. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Zoom behavior and rendering
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-027: Zoom can anchor on selection start or project cursor. Quick Zoom defers event/part redraw until zoom input stops; horizontal-only Zoom tool prevents height changes. | Cubase Pro 15.0.30 manual, Editing—Zoom p.1602; Project Window p.101; installed 15.0.5.114 requires verification | ADR-0203 keeps Live selection-centered zoom; Cubase options inform optional preferences and performance tests, not silent parity replacement. Measurement case M5-C5W-027. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Display state and visibility thresholds
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-028: Event Display controls separate minimum heights for content and names, overlap indication, opacity and curve/fade visibility; reduced opacity can affect UI responsiveness according to the guide. | Cubase Pro 15.0.30 manual, Event Display pp.1604–1605; installed 15.0.5.114 requires verification | Small-track usability depends on visibility thresholds and hit targets. Do not infer hidden data was deleted or UI cost from a static screenshot. Measurement case M5-C5W-028. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Autosave and bounded history
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-029: Auto Save creates backups for dirty open projects with interval and maximum-count controls, overwriting oldest backups at the limit. Maximum Undo Steps is separate; unsaved projects also receive backup names. | Cubase Pro 15.0.30 manual, General pp.1608–1609; installed 15.0.5.114 requires verification | ADI persistent operations/history are distinct from periodic backup and bounded in-memory undo. Keep retention/dependency completeness explicit. Measurement case M5-C5W-029. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Monitoring and PDC preferences
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-030: Auto Monitoring offers Manual, While Record-Enabled, While Record Running and Tapemachine Style. Delay Compensation Threshold limits which latent plug-ins Constrain Delay Compensation affects. | Cubase Pro 15.0.30 manual, VST p.1623; installed 15.0.5.114 requires verification | FEATURES audio monitoring and ADR-0203: monitor state, recording placement and graph latency are separate. The fourth monitoring mode is already an ADI-approved option. Measurement case M5-C5W-030. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Mute behavior and prior state
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-031: Mute Pre-Send when Mute changes pre-fader send behavior. Group Channels: Mute Sources as well propagates mute to direct sources, and the guide warns previously muted sources are unmuted when the group is unmuted. | Cubase Pro 15.0.30 manual, VST p.1623; installed 15.0.5.114 requires verification | Define inherited versus explicit mute so ADI does not accidentally erase prior user intent. Reference behavior is a caution, not an adoption requirement. Measurement case M5-C5W-031. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Plug-in lifecycle preference
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-032: Suspend VST3 processing when no audio is received is configurable; the guide recommends leaving it deactivated. Auto-opening editors and warning before removing modified effects are separate options. | Cubase Pro 15.0.30 manual, VST—Plug-ins p.1624; installed 15.0.5.114 requires verification | Do not equate silence detection with safe suspension or use the preference as measured efficiency proof. ADI needs correct tails, autonomous sources and wake behavior. Measurement case M5-C5W-032. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Recording buffers and timing preferences
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-033: Audio Pre-Record Seconds buffers incoming audio in stop/playback; retrospective MIDI capacity is measured in events. MIDI record catch range and ASIO recording compensation are separate settings. | Cubase Pro 15.0.30 manual, Record pp.1615–1616; installed 15.0.5.114 requires verification | Buffers measured in time versus event count have different retention guarantees. Separate capture timestamp correction from monitor latency and UI duration. Measurement case M5-C5W-033. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Transport and audition command scope
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-034: Playback Toggle Triggers Local Preview makes Space control Sample Editor/Pool preview under the documented conditions, otherwise project transport. Scrub quality and insert processing can differ from playback. | Cubase Pro 15.0.30 manual, Transport pp.1616–1617; installed 15.0.5.114 requires verification | ADR-0180 global transport decisions need explicit exceptions; distinguish local audition ownership and processing policy from the main transport. Measurement case M5-C5W-034. | Supported hypothesis — documented; installed behavior unmeasured |
+
+### Multiple screens, command customization and preferences — Recovery and settings persistence
+
+| What the app does | Where it says so / evidence | What ADI does with it | Status |
+|---|---|---|---|
+| C5W-035: Safe Mode distinguishes temporarily disabling preferences, permanently deleting them, and disabling third-party plug-ins. Preference deletion is non-undoable and affects all installed Cubase versions; RAMpresets.xml writes on application exit. | Cubase Pro 15.0.30 manual, Customizing pp.1584–1586; installed 15.0.5.114 requires verification | ADR-0125 Safe Mode should preserve reversible recovery and explicit scope. Never manufacture this test by deleting the user profile; save/exit boundaries matter to portability. Measurement case M5-C5W-035. | Supported hypothesis — documented; installed behavior unmeasured |
