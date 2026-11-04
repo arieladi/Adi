@@ -16,8 +16,8 @@ using JobId = std::uint64_t;
 enum class JobState { Pending, Running, Completed, Failed, Cancelled };
 
 // ADR-0071/0205: application job state, never project operations. This first
-// runner exports direct wet sources as WAV. Other containers, noise shaping,
-// dry processing and isolated through-master stems need support. Normalization
+// runner exports direct wet sources as WAV, or NI Stems through niStems. Noise
+// shaping, dry processing and isolated through-master stems need support. Normalization
 // captures the selected source once and verifies the final encoded WAV.
 struct Source {
     std::int64_t trackId = 0; // zero selects the project's master at render start
@@ -29,6 +29,15 @@ struct Encoding {
     // Mixed with the stable enqueue ordinal. Retry is reproducible; different
     // jobs get separate streams. Float32 ignores dither without adding noise.
     std::uint64_t ditherSeed = 0;
+};
+struct NiStem {
+    Source source;
+    std::string name;
+    std::string color; // optional #RRGGBB, NI metadata, never a Live palette index
+};
+struct NiStems {
+    std::vector<NiStem> stems; // one to four direct wet sources; unused slots silent
+    std::uint32_t bitRate = 256000; // per stereo track, one codec setting for all five
 };
 struct Job {
     std::filesystem::path project;
@@ -42,6 +51,7 @@ struct Job {
     // Independent jobs are not ADR-0070's continuous gapless region batch.
     std::optional<std::int64_t> regionId;
     Encoding encoding;
+    std::optional<NiStems> niStems = {};
     Normalization normalization{};
 };
 struct Result {
@@ -62,6 +72,7 @@ struct NameContext {
 [[nodiscard]] std::string resolveName(const std::string&, const NameContext&);
 struct Control {
     std::stop_token stop;
+    // Work in sample frames; NI Stems spans five encoded streams.
     std::function<void(JobId, std::uint64_t written, std::uint64_t total)> progress;
     // Called between blocks, on the same thread as the loader and the runner.
     // Hosts with a message-thread contract must be run on that thread (or in
@@ -74,6 +85,10 @@ struct Control {
 [[nodiscard]] Result renderWav(Job, engine::DeviceLoader,
                               Control = {}, JobId = 0,
                               std::uint64_t counter = 1);
+
+[[nodiscard]] Result renderNiStems(Job, engine::DeviceLoader, Control = {},
+                                    JobId = 0, std::uint64_t counter = 1);
+void validateNiStems(const Job&);
 
 // Single-owner synchronous queue. The caller chooses its execution thread;
 // snapshots are independent values for posting to a UI. No callback runs on an

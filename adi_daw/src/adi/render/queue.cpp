@@ -35,6 +35,7 @@ void validate(const Job& j) {
         throw std::invalid_argument("unsupported export WAV encoding");
     if (j.encoding.dither != audio::WavDither::None && j.encoding.dither != audio::WavDither::Triangular && j.encoding.dither != audio::WavDither::Rectangular)
         throw std::invalid_argument("unsupported export dither");
+    validateNiStems(j);
     validateNormalization(j.normalization,static_cast<std::uint32_t>(j.session.sampleRate),j.session.channels);
     (void)resolveName(j.nameTemplate, {"project","master","group","120",1,"region"});
 }
@@ -139,6 +140,7 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
     try {
         cancellation(control);
         validate(job);
+        if (job.niStems) throw std::invalid_argument("renderWav requires a WAV job; use renderNiStems for NI Stems");
         StoreError error = StoreError::Ok;
         auto store = Store::open(job.project, error, true);
         if (!store || error != StoreError::Ok) throw std::runtime_error(std::string("open export project: ") + toString(error));
@@ -150,7 +152,9 @@ Result renderWav(Job job, engine::DeviceLoader loader, Control control,
             // Metadata, device states and playback rows describe one database
             // revision, sampled when this job starts, never when it is queued.
             SQLite::Transaction snapshot(store->db());
-            if (!session.load(*store, std::move(loader), job.session)) throw std::runtime_error(session.error());
+            auto renderSpec=job.session;
+            renderSpec.performanceState=false;
+            if (!session.load(*store, std::move(loader), renderSpec)) throw std::runtime_error(session.error());
             if (session.stats().placeholders || session.stats().skipped || !session.problems().empty()) {
                 std::string why = "export requires a fully resolved project";
                 for (const auto& problem : session.problems()) why += "; " + problem;
@@ -354,7 +358,8 @@ void Queue::run(engine::DeviceLoader loader, Control control) {
         try {
             // The enqueue ordinal is stable across removal/retry. Reusing a
             // vector index would reuse names of completed files after removal.
-            result = renderWav(job, loader, control, id, id);
+            result = job.niStems ? renderNiStems(job, loader, control, id, id)
+                                 : renderWav(job, loader, control, id, id);
         } catch (const std::exception& e) {
             result.state = JobState::Failed; result.error = e.what();
         } catch (...) {

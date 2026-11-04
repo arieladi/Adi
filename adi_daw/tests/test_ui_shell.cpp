@@ -2894,9 +2894,10 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     root.setSize(1440, 900);
     root.frame();
     root.frame();
-    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 1} &&
-              root.reader().findTrack(2)->name == "1 MIDI" && root.reader().findTrack(5)->name == "4 Audio",
-          "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, then Main");
+    check(laneOrder(root) == std::vector<std::int64_t>{2, 3, 4, 5, 6, 7, 1} &&
+              root.reader().findTrack(2)->name == "1 MIDI" && root.reader().findTrack(5)->name == "4 Audio" &&
+              root.reader().findTrack(7)->name == "B Delay",
+          "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, then Main (N41)");
     check(!root.canUndo(false) && root.undoTitle(false) == "Undo", "and has nothing to undo, as Live");
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});

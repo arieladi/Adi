@@ -124,6 +124,10 @@ bool matches(const std::vector<float>& samples, std::int64_t begin, double gain 
 }
 void ranges() {
     Fixture f; f.effect(); f.parallel();
+    OpRequest click;click.opType="transport.setMetronome";click.payload={{"on",true}};
+    OpRequest loop;loop.opType="transport.setLoop";loop.payload={{"on",true},{"start",0},{"end",1}};
+    check(OpJournal(*f.store).commit(std::vector<OpRequest>{click,loop}).ok,
+          "saved monitor loop/click fixture commits before export");
     int loads = 0;
     auto loader = [&](const DeviceRequest&, std::string&) {++loads; return std::make_unique<Delay>();};
     Queue queue;

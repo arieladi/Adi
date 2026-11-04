@@ -1029,7 +1029,8 @@ void rangeEditsAsBatches() {
               sub.nextUndo()->label == "Deactivate Clips",
           "one undo step, named");
     auto on = ui::deactivateRange(view.current()->tracks, all, 0, 2 * bar);
-    check(on.ops.size() == 2 && on.ops[0].payload["muted"] == false && on.ops[0].label == "Activate Clips",
+    check(on.ops.size() == 2 && on.ops[0].payload["muted"] == false && on.ops[0].label == "Activate Clips" &&
+              sub.submit(std::move(on.ops)).ok, // submitted: undo restores a deleted clip exactly, muted included (chain)
           "0 again, every one deactivated: activates them");
     auto gone = ui::deleteRange(view.current()->tracks, all, 0, 2 * bar);
     check(gone.ops.size() == 2 && gone.ops[0].opType == "clip.delete" && sub.submit(std::move(gone.ops)).ok &&
