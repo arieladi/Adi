@@ -18,6 +18,7 @@ Permissive licences, all AGPLv3-compatible in the direction we need.
 
 | Repo | Licence | Size | Purpose |
 |---|---|---|---|
+| [FFmpeg](https://github.com/FFmpeg/FFmpeg) | LGPL-2.1-or-later (public headers) | Sparse headers only, two ABIs | Linux AAC-LC through dynamically loaded libavcodec/libavutil (ADR-0204 d5). Header pins **n6.1.3 / 01d3f764f79b2f571174a4cec855e651258f20ec** (codec60/util58), **n7.1.5 / 3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587** (codec61/util59). No FFmpeg implementation is compiled or statically linked. Each shim checks both runtime majors before using public structures. No CLI dependency. Fetched by --build-only; unsupported/missing runtime gives an explicit codec-unavailable error. |
 | [`libsamplerate`](https://github.com/libsndfile/libsamplerate) | BSD-2-Clause | 5 MB shallow | Off-callback clip rate conversion, sinc best (ADR-0151); Re-Pitch's variable-ratio resampler (ADR-0188 d2). Pinned **0.2.2 / `c96f5e3de9c4488f4e6c97f59f5245f22fda22f7`**; director-granted row, fetched by `--build-only`. |
 | [`utf8proc`](https://github.com/JuliaStrings/utf8proc) | MIT and Unicode data licence | 3 MB shallow | Library NFC/case-fold keys (ADR-0147). Pinned **v2.11.3 / `e5e799221b45bbb90f5fdc5c69b6b8dfbf017e78`**, fetched by `--build-only`; director-granted dependency row. |
 | [`BLAKE3`](https://github.com/BLAKE3-team/BLAKE3) | CC0-1.0 or Apache-2.0 | 2.5 MB shallow | Media hashes (ADR-0127). Pinned **1.8.7 / `f3149ec5bb5449af877ba20377a11008ff499fa2`**; official C portable implementation only, SIMD disabled. Official test vectors exercise the 32-byte unkeyed hash. Fetched by `--build-only`. |
@@ -31,6 +32,7 @@ Permissive licences, all AGPLv3-compatible in the direction we need.
 | [`airwin2rack`](https://github.com/baconpaul/airwin2rack) | MIT (Airwindows, Chris Johnson; the registry, Paul Walker) | 31 MB shallow | **Only 16 console algorithms are compiled**, into the engine as native group summing (ADR-0173, ADR-0174): the channel and buss halves of Console9, ConsoleLA, ConsoleMC, ConsoleMD, PurestConsole3, PD, C5Raw and Atmosphere. The newest tag (v2.9.0, 2024) predates Console9, so this is the one row pinned **by commit alone**: **`b6eef0af60cd32641b09837096e41bbcdb030341`**, tag `-`, fetched by that commit by `--build-only`. The same checkout feeds the ADI Airwindows plug-ins (ADR-0166). |
 | [`SQLiteCpp`](https://github.com/SRombauts/SQLiteCpp) | MIT | 14 MB | RAII C++ wrapper over the SQLite C API. Transactions, prepared statements, BLOB binding. Removes an entire class of leak and error-handling bug from the `.adi` reader/writer. |
 | [`json`](https://github.com/nlohmann/json) | MIT | 29 MB | nlohmann/json. We want it for its **CBOR** codec (`to_cbor`/`from_cbor`), not its JSON — for `ops.payload` and `ops.inverse`. See ADR-0016. |
+| [Rubber Band](https://github.com/breakfastquay/rubberband) | GPL-2.0-or-later | 3 MB shallow | ADR-0061 / ADR-0188 d2: off-callback R3 for Tones, Complex and Complex Pro. Pinned **v4.0.0 / 1d95888bec3ae0a17c0c4af791810d5a63f6bc35**, fetched by --build-only. At this exact commit rubberband/RubberBandStretcher.h and single/RubberBandSingle.cpp explicitly say "either version 2 of the License, or (at your option) any later version", verifying ADR-0061 d2. Upstream single-file build, unmodified: built-in FFT/BQ resampler, Apple vDSP through Accelerate, no internal worker threads. Its private FFT implements the approved R3 backend; ADI's analyser and convolution continue using their shared PFFFT. |
 | [`bungee`](https://github.com/bungee-audio-stretch/bungee) | MPL-2.0 | 426 KB | Time-stretch / pitch-shift. Feeds `audio_clips.warp_markers` (SPEC §6.4). Handles continuous rate change and zero/negative speed, which is what scrubbing needs. |
 | [`lockfree`](https://github.com/DNedic/lockfree) | MIT | 2.2 MB | Header-only bounded SPSC/MPMC queues, no dynamic allocation, cache-line padded. For the message-thread→audio-thread handoff in ADR-0010. |
 | [`JUCE`](https://github.com/juce-framework/JUCE) | **AGPL-3.0** or commercial | 117 MB shallow | Audio device I/O, the plugin graph and VST3 hosting for step 6, and the UI toolkit after it. **Pinned 9.0.2 / `72782788`. Fetched only by `--with-juce`; `ADI_WITH_JUCE` is OFF by default** so the whole tree builds and every suite passes with no JUCE present (ADR-0036). **The one dependency whose licence is stronger than ours** — see ADR-0048 and the note below. |
@@ -226,3 +228,13 @@ unrecorded and open.
 
 Note also that MAGDA requires a **CLA** from contributors, which bears directly
 on the open question at the end of ADR-0015.
+
+
+NI Stems transport reference (read only, no code or fixture vendored):
+[Mixxx](https://github.com/mixxxdj/mixxx), GPL-2.0-or-later, observed at
+`bc49961fd3e5a46cd46588090c652a0d7ec44e18`: SoundSourceStem,
+StemInfoImporter and the stem01 synthetic sine MP4/JSON establish the
+master-plus-four layout and `moov/udta/stem` manifest. ADI's bounded MP4
+reader/writer and codec adapters are original implementations; see
+[ENGINE-NI-STEMS.md](ENGINE-NI-STEMS.md) for the independent interoperability
+check. Automated fixtures are generated by ADI's tests.
