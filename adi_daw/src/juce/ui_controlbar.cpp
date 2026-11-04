@@ -143,6 +143,11 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         g.drawRect(getLocalBounds(), 1);
     }
 }
+bool BarItem::keyPressed(const juce::KeyPress &key) {
+    if (onKey && onKey(key))
+        return true;
+    return juce::Button::keyPressed(key);
+}
 void BarItem::focusGained(FocusChangeType cause) {
     ring_ = cause != focusChangedByMouseClick;
     if (onFocus)
@@ -172,7 +177,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
                             "(Option+Shift+F on the Mac)."},
-        {&position, "Arrangement Position", "Where the playhead is, in bars, beats and sixteenths."},
+        {&position, "Arrangement Position", "Where the playhead is, in bars, beats and sixteenths. Click to type "
+                                            "another, such as 5.2.3; up and down step a bar. It moves the insert marker."},
         {&play, "Play", "Starts playback from the insert marker, or stops it. Space."},
         {&stop, "Stop", "Stops playback."},
         {&record, "Arrangement Record", "Records into the arrangement. F9."},
@@ -209,6 +215,16 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     tap.setTriggeredOnMouseDown(true);
     tap.onClick = [this] { root_.tapTempo(static_cast<std::int64_t>(juce::Time::getMillisecondCounter())); };
     signature.onClick = [this] { beginSignatureEdit(); };
+    position.onClick = [this] { beginPositionEdit(); };
+    position.onKey = [this](const juce::KeyPress &k) {
+        if (k.getModifiers().isAnyModifierKeyDown())
+            return false;
+        if (k.getKeyCode() == juce::KeyPress::upKey || k.getKeyCode() == juce::KeyPress::downKey) {
+            root_.stepPosition(k.getKeyCode() == juce::KeyPress::upKey ? 1 : -1);
+            return true;
+        }
+        return false;
+    };
     addChildComponent(fieldEditor);
     fieldEditor.setJustification(juce::Justification::centred);
     fieldEditor.onReturnKey = [this] {
@@ -221,7 +237,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     fieldEditor.onFocusLost = [this] { fieldEditor.setVisible(false); };
     for (auto *item : items())
         if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo &&
-            item != &tap)
+            item != &tap && item != &position)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -320,6 +336,11 @@ void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
 }
 void TransportBar::beginTempoEdit() {
     beginFieldEdit(tempo, juce::String(root_.bpm(), 2), [this](const std::string &t) { return root_.setTempoAtPlay(t); });
+}
+void TransportBar::beginPositionEdit() {
+    const auto at = barPosition(root_.timelineTick(), root_.reader().meters());
+    beginFieldEdit(position, juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth),
+                   [this](const std::string &t) { return root_.setPositionAt(t); });
 }
 void TransportBar::beginSignatureEdit() {
     const auto &meter = meterAt(root_.timelineTick(), root_.reader().meters());

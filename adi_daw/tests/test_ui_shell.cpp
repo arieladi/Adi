@@ -1426,6 +1426,43 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(std::abs(root.bpm() - 120) < 1e-9 && submitter.nextUndo()->txnId == beforeField && runStep != beforeField,
           "one undo takes the whole run back: 120");
+    // The Arrangement Position field (manual 6.1): typed, it moves the insert marker; up and down step
+    // a bar. Here 5/4 from bar 3 (quarter 8), and bar 4 cut short by the 7/8 on quarter 14.
+    bar.position.onClick();
+    check(bar.editing() == &bar.position && bar.fieldEditor.getText() == "1.1.1",
+          "a click on the position: a field holding 1.1.1");
+    auto typePosition = [&](const char *text) {
+        bar.fieldEditor.setText(text, false);
+        bar.fieldEditor.onReturnKey();
+        root.frame();
+    };
+    typePosition("2.3");
+    check(bar.editing() == nullptr && lanes.selection.insert == 6 * q && lanes.selection.marked &&
+              lanes.selection.start == lanes.selection.end && submitter.nextUndo()->txnId == beforeField,
+          "2.3 typed: the insert marker on bar 2's third beat, quarter 6; no undo step");
+    {
+        // The driver takes the locate, as the audio thread would; the field shows the play position.
+        engine::Transport driver;
+        mailbox.drain(driver);
+        root.mark(DirtySet::All);
+        root.frame();
+        check(!root.playing() && bar.position.text == "2.  3.  1", "the playhead there too, and the field shows 2. 3. 1");
+    }
+    render("adi-position-field.png");
+    bar.position.onClick();
+    typePosition("3.5");
+    check(lanes.selection.insert == 12 * q, "3.5: bar 3's fifth beat in 5/4, quarter 12");
+    bar.position.onClick();
+    typePosition("4.2");
+    check(bar.editing() == &bar.position && lanes.selection.insert == 12 * q &&
+              root.error().find("no beat 2") != std::string::npos,
+          "4.2: bar 4 ends at the 7/8 before its second beat: refused, the field kept open, the reason said");
+    bar.fieldEditor.onEscapeKey();
+    check(bar.position.keyPressed(juce::KeyPress(juce::KeyPress::upKey)) && lanes.selection.insert == 13 * q,
+          "up: a bar on, where bar 4 has no fifth beat, so its start, quarter 13");
+    check(bar.position.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && lanes.selection.insert == 8 * q,
+          "down: bar 3's start again");
+    check(submitter.nextUndo()->txnId == beforeField, "none of it an undo step");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.

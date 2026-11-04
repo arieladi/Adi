@@ -1223,6 +1223,32 @@ void referenceTapAndHold() {
     check(!ref.on(), "latched, then held and let go: off");
 }
 
+void positionsTyped() {
+    section("Arrangement Position fields: a typed position in the project's meters (Live 12 manual 6.1)");
+    const auto q = textproj::kPPQ;
+    const std::vector<textproj::Meter> meters{{0, 4, 4}, {8 * q, 6, 8}, {12 * q, 5, 4}};
+    using P = ui::BarPosition;
+    for (const auto &[text, ok, bar, beat, sixteenth] :
+         {std::tuple<const char *, bool, int, int, int>{"5", true, 5, 1, 1}, {"5.2", true, 5, 2, 1}, {"5.2.3", true, 5, 2, 3},
+          {" 5 2 3 ", true, 5, 2, 3}, {"5:2,3", true, 5, 2, 3}, {"5 . 2", true, 5, 2, 1}, {"", false, 0, 0, 0},
+          {"5.", false, 0, 0, 0}, {"0.1.1", false, 0, 0, 0}, {"5.2.3.4", false, 0, 0, 0}, {"5x", false, 0, 0, 0},
+          {"123456", false, 0, 0, 0}}) {
+        const auto at = ui::parsePosition(text);
+        check(at.has_value() == ok && (!ok || *at == P{bar, beat, sixteenth}), text);
+    }
+    check(ui::tickOf(P{1, 1, 1}, meters) == 0 && ui::tickOf(P{2, 3, 2}, meters) == 4 * q + 2 * q + q / 4,
+          "4/4: bar 2, beat 3, sixteenth 2");
+    check(ui::tickOf(P{3, 1, 1}, meters) == 8 * q && ui::tickOf(P{3, 4, 2}, meters) == 8 * q + 3 * q / 2 + q / 4,
+          "6/8 from bar 3: its beats are eighths, of two sixteenths each");
+    check(!ui::tickOf(P{3, 7, 1}, meters) && !ui::tickOf(P{3, 1, 3}, meters), "6/8 has no beat 7, nor an eighth a third sixteenth");
+    check(ui::tickOf(P{4, 2, 1}, meters) == 11 * q + q / 2 && !ui::tickOf(P{4, 3, 1}, meters),
+          "bar 4, cut short by the 5/4 on quarter 12: beat 2 there, beat 3 past it");
+    check(ui::tickOf(P{5, 1, 1}, meters) == 12 * q && ui::tickOf(P{7, 5, 4}, meters) == 22 * q + 4 * q + 3 * q / 4,
+          "5/4 from bar 5, on and on");
+    for (const auto tick : {std::int64_t{0}, 7 * q, 11 * q + q / 2, 30 * q + q / 4})
+        check(ui::tickOf(ui::barPosition(tick, meters), meters) == tick, "tickOf undoes barPosition");
+}
+
 void fragmentaryBars() {
     section("fragmentary bars: a change before the previous bar is complete cuts it short (Live 12 manual 6.5)");
     const auto q = textproj::kPPQ;
@@ -1522,6 +1548,7 @@ int main() {
     rangeEditsAsBatches();
     referenceTapAndHold();
     momentaryLatch();
+    positionsTyped();
     fragmentaryBars();
     tapTempo();
     tempoField();

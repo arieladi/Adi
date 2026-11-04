@@ -1388,6 +1388,44 @@ bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
         tapStep_ = after->txnId;
     return true;
 }
+namespace {
+// The insert marker, a point, at `tick`, and the playhead with it.
+void placeInsertMarker(ArrangementView &arrangement, std::int64_t tick) {
+    auto &sel = arrangement.geometry.selection;
+    sel.insert = sel.start = sel.end = tick;
+    sel.clip = 0;
+    sel.pickedClips.clear();
+    sel.marked = true;
+    arrangement.locate();
+}
+} // namespace
+bool AdiRootComponent::setPositionAt(const std::string &text) {
+    const auto at = parsePosition(text);
+    if (!at)
+        return fail("Type a position such as 5.2.3: bar, beat and sixteenth.");
+    const auto tick = tickOf(*at, reader().meters());
+    if (!tick)
+        return fail("Bar " + std::to_string(at->bar) + " has no beat " + std::to_string(at->beat) + ", sixteenth " +
+                    std::to_string(at->sixteenth) + " in its time signature.");
+    placeInsertMarker(arrangement, *tick);
+    publishSelection();
+    arrangement.changed();
+    return true;
+}
+bool AdiRootComponent::stepPosition(int bars) {
+    const auto &meters = reader().meters();
+    const auto from = barPosition(playing_ ? timelineTick() : arrangement.geometry.selection.insert, meters);
+    const BarPosition to{std::max<std::int64_t>(1, from.bar + bars), from.beat, from.sixteenth};
+    auto tick = tickOf(to, meters);
+    if (!tick)
+        tick = tickOf({to.bar, 1, 1}, meters); // a beat that bar does not have: its start
+    if (!tick)
+        return false;
+    placeInsertMarker(arrangement, *tick);
+    publishSelection();
+    arrangement.changed();
+    return true;
+}
 bool AdiRootComponent::setTempoAtPlay(const std::string &text, const char *label) {
     const auto current = view_.current();
     if (!current || !current->tempo)
