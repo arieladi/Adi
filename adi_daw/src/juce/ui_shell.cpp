@@ -1,12 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cmath>
 #include <vector>
 namespace adi::ui {
 namespace {
+// A letter's key is down whichever case its code names.
+bool keyIsDown(int code) {
+    return juce::KeyPress::isKeyCurrentlyDown(code) ||
+           (code > 0 && code < 128 && std::isalpha(code) &&
+            (juce::KeyPress::isKeyCurrentlyDown(std::toupper(code)) ||
+             juce::KeyPress::isKeyCurrentlyDown(std::tolower(code))));
+}
 // Live's measures, in points at 100 % (ui_look.hpp): the control bar, the Status Bar,
 // the AI tab, the Info View's width and the browser's preview strip.
 constexpr int kTransportHeight = look::controlBarHeight, kStatusHeight = look::statusBarHeight,
@@ -46,6 +57,15 @@ bool AppCommands::setInfoView(bool on, std::string &why) {
         return false;
     infoView_ = on;
     return true;
+}
+std::optional<float> AppCommands::keptZoom(const std::string &window, const std::string &display) const {
+    const auto kept = settings::windowZoom(settings_, window, display);
+    if (!kept)
+        return std::nullopt;
+    return static_cast<float>(*kept);
+}
+bool AppCommands::keepZoom(const std::string &window, const std::string &display, float zoom, std::string &why) {
+    return settings::setWindowZoom(settings_, window, display, zoom, {}, why) && settings_.save(why);
 }
 bool AppCommands::setTabMovesFocus(bool on, std::string &why) {
     if (!settings_.set("lookfeel.tabMovesFocus", on, {}, why) || !settings_.save(why))
@@ -104,7 +124,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Activate/Deactivate Track 2", "Activate/Deactivate Track 3",
                                   "Activate/Deactivate Track 4", "Activate/Deactivate Track 5",
                                   "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
-                                  "Activate/Deactivate Track 8"};
+                                  "Activate/Deactivate Track 8", "Mixer Sends",
+                                  "Insert Time Signature Change"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -224,6 +245,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('t', cmd | shift);
         break;
     case DeleteTrack:
+        // On a selected time signature marker, Delete removes it (Live 12 manual 6.5).
+        if (active_ != nullptr && active_->arrangement.selectedMeter >= 0) {
+            info.shortName = "Delete Time Signature Change";
+            info.setActive(true);
+            break;
+        }
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
         break;
     case Quit:
@@ -233,9 +260,17 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('q', cmd);
 #endif
         break;
-    case RenameTrack: // §41.5
+    case RenameTrack: // §41.5; on a selected time signature marker, Edit Time Signature (manual 6.5)
         info.addDefaultKeypress('r', cmd);
+        if (active_ != nullptr && active_->arrangement.selectedMeter >= 0) {
+            info.shortName = "Edit Time Signature";
+            info.setActive(true);
+            break;
+        }
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        break;
+    case InsertTimeSignatureChange: // manual 6.5: at the insert marker
+        info.setActive(active_ != nullptr);
         break;
     case ToggleMixView:
         // ADR-0209 d9: F4 opens and closes the Mix View; the function keys do functions.
@@ -265,6 +300,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleMixerInOut: // Live 12's Mixer Controls In/Out: the Mixer View's own; no key of its own
         info.setTicked(active_ != nullptr && active_->state().mixerInOut);
+        break;
+    case ToggleMixerSends: // Live 12's Mixer Controls Sends: the Mixer View's own; Ctrl/Cmd+Alt+S is the track controls'
+        info.setTicked(active_ != nullptr && active_->state().mixerSends);
         break;
     case SoloSelected: // §42.19: Solo Selected Tracks, S
         info.addDefaultKeypress('s', 0);
@@ -397,6 +435,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
 }
 bool AppCommands::key(const juce::KeyPress &key, AdiRootComponent &root) {
     activate(root);
+    // A latching key runs its command once while it is held (Live 42.25): the root times it. One let
+    // go where the window could not see it (the focus elsewhere) goes down anew, and nothing goes back.
+    if (const auto id = manager.getKeyMappings()->findCommandForKeyPress(key); AdiRootComponent::latches(id)) {
+        if (root.latch().held() && !keyIsDown(root.latch().key()))
+            root.letGoUnseen();
+        return root.latchKey(id, key.getKeyCode(), true, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
+    }
     return manager.getKeyMappings()->keyPressed(key, &root);
 }
 void AppCommands::activate(AdiRootComponent &root) {
@@ -786,14 +831,16 @@ void AdiRootComponent::resized() {
     // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
     // View and its track controls, which a lane-less view has no use for. The browser, the strip
     // down the edge and the Detail View stay.
-    mixViewArea_ = state_.mixView && !state_.mixViewDetached
-                       ? juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_)
-                       : juce::Rectangle<int>();
+    mixViewDock_ = juce::Rectangle<int>(centreX, top, centreW, mid).getUnion(mixerArea_);
+    mixViewArea_ = state_.mixView && !state_.mixViewDetached ? mixViewDock_ : juce::Rectangle<int>();
     const bool mixing = !mixViewArea_.isEmpty();
-    // In its own window the panel is the window's; docked, it is laid out here.
+    // In its own window the panel is the window's; docked, it is laid out here. Framed before it shows,
+    // so the switch never shows what it held when it was last open (the director's R3).
     if (mixViewPanel.getParentComponent() == this) {
-        mixViewPanel.setVisible(mixing);
         mixViewPanel.setBounds(mixViewArea_);
+        if (mixing && !mixViewPanel.isVisible() && reader_)
+            mixViewPanel.frame(reader());
+        mixViewPanel.setVisible(mixing);
     }
     arrangement.setVisible(!mixing);
     if (mixing) {
@@ -899,13 +946,29 @@ juce::PopupMenu AdiRootComponent::mixerOptionsMenu() {
     commands_.activate(*this);
     juce::PopupMenu menu;
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerInOut, "In/Out");
-    menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerSends, "Sends");
     menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
     menu.addItem(juce::PopupMenu::Item("Track Options").setEnabled(false));
     menu.addItem(juce::PopupMenu::Item("Crossfader").setEnabled(false));
     menu.addItem(juce::PopupMenu::Item("Performance Impact").setEnabled(false));
     menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleReturnTracks);
+    return menu;
+}
+juce::PopupMenu AdiRootComponent::trackControlsMenu() {
+    // Live 12's Arrangement Track Controls submenu (the View menu; manual 6.1: "You can customize
+    // which controls are shown"; 18.6: Track Options holds Track Delay): the track controls' In/Out
+    // and Sends, with their keys. Volume always shows in ADI; Track Options waits on Track Delay
+    // (N22). Live's full list is to be measured. First, ADI's side panel of track controls, shown or
+    // hidden whole, which the View menu held as "Arrangement Track Controls" before the submenu.
+    commands_.activate(*this);
+    juce::PopupMenu menu;
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixer, "Hide/Show Track Controls");
+    menu.addSeparator();
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleInOut);
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
+    menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Track Options").setEnabled(false));
     return menu;
 }
 void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
@@ -931,10 +994,45 @@ bool AdiRootComponent::referenceKey(bool down, std::int64_t nowMs) {
     return true;
 }
 bool AdiRootComponent::keyStateChanged(bool isKeyDown) {
+    const auto now = static_cast<std::int64_t>(juce::Time::getMillisecondCounter());
+    // A latching key let go: after a hold, the window goes back (Live 42.25).
+    bool handled = false;
+    if (latch_.held() && !keyIsDown(latch_.key()))
+        handled = latchKey(0, latch_.key(), false, now);
     // Shift+R let go: a hold of the ★ Reference ends, a tap latches it (ADR-0209 d9).
-    if (reference_.held() && !juce::KeyPress::isKeyCurrentlyDown('r') && !juce::KeyPress::isKeyCurrentlyDown('R'))
-        return referenceKey(false, static_cast<std::int64_t>(juce::Time::getMillisecondCounter()));
-    return juce::Component::keyStateChanged(isKeyDown);
+    if (reference_.held() && !keyIsDown('r'))
+        return referenceKey(false, now) || handled;
+    return handled || juce::Component::keyStateChanged(isKeyDown);
+}
+bool AdiRootComponent::latches(int command) noexcept {
+    return command == AppCommands::SoloSelected || command == AppCommands::ZoomToSelection ||
+           (command >= AppCommands::ActivateTrack1 && command <= AppCommands::ActivateTrack8);
+}
+bool AdiRootComponent::latchKey(int id, int keyCode, bool down, std::int64_t nowMs) {
+    if (down) {
+        // The first press acts; a repeat while the key is held does nothing.
+        if (!latch_.press(keyCode, id, nowMs))
+            return true;
+        const auto before = submitter_.nextUndo();
+        const bool done = command(id);
+        if (const auto after = submitter_.nextUndo(); after && (!before || after->txnId != before->txnId))
+            latch_.made(after->txnId);
+        return done;
+    }
+    const auto back = latch_.release(keyCode, nowMs);
+    if (!back)
+        return false;
+    if (back->command == AppCommands::ZoomToSelection)
+        return command(AppCommands::ZoomBack);
+    // Only the step the press made, while it is still the latest: an edit since then stays, and so
+    // does what the press made under it. Going back pauses no Follow, as an undo from the menu does.
+    const auto last = submitter_.nextUndo();
+    if (back->step == 0 || !last || last->txnId != back->step)
+        return false;
+    const bool paused = arrangement.followPaused;
+    const bool done = command(AppCommands::Undo);
+    arrangement.followPaused = paused;
+    return done;
 }
 bool AdiRootComponent::setMixView(bool open, bool detached) {
     const bool wasOpen = state_.mixView, wasDetached = state_.mixViewDetached;
@@ -1040,29 +1138,20 @@ bool AdiRootComponent::toggle(Panel p) {
 bool AdiRootComponent::insertTrack(bool midi) {
     // Live inserts after the selected track and selects the new one. The id is the
     // payload's, never SQLite's (ADR-0021), and it comes from the CURRENT cell: an
-    // action lands on the project as it is now, not on this window's last frame.
+    // action lands on the project as it is now, not on this window's last frame. In the selected
+    // track's group, right after it; the tracks after it move down one, in the same step.
     const auto current = view_.current();
-    const auto &tracks = current->tracks;
-    std::int64_t id = 1, index = static_cast<std::int64_t>(tracks.size());
-    for (std::size_t i = 0; i < tracks.size(); ++i) {
-        id = std::max(id, tracks[i]->id + 1);
-        if (tracks[i]->id == arrangement.geometry.selection.track)
-            index = static_cast<std::int64_t>(i) + 1;
-    }
-    OpRequest request;
-    request.opType = "track.create";
-    request.payload = {{"id", id},
-                       {"kind", midi ? "midi" : "audio"},
-                       // '#' shows the track's number and follows it (manual 18.2).
-                       {"name", midi ? "# MIDI" : "# Audio"},
-                       {"index", index}};
-    request.label = midi ? "Insert MIDI Track" : "Insert Audio Track";
-    request.selBefore = session_.advisory();
-    const auto result = submitter_.submit(std::move(request));
+    if (!current)
+        return fail("Inserting a track needs an open project.");
+    auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    edit.ops.front().selBefore = session_.advisory();
+    const auto result = submitter_.submit(std::move(edit.ops));
     if (!result)
         return fail(result.error);
     arrangement.followPaused = true;
-    arrangement.geometry.selection.track = id;
+    arrangement.geometry.selection.track = edit.select;
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
     publishSelection();
@@ -1102,6 +1191,7 @@ bool AdiRootComponent::insertReturnTrack() {
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = 0;
+    arrangement.geometry.selection.pickedClips.clear();
     publishSelection();
     arrangement.applyView();
     return true;
@@ -1121,31 +1211,65 @@ bool AdiRootComponent::deleteTrack() {
     arrangement.followPaused = true;
     arrangement.geometry.selection.track = 0;
     arrangement.geometry.selection.clip = 0;
+    arrangement.geometry.selection.pickedClips.clear();
     publishSelection();
     return true;
 }
 bool AdiRootComponent::dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos,
                                  const std::string &name) {
-    // Where it lands is checked before the file is read; the batch is built from the CURRENT cell.
+    return dropAudioFiles({{utf8Path, name}}, track, pos, false);
+}
+bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files,
+                                      std::int64_t track, std::int64_t pos, bool separate) {
+    // Where it lands is checked before the files are read; the batch is built from the CURRENT cell.
     if (!view_.current())
         return fail("Dropping audio needs an open project.");
     if (auto refusal = audioDropRefusal(*view_.current(), track); !refusal.empty())
         return fail(std::move(refusal));
     if (!importAudio)
         return fail("Dropping audio needs an open project.");
-    AudioImport import;
-    std::string why;
-    if (!importAudio(utf8Path, import, why))
-        return fail(why.empty() ? "The file could not be imported." : why);
-    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, name, std::move(import));
+    // Each file captured before the batch lands: a new pool row takes an id past the ones the files
+    // before it took, and a file dropped twice is captured once.
+    std::vector<DroppedAudio> dropped;
+    std::int64_t nextId = 0;
+    for (std::size_t i = 0; i < files.size(); ++i) {
+        const auto &[path, name] = files[i];
+        DroppedAudio file{name, {}};
+        std::size_t seen = 0;
+        while (seen < i && files[seen].first != path)
+            ++seen;
+        if (seen < i) {
+            file.import = dropped[seen].import;
+            file.import.media = {};
+        } else {
+            file.import.firstFreeId = nextId;
+            std::string why;
+            if (!importAudio(path, file.import, why))
+                return fail(why.empty() ? "The file could not be imported." : why);
+            if (!file.import.media.opType.empty())
+                nextId = std::max(nextId, file.import.mediaId + 1);
+        }
+        dropped.push_back(std::move(file));
+    }
+    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate);
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     if (!submitEdits(std::move(edit.ops)))
         return false;
-    arrangement.geometry.selection.track = edit.select;
-    arrangement.geometry.selection.toTrack = 0;
-    arrangement.geometry.selection.picked.clear();
-    arrangement.geometry.selection.clip = edit.clip;
+    // The first clip selected, as a click on it selects it: its track, and its time.
+    auto &sel = arrangement.geometry.selection;
+    sel.track = edit.select;
+    sel.toTrack = 0;
+    sel.picked.clear();
+    sel.clip = edit.clip;
+    sel.pickedClips.clear();
+    if (const auto now = view_.current())
+        if (const auto *t = now->findTrack(edit.select))
+            for (const auto &c : t->clips)
+                if (c->id == edit.clip) {
+                    sel.start = c->posTicks;
+                    sel.end = c->posTicks + c->lengthTicks;
+                }
     publishSelection();
     return true;
 }
@@ -1169,6 +1293,7 @@ bool AdiRootComponent::groupTracks(bool ungroup) {
     arrangement.geometry.selection.toTrack = 0;
     arrangement.geometry.selection.picked.clear();
     arrangement.geometry.selection.clip = 0;
+    arrangement.geometry.selection.pickedClips.clear();
     publishSelection();
     return true;
 }
@@ -1192,6 +1317,161 @@ bool AdiRootComponent::activateTrack(std::int64_t id, bool withSelection) {
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::insertMeter(std::int64_t pos, const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    auto edit = ::adi::ui::insertMeter(current->meters, pos, text);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.selectedMeter = pos;
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::editMeter(std::int64_t pos, const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    auto edit = ::adi::ui::editMeter(current->meters, pos, text);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.selectedMeter = pos;
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::moveMeter(std::int64_t from, std::int64_t to) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    auto edit = ::adi::ui::moveMeter(current->meters, from, to);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    if (to != from)
+        arrangement.selectedMeter = to;
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::setMeterAtPlay(const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    const auto at = timelineTick();
+    const bool surely = startSurelyStored(current->meters);
+    auto edit = setMeterAt(current->meters, at, text, surely);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (edit.ops.empty())
+        return true;
+    // A 4/4 at the start may be stored or the snapshot's own: insert first, and where the project
+    // stores one, replace it.
+    if (!surely && edit.ops.size() == 1 && edit.ops.front().payload.at("pos").get<std::int64_t>() == 0)
+        return submitStartEdit(std::move(edit.ops), setMeterAt(current->meters, at, text, true).ops);
+    return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::tapTempo(std::int64_t nowMs) {
+    const auto bpm = tap_.tap(nowMs);
+    if (!bpm) {
+        tapStep_ = 0;
+        tapBpm_ = 0;
+        return true;
+    }
+    const double value = std::round(std::clamp(*bpm, kMinTempo, kMaxTempo) * 100) / 100;
+    if (std::abs(value - tapBpm_) < .005)
+        return true;
+    // The run's step gives way to this tap's, while it is still the latest: one step for the run.
+    if (const auto last = submitter_.nextUndo(); tapStep_ != 0 && last && last->txnId == tapStep_) {
+        const bool paused = arrangement.followPaused;
+        command(AppCommands::Undo);
+        arrangement.followPaused = paused;
+    }
+    const auto before = submitter_.nextUndo();
+    if (!setTempoAtPlay(juce::String(value, 2).toStdString(), "Tap Tempo"))
+        return false;
+    tapBpm_ = value;
+    if (const auto after = submitter_.nextUndo(); after && (!before || after->txnId != before->txnId))
+        tapStep_ = after->txnId;
+    return true;
+}
+namespace {
+// The insert marker, a point, at `tick`, and the playhead with it.
+void placeInsertMarker(ArrangementView &arrangement, std::int64_t tick) {
+    auto &sel = arrangement.geometry.selection;
+    sel.insert = sel.start = sel.end = tick;
+    sel.clip = 0;
+    sel.pickedClips.clear();
+    sel.marked = true;
+    arrangement.locate();
+}
+} // namespace
+bool AdiRootComponent::setPositionAt(const std::string &text) {
+    const auto at = parsePosition(text);
+    if (!at)
+        return fail("Type a position such as 5.2.3: bar, beat and sixteenth.");
+    const auto tick = tickOf(*at, reader().meters());
+    if (!tick)
+        return fail("Bar " + std::to_string(at->bar) + " has no beat " + std::to_string(at->beat) + ", sixteenth " +
+                    std::to_string(at->sixteenth) + " in its time signature.");
+    placeInsertMarker(arrangement, *tick);
+    publishSelection();
+    arrangement.changed();
+    return true;
+}
+bool AdiRootComponent::stepPosition(int bars) {
+    const auto &meters = reader().meters();
+    const auto from = barPosition(playing_ ? timelineTick() : arrangement.geometry.selection.insert, meters);
+    const BarPosition to{std::max<std::int64_t>(1, from.bar + bars), from.beat, from.sixteenth};
+    auto tick = tickOf(to, meters);
+    if (!tick)
+        tick = tickOf({to.bar, 1, 1}, meters); // a beat that bar does not have: its start
+    if (!tick)
+        return false;
+    placeInsertMarker(arrangement, *tick);
+    publishSelection();
+    arrangement.changed();
+    return true;
+}
+bool AdiRootComponent::setTempoAtPlay(const std::string &text, const char *label) {
+    const auto current = view_.current();
+    if (!current || !current->tempo)
+        return fail("The tempo needs an open project.");
+    const auto at = timelineTick();
+    const auto &events = current->tempo->events;
+    const bool surely = tempoSurelyStored(events);
+    auto edit = setTempoAt(events, at, text, surely, label);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (edit.ops.empty())
+        return true;
+    // A 120 at the start may be stored or the snapshot's own, as for the signature.
+    if (!surely && edit.ops.size() == 1 && edit.ops.front().payload.at("pos").get<std::int64_t>() == 0)
+        return submitStartEdit(std::move(edit.ops), setTempoAt(events, at, text, true, label).ops);
+    return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::submitStartEdit(std::vector<OpRequest> tried, std::vector<OpRequest> otherwise) {
+    tried.front().selBefore = session_.advisory();
+    if (const auto result = submitter_.submit(std::move(tried)); result.ok)
+        return edited(result);
+    return submitEdits(std::move(otherwise));
+}
+bool AdiRootComponent::deleteMeter(std::int64_t pos) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    auto edit = ::adi::ui::deleteMeter(current->meters, pos);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.selectedMeter = -1;
+    arrangement.scrub.repaint();
+    return true;
 }
 bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
     // From the CURRENT cell (ADR-0201); the batch is one undo step, and the selection stays.
@@ -1388,11 +1668,13 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ToggleOverview:
     case AppCommands::ToggleInOut:
     case AppCommands::ToggleSends:
-    case AppCommands::ToggleMixerInOut: {
-        auto &shown = id == AppCommands::ToggleOverview ? state_.overview
-                      : id == AppCommands::ToggleInOut  ? state_.inOut
-                      : id == AppCommands::ToggleSends  ? state_.sends
-                                                        : state_.mixerInOut;
+    case AppCommands::ToggleMixerInOut:
+    case AppCommands::ToggleMixerSends: {
+        auto &shown = id == AppCommands::ToggleOverview  ? state_.overview
+                      : id == AppCommands::ToggleInOut   ? state_.inOut
+                      : id == AppCommands::ToggleSends   ? state_.sends
+                      : id == AppCommands::ToggleMixerSends ? state_.mixerSends
+                                                         : state_.mixerInOut;
         shown = !shown;
         if (!persist()) {
             shown = !shown;
@@ -1443,9 +1725,24 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::DeleteTrack:
+        if (arrangement.selectedMeter >= 0)
+            return deleteMeter(arrangement.selectedMeter);
         if (!deleteTrack())
             return false;
         break;
+    case AppCommands::InsertTimeSignatureChange: {
+        // At the insert marker (Live 12 manual 6.5): a field there to type the value; where a marker
+        // stands, that marker's value. The start's signature is the control bar's.
+        const auto pos = arrangement.geometry.selection.insert;
+        const auto current = view_.current();
+        if (!current)
+            return fail("Time signatures need an open project.");
+        if (pos <= 0)
+            return fail("The time signature at the start is the control bar's; place the insert marker "
+                        "where the change goes.");
+        arrangement.selectedMeter = markerAt(current->meters, pos) != 0 ? pos : -1;
+        return arrangement.scrub.beginMeterEdit(pos, true);
+    }
     case AppCommands::GroupTracks:
     case AppCommands::UngroupTracks:
         if (!groupTracks(id == AppCommands::UngroupTracks))
@@ -1478,8 +1775,11 @@ bool AdiRootComponent::command(int id) {
         strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
         break;
     case AppCommands::RenameTrack:
-        // Rename acts on the selection: the device with the focus, else the selected track.
-        // The edit itself is its own op when the name is committed.
+        // Rename acts on the selection: a selected time signature marker (Edit Time Signature), the
+        // device with the focus, else the selected track. The edit itself is its own op when the
+        // name is committed.
+        if (arrangement.selectedMeter >= 0)
+            return arrangement.scrub.beginMeterEdit(arrangement.selectedMeter, false);
         for (auto &panel : devices.panels)
             if (panel->hasKeyboardFocus(true))
                 return panel->beginRename() || fail("Unfold the device to rename it.");
@@ -1505,6 +1805,12 @@ bool AdiRootComponent::command(int id) {
         interfaceZoom_ = *next;
         if (auto *host = getParentComponent())
             host->resized();
+        // Kept for this window on the display it stands on, for the next launch (N4).
+        zoomDisplay_ = displayAt(getScreenBounds().getCentre());
+        if (std::string why; !commands_.keepZoom(window_, *zoomDisplay_, interfaceZoom_, why)) {
+            say("The zoom is not kept for the next launch: " + why);
+            return true;
+        }
         break;
     }
     default:
@@ -1525,6 +1831,8 @@ struct MenuEntries {
     const char *name;
     std::vector<int> items;
 };
+// Live 12's View menu submenus, in a menu's items: Arrangement Track Controls and Mixer Controls.
+constexpr int kTrackControlsMenu = -1, kMixerControlsMenu = -2;
 const std::vector<MenuEntries> &menuBar() {
     using C = AppCommands;
     static const std::vector<MenuEntries> bar{
@@ -1536,12 +1844,12 @@ const std::vector<MenuEntries> &menuBar() {
         // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
         // Paste and Duplicate; those wait for their ops.
         {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks}},
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack}},
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertTimeSignatureChange}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
-         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut, C::ToggleSends, C::ToggleReturnTracks,
+         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
-          C::PlayReference, C::ToggleMixer, C::ToggleDeviceView,
+          C::PlayReference, C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},
@@ -1582,6 +1890,10 @@ class ShellMenu final : public juce::MenuBarModel {
                 for (const int id : m.items) {
                     if (id == 0)
                         menu.addSeparator();
+                    else if (id == kTrackControlsMenu)
+                        menu.addSubMenu("Arrangement Track Controls", root.trackControlsMenu());
+                    else if (id == kMixerControlsMenu)
+                        menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu());
                     else
                         menu.addCommandItem(&commands.manager, id);
                 }
@@ -1615,6 +1927,27 @@ std::optional<float> nextZoom(float now, bool in) noexcept {
     if (next < 0 || next >= static_cast<std::ptrdiff_t>(kZoomSteps.size()))
         return std::nullopt;
     return kZoomSteps[static_cast<std::size_t>(next)];
+}
+std::string displayId(const juce::Displays::Display &d) {
+    const auto a = d.logicalBounds.toNearestInt();
+    return std::to_string(a.getX()) + ":" + std::to_string(a.getY()) + ":" + std::to_string(a.getWidth()) + ":" +
+           std::to_string(a.getHeight()) + ":" + std::to_string(static_cast<int>(d.dpi));
+}
+std::string displayAt(juce::Point<int> screen) {
+    const auto *d = juce::Desktop::getInstance().getDisplays().getDisplayForPoint(screen.toFloat());
+    return d != nullptr ? displayId(*d) : std::string();
+}
+void AdiRootComponent::followDisplay() {
+    const auto display = displayAt(getScreenBounds().getCentre());
+    if (zoomDisplay_ == display)
+        return;
+    zoomDisplay_ = display;
+    const auto kept = commands_.keptZoom(window_, display);
+    if (!kept || juce::approximatelyEqual(*kept, interfaceZoom_))
+        return;
+    interfaceZoom_ = *kept;
+    if (auto *host = getParentComponent())
+        host->resized();
 }
 ZoomHost::ZoomHost(std::unique_ptr<AdiRootComponent> root) : root_(std::move(root)) {
     setOpaque(true);
@@ -1654,6 +1987,10 @@ AdiWindow::AdiWindow(std::unique_ptr<AdiRootComponent> root, AppCommands &comman
     setMenuBar(menu_.get());
 #endif
 }
+void AdiWindow::moved() {
+    DocumentWindow::moved();
+    root_->followDisplay();
+}
 AdiWindow::~AdiWindow() {
 #if JUCE_MAC
     if (juce::MenuBarModel::getMacMainMenu() == menu_.get())
@@ -1690,5 +2027,9 @@ bool AdiWindow::keyPressed(const juce::KeyPress &key, juce::Component *) {
     }
 #endif
     return commands_.key(key, *root_);
+}
+bool AdiWindow::keyStateChanged(bool isKeyDown, juce::Component *) {
+    // A held key comes up wherever the focus is: the root lets it go.
+    return root_->keyStateChanged(isKeyDown);
 }
 } // namespace adi::ui

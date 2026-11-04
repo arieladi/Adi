@@ -126,13 +126,14 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 54> kTables{{
+    static constexpr std::array<TableCoverage, 56> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
         {"time_signature_map", Coverage::Projected, ""},
         {"tracks", Coverage::Projected, ""},
         {"mixer_strip", Coverage::Projected, "inlined on its track"},
+        {"mixer_pan_settings", Coverage::Projected, "inlined on its strip track (N12)"},
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
@@ -141,6 +142,7 @@ std::span<const TableCoverage> coverage() {
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
         {"event_streams", Coverage::Projected, "notes decoded; other stream kinds excluded"},
         {"markers", Coverage::Projected, ""},
+        {"marker_details", Coverage::Projected, "inlined on its marker"},
         {"media_files", Coverage::Projected, "peaks excluded: regenerable, never authoritative"},
         {"routing", Coverage::Projected, ""},
         {"remarks", Coverage::Projected, "a child of the track or clip it is anchored to; a device's on its track (ADR-0139)"},
@@ -346,6 +348,9 @@ Tree buildTree(const rows::Model& m) {
             a.real("width", s.width, 1.0);
             a.real("inGain", s.inputGainDb, 0.0);
             a.num("panLaw", s.panLaw, 0);
+            a.text("panMode", s.panMode, "stereo");
+            a.real("panLeft", s.panLeft, -1.0);
+            a.real("panRight", s.panRight, 1.0);
             a.num("delay", s.delaySamples, 0);
             a.flag("phaseInvert", s.phaseInvert);
         }
@@ -598,6 +603,9 @@ Tree buildTree(const rows::Model& m) {
         else
             a.raw("at " + std::to_string(k.posNs.value_or(0)) + "ns");
         if (k.lengthTicks) a.raw("len " + renderDuration(*k.lengthTicks));
+        if (k.lengthNs) a.raw("len " + std::to_string(*k.lengthNs) + "ns");
+        a.text("note", k.note);
+        a.text("prompt", k.prompt);
         a.text("kind", k.kind, "position");
         a.num("color", k.color.value_or(-1), -1);
         t.roots.push_back(n);

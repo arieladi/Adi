@@ -35,7 +35,9 @@ bool same(const ClipNode& a, const ClipNode& b) {
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
         a.kind != b.kind || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
-        a.volumeDb != b.volumeDb || a.pan != b.pan || a.clips.size() != b.clips.size())
+        a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
+        a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
+        a.clips.size() != b.clips.size())
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
         if (a.clips[i] != b.clips[i]) return false;   // pointer identity: already shared
@@ -111,23 +113,40 @@ const TrackNode* Snapshot::findTrack(std::int64_t id) const noexcept {
     return nullptr;
 }
 
+const MarkerNode* Snapshot::findMarker(std::int64_t id) const noexcept {
+    for (const auto& marker : markers)
+        if (marker->id == id) return marker.get();
+    return nullptr;
+}
+
 bool Snapshot::anySoloed() const noexcept {
     for (const auto& t : tracks)
         if (t->soloed) return true;
     return false;
 }
 
+const AutomationLaneNode* Snapshot::findAutomationLane(std::int64_t id) const noexcept {
+    for (const auto& lane : automationLanes)
+        if (lane->id == id) return lane.get();
+    return nullptr;
+}
+
 // --- building --------------------------------------------------------------------
 
-std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store) {
+std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
+                                                    const std::set<std::int64_t>& overridden) {
     Snapshot empty;
-    return fromStore(store, empty);
+    return fromStore(store, empty, overridden);
 }
 
 std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
-                                                     const Snapshot& previous) {
+                                                     const Snapshot& previous,
+                                                     const std::set<std::int64_t>& overridden) {
     auto snap = std::make_unique<Snapshot>();
+    snap->transport=readTransportSettings(store);
     auto& db = const_cast<SQLite::Database&>(store.db());
+    snap->automationLanes = detail::readAutomationSnapshot(db, previous.automationLanes, overridden);
+    snap->automationOverridden = !overridden.empty();
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -180,6 +199,30 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         // Match textproj_store: a late first event must not reset bar numbering.
         if (snap->meters.empty() || snap->meters.front().start_ticks != 0)
             snap->meters.insert(snap->meters.begin(), {0, 4, 4});
+    }
+
+    // --- marker/locator metadata ------------------------------------------------
+    {
+        std::map<std::int64_t, std::shared_ptr<const MarkerNode>> prior;
+        for (const auto& marker : previous.markers) prior[marker->id] = marker;
+        SQLite::Statement q(db, "SELECT m.id,m.time_base,m.pos_ticks,m.pos_ns,m.length_ticks,m.length_ns,m.name,m.color,m.kind,"
+            "COALESCE(d.note,''),COALESCE(d.prompt,'') FROM markers m LEFT JOIN marker_details d ON d.marker_id=m.id ORDER BY m.id");
+        while (q.executeStep()) {
+            MarkerNode marker;
+            marker.id = q.getColumn(0).getInt64(); marker.timeBase = q.getColumn(1).getInt64();
+            auto integer = [&](int column) -> std::optional<std::int64_t> {
+                if (q.getColumn(column).isNull()) return std::nullopt;
+                return q.getColumn(column).getInt64();
+            };
+            marker.posTicks = integer(2); marker.posNs = integer(3);
+            marker.lengthTicks = integer(4); marker.lengthNs = integer(5);
+            marker.name = q.getColumn(6).getString(); marker.color = integer(7);
+            marker.kind = q.getColumn(8).getString(); marker.note = q.getColumn(9).getString();
+            marker.prompt = q.getColumn(10).getString();
+            const auto found = prior.find(marker.id);
+            if (found != prior.end() && *found->second == marker) snap->markers.push_back(found->second);
+            else snap->markers.push_back(std::make_shared<const MarkerNode>(std::move(marker)));
+        }
     }
 
     struct FadeShape {std::optional<double> in,out;std::optional<std::int64_t> offset,loopBegin,loopLength,end;std::array<std::optional<std::int64_t>,4> clock{},warpClock{};};
@@ -239,6 +282,13 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    struct PanSettings {std::string mode;double left=-1.0,right=1.0;};
+    std::map<std::int64_t,PanSettings> panSettings;
+    try {
+        SQLite::Statement st(db,"SELECT track_id,mode,pan_left,pan_right FROM mixer_pan_settings");
+        while(st.executeStep())panSettings[st.getColumn(0).getInt64()]={st.getColumn(1).getString(),st.getColumn(2).getDouble(),st.getColumn(3).getDouble()};
+    } catch(const std::exception&) {} // an older read-only file has default stereo
+
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -246,7 +296,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         SQLite::Statement st(db,
             "SELECT t.id, t.name, t.muted, t.soloed, "
             "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0), "
-            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color "
+            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color, IFNULL(m.delay_samples,0) "
             "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id "
             "ORDER BY t.index_in_parent, t.id");
         while (st.executeStep()) {
@@ -257,10 +307,14 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.soloed = st.getColumn(3).getInt() != 0;
             t.volumeDb = static_cast<float>(st.getColumn(4).getDouble());
             t.pan = static_cast<float>(st.getColumn(5).getDouble());
+            if(const auto it=panSettings.find(t.id);it!=panSettings.end()) {
+                t.panMode=it->second.mode;t.panLeft=it->second.left;t.panRight=it->second.right;
+            }
             t.parent = st.getColumn(6).getInt64();
             t.indexInParent = st.getColumn(7).getInt64();
             t.kind = st.getColumn(8).getString();
             if (!st.getColumn(9).isNull()) t.color = st.getColumn(9).getInt64();
+            t.delaySamples = st.getColumn(10).getInt64();
             if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
                 t.clips = it->second;
 
@@ -314,6 +368,15 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
     }
     for (const auto& sa : a.sends)
         if (std::find(b.sends.begin(),b.sends.end(),sa)!=b.sends.end())++shared;
+    for (const auto& marker : a.markers)
+        if (std::find(b.markers.begin(), b.markers.end(), marker) != b.markers.end()) ++shared;
+    for (const auto& lane : a.automationLanes) {
+        const auto* other = b.findAutomationLane(lane->id);
+        if (!other) continue;
+        if (other == lane.get()) ++shared;
+        for (const auto& envelope : lane->envelopes)
+            if (std::find(other->envelopes.begin(), other->envelopes.end(), envelope) != other->envelopes.end()) ++shared;
+    }
     return shared;
 }
 

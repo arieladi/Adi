@@ -191,6 +191,19 @@ Model readModel(const Store& store) {
               m.strips.push_back(s);
           });
 
+    std::map<std::int64_t,MixerStrip*> panStripOf;
+    for(auto& strip:m.strips)panStripOf[strip.trackId]=&strip;
+    query(m, db, "mixer_pan_settings",
+          "SELECT track_id, mode, pan_left, pan_right FROM mixer_pan_settings ORDER BY track_id",
+          [&](const SQLite::Statement& st) {
+              const auto id=st.getColumn(0).getInt64();
+              if(const auto it=panStripOf.find(id);it!=panStripOf.end()) {
+                  it->second->panMode=st.getColumn(1).getString();
+                  it->second->panLeft=st.getColumn(2).getDouble();
+                  it->second->panRight=st.getColumn(3).getDouble();
+              }
+          });
+
     query(m, db, "lanes",
           "SELECT id, track_id, ord, name, kind, muted, is_comp_target FROM lanes",
           [&](const SQLite::Statement& st) {
@@ -303,8 +316,8 @@ Model readModel(const Store& store) {
           });
 
     query(m, db, "markers",
-          "SELECT id, time_base, pos_ticks, pos_ns, length_ticks, length_ns, "
-          "       name, color, kind FROM markers",
+          "SELECT m.id, m.time_base, m.pos_ticks, m.pos_ns, m.length_ticks, m.length_ns, "
+          "       m.name, m.color, m.kind, COALESCE(d.note,''), COALESCE(d.prompt,'') FROM markers m LEFT JOIN marker_details d ON d.marker_id=m.id",
           [&](const SQLite::Statement& st) {
               Marker k;
               k.id = st.getColumn(0).getInt64();
@@ -316,6 +329,7 @@ Model readModel(const Store& store) {
               k.name = st.getColumn(6).getString();
               k.color = optInt(st, 7);
               k.kind = st.getColumn(8).getString();
+              k.note = st.getColumn(9).getString();k.prompt = st.getColumn(10).getString();
               m.markers.push_back(std::move(k));
           });
 

@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.11 (see SPEC.md and frozen history/)
+--  Normative schema, version 1.13 (see SPEC.md and frozen history/)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -15,7 +15,7 @@
 --       sizeof(struct).
 --    *  Booleans are INTEGER 0/1.
 --    *  Timestamps are INTEGER microseconds since the Unix epoch, UTC.
---    *  Colours are INTEGER 0xAARRGGBB.
+--    *  Colours are Live palette indexes 0..69, NULL for none (ADR-0211).
 --    *  EVERY table is STRICT. Without it, SQLite's flexible typing lets a
 --       TEXT value sit in a REAL column, and sqlite3_column_double() then
 --       coerces it silently -- so a reader returns a number that is not what
@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1011;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1013;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '11'),
+    ('schema_minor',        '13'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -183,6 +183,14 @@ CREATE TABLE markers (
         OR (time_base = 1 AND pos_ns    IS NOT NULL AND pos_ticks IS NULL))
 ) STRICT;
 
+-- Since 1.10 (N25): marker notes and literal prompts, additive to the frozen
+-- marker row. Deleting a marker removes its details in the same transaction.
+CREATE TABLE marker_details (
+    marker_id INTEGER PRIMARY KEY REFERENCES markers(id) ON DELETE CASCADE,
+    note TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL DEFAULT ''
+) STRICT;
+
 -- Cubase Arranger Track / Ableton locators: named sections that can be
 -- reordered into a play list without moving any clips.
 CREATE TABLE arranger_sections (
@@ -268,6 +276,16 @@ CREATE TABLE mixer_strip (
     -- Per-channel delay compensation offset, in samples, positive or negative.
     delay_samples INTEGER NOT NULL DEFAULT 0,
     vca_group_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL
+) STRICT;
+
+-- Since 1.11: Split Stereo Pan (ADR-0203 d9). Optional settings leave
+-- frozen mixer_strip columns unchanged (ADR-0144). Missing row is stereo,
+-- with dormant split positions hard left/right, so mode changes preserve them.
+CREATE TABLE mixer_pan_settings (
+    track_id INTEGER PRIMARY KEY REFERENCES mixer_strip(track_id) ON DELETE CASCADE,
+    mode TEXT NOT NULL DEFAULT 'stereo',
+    pan_left REAL NOT NULL DEFAULT -1.0 CHECK (pan_left BETWEEN -1.0 AND 1.0),
+    pan_right REAL NOT NULL DEFAULT 1.0 CHECK (pan_right BETWEEN -1.0 AND 1.0)
 ) STRICT;
 
 -- Since 1.7 (ADR-0173, ADR-0174): native analog summing on a GROUP track. Each
@@ -381,7 +399,7 @@ CREATE INDEX idx_clips_lane  ON clips(lane_id);
 
 -- MIDI content. One blob per clip per stream kind — the granularity rule in
 -- SPEC §6.3. Editing one note rewrites this clip's note blob and nothing else.
--- Since 1.10 (N17): optional continuous fade curvature. NULL preserves the
+-- Since 1.12 (N17): optional continuous fade curvature. NULL preserves the
 -- original curve reader; an explicit tension, including zero, uses SPEC's
 -- shared curve evaluator. Each side opts in independently.
 CREATE TABLE clip_playback_details (
@@ -406,7 +424,7 @@ CREATE TABLE clip_playback_details (
     CHECK (loop_end_ns > loop_begin_ns)
 ) STRICT;
 
--- Since 1.11 (N17): retained Warp fades use the unrolled source's musical
+-- Since 1.13 (N17): retained Warp fades use the unrolled source's musical
 -- clock. They remain musical when a tempo edit rebuilds prepared PCM.
 CREATE TABLE clip_warp_fade_domains (
     clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
@@ -506,7 +524,7 @@ CREATE TABLE automation_data (
 ) STRICT;
 CREATE UNIQUE INDEX idx_autodata ON automation_data(lane_id, IFNULL(clip_id, -1));
 
--- Since 1.10: a segment trimmed by Insert Silence keeps its original curve,
+-- Since 1.12: a segment trimmed by Insert Silence keeps its original curve,
 -- source values and progress interval. Record ordinals identify original
 -- storage records even when point_id is zero or unassigned.
 CREATE TABLE automation_segment_ranges (
