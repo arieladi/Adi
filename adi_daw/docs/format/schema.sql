@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.0 (DRAFT — see SPEC.md, nothing is frozen)
+--  Normative schema, version 1.10 (see SPEC.md; older minors are frozen)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -15,7 +15,7 @@
 --       sizeof(struct).
 --    *  Booleans are INTEGER 0/1.
 --    *  Timestamps are INTEGER microseconds since the Unix epoch, UTC.
---    *  Colours are INTEGER 0xAARRGGBB.
+--    *  Colours are Live palette indexes 0..69, NULL for none (ADR-0211).
 --    *  EVERY table is STRICT. Without it, SQLite's flexible typing lets a
 --       TEXT value sit in a REAL column, and sqlite3_column_double() then
 --       coerces it silently -- so a reader returns a number that is not what
@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1009;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1010;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '9'),
+    ('schema_minor',        '10'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -181,6 +181,14 @@ CREATE TABLE markers (
     kind        TEXT    NOT NULL DEFAULT 'position',
     CHECK ((time_base = 0 AND pos_ticks IS NOT NULL AND pos_ns    IS NULL)
         OR (time_base = 1 AND pos_ns    IS NOT NULL AND pos_ticks IS NULL))
+) STRICT;
+
+-- Since 1.10 (N25): marker notes and literal prompts, additive to the frozen
+-- marker row. Deleting a marker removes its details in the same transaction.
+CREATE TABLE marker_details (
+    marker_id INTEGER PRIMARY KEY REFERENCES markers(id) ON DELETE CASCADE,
+    note TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL DEFAULT ''
 ) STRICT;
 
 -- Cubase Arranger Track / Ableton locators: named sections that can be

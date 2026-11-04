@@ -222,8 +222,12 @@ add_library(adi_core STATIC
     # which is also why it is built on every ABI including the ones where the
     # runtime below is not.
     src/juce/pd_declarations.cpp
+    src/adi/transport_settings.cpp
     src/adi/store.cpp
+    src/adi/project_files.cpp
     src/adi/ops.cpp
+    src/adi/row_capture.cpp
+    src/adi/marker_ops.cpp
     src/adi/ops_catalog.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
@@ -231,6 +235,7 @@ add_library(adi_core STATIC
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
+    src/adi/engine/automation_snapshot.cpp
     src/adi/render/queue.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
@@ -247,6 +252,7 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/main_loudness.cpp
     src/adi/engine/gain_stage.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/summing.cpp
@@ -506,6 +512,9 @@ add_test(NAME adi_tests COMMAND adi_tests)
 add_executable(adi_store_tests tests/test_store.cpp)
 target_link_libraries(adi_store_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_store_tests COMMAND adi_store_tests)
+add_executable(adi_project_files_tests tests/test_project_files.cpp)
+target_link_libraries(adi_project_files_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_project_files_tests COMMAND adi_project_files_tests)
 
 add_executable(adi_project_bootstrap_tests tests/test_project_bootstrap.cpp)
 target_link_libraries(adi_project_bootstrap_tests PRIVATE adi_core adi_warnings)
@@ -540,6 +549,12 @@ add_test(NAME adi_check_tests COMMAND adi_check_tests)
 add_executable(adi_remarks_tests tests/test_remarks.cpp)
 target_link_libraries(adi_remarks_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_remarks_tests COMMAND adi_remarks_tests)
+
+add_executable(adi_marker_tests tests/test_markers.cpp)
+target_link_libraries(adi_marker_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_marker_tests PRIVATE
+    ADI_MARKER_HISTORY_FILE="${CMAKE_CURRENT_SOURCE_DIR}/docs/format/history/schema-1.9.sql")
+add_test(NAME adi_marker_tests COMMAND adi_marker_tests)
 
 # History snapshots (ADR-0128): revert never discards, across branches too.
 add_executable(adi_snapshots_tests tests/test_snapshots.cpp)
@@ -716,6 +731,10 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 # device contract at every block size. No JUCE, so it runs on all seven
 # ABIs; the JUCE half (adi_play) only has to prove a device callback
 # reaches it.
+add_executable(adi_transport_settings_tests tests/test_transport_settings.cpp)
+target_link_libraries(adi_transport_settings_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_settings_tests COMMAND adi_transport_settings_tests)
+
 add_executable(adi_session_tests tests/test_session.cpp)
 target_link_libraries(adi_session_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_session_tests COMMAND adi_session_tests)
@@ -729,6 +748,14 @@ target_link_libraries(adi_analyser_taps_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_analyser_taps_tests COMMAND adi_analyser_taps_tests)
 
 # ADR-0163: the mixer strip in the graph.
+add_executable(adi_strip_meter_tests tests/test_strip_meter.cpp)
+target_link_libraries(adi_strip_meter_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_strip_meter_tests COMMAND adi_strip_meter_tests)
+
+add_executable(adi_main_loudness_tests tests/test_main_loudness.cpp)
+target_link_libraries(adi_main_loudness_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_main_loudness_tests COMMAND adi_main_loudness_tests)
+
 add_executable(adi_mixer_tests tests/test_mixer.cpp)
 target_link_libraries(adi_mixer_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_mixer_tests COMMAND adi_mixer_tests)
@@ -782,6 +809,10 @@ add_test(NAME adi_param_edits_tests COMMAND adi_param_edits_tests)
 
 target_link_libraries(adi_engine_tests PRIVATE Threads::Threads)
 add_test(NAME adi_engine_tests COMMAND adi_engine_tests)
+
+add_executable(adi_automation_snapshot_tests tests/test_automation_snapshot.cpp)
+target_link_libraries(adi_automation_snapshot_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_snapshot_tests COMMAND adi_automation_snapshot_tests)
 # ADR-0201: the UI's project-state cell, message thread only.
 add_executable(adi_project_view_tests tests/test_project_view.cpp)
 target_link_libraries(adi_project_view_tests PRIVATE adi_core adi_warnings)
