@@ -123,7 +123,7 @@ struct FloatingHost::Entry {
     bool closing = false;
     std::uint64_t drains = 0;
     juce::Component::SafePointer<juce::Component> component, dock;
-    juce::Rectangle<int> dockBounds;
+    juce::Rectangle<int> dockBounds, first;
     std::unique_ptr<juce::Component> owned;
     std::unique_ptr<Zoomed> zoomed; // an ADI view's, in openView's windows
     std::function<void(const SnapshotReader &)> onFrame;
@@ -182,20 +182,26 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     raw->window->setContentNonOwned(raw->zoomed ? static_cast<juce::Component *>(raw->zoomed.get())
                                                 : raw->component.getComponent(),
                                     false);
-    raw->window->setBounds(restoreFloating(states_.loadFloating(key), currentMonitors()));
+    if (const auto kept = states_.loadFloating(key); kept.monitor.empty() && !raw->first.isEmpty()) {
+        // Never placed: the content where `first` says, the title bar above it.
+        raw->window->setBounds(raw->window->getContentComponentBorder().addedTo(raw->first));
+    } else
+        raw->window->setBounds(restoreFloating(kept, currentMonitors()));
     if (native_)
         raw->window->setVisible(true);
     save(*raw, true);
     return true;
 }
 bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Component &component,
-                          juce::Component &dock, std::function<void(const SnapshotReader &)> fn) {
+                          juce::Component &dock, std::function<void(const SnapshotReader &)> fn,
+                          juce::Rectangle<int> first) {
     auto e = std::make_unique<Entry>();
     e->key = key;
     e->device = id;
     e->component = &component;
     e->dock = &dock;
     e->dockBounds = component.getBounds();
+    e->first = first;
     e->onFrame = std::move(fn);
     return install(std::move(e));
 }
@@ -264,6 +270,8 @@ void FloatingHost::close(const std::string &key) {
         return;
     auto &e = *it->second;
     save(e, false);
+    // Gone before its content leaves it: an empty window never shows (the director's R3).
+    e.window->setVisible(false);
     e.window->clearContentComponent();
     if (e.dock && e.component) {
         e.dock->addAndMakeVisible(e.component);
@@ -284,6 +292,7 @@ void FloatingHost::closeAll(bool remember) {
     while (!entries_.empty()) {
         auto &e = *entries_.begin()->second;
         save(e, remember);
+        e.window->setVisible(false);
         e.window->clearContentComponent();
         if (e.dock && e.component) {
             e.dock->addAndMakeVisible(e.component);
@@ -306,7 +315,9 @@ bool detachMixView(FloatingHost &host, AdiRootComponent &root, bool detach) {
     if (host.content(kMixViewKey) != nullptr)
         return true;
     auto &panel = root.mixViewPanel;
-    if (host.detach(kMixViewKey, 0, panel, root, [&panel](const SnapshotReader &reader) { panel.frame(reader); }))
+    // Its first window opens where it stands docked, at its size; after that, where it was left.
+    if (host.detach(kMixViewKey, 0, panel, root, [&panel](const SnapshotReader &reader) { panel.frame(reader); },
+                    root.localAreaToGlobal(root.mixViewDock())))
         return true;
     root.setMixView(true, false);
     return false;
@@ -329,6 +340,10 @@ void syncMixView(FloatingHost &host, AdiRootComponent &root, bool restore) {
 juce::Component *FloatingHost::content(const std::string &key) const {
     auto it = entries_.find(key);
     return it == entries_.end() ? nullptr : it->second->component.getComponent();
+}
+juce::Component *FloatingHost::window(const std::string &key) const {
+    auto it = entries_.find(key);
+    return it == entries_.end() ? nullptr : it->second->window.get();
 }
 bool FloatingHost::hasTooltips(const std::string &key) const {
     auto it = entries_.find(key);

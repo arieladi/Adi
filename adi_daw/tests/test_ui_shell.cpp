@@ -3134,6 +3134,24 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
     check(!root.state().mixView && !panel.isVisible() && root.arrangement.isVisible() && root.mixer.isVisible() &&
               root.arrangement.getBounds() == lanes && !root.transport.mix.getToggleState(),
           "the Mix button closes it: the arrangement and its track controls where they were");
+    // While it is closed the project changes; opened, it shows the change on its first picture, before
+    // any frame (the director's R3: no flash of what it held before).
+    {
+        const auto before = panel.stack.rows().size();
+        OpRequest padTrack;
+        padTrack.opType = "track.create";
+        padTrack.payload = {{"id", 15}, {"kind", "midi"}, {"name", "Pad"}, {"index", 4}};
+        padTrack.label = "Create track";
+        check(submitter.submit(std::move(padTrack)).ok, "a track while the Mix View is closed");
+        root.frame();
+        const bool stale = panel.stack.rows().size() == before;
+        root.transport.mix.onClick();
+        check(stale && panel.isVisible() && panel.stack.rows().size() == before + 1,
+              "opened, it is drawn from the project as it is now, before the next frame");
+        check(root.command(AppCommands::Undo), "the track undone");
+        root.transport.mix.onClick();
+        root.frame();
+    }
     // In a window of its own, onto any display (ADR-0209 d11, ADR-0180 d3): the same panel moves
     // into the floating host's window and back.
     {
@@ -3152,6 +3170,12 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.state().mixView && root.state().mixViewDetached && host.content("Mix View") == &panel &&
                   panel.getParentComponent() != &root && root.arrangement.isVisible() && root.mixer.isVisible(),
               "its window button moves it into a window; the arrangement comes back in the centre");
+        // The director's R3 (2 November): its first window stands where it stood docked, at its size.
+        const auto dock = root.localAreaToGlobal(root.mixViewDock());
+        const auto *window = host.window("Mix View");
+        check(window != nullptr && !dock.isEmpty() &&
+                  panel.getBounds().translated(window->getX(), window->getY()) == dock && window->getY() < dock.getY(),
+              "its first window opens over the place it stood docked, at its size, its title bar above");
         host.frame("Mix View");
         check(panel.floating.getToggleState() && root.transport.mix.getToggleState(),
               "the window button is lit while it is in a window, and so is the Mix field");
@@ -3166,12 +3190,32 @@ void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
         host.frame("Mix View");
         check(panel.stack.rows().size() == 6 && host.drains("Mix View") == 2, "the window's own clock frames it");
         root.frame();
+        // Moved and resized, it keeps that place (on a desktop with a display to keep it on).
+        const juce::Rectangle<int> moved(180, 140, 760, 430);
+        const bool displays = !currentMonitors().empty();
+        if (displays)
+            host.window("Mix View")->setBounds(moved);
         check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && host.count() == 0 &&
                   panel.getParentComponent() == &root && !panel.isVisible() && !root.state().mixView &&
                   root.state().mixViewDetached,
               "F4 closes its window; it will open there again");
-        check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && host.content("Mix View") == &panel,
-              "and F4 opens it there again");
+        check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && host.content("Mix View") == &panel &&
+                  (!displays || host.window("Mix View")->getBounds() == moved),
+              "and F4 opens it there again, where it was left and at that size");
+        // Docked by its window button, it is back in the centre, drawn; out again, its window is where
+        // it was.
+        panel.floating.onClick();
+        check(host.count() == 0 && panel.getParentComponent() == &root && panel.isVisible() &&
+                  panel.getBounds() == root.mixViewArea() && root.mixViewArea() == root.mixViewDock() &&
+                  !root.arrangement.isVisible() && root.state().mixView && !root.state().mixViewDetached,
+              "its window button docks it where it stood, open");
+        panel.floating.onClick();
+        check(host.content("Mix View") == &panel && (!displays || host.window("Mix View")->getBounds() == moved),
+              "and puts it back in its window where it was left");
+        check(root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && !root.state().mixView &&
+                  root.keyPressed(juce::KeyPress(juce::KeyPress::F4Key)) && root.state().mixView &&
+                  host.content("Mix View") == &panel,
+              "F4 toggles it both ways in its window");
         // Its own close button: the host collects the window, and the Mix View is closed.
         host.close("Mix View");
         syncMixView(host, root);
