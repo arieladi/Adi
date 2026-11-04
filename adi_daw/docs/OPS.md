@@ -439,16 +439,40 @@ silent truncation in JSON, a non-issue in CBOR.
 
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
-| `automation.createLane` | e | S | pair `deleteLane` | P0 |
+| `automation.createLane` | e | S | cap | P0 |
 | `automation.deleteLane` | e | S | cap | P0 |
 | `automation.writePoints` | e | S | cap | P0 |
 | `automation.deletePoints` | e | S | cap | P0 |
 | `automation.movePoints` | e | S | sym, coalescable | P0 |
 | `automation.setCurve` | e | S | sym | P1 |
 | `automation.clearLane` | e | S | cap | P1 |
-| `automation.setLaneEnabled` | e | S | sym | P1 |
-| `automation.setLaneVisible` | e | N | sym | P1 |
-| `automation.setDefaultValue` | e | S | sym | P2 |
+| `automation.setLaneEnabled` | e | S | cap | P1 |
+| `automation.setLaneVisible` | e | N | cap | P1 |
+| `automation.setDefaultValue` | e | S | cap | P2 |
+| `automation.restoreLane` | e | S | cap | P1 |
+
+The native lane lifecycle in `automation_lanes.hpp` implements create/delete,
+clear, enable, visibility and default-value edits, all on the document owner.
+`createLane(LaneSpec)` resolves every creation default into a complete `row`
+payload. The outer `id` must match its explicit positive row ID. The polymorphic
+owner must exist; parameter reference must be nonempty; time base is 0/1;
+value domain is normalized/real/enum; finite defaults must respect optional
+min/max; height is nonnegative. No handler allocates an identity or reads a UI
+selection. An existing ID refuses creation instead of overwriting the lane.
+
+Delete and clear payloads contain `id`; setters contain `id` and `value` (boolean
+for enable/visibility, finite double within lane bounds for default value).
+Clear removes points from every arrangement/clip stream while retaining data-row
+IDs, clip addresses, header version/stride/flags and trailers. An unreadable
+stream refuses the whole transaction, including any earlier clears. Delete
+cascades all streams. `automation.restoreLane` captures a `state` object holding
+the exact original row or null and every data row (`id`, `clip`, CBOR binary
+`bytes`), and restores its own inverse. Legacy scalar metadata and malformed
+opaque stream bytes are preserved by deletion undo, without applying new-lane
+validation to the captured state. Explicit row/stream ID collisions fail within
+the journal transaction. Each setter currently captures the full lane rather
+than coalescing gestures; visibility has no forward engine impact. No schema,
+Automation Arm, shape preset or playback change is introduced by lifecycle ops.
 
 ### 9.7 Devices, chains, macros
 
@@ -650,7 +674,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**173 ops** — 66 P0, 55 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
