@@ -499,6 +499,46 @@ Controller pressure reserves note-event space and rotates addresses;
 `MidiClips::droppedControllers()` counts deferred/refused updates. Callbacks use
 fixed state and prepared arrays, with no Store access, allocation or locks.
 
+**Retrospective MIDI input memory (ADR-0132 d9).** `engine/midi_memory.hpp`
+provides a bounded `MidiMemory(inputId,trackId,sampleRate,noteChannelBase,capacity)`
+for each explicitly eligible input/track. Allocate it before callbacks; default
+capacity is 65,536 events, bounded 2..1,048,576. One producer serializes controls,
+`push(Event,absoluteDriverSample)` and `advance(exclusiveBlockEnd)`, including
+silent blocks. Armed OR monitored input listens independently of transport
+play/record; neither gate retains input. Queue gate changes to that producer.
+Input on/off, explicit discontinuity, backwards clocks, malformed musical input
+and a pinned-slot drop begin a new epoch. Forward rests preserve the history.
+
+Snapshots retain typed note-on/off, expression and controller events, double
+values, uint64 identities, integer timestamps above 2^53, original packet frames
+and coincident serial order. Input channels are declared rather than guessed:
+MpeParser notes use 1..16, while clip notes use 0..15; controllers always address
+0..15 and controller 0..127. The memory preserves the declared note convention
+and never reconstructs MPE allocation. Note keys/velocities, controller addresses/
+values, finite expression values and times are checked. Unassigned release IDs
+remain unassigned for owner resolution. Addressed ParamValue/ParamMod events are
+ignored without clearing musical history. Feed live input only, never playback
+or controller-delivery feedback. No MIDI byte encoding or float narrowing occurs.
+
+The single owner calls `snapshot(output,error)` off callback and receives an
+immutable bounded history with input/track/format/convention/epoch, current
+exclusive end sample and a `prefixDropped` notice when capacity evicted older
+events. This is not a promise that a retained suffix contains complete notes or
+a complete phrase. A concurrent overwrite/in-flight slot refuses the entire
+snapshot with empty output; callers may retry. Slot ownership avoids data races;
+the producer never waits for a reader, instead dropping/counting that event and
+starting fresh history. Stats distinguish copied/dropped/ignored/invalid input.
+Producer controls/parser/copy calls allocate, lock, log and perform file I/O
+nowhere. Constructor/destructor and snapshot work belong off callback.
+
+This increment supplies exact rolling input and the actual MPE-parser handoff,
+not automatic host/UI wiring, phrase detection, Live tempo/loop inference or a
+native committed clip. Owner-side Capture must resolve complete notes and missing
+prefixes before preparing edits. Existing ANOT velocity bytes and AEXP floats
+cannot preserve every arbitrary captured double; persistence must name/refuse
+that limitation rather than silently narrow it. No schema/new opcode or measured
+Live parity claim is introduced by the RAM memory.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
