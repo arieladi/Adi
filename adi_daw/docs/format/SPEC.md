@@ -973,6 +973,17 @@ op that a history snapshot names (§8.6).
 scroll offsets, selection, playhead, loop, per-plugin-window rectangles *with
 their monitor identity*, mixer layout, visible panels, last-used tool.
 
+Reserved `session_state` keys for saved performance controls:
+`transport.metronome` is a JSON boolean; `transport.loop` is JSON
+`{"on": bool, "start": ticks, "end": ticks}` with `0 <= start < end`.
+Absent keys mean click/loop off and an initial four-bar 4/4 window at zero.
+These are session metadata, not undoable project edits; the ephemeral transport
+ops update them and their audit rows in one transaction. Readers ignore malformed
+session values and use defaults. `Snapshot::transport` exposes them without
+sharing mutable driver state. Loop bounds stay in ticks and are converted through
+the tempo map at the session rate; no fixed-tempo sample count is persisted.
+
+
 The monitor identity matters: restoring a plugin window to `x=3200` on a machine
 that no longer has a second monitor puts it offscreen. Readers MUST clamp
 restored windows to the currently available display arrangement.

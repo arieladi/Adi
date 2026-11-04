@@ -19,6 +19,7 @@
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/transport_settings.hpp"
 #include "adi/marker_ops.hpp"
 #include "adi/clip_property_ops.hpp"
 #include "adi/row_capture.hpp"
@@ -967,13 +968,29 @@ bool remarkResolveInverse(OpContext& c, const Payload& p, Payload& inv, std::str
 
 // --- transport: the first real ephemeral ops ----------------------------------
 //
-// They persist nothing (ADR-0027), so there is nothing to apply until an engine
-// exists and nothing to undo ever. They still go through the registry -- same
+// Play/stop/seek/record remain driver commands, with no undo (ADR-0027).
+// Loop and click now materialise saved performance state in session_state. They still go through the registry -- same
 // validation, same scopes, same attribution -- and still get a log row tagged
 // `ephemeral`, so "what did the agent do at 14:32" stays answerable while Ctrl-Z
 // lands on the last real edit.
 
 bool transportNoop(OpContext&, const Payload&, std::string&) { return true; }
+
+bool transportSetting(OpContext& c,const Payload& p,std::string& error,bool loop) {
+    try {
+        Payload value;
+        if(loop) {
+            const auto previous=readTransportSettings(c.store);
+            const auto start=p.value("start",previous.loopStartTicks),end=p.value("end",previous.loopEndTicks);
+            if(start<0 || end<=start){error="loop requires nonnegative start and end after start";return false;}
+            value={{"on",p.at("on")},{"start",start},{"end",end}};
+        }else value=p.at("on");
+        SQLite::Statement set(c.db,"INSERT INTO session_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+        set.bind(1,loop?"transport.loop":"transport.metronome");set.bind(2,value.dump());set.exec();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+bool transportLoop(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,true);}
+bool transportMetronome(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,false);}
 
 // --- field tables ---------------------------------------------------------------
 
@@ -2028,14 +2045,14 @@ const OpDescriptor kHandWritten[] = {
      {}, false, true, transportNoop, nullptr, ""},
     {"transport.seek", "Move the playhead", Scope::Transport, EngineImpact::None,
      kFTransportSeek, false, true, transportNoop, nullptr, ""},
-    {"transport.setLoop", "Set the loop region", Scope::Transport, EngineImpact::None,
-     kFTransportLoop, false, true, transportNoop, nullptr, ""},
+    {"transport.setLoop", "Set the loop region", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportLoop, false, true, transportLoop, nullptr, ""},
     {"transport.setRecord", "Arm or disarm the transport", Scope::Transport,
      EngineImpact::GraphRebuild, kFTransportFlag, false, true,
      transportNoop, nullptr, ""},
     {"transport.setMetronome", "Toggle the metronome", Scope::Transport,
      EngineImpact::Snapshot, kFTransportFlag, false, true,
-     transportNoop, nullptr, ""},
+     transportMetronome, nullptr, ""},
 };
 
 }  // namespace
