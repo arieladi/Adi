@@ -257,10 +257,10 @@ void notPlayedYet() {
     m.automationData.push_back(env);
     AutomationProgram prog(m, 48000.0);
     check(!prog.lane(1) && hasProblem(prog, "#1", "owner 'project' not played yet"), "a 'project' lane is reported as not played yet");
-    check(!prog.lane(2) && hasProblem(prog, "#2", "owner 'routing' not played yet"), "a 'routing' lane is reported as not played yet");
+    check(!prog.lane(2) && hasProblem(prog, "#2", "routing target is not an existing track send"), "a routing lane without a real send is refused explicitly");
     check(!prog.lane(3) && hasProblem(prog, "#3", "owner 'clip' not played yet"), "a clip-owned lane is reported as not played yet");
     check(prog.lane(4) && prog.lane(4)->points.size() == 1 && valueAt(*prog.lane(4), 0) == 1.0 &&
-              hasProblem(prog, "#4", "clip envelope (clips#77) not played yet"),
+              hasProblem(prog, "#4", "clip envelope (clips#77): missing clip"),
           "a clip envelope is reported and never mixed into its lane's arrangement stream");
 }
 
