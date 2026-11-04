@@ -43,6 +43,11 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
+    // A track's header is one piece in Live: the split line at the foot of its track controls, as at
+    // the foot of its name, shows the resize cursor and drags the track's height (Live 12 manual 6.9).
+    void mouseMove(const juce::MouseEvent &) override;
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
     // A double-click on a Mixer View strip's title selects its track and brings up the Device View.
     void mouseDoubleClick(const juce::MouseEvent &) override;
     // A row takes clicks only level with the lanes (MixerPanel::rowsBand).
@@ -148,6 +153,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
+    int resizeFrom_ = -1; // the track's height when its split line was pressed; -1 while not resizing
+    bool onSplitLine(const juce::MouseEvent &) const noexcept;
     float peak_ = 0, rms_ = 0;
     std::shared_ptr<const engine::ScopeTap> tap_;
     std::array<float, 1024> left_{}, right_{};

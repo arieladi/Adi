@@ -192,4 +192,8 @@ void GraphHost::process(const AudioIo& io) noexcept {
     fadeIn(io);
 }
 
+std::int32_t GraphHost::renderedLatency() const noexcept {
+    return lastSnap_ ? lastSnap_->graph().graph().latencySamples() : 0;
+}
+
 }  // namespace adi::engine
