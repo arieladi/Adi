@@ -444,6 +444,12 @@ juce::MouseEvent pressAt(juce::Component &c, juce::Point<float> at, juce::Modifi
     return {juce::Desktop::getInstance().getMainMouseSource(), at, mods, 1.f, 0.f, 0.f, 0.f, 0.f, &c, &c, now, at,
             now, 1, false};
 }
+// The mouse at `at` in a drag that began at `from`.
+juce::MouseEvent dragAt(juce::Component &c, juce::Point<float> from, juce::Point<float> at, juce::ModifierKeys mods = {}) {
+    const auto now = juce::Time::getCurrentTime();
+    return {juce::Desktop::getInstance().getMainMouseSource(), at, mods, 1.f, 0.f, 0.f, 0.f, 0.f, &c, &c, now, from,
+            now, 1, true};
+}
 // Live's group tracks (manual 18.3) in the director's Bitwig project (Master Reference 10,
 // Figure 32): Drums holds Clap/Snare/Rimshot and Hats & Percs; Body holds Bass, Synths and
 // Fx And Hits, which holds Rises and Hits; Main. The tree from the snapshot (#299), as the
@@ -888,6 +894,125 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
         root.arrangement.chooseView(0);
         root.frame();
         check(stackIds().size() == 10 && root.command(AppCommands::ToggleMixView), "the whole project again; closed");
+        root.frame();
+    }
+    // Live's track drag (the Arrangement View: "Tracks can be reordered by selecting and dragging
+    // them above or below other tracks"; 18.3: "tracks can be dragged into or out of the group").
+    {
+        auto &headers = root.arrangement.headers;
+        auto at = [&topOf](std::int64_t id, int down) { return juce::Point<float>(60.f, static_cast<float>(topOf(id) + down)); };
+        // The window at twice its size, for the PR's picture (ADI_UI_PARITY).
+        auto picture = [&root](const char *name) {
+            const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+            if (pictures.isEmpty())
+                return;
+            root.frame();
+            juce::Image shot(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(shot);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                root.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile(name);
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
+        };
+        // Drags `id`'s title to `to`; what the line showed on the way, and whether it was drawn.
+        bool lineShown = false;
+        auto drag = [&](std::int64_t id, juce::Point<float> to, juce::ModifierKeys mods = {}, const char *shots = nullptr) {
+            const auto from = at(id, 16);
+            headers.mouseDown(pressAt(headers, from, mods));
+            headers.mouseDrag(dragAt(headers, from, to, mods));
+            const auto shown = headers.drop();
+            if (shown) {
+                // The line, white, where the drop would land; or the group outlined.
+                juce::Image image(juce::Image::ARGB, headers.getWidth(), headers.getHeight(), true, juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(image);
+                    headers.paintEntireComponent(g, true);
+                }
+                const int y = shown->into != 0 ? topOf(shown->into) + 1 : shown->y;
+                lineShown = image.getPixelAt(headers.nameLeft(shown->depth) + 30, y) == juce::Colours::white;
+            }
+            if (shots != nullptr)
+                picture((std::string(shots) + "-dragging.png").c_str());
+            headers.mouseUp(dragAt(headers, from, to, mods));
+            root.frame();
+            if (shots != nullptr)
+                picture((std::string(shots) + "-dropped.png").c_str());
+            return shown;
+        };
+        auto undo = [&root] {
+            root.command(AppCommands::Undo);
+            root.frame();
+        };
+        const std::vector<std::pair<std::int64_t, std::uint32_t>> bassFirst{
+            {14, 0}, {10, 0}, {11, 1}, {12, 1}, {13, 0}, {15, 1}, {16, 1}, {17, 2}, {18, 2}, {1, 0}};
+        headers.mouseMove(pressAt(headers, at(12, 38)));
+        const bool splitCursor = headers.getMouseCursor() == juce::MouseCursor::UpDownResizeCursor;
+        headers.mouseMove(pressAt(headers, at(12, 16)));
+        check(splitCursor && headers.getMouseCursor() == juce::MouseCursor::NormalCursor,
+              "the split line at a title's foot shows the resize cursor; the rest of the title does not");
+        const int drumsTop = topOf(10);
+        auto shown = drag(14, at(10, 6));
+        check(shown && shown->to.parent == 0 && shown->to.before == 10 && shown->y == drumsTop && shown->depth == 0 && lineShown &&
+                  order() == bassFirst && root.undoTitle(false) == "Undo Move Track" && lanes.selection.track == 14,
+              "Bass dragged to Drums' upper half: the line above Drums, and Bass first, one step; still selected");
+        undo();
+        check(order() == tree && !headers.drop(), "undo puts Bass back in Body; no line once the drag is over");
+        shown = drag(17, at(10, 30), {}, "adi-track-move");
+        check(shown && shown->to.parent == 10 && shown->to.before == 11 && shown->depth == 1 && lineShown &&
+                  order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {17, 1}, {11, 1}, {12, 1}, {13, 0},
+                                                                                  {14, 1}, {15, 1}, {16, 1}, {18, 2}, {1, 0}},
+              "Rises dragged under open Drums: into it, at the top of what it holds, out of Fx And Hits");
+        undo();
+        shown = drag(18, at(1, 20));
+        check(shown && shown->to.parent == 0 && shown->to.before == 0 &&
+                  order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {11, 1}, {12, 1}, {13, 0}, {14, 1},
+                                                                                  {15, 1}, {16, 1}, {17, 2}, {18, 0}, {1, 0}},
+              "Hits dragged onto Main at the foot: out of its groups, the last track before Main");
+        undo();
+        check(order() == tree, "undo puts Hits back in Fx And Hits");
+        root.arrangement.toggleFold(10);
+        root.frame();
+        shown = drag(14, at(10, 20));
+        check(shown && shown->into == 10 && shown->to.parent == 10 && shown->to.before == 0 && lineShown,
+              "Bass dragged to the middle of folded Drums: the group outlined, at the end of what it holds");
+        root.arrangement.toggleFold(10);
+        root.frame();
+        check(order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{10, 0}, {11, 1}, {12, 1}, {14, 1}, {13, 0},
+                                                                               {15, 1}, {16, 1}, {17, 2}, {18, 2}, {1, 0}},
+              "unfolded, Bass is the last track Drums holds");
+        undo();
+        // Several selected tracks go together; a plain press on one keeps them for the drag.
+        lanes.selection.track = 14;
+        lanes.selection.toTrack = 15;
+        drag(15, at(10, 6));
+        check(order() == std::vector<std::pair<std::int64_t, std::uint32_t>>{{14, 0}, {15, 0}, {10, 0}, {11, 1}, {12, 1},
+                                                                               {13, 0}, {16, 1}, {17, 2}, {18, 2}, {1, 0}} &&
+                  root.undoTitle(false) == "Undo Move Tracks" && lanes.selectedTracks(root.reader()) == std::vector<std::int64_t>{14, 15},
+              "Bass and Synths selected, Synths dragged above Drums: both, in their order, one step; still selected");
+        undo();
+        headers.mouseDown(pressAt(headers, at(15, 16)));
+        const bool kept = lanes.selection.toTrack == 15;
+        headers.mouseUp(pressAt(headers, at(15, 16)));
+        check(kept && lanes.selection.track == 15 && lanes.selection.toTrack == 0,
+              "a plain click on Synths among them keeps them while pressed, then selects Synths alone");
+        // A group never goes inside itself; the refusal says why.
+        drag(13, at(16, 30));
+        check(order() == tree && root.error() == "A group can't go inside itself.",
+              "Body dragged under Fx And Hits, which it holds: refused, with the reason");
+        drag(12, at(12, 10));
+        check(order() == tree && root.undoTitle(false) != "Undo Move Track",
+              "Hats & Percs dropped on itself: nothing moves, no step");
+        // The split line still resizes.
+        const auto from = at(12, 38);
+        headers.mouseDown(pressAt(headers, from));
+        headers.mouseDrag(dragAt(headers, from, from.translated(0, 20)));
+        headers.mouseUp(dragAt(headers, from, from.translated(0, 20)));
+        check(lanes.heightFor(12) == 60 && order() == tree, "a drag from the split line makes the track taller, and moves none");
+        lanes.resizeTrack(12, 40);
         root.frame();
     }
     lanes.selection.track = 15;
@@ -1692,12 +1817,17 @@ void rangeSelection(AppCommands &commands, const std::filesystem::path &dir) {
           "Group Tracks puts the two picked tracks in one group, 2 MIDI left outside");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
-    headers.mouseDown(pressAt(headers, title(1)));
-    headers.mouseDown(pressAt(headers, title(3), cmd));
-    headers.mouseDown(pressAt(headers, title(3), cmd));
+    // Clicks: a plain press on one of several selected tracks selects it alone on release.
+    auto click = [&headers](juce::Point<float> at, juce::ModifierKeys mods = {}) {
+        headers.mouseDown(pressAt(headers, at, mods));
+        headers.mouseUp(pressAt(headers, at, mods));
+    };
+    click(title(1));
+    click(title(3), cmd);
+    click(title(3), cmd);
     check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{1}, "Ctrl/Cmd+click again lets 3 go");
-    headers.mouseDown(pressAt(headers, title(3), cmd));
-    headers.mouseDown(pressAt(headers, title(2)));
+    click(title(3), cmd);
+    click(title(2));
     check(geo.selectedTracks(root.reader()) == std::vector<std::int64_t>{2} && geo.selection.picked.empty(),
           "a plain click on 2 selects it alone");
 }

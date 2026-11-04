@@ -53,6 +53,12 @@ enum class StoreError {
 
 const char* toString(StoreError);
 
+struct StoreFileResult {
+    bool ok = false;
+    std::string error;
+    std::string warning;
+};
+
 /// An open `.adi`.
 ///
 /// Non-copyable, non-movable: it owns a database handle and a close policy that
@@ -100,6 +106,16 @@ public:
     /// destructor calls it. Safe to call explicitly to find out whether it
     /// worked, which the destructor cannot tell you.
     bool close();
+
+    /// Owner thread, outside any SQL transaction. Snapshot committed WAL data
+    /// into a new file without replacing an existing destination. Rebase media
+    /// paths in both rows and captured history so undo/redo still finds audio.
+    [[nodiscard]] StoreFileResult saveCopy(const std::filesystem::path&) const;
+    /// Save a copy, then switch this same Store object to the new writable file.
+    /// Existing OpJournal/History references remain valid. Requires no live SQL
+    /// statements. Refresh ProjectView/Session and the window's filename after
+    /// success. A failed switch retains the source and a completed copy.
+    [[nodiscard]] StoreFileResult saveAs(const std::filesystem::path&);
 
     [[nodiscard]] bool readOnly() const { return readOnly_; }
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
