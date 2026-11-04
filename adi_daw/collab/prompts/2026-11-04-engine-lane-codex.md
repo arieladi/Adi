@@ -28,10 +28,12 @@ gate (full GCC Debug/Werror build, `tools/test_all.sh`, the validators, Clang on
 suites, the fault plants), push the branch, write the log entry with its "PR requested" line, push
 `engine/log`, and **take the next item in the same turn**. A checkpoint is a log entry, not a
 stop. Do not end the turn to report: the director reads the log, not summaries. Do not stop to
-ask whether to continue, for CI, or because the queue looks long. The only end of a turn is the
-seat itself ending; if that happens mid-item, the last log entry says what is half done and
+ask whether to continue, for CI, or because the queue looks long. Stop only for a really good
+reason, one you would defend to the director: the repository refuses your pushes, the build is
+broken by something outside your lane and nothing in the queue can proceed without it, or the
+seat itself is ending. Then the last log entry names that reason and what is half done and
 where, so the next turn resumes without guessing. If the queue is truly empty, say so in the log
-and take the next phase of the brief.
+and take the next phase of the brief; an empty queue is not a reason to stop.
 
 ## Stacking your own branches
 
