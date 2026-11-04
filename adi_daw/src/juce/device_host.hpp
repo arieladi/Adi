@@ -66,6 +66,7 @@ public:
     /// rather than crashed: a session that has not opened a project yet is a
     /// real state, not a bug.
     struct RebuildSpec {
+        std::vector<engine::MonitorPoint> monitors;
         std::function<const rows::Model*()> model;
         std::int32_t channels = 2;
         double sampleRate = 48000.0;
@@ -84,6 +85,7 @@ public:
         engine::SendFn sendTailFor;
         /// And what closes a return's send into itself. Unset, no loop is made.
         engine::FeedbackFn feedbackFor;
+        std::function<void(engine::GraphPlan &)> transformPlan{};
     };
 
     /// Attach to the HOST that owns the live graph, and take responsibility
