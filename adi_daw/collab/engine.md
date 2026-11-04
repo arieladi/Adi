@@ -12,6 +12,14 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-04 — Whole Loudness Drive cascade handoff still blocked; taking general AAC/M4A import
+
+**Named item blocker, not a seat stop:** Phase D 7/7a's whole Loudness Drive must engage actual per-channel/group ADI-L stages and the master's full-mode end (ADR-0204 d1). This checkout still contains no ADI-Q/ADI-L clone header/target, supported DeviceInstance adapter, accepted measurement/handover artifact, stable parameter/state ids, response query or limiter light/full-mode contract; the earlier N16 handoff request remains unanswered here. Only the generic Live-class limiter exists in the device tier, which this lane does not change or substitute for the director's clone. InputGainNode and Auto Gain Stage already provide pre-insert gain after the instrument, but neither is a completed saved VCA/cascade control. Inspection also confirms tracks.role's native migration is still absent here (N38's handlers deliberately refuse that older format), relevant to a saved reference bypass. No new schema/control, slot engagement or complete Drive claim was made from the empty inspection branch. Win/clones must publish that actual backend contract; this is the existing handover dependency, not a director approval question.
+
+**Queue continuation at once:** 7b's installer/UI tiers belong to win/window; 7c/7d export jobs/LUFS/NI Stems and 8/9 freeze/bounce/history/save have their prior pushed gates and remain taken. At Phase D 10, audio/decode.hpp's SourceFormat and decode.cpp's decoder dispatch still recognize only RIFF/AIFF/FLAC/MP3/Ogg, while the independent NI Stems path already has native MP4/AAC/platform codecs. General AAC/M4A import is therefore the next concrete engine gap. Wire sniffed content and the existing native MP4/AAC path into the normal import/cache/playback pipeline, with bounded decoding, cache identity/publication/error/cancellation and real fixture evidence; then take progressive decode playback, the analysed folder/library Warp data, Link and remaining brief work. Keep model weight access and the Drive handoff named open, rather than claiming either from a DTO or substituting unrelated DSP. Gate, push, log, next continues in this same turn through compaction; no stop here.
+
+---
+
 ## 2026-11-04 — Native N-stem result import gated; model weights blocked, taking Loudness Drive
 
 **PR requested:** head `engine/stem-results` at **`75d9a0b5`**, base `engine/log` (`c830b634`, including win's earlier integration history). Title: **Import completed N-stem results as one native action**. No scanner or inference dependency. Win opens the PR; main remains untouched.
