@@ -190,6 +190,7 @@ add_library(adi_core STATIC
     src/adi/appdata.cpp
     src/adi/panel.cpp
     src/adi/plugin_registry.cpp
+    src/adi/scan_process.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
@@ -600,6 +601,10 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 # exported symbol. Not a test: it needs a plugin installed, and CI has none.
 add_executable(adi_clap_probe src/juce/clap_probe.cpp)
 target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
+
+add_executable(adi_scan_process_tests tests/test_scan_process.cpp)
+target_link_libraries(adi_scan_process_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_process_tests COMMAND adi_scan_process_tests)
 
 add_executable(adi_dsp_tests tests/test_dsp.cpp)
 target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
