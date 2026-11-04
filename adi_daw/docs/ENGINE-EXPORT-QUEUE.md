@@ -98,11 +98,12 @@ different streams and unchanged retries reproduce their samples. The standalone
 WAV writer retains its previous no-dither default for existing callers.
 
 Dry and isolated through-master choices, continuous gapless region batches,
-normalization/LUFS, other containers, noise shaping, NI Stems import/export,
+normalization/LUFS, other containers, noise shaping,
 queue persistence, and the Export window remain subsequent increments. There is
 no new schema or silent fallback for these options.
 
-`renderWav` runs a single job directly; the queue uses it. The compatibility
+`renderWav` runs a single WAV job directly. Jobs with `niStems` use
+`renderNiStems`; see [ENGINE-NI-STEMS.md](ENGINE-NI-STEMS.md). The compatibility
 entry point `renderMasterWav` accepts only the default master source and reports
 a failure for an explicit track or pre-fader tap.
 
