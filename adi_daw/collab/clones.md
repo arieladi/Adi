@@ -1,5 +1,17 @@
 # Clones lane log
 
+## 2026-11-04 — whole-Dream research, milestone 3
+
+Director clarified that the named audio-editing, warp/MIDI and modulation cases are only examples: the research scope is every intended Dream/current ADI feature. Research commit `3ac99a35` on `clones/daw-reference-reading-20261104` adds a 220-requirement register spanning all 15 Dream sections, an independent index of all 319 FEATURES table data rows including metadata, and an integration/contradiction document. This is coverage accounting, not 220 completed contracts. Current repository decisions govern implementation; Dream expands research without overriding them.
+
+Per-app v0.3 notes add 89 source-backed rows: Live 32, Cubase 30, Bitwig 22 and five REAPER rows only for explicitly referenced behaviors. New detail covers launch/follow timing, monitoring and compensation, automation ownership, media/browser/transfer, tuning/articulation, racks, arranger/time domains, mixer/cue recall, controllers, hosting, modulation sources and Grid interfaces. Built-in instrument/effect implementations remain excluded. The earlier chapter-level exclusion of all Bitwig chapter 19 was too broad: modulator and Grid interface semantics in §§19.27–19.28 are included. The Score Editor feature/exclusion conflict is recorded rather than silently resolved.
+
+Private E24–E29 evidence includes nine pinned/datestamped primary SDK/format/backup snapshots; structural summaries of 25 shipped Live XML artifacts; twelve installed Bitwig API documents; and a hash-bound reading manifest covering 36 source files. Protocol findings cover gestures, expression identity, process/flush, ARA ownership, interchange, backup and LinkAudio availability. They do not establish installed engine internals or authorize ADR changes. Raw source artifacts stay in `D:\ADI-Research\2026-11-04-daws`.
+
+WHOLE-HOST-MISSIONS.md adds ten reference-test families and an ADI-only future acceptance matrix, supplementing both earlier mission documents. No GUI, audio or CPU measurements were performed; all ten original Live window questions remain open for Claude evidence and win relay. AI/collaboration, telemetry, remote hosting, mobile and ADiJ are explicitly tracked as independent ADI contract work where reference parity is unsupported.
+
+Validation: 37 research-artifact checks passed, including source/reference integrity, all 272 inventoried installed binaries unchanged and 74 inspected source artifacts unchanged. No product code, ADR, build or CI changes; no push, merge or external message. Full-host research remains incomplete. Continue from the per-requirement open dimensions and ingest actual test results into the exact app/build rows.
+
 ## 2026-11-04 — expanded host research, milestone 2
 
 Director expanded the assignment to all host behavior, prioritizing Cubase F7 DOP/advanced fades, Live warp/MIDI and Bitwig modular/modulation semantics. Built-in effect/instrument implementations are excluded; editor utilities, hosting, routing and Grid semantics remain included. Research commit `905556ef` on `clones/daw-reference-reading-20261104` adds 127 detailed contract rows (Cubase 45, Live 43, Bitwig 39), per-app remaining-scope queues and an expanded dated prompt. No product code or ADR changed; nothing pushed or merged.
