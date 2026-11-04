@@ -814,6 +814,14 @@ public:
     }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
 
+    /// Build-time alignment policy. Intrinsic device latency and delayed dry
+    /// bypass remain intact. Change by building/publishing a new graph.
+    void setDelayCompensation(bool on) noexcept {
+        if(on!=delayCompensation_)prepared_=false;
+        delayCompensation_=on;
+    }
+    [[nodiscard]] bool delayCompensation() const noexcept { return delayCompensation_; }
+
     /// Per-node event capacity. At 500 Hz with heavy polyphony this is a real
     /// design number rather than a formality (events.hpp).
     /// Per-node event capacity. Zero -- the default -- DERIVES it at `prepare`
@@ -1173,6 +1181,7 @@ private:
     std::vector<double> delayScratch64_; ///< the same at 64
 
     Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
+    bool delayCompensation_ = true;
     double sampleRate_ = 0.0;
     std::int32_t maxFrames_ = 0;
     std::int32_t channels_ = 2;

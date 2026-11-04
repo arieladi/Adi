@@ -20,14 +20,8 @@ juce::Rectangle<int> restoreFloating(const FloatingState &s,
 }
 std::vector<MonitorArea> currentMonitors() {
     std::vector<MonitorArea> result;
-    for (const auto &d : juce::Desktop::getInstance().getDisplays().displays) {
-        // JUCE exposes no stable EDID identifier; geometry + physical DPI is its portable identity.
-        const auto a = d.logicalBounds.toNearestInt();
-        result.push_back({std::to_string(a.getX()) + ":" + std::to_string(a.getY()) + ":" +
-                              std::to_string(a.getWidth()) + ":" + std::to_string(a.getHeight()) +
-                              ":" + std::to_string(static_cast<int>(d.dpi)),
-                          d.userBounds.toNearestInt()});
-    }
+    for (const auto &d : juce::Desktop::getInstance().getDisplays().displays)
+        result.push_back({displayId(d), d.userBounds.toNearestInt()});
     return result;
 }
 AnalyserModel::AnalyserModel(std::shared_ptr<const engine::ScopeTap> tap) : tap_(std::move(tap)) {
@@ -116,6 +110,8 @@ struct Zoomed final : juce::Component {
     juce::Component &view;
     float zoom = 1;
 };
+// A floating window's name in `window.zoom` (N4): "floating:" and its key.
+std::string zoomKey(const std::string &key) { return "floating:" + key; }
 } // namespace
 struct FloatingHost::Entry {
     std::string key;
@@ -123,7 +119,7 @@ struct FloatingHost::Entry {
     bool closing = false;
     std::uint64_t drains = 0;
     juce::Component::SafePointer<juce::Component> component, dock;
-    juce::Rectangle<int> dockBounds;
+    juce::Rectangle<int> dockBounds, first;
     std::unique_ptr<juce::Component> owned;
     std::unique_ptr<Zoomed> zoomed; // an ADI view's, in openView's windows
     std::function<void(const SnapshotReader &)> onFrame;
@@ -141,6 +137,7 @@ struct FloatingHost::Entry {
             followTooltips(*this, h.commands_, tips, tipDelayMs);
         }
         using juce::DocumentWindow::keyPressed;
+        using juce::DocumentWindow::keyStateChanged;
         bool keyPressed(const juce::KeyPress &k, juce::Component *) override {
             // The zoom keys zoom this window; every other key is the main window's.
             const auto id = h.commands_.manager.getKeyMappings()->findCommandForKeyPress(k);
@@ -150,6 +147,8 @@ struct FloatingHost::Entry {
             }
             return h.commands_.key(k, h.root_);
         }
+        // A key held from here comes up here: the main window lets it go.
+        bool keyStateChanged(bool isKeyDown, juce::Component *) override { return h.root_.keyStateChanged(isKeyDown); }
         void closeButtonPressed() override {
             e.closing = true;
             setVisible(false);
@@ -179,20 +178,32 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     raw->window->setContentNonOwned(raw->zoomed ? static_cast<juce::Component *>(raw->zoomed.get())
                                                 : raw->component.getComponent(),
                                     false);
-    raw->window->setBounds(restoreFloating(states_.loadFloating(key), currentMonitors()));
+    if (const auto kept = states_.loadFloating(key); kept.monitor.empty() && !raw->first.isEmpty()) {
+        // Never placed: the content where `first` says, the title bar above it.
+        raw->window->setBounds(raw->window->getContentComponentBorder().addedTo(raw->first));
+    } else
+        raw->window->setBounds(restoreFloating(kept, currentMonitors()));
+    // An ADI view's window opens at the zoom kept for it on its display (N4).
+    if (raw->zoomed)
+        if (const auto kept = commands_.keptZoom(zoomKey(key), displayAt(raw->window->getBounds().getCentre()))) {
+            raw->zoomed->zoom = *kept;
+            raw->zoomed->resized();
+        }
     if (native_)
         raw->window->setVisible(true);
     save(*raw, true);
     return true;
 }
 bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Component &component,
-                          juce::Component &dock, std::function<void(const SnapshotReader &)> fn) {
+                          juce::Component &dock, std::function<void(const SnapshotReader &)> fn,
+                          juce::Rectangle<int> first) {
     auto e = std::make_unique<Entry>();
     e->key = key;
     e->device = id;
     e->component = &component;
     e->dock = &dock;
     e->dockBounds = component.getBounds();
+    e->first = first;
     e->onFrame = std::move(fn);
     return install(std::move(e));
 }
@@ -232,6 +243,10 @@ bool FloatingHost::zoom(const std::string &key, bool in) {
         return false;
     zoomed.zoom = *next;
     zoomed.resized();
+    // Kept for this window on the display it stands on, for the next time it opens (N4).
+    if (std::string why; !commands_.keepZoom(zoomKey(key), displayAt(it->second->window->getBounds().getCentre()),
+                                             zoomed.zoom, why))
+        root_.say("The zoom is not kept for the next launch: " + why);
     return true;
 }
 float FloatingHost::zoomOf(const std::string &key) const {
@@ -261,6 +276,8 @@ void FloatingHost::close(const std::string &key) {
         return;
     auto &e = *it->second;
     save(e, false);
+    // Gone before its content leaves it: an empty window never shows (the director's R3).
+    e.window->setVisible(false);
     e.window->clearContentComponent();
     if (e.dock && e.component) {
         e.dock->addAndMakeVisible(e.component);
@@ -281,6 +298,7 @@ void FloatingHost::closeAll(bool remember) {
     while (!entries_.empty()) {
         auto &e = *entries_.begin()->second;
         save(e, remember);
+        e.window->setVisible(false);
         e.window->clearContentComponent();
         if (e.dock && e.component) {
             e.dock->addAndMakeVisible(e.component);
@@ -303,7 +321,9 @@ bool detachMixView(FloatingHost &host, AdiRootComponent &root, bool detach) {
     if (host.content(kMixViewKey) != nullptr)
         return true;
     auto &panel = root.mixViewPanel;
-    if (host.detach(kMixViewKey, 0, panel, root, [&panel](const SnapshotReader &reader) { panel.frame(reader); }))
+    // Its first window opens where it stands docked, at its size; after that, where it was left.
+    if (host.detach(kMixViewKey, 0, panel, root, [&panel](const SnapshotReader &reader) { panel.frame(reader); },
+                    root.localAreaToGlobal(root.mixViewDock())))
         return true;
     root.setMixView(true, false);
     return false;
@@ -326,6 +346,10 @@ void syncMixView(FloatingHost &host, AdiRootComponent &root, bool restore) {
 juce::Component *FloatingHost::content(const std::string &key) const {
     auto it = entries_.find(key);
     return it == entries_.end() ? nullptr : it->second->component.getComponent();
+}
+juce::Component *FloatingHost::window(const std::string &key) const {
+    auto it = entries_.find(key);
+    return it == entries_.end() ? nullptr : it->second->window.get();
 }
 bool FloatingHost::hasTooltips(const std::string &key) const {
     auto it = entries_.find(key);
