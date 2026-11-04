@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_arrangement.hpp"
+#include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
 #include "ui_shell.hpp"
+#include <limits>
 namespace adi::ui {
 ArrangementOverview::ArrangementOverview(ArrangementView &v) : view(v) {
     setTitle("Overview");
@@ -93,8 +95,38 @@ void ArrangementOverview::mouseDrag(const juce::MouseEvent &e) {
 void ArrangementOverview::mouseDoubleClick(const juce::MouseEvent &) { view.fit(false); }
 ScrubArea::ScrubArea(ArrangementView &v) : view(v) {
     setTitle("Scrub area");
-    setTooltip("Click to play from that point.");
+    setTooltip("Click to play from that point. Click a time signature marker to select it; "
+               "right-click for Insert Time Signature Change.");
     setMouseCursor(juce::MouseCursor::PointingHandCursor);
+    addChildComponent(editor);
+    editor.setTitle("Time signature");
+    editor.setJustification(juce::Justification::centredLeft);
+    editor.onCommit = [this] {
+        if (editing_ < 0)
+            return;
+        const auto pos = editing_;
+        const auto text = editor.getText().toStdString();
+        // A value refused keeps the field open to type again; the Status Bar says why.
+        if (inserting_ ? view.root.insertMeter(pos, text) : view.root.editMeter(pos, text))
+            endMeterEdit();
+        else if (editor.isShowing())
+            editor.selectAll();
+    };
+    editor.onCancel = [this] { endMeterEdit(); };
+}
+juce::Rectangle<float> ScrubArea::markerBox(const textproj::Meter &m) const {
+    const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
+    const float x = static_cast<float>(view.geometry.x(m.start_ticks));
+    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
+    return {x, 3.f, w, 15.f};
+}
+std::int64_t ScrubArea::markerAt(float x) const {
+    const auto &meters = view.reader().meters();
+    // The later one is drawn over the earlier where two touch.
+    for (std::size_t i = meters.size(); i-- > 1;)
+        if (const auto box = markerBox(meters[i]); x >= box.getX() && x < box.getRight())
+            return meters[i].start_ticks;
+    return -1;
 }
 void ScrubArea::paint(juce::Graphics &g) {
     // Live's locator band: the lanes' grey and grid, where the loop brace and the
@@ -102,18 +134,16 @@ void ScrubArea::paint(juce::Graphics &g) {
     paintLanes(g, view.geometry, getWidth(), 0, getHeight(), false);
     // A marker at each change of time signature (Live 12 manual 6.4.1, its figure): a grey box
     // with a dark edge, a notch at its top left, the signature in it. The first signature is the
-    // control bar's and has none.
+    // control bar's and has none. The selected one is lit (its colour to be measured on Live).
     const auto &meters = view.reader().meters();
     g.setFont(look::font(11.5f));
     for (std::size_t i = 1; i < meters.size(); ++i) {
         const auto &m = meters[i];
-        const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
-        const float x = static_cast<float>(view.geometry.x(m.start_ticks));
-        const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
-        if (x + w < 0 || x > static_cast<float>(getWidth()))
+        const auto box = markerBox(m);
+        if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
             continue;
-        const juce::Rectangle<float> box(x, 3.f, w, 15.f);
-        g.setColour(juce::Colour(0xffb4b4b4));
+        const float x = box.getX();
+        g.setColour(m.start_ticks == view.selectedMeter ? look::selection : juce::Colour(0xffb4b4b4));
         g.fillRect(box);
         g.setColour(look::separator);
         g.drawRect(box, 1.5f);
@@ -122,16 +152,77 @@ void ScrubArea::paint(juce::Graphics &g) {
         g.setColour(juce::Colour(0xffe8e8e8));
         g.fillPath(notch);
         g.setColour(look::text);
-        g.drawText(text, box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
+        g.drawText(juce::String(meterText(m)), box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
     }
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
-    if (e.mods.isPopupMenu())
+    // A marker clicked is selected, and plays nothing; its menu acts on it.
+    const auto marker = markerAt(e.position.x);
+    if (marker >= 0 || view.selectedMeter >= 0) {
+        view.selectedMeter = marker;
+        if (marker >= 0) {
+            // Delete and the arrows go to the lanes, which act on the marker while it is selected.
+            auto &sel = view.geometry.selection;
+            sel.clip = 0;
+            sel.pickedClips.clear();
+            view.canvas.grabKeyboardFocus();
+        }
+        repaint();
+    }
+    if (e.mods.isPopupMenu()) {
+        menu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+        return;
+    }
+    if (marker >= 0)
         return;
     view.followPaused = false;
     // From the point clicked; Live's global launch quantization arrives with Session
     // View's launch settings (ADR-0203 d10), so nothing is quantized yet.
     view.root.playFrom(view.geometry.tick(e.position.x));
+}
+juce::PopupMenu ScrubArea::menu() {
+    // Live's scrub area menu (manual 6.5): Insert Time Signature Change at the insert marker; on a
+    // marker, Edit Time Signature and Delete (the Edit menu's Rename and Delete, which act on the
+    // selected marker).
+    auto &commands = view.root.commands();
+    commands.activate(view.root);
+    juce::PopupMenu out;
+    out.addCommandItem(&commands.manager, AppCommands::InsertTimeSignatureChange);
+    if (view.selectedMeter >= 0) {
+        out.addSeparator();
+        out.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+        out.addCommandItem(&commands.manager, AppCommands::DeleteTrack);
+    }
+    return out;
+}
+bool ScrubArea::beginMeterEdit(std::int64_t pos, bool inserting) {
+    if (pos < 0)
+        return false;
+    // The marker's place on screen: the lanes scroll to it first when it is off them.
+    if (const auto x = view.geometry.x(pos); x < 0 || x > getWidth() - 64) {
+        view.geometry.left = static_cast<double>(pos) / textproj::kPPQ -
+                             static_cast<double>(getWidth()) / 4. / std::max(view.geometry.scale, 1.);
+        view.geometry.left = std::max(0., view.geometry.left);
+        view.changed();
+    }
+    editing_ = pos;
+    inserting_ = inserting;
+    const int x = std::clamp(static_cast<int>(view.geometry.x(pos)), 0, std::max(0, getWidth() - 64));
+    editor.setBounds(x, 2, 64, std::max(0, getHeight() - 4));
+    editor.setText(juce::String(meterText(meterAt(pos, view.reader().meters()))), false);
+    editor.setVisible(true);
+    editor.selectAll();
+    if (editor.isShowing())
+        editor.grabKeyboardFocus();
+    repaint();
+    return true;
+}
+void ScrubArea::endMeterEdit() {
+    editing_ = -1;
+    editor.setVisible(false);
+    if (view.canvas.isShowing())
+        view.canvas.grabKeyboardFocus();
+    repaint();
 }
 TimelineRuler::TimelineRuler(ArrangementView &v) : view(v) {
     setTitle("Beat-time ruler");
@@ -1096,7 +1187,15 @@ void TimelineRuler::paint(juce::Graphics &g) {
         label(tick, juce::String(bar));
         const auto &m = meterAt(tick, meters);
         const auto beatTicks = textproj::kWhole / std::max<std::int64_t>(1, m.denominator);
-        for (std::int64_t b = beatStep; b < m.numerator; b += beatStep)
+        // A change part-way through a bar cuts it short (Live's fragmentary bar, manual 6.5): its
+        // beats stop where the next signature begins. Live crosshatches the fragment; ADI does not yet.
+        auto until = std::numeric_limits<std::int64_t>::max();
+        for (const auto &next : meters)
+            if (next.start_ticks > tick) {
+                until = next.start_ticks;
+                break;
+            }
+        for (std::int64_t b = beatStep; b < m.numerator && tick + b * beatTicks < until; b += beatStep)
             label(tick + b * beatTicks, juce::String(bar) + "." + juce::String(b + 1));
     });
 }
@@ -1257,6 +1356,10 @@ void TrackHeaderList::endRename() {
     repaint();
 }
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
+    if (view.selectedMeter >= 0) {
+        view.selectedMeter = -1; // a click on a title lets a selected marker go
+        view.scrub.repaint();
+    }
     // A group's fold switch folds or unfolds it (Live 12 manual 18.3), and selects nothing.
     int top = 0;
     const auto rows = view.geometry.rows(view.reader());
@@ -1643,6 +1746,10 @@ void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y,
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
+    if (view.selectedMeter >= 0) {
+        view.selectedMeter = -1; // a click in the lanes lets a selected marker go
+        view.scrub.repaint();
+    }
     view.followPaused = false; // a click in the Arrangement starts Follow again (§6.2)
     last = e.position;
     moving_ = resizing_ = 0;
@@ -2079,6 +2186,11 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
                     return true;
                 }
         }
+    // Delete on a selected time signature marker (Live 12 manual 6.5).
+    if (view.selectedMeter >= 0 && (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)) {
+        view.root.deleteMeter(view.selectedMeter);
+        return true;
+    }
     // Live's Delete, and 0 to deactivate (§6.9), on a time selection: every selected track's
     // material, as one undo step.
     if (sel.clip == 0 && sel.start != sel.end &&

@@ -1178,6 +1178,88 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.toggleFold(16);
     root.arrangement.toggleFold(10);
     render("adi-groups-folded.png");
+    root.arrangement.toggleFold(10);
+    root.arrangement.toggleFold(16);
+    // Live's time signature markers (manual 6.5): a click on one selects it and plays nothing;
+    // Ctrl/Cmd+R edits it; Delete removes it; Insert Time Signature Change at the insert marker.
+    lanes.scale = 60;
+    lanes.left = 0;
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &scrub = root.arrangement.scrub;
+    auto meterOf = [&root](std::int64_t pos) {
+        for (const auto &m : root.reader().meters())
+            if (m.start_ticks == pos)
+                return std::to_string(m.numerator) + "/" + std::to_string(m.denominator);
+        return std::string{};
+    };
+    const auto bar3 = 8 * textproj::kPPQ, bar2 = 4 * textproj::kPPQ;
+    const float markerX = static_cast<float>(lanes.x(bar3)) + 6.f;
+    check(scrub.markerAt(markerX) == bar3 && scrub.markerAt(static_cast<float>(lanes.x(bar2))) == -1,
+          "the 3/4 marker is under the mouse at bar 3, and none at bar 2");
+    scrub.mouseDown(pressAt(scrub, {markerX, 10.f}));
+    check(root.arrangement.selectedMeter == bar3 && !mailbox.desiredPlaying() && lanes.selection.clip == 0,
+          "a click on it selects it and plays nothing");
+    commands.activate(root);
+    juce::ApplicationCommandInfo renameInfo(AppCommands::RenameTrack), deleteInfo(AppCommands::DeleteTrack);
+    commands.getCommandInfo(AppCommands::RenameTrack, renameInfo);
+    commands.getCommandInfo(AppCommands::DeleteTrack, deleteInfo);
+    check(renameInfo.shortName == "Edit Time Signature" && deleteInfo.shortName == "Delete Time Signature Change",
+          "the Edit menu's Rename and Delete name the marker");
+    root.frame();
+    render("adi-meter-selected.png");
+    check(root.command(AppCommands::RenameTrack) && scrub.meterEditing() == bar3 && scrub.editor.isVisible() &&
+              scrub.editor.getText() == "3/4",
+          "Ctrl/Cmd+R: Edit Time Signature, its value in a field over it");
+    render("adi-meter-editing.png");
+    scrub.editor.setText("5/3", false);
+    scrub.editor.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+    check(scrub.editor.isVisible() && meterOf(bar3) == "3/4" && root.error().find("3/4") != std::string::npos,
+          "a value Live takes not keeps the field open, and the Status Bar says what to type");
+    scrub.editor.setText("5 4", false);
+    scrub.editor.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+    root.frame();
+    check(!scrub.editor.isVisible() && meterOf(bar3) == "5/4" && submitter.nextUndo()->label == "Edit Time Signature" &&
+              root.arrangement.selectedMeter == bar3,
+          "5 4 typed, Enter: 5/4, one step, the marker still selected");
+    check(root.command(AppCommands::RenameTrack) && scrub.editor.isVisible(), "Ctrl/Cmd+R again");
+    scrub.editor.setText("2/2", false);
+    scrub.editor.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    root.frame();
+    check(!scrub.editor.isVisible() && meterOf(bar3) == "5/4", "Esc: the field closes, nothing changed");
+    const auto markers = root.reader().meters().size();
+    check(root.arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete");
+    root.frame();
+    check(meterOf(bar3).empty() && root.reader().meters().size() == markers - 1 &&
+              submitter.nextUndo()->label == "Delete Time Signature Change" && root.arrangement.selectedMeter == -1,
+          "Delete removes the selected marker, one step");
+    root.command(AppCommands::Undo);
+    root.frame();
+    check(meterOf(bar3) == "5/4", "undo brings it back");
+    lanes.selection.insert = bar2;
+    lanes.selection.start = lanes.selection.end = bar2;
+    check(root.command(AppCommands::InsertTimeSignatureChange) && scrub.meterEditing() == bar2 &&
+              scrub.editor.getText() == "4/4",
+          "Insert Time Signature Change: a field at the insert marker, bar 2, with the 4/4 in force there");
+    scrub.editor.setText("6/8", false);
+    scrub.editor.keyPressed(juce::KeyPress(juce::KeyPress::returnKey));
+    root.frame();
+    check(meterOf(bar2) == "6/8" && submitter.nextUndo()->label == "Insert Time Signature Change" &&
+              root.arrangement.selectedMeter == bar2,
+          "6/8 typed: a marker at bar 2, one step, selected");
+    render("adi-meter-inserted.png");
+    lanes.selection.insert = 0;
+    check(!root.command(AppCommands::InsertTimeSignatureChange) && !scrub.editor.isVisible() &&
+              root.error().find("control bar") != std::string::npos,
+          "at the start: refused, the start's signature is the control bar's");
+    auto &lanesView = root.arrangement.canvas;
+    const juce::Point<float> inLanes{40.f, static_cast<float>(laneTop(root, 11) + 10)};
+    lanesView.mouseDown(pressAt(lanesView, inLanes));
+    lanesView.mouseUp(pressAt(lanesView, inLanes));
+    check(root.arrangement.selectedMeter == -1, "a click in the lanes lets the marker go");
+    root.command(AppCommands::Undo);
+    root.frame();
+    check(meterOf(bar2).empty(), "undo: the inserted marker gone");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
@@ -3497,8 +3579,9 @@ int main(int argc, char **argv) {
                                                 C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Group and "
               "Ungroup Tracks");
-        check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack},
-              "the Create menu inserts tracks, returns too (§18.4)");
+        check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
+                                                  C::InsertTimeSignatureChange},
+              "the Create menu inserts tracks, returns too (§18.4), then a time signature change (§6.5)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,

@@ -29,6 +29,7 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
+#include "adi/ui/meter_edits.hpp"
 #include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
 #include "adi/ui/session_state.hpp"
@@ -1220,6 +1221,58 @@ void referenceTapAndHold() {
     check(!ref.on(), "latched, then held and let go: off");
 }
 
+void meterMarkers() {
+    section("time signature markers: Insert, Edit and Delete, one step each (Live 12 manual 6.5)");
+    for (const auto &[text, ok, num, den] :
+         {std::tuple<const char *, bool, int, int>{"3/4", true, 3, 4}, {" 7 , 8 ", true, 7, 8}, {"12.16", true, 12, 16},
+          {"5   4", true, 5, 4}, {"6 / 8", true, 6, 8}, {"99/1", true, 99, 1}, {"34", false, 0, 0},
+          {"0/4", false, 0, 0}, {"100/4", false, 0, 0}, {"3/3", false, 0, 0}, {"3/32", false, 0, 0},
+          {"3//4", false, 0, 0}, {"3/4x", false, 0, 0}, {"", false, 0, 0}, {"/4", false, 0, 0}}) {
+        const auto value = ui::parseMeter(text);
+        check(value.has_value() == ok && (!ok || (value->numerator == num && value->denominator == den)), text);
+    }
+    adi::test::TempDirectory temp("ui_seams", "meters");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    const auto bar = textproj::kWhole;
+    auto meters = [&view] { return ui::SnapshotReader(view.current()).meters(); };
+    check(meters().size() <= 1 && ui::markerAt(meters(), 0) == 0, "no marker yet");
+    const auto atStart = ui::insertMeter(meters(), 0, "3/4");
+    check(atStart.ops.empty() && !atStart.refusal.empty(), "at the start: the control bar's, refused with the reason");
+    const auto badText = ui::insertMeter(meters(), 2 * bar, "3/5");
+    check(badText.ops.empty() && badText.refusal.find("3/4") != std::string::npos, "a value Live takes not: refused");
+    auto inserted = ui::insertMeter(meters(), 2 * bar, "3/4");
+    check(inserted.ops.size() == 1 && inserted.ops[0].label == "Insert Time Signature Change" &&
+              sub.submit(std::move(inserted.ops)).ok,
+          "Insert Time Signature Change at bar 3, one op");
+    check(meters().size() == 2 && meters()[1].start_ticks == 2 * bar && meters()[1].numerator == 3 &&
+              ui::markerAt(meters(), 2 * bar) == 1 && sub.nextUndo()->label == "Insert Time Signature Change",
+          "a 3/4 marker at bar 3, one step");
+    auto again = ui::insertMeter(meters(), 2 * bar, "6/8");
+    check(again.ops.size() == 2 && again.ops[0].label == "Edit Time Signature" && sub.submit(std::move(again.ops)).ok &&
+              meters().size() == 2 && meters()[1].numerator == 6 && meters()[1].denominator == 8,
+          "inserted where a marker stands: it takes the value, as an edit");
+    check(ui::editMeter(meters(), 2 * bar, "6 8").ops.empty() && ui::editMeter(meters(), 2 * bar, "6 8").refusal.empty(),
+          "the same value is no edit");
+    check(!ui::editMeter(meters(), bar, "2/4").refusal.empty() && !ui::editMeter(meters(), 0, "2/4").refusal.empty(),
+          "no marker there, or the start's: Edit is refused");
+    auto edited = ui::editMeter(meters(), 2 * bar, "5/4");
+    check(sub.submit(std::move(edited.ops)).ok && meters()[1].numerator == 5 && meters()[1].denominator == 4 &&
+              sub.nextUndo()->label == "Edit Time Signature" && sub.nextUndo()->opCount == 2,
+          "Edit Time Signature: 5/4, one step of two ops");
+    check(sub.undo().ok && meters()[1].numerator == 6 && meters()[1].denominator == 8, "undo: 6/8 again");
+    check(!ui::deleteMeter(meters(), bar).refusal.empty() && !ui::deleteMeter(meters(), 0).refusal.empty(),
+          "no marker there, or the start's: Delete is refused");
+    auto removed = ui::deleteMeter(meters(), 2 * bar);
+    check(removed.ops.size() == 1 && removed.ops[0].label == "Delete Time Signature Change" &&
+              sub.submit(std::move(removed.ops)).ok && meters().size() == 1,
+          "Delete: the marker gone, one step");
+    check(sub.undo().ok && meters().size() == 2 && meters()[1].numerator == 6, "undo: it is back");
+}
+
 void momentaryLatch() {
     section("momentary latching: a key held 500 ms or more goes back on release (Live 42.25)");
     ui::MomentaryLatch latch;
@@ -1364,6 +1417,7 @@ int main() {
     rangeEditsAsBatches();
     referenceTapAndHold();
     momentaryLatch();
+    meterMarkers();
     midiTrackMixer();
     soloRules();
 

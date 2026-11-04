@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
@@ -112,7 +113,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Activate/Deactivate Track 2", "Activate/Deactivate Track 3",
                                   "Activate/Deactivate Track 4", "Activate/Deactivate Track 5",
                                   "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
-                                  "Activate/Deactivate Track 8", "Mixer Sends"};
+                                  "Activate/Deactivate Track 8", "Mixer Sends",
+                                  "Insert Time Signature Change"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -232,6 +234,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('t', cmd | shift);
         break;
     case DeleteTrack:
+        // On a selected time signature marker, Delete removes it (Live 12 manual 6.5).
+        if (active_ != nullptr && active_->arrangement.selectedMeter >= 0) {
+            info.shortName = "Delete Time Signature Change";
+            info.setActive(true);
+            break;
+        }
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
         break;
     case Quit:
@@ -241,9 +249,17 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('q', cmd);
 #endif
         break;
-    case RenameTrack: // §41.5
+    case RenameTrack: // §41.5; on a selected time signature marker, Edit Time Signature (manual 6.5)
         info.addDefaultKeypress('r', cmd);
+        if (active_ != nullptr && active_->arrangement.selectedMeter >= 0) {
+            info.shortName = "Edit Time Signature";
+            info.setActive(true);
+            break;
+        }
         info.setActive(active_ != nullptr && active_->arrangement.geometry.selection.track != 0);
+        break;
+    case InsertTimeSignatureChange: // manual 6.5: at the insert marker
+        info.setActive(active_ != nullptr);
         break;
     case ToggleMixView:
         // ADR-0209 d9: F4 opens and closes the Mix View; the function keys do functions.
@@ -1289,6 +1305,45 @@ bool AdiRootComponent::activateTrack(std::int64_t id, bool withSelection) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::insertMeter(std::int64_t pos, const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    auto edit = ::adi::ui::insertMeter(current->meters, pos, text);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.selectedMeter = pos;
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::editMeter(std::int64_t pos, const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    auto edit = ::adi::ui::editMeter(current->meters, pos, text);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.selectedMeter = pos;
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::deleteMeter(std::int64_t pos) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    auto edit = ::adi::ui::deleteMeter(current->meters, pos);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.selectedMeter = -1;
+    arrangement.scrub.repaint();
+    return true;
+}
 bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
     // From the CURRENT cell (ADR-0201); the batch is one undo step, and the selection stays.
     const auto current = view_.current();
@@ -1541,9 +1596,24 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::DeleteTrack:
+        if (arrangement.selectedMeter >= 0)
+            return deleteMeter(arrangement.selectedMeter);
         if (!deleteTrack())
             return false;
         break;
+    case AppCommands::InsertTimeSignatureChange: {
+        // At the insert marker (Live 12 manual 6.5): a field there to type the value; where a marker
+        // stands, that marker's value. The start's signature is the control bar's.
+        const auto pos = arrangement.geometry.selection.insert;
+        const auto current = view_.current();
+        if (!current)
+            return fail("Time signatures need an open project.");
+        if (pos <= 0)
+            return fail("The time signature at the start is the control bar's; place the insert marker "
+                        "where the change goes.");
+        arrangement.selectedMeter = markerAt(current->meters, pos) != 0 ? pos : -1;
+        return arrangement.scrub.beginMeterEdit(pos, true);
+    }
     case AppCommands::GroupTracks:
     case AppCommands::UngroupTracks:
         if (!groupTracks(id == AppCommands::UngroupTracks))
@@ -1576,8 +1646,11 @@ bool AdiRootComponent::command(int id) {
         strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
         break;
     case AppCommands::RenameTrack:
-        // Rename acts on the selection: the device with the focus, else the selected track.
-        // The edit itself is its own op when the name is committed.
+        // Rename acts on the selection: a selected time signature marker (Edit Time Signature), the
+        // device with the focus, else the selected track. The edit itself is its own op when the
+        // name is committed.
+        if (arrangement.selectedMeter >= 0)
+            return arrangement.scrub.beginMeterEdit(arrangement.selectedMeter, false);
         for (auto &panel : devices.panels)
             if (panel->hasKeyboardFocus(true))
                 return panel->beginRename() || fail("Unfold the device to rename it.");
@@ -1636,7 +1709,7 @@ const std::vector<MenuEntries> &menuBar() {
         // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
         // Paste and Duplicate; those wait for their ops.
         {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks}},
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack}},
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertTimeSignatureChange}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
