@@ -435,6 +435,13 @@ silent truncation in JSON, a non-issue in CBOR.
 | `cc.delete` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
 
+Scale highlighting, ruler and Fold projections are runtime read concerns.
+`engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
+tuning degrees coherently without reading notes or writing history. Held
+contexts offer bounded pitch/membership queries with an explicit absolute
+tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
+non-octave periods and native pitch precision. No new opcode or schema.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
