@@ -994,6 +994,34 @@ void ArrangementView::addGridItems(juce::PopupMenu &menu) {
     menu.addCommandItem(&root.commands().manager, AppCommands::TripletGrid);
     menu.addCommandItem(&root.commands().manager, AppCommands::SnapToGrid);
 }
+bool ArrangementView::edgeScroll(int x, int y, bool sideways, bool upAndDown) {
+    // How far past the edge zone's inner line, as a step: a few points at its rim, up to a track
+    // a step well past it.
+    auto step = [](int depth) { return depth == 0 ? 0 : (depth > 0 ? 1 : -1) * std::min(48, 2 + std::abs(depth) / 2); };
+    bool moved = false;
+    if (upAndDown) {
+        // The tracks scroll above the foot: its top is their bottom.
+        const int bottom = geometry.footTop(reader());
+        const int depth = y < kScrollEdge ? y - kScrollEdge : y > bottom - kScrollEdge ? y - (bottom - kScrollEdge) : 0;
+        const int before = geometry.scrollY;
+        geometry.scrollY = std::clamp(before + step(depth), 0, geometry.maxScroll(reader()));
+        moved = geometry.scrollY != before;
+    }
+    if (sideways) {
+        const int width = canvas.getWidth();
+        const int depth = x < kScrollEdge ? x - kScrollEdge : x > width - kScrollEdge ? x - (width - kScrollEdge) : 0;
+        const double before = geometry.left;
+        geometry.pan(step(depth));
+        if (geometry.left != before) {
+            moved = true;
+            followPaused = true; // a sideways scroll pauses Follow (§6.2)
+        }
+    }
+    // The mixer's rows follow the lanes: re-placed on the next frame.
+    if (moved)
+        root.mark(DirtySet::Layout);
+    return moved;
+}
 void ArrangementView::wheel(const juce::MouseEvent &e, const juce::MouseWheelDetails &w) {
     if (e.mods.isCommandDown()) {
         // Live zooms around the selection (manual 6.2, ADR-0203 d7); around the
@@ -1266,8 +1294,11 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
         }
         if (split)
             resizeId = t->id;
-        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.foot())
+        else if (!e.mods.isPopupMenu() && pressed < rows.size() && !rows[pressed].place.foot()) {
             moveId_ = t->id;
+            // Held still at the lanes' edge, the drag repeats, so they keep scrolling.
+            beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
+        }
         initialHeight = view.geometry.heightFor(t->id);
         view.changed();
     }
@@ -1373,6 +1404,9 @@ void TrackHeaderList::mouseDrag(const juce::MouseEvent &e) {
         // tracks"; the line shows where they would land.
         moving_ = true;
         selectOnUp_ = false;
+        // At the lanes' top or foot they scroll, and the line follows.
+        if (view.edgeScroll(0, e.y, false))
+            view.frame(true);
         drop_ = dropAt(e.y);
         repaint();
     }
@@ -1568,6 +1602,8 @@ void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
         view.select(e.x, e.y, view.snaps(e.mods));
         view.contextMenu(e.getScreenPosition(), false);
     } else if (!panning) {
+        // Held still at the lanes' edge, a drag repeats, so they keep scrolling.
+        beginDragAutoRepeat(ArrangementView::kAutoRepeatMs);
         // Only a clip's bar moves it, not its body; its right edge changes its length (§6.7).
         std::int64_t track = 0;
         bool edge = false;
@@ -1637,20 +1673,24 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         return;
     if (resizing_ != 0) {
         // The clip's end follows the mouse, to the nearest grid line while snapping, never
-        // shorter than one grid step.
+        // shorter than one grid step; at the lanes' side the view scrolls along.
+        const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true, false);
         const auto start = resizeStart_;
         const auto step = static_cast<std::int64_t>(view.geometry.gridQuarters() * textproj::kPPQ);
         const auto raw = view.geometry.tick(e.x);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         const auto end = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
         resizeLength_ = std::max(std::max<std::int64_t>(1, step), end - start);
+        if (scrolled)
+            view.frame(true);
         repaint();
         return;
     }
     if (moving_ != 0) {
         // The clip's start follows the mouse, to the nearest grid line while snapping, and its
         // track follows the lane under it when that track can take it (Live 12 manual 6.7);
-        // over one that cannot, it stays on the last that could.
+        // over one that cannot, it stays on the last that could. At the lanes' edge they scroll.
+        const bool scrolled = e.mouseWasDraggedSinceMouseDown() && view.edgeScroll(e.x, e.y, true);
         if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
             if (const auto *source = view.reader().findTrack(movingSource_);
                 source != nullptr && over->id != movingTrack_ && canTakeClip(*over, *source))
@@ -1658,6 +1698,8 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
         const auto raw = std::max<std::int64_t>(0, view.geometry.tick(e.x) - grabTicks_);
         const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
         movingTo_ = !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up);
+        if (scrolled)
+            view.frame(true);
         repaint();
         return;
     }
@@ -1667,7 +1709,10 @@ void ArrangementCanvas::mouseDrag(const juce::MouseEvent &e) {
                                            view.geometry.maxScroll(view.reader()));
         last = e.position;
     } else {
-        // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9).
+        // Dragged across lanes, the selection reaches every track between (Live 12 manual 6.9); at
+        // the lanes' edge they scroll, and it reaches on.
+        if (e.mouseWasDraggedSinceMouseDown())
+            view.edgeScroll(e.x, e.y, true);
         if (const auto *over = view.geometry.trackAt(view.reader(), e.y))
             view.geometry.selection.toTrack = over->id == view.geometry.selection.track ? 0 : over->id;
         // A time selection covers whole grid cells while snapping (§6.10).

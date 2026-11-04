@@ -227,6 +227,13 @@ class ArrangementView final : public juce::Component {
     bool command(int);
     void fit(bool selection);
     void wheel(const juce::MouseEvent &, const juce::MouseWheelDetails &);
+    // Live scrolls the lanes while a track, a clip or a selection is dragged to their edge: the mouse
+    // at `y` within kScrollEdge of the lanes' top, or above it, scrolls up; near the foot, or the
+    // lanes' bottom, down; with `sideways`, at `x` near the left or right edge, back or on. The
+    // farther in, the faster. Points are the lanes' (the canvas's and the names'). True when the
+    // view moved; a held mouse repeats the drag (beginDragAutoRepeat), so it keeps going.
+    bool edgeScroll(int x, int y, bool sideways, bool upAndDown = true);
+    static constexpr int kScrollEdge = 16, kAutoRepeatMs = 40;
     // Selects at a point: the clip there, or the insert marker on the grid (§6.10).
     void select(int x, int y, bool snapToGrid = true);
     // Whether a gesture with these keys snaps to the grid.
