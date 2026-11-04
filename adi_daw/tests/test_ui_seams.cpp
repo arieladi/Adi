@@ -654,6 +654,44 @@ void groupAndUngroupAsBatches() {
           "tracks in different groups are refused, with the reason");
     check(sub.undo().ok && order() == Order{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}}, "undo puts them back");
 
+    // Live's track drag (the Arrangement View: "dragging them above or below other tracks"; 18.3:
+    // "dragged into or out of the group"): one batch, one step.
+    const Order before{{2, 0}, {6, 0}, {3, 1}, {4, 0}, {1, 0}};
+    auto moved = ui::moveTracks(view.current()->tracks, {4}, {0, 2});
+    check(moved.refusal.empty() && sub.submit(std::move(moved.ops)).ok &&
+              order() == Order{{4, 0}, {2, 0}, {6, 0}, {3, 1}, {1, 0}} && sub.nextUndo()->label == "Move Track",
+          "Bass dragged above Kick: first, one step named Move Track; Main stays last");
+    check(sub.undo().ok && order() == before, "undo puts Bass back");
+    auto into = ui::moveTracks(view.current()->tracks, {2}, {6, 0});
+    check(into.refusal.empty() && into.ops.front().opType == "track.setParent" && into.ops.front().payload["parent"] == 6 &&
+              sub.submit(std::move(into.ops)).ok && order() == Order{{6, 0}, {3, 1}, {2, 1}, {4, 0}, {1, 0}},
+          "Kick dragged into the group: after Snare in it, routed by track.setParent");
+    check(sub.undo().ok && order() == before, "undo takes Kick out again");
+    auto out = ui::moveTracks(view.current()->tracks, {3}, {0, 0});
+    check(out.refusal.empty() && out.ops.front().payload["parent"].is_null() && sub.submit(std::move(out.ops)).ok &&
+              order() == Order{{2, 0}, {6, 0}, {4, 0}, {3, 0}, {1, 0}},
+          "Snare dragged out of the group below the last track: at the top level, before Main");
+    check(sub.undo().ok && order() == before, "undo puts Snare back in its group");
+    auto pair = ui::moveTracks(view.current()->tracks, {4, 2}, {0, 6});
+    check(pair.refusal.empty() && sub.submit(std::move(pair.ops)).ok &&
+              order() == Order{{2, 0}, {4, 0}, {6, 0}, {3, 1}, {1, 0}} && sub.nextUndo()->label == "Move Tracks",
+          "Kick and Bass selected and dragged above the group: side by side, in their order, one step");
+    check(sub.undo().ok && order() == before, "undo");
+    auto whole = ui::moveTracks(view.current()->tracks, {3, 6}, {0, 0});
+    check(whole.refusal.empty() && sub.submit(std::move(whole.ops)).ok &&
+              order() == Order{{2, 0}, {4, 0}, {6, 0}, {3, 1}, {1, 0}},
+          "the group dragged below Bass, Snare selected with it: Snare goes with its group");
+    check(sub.undo().ok && order() == before, "undo");
+    check(ui::moveTracks(view.current()->tracks, {2}, {0, 2}).ops.empty() &&
+              ui::moveTracks(view.current()->tracks, {2}, {0, 6}).ops.empty() &&
+              ui::moveTracks(view.current()->tracks, {3}, {6, 0}).ops.empty(),
+          "dropped where they stand, nothing moves and no step is made");
+    check(ui::moveTracks(view.current()->tracks, {6}, {6, 0}).refusal == "A group can't go inside itself." &&
+              ui::moveTracks(view.current()->tracks, {1}, {0, 2}).refusal == "Main and the return tracks stay at the foot." &&
+              ui::moveTracks(view.current()->tracks, {2}, {4, 0}).refusal == "Tracks go into a group track only." &&
+              ui::moveTracks(view.current()->tracks, {}, {0, 0}).refusal == "Select a track to move.",
+          "a group into itself, Main, a track that is not a group and nothing are refused, with the reason");
+
     // A group holding a soloed track (manual 18.3: its Solo shows half coloured).
     OpRequest solo;
     solo.opType = "track.setSolo";

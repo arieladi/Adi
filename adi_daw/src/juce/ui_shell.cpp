@@ -1193,6 +1193,19 @@ bool AdiRootComponent::activateTrack(std::int64_t id, bool withSelection) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::moveTracks(std::int64_t dragged, TrackDrop to) {
+    // From the CURRENT cell (ADR-0201); the batch is one undo step, and the selection stays.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Moving tracks needs an open project.");
+    auto ids = arrangement.geometry.selectedTracks(reader());
+    if (std::find(ids.begin(), ids.end(), dragged) == ids.end())
+        ids = {dragged};
+    auto edit = ::adi::ui::moveTracks(current->tracks, ids, to);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
 bool AdiRootComponent::showDeviceView() { return state_.docked || command(AppCommands::ToggleDeviceView); }
 bool AdiRootComponent::fullScreen() const {
     const auto *window = dynamic_cast<const juce::ResizableWindow *>(getTopLevelComponent());
