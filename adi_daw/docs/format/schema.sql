@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.0 (DRAFT — see SPEC.md, nothing is frozen)
+--  Normative schema, version 1.19 (prior minors frozen under history/)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -15,7 +15,7 @@
 --       sizeof(struct).
 --    *  Booleans are INTEGER 0/1.
 --    *  Timestamps are INTEGER microseconds since the Unix epoch, UTC.
---    *  Colours are INTEGER 0xAARRGGBB.
+--    *  Colours are Live palette indexes 0..69, NULL for none (ADR-0211).
 --    *  EVERY table is STRICT. Without it, SQLite's flexible typing lets a
 --       TEXT value sit in a REAL column, and sqlite3_column_double() then
 --       coerces it silently -- so a reader returns a number that is not what
@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1009;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1019;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '9'),
+    ('schema_minor',        '19'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -183,6 +183,14 @@ CREATE TABLE markers (
         OR (time_base = 1 AND pos_ns    IS NOT NULL AND pos_ticks IS NULL))
 ) STRICT;
 
+-- Since 1.10 (N25): marker notes and literal prompts, additive to the frozen
+-- marker row. Deleting a marker removes its details in the same transaction.
+CREATE TABLE marker_details (
+    marker_id INTEGER PRIMARY KEY REFERENCES markers(id) ON DELETE CASCADE,
+    note TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL DEFAULT ''
+) STRICT;
+
 -- Cubase Arranger Track / Ableton locators: named sections that can be
 -- reordered into a play list without moving any clips.
 CREATE TABLE arranger_sections (
@@ -244,6 +252,28 @@ CREATE TABLE tracks (
 ) STRICT;
 CREATE INDEX idx_tracks_parent ON tracks(parent_id, index_in_parent);
 
+-- Since 1.14: per-track recording choices (ADR-0132 d8/d10, ADR-0133).
+-- Missing rows mean fixed defaults, not a read of application preferences.
+-- A new-track producer captures explicit inherited app preferences in its ops.
+CREATE TABLE track_recording_options (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    record_enabled INTEGER NOT NULL DEFAULT 1 CHECK (record_enabled IN (0,1)),
+    record_grid TEXT NOT NULL DEFAULT '1/16' CHECK (record_grid IN ('1/4','1/8','1/16','1/32')),
+    play_enabled INTEGER NOT NULL DEFAULT 0 CHECK (play_enabled IN (0,1)),
+    play_grid TEXT NOT NULL DEFAULT '1/16' CHECK (play_grid IN ('1/4','1/8','1/16','1/32')),
+    play_forgiveness_ms REAL NOT NULL DEFAULT 0.0 CHECK (play_forgiveness_ms BETWEEN 0.0 AND 1000.0),
+    keep_monitoring_latency INTEGER NOT NULL DEFAULT 1 CHECK (keep_monitoring_latency IN (0,1))
+) STRICT;
+
+-- Since 1.15: ADR-0203 d3, one persistent send tap per RETURN. An absent
+-- row leaves legacy edge taps intact; the native return command normalizes
+-- all incoming sends as one undoable choice, including a return with none.
+CREATE TABLE return_send_taps (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    pre_fader INTEGER NOT NULL DEFAULT 0 CHECK (pre_fader IN (0,1))
+) STRICT;
+
+
 -- Take lanes / comping (SPEC §6.2). A comp is clips across lanes with an
 -- active-region selection — the model both Ableton 11+ and Cubase use.
 CREATE TABLE lanes (
@@ -268,6 +298,16 @@ CREATE TABLE mixer_strip (
     -- Per-channel delay compensation offset, in samples, positive or negative.
     delay_samples INTEGER NOT NULL DEFAULT 0,
     vca_group_id INTEGER REFERENCES tracks(id) ON DELETE SET NULL
+) STRICT;
+
+-- Since 1.11: Split Stereo Pan (ADR-0203 d9). Optional settings leave
+-- frozen mixer_strip columns unchanged (ADR-0144). Missing row is stereo,
+-- with dormant split positions hard left/right, so mode changes preserve them.
+CREATE TABLE mixer_pan_settings (
+    track_id INTEGER PRIMARY KEY REFERENCES mixer_strip(track_id) ON DELETE CASCADE,
+    mode TEXT NOT NULL DEFAULT 'stereo',
+    pan_left REAL NOT NULL DEFAULT -1.0 CHECK (pan_left BETWEEN -1.0 AND 1.0),
+    pan_right REAL NOT NULL DEFAULT 1.0 CHECK (pan_right BETWEEN -1.0 AND 1.0)
 ) STRICT;
 
 -- Since 1.7 (ADR-0173, ADR-0174): native analog summing on a GROUP track. Each
@@ -379,8 +419,61 @@ CREATE TABLE clips (
 CREATE INDEX idx_clips_track ON clips(track_id, pos_ticks);
 CREATE INDEX idx_clips_lane  ON clips(lane_id);
 
+-- Since 1.16 (N33): local Main Clip Properties. NULL inherits the project
+-- signature/scale or the visible source end; start uses content_offset_ticks.
+CREATE TABLE clip_properties (
+    clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    end_marker_ticks INTEGER CHECK (end_marker_ticks >= 0),
+    signature_numerator INTEGER CHECK (signature_numerator BETWEEN 1 AND 255),
+    signature_denominator INTEGER CHECK (signature_denominator IN (1,2,4,8,16,32,64,128)),
+    scale_root INTEGER CHECK (scale_root BETWEEN 0 AND 11),
+    scale_id TEXT CHECK (length(scale_id) > 0),
+    scale_mask INTEGER CHECK (scale_mask BETWEEN 1 AND 4095 AND (scale_mask & 1) = 1),
+    CHECK ((signature_numerator IS NULL) = (signature_denominator IS NULL)),
+    CHECK ((scale_root IS NULL) = (scale_id IS NULL) AND (scale_id IS NULL) = (scale_mask IS NULL))
+) STRICT;
+
 -- MIDI content. One blob per clip per stream kind — the granularity rule in
 -- SPEC §6.3. Editing one note rewrites this clip's note blob and nothing else.
+-- Since 1.12 (N17): optional continuous fade curvature. NULL preserves the
+-- original curve reader; an explicit tension, including zero, uses SPEC's
+-- shared curve evaluator. Each side opts in independently.
+CREATE TABLE clip_playback_details (
+    clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    in_tension REAL CHECK (in_tension BETWEEN -1.0 AND 1.0),
+    out_tension REAL CHECK (out_tension BETWEEN -1.0 AND 1.0),
+    -- Unwarped source clocks, independent of a moved placement's tempo.
+    -- NULL uses the legacy musical offset/window; edits can pin nanoseconds.
+    content_offset_ns INTEGER CHECK (content_offset_ns >= 0),
+    loop_begin_ns INTEGER CHECK (loop_begin_ns >= 0),
+    loop_end_ns INTEGER CHECK (loop_end_ns > 0),
+    source_end_ns INTEGER CHECK (source_end_ns >= 0),
+    in_begin_ns INTEGER CHECK (in_begin_ns >= 0),
+    in_end_ns INTEGER CHECK (in_end_ns >= 0),
+    out_begin_ns INTEGER CHECK (out_begin_ns >= 0),
+    out_end_ns INTEGER CHECK (out_end_ns >= 0),
+    CHECK ((in_begin_ns IS NULL AND in_end_ns IS NULL) OR
+           (in_begin_ns IS NOT NULL AND in_end_ns IS NOT NULL AND in_end_ns > in_begin_ns)),
+    CHECK ((out_begin_ns IS NULL AND out_end_ns IS NULL) OR
+           (out_begin_ns IS NOT NULL AND out_end_ns IS NOT NULL AND out_end_ns > out_begin_ns)),
+    CHECK ((loop_begin_ns IS NULL) = (loop_end_ns IS NULL)),
+    CHECK (loop_end_ns > loop_begin_ns)
+) STRICT;
+
+-- Since 1.13 (N17): retained Warp fades use the unrolled source's musical
+-- clock. They remain musical when a tempo edit rebuilds prepared PCM.
+CREATE TABLE clip_warp_fade_domains (
+    clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    in_begin_ticks INTEGER CHECK (in_begin_ticks >= 0),
+    in_end_ticks INTEGER CHECK (in_end_ticks >= 0),
+    out_begin_ticks INTEGER CHECK (out_begin_ticks >= 0),
+    out_end_ticks INTEGER CHECK (out_end_ticks >= 0),
+    CHECK ((in_begin_ticks IS NULL AND in_end_ticks IS NULL) OR
+           (in_begin_ticks IS NOT NULL AND in_end_ticks IS NOT NULL AND in_end_ticks > in_begin_ticks)),
+    CHECK ((out_begin_ticks IS NULL AND out_end_ticks IS NULL) OR
+           (out_begin_ticks IS NOT NULL AND out_end_ticks IS NOT NULL AND out_end_ticks > out_begin_ticks))
+) STRICT;
+
 CREATE TABLE event_streams (
     id          INTEGER PRIMARY KEY,
     clip_id     INTEGER NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
@@ -466,6 +559,22 @@ CREATE TABLE automation_data (
     data        BLOB    NOT NULL        -- AAUT stream
 ) STRICT;
 CREATE UNIQUE INDEX idx_autodata ON automation_data(lane_id, IFNULL(clip_id, -1));
+
+-- Since 1.12: a segment trimmed by Insert Silence keeps its original curve,
+-- source values and progress interval. Record ordinals identify original
+-- storage records even when point_id is zero or unassigned.
+CREATE TABLE automation_segment_ranges (
+    id INTEGER PRIMARY KEY,
+    data_id INTEGER NOT NULL REFERENCES automation_data(id) ON DELETE CASCADE,
+    clip_id INTEGER REFERENCES clips(id) ON DELETE CASCADE,
+    record_index INTEGER NOT NULL CHECK (record_index >= 0),
+    progress_begin REAL NOT NULL CHECK (progress_begin >= 0.0 AND progress_begin < 1.0),
+    progress_end REAL NOT NULL CHECK (progress_end > 0.0 AND progress_end <= 1.0),
+    source_first REAL NOT NULL,
+    source_last REAL NOT NULL,
+    CHECK (progress_end > progress_begin),
+    UNIQUE(data_id, record_index)
+) STRICT;
 
 -- ============================================================================
 --  LAYER 2 — PLUGIN STATE
@@ -999,3 +1108,30 @@ CREATE UNIQUE INDEX idx_ext ON extensions(ns, key, scope_kind, IFNULL(scope_id,-
 -- ============================================================================
 --  END
 -- ============================================================================
+
+-- Immutable whole-track cache provenance. Original material and state stay pooled.
+CREATE TABLE frozen_renders (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    pre_media_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE RESTRICT,
+    post_media_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE RESTRICT,
+    frames INTEGER NOT NULL CHECK(frames>0),
+    sample_rate INTEGER NOT NULL CHECK(sample_rate BETWEEN 8000 AND 768000),
+    channels INTEGER NOT NULL CHECK(channels BETWEEN 1 AND 64),
+    fingerprint TEXT NOT NULL,
+    identities BLOB NOT NULL,
+    original_armed INTEGER NOT NULL CHECK(original_armed IN (0,1))
+) STRICT;
+
+-- One cached whole-group bus parks its descendant sources and audio routes.
+CREATE TABLE frozen_groups (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    members BLOB NOT NULL
+) STRICT;
+
+-- ADR-0203 d13: replayable state at the retained undo root. Journal and
+-- checkpoint change atomically; base_seq itself remains in ops as the root.
+CREATE TABLE history_checkpoint (
+    id INTEGER PRIMARY KEY CHECK (id=1),
+    base_seq INTEGER NOT NULL REFERENCES ops(seq),
+    state BLOB NOT NULL
+) STRICT;

@@ -60,31 +60,26 @@ Setting device(std::string key, Type type, std::string page, std::string label, 
 }
 
 // Live's sections within its tabs (Live 12 manual 2.3; the Audio sections as Live 11 shows them,
-// collab/window/parity-settings.md row 4). A setting Live has sits in Live's section; the three
-// placements marked "win's" are ADI's settings on a Live tab, put where Live keeps the nearest
-// thing, for the director to strike. A key not listed has no section: the tab's own group.
+// collab/window/parity-settings.md row 4). A setting Live has sits in Live's section; ADI's own
+// settings on a Live tab have none and follow Live's sections there, in the tab's own group
+// (Zoom on Selection, the tooltips and the knob, slider and value-box modes: Live 12 manual 2.3.1
+// lists none of them in its sections). A key not listed has no section.
 void liveSections(std::vector<Setting>& r) {
     static const std::vector<std::pair<const char*, const char*>> table = {
         // Display & Input
         {"lookfeel.language", "Display"},
         {"window.zoom", "Display"},
-        {"lookfeel.zoomOnSelection", "Display"},  // win's: beside Live's Zoom Display
         {"lookfeel.focusOutline", "Display Options"},
         {"lookfeel.scrollBars", "Display Options"},
         {"lookfeel.followMode", "Display Options"},
         {"lookfeel.followPlayhead", "Display Options"},
         {"lookfeel.showLabels", "Display Options"},
-        {"lookfeel.showTooltips", "Display Options"},  // win's: Live's tooltips switch is here
-        {"lookfeel.tooltipDelayMs", "Display Options"},
         {"lookfeel.showInfoView", "Display Options"},
         {"lookfeel.tabMovesFocus", "Navigation and Keyboard"},
         {"lookfeel.wrapTabNavigation", "Navigation and Keyboard"},
         {"editing.arrowKeysMoveClips", "Navigation and Keyboard"},
         {"lookfeel.penTabletMode", "Mouse and Pen Input"},
         {"lookfeel.permanentScrubAreas", "Mouse and Pen Input"},
-        {"lookfeel.knobMode", "Mouse and Pen Input"},  // win's: the knob, slider and value-box modes
-        {"lookfeel.sliderMode", "Mouse and Pen Input"},
-        {"lookfeel.valueBoxMode", "Mouse and Pen Input"},
         {"lookfeel.wheelChangesParameters", "Mouse and Pen Input"},
         // Theme & Colors
         {"lookfeel.theme", "Theme"},

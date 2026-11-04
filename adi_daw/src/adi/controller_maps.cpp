@@ -93,28 +93,38 @@ ControllerMode detectControllerMode(std::span<const int> values) noexcept {
     }
     return (twos && movedTwos) || (offset && movedOffset) ? ControllerMode::Relative : ControllerMode::Absolute;
 }
-std::optional<OpRequest> learnController(const Store& store,std::int64_t id,std::int64_t lane,
-    const ControllerCc& source,std::span<const int> values,const ControllerPolicy& policy,std::string& error) {
+std::optional<OpRequest> learnControllerTarget(std::int64_t id,const std::string& kind,
+    std::int64_t targetId,const std::string& param,const ControllerCc& source,
+    std::span<const int> values,const ControllerPolicy& policy,std::string& error) {
     error.clear();
-    if(!policy.remoteEnabled) { error="MIDI port is not enabled for Remote"; return std::nullopt; }
-    if(policy.focusDial && *policy.focusDial==source) { error="Focus Dial is reserved"; return std::nullopt; }
+    if(!policy.remoteEnabled){error="MIDI port is not enabled for Remote";return std::nullopt;}
+    if(policy.focusDial && *policy.focusDial==source){error="Focus Dial is reserved";return std::nullopt;}
     if(id<=0 || !validSource(source) || values.empty() ||
-        std::any_of(values.begin(),values.end(),[](int v){return v<0 || v>127;})) {
-        error="invalid Learn CC or binding id"; return std::nullopt;
+        std::any_of(values.begin(),values.end(),[](int value){return value<0 || value>127;})) {
+        error="invalid Learn CC or binding id";return std::nullopt;
     }
-    SQLite::Statement target(store.db(),"SELECT owner_kind,owner_id,param_ref FROM automation_lanes WHERE id=?");
-    target.bind(1,lane);
-    if(!target.executeStep()) { error="no automation lane to learn"; return std::nullopt; }
+    if((kind!="track" && kind!="device" && kind!="clip" && kind!="routing" && kind!="project") || targetId<=0 || param.empty()) {
+        error="invalid controller target address";return std::nullopt;
+    }
+    if(policy.takeover!=ControllerTakeover::Jump && policy.takeover!=ControllerTakeover::Pickup && policy.takeover!=ControllerTakeover::Scale) {
+        error="invalid controller takeover policy";return std::nullopt;
+    }
     const auto mode=detectControllerMode(values);
     Payload binding={{"device_name",source.port},{"protocol","midi"},{"channel",source.channel},
         {"msg_type","cc"},{"msg_num",source.number},{"osc_path",nullptr},
-        {"target_kind",target.getColumn(0).getString()},{"target_id",target.getColumn(1).getInt64()},
-        {"target_param",target.getColumn(2).getString()},{"mode",static_cast<int>(mode)},
+        {"target_kind",kind},{"target_id",targetId},{"target_param",param},
+        {"mode",static_cast<int>(mode)},
         {"takeover",static_cast<int>(mode==ControllerMode::Absolute?policy.takeover:ControllerTakeover::Jump)},
         {"range_min",0.0},{"range_max",1.0},{"enabled",true}};
-    OpRequest op; op.opType="controller.bind"; op.label="MIDI Learn";
-    op.payload={{"id",id},{"binding",std::move(binding)}};
-    return op;
+    OpRequest op;op.opType="controller.bind";op.label="MIDI Learn";
+    op.payload={{"id",id},{"binding",std::move(binding)}};return op;
+}
+std::optional<OpRequest> learnController(const Store& store,std::int64_t id,std::int64_t lane,
+    const ControllerCc& source,std::span<const int> values,const ControllerPolicy& policy,std::string& error) {
+    error.clear();
+    SQLite::Statement target(store.db(),"SELECT owner_kind,owner_id,param_ref FROM automation_lanes WHERE id=?");target.bind(1,lane);
+    if(!target.executeStep()){error="no automation lane to learn";return std::nullopt;}
+    return learnControllerTarget(id,target.getColumn(0).getString(),target.getColumn(1).getInt64(),target.getColumn(2).getString(),source,values,policy,error);
 }
 std::vector<ControllerBinding> readControllerBindings(const Store& store) {
     SQLite::Statement st(store.db(),std::string("SELECT id,")+columns+" FROM controller_maps ORDER BY id");
