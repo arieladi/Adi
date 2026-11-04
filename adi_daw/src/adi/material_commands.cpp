@@ -52,7 +52,7 @@ void paths(OpRequest& request,Store& store,const fs::path& target) {
     else if(request.opType=="media.relink")request.payload["paths"]=std::move(captured);
 }
 void snapshot(Store& store,const fs::path& target) {
-    SQLite::Database output(target.string(),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);
+    SQLite::Database output(media::pathUtf8(target),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);
     auto* backup=sqlite3_backup_init(output.getHandle(),"main",store.db().getHandle(),"main");
     if(!backup)throw std::runtime_error("cannot start bounce snapshot");
     const int copied=sqlite3_backup_step(backup,-1),finished=sqlite3_backup_finish(backup);
@@ -117,7 +117,11 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
             markers=audio::writeWarpMap(warped->markers,static_cast<std::uint64_t>(info.frames)-warped->trimFrames);
             if(!*markers)throw std::runtime_error("cannot capture the detected warp map");
         }
-        if(options.copyIn && !mediaRequest.opType.empty()) {
+        const auto sourceHash=media::blake3File(source,options.stop);
+        const auto capturedHash=mediaRequest.opType=="media.import"?mediaRequest.payload.at("row").at("hash_blake3"):media::mediaRow(store.db(),imported.mediaId).at("hash_blake3");
+        if(!sourceHash || capturedHash!=sourceHash.hex)throw std::runtime_error("source changed during material capture");
+        files->staged=source;files->hash=sourceHash.hex;
+        if(options.copyIn) {
             const auto folder=media::projectFolder(store)/"audio";
             if(fs::is_symlink(fs::symlink_status(folder)))throw std::runtime_error("audio directory must not be a symlink");
             fs::create_directories(folder);
@@ -126,6 +130,10 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
             const auto hash=media::blake3File(source);
             if(!hash)throw std::runtime_error("cannot verify copied import");
             files->hash=hash.hex;files->target=folder/("import-"+std::to_string(imported.mediaId)+"-"+hash.hex.substr(0,16)+extension);
+            if(imported.existing) {
+                mediaRequest.opType="media.relink";
+                mediaRequest.payload={{"id",imported.mediaId},{"hash",files->hash},{"paths",Payload::object()}};
+            }
             paths(mediaRequest,store,files->target);
         }
         if(!mediaRequest.opType.empty())result.edit.requests.push_back(std::move(mediaRequest));
@@ -214,10 +222,17 @@ CommitResult commitMaterial(Store& store,MaterialEdit& material,Actor actor) {
         prepared.options.beforeCommit=[files,previous](SQLite::Database& db,std::int64_t transaction,std::string& error) {
             if(previous && !previous(db,transaction,error))return false;
             if(files->stop.stop_requested()){error="operation cancelled";return false;}
-            if(files->target.empty())return true;
-            const auto hash=media::blake3File(files->staged);
+            const auto hash=media::blake3File(files->staged,files->stop);
             if(!hash || hash.hex!=files->hash){error="staged media changed after capture";return false;}
-            const auto published=media::publishFile(files->staged,files->target);
+            if(files->target.empty())return true;
+            // publishFile moves its source. Retain the only captured render for
+            // recovery when a deferred SQL constraint rejects COMMIT afterward.
+            const auto publication=files->directory/"publication.tmp";
+            std::error_code cleanup;fs::remove(publication,cleanup);
+            fs::copy_file(files->staged,publication,fs::copy_options::none);
+            const auto copied=media::blake3File(publication,files->stop);
+            if(!copied || copied.hex!=files->hash){error="material changed while staging publication";return false;}
+            const auto published=media::publishFile(publication,files->target);
             if(published.status==media::PublishStatus::exists) {
                 // Undo retains owned media for redo. A new import with the
                 // same content/id may safely reference that existing regular

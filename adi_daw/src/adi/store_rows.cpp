@@ -235,12 +235,11 @@ Model readModel(const Store& store) {
           });
 
     query(m, db, "clips",
-          "SELECT id, track_id, lane_id, kind, name, color, time_base, pos_ticks, "
-          "       pos_ns, length_ticks, length_ns, loop_enabled, loop_start_ticks, "
-          "       loop_len_ticks, content_offset_ticks, muted, gain_db, "
-          "       fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
-          "       alias_of "
-          "FROM clips",
+          "SELECT c.id,c.track_id,c.lane_id,c.kind,c.name,c.color,c.time_base,c.pos_ticks,"
+          "c.pos_ns,c.length_ticks,c.length_ns,c.loop_enabled,c.loop_start_ticks,c.loop_len_ticks,"
+          "c.content_offset_ticks,c.muted,c.gain_db,c.fade_in_ticks,c.fade_out_ticks,c.fade_in_curve,"
+          "c.fade_out_curve,c.alias_of,p.end_marker_ticks,p.signature_numerator,p.signature_denominator,"
+          "p.scale_root,p.scale_id,p.scale_mask FROM clips c LEFT JOIN clip_properties p ON p.clip_id=c.id",
           [&](const SQLite::Statement& st) {
               Clip c;
               c.id = st.getColumn(0).getInt64();
@@ -265,6 +264,9 @@ Model readModel(const Store& store) {
               c.fadeInCurve = st.getColumn(19).getInt64();
               c.fadeOutCurve = st.getColumn(20).getInt64();
               c.aliasOf = optInt(st, 21);
+              c.endMarkerTicks = optInt(st, 22);
+              c.signatureNumerator = optInt(st, 23); c.signatureDenominator = optInt(st, 24);
+              c.scaleRoot = optInt(st, 25); c.scaleId = optText(st, 26); c.scaleMask = optInt(st, 27);
               m.clips.push_back(std::move(c));
           });
 

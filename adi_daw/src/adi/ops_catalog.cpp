@@ -23,17 +23,22 @@
 #include "adi/note_flags_ops.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/controller_maps.hpp"
+#include "adi/freeze_groups.hpp"
+#include "adi/freeze_state.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/note_transforms.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/cue_settings.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/marker_ops.hpp"
 #include "adi/track_recording.hpp"
-#include "adi/track_image.hpp"
 #include "adi/row_capture.hpp"
 #include "adi/return_send_tap.hpp"
+#include "adi/clip_property_ops.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/summing_flavors.hpp"
+#include "adi/track_image.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -1210,12 +1215,23 @@ constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
 constexpr Field kFMarkerCreate[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true},{"time_base",FieldType::Int,false},
     {"name",FieldType::Text,false},{"kind",FieldType::Text,false},{"length",FieldType::Int,false},{"color",FieldType::Int,false},
     {"note",FieldType::Text,false},{"prompt",FieldType::Text,false}};
+constexpr Field kFClipMarker[] = {{"id",FieldType::Int,true},{"ticks",FieldType::Int,true}};
+constexpr Field kFClipLoop[] = {{"id",FieldType::Int,true},{"on",FieldType::Bool,true},
+    {"start",FieldType::Int,false},{"length",FieldType::Int,false}};
+constexpr Field kFClipSignature[] = {{"id",FieldType::Int,true},{"num",FieldType::Int,false},{"den",FieldType::Int,false}};
+constexpr Field kFClipScale[] = {{"id",FieldType::Int,true},{"root",FieldType::Int,false},
+    {"scale",FieldType::Text,false},{"mask",FieldType::Int,false}};
 constexpr Field kFMarkerId[]={{"id",FieldType::Int,true}};
 constexpr Field kFMarkerMove[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true}};
 constexpr Field kFMarkerName[]={{"id",FieldType::Int,true},{"name",FieldType::Text,true}};
 constexpr Field kFMarkerColor[]={{"id",FieldType::Int,true},{"color",FieldType::Int,false}};
 constexpr Field kFMarkerText[]={{"id",FieldType::Int,true},{"text",FieldType::Text,true}};
 constexpr Field kFMarkerLength[]={{"id",FieldType::Int,true},{"length",FieldType::Int,true}};
+
+constexpr Field kFCueFirst[]={{"first",FieldType::Int,true}};
+constexpr Field kFCueDb[]={{"db",FieldType::Real,true}};
+constexpr Field kFCueTrack[]={{"id",FieldType::Int,true},{"on",FieldType::Bool,true}};
+constexpr Field kFCueReference[]={{"on",FieldType::Bool,true},{"id",FieldType::Int,false}};
 
 // --- track.setParent: the first op that is not a function of one row -------
 //
@@ -1978,34 +1994,38 @@ bool deviceSetPresetInverse(OpContext& c, const Payload& p, Payload& inv, std::s
 }
 
 // ADR-0143: path-taking media APIs capture these replayable payloads.
+constexpr Field kFFreeze[] = {
+    {"id", FieldType::Int}, {"before", FieldType::Object}, {"after", FieldType::Object}};
 constexpr Field kFMediaRow[] = {{"id", FieldType::Int}, {"row", FieldType::Object}};
 constexpr Field kFMediaRelink[] = {{"id", FieldType::Int}, {"hash", FieldType::Text}, {"paths", FieldType::Object}};
 constexpr Field kFControllerBind[] = {{"id", FieldType::Int}, {"binding", FieldType::Object, false}};
 const OpDescriptor kHandWritten[] = {
     {"controller.bind", "Learn or replace a project controller binding", Scope::Edit, EngineImpact::None,
      kFControllerBind, false, false, controllerBindApply, controllerBindInverse, ""},
-    {"controller.unbind", "Remove a project controller binding", Scope::Edit, EngineImpact::None,
-     kFId, false, false, controllerUnbindApply, controllerUnbindInverse, "controller.bind"},
-    {"media.import", "Import captured media metadata", Scope::Edit, EngineImpact::None,
-     kFMediaRow, false, false, media::importApply, media::importInverse, "media.unlink"},
+    {"controller.unbind", "Remove a project controller binding", Scope::Edit, EngineImpact::None, kFId, false,
+     false, controllerUnbindApply, controllerUnbindInverse, "controller.bind"},
+    {"media.import", "Import captured media metadata", Scope::Edit, EngineImpact::None, kFMediaRow, false,
+     false, media::importApply, media::importInverse, "media.unlink"},
     {"media.unlink", "Unlink unreferenced media without deleting files", Scope::Edit, EngineImpact::None,
      kFId, false, false, media::unlinkApply, media::unlinkInverse, "media.import"},
-    {"media.relink", "Relink the same media content", Scope::Edit, EngineImpact::Snapshot,
-     kFMediaRelink, false, false, media::relinkApply, media::relinkInverse, ""},
-    {"project.setName", "Rename the project", Scope::Edit, EngineImpact::None,
-     kFProjectName, false, false, setProjectNameApply, setProjectNameInverse, ""},
+    {"media.relink", "Relink the same media content", Scope::Edit, EngineImpact::Snapshot, kFMediaRelink,
+     false, false, media::relinkApply, media::relinkInverse, ""},
+    {"project.setName", "Rename the project", Scope::Edit, EngineImpact::None, kFProjectName, false, false,
+     setProjectNameApply, setProjectNameInverse, ""},
 
     // ADR-0174: native analog summing on a group. Turning it on or choosing a
     // flavour adds or replaces nodes; the drive is a gain on nodes that exist.
-    {"group.setSumming", "Turn a group's analog summing on or off", Scope::Edit,
-     EngineImpact::GraphRebuild, kFSummingEnabled, false, false, summingEnabledApply,
-     summingEnabledInverse, ""},
-    {"group.setSummingFlavor", "Choose a group's summing console", Scope::Edit,
-     EngineImpact::GraphRebuild, kFSummingFlavor, false, false, summingFlavorApply,
-     summingFlavorInverse, ""},
-    {"group.setSummingDrive", "Set how hard a group's summing is driven", Scope::Edit,
-     EngineImpact::Snapshot, kFSummingDrive, true, false, summingDriveApply, summingDriveInverse, ""},
+    {"group.setSumming", "Turn a group's analog summing on or off", Scope::Edit, EngineImpact::GraphRebuild,
+     kFSummingEnabled, false, false, summingEnabledApply, summingEnabledInverse, ""},
+    {"group.setSummingFlavor", "Choose a group's summing console", Scope::Edit, EngineImpact::GraphRebuild,
+     kFSummingFlavor, false, false, summingFlavorApply, summingFlavorInverse, ""},
+    {"group.setSummingDrive", "Set how hard a group's summing is driven", Scope::Edit, EngineImpact::Snapshot,
+     kFSummingDrive, true, false, summingDriveApply, summingDriveInverse, ""},
 
+    {"group.setFreezeScope", "Set captured whole-group freeze scope", Scope::Edit, EngineImpact::GraphRebuild,
+     kFFreeze, false, false, freeze::groupApply, freeze::groupInverse, ""},
+    {"track.setFreeze", "Set captured track freeze state", Scope::Edit, EngineImpact::GraphRebuild, kFFreeze,
+     false, false, freeze::apply, freeze::inverse, ""},
     {"track.create", "Create a track", Scope::Edit, EngineImpact::GraphRebuild,
      kFTrackCreate, false, false, trackCreateApply, trackCreateInverse, "track.delete"},
     {"track.setRole", "Set an anchor role", Scope::Edit, EngineImpact::GraphRebuild,
@@ -2016,103 +2036,83 @@ const OpDescriptor kHandWritten[] = {
      EngineImpact::GraphRebuild, kFSetParent, false, false,
      trackSetParentApply, trackSetParentInverse, ""},
 
-    {"clip.create", "Create a clip", Scope::Edit, EngineImpact::Snapshot,
-     kFClipCreate, false, false, clipCreateApply, clipCreateInverse, "clip.delete"},
-    {"clip.delete", "Delete a clip", Scope::Edit, EngineImpact::Snapshot,
-     kFId, false, false, clipDeleteApply, clipDeleteInverse, "clip.create"},
-    {"clip.attachAudio", "Attach audio to a clip", Scope::Edit, EngineImpact::GraphRebuild,
-     kFAudioAttach, false, false, audioAttachApply, clipCreateInverse, "clip.detachAudio"},
-    {"clip.detachAudio", "Detach unedited audio", Scope::Edit, EngineImpact::GraphRebuild,
-     kFId, false, false, audioDetachApply, audioDetachInverse, "clip.attachAudio"},
-    {"clip.move", "Move a clip in time, and optionally to another track",
-     Scope::Edit, EngineImpact::Snapshot, kFClipMove, false, false,
-     clipMoveApply, clipMoveInverse, ""},
-    {"clip.resize", "Change a clip's start and length", Scope::Edit,
-     EngineImpact::Snapshot, kFClipResize, false, false,
-     clipResizeApply, clipResizeInverse, ""},
+    {"clip.create", "Create a clip", Scope::Edit, EngineImpact::Snapshot, kFClipCreate, false, false,
+     clipCreateApply, clipCreateInverse, "clip.delete"},
+    {"clip.delete", "Delete a clip", Scope::Edit, EngineImpact::Snapshot, kFId, false, false, clipDeleteApply,
+     clipDeleteInverse, "clip.create"},
+    {"clip.attachAudio", "Attach audio to a clip", Scope::Edit, EngineImpact::GraphRebuild, kFAudioAttach,
+     false, false, audioAttachApply, clipCreateInverse, "clip.detachAudio"},
+    {"clip.detachAudio", "Detach unedited audio", Scope::Edit, EngineImpact::GraphRebuild, kFId, false, false,
+     audioDetachApply, audioDetachInverse, "clip.attachAudio"},
+    {"clip.move", "Move a clip in time, and optionally to another track", Scope::Edit, EngineImpact::Snapshot,
+     kFClipMove, false, false, clipMoveApply, clipMoveInverse, ""},
+    {"clip.resize", "Change a clip's start and length", Scope::Edit, EngineImpact::Snapshot, kFClipResize,
+     false, false, clipResizeApply, clipResizeInverse, ""},
 
-    {"note.insert", "Add a note to a clip", Scope::Edit, EngineImpact::Snapshot,
-     kFNoteFull, false, false, noteInsertApply, noteInsertInverse, "note.delete"},
-    {"note.delete", "Remove a note from a clip", Scope::Edit, EngineImpact::Snapshot,
-     kFNoteRef, false, false, noteDeleteApply, noteDeleteInverse, "note.insert"},
-    {"note.move", "Move a note in time or pitch", Scope::Edit, EngineImpact::Snapshot,
-     kFNoteMove, false, false, noteMoveApply, noteMoveInverse, ""},
-    {"note.resize", "Change a note's length", Scope::Edit, EngineImpact::Snapshot,
-     kFNoteResize, false, false, noteResizeApply, noteResizeInverse, ""},
-    {"note.setVelocity", "Set a note's velocity", Scope::Edit, EngineImpact::Snapshot,
-     kFNoteVel, true, false, noteSetVelocityApply, noteSetVelocityInverse, ""},
+    {"note.insert", "Add a note to a clip", Scope::Edit, EngineImpact::Snapshot, kFNoteFull, false, false,
+     noteInsertApply, noteInsertInverse, "note.delete"},
+    {"note.delete", "Remove a note from a clip", Scope::Edit, EngineImpact::Snapshot, kFNoteRef, false, false,
+     noteDeleteApply, noteDeleteInverse, "note.insert"},
+    {"note.move", "Move a note in time or pitch", Scope::Edit, EngineImpact::Snapshot, kFNoteMove, false,
+     false, noteMoveApply, noteMoveInverse, ""},
+    {"note.resize", "Change a note's length", Scope::Edit, EngineImpact::Snapshot, kFNoteResize, false, false,
+     noteResizeApply, noteResizeInverse, ""},
+    {"note.setVelocity", "Set a note's velocity", Scope::Edit, EngineImpact::Snapshot, kFNoteVel, true, false,
+     noteSetVelocityApply, noteSetVelocityInverse, ""},
     {"note.setMute", "Activate or deactivate a MIDI note", Scope::Edit, EngineImpact::Snapshot,
      kFNoteMute, false, false, note_flags::mute, note_flags::muteInverse, ""},
 
-    {"project.insertTempoEvent", "Add a tempo change", Scope::Edit,
-     EngineImpact::Snapshot, kFTempoIns, false, false,
-     tempoInsertApply, tempoInsertInverse, "project.removeTempoEvent"},
-    {"project.removeTempoEvent", "Remove a tempo change", Scope::Edit,
-     EngineImpact::Snapshot, kFPos, false, false,
-     tempoRemoveApply, tempoRemoveInverse, "project.insertTempoEvent"},
-    {"project.insertTimeSignature", "Add a time signature change", Scope::Edit,
-     EngineImpact::Snapshot, kFSigIns, false, false,
-     sigInsertApply, sigInsertInverse, "project.removeTimeSignature"},
-    {"project.removeTimeSignature", "Remove a time signature change", Scope::Edit,
-     EngineImpact::Snapshot, kFPos, false, false,
-     sigRemoveApply, sigRemoveInverse, "project.insertTimeSignature"},
+    {"project.insertTempoEvent", "Add a tempo change", Scope::Edit, EngineImpact::Snapshot, kFTempoIns, false,
+     false, tempoInsertApply, tempoInsertInverse, "project.removeTempoEvent"},
+    {"project.removeTempoEvent", "Remove a tempo change", Scope::Edit, EngineImpact::Snapshot, kFPos, false,
+     false, tempoRemoveApply, tempoRemoveInverse, "project.insertTempoEvent"},
+    {"project.insertTimeSignature", "Add a time signature change", Scope::Edit, EngineImpact::Snapshot,
+     kFSigIns, false, false, sigInsertApply, sigInsertInverse, "project.removeTimeSignature"},
+    {"project.removeTimeSignature", "Remove a time signature change", Scope::Edit, EngineImpact::Snapshot,
+     kFPos, false, false, sigRemoveApply, sigRemoveInverse, "project.insertTimeSignature"},
 
-    {"chain.create", "Create a device chain", Scope::Edit,
-     EngineImpact::GraphRebuild, kFChainCreate, false, false,
-     chainCreateApply, chainCreateInverse, "chain.delete"},
-    {"chain.delete", "Delete a device chain", Scope::Edit,
-     EngineImpact::GraphRebuild, kFId, false, false,
+    {"chain.create", "Create a device chain", Scope::Edit, EngineImpact::GraphRebuild, kFChainCreate, false,
+     false, chainCreateApply, chainCreateInverse, "chain.delete"},
+    {"chain.delete", "Delete a device chain", Scope::Edit, EngineImpact::GraphRebuild, kFId, false, false,
      chainDeleteApply, chainDeleteInverse, "chain.create"},
 
-    {"device.insert", "Add a device to a chain", Scope::Edit,
-     EngineImpact::GraphRebuild, kFDeviceInsert, false, false,
-     deviceInsertApply, deviceInsertInverse, "device.remove"},
-    {"device.remove", "Remove a device from a chain", Scope::Edit,
-     EngineImpact::GraphRebuild, kFId, false, false,
-     deviceRemoveApply, deviceRemoveInverse, "device.insert"},
-    {"device.move", "Move a device within or between chains", Scope::Edit,
-     EngineImpact::GraphRebuild, kFDeviceMove, false, false,
-     deviceMoveApply, deviceMoveInverse, ""},
+    {"device.insert", "Add a device to a chain", Scope::Edit, EngineImpact::GraphRebuild, kFDeviceInsert,
+     false, false, deviceInsertApply, deviceInsertInverse, "device.remove"},
+    {"device.remove", "Remove a device from a chain", Scope::Edit, EngineImpact::GraphRebuild, kFId, false,
+     false, deviceRemoveApply, deviceRemoveInverse, "device.insert"},
+    {"device.move", "Move a device within or between chains", Scope::Edit, EngineImpact::GraphRebuild,
+     kFDeviceMove, false, false, deviceMoveApply, deviceMoveInverse, ""},
     // Coalescable: one knob gesture is a stream of these and undo should step
     // over the gesture, not through it (OPS.md 9.7, SPEC 7.3).
-    {"device.setParam", "Set a device parameter", Scope::Edit,
-     EngineImpact::Snapshot, kFDeviceParam, true, false,
-     deviceSetParamApply, deviceSetParamInverse, ""},
-    {"device.loadState", "Load opaque device state", Scope::Edit,
-     EngineImpact::Snapshot, kFDeviceState, false, false,
-     deviceLoadStateApply, deviceLoadStateInverse, ""},
+    {"device.setParam", "Set a device parameter", Scope::Edit, EngineImpact::Snapshot, kFDeviceParam, true,
+     false, deviceSetParamApply, deviceSetParamInverse, ""},
+    {"device.loadState", "Load opaque device state", Scope::Edit, EngineImpact::Snapshot, kFDeviceState,
+     false, false, deviceLoadStateApply, deviceLoadStateInverse, ""},
     // ADR-0146, ADR-0149. Snapshot: the route is read by the device, not the
     // graph's shape.
     // ADR-0154. No engine impact: the panel is what the UI shows.
-    {"device.setPanel", "Choose the parameters a plug-in's panel shows",
-     Scope::Edit, EngineImpact::None, kFDevicePanel, false, false,
-     deviceSetPanelApply, deviceSetPanelInverse, ""},
-    {"device.setExpressionRoute", "Choose how per-note expression reaches a device",
-     Scope::Edit, EngineImpact::Snapshot, kFDeviceRoute, false, false,
-     deviceSetRouteApply, deviceSetRouteInverse, ""},
-    {"device.setPreset", "Set a device's preset name", Scope::Edit,
-     EngineImpact::Snapshot, kFDevicePreset, false, false,
-     deviceSetPresetApply, deviceSetPresetInverse, ""},
+    {"device.setPanel", "Choose the parameters a plug-in's panel shows", Scope::Edit, EngineImpact::None,
+     kFDevicePanel, false, false, deviceSetPanelApply, deviceSetPanelInverse, ""},
+    {"device.setExpressionRoute", "Choose how per-note expression reaches a device", Scope::Edit,
+     EngineImpact::Snapshot, kFDeviceRoute, false, false, deviceSetRouteApply, deviceSetRouteInverse, ""},
+    {"device.setPreset", "Set a device's preset name", Scope::Edit, EngineImpact::Snapshot, kFDevicePreset,
+     false, false, deviceSetPresetApply, deviceSetPresetInverse, ""},
 
-    {"routing.connect", "Connect two points in the signal path", Scope::Edit,
-     EngineImpact::GraphRebuild, kFRouting, false, false,
-     routingConnectApply, routingConnectInverse, "routing.disconnect"},
-    {"routing.disconnect", "Remove a connection", Scope::Edit,
-     EngineImpact::GraphRebuild, kFId, false, false,
+    {"routing.connect", "Connect two points in the signal path", Scope::Edit, EngineImpact::GraphRebuild,
+     kFRouting, false, false, routingConnectApply, routingConnectInverse, "routing.disconnect"},
+    {"routing.disconnect", "Remove a connection", Scope::Edit, EngineImpact::GraphRebuild, kFId, false, false,
      routingDisconnectApply, routingDisconnectInverse, "routing.connect"},
 
     // ADR-0131. No engine impact: a remark is read by people and the agent,
     // never by the audio graph.
-    {"remark.add", "Anchor a remark to a track, clip, device or parameter",
-     Scope::Edit, EngineImpact::None, kFRemarkAdd, false, false,
-     remarkAddApply, remarkAddInverse, "remark.remove"},
-    {"remark.remove", "Remove a remark", Scope::Edit, EngineImpact::None,
-     kFId, false, false, remarkRemoveApply, remarkRemoveInverse, "remark.add"},
-    {"remark.edit", "Change a remark's text", Scope::Edit, EngineImpact::None,
-     kFRemarkEdit, false, false, remarkEditApply, remarkEditInverse, ""},
-    {"remark.resolve", "Mark a remark resolved, or reopen it", Scope::Edit,
-     EngineImpact::None, kFRemarkResolve, false, false,
-     remarkResolveApply, remarkResolveInverse, ""},
+    {"remark.add", "Anchor a remark to a track, clip, device or parameter", Scope::Edit, EngineImpact::None,
+     kFRemarkAdd, false, false, remarkAddApply, remarkAddInverse, "remark.remove"},
+    {"remark.remove", "Remove a remark", Scope::Edit, EngineImpact::None, kFId, false, false,
+     remarkRemoveApply, remarkRemoveInverse, "remark.add"},
+    {"remark.edit", "Change a remark's text", Scope::Edit, EngineImpact::None, kFRemarkEdit, false, false,
+     remarkEditApply, remarkEditInverse, ""},
+    {"remark.resolve", "Mark a remark resolved, or reopen it", Scope::Edit, EngineImpact::None,
+     kFRemarkResolve, false, false, remarkResolveApply, remarkResolveInverse, ""},
 
     {"marker.create","Create a locator or cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerCreate,false,false,marker::create,marker::createInverse,"marker.delete"},
     {"marker.delete","Delete a marker and its text",Scope::Edit,EngineImpact::Snapshot,kFMarkerId,false,false,marker::erase,marker::eraseInverse,"marker.create"},
@@ -2122,6 +2122,25 @@ const OpDescriptor kHandWritten[] = {
     {"marker.resize","Resize a cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerLength,false,false,marker::resize,marker::rowInverse,""},
     {"marker.setNote","Set a marker's note",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::note,marker::detailsInverse,""},
     {"marker.setPrompt","Set a marker's literal prompt",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::prompt,marker::detailsInverse,""},
+
+    {"cue.setMode", "Use solo buttons as Cue", Scope::Transport, EngineImpact::GraphRebuild,
+     kFTransportFlag,false,true,cueModeApply,nullptr,""},
+    {"cue.setOutput", "Select the stereo Cue Out pair", Scope::Transport, EngineImpact::Snapshot,
+     kFCueFirst,false,true,cueOutputApply,nullptr,""},
+    {"cue.setVolume", "Set Cue Volume", Scope::Transport, EngineImpact::Snapshot,
+     kFCueDb,false,true,cueVolumeApply,nullptr,""},
+    {"cue.setTrack", "Cue a track without changing its solo", Scope::Transport, EngineImpact::GraphRebuild,
+     kFCueTrack,false,true,cueTrackApply,nullptr,""},
+    {"cue.setReference", "Select and audition the exclusive reference", Scope::Transport, EngineImpact::GraphRebuild,
+     kFCueReference,false,true,cueReferenceApply,nullptr,""},
+    {"mixer.setSoloInPlace", "Keep a soloed track's returns audible", Scope::Transport, EngineImpact::GraphRebuild,
+     kFTransportFlag,false,true,soloInPlaceApply,nullptr,""},
+
+    {"clip.setStartMarker","Set the clip source Start marker",Scope::Edit,EngineImpact::Snapshot,kFClipMarker,false,false,clip_properties::start,clip_properties::inverse,""},
+    {"clip.setEndMarker","Set the clip source End marker",Scope::Edit,EngineImpact::Snapshot,kFClipMarker,false,false,clip_properties::end,clip_properties::inverse,""},
+    {"clip.setLoop","Set the clip loop switch and window",Scope::Edit,EngineImpact::Snapshot,kFClipLoop,false,false,clip_properties::loop,clip_properties::inverse,""},
+    {"clip.setTimeSignature","Set or inherit the clip signature",Scope::Edit,EngineImpact::Snapshot,kFClipSignature,false,false,clip_properties::signature,clip_properties::inverse,""},
+    {"clip.setScale","Set or inherit the clip scale",Scope::Edit,EngineImpact::Snapshot,kFClipScale,false,false,clip_properties::scale,clip_properties::inverse,""},
 
     // Ephemeral: performance, not editing. No inverse, and undo skips them.
     {"transport.play", "Start playback", Scope::Transport, EngineImpact::None,

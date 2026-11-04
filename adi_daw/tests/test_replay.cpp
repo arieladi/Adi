@@ -118,6 +118,8 @@ std::vector<OpRequest> corpus() {
     op("track.create", {{"id", 10}, {"kind", "midi"}, {"name", "Keys"}}, "Add Keys");
     op("track.create", {{"id", 11}, {"kind", "audio"}, {"name", "Vox"}}, "Add Vox");
     op("track.create", {{"id", 12}, {"kind", "group"}, {"name", "Bus"}}, "Add Bus");
+    op("track.setFreeze", {{"id",11},{"before",{{"armed",0},{"frozen",0},{"media",nullptr},{"render",nullptr}}},
+        {"after",{{"armed",0},{"frozen",0},{"media",nullptr},{"render",nullptr}}}}, "Captured unfrozen state");
     // Ids are caller-allocated and deliberately NOT sequential, so a handler
     // that quietly used rowid order instead would diverge.
     op("track.create", {{"id", 7}, {"kind", "midi"}, {"name", "Drums"},

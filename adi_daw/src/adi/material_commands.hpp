@@ -31,6 +31,7 @@ struct BounceOptions {
 /// Session is never processed. The output becomes media+clip in one undo step.
 [[nodiscard]] MaterialEdit prepareBounce(Store&,const BounceOptions&,engine::DeviceLoader={},render::Control={});
 /// Publication is no-clobber, immediately before SQL commit. Failure removes
-/// only files this attempt created. Successful undo retains imported media.
+/// only files this attempt created; private originals survive for same-job
+/// retry after late SQL failure. Successful undo retains imported media.
 [[nodiscard]] CommitResult commitMaterial(Store&,MaterialEdit&,Actor=Actor::User);
 }

@@ -49,6 +49,7 @@
 #include "adi/engine/clip_playback.hpp"
 #include "adi/engine/midi_clips.hpp"
 #include "adi/engine/mixer.hpp"
+#include "adi/engine/cue_monitor.hpp"
 #include "adi/engine/scope.hpp"
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
@@ -57,13 +58,14 @@
 #include "adi/store_rows.hpp"
 #include "juce/device_host.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
-#include <map>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -114,6 +116,15 @@ struct OfflineOutput {
     NodeId node = kInvalidNode;
     std::int64_t latency = 0;
 };
+struct OfflineDeviceInfo {
+    std::int64_t id = 0;
+    device::DeviceIdentity identity;
+};
+struct OfflineSourceInfo {
+    std::int64_t track = 0;
+    std::vector<OfflineDeviceInfo> devices;  // actual loaded chain order / versions
+    std::vector<std::int64_t> prefixDevices; // through the last MIDI consumer
+};
 
 class Session final : public BlockProcessor {
 public:
@@ -123,6 +134,7 @@ public:
         std::int64_t trackId = 0;      ///< the chain's track; 0 once retired
         std::string name;
         bool placeholder = false;      ///< a `MissingDevice` stands in (ADR-0011)
+        bool parked = false;           ///< freeze retirement: restore a fresh instance on unfreeze
         bool retired = false;          ///< the row is gone; the instance is kept
         std::string error;             ///< why the loader refused, when it did
         std::size_t hostIndex = 0;     ///< into `devices()`
@@ -233,6 +245,10 @@ public:
     /// graph mutation. The result is invalidated by a rebuild or latency change.
     /// Empty for missing/non-audio tracks, unsupported taps or no prepared graph.
     [[nodiscard]] std::optional<OfflineOutput> offlineOutput(std::int64_t trackId, OfflineTap);
+    /// Owner-only cache capture. PreFx is after the instrument, before audio FX.
+    /// Returned identities come from the loaded devices AFTER state restoration.
+    [[nodiscard]] std::optional<OfflineOutput> offlineTapOutput(std::int64_t trackId, Tap);
+    [[nodiscard]] std::optional<OfflineSourceInfo> offlineSourceInfo(std::int64_t trackId);
 
     /// Everything the model read, the plan found and the session decided,
     /// in that order. A project with problems still plays where it can.
@@ -305,6 +321,8 @@ public:
 
 private:
     void attach();
+    bool readPlayback(const Store &);
+    bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row);
     void retireDepartedRows();
@@ -335,6 +353,8 @@ private:
     };
     SnapshotPublisher<TimingView> timing_;
     MainLoudness mainLoudness_;
+    CueSettings cueSettings_;
+    CueMonitor cueMonitor_;
     TransportSettings transportSettings_; // message thread, copied into TimingView
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;
@@ -370,6 +390,16 @@ private:
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
+    rows::Model playbackModel_;
+    std::set<std::int64_t> frozenGroupChildren_;
+    struct FrozenMediaFile {
+        std::string row;
+        std::filesystem::path file;
+        std::uintmax_t size = 0;
+        std::filesystem::file_time_type modified{};
+    };
+    std::map<std::int64_t, FrozenMediaFile> verifiedFrozenMedia_;
+    std::map<std::int64_t, std::pair<std::int64_t, std::int64_t>> frozenSources_; // dry, wet synthetic tracks
     DeviceLoader loader_;
     SourceFn sources_;
     SessionSpec spec_;
@@ -379,6 +409,7 @@ private:
     std::vector<std::string> problems_;
     std::vector<std::string> sessionProblems_;   ///< ours, re-appended after each read
     std::string error_;
+    std::atomic<bool> playbackRunning_{false}; // driver sample; owner never reads Transport
     bool loaded_ = false;
     bool live_ = false;      ///< a graph is prepared and published for a device
 };

@@ -77,7 +77,32 @@ void refusalAndRollback() {
               db.execAndGet("SELECT count(*) FROM clips").getInt()==0,"late SQL commit failure rolls back every project row");
         bool empty=true;for(const auto& entry:std::filesystem::directory_iterator(p.temporary.path()/"audio")){(void)entry;empty=false;}
         check(empty,"late SQL failure removes only the newly published media");
+        db.exec("DROP TRIGGER fail_import;DROP TABLE future_deferred");
+        const auto retry=clip_edit::commitMaterial(*p.store,prepared);
+        check(retry.ok && db.execAndGet("SELECT count(*) FROM clips").getInt()==1,
+              "same prepared material survives publication and late SQL rollback for retry");
     }
+}
+void externalCopyOwnership() {
+    Project p;auto options=p.options();options.copyIn=false;
+    auto external=clip_edit::prepareImportAudio(*p.store,options,48000);
+    check(clip_edit::commitMaterial(*p.store,external).ok,"first import references external source explicitly");
+    options.copyIn=true;options.clipId=10;options.mediaId=11;
+    auto owned=clip_edit::prepareImportAudio(*p.store,options,48000);
+    const auto copied=clip_edit::commitMaterial(*p.store,owned);
+    const auto row=media::mediaRow(p.store->db(),8);std::string error;
+    const auto playable=media::resolveMedia(media::projectFolder(*p.store),row,error);
+    check(copied.ok && playable.parent_path().filename()=="audio" &&
+          p.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==1,
+          "copy-in rehomes an existing valid external media identity into owned audio");
+    check(History(*p.store).undo().ok && p.store->db().execAndGet("SELECT rel_path FROM media_files WHERE id=8").getString()=="source.wav" && std::filesystem::exists(options.source),
+          "undo of rehoming restores the still-existing external source path");
+    Project changed;auto notCopied=changed.options();notCopied.copyIn=false;
+    auto captured=clip_edit::prepareImportAudio(*changed.store,notCopied,48000);
+    {std::ofstream writer(notCopied.source,std::ios::binary|std::ios::trunc);writer<<"changed after prepare";}
+    const auto refused=clip_edit::commitMaterial(*changed.store,captured);
+    check(!refused.ok && changed.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0 && std::filesystem::exists(notCopied.source),
+          "external material changes refuse native commit without deleting that source");
 }
 void bounce() {
     Project p;auto& db=p.store->db();auto imported=clip_edit::prepareImportAudio(*p.store,p.options(),48000);
@@ -131,4 +156,4 @@ void bounceInPlaceAndStale() {
 }
 
 }
-int main(){try{imports();refusalAndRollback();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{imports();refusalAndRollback();externalCopyOwnership();bounce();bounceInPlaceAndStale();}catch(const std::exception& e){check(false,e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

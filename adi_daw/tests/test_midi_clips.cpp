@@ -208,6 +208,30 @@ void activeFlag() {
           "deactivating a held note releases it on the next callback without a stuck voice");
 }
 
+void sourceMarkers() {
+    constexpr std::int64_t quarter=5765760;
+    auto set = [](Store& store,const char* name,Payload payload) {
+        OpRequest op;op.opType=name;op.payload=std::move(payload);
+        if(!OpJournal(store).commit(op).ok)throw std::runtime_error("clip property op failed");
+    };
+    Fixture plain;plain.clip(1,0,2*quarter,4*quarter);
+    set(*plain.store,"clip.setStartMarker",{{"id",1},{"ticks",quarter/2}});
+    set(*plain.store,"clip.setEndMarker",{{"id",1},{"ticks",quarter}});
+    plain.load();while(plain.clock<13000)plain.render();
+    check(plain.instrument->count==3 && plain.instrument->heard[0].clock==0 &&
+              plain.instrument->heard[2].e.type==EventType::NoteOff && plain.instrument->heard[2].clock==12000,
+          "Start chases a held note and End releases it at the exact source marker");
+    Fixture loop;loop.clip(1,0,2*quarter,4*quarter);
+    set(*loop.store,"clip.setStartMarker",{{"id",1},{"ticks",quarter/2}});
+    set(*loop.store,"clip.setEndMarker",{{"id",1},{"ticks",quarter}});
+    set(*loop.store,"clip.setLoop",{{"id",1},{"on",true},{"start",0},{"length",2*quarter}});
+    loop.load();while(loop.clock<38000)loop.render();
+    std::int64_t firstOff=-1;
+    for(std::size_t i=0;i<loop.instrument->count;++i)
+        if(loop.instrument->heard[i].e.type==EventType::NoteOff){firstOff=loop.instrument->heard[i].clock;break;}
+    check(firstOff==36000,"MIDI Loop ignores End and releases at its own repeat boundary");
+}
+
 }
 namespace {
 void sessionControllers() {
@@ -247,7 +271,7 @@ void sessionControllers() {
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
-    try{if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
+    try{if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

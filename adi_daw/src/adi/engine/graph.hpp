@@ -861,8 +861,9 @@ public:
     void process(const AudioIo& io) noexcept override;
     void release() override;
 
-    /// Offline owner only, between process calls with no concurrent rendering,
-    /// retap or rebuild. Copies a node's last complete block at graph precision;
+    /// Processing owner only, after process and before the next process.
+    /// The graph must remain prepared/alive; GraphHost::copyRenderedOutput
+    /// provides publication lifetime inside a callback. Copies at graph precision;
     /// out64 retains double samples and extra destination channels are silence.
     /// False (and clears output) for an invalid node, stale/unprepared graph or
     /// a frame count different from the last successful process call.
@@ -964,6 +965,9 @@ public:
     /// the probe's pattern of feeding a graph and re-preparing it after a
     /// rebuild would hit on the first swap.
     [[nodiscard]] DelayLine* edgeLine(NodeId from, NodeId to, Bus bus) noexcept;
+    [[nodiscard]] const DelayLine* edgeLine(NodeId from, NodeId to, Bus bus) const noexcept {
+        return const_cast<Graph*>(this)->edgeLine(from,to,bus);
+    }
 
     /// The graph's own latency: how far behind the output is (ADR-0058).
     /// Excludes the device buffer -- that is ADR-0042 decision 7, and folding

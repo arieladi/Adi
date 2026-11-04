@@ -131,7 +131,7 @@ struct MainLoudness::Impl {
 MainLoudness::MainLoudness():impl_(std::make_unique<Impl>()){}
 MainLoudness::~MainLoudness()=default;
 bool MainLoudness::prepare(double sampleRate,int channels,std::span<const double> weights) {
-    if(!std::isfinite(sampleRate) || sampleRate<8000 || sampleRate>384000 || channels<1 || channels>64 ||
+    if(!std::isfinite(sampleRate) || sampleRate<8000 || sampleRate>768000 || channels<1 || channels>64 ||
        (!weights.empty() && weights.size()!=static_cast<std::size_t>(channels)))return false;
     std::vector<double> next(static_cast<std::size_t>(channels),1);
     if(!weights.empty())std::copy(weights.begin(),weights.end(),next.begin());

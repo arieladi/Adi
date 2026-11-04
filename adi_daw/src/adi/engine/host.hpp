@@ -85,8 +85,8 @@ public:
     /// model with a cycle or no master leaves the session playing exactly what
     /// it was playing. The alternative — swap first, discover second — turns a
     /// bad edit into silence.
-    bool rebuild(const rows::Model& model, const RealizeOptions& opts,
-                 double sampleRate, std::int32_t maxFrames);
+    bool rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
+                 std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan = {});
 
     /// Free retired graphs the audio thread has demonstrably moved past. Call
     /// it on the same timer that polls the coalescer; it never blocks audio.
@@ -102,6 +102,9 @@ public:
     [[nodiscard]] Graph* currentGraph() const noexcept;
     /// Audio thread, after process: latency of the graph that actually ran.
     [[nodiscard]] std::int32_t renderedLatency() const noexcept;
+    /// Audio owner after process, before the next process: protected by its
+    /// current publication. Copies already rendered samples, never runs DSP.
+    [[nodiscard]] bool copyRenderedOutput(const Node&, const AudioIo&) const noexcept;
 
     /// The realised graph behind it, for callers that need a track's chain
     /// head or tail -- a clip reader pushing into `inputFor`, or a device

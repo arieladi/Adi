@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include "adi/history_compaction.hpp"
+#include "adi/history_policy.hpp"
 #include "adi/ops.hpp"
 
 #include <cstdint>
@@ -82,6 +84,19 @@ public:
     /// change. The branch left keeps its head, so nothing becomes unreachable.
     Result switchToBranch(std::int64_t branchId);
 
+    // Caps are project metadata. Setting a policy also compacts atomically.
+    UndoCompactionResult setUndoRetentionPolicy(const UndoRetentionPolicy &);
+    UndoCompactionResult compactUndo();
+    struct ReplayBaseResult {
+        bool ok = false;
+        std::int64_t baseSeq = 0;
+        std::string error;
+    };
+    // Hold a source read transaction across this call and retained-log reads.
+    // Restore the source checkpoint into a journal-empty target, preserving its
+    // UI metadata. Replay source ops strictly AFTER returned baseSeq.
+    static ReplayBaseResult restoreReplayBase(const Store &source, Store &target);
+
     // --- snapshots (ADR-0128, SPEC 8.6) ---------------------------------------
     //
     // A snapshot is a name on a point in the log; it copies nothing. Taking,
@@ -134,11 +149,14 @@ public:
     /// Names the current head. An empty `name` becomes
     /// defaultSnapshotName(project name, createdUtc, utcOffsetMinutes), the
     /// local time being UTC plus the offset the CALLER supplies (ADR-0128 d4).
-    SnapshotResult takeSnapshot(const std::string& name, std::int64_t createdUtc,
-                                int utcOffsetMinutes, bool automatic = false);
+    SnapshotResult takeSnapshot(const std::string &name, std::int64_t createdUtc, int utcOffsetMinutes,
+                                bool automatic = false, const HistorySnapshotPolicy &policy = {});
 
-    /// Renames in place. Not an op and not undoable (ADR-0128 d5). An empty name
-    /// is refused rather than defaulted: a rename is always a typed name.
+    /// Explicit user removal of snapshot metadata; never an undo operation.
+    Result removeSnapshot(std::int64_t snapshotId);
+
+    /// Renames in place and promotes automatic points to named. Not an op and
+    /// not undoable (ADR-0128 d5). An empty name is refused.
     Result renameSnapshot(std::int64_t snapshotId, const std::string& newName);
 
     /// Every snapshot, oldest first (created_utc, then id).

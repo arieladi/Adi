@@ -50,7 +50,7 @@ import sqlite3
 import sys
 
 SPEC_APPLICATION_ID = 1094994225  # 0x41444931 == 'ADI1'
-SPEC_USER_VERSION = 1015   # schema 1.15 (return send taps, ADR-0203 d3); SPEC §3.1 and the DDL say the same
+SPEC_USER_VERSION = 1019   # schema 1.19 (undo checkpoint, ADR-0203 d13); SPEC §3.1 and the DDL say the same
 ADI_PPQ = 5765760  # SPEC 4.2
 
 HERE = pathlib.Path(__file__).resolve().parent

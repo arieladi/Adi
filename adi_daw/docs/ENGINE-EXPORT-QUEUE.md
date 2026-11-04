@@ -98,9 +98,16 @@ different streams and unchanged retries reproduce their samples. The standalone
 WAV writer retains its previous no-dither default for existing callers.
 
 Dry and isolated through-master choices, continuous gapless region batches,
-normalization/LUFS, other containers, noise shaping,
+RMS/brickwall and linked-batch normalization, other containers, noise shaping,
 queue persistence, and the Export window remain subsequent increments. There is
 no new schema or silent fallback for these options.
+
+Peak and LUFS normalization now live in Job.normalization (Off by default),
+with encoded measurements in Result.normalization. The selected cropped source
+renders once into private double PCM; gain, destination encoding/dither and
+post-encode true-peak verification use that capture. A ceiling-limited target
+reports the actual result. ENGINE-EXPORT-NORMALIZATION.md documents limits,
+channel weights, cancellation and the captured report.
 
 `renderWav` runs a single WAV job directly. Jobs with `niStems` use
 `renderNiStems`; see [ENGINE-NI-STEMS.md](ENGINE-NI-STEMS.md). The compatibility

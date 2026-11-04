@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/snapshot.hpp"
+#include "adi/freeze_groups.hpp"
 
 #include "adi/controller_lanes.hpp"
 #include "adi/store.hpp"
+#include "adi/media/media_ops.hpp"
+#include "juce/builtin_samples.hpp"
+#include <filesystem>
 
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
@@ -44,7 +48,8 @@ bool same(const TrackNode& a, const TrackNode& b) {
         a.kind != b.kind || a.role != b.role || a.recording != b.recording || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
-        a.clips.size() != b.clips.size())
+        a.clips.size() != b.clips.size() ||
+        a.frozen != b.frozen || a.frozenByGroup != b.frozenByGroup || a.freezeMediaId != b.freezeMediaId || a.freezeMode != b.freezeMode)
         return false;
     for (std::size_t i = 0; i < a.clips.size(); ++i)
         if (a.clips[i] != b.clips[i]) return false;   // pointer identity: already shared
@@ -151,6 +156,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const std::set<std::int64_t>& overridden) {
     auto snap = std::make_unique<Snapshot>();
     snap->transport=readTransportSettings(store);
+    snap->cue=readCueSettings(store);
     auto& db = const_cast<SQLite::Database&>(store.db());
     snap->automationLanes = detail::readAutomationSnapshot(db, previous.automationLanes, overridden);
     snap->automationOverridden = !overridden.empty();
@@ -343,6 +349,16 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     bool hasRole=false;
     {SQLite::Statement columns(db,"PRAGMA table_info(tracks)");while(columns.executeStep())hasRole=hasRole || columns.getColumn(1).getString()=="role";}
 
+    std::map<std::int64_t, std::int64_t> groupOwners;
+    std::set<std::int64_t> groupRoots;
+    try {
+        for (const auto &[root, members] : freeze::groups(db)) {
+            groupRoots.insert(root);
+            for (const auto &member : members)
+                groupOwners[member.id] = root;
+        }
+    } catch (const std::exception &) {
+    }
     // --- tracks --------------------------------------------------------------------
     // This deterministic flat traversal is not a display order. The window
     // orders the tree using parent and indexInParent from the snapshot.
@@ -351,8 +367,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             "SELECT t.id, t.name, t.muted, t.soloed, "
             "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0), "
             "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color, IFNULL(m.delay_samples,0), " +
-            std::string(hasRole?"t.role ":"NULL ")+
-            "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id "
+            std::string(hasRole?"t.role ":"NULL ")+ ", t.frozen, t.freeze_media_id, f.track_id "
+            "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id LEFT JOIN frozen_renders f ON f.track_id=t.id "
             "ORDER BY t.index_in_parent, t.id");
         while (st.executeStep()) {
             TrackNode t;
@@ -373,6 +389,17 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             if (!st.getColumn(9).isNull()) t.color = st.getColumn(9).getInt64();
             t.delaySamples = st.getColumn(10).getInt64();
             if (!st.getColumn(11).isNull()) t.role = st.getColumn(11).getString();  // 10 is delay_samples (chain)
+            t.frozen = st.getColumn(12).getInt() != 0;  // 10 delay_samples, 11 role (chain)
+            if (!st.getColumn(13).isNull())
+                t.freezeMediaId = st.getColumn(13).getInt64();
+            t.freezeMode = !st.getColumn(14).isNull() ? "wet" : t.frozen ? "unverified" : "";
+            if (groupRoots.contains(t.id))
+                t.freezeMode = "group";
+            if (groupOwners.contains(t.id)) {
+                t.frozenByGroup = groupOwners.at(t.id);
+                t.frozen = true;
+                t.freezeMode = "group-member";
+            }
             if (auto it = clipsByTrack.find(t.id); it != clipsByTrack.end())
                 t.clips = it->second;
 
@@ -472,6 +499,54 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     }
     if (transaction)
         transaction->commit();
+    // State bytes are immutable: decode only a changed state hash. Ordinary
+    // edits reuse its metadata and check only the small pool row and locator.
+    std::map<std::pair<std::int64_t,std::int32_t>,std::shared_ptr<const SampleSlotNode>> previousSlots;
+    for(const auto& slot:previous.sampleSlots)previousSlots[{slot->deviceId,slot->slot}]=slot;
+    SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid FROM plugin_state s "
+        "JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
+        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' ORDER BY s.device_id,s.stream_role");
+    while(slots.executeStep()) {
+        SampleSlotNode node;node.deviceId=slots.getColumn(0).getInt64();node.stateHash=slots.getColumn(2).getString();
+        try {
+            const auto role=slots.getColumn(1).getString();
+            if(role!="sample:1")throw std::runtime_error("unknown built-in sample role");
+            node.slot=1;node.name="Impulse";const auto old=previousSlots.find({node.deviceId,node.slot});
+            if(old!=previousSlots.end() && old->second->stateHash==node.stateHash && old->second->problem.empty())node=*old->second;
+            else {
+                SQLite::Statement size(db,"SELECT length(data) FROM state_blobs WHERE hash_blake3=?");size.bind(1,node.stateHash);
+                if(!size.executeStep() || size.getColumn(0).getInt64()<=0 || size.getColumn(0).getInt64()>40LL*1024*1024)
+                    throw std::runtime_error("sample state is missing or too large");
+                const auto bytes=store.getStateBlob(node.stateHash);
+                if(!bytes || bytes->empty() || bytes->size()>40u*1024u*1024u)throw std::runtime_error("sample state is missing or too large");
+                const auto* first=reinterpret_cast<const std::uint8_t*>(bytes->data());
+                const auto value=Payload::from_cbor(first,first+bytes->size());const auto info=device::inspectBuiltinSample(value);
+                if(info.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
+                node.uid=info.uid;node.empty=info.empty;node.mediaHash=info.mediaHash;node.hasDerivedState=!info.empty && value.contains("derived");
+            }
+            if(node.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
+            node.mediaId.reset();node.missing=false;
+            if(!node.empty && node.problem.empty()) {
+                SQLite::Statement media(db,"SELECT id,rel_path,abs_path_hint,missing FROM media_files WHERE hash_blake3=?");media.bind(1,node.mediaHash);
+                node.missing=true;
+                if(media.executeStep()) {
+                    node.mediaId=media.getColumn(0).getInt64();
+                    if(media.getColumn(3).getInt()==0) {
+                        std::error_code ec;bool present=false;
+                        if(!media.getColumn(1).isNull()) {
+                            const auto relative=media::pathFromUtf8(media.getColumn(1).getString());
+                            if(!relative.is_absolute())present=std::filesystem::is_regular_file(media::projectFolder(store)/relative,ec);
+                        }
+                        if(!present && !media.getColumn(2).isNull())present=std::filesystem::is_regular_file(media::pathFromUtf8(media.getColumn(2).getString()),ec);
+                        node.missing=!present;
+                    }
+                }
+            }
+        }catch(const std::exception& exception){node.problem=exception.what();node.missing=true;}
+        const auto old=previousSlots.find({node.deviceId,node.slot});
+        if(old!=previousSlots.end() && *old->second==node)snap->sampleSlots.push_back(old->second);
+        else snap->sampleSlots.push_back(std::make_shared<const SampleSlotNode>(std::move(node)));
+    }
     return snap;
 }
 
@@ -503,6 +578,8 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
     }
     for(const auto& remark:a.remarks)
         if(std::find(b.remarks.begin(),b.remarks.end(),remark)!=b.remarks.end())++shared;
+    for(const auto& slot:a.sampleSlots)
+        if(std::find(b.sampleSlots.begin(),b.sampleSlots.end(),slot)!=b.sampleSlots.end())++shared;
     return shared;
 }
 

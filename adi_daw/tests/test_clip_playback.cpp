@@ -8,6 +8,7 @@
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/store.hpp"
+#include "adi/ops.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <chrono>
@@ -284,6 +285,29 @@ void timeClipboardSourceClocks() {
     }
 }
 
+void sourceMarkers() {
+    auto set = [](Store& store, const char* name, Payload payload) {
+        OpRequest op; op.opType=name;op.payload=std::move(payload);
+        if (!OpJournal(store).commit(op).ok) throw std::runtime_error("clip property op failed");
+    };
+    Fixture plain;plain.add(1,0,500,7,1000);
+    set(*plain.store,"clip.setStartMarker",{{"id",1},{"ticks",12012}}); // source sample 50
+    set(*plain.store,"clip.setEndMarker",{{"id",1},{"ticks",48048}}); // source sample 200
+    plain.load(512);const auto out=plain.render(512);
+    check(out[0]==plain.media[114] && out[149]==plain.media[412] && out[150]==0 && out[499]==0,
+          "clip Start/End ops gate audio at exact source samples without moving placement");
+    check(plain.session.setPrecision(Precision::Float64),"source markers switch to native double graph");
+    plain.session.transport().locate(0);const auto wide=plain.render(512);
+    check(wide[0]==plain.media[114] && wide[149]==plain.media[412] && wide[150]==0,
+          "source End also gates a native double graph at the exact sample");
+    Fixture loop;loop.add(1,0,500,7,1000);
+    set(*loop.store,"clip.setStartMarker",{{"id",1},{"ticks",12012}});
+    set(*loop.store,"clip.setEndMarker",{{"id",1},{"ticks",48048}});
+    set(*loop.store,"clip.setLoop",{{"id",1},{"on",true},{"start",24024},{"length",48048}});
+    loop.load(512);const auto repeated=loop.render(512);
+    check(repeated[150]==loop.media[414] && repeated[250]==loop.media[214] && repeated[500]==0,
+          "Loop uses its own source window while the End marker is inactive");
+}
 void seeksAndStalls() {
     Fixture f;f.add(1,0,90000,0,90000);f.load(4096);(void)f.render(4096);
     f.session.transport().locate(70003);
@@ -625,6 +649,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
+        if(only=="all" || only=="markers")sourceMarkers();
         if(only=="all" || only=="refresh")refreshAndVariableBlocks();
         if(only=="all" || only=="unsupported")unsupported();
         if(only=="all" || only=="segments")segmentsAndCrop();

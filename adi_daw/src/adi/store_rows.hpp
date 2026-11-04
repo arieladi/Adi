@@ -157,6 +157,9 @@ struct Clip {
     std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
     std::optional<std::int64_t> endMarkerTicks; // optional N33 properties, when available
     std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain
+    std::optional<std::int64_t> signatureNumerator = {}, signatureDenominator = {};
+    std::optional<std::int64_t> scaleRoot = {}, scaleMask = {};
+    std::optional<std::string> scaleId = {};
 };
 
 struct AudioClip {
