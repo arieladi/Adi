@@ -17,7 +17,9 @@ public:
     std::vector<Node*> sourcesFor(std::int64_t track);
     const std::vector<std::string>& problems() const noexcept;
     std::uint32_t droppedNotes() const noexcept;
-private:
+    std::uint64_t droppedControllers() const noexcept;
+
+  private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
 };

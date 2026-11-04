@@ -139,11 +139,15 @@ struct ExpressionCaps {
     std::array<std::uint32_t, 16> pressureParam{};
     std::array<std::uint32_t, 16> timbreParam{};
 
+    std::array<std::array<std::uint32_t, 128>, 16> controllerParam{};
+
     /// CC101, CC100 and CC6 on channel 0: where the MPE Configuration Message
     /// would land.
     std::array<std::uint32_t, 3> rpnParam{};
 
-    ExpressionCaps() noexcept {
+    constexpr ExpressionCaps() noexcept {
+        for (auto &channel : controllerParam)
+            channel.fill(kNoParam);
         bendParam.fill(kNoParam);
         pressureParam.fill(kNoParam);
         timbreParam.fill(kNoParam);

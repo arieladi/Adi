@@ -89,10 +89,14 @@ inline constexpr double kSilenceDb = -150.0;
 
 /// The lanes that drive one strip, resolved against one compiled
 /// AutomationProgram (ADR-0164). A null lane means the model's static value.
+enum class PanMode { Stereo, Split };
+
 struct StripLanes {
     const AutomationLaneProgram* volume = nullptr;   ///< dB
     const AutomationLaneProgram* pan = nullptr;      ///< -1 .. +1
     const AutomationLaneProgram* mute = nullptr;     ///< 0.5 or more is muted
+    const AutomationLaneProgram* panLeft = nullptr;
+    const AutomationLaneProgram* panRight = nullptr;
 };
 
 /// One track's strip as the model has it, sanitised: what its StripNode
@@ -112,18 +116,32 @@ struct StripConfig {
     std::shared_ptr<void> keepAlive;
     std::int64_t delaySamples = 0;    ///< the track delay (ADR-0172), at `delayRate`
     std::int64_t delayRate = 48000;   ///< the project's rate
+    PanMode panMode = PanMode::Stereo;
+    double panLeft = -1.0, panRight = 1.0;
 };
+
+/// Linear post-fader levels, independent relaxed loads for the UI frame.
+/// Peak is the largest channel magnitude; RMS averages all channel samples.
+/// No scope subscription, snapshot rebuild or SQL read is needed.
+struct StripMeter {
+    std::atomic<float> peak{0}, rms{0};
+};
+static_assert(std::atomic<float>::is_always_lock_free);
 
 class StripNode final : public Node {
 public:
     /// Message thread: the model's values. `audible` is mute and solo together.
     void setStatic(double volumeDb, double pan, PanLaw law, bool audible) noexcept;
+    void setPanMode(PanMode mode, double left, double right) noexcept;
 
     /// Message thread, before the graph that plays them is published: the lanes
     /// now driving this strip (null for none), and what keeps them alive. The
     /// realiser retains `keepAlive` with the graph (sourceLifetime), so a lane a
     /// retired graph may still read is never freed under it.
     void setLanes(const StripLanes* lanes, std::shared_ptr<void> keepAlive) noexcept;
+    /// Audio owner of a private strip only: the caller's publication protects
+    /// these lanes. Never mix this with message-thread setLanes on that strip.
+    void usePublishedLanes(const StripLanes* lanes) noexcept { lanes_.store(lanes,std::memory_order_release); }
 
     /// Where a lane is read. Driver-thread state, read at the block's origin as
     /// every source reads it (Transport's contract).
@@ -134,6 +152,7 @@ public:
     void configure(const StripConfig& config, bool audible, const Transport* transport) noexcept {
         setTransport(transport);
         setStatic(config.volumeDb, config.pan, config.law, audible);
+        setPanMode(config.panMode, config.panLeft, config.panRight);
         setDelay(config.delaySamples, config.delayRate);
         setLanes(config.lanes, config.lanes != nullptr ? config.keepAlive : std::shared_ptr<void>{});
     }
@@ -159,6 +178,9 @@ public:
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const NodeIo& io) noexcept override;
     void silenceTaps(const NodeIo& io) noexcept override;
+    [[nodiscard]] const StripMeter& meter() const noexcept { return meter_; }
+    /// Driver stopped: clear the published readout without touching render state.
+    void release() override;
 
     /// Message thread: the next block starts AT the target, as a new strip
     /// does, rather than ramping from whatever this one last played.
@@ -188,6 +210,13 @@ private:
     template <typename T>
     void writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
                   const T* const* audio) noexcept;
+    template <typename T>
+    void writeMeter(const NodeIo& io, const T* const* audio) noexcept;
+
+    StripMeter meter_;
+    // Audio thread only. Accumulate segments of one callback; offset zero
+    // starts the next. Publication after each segment describes its prefix.
+    double meterPeak_ = 0, meterEnergy_ = 0, meterCount_ = 0;
 
     std::atomic<ScopeTap*> tap_{nullptr};
     std::atomic<ScopeTap*> preFaderTap_{nullptr};
@@ -197,12 +226,12 @@ private:
     /// message thread while the graph before may still be playing it; so an
     /// atomic, as `rampFrames_` is, and never a plain write under a reader.
     std::atomic<double> sampleRate_{48000.0};
-    /// Left, right, and every other channel (the fader alone). `g` is what a
+    /// LL, RR, every other channel (fader alone), R->L, L->R. `g` is what a
     /// graph at 32 plays, rounded exactly as it always was; `w` the same
     /// values unrounded, for a graph at 64.
     struct Gains {
-        float g[3] = {1.0f, 1.0f, 1.0f};
-        double w[3] = {1.0, 1.0, 1.0};
+        float g[5] = {1.0f, 1.0f, 1.0f, 0.0f, 0.0f};
+        double w[5] = {1.0, 1.0, 1.0, 0.0, 0.0};
     };
     [[nodiscard]] Gains desired(const StripLanes* lanes, std::int32_t frame) noexcept;
 
@@ -213,14 +242,14 @@ private:
     /// when that width last played, and resuming it would replay an old gain.
     template <typename T>
     struct Ramp {
-        T cur[3] = {1, 1, 1};
-        T step[3] = {0, 0, 0};
-        T to[3] = {1, 1, 1};
+        T cur[5] = {1, 1, 1, 0, 0};
+        T step[5] = {0, 0, 0, 0, 0};
+        T to[5] = {1, 1, 1, 0, 0};
         std::int32_t remaining = 0;
         bool started = false;
-        void retarget(const T (&t)[3], std::int32_t frames) noexcept;
+        void retarget(const T (&t)[5], std::int32_t frames) noexcept;
         /// At the target now, no ramp: for a strip asleep, whose input is silent.
-        void land(const T (&t)[3]) noexcept;
+        void land(const T (&t)[5]) noexcept;
     };
     template <typename T>
     [[nodiscard]] Ramp<T>& ramp() noexcept;
@@ -231,7 +260,8 @@ private:
 
     // The model's values, written by the message thread.
     std::atomic<float> volumeDb_{0.0f}, pan_{0.0f};
-    std::atomic<int> law_{0};
+    std::atomic<int> law_{0}, panMode_{0};
+    std::atomic<double> panLeft_{-1.0}, panRight_{1.0};
     std::atomic<bool> audible_{true};
     std::atomic<bool> restart_{false};
     std::atomic<const StripLanes*> lanes_{nullptr};
@@ -242,7 +272,8 @@ private:
     // changes; and the ramp. A strip begins AT its target, not ramping up to it
     // from silence: a project that opens must not fade in.
     double lastVol_ = 0.0, lastPan_ = 0.0;
-    int lastLaw_ = 0;
+    int lastLaw_ = 0, lastPanMode_ = 0;
+    double lastPanLeft_ = -1.0, lastPanRight_ = 1.0;
     bool lastHeard_ = true;
     Gains lastGains_{};
     bool haveLast_ = false;
@@ -478,11 +509,13 @@ private:
     std::int64_t readEnd_ = 0;          ///< one past the last position played, or emptied
 };
 
-/// How solo reaches across sends (ADR-0203 d3). Fixed until the format has a
-/// home for them (win's question 7); a test may change them.
+/// How solo reaches across sends (ADR-0203 d3). Session supplies saved
+/// Solo in Place / Cue controls; low-level callers retain Live defaults.
 struct HearingFlags {
     /// Live's Solo in Place: a soloed track's returns, and what they feed, stay heard.
     bool soloInPlace = true;
+    bool soloIsCue = false;
+    std::int64_t referenceTrack = 0; // designated reference never enters Main or sends
     /// Another track's solo silences a Pre send with its source, as it does
     /// a Post one (the sends plan's preFollowsSolo, on until Live is measured).
     bool preFollowsSolo = true;
@@ -516,7 +549,7 @@ struct Hearing {
 
 /// A strip's automatable parameters (ADR-0164), as `automation_lanes.param_ref`
 /// names them for a track (SPEC §6.9).
-enum class StripParam { Volume, Pan, Mute };
+enum class StripParam { Volume, Pan, Mute, PanLeft, PanRight };
 
 /// One compiled program's lanes, bound to strips. Immutable once built; the
 /// strips and the graphs that play them share it.
@@ -543,10 +576,14 @@ public:
     /// and bind its lanes. Creates strips for new tracks; a departed track's
     /// strip is kept, silent, until the session ends, as a departed device is
     /// (ADR-0122), since a retired graph may still name it.
-    void sync(const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&);
+    void sync(const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&,
+              bool delayCompensation=true, const HearingFlags& = {});
 
     /// The strip for a track the plan realises, or null.
     [[nodiscard]] StripNode* stripFor(std::int64_t trackId) noexcept;
+    [[nodiscard]] const StripNode* stripFor(std::int64_t trackId) const noexcept {
+        return const_cast<MixerStrips*>(this)->stripFor(trackId);
+    }
 
     /// The node a planned send plays through (ADR-0203 d3), by its routing
     /// row, or null. One per row, kept for the session as a strip is, so a

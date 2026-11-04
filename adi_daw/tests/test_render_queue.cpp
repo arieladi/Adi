@@ -124,6 +124,10 @@ bool matches(const std::vector<float>& samples, std::int64_t begin, double gain 
 }
 void ranges() {
     Fixture f; f.effect(); f.parallel();
+    OpRequest click;click.opType="transport.setMetronome";click.payload={{"on",true}};
+    OpRequest loop;loop.opType="transport.setLoop";loop.payload={{"on",true},{"start",0},{"end",1}};
+    check(OpJournal(*f.store).commit(std::vector<OpRequest>{click,loop}).ok,
+          "saved monitor loop/click fixture commits before export");
     int loads = 0;
     auto loader = [&](const DeviceRequest&, std::string&) {++loads; return std::make_unique<Delay>();};
     Queue queue;
@@ -460,8 +464,8 @@ void pcmExports() {
         double value=0;
         void process(const NodeIo& io) noexcept override {
             for(int c=0;c<io.channels;++c)for(int i=0;i<io.frames;++i) {
-                const int at=io.blockOffset+i;
-                if(io.wide())io.out64[c][at]=value;else io.out[c][at]=static_cast<float>(value);
+                const int offset=io.blockOffset+i;
+                if(io.wide())io.out64[c][offset]=value;else io.out[c][offset]=static_cast<float>(value);
             }
         }
     };
@@ -486,6 +490,41 @@ void pcmExports() {
     check(renderWav(j,{}).state==JobState::Failed && f.noStage(),"unsupported dither has no silent fallback");
 }
 
+void normalizedRenders() {
+    for(const auto precision:{Precision::Float32,Precision::Float64}) {
+        Fixture f;f.effect();auto job=f.job(precision==Precision::Float64?"normalized-wide":"normalized-float");
+        job.beginSample=200;job.endSample=220;job.session.precision=precision;job.normalization.mode=NormalizeMode::Peak;
+        std::uint64_t processed=0;int loads=0;
+        struct CountedDelay final:Delay {
+            std::uint64_t& counter;
+            explicit CountedDelay(std::uint64_t& value):counter(value){}
+            void process(const NodeIo& io)noexcept override{counter+=static_cast<std::uint64_t>(io.frames);Delay::process(io);}
+        };
+        auto loader=[&](const DeviceRequest&,std::string&){++loads;auto device=std::make_unique<CountedDelay>(processed);device->distinguishWidth=true;return device;};
+        const auto result=renderWav(job,loader);const auto samples=read(result,20);
+        double peak=0;for(std::int64_t frame=200;frame<220;++frame)for(int channel=0;channel<2;++channel)peak=std::max(peak,std::abs(static_cast<double>(source(frame,channel))));
+        bool exact=samples.size()==40;
+        for(std::size_t frame=0;frame<samples.size()/2;++frame)for(int channel=0;channel<2;++channel)exact=exact && samples[frame*2+static_cast<std::size_t>(channel)]==static_cast<float>(source(200+static_cast<std::int64_t>(frame),channel)/peak);
+        check(exact && result.normalization && result.normalization->sourceSamplePeakDb && std::abs(*result.normalization->sourceSamplePeakDb-20*std::log10(peak*(precision==Precision::Float64?2:1)))<1e-10,"normalization measures only the selected compensated range, excluding preroll, and preserves either source width");
+        check(loads==1 && processed==297 && f.noStage(),"normalization captures one continuous plugin run and cleans private double PCM after publication");
+    }
+    Fixture f;auto job=f.job("normalized-cancel");job.normalization.mode=NormalizeMode::Peak;std::stop_source stop;Control control;control.stop=stop.get_token();bool duringEncoding=false;
+    auto encoding=[&]{
+        for(const auto& path:fs::directory_iterator(job.directory))if(path.path().filename().string().starts_with(".adi-render-") && fs::exists(path.path()/"render.wav"))return true;
+        return false;
+    };
+    control.serviceHost=[&]{if(encoding()){duringEncoding=true;stop.request_stop();}};
+    const auto cancelled=renderWav(job,{},control);
+    check(duringEncoding && cancelled.state==JobState::Cancelled && !fs::exists(cancelled.output) && f.noStage(),"cancellation during encoding removes the capture/output without publishing a partial normalized job");
+    job.nameTemplate="normalized-race";bool raced=false;control={};
+    control.serviceHost=[&]{if(!raced && encoding()){std::ofstream external(job.directory/"normalized-race.wav",std::ios::binary);external<<"external";raced=true;}};
+    const auto collision=renderWav(job,{},control);std::ifstream existing(job.directory/"normalized-race.wav",std::ios::binary);const std::string retained{std::istreambuf_iterator<char>(existing),std::istreambuf_iterator<char>()};
+    check(raced && collision.state==JobState::Failed && retained=="external" && f.noStage(),"normalized publication preserves a destination created after rendering started");
+    Queue queue;job=f.job("normalized-queued");const auto id=queue.add(job);job.normalization.mode=NormalizeMode::Peak;
+    check(queue.update(id,job) && queue.snapshot()[0].job.normalization.mode==NormalizeMode::Peak,"pending queue edits retain the captured normalization choice");
+    queue.run();check(queue.snapshot()[0].result.state==JobState::Completed && queue.snapshot()[0].result.normalization.has_value(),"a queued normalization choice produces a report on its completed job");
+}
+
 void namesAndValidation() {
     NameContext c{"../A{track}","B/C","G","90",3};
     check(resolveName("{project}-{track}-{group}-{bpm}-{counter}",c)==".._A{track}-B_C-G-90-3","metadata cannot inject paths or more placeholders");
@@ -507,7 +546,7 @@ void namesAndValidation() {
 }
 } // namespace
 int main() {
-    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); namesAndValidation();}
+    try {ranges(); precisionAndIsolation(); sampleRateConversion(); cancellationAndFailures(); queueEdits(); latencyChanges(); coherentRevision(); directStems(); groupStems(); multichannelStem(); regionStems(); returnStem(); invalidStemSources(); pcmExports(); normalizedRenders(); namesAndValidation();}
     catch(const std::exception& e) {check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures ? "FAIL" : "PASS",checks,failures);
     return failures ? 1 : 0;

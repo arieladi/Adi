@@ -316,6 +316,22 @@ std::unique_ptr<RealizedGraph> realize(const GraphPlan& plan,
         rec.bus = e.bus;
         r->planEdges_.push_back(rec);
     }
+    // Monitoring is a downstream sink: a sidechain from Main aligns its
+    // clock without copying Main audio or running any source/device again.
+    const auto mainTrack=plan.nodes[*plan.output].trackId;
+    const auto mainOutput=r->outputFor(mainTrack);
+    for(const auto& monitor:opts.monitors) {
+        if(!monitor.gain || !monitor.aligned || !r->has(monitor.trackId))continue;
+        const auto source=monitor.source?r->graph_.find(*monitor.source):r->inputFor(monitor.trackId);
+        if(source==kInvalidNode || mainOutput==kInvalidNode)continue;
+        if(!placeOnce(monitor.gain,"cue", "a monitor gain") || !placeOnce(monitor.aligned,"cue","a monitor sink"))continue;
+        const auto gain=r->graph_.addNode(*monitor.gain),aligned=r->graph_.addNode(*monitor.aligned);
+        if(auto owner=monitor.gain->sourceLifetime())r->sourceOwners_.push_back(std::move(owner));
+        r->graph_.connect(source,gain);r->graph_.connect(gain,aligned);r->graph_.connect(mainOutput,aligned,Bus::Sidechain);
+        r->chainEdges_.push_back({{monitor.trackId,RealizedGraph::ChainKey::Leg::Monitor,monitor.source,0},source,gain,Bus::Main});
+        r->chainEdges_.push_back({{monitor.trackId,RealizedGraph::ChainKey::Leg::Monitor,monitor.gain,1},gain,aligned,Bus::Main});
+        r->chainEdges_.push_back({{monitor.trackId,RealizedGraph::ChainKey::Leg::Monitor,monitor.aligned,2},mainOutput,aligned,Bus::Sidechain});
+    }
     // Sorted here, on the message thread, so the audio thread can match two
     // graphs' edges by walking both lists once (ADR-0092).
     std::sort(r->planEdges_.begin(), r->planEdges_.end(),
