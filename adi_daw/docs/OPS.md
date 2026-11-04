@@ -416,6 +416,7 @@ silent truncation in JSON, a non-issue in CBOR.
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
 | `note.insert` | e | S | pair `note.delete` | P0 |
+| `capture.createMidi` | e | G | pair `clip.delete` | P1 |
 | `note.delete` | e | S | cap | P0 |
 | `note.move` | e | S | sym | P0 |
 | `note.resize` | e | S | sym | P0 |
@@ -559,6 +560,48 @@ Sink refusal remains counted/nonblocking. Parsing/reset/delivery allocates and
 performs callback I/O nowhere. Program change, SysEx, poly aftertouch and full
 native Capture composition are outside this input correction; no schema/opcode
 or measured Live parity claim is introduced.
+
+`midi_capture.hpp` adds owner-side `capture::prepareMidi(store,snapshot,spec,error)`
+and `commitMidi`. The spec supplies a fresh positive clip ID, project tick
+position, explicit integer source range containing the complete retained input,
+name and held-note closing policy. Source driver timestamps are independent of
+project placement. A coherent read checks the regular unlocked/unfrozen target,
+new identities and current step-tempo clock. Every note/CC boundary must roundtrip
+its exact sample at the captured rate. Prefix-truncated histories, serial/time
+gaps, unknown/duplicate ownership, mismatched releases, zero-duration notes,
+tempo ramps and unsupported expressions refuse without writes. Existing ANOT
+velocity bytes accept only source values that roundtrip exactly through the
+MIDI-1 word; arbitrary doubles are refused, never silently quantized. CC values
+remain full double. Held notes optionally close at the explicit Capture end with
+release velocity zero. The caller retains document generation across async work.
+
+Preparation returns one `capture.createMidi` request with fully resolved clip/
+stream IDs and native binary images. Commit requires the same still-open Store
+pointer/client and captured head, including NULL; a supplied transaction veto
+cannot replace the head guard. Callback misuse returns `callback` before SQL or
+allocation. The operation writes each stream once, so large captures avoid
+per-note stream rewrites. One undo removes the new clip and cascaded streams;
+Redo/replay uses only captured values, independent of input devices or UI state.
+
+The closed opcode payload contains `clip` (the existing explicit MIDI clip.create
+row packet), `controllers` (array of `{id,channel,controller,bytes}`), and optional
+`notes` (`{id,bytes}`). Bytes are CBOR binary known-v1 sorted ACTL/ANOT images,
+with exact record stride/count and no opaque trailer. At most 2,048 controller
+addresses and 1,048,576 total points/notes are accepted. All stream IDs are
+explicit positive int64; record IDs remain uint64. Fresh records are checked for
+unique identities, times within the clip, valid domains/curves/velocity/channel/
+probability/tuning and zero reserved/flag fields. Invalid/future images,
+duplicate/occupied IDs/addresses, locked/frozen targets and late SQL failure
+roll back clip, streams and journal together. Existing rows are never overwritten.
+This adds an opcode, not a schema or binary-layout change.
+
+Native playback retains its existing CC first-value chase, ordinary-control
+hold, pedal-release ownership and cross-stream ordering. The exact raw input
+transcript remains in memory; this is not a promise to persist its cross-stream
+serial ordering or unknown controller state before a first point. Automatic Live
+phrase/tempo/loop inference, full-double note/expression persistence and host/UI
+Capture command wiring remain explicit subsequent work. No measured Live parity
+claim is introduced by this native MIDI-1/CC Capture path.
 
 ### 9.6 Automation
 
@@ -775,7 +818,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**173 ops** — 67 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**174 ops** — 67 P0, 55 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

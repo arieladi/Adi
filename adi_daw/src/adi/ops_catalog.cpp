@@ -16,6 +16,7 @@
 
 #include "adi/blob.hpp"
 #include "adi/controller_lanes.hpp"
+#include "adi/midi_capture.hpp"
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/ops.hpp"
@@ -2041,6 +2042,8 @@ std::span<const OpDescriptor> builtinOps() {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         const auto controllerOps = controllers::laneOps();
         v.insert(v.end(), controllerOps.begin(), controllerOps.end());
+        const auto captureOps = capture::midiOps();
+        v.insert(v.end(), captureOps.begin(), captureOps.end());
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
         return v;
     }();
