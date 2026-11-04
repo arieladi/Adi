@@ -76,9 +76,12 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
         const auto beginNs=base==0?time.nanos(origin):integer(root,"pos_ns");
         const auto spanNs=base==0?time.duration(origin,integer(root,"length_ticks")):integer(root,"length_ns");
         const auto oneSampleNs=static_cast<std::int64_t>(std::ceil(1e9/rate));
+        // Apple arm64's long double is 64 bits wide, so every int64 operand is cast explicitly
+        // (-Wimplicit-int-float-conversion is an error under the macOS gate).
+        const auto physicalLd=static_cast<long double>(physicalNs);const auto toleranceLd=static_cast<long double>(oneSampleNs);
         if(options.enabled) {
-            if(std::abs(static_cast<long double>(spanNs)-physicalNs)>oneSampleNs ||
-               (!details.at("source_end_ns").is_null() && std::abs(static_cast<long double>(integer(details,"source_end_ns"))-physicalNs)>oneSampleNs))
+            if(std::abs(static_cast<long double>(spanNs)-physicalLd)>toleranceLd ||
+               (!details.at("source_end_ns").is_null() && std::abs(static_cast<long double>(integer(details,"source_end_ns"))-physicalLd)>toleranceLd))
                 throw std::runtime_error("Auto-Warp currently needs a clean full-source clip");
             const auto onsets=audio::detectTransients(reader,static_cast<std::uint64_t>(start),frames,50,options.stop);cancelled(options.stop);
             if(!onsets)throw std::runtime_error("cannot analyze Warp source transients");
@@ -99,7 +102,7 @@ PreparedEdit prepareSetWarp(Store& store,std::int64_t clipId,const WarpOptions& 
             if(source.at("warp_markers").is_null() || !source.at("warp_markers").is_binary())throw std::runtime_error("Warp off needs the stored source map");
             const auto& bytes=source.at("warp_markers").get_binary();
             const auto markers=audio::readWarpMap(std::span<const std::byte>(reinterpret_cast<const std::byte*>(bytes.data()),bytes.size()),frames);
-            if(!markers || std::abs(static_cast<long double>(spanNs)-time.duration(origin,markers.markers.back().tick))>oneSampleNs)throw std::runtime_error("Warp off currently needs an untrimmed full-source Warp clip");
+            if(!markers || std::abs(static_cast<long double>(spanNs)-static_cast<long double>(time.duration(origin,markers.markers.back().tick)))>toleranceLd)throw std::runtime_error("Warp off currently needs an untrimmed full-source Warp clip");
             root["length_ticks"]=time.ticks(edit::addTime(beginNs,physicalNs))-origin;
             details["content_offset_ns"]=0;details["source_end_ns"]=physicalNs;
         }

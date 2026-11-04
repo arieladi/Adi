@@ -122,8 +122,8 @@ AutoWarpResult autoWarpFromOnsets(std::span<const std::uint64_t> onsets,std::uin
             cancellation(stop);
             while(segment+2<beats.size() && beats[segment+1].tick<position)++segment;
             const auto& a=beats[segment];const auto& b=beats[segment+1];
-            const long double fraction=static_cast<long double>(position-a.tick)/(b.tick-a.tick);
-            const auto frame=a.frame+static_cast<std::uint64_t>(std::llround(fraction*(b.frame-a.frame)));
+            const long double fraction=static_cast<long double>(position-a.tick)/static_cast<long double>(b.tick-a.tick);
+            const auto frame=a.frame+static_cast<std::uint64_t>(std::llround(fraction*static_cast<long double>(b.frame-a.frame)));
             if(frame<=static_cast<std::uint64_t>(result.markers.back().sourceFrame) || frame>=sourceFrames)throw Failure{AutoWarpError::Precision};
             result.markers.push_back({static_cast<std::int64_t>(frame),position});
         }
