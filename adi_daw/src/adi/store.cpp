@@ -82,8 +82,12 @@ const std::vector<MigrationStep>& migrationSteps() {
         {8, {"tuning_systems", "tuning_degrees", "key_map_tunings", "key_map_degrees"}},
         // 1.9 (ADR-0203 d18): project default changes; no objects added.
         {9, {}},
-        {10, {"clip_playback_details","automation_segment_ranges"}}, // continuous fade handles (N17)
-        {11, {"clip_warp_fade_domains"}}, // retained musical Warp fades (N17)
+        // 1.10 (N25): literal marker notes/prompts.
+        {10, {"marker_details"}},
+        // 1.11: Split Stereo Pan, additive settings (ADR-0203 d9).
+        {11, {"mixer_pan_settings"}},
+        {12, {"clip_playback_details","automation_segment_ranges"}}, // continuous fade handles (N17)
+        {13, {"clip_warp_fade_domains"}}, // retained musical Warp fades (N17)
     };
     return steps;
 }

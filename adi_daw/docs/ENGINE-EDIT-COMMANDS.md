@@ -81,7 +81,7 @@ boundary fields refuse. Clip envelopes are copied unchanged; their playback
 is still the separate phase D engine item.
 
 Split/copy also supports attached Warp audio. Its retained fade domains use
-source musical ticks (schema 1.11); unwarped audio retains nanoseconds. The
+source musical ticks (schema 1.13); unwarped audio retains nanoseconds. The
 source map and window stay unchanged, and a new placement follows its tempo.
 Aliases still return a named refusal. Splitting through
 a fade retains the original envelope on both pieces, with no new internal

@@ -80,7 +80,7 @@ The formant_shift row value is an extra semitone shift (ratio 2^(value/12));
 the default is zero. Reverse and channel aliases remain unsupported here.
 
 Split, copy and range/Time material edits retain warped fade shapes on the
-unrolled source musical clock (clip_warp_fade_domains, schema 1.11), including
+unrolled source musical clock (clip_warp_fade_domains, schema 1.13), including
 repeated splits inside overlapping fades and source loops. Handle edits replace
 only the selected side; undo restores its full typed metadata.
 
