@@ -131,6 +131,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
     bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
+    // Each window's interface zoom, kept per window and per display in `window.zoom` (N4;
+    // ADR-0129 d3, ADR-0203 d11): what was kept for that window on that display, if anything;
+    // and keeping a window's zoom there, saved at once.
+    std::optional<float> keptZoom(const std::string &window, const std::string &display) const;
+    bool keepZoom(const std::string &window, const std::string &display, float zoom, std::string &why);
     juce::ApplicationCommandManager manager;
 
   private:
@@ -210,6 +215,9 @@ class AdiRootComponent final : public juce::Component {
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
     // own, and the ZoomHost around the root applies it as a transform.
     float interfaceZoom() const noexcept { return interfaceZoom_; }
+    // On opening, and after a move onto another display: the zoom kept for this window on the
+    // display it now stands on, if one was kept (N4). Ctrl/Cmd + and - keep it there.
+    void followDisplay();
     // Whether this view's own window fills the screen (Live's Full Screen, §42.1).
     bool fullScreen() const;
     // What the Info View shows: the element under the mouse, read in the frame.
@@ -365,6 +373,7 @@ class AdiRootComponent final : public juce::Component {
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs
     float interfaceZoom_ = 1;
+    std::optional<std::string> zoomDisplay_; // the display the zoom was last followed on
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
     juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
@@ -382,6 +391,10 @@ class AdiRootComponent final : public juce::Component {
 // The interface zoom's steps, 50 % to 200 % (ADR-0129 d3): the next one in or out of
 // `now`, or nothing at either end.
 std::optional<float> nextZoom(float now, bool in) noexcept;
+// A display's name in the App settings: its geometry and DPI, as the floating windows name the
+// monitors (JUCE exposes no stable EDID identifier); the one nearest a point on the screen.
+std::string displayId(const juce::Displays::Display &);
+std::string displayAt(juce::Point<int> screen);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {
@@ -422,6 +435,8 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
             setVisible(false);
     }
     juce::MenuBarModel *menu() noexcept;
+    // Placed, or moved onto another display: the root takes the zoom kept for it there (N4).
+    void moved() override;
     // What the window keeps of the App settings, brought up to date: each frame does it.
     void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }
