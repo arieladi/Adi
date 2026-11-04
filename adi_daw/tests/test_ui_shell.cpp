@@ -18,6 +18,8 @@
 #include <fstream>
 #include <functional>
 #include <new>
+#include <optional>
+#include <set>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -5538,8 +5540,8 @@ int main(int argc, char **argv) {
             // Live's lines (N14); the panel draws no second heading for them.
             juce::AudioDeviceManager devices;
             AudioDevicePage *page = nullptr;
-            SettingsPanel audio(settings, [&page, &devices] {
-                auto head = std::make_unique<AudioDevicePage>(devices);
+            SettingsPanel audio(settings, [&page, &devices, &settings] {
+                auto head = std::make_unique<AudioDevicePage>(devices, settings);
                 page = head.get();
                 return head;
             });
@@ -5557,8 +5559,10 @@ int main(int argc, char **argv) {
             collect(audio);
             bool heldInPage = page != nullptr;
             for (const auto &row : audio.rows())
-                if (std::find(AudioDevicePage::kSections.begin(), AudioDevicePage::kSections.end(),
-                              row->setting.section) != AudioDevicePage::kSections.end())
+                if (row->setting.key == "audio.channelConfig")
+                    heldInPage = heldInPage && row->getParentComponent() == nullptr;
+                else if (std::find(AudioDevicePage::kSections.begin(), AudioDevicePage::kSections.end(),
+                                   row->setting.section) != AudioDevicePage::kSections.end())
                     heldInPage = heldInPage && row->getParentComponent() == page && row->isVisible();
             check(heldInPage && panelHeadings == std::vector<juce::String>{"Test", "Audio"},
                   "the Audio page's head holds every row of Audio Device, Sample Rate and Latency; the panel heads "
@@ -5603,6 +5607,82 @@ int main(int argc, char **argv) {
             check(page->lineY("Driver Error Compensation") > 0 &&
                       page->lineY("Overall Latency") - page->lineY("Driver Error Compensation") == SettingRow::kHeight,
                   "shown again, the page holds the new rows only, once each");
+            // Live's Channel Configuration (N20; Live 12 manual 17.2): its Input Config and Output
+            // Config buttons on their line, in place of the record's field; off with no device open.
+            check(page->channels.getY() == page->lineY("Channel Configuration") + 3 && page->channels.isVisible() &&
+                      !page->channels.input.isEnabled() && !page->channels.output.isEnabled() &&
+                      page->configPanel() == nullptr,
+                  "Channel Configuration is Live's Input Config and Output Config buttons, off with no device");
+        }
+        {
+            // The dialogs (N20; Live 12 manual 17.2): a device's mono channels and stereo pairs, each
+            // a switch and a name; OK hands the record back, Cancel leaves it.
+            using settings::ChannelConfig;
+            const auto start = settings::defaultChannelConfig(4, 2);
+            ChannelConfigPanel dialog(true, start, "Interface");
+            std::vector<std::string> labels;
+            std::vector<bool> on;
+            for (const auto &line : dialog.lines()) {
+                labels.push_back(line->toggle.getButtonText().toStdString());
+                on.push_back(line->toggle.getToggleState());
+            }
+            check(dialog.getTitle() == "Input Config" &&
+                      labels == std::vector<std::string>{"1", "2", "3", "4", "1/2", "3/4"} &&
+                      on == std::vector<bool>{true, true, false, false, true, false} &&
+                      dialog.lines()[4]->name.getTextToShowWhenEmpty() == "1/2 (stereo)",
+                  "Input Config lists the mono inputs, then the stereo pairs, Live's default on, Live's names shown");
+            auto &three = *dialog.lines()[2];
+            three.toggle.setToggleState(true, juce::dontSendNotification);
+            three.toggle.onClick();
+            auto &pair = *dialog.lines()[4];
+            pair.name.setText("Vox", false);
+            pair.name.onTextChange();
+            std::optional<ChannelConfig> handed;
+            bool cancelled = false;
+            dialog.onOk = [&handed](const ChannelConfig &c) { handed = c; };
+            dialog.onCancel = [&cancelled] { cancelled = true; };
+            dialog.ok.onClick();
+            check(handed && handed->monoInputs[2].on && handed->stereoInputs[0].name == "Vox" &&
+                      handed->monoOutputs == start.monoOutputs && handed->activeInputs() == std::set<int>{1, 2, 3},
+                  "a switch and a name edited; OK hands back the record with the outputs as they were");
+            dialog.cancel.onClick();
+            check(cancelled, "Cancel leaves it");
+            // The dialog at twice its size, for the director's first look (ADI_UI_PARITY).
+            if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+                pictures.isNotEmpty()) {
+                ChannelConfigPanel shown(true, settings::defaultChannelConfig(8, 2), "Interface");
+                juce::Image image(juce::Image::ARGB, 2 * shown.getWidth(), 2 * shown.getHeight(), true,
+                                  juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(image);
+                    g.addTransform(juce::AffineTransform::scale(2.f));
+                    shown.paintEntireComponent(g, true);
+                }
+                const auto file = juce::File(pictures).getChildFile("channel-config-input.png");
+                file.deleteFile();
+                if (auto stream = file.createOutputStream())
+                    juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+            }
+            ChannelConfigPanel outputs(false, start, "Interface");
+            check(outputs.getTitle() == "Output Config" && outputs.lines().size() == 3,
+                  "Output Config lists the device's outputs: two mono, one pair");
+            // Kept with the device, one side at a time; the device opens with the channels in use.
+            std::string refused;
+            check(channelConfigFor(settings, "Interface", 4, 2) == start &&
+                      keepChannelConfig(settings, "Interface", true, *handed, refused),
+                  "no record kept: Live's default; the edited inputs are kept");
+            auto edited = start;
+            edited.monoOutputs[1].on = false;
+            edited.monoInputs[0].on = false; // not this dialog's side: left as kept
+            settings::AppSettings reread(appdata::App::Daw, settings.file());
+            check(keepChannelConfig(settings, "Interface", false, edited, refused) &&
+                      channelConfigFor(settings, "Interface", 4, 2).monoInputs == handed->monoInputs &&
+                      !channelConfigFor(settings, "Interface", 4, 2).monoOutputs[1].on &&
+                      settings::channelConfig(reread, "Interface").has_value(),
+                  "the output side kept beside the inputs, each from its own dialog, saved at once");
+            const auto bits = channelBits(channelConfigFor(settings, "Interface", 4, 2).activeInputs(), 4);
+            check(bits[0] && bits[1] && bits[2] && !bits[3] && channelBits({1, 2, 5}, 4).countNumberOfSetBits() == 2,
+                  "the record's channels in use are the device's channel bits, none beyond the device");
         }
         auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
             if (s == nullptr)
