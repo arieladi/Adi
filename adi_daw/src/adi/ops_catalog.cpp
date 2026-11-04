@@ -20,6 +20,8 @@
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/transport_settings.hpp"
+#include "adi/marker_ops.hpp"
 #include "adi/summing_flavors.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -994,13 +996,29 @@ bool remarkResolveInverse(OpContext& c, const Payload& p, Payload& inv, std::str
 
 // --- transport: the first real ephemeral ops ----------------------------------
 //
-// They persist nothing (ADR-0027), so there is nothing to apply until an engine
-// exists and nothing to undo ever. They still go through the registry -- same
+// Play/stop/seek/record remain driver commands, with no undo (ADR-0027).
+// Loop and click now materialise saved performance state in session_state. They still go through the registry -- same
 // validation, same scopes, same attribution -- and still get a log row tagged
 // `ephemeral`, so "what did the agent do at 14:32" stays answerable while Ctrl-Z
 // lands on the last real edit.
 
 bool transportNoop(OpContext&, const Payload&, std::string&) { return true; }
+
+bool transportSetting(OpContext& c,const Payload& p,std::string& error,bool loop) {
+    try {
+        Payload value;
+        if(loop) {
+            const auto previous=readTransportSettings(c.store);
+            const auto start=p.value("start",previous.loopStartTicks),end=p.value("end",previous.loopEndTicks);
+            if(start<0 || end<=start){error="loop requires nonnegative start and end after start";return false;}
+            value={{"on",p.at("on")},{"start",start},{"end",end}};
+        }else value=p.at("on");
+        SQLite::Statement set(c.db,"INSERT INTO session_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+        set.bind(1,loop?"transport.loop":"transport.metronome");set.bind(2,value.dump());set.exec();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+bool transportLoop(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,true);}
+bool transportMetronome(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,false);}
 
 // --- field tables ---------------------------------------------------------------
 
@@ -1139,6 +1157,16 @@ constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
 constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
                                      {"start", FieldType::Int, false},
                                      {"end", FieldType::Int, false}};
+
+constexpr Field kFMarkerCreate[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true},{"time_base",FieldType::Int,false},
+    {"name",FieldType::Text,false},{"kind",FieldType::Text,false},{"length",FieldType::Int,false},{"color",FieldType::Int,false},
+    {"note",FieldType::Text,false},{"prompt",FieldType::Text,false}};
+constexpr Field kFMarkerId[]={{"id",FieldType::Int,true}};
+constexpr Field kFMarkerMove[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true}};
+constexpr Field kFMarkerName[]={{"id",FieldType::Int,true},{"name",FieldType::Text,true}};
+constexpr Field kFMarkerColor[]={{"id",FieldType::Int,true},{"color",FieldType::Int,false}};
+constexpr Field kFMarkerText[]={{"id",FieldType::Int,true},{"text",FieldType::Text,true}};
+constexpr Field kFMarkerLength[]={{"id",FieldType::Int,true},{"length",FieldType::Int,true}};
 
 // --- track.setParent: the first op that is not a function of one row -------
 //
@@ -2021,6 +2049,15 @@ const OpDescriptor kHandWritten[] = {
      EngineImpact::None, kFRemarkResolve, false, false,
      remarkResolveApply, remarkResolveInverse, ""},
 
+    {"marker.create","Create a locator or cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerCreate,false,false,marker::create,marker::createInverse,"marker.delete"},
+    {"marker.delete","Delete a marker and its text",Scope::Edit,EngineImpact::Snapshot,kFMarkerId,false,false,marker::erase,marker::eraseInverse,"marker.create"},
+    {"marker.move","Move a marker in its own time base",Scope::Edit,EngineImpact::Snapshot,kFMarkerMove,true,false,marker::move,marker::moveInverse,""},
+    {"marker.rename","Rename a marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerName,false,false,marker::rename,marker::renameInverse,""},
+    {"marker.setColor","Set or clear a marker palette colour",Scope::Edit,EngineImpact::Snapshot,kFMarkerColor,false,false,marker::color,marker::rowInverse,""},
+    {"marker.resize","Resize a cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerLength,false,false,marker::resize,marker::rowInverse,""},
+    {"marker.setNote","Set a marker's note",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::note,marker::detailsInverse,""},
+    {"marker.setPrompt","Set a marker's literal prompt",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::prompt,marker::detailsInverse,""},
+
     // Ephemeral: performance, not editing. No inverse, and undo skips them.
     {"transport.play", "Start playback", Scope::Transport, EngineImpact::None,
      {}, false, true, transportNoop, nullptr, ""},
@@ -2028,14 +2065,14 @@ const OpDescriptor kHandWritten[] = {
      {}, false, true, transportNoop, nullptr, ""},
     {"transport.seek", "Move the playhead", Scope::Transport, EngineImpact::None,
      kFTransportSeek, false, true, transportNoop, nullptr, ""},
-    {"transport.setLoop", "Set the loop region", Scope::Transport, EngineImpact::None,
-     kFTransportLoop, false, true, transportNoop, nullptr, ""},
+    {"transport.setLoop", "Set the loop region", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportLoop, false, true, transportLoop, nullptr, ""},
     {"transport.setRecord", "Arm or disarm the transport", Scope::Transport,
      EngineImpact::GraphRebuild, kFTransportFlag, false, true,
      transportNoop, nullptr, ""},
     {"transport.setMetronome", "Toggle the metronome", Scope::Transport,
      EngineImpact::Snapshot, kFTransportFlag, false, true,
-     transportNoop, nullptr, ""},
+     transportMetronome, nullptr, ""},
 };
 
 }  // namespace

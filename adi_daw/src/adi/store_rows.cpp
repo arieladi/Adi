@@ -257,8 +257,8 @@ Model readModel(const Store& store) {
           });
 
     query(m, db, "markers",
-          "SELECT id, time_base, pos_ticks, pos_ns, length_ticks, length_ns, "
-          "       name, color, kind FROM markers",
+          "SELECT m.id, m.time_base, m.pos_ticks, m.pos_ns, m.length_ticks, m.length_ns, "
+          "       m.name, m.color, m.kind, COALESCE(d.note,''), COALESCE(d.prompt,'') FROM markers m LEFT JOIN marker_details d ON d.marker_id=m.id",
           [&](const SQLite::Statement& st) {
               Marker k;
               k.id = st.getColumn(0).getInt64();
@@ -270,6 +270,7 @@ Model readModel(const Store& store) {
               k.name = st.getColumn(6).getString();
               k.color = optInt(st, 7);
               k.kind = st.getColumn(8).getString();
+              k.note = st.getColumn(9).getString();k.prompt = st.getColumn(10).getString();
               m.markers.push_back(std::move(k));
           });
 
