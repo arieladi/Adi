@@ -1637,6 +1637,12 @@ add_executable(adi_ni_stems_tests tests/test_ni_stems.cpp)
 target_link_libraries(adi_ni_stems_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ni_stems_tests COMMAND adi_ni_stems_tests)
 
+add_executable(adi_aac_import_tests tests/test_aac_import.cpp)
+target_link_libraries(adi_aac_import_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_aac_import_tests PRIVATE
+    ADI_AAC_IMPORT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/aac_import")
+add_test(NAME adi_aac_import_tests COMMAND adi_aac_import_tests)
+
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
 target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_note_transforms_tests COMMAND adi_note_transforms_tests)
