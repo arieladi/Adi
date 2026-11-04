@@ -227,6 +227,7 @@ add_library(adi_core STATIC
     src/adi/ops_catalog.cpp
     src/adi/automation_edits.cpp
     src/adi/automation_lanes.cpp
+    src/adi/automation_shapes.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -1366,3 +1367,7 @@ add_test(NAME adi_automation_edits_tests COMMAND adi_automation_edits_tests)
 add_executable(adi_automation_lanes_tests tests/test_automation_lanes.cpp)
 target_link_libraries(adi_automation_lanes_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_automation_lanes_tests COMMAND adi_automation_lanes_tests)
+
+add_executable(adi_automation_shapes_tests tests/test_automation_shapes.cpp)
+target_link_libraries(adi_automation_shapes_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_shapes_tests COMMAND adi_automation_shapes_tests)

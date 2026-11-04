@@ -510,6 +510,37 @@ original layout even across reordering. Caller beforeCommit rejection rolls back
 stream and journal together. Caller-provided shape points use the existing six
 curve formulas; this increment adds no Live shape preset or parity claim, Automation Arm, clip-envelope playback, or automated send levels.
 
+`automation_shapes.hpp` adds owner-thread shape generation and prepared inclusive
+range replacement, expressed as the existing deletePoints/writePoints operations
+in one transaction (no new opcode). The named templates are sine, triangle,
+sawtooth/inverse, square, exponential rise/fall, logarithmic rise/fall and ADSR.
+Geometry/defaults are explicit implementation behavior awaiting Live parity;
+blocked official-manual access is not evidence that these presets match Live.
+
+`ShapeSpec` carries the lane-unit range, low/high values, cycles and resolution.
+Sine starts low and peaks halfway; triangle is linear; saws run to the opposite
+endpoint and restart at each cycle; square uses Hold points at its half-cycle.
+Curved ramps use the shared exponential/logarithmic formulas at tension +1.
+ADSR uses explicit attack/decay/release fractions in hundredths of a percent and
+a normalized sustain level; zero-duration phases create coincident steps. Sine is linearly sampled at the requested resolution; triangle, saws and ramps
+retain exact vertices/native curve descriptors regardless of resolution. Cycles are
+bounded 1..128 and steps/cycle 2..2048. All times are placed with integer quotient
+and remainder, including beyond 2^53. Nonfinite/reversed ranges, unknown shapes,
+overlapping ADSR phases and insufficient time resolution are refused.
+
+`prepareShapeInsertion` reads one SQLite snapshot without writing/reserving IDs,
+respects an outer read transaction, and resolves fresh positive uint64 point IDs
+that avoid every existing identity. It refuses unknown AAUT insertion layouts,
+ambiguous identities, wrong data/lane/clip addresses and lane-bound violations.
+It replaces points in inclusive [start,end], retaining outside records; the
+resulting points determine interpolation across either boundary, with no promise
+of unchanged extrapolated sound outside a boundary lacking its own point.
+`commitShapeInsertion` checks the original open Store/client and commits with an
+explicit expected head, including an expected NULL head. Stale work changes
+nothing; exact row absence/bytes are restored in one undo. Callers keep their
+own document generation across asynchronous preparation. This adds no UI or
+Automation Arm/recording behavior.
+
 ### 9.7 Devices, chains, macros
 
 | Op | S | E | Inv | P |
