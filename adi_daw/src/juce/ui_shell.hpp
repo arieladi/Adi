@@ -4,7 +4,9 @@
 #include "adi/settings/store.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/op_submitter.hpp"
+#include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
+#include "adi/ui/tap_tempo.hpp"
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
@@ -94,7 +96,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         DeactivateSelected,
         ActivateTrack1,
         ActivateTrack8 = ActivateTrack1 + 7,
-        LastId = ActivateTrack8
+        ToggleMixerSends,
+        InsertTimeSignatureChange,
+        LastId = InsertTimeSignatureChange
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -127,6 +131,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
     bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
+    // Each window's interface zoom, kept per window and per display in `window.zoom` (N4;
+    // ADR-0129 d3, ADR-0203 d11): what was kept for that window on that display, if anything;
+    // and keeping a window's zoom there, saved at once.
+    std::optional<float> keptZoom(const std::string &window, const std::string &display) const;
+    bool keepZoom(const std::string &window, const std::string &display, float zoom, std::string &why);
     juce::ApplicationCommandManager manager;
 
   private:
@@ -166,7 +175,8 @@ class AdiRootComponent final : public juce::Component {
     void paint(juce::Graphics &) override;
     void resized() override;
     bool keyPressed(const juce::KeyPress &) override;
-    // The ★ Reference's key comes up: a hold ends (ADR-0209 d9).
+    // The ★ Reference's key comes up: a hold ends (ADR-0209 d9). A latching key comes up: a hold
+    // of 500 ms or more goes back (Live 42.25).
     bool keyStateChanged(bool isKeyDown) override;
     bool command(int);
     void mark(unsigned bits) noexcept { dirty_.mark(bits); }
@@ -197,9 +207,17 @@ class AdiRootComponent final : public juce::Component {
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.
     bool dropAudio(const std::string &utf8Path, std::int64_t track, std::int64_t pos, const std::string &name);
+    // Several files dropped at once, each a (path, clip name): one after another on that track, or
+    // with `separate` (Ctrl/Cmd held) the first there and each other on a new audio track of its own
+    // (`adi::ui::dropAudio`). Each file is read and captured first; one undo step for them all.
+    bool dropAudioFiles(const std::vector<std::pair<std::string, std::string>> &files, std::int64_t track,
+                        std::int64_t pos, bool separate);
     // The window's own interface zoom (ADR-0203 d6, A5-01): each window keeps its
     // own, and the ZoomHost around the root applies it as a transform.
     float interfaceZoom() const noexcept { return interfaceZoom_; }
+    // On opening, and after a move onto another display: the zoom kept for this window on the
+    // display it now stands on, if one was kept (N4). Ctrl/Cmd + and - keep it there.
+    void followDisplay();
     // Whether this view's own window fills the screen (Live's Full Screen, §42.1).
     bool fullScreen() const;
     // What the Info View shows: the element under the mouse, read in the frame.
@@ -231,6 +249,9 @@ class AdiRootComponent final : public juce::Component {
     // The Mix View (ADR-0209): docked in place of the arrangement and its track controls.
     MixViewPanel mixViewPanel{*this};
     juce::Rectangle<int> mixViewArea() const noexcept { return mixViewArea_; }
+    // Where the Mix View stands docked, open or not: the arrangement's place and its track controls'.
+    // Its first window opens over it, on the screen (detachMixView).
+    juce::Rectangle<int> mixViewDock() const noexcept { return mixViewDock_; }
     // The Mix View's tab, this window's view state; false only on a write error.
     bool chooseMixViewTab(int tab);
     // Opens or closes the Mix View and says where it goes; the application moves the panel into
@@ -243,6 +264,13 @@ class AdiRootComponent final : public juce::Component {
     // The ★ Reference's [REF] and Shift+R, down or up at a time in milliseconds (ADR-0209 d9): a
     // tap latches, a hold auditions. True when the reference's state changed.
     bool referenceKey(bool down, std::int64_t nowMs);
+    // Live's momentary latching (§42.25) for S, F1…F8 and Z: the key goes down and its command runs,
+    // once, however long it is held; it comes up after 500 ms or more and the window goes back: the
+    // solo or the activator's step is undone, while it is still the latest, and the zoom goes back.
+    static bool latches(int command) noexcept;
+    bool latchKey(int command, int keyCode, bool down, std::int64_t nowMs);
+    const MomentaryLatch &latch() const noexcept { return latch_; }
+    void letGoUnseen() noexcept { latch_.letGo(); }
     const ReferenceAudition &reference() const noexcept { return reference_; }
     // The ★ Reference track, or 0 when no track is it.
     std::int64_t referenceTrack() const noexcept;
@@ -256,6 +284,10 @@ class AdiRootComponent final : public juce::Component {
     // Live 12's Mixer View Control options (manual 18.1, "show or hide mixer components"): In/Out,
     // Sends, Volume, Track Options, Crossfader, Performance Impact, then Return Tracks.
     juce::PopupMenu mixerOptionsMenu();
+    // Live 12's Arrangement Track Controls submenu of the View menu: ADI's Hide/Show Track Controls
+    // (the side panel), then the track controls' In/Out and Sends (Ctrl/Cmd+Alt+I, Ctrl/Cmd+Alt+S),
+    // Volume and Track Options. The View menu's Mixer Controls submenu is mixerOptionsMenu().
+    juce::PopupMenu trackControlsMenu();
     juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
     // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
     bool submitEdit(const std::string &op, Payload payload, const char *label);
@@ -268,6 +300,35 @@ class AdiRootComponent final : public juce::Component {
     // Live's Track Activator on track `id`: with `withSelection`, the selected tracks together when
     // `id` is among them (a switch, or 0 on the selection); without, that track alone (F1…F8).
     bool activateTrack(std::int64_t id, bool withSelection = true);
+    // Live's time signature markers (manual 6.5), from the CURRENT cell (ADR-0201), each one undo
+    // step: Insert Time Signature Change at `pos` with the value typed, Edit Time Signature on the
+    // marker there, Delete. The marker inserted or edited is selected; a refusal is said.
+    bool insertMeter(std::int64_t pos, const std::string &text);
+    bool editMeter(std::int64_t pos, const std::string &text);
+    bool deleteMeter(std::int64_t pos);
+    // The marker at `from` moved to `to`, its value kept, one step; it stays selected.
+    bool moveMeter(std::int64_t from, std::int64_t to);
+    // The control bar's Time Signature field (manual 6.5): the signature in force at the play
+    // location takes the value typed, one step.
+    bool setMeterAtPlay(const std::string &text);
+    // The control bar's Tempo field (manual 9.1.1): the tempo in force at the play location takes the
+    // value typed, 20 to 999 BPM, one step.
+    bool setTempoAtPlay(const std::string &text, const char *label = "Change Tempo");
+    // Live's Tap Tempo (manual 9.1.2): a tap at a time in milliseconds; from a run's second tap the
+    // tempo follows the taps. A run is one undo step ("Tap Tempo"): each tap replaces the run's step
+    // while it is still the latest.
+    bool tapTempo(std::int64_t nowMs);
+    // Live's Arrangement Position fields (manual 6.1): "Adjusting the Arrangement Position fields
+    // automatically moves the insert marker". A position typed, bar.beat.sixteenth in the project's
+    // meters, puts the insert marker and the playhead there; up and down step a bar from the play
+    // position (the insert marker while stopped). Neither is an edit, so neither is an undo step.
+    bool setPositionAt(const std::string &text);
+    bool stepPosition(int bars);
+    const TapTempo &taps() const noexcept { return tap_; }
+    // An edit of the start's tempo or signature, where the snapshot cannot tell a stored value from
+    // its own: `tried` (an insert) first; refused, it changed nothing, and `otherwise` (a replace)
+    // follows. One step either way.
+    bool submitStartEdit(std::vector<OpRequest> tried, std::vector<OpRequest> otherwise);
     // Live's track drag (the Arrangement View; manual 18.3): the selected tracks when `dragged` is
     // among them, else that track alone, to `to`; one undo step, "Move Track" or "Move Tracks".
     bool moveTracks(std::int64_t dragged, TrackDrop to);
@@ -312,19 +373,28 @@ class AdiRootComponent final : public juce::Component {
     std::int64_t position_ = 0;
     double sampleRate_ = 0; // the device's granted rate, once a driver runs
     float interfaceZoom_ = 1;
+    std::optional<std::string> zoomDisplay_; // the display the zoom was last followed on
     juce::Component *hovered_ = nullptr;
     juce::String infoText_;
     juce::Rectangle<int> deviceArea_, infoArea_, browserArea_, chatArea_, mixerArea_,
-        mixerViewArea_, stripArea_, mixViewArea_;
+        mixerViewArea_, stripArea_, mixViewArea_, mixViewDock_;
     int leftWidth_ = 0, rightWidth_ = 0;
     std::string error_;
     StubMixViewProvider mixStub_;
     const MixViewProvider *mixProvider_ = &mixStub_;
     ReferenceAudition reference_;
+    MomentaryLatch latch_;
+    TapTempo tap_;
+    std::int64_t tapStep_ = 0; // the undo step the tap run made
+    double tapBpm_ = 0;
 };
 // The interface zoom's steps, 50 % to 200 % (ADR-0129 d3): the next one in or out of
 // `now`, or nothing at either end.
 std::optional<float> nextZoom(float now, bool in) noexcept;
+// A display's name in the App settings: its geometry and DPI, as the floating windows name the
+// monitors (JUCE exposes no stable EDID identifier); the one nearest a point on the screen.
+std::string displayId(const juce::Displays::Display &);
+std::string displayAt(juce::Point<int> screen);
 // Holds a root at its window's interface zoom: the root lays out in logical
 // units and the transform scales it, so nothing below knows the zoom exists.
 class ZoomHost final : public juce::Component {
@@ -356,6 +426,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
     AdiWindow(std::unique_ptr<AdiRootComponent>, AppCommands &, bool onDesktop = true);
     ~AdiWindow() override;
     using juce::DocumentWindow::keyPressed;
+    using juce::DocumentWindow::keyStateChanged;
     std::function<void()> onClose;
     void closeButtonPressed() override {
         if (onClose)
@@ -364,6 +435,8 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
             setVisible(false);
     }
     juce::MenuBarModel *menu() noexcept;
+    // Placed, or moved onto another display: the root takes the zoom kept for it there (N4).
+    void moved() override;
     // What the window keeps of the App settings, brought up to date: each frame does it.
     void followSettings();
     AdiRootComponent &root() noexcept { return *root_; }
@@ -372,6 +445,7 @@ class AdiWindow final : public juce::DocumentWindow, private juce::KeyListener {
 
   private:
     bool keyPressed(const juce::KeyPress &k, juce::Component *) override;
+    bool keyStateChanged(bool isKeyDown, juce::Component *) override;
     AdiRootComponent *root_;
     AppCommands &commands_;
     std::unique_ptr<juce::TooltipWindow> tips_;

@@ -17,6 +17,31 @@ std::string quoted(const std::string& identifier) {
     }
     return out + '"';
 }
+void bindCell(SQLite::Statement& statement,int index,const Payload& value) {
+    if (value.is_null()) statement.bind(index);
+    else if (value.is_number_integer()) statement.bind(index, signedInteger(value));
+    else if (value.is_number_float()) statement.bind(index, value.get<double>());
+    else if (value.is_string()) statement.bind(index, value.get<std::string>());
+    else if (value.is_binary()) {
+        const auto& bytes = value.get_binary();
+        // sqlite3_bind_blob(nullptr,0) means NULL, not an empty BLOB.
+        static const char empty = 0;
+        if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            throw std::runtime_error("captured blob is too large");
+        statement.bind(index, bytes.empty() ? static_cast<const void*>(&empty)
+                                           : static_cast<const void*>(bytes.data()),
+                       static_cast<int>(bytes.size()));
+    } else throw std::runtime_error("invalid captured SQLite value");
+}
+std::string predicate(const Payload& key) {
+    if(!key.is_object() || key.empty())throw std::runtime_error("captured key must be a nonempty object");
+    std::string result;
+    for(auto it=key.begin();it!=key.end();++it){if(!result.empty())result+=" AND ";result+=quoted(it.key())+" IS ?";}
+    return result;
+}
+void bindKey(SQLite::Statement& statement,const Payload& key,int index=0) {
+    for(const auto& value:key)bindCell(statement,++index,value);
+}
 } // namespace
 
 std::int64_t signedInteger(const Payload& value) {
@@ -29,8 +54,11 @@ std::int64_t signedInteger(const Payload& value) {
 
 std::optional<Payload> captureRow(SQLite::Database& db, const std::string& table,
                                 const std::string& key, std::int64_t id) {
-    SQLite::Statement query(db, "SELECT * FROM " + quoted(table) + " WHERE " + quoted(key) + "=?");
-    query.bind(1, id);
+    return captureRowKey(db,table,Payload{{key,id}});
+}
+std::optional<Payload> captureRowKey(SQLite::Database& db,const std::string& table,const Payload& key) {
+    SQLite::Statement query(db,"SELECT * FROM "+quoted(table)+" WHERE "+predicate(key));
+    bindKey(query,key);
     if (!query.executeStep()) return std::nullopt;
     return captureQueryRow(query);
 }
@@ -81,27 +109,28 @@ void restoreRow(SQLite::Database& db, const std::string& table, const Payload& r
               (assignments.empty() ? quoted(updateKey) + "=" + quoted(updateKey) : assignments) +
               " WHERE " + quoted(updateKey) + "=?";
     SQLite::Statement statement(db, sql);
-    auto bind = [&](int index, const Payload& value) {
-        if (value.is_null()) statement.bind(index);
-        else if (value.is_number_integer()) statement.bind(index, signedInteger(value));
-        else if (value.is_number_float()) statement.bind(index, value.get<double>());
-        else if (value.is_string()) statement.bind(index, value.get<std::string>());
-        else if (value.is_binary()) {
-            const auto& bytes = value.get_binary();
-            // sqlite3_bind_blob(nullptr,0) means NULL, not an empty BLOB.
-            static const char empty = 0;
-            if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
-                throw std::runtime_error("captured blob is too large");
-            statement.bind(index, bytes.empty() ? static_cast<const void*>(&empty)
-                                               : static_cast<const void*>(bytes.data()),
-                           static_cast<int>(bytes.size()));
-        } else throw std::runtime_error("invalid captured SQLite value");
-    };
     int index = 0;
     for (auto it = row.begin(); it != row.end(); ++it)
-        if (updateKey.empty() || it.key() != updateKey) bind(++index, it.value());
-    if (!updateKey.empty()) bind(++index, row.at(updateKey));
+        if (updateKey.empty() || it.key() != updateKey) bindCell(statement,++index, it.value());
+    if (!updateKey.empty()) bindCell(statement,++index, row.at(updateKey));
     if (statement.exec() == 0 && !updateKey.empty())
         throw std::runtime_error("captured update target is missing");
+}
+void updateRowKey(SQLite::Database& db,const std::string& table,const Payload& row,const Payload& key) {
+    if(!row.is_object() || row.empty())throw std::runtime_error("invalid captured update row");
+    const auto where=predicate(key);std::string assignments;
+    for(auto it=row.begin();it!=row.end();++it)if(!key.contains(it.key())) {
+        if(!assignments.empty())assignments+=',';
+        assignments+=quoted(it.key())+"=?";
+    }
+    for(auto it=key.begin();it!=key.end();++it)if(!row.contains(it.key()) || row.at(it.key())!=it.value())throw std::runtime_error("captured update changes its key");
+    if(assignments.empty())assignments=quoted(key.begin().key())+"="+quoted(key.begin().key());
+    SQLite::Statement statement(db,"UPDATE "+quoted(table)+" SET "+assignments+" WHERE "+where);int index=0;
+    for(auto it=row.begin();it!=row.end();++it)if(!key.contains(it.key()))bindCell(statement,++index,it.value());
+    bindKey(statement,key,index);
+    if(statement.exec()!=1)throw std::runtime_error("captured update target is missing");
+}
+int eraseRowKey(SQLite::Database& db,const std::string& table,const Payload& key) {
+    SQLite::Statement statement(db,"DELETE FROM "+quoted(table)+" WHERE "+predicate(key));bindKey(statement,key);return statement.exec();
 }
 } // namespace adi::detail

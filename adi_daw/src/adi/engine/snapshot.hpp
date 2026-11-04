@@ -24,9 +24,13 @@
 // mutating a live snapshot does not compile.
 
 #pragma once
+#include <array>
 
 #include "adi/engine/publisher.hpp"
+#include "adi/engine/automation_snapshot.hpp"
 #include "adi/textproj.hpp"
+#include "adi/transport_settings.hpp"
+#include "adi/track_recording.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -70,6 +74,11 @@ struct ClipNode {
     std::int64_t lengthTicks = 0;
     bool muted = false;
     float gainDb = 0.0f;
+    std::int64_t fadeInTicks=0,fadeOutTicks=0,fadeInCurve=1,fadeOutCurve=1;
+    std::optional<double> fadeInTension,fadeOutTension;
+    std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
+    std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
+    std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain
 };
 
 struct TrackNode {
@@ -77,6 +86,7 @@ struct TrackNode {
     std::int64_t parent = 0;      // 0 at the top of the tree
     std::int64_t indexInParent = 0;
     std::string kind;
+    TrackRecordingOptions recording;
     std::optional<std::int64_t> color; // absent is distinct from explicit zero
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;
@@ -87,6 +97,9 @@ struct TrackNode {
     std::string freezeMode; // wet, unverified legacy flag, or empty
     float volumeDb = 0.0f;
     float pan = 0.0f;
+    std::int64_t delaySamples = 0; // stored samples at Snapshot::sampleRate; ms = 1000 * samples / rate
+    std::string panMode = "stereo";
+    double panLeft = -1.0, panRight = 1.0;
     std::vector<std::shared_ptr<const ClipNode>> clips;
 };
 
@@ -101,12 +114,39 @@ struct SendRoute {
     bool preFader = false, enabled = true;
 };
 
+/// Locator/cycle metadata. Positions and lengths retain their stored units;
+/// only the matching time-base columns are present. Notes/prompts are literal.
+struct MarkerNode {
+    std::int64_t id = 0, timeBase = 0;
+    std::optional<std::int64_t> posTicks, posNs, lengthTicks, lengthNs, color;
+    std::string name, kind, note, prompt;
+    friend bool operator==(const MarkerNode&, const MarkerNode&) = default;
+};
+
+/// A remark with its owning track resolved once per rebuild. Orphaned
+/// anchors remain visible; a parameter need not have a plugin_params row.
+struct RemarkNode {
+    std::int64_t id=0,targetId=0,createdUtc=0;
+    std::string targetKind,author,actorDetail,text;
+    std::optional<std::string> paramId;
+    bool resolved=false,anchorMissing=false;
+    std::optional<std::int64_t> trackId;
+    friend bool operator==(const RemarkNode&,const RemarkNode&)=default;
+};
+
 /// What the audio thread sees. Derives from Sequenced so the publisher can
 /// stamp it; nothing else touches `seq`.
 struct Snapshot : Sequenced {
     std::shared_ptr<const TempoMap> tempo;
     std::vector<std::shared_ptr<const TrackNode>> tracks;
+    // Sorted by persistent id, not a display order. Filter by trackId or the
+    // raw target address; unresolved anchors retain all their text/metadata.
+    std::vector<std::shared_ptr<const RemarkNode>> remarks;
     int sampleRate = 44100;
+    TransportSettings transport;
+    std::vector<std::shared_ptr<const MarkerNode>> markers; // id order, not a mixed-units display order
+    std::vector<std::shared_ptr<const AutomationLaneNode>> automationLanes; // lane id order
+    bool automationOverridden = false; // session state supplied at rebuild, never saved
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.
     std::vector<textproj::Meter> meters;
@@ -116,6 +156,8 @@ struct Snapshot : Sequenced {
 
     [[nodiscard]] const TrackNode* findTrack(std::int64_t id) const noexcept;
     [[nodiscard]] bool anySoloed() const noexcept;
+    [[nodiscard]] const MarkerNode* findMarker(std::int64_t id) const noexcept;
+    [[nodiscard]] const AutomationLaneNode* findAutomationLane(std::int64_t id) const noexcept;
 };
 
 /// Builds snapshots, reusing nodes from the previous one.
@@ -128,11 +170,12 @@ class SnapshotBuilder {
 public:
     /// Reads the whole project. Use for the first snapshot, or after a change
     /// too broad to describe.
-    static std::unique_ptr<Snapshot> fromStore(const Store&);
+    static std::unique_ptr<Snapshot> fromStore(const Store&, const std::set<std::int64_t>& overridden = {});
 
     /// Reads the project but reuses every node from `previous` that is
     /// unchanged. Returns a snapshot sharing structure with it.
-    static std::unique_ptr<Snapshot> fromStore(const Store&, const Snapshot& previous);
+    static std::unique_ptr<Snapshot> fromStore(const Store&, const Snapshot& previous,
+                                              const std::set<std::int64_t>& overridden = {});
 
     /// How many nodes the two snapshots share by pointer. For tests: the sharing
     /// claim above is checkable, so it is checked.

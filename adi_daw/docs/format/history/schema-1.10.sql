@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.0 (DRAFT — see SPEC.md, nothing is frozen)
+--  Normative schema, version 1.10 (see SPEC.md; older minors are frozen)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -15,7 +15,7 @@
 --       sizeof(struct).
 --    *  Booleans are INTEGER 0/1.
 --    *  Timestamps are INTEGER microseconds since the Unix epoch, UTC.
---    *  Colours are INTEGER 0xAARRGGBB.
+--    *  Colours are Live palette indexes 0..69, NULL for none (ADR-0211).
 --    *  EVERY table is STRICT. Without it, SQLite's flexible typing lets a
 --       TEXT value sit in a REAL column, and sqlite3_column_double() then
 --       coerces it silently -- so a reader returns a number that is not what
@@ -181,6 +181,14 @@ CREATE TABLE markers (
     kind        TEXT    NOT NULL DEFAULT 'position',
     CHECK ((time_base = 0 AND pos_ticks IS NOT NULL AND pos_ns    IS NULL)
         OR (time_base = 1 AND pos_ns    IS NOT NULL AND pos_ticks IS NULL))
+) STRICT;
+
+-- Since 1.10 (N25): marker notes and literal prompts, additive to the frozen
+-- marker row. Deleting a marker removes its details in the same transaction.
+CREATE TABLE marker_details (
+    marker_id INTEGER PRIMARY KEY REFERENCES markers(id) ON DELETE CASCADE,
+    note TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL DEFAULT ''
 ) STRICT;
 
 -- Cubase Arranger Track / Ableton locators: named sections that can be
@@ -999,16 +1007,3 @@ CREATE UNIQUE INDEX idx_ext ON extensions(ns, key, scope_kind, IFNULL(scope_id,-
 -- ============================================================================
 --  END
 -- ============================================================================
-
--- Immutable whole-track cache provenance. Original material and state stay pooled.
-CREATE TABLE frozen_renders (
-    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
-    pre_media_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE RESTRICT,
-    post_media_id INTEGER NOT NULL REFERENCES media_files(id) ON DELETE RESTRICT,
-    frames INTEGER NOT NULL CHECK(frames>0),
-    sample_rate INTEGER NOT NULL CHECK(sample_rate BETWEEN 8000 AND 768000),
-    channels INTEGER NOT NULL CHECK(channels BETWEEN 1 AND 64),
-    fingerprint TEXT NOT NULL,
-    identities BLOB NOT NULL,
-    original_armed INTEGER NOT NULL CHECK(original_armed IN (0,1))
-) STRICT;

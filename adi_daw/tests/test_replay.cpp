@@ -133,6 +133,11 @@ std::vector<OpRequest> corpus() {
     op("controller.bind", {{"id",81},{"binding",binding}}, "Relearn pan");
     op("controller.unbind", {{"id",81}}, "Unlearn pan");
     op("controller.bind", {{"id",82},{"binding",binding}}, "Keep project binding");
+    op("track.setRecordQuantize", {{"id",10},{"on",false},{"grid","1/8"}}, "Free record");
+    op("track.setPlayQuantize", {{"id",10},{"on",true},{"grid","1/16"},{"forgivenessMs",30.0}}, "Live quantize");
+    op("track.setKeepMonitoringLatency", {{"id",10},{"on",false}}, "Remove monitoring latency");
+    op("track.restoreRecording", {{"id",10}}, "Remove captured recording overrides");
+    op("track.setRecordQuantize", {{"id",10},{"on",true},{"grid","1/32"}}, "Record thirty-seconds");
     op("track.rename", {{"id", 11}, {"name", "Lead Vocal"}}, "Rename Vox");
     op("track.setMute", {{"id", 7}, {"muted", true}}, "Mute Drums");
     op("track.setMute", {{"id", 10}, {"muted", false}}, "Unmute Keys");
@@ -184,10 +189,16 @@ std::vector<OpRequest> corpus() {
     // CONTENT, addressed by hash and travelling with the file, exactly as
     // media does (ADR-0032, ADR-0038). An op that inlined the bytes would put
     // a sampler's embedded content into the undo log twice.
+    const Payload builtinRow={{"id",400},{"format","internal"},{"uid","org.adidaw.builtin.utility"},
+        {"vendor","ADI"},{"name","Utility"},{"version","1"},{"subtype","effect"},
+        {"path_hint",""},{"is_shell",0},{"shell_id",nullptr}};
+    op("pluginRef.register", {{"id",400},{"row",builtinRow}}, "Register Utility");
+    op("pluginRef.unregister", {{"id",400}}, "Forget unused Utility reference");
+    op("pluginRef.register", {{"id",400},{"row",builtinRow}}, "Register Utility again");
     op("chain.create", {{"id", 60}, {"track", 10}, {"name", "Rhodes FX"}},
        "A chain on Rhodes");
     op("device.insert", {{"id", 70}, {"chain", 60}, {"ord", 0},
-                         {"name", "Compressor"}}, "Insert a compressor");
+                         {"name", "Compressor"},{"ref",400}}, "Insert a compressor");
     op("device.insert", {{"id", 71}, {"chain", 60}, {"ord", 1},
                          {"name", "Reverb"}, {"always", true}}, "Insert a reverb");
     // ADR-0011: a device whose plugin did not load is STILL INSERTED. Undoing

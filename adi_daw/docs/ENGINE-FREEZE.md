@@ -60,7 +60,7 @@ Disable edits to baked source material while frozen, offering Unfreeze first.
 
 ## Persistence and failures
 
-Schema 1.10 adds frozen_renders. Each row holds pre/post media IDs, frames,
+Schema 1.17 adds frozen_renders. Each row holds pre/post media IDs, frames,
 sample rate/channels, source fingerprint, installed identity CBOR and original
 arm state. Older minors migrate additively; read-only older projects get an
 empty temporary table. The new track.setFreeze operation carries captured
@@ -102,7 +102,7 @@ refused. These boundaries prevent a static cache from silently replacing a
 partial or live-input mix; live-input modes remain follow-up work. Empty and
 nested ordinary groups are valid. A master track cannot belong to the scope.
 
-Use the same prepareFreeze/commitFreeze/unfreeze calls. Schema 1.11 adds
+Use the same prepareFreeze/commitFreeze/unfreeze calls. Schema 1.18 adds
 frozen_groups with captured descendant IDs and original arm switches, and
 group.setFreezeScope records them beside the root cache in the same transaction.
 Undo, redo, reopen and generic track-delete undo retain that metadata. Unfreeze
