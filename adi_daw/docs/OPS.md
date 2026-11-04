@@ -435,6 +435,13 @@ silent truncation in JSON, a non-issue in CBOR.
 | `cc.delete` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
 
+Scala file parsing is owner preparation, not a log operation.
+`engine::parseScala(bytes,id,name)` captures an explicit owned definition,
+including the final repeat period and double cent offsets. See
+`ENGINE-SCALA-IMPORT.md` for its bounded accepted grammar and errors. Native
+writer integration logs resolved values; replay never reads the original file
+or recomputes ratios. No opcode/schema/binary-layout change in the parser.
+
 Scale highlighting, ruler and Fold projections are runtime read concerns.
 `engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
 tuning degrees coherently without reading notes or writing history. Held
