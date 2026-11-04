@@ -5,7 +5,7 @@ namespace adi::ui {
 namespace {
 // The rows under the three headings, top to bottom, as Live lays them out.
 constexpr int kDriver = 1, kInput = 2, kOutput = 3, kRate = 5, kBuffer = 7, kInLatency = 8,
-              kOutLatency = 9, kOverall = 10, kRows = 11;
+              kOutLatency = 9, kCompensation = 10, kOverall = 11, kRows = 12;
 int rowY(int row) {
     // A heading is 25 units, a row 21: headings sit at rows 0, 4 and 6.
     const int headings = row > 6 ? 3 : row > 4 ? 2 : 1;
@@ -50,6 +50,16 @@ AudioDevicePage::AudioDevicePage(juce::AudioDeviceManager &manager) : manager_(m
     refresh();
 }
 AudioDevicePage::~AudioDevicePage() { manager_.removeChangeListener(this); }
+bool AudioDevicePage::hold(const std::string &key, SettingRow &row) {
+    if (key != "audio.driverErrorCompensationMs")
+        return false;
+    // Live's name, in the page's own case.
+    row.setTitle("Driver Error Compensation");
+    addAndMakeVisible(row);
+    compensation_ = &row;
+    resized();
+    return true;
+}
 void AudioDevicePage::apply(const std::function<void(juce::AudioDeviceManager::AudioDeviceSetup &)> &change) {
     auto setup = manager_.getAudioDeviceSetup();
     change(setup);
@@ -118,6 +128,8 @@ void AudioDevicePage::resized() {
     place(output_, kOutput, SettingRow::kWide);
     place(sampleRate_, kRate, SettingRow::kNarrow);
     place(bufferSize_, kBuffer, SettingRow::kNarrow);
+    if (compensation_ != nullptr)
+        compensation_->setBounds(0, rowY(kCompensation), w, SettingRow::kHeight);
 }
 void AudioDevicePage::paint(juce::Graphics &g) {
     // Live's names on the left; the latencies are read, not set.

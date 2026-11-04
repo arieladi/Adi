@@ -9,12 +9,15 @@ namespace adi::ui {
 // Device (driver type, input and output devices), Sample Rate, and Latency (buffer size, the
 // input, output and overall latencies). It drives the application's device manager, whose
 // own listener writes the choice into the App settings (`audio.*`).
-class AudioDevicePage final : public juce::Component, private juce::ChangeListener {
+// Driver Error Compensation stands among the latencies, between Output and Overall Latency, as
+// Live 11's: the Settings panel's own row for `audio.driverErrorCompensationMs`, held here.
+class AudioDevicePage final : public juce::Component, public SettingsPageHead, private juce::ChangeListener {
   public:
     explicit AudioDevicePage(juce::AudioDeviceManager &);
     ~AudioDevicePage() override;
     void paint(juce::Graphics &) override;
     void resized() override;
+    bool hold(const std::string &key, SettingRow &row) override;
 
   private:
     void changeListenerCallback(juce::ChangeBroadcaster *) override;
@@ -25,5 +28,6 @@ class AudioDevicePage final : public juce::Component, private juce::ChangeListen
     SettingsHeading device_{"Audio Device"}, rate_{"Sample Rate"}, latency_{"Latency"};
     juce::ComboBox driver_, input_, output_, sampleRate_, bufferSize_;
     juce::String inputLatency_, outputLatency_, overallLatency_, error_;
+    juce::Component::SafePointer<SettingRow> compensation_;
 };
 } // namespace adi::ui

@@ -5291,6 +5291,41 @@ int main(int argc, char **argv) {
         panel.showPage("Audio");
         check(panel.page() == "Audio" && panel.rows().size() == onAudio && panel.audioDevices() == nullptr,
               "one page at a time, every setting on its tab");
+        {
+            // A page's head holds the rows Live has among its own controls (the Audio page's Driver
+            // Error Compensation among the latencies); the panel keeps them, out of its list.
+            struct Head final : juce::Component, SettingsPageHead {
+                bool hold(const std::string &key, SettingRow &row) override {
+                    if (key != "audio.driverErrorCompensationMs")
+                        return false;
+                    addAndMakeVisible(row);
+                    return true;
+                }
+            };
+            SettingsPanel headed(settings, [] {
+                auto head = std::make_unique<Head>();
+                head->setSize(500, 120);
+                return head;
+            });
+            headed.setSize(560, 680);
+            headed.showPage("Audio");
+            const SettingRow *compensation = nullptr;
+            bool othersInList = true;
+            for (const auto &row : headed.rows()) {
+                if (row->setting.key == "audio.driverErrorCompensationMs")
+                    compensation = row.get();
+                else if (row->getParentComponent() == headed.audioDevices())
+                    othersInList = false;
+            }
+            check(compensation != nullptr && compensation->getParentComponent() == headed.audioDevices() && othersInList &&
+                      compensation->isVisible(),
+                  "the head holds Driver Error Compensation's row; the panel keeps it, the rest stay in the list");
+            headed.showPage(pages.front() != "Audio" ? pages.front() : pages.back());
+            check(!headed.rows().empty() && headed.page() != "Audio" &&
+                      std::none_of(headed.rows().begin(), headed.rows().end(),
+                               [](const auto &row) { return row->setting.key == "audio.driverErrorCompensationMs"; }),
+                  "another page lets it go");
+        }
         auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
             if (s == nullptr)
                 return nullptr;
