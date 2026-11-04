@@ -42,3 +42,11 @@ Read with [whole-feature coverage](DAW-RESEARCH-COVERAGE.md) and the [per-app no
 The Dream's collaboration conflict handling, agent authority, per-frame video telemetry, remote hosting failover, always-saved operation model, mobile project continuity and ADiJ require their own specifications and tests. No evidence here establishes equivalent features in Live, Cubase or Bitwig. The [coverage register](DAW-RESEARCH-COVERAGE.md) retains each requirement instead of forcing a misleading reference-app analogy.
 
 For every domain, record: stable object identity and ownership; source versus derived data; time/value units; trigger and state transitions; one-gesture transaction boundary; save/reopen and missing dependencies; cancellation/failure; and real-time/export differences where applicable. These are acceptance dimensions, not a substitute for actual reference evidence.
+
+## Live base research expansion — milestone 6
+
+The [Live v0.6 notes](daws/ableton-12.md) add 445 detailed contracts across editing, routing, recording, controllers, accessibility, files, public API and tuning interchange. A6M/A6C/A6H/A6R cover host workflows; A6S/A6T are bounded installed-resource observations; A6D is versioned release evidence; A6P is public API research; A6F is format/interoperability research; A6G fills additional resource, clock and numerical-test boundaries. Each includes an ADI implication and a private follow-up case.
+
+The new source review preserves ADI per-key-map tuning and flags source-valid scales that conflict with ADR-0178's current model. It separates typed time units, ephemeral API handles, deferred changes, UI versus API commands and data lost during interchange. A6Z adds bounded shipped-schema evidence; A6X/A6U/A6I address the extension/current-integration documentary gaps. These findings refine questions under the existing decisions; they authorize no model change.
+
+The 610-entry Live contents inventory retains stable IDs and now links 373 entries to exact M6 findings. Four Simpler-operation entries are explicitly excluded under the director's instruction. Links are navigation, not completion certification; all original Live measurement questions and full settings/text/menu/palette/history/audio/CPU verification remain open.
