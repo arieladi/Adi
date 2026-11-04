@@ -1376,3 +1376,7 @@ add_test(NAME adi_automation_shapes_tests COMMAND adi_automation_shapes_tests)
 add_executable(adi_automation_recording_tests tests/test_automation_recording.cpp)
 target_link_libraries(adi_automation_recording_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_automation_recording_tests COMMAND adi_automation_recording_tests)
+
+add_executable(adi_automation_write_policy_tests tests/test_automation_write_policy.cpp)
+target_link_libraries(adi_automation_write_policy_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_write_policy_tests COMMAND adi_automation_write_policy_tests)

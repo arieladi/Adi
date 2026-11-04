@@ -573,6 +573,28 @@ of every host callback or the existing UI Arm button: those producers must suppl
 correct lane-unit timestamps and serialize controls on their producer thread.
 No clip-envelope playback or send-level automation is claimed by recording capture.
 
+Session's document-owner write policy is separate from the SPSC producer gates.
+`setAutomationWriteState(armed,recording)` exposes the default on/off policy;
+`beginAutomationWrite(lane)` requires both gates and an existing playable strip
+or device lane. It temporarily excludes that lane from automation binding and
+clears its previous ordinary override. Manual parameter/fader ops committed while
+that lane is writing do not create an ordinary override. Other lanes retain the
+usual override behavior. Re-Enable Automation does not cancel active recording.
+
+The owner closes the producer gesture, drains and commits its captured points,
+refreshes Session, and only then calls `finishAutomationWrite(lane,true)` to follow
+the new curve. Turning a gate off prevents new writes but does not prematurely
+resume old automation while captured data is pending. On capture/commit failure,
+`finishAutomationWrite(lane,false)` explicitly leaves a normal manual override.
+Deleted/disabled/unrecognized lanes drop stale writing state at rebuild. Unknown
+or gated starts and finishing an inactive write are refused. A rebuild failure
+returns false while retaining the requested policy for a subsequent owner-side
+rebuild retry, as Re-Enable Automation does. These are owner-side
+APIs; they introduce no Store calls/allocations into audio callbacks. The UI/host
+coordinator must still map timestamps/targets and serialize matching recorder
+producer controls; no automatic host callback wiring or measured Live parity is
+claimed. No schema or opcode change is required.
+
 ### 9.7 Devices, chains, macros
 
 | Op | S | E | Inv | P |
