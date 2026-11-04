@@ -84,7 +84,7 @@ const std::vector<MigrationStep>& migrationSteps() {
         {9, {}},
         // 1.10 (N25): literal marker notes/prompts.
         {10, {"marker_details"}},
-        {11, {"clip_properties"}},
+        {16, {"clip_properties"}},
     };
     return steps;
 }

@@ -432,7 +432,6 @@ void restoreClipAudio(SQLite::Database& db, std::int64_t clip, const Payload& ro
 }
 bool clipCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
-        if (p.contains("row")) { clip_properties::restoreDeleted(c,p); return true; }
         SQLite::Statement st(c.db,
             "INSERT INTO clips(id, track_id, kind, name, time_base, pos_ticks, "
             "length_ticks) VALUES (?,?,?,?,0,?,?)");

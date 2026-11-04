@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1011;          -- schema 1.11
+PRAGMA user_version   = 1016;          -- schema 1.16
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -334,7 +334,7 @@ length, loop window, fades, gain and mute. Loop fields are separate from positio
 and length so that a looping clip is *one* object rather than N repeats — the
 Ableton model, and the correct one.
 
-### Local Main Clip Properties (schema 1.11, N33)
+### Local Main Clip Properties (schema 1.16, N33)
 
 `clip_properties` is an additive optional row keyed by clip id, removed with its
 clip. A NULL end marker derives from content offset plus visible duration.

@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.11 (see SPEC.md; older minors are frozen)
+--  Normative schema, version 1.16 (see SPEC.md; older minors are frozen)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1011;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1016;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '11'),
+    ('schema_minor',        '16'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -387,7 +387,7 @@ CREATE TABLE clips (
 CREATE INDEX idx_clips_track ON clips(track_id, pos_ticks);
 CREATE INDEX idx_clips_lane  ON clips(lane_id);
 
--- Since 1.11 (N33): local Main Clip Properties. NULL inherits the project
+-- Since 1.16 (N33): local Main Clip Properties. NULL inherits the project
 -- signature/scale or the visible source end; start uses content_offset_ticks.
 CREATE TABLE clip_properties (
     clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,

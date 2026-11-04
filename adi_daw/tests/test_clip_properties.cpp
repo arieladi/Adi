@@ -174,7 +174,7 @@ void migrationAndLinear() {
     }
     check(readFile(path)==bytes,"read-only open leaves 1.10 bytes unchanged");
     auto store=Store::open(path,error);
-    check(store && store->schemaMinor()==11 && store->upgradedFromMinor()==10,"1.10 upgrades additively to 1.11");
+    check(store && store->schemaMinor()==adi::kSchemaMinor && store->upgradedFromMinor()==10,"1.10 upgrades additively to 1.11");
     if(!store)return;
     roundTrip(*store,"clip.setStartMarker",{{"id",1},{"ticks",17}});
     auto model=rows::readModel(*store);
@@ -186,6 +186,7 @@ void migrationAndLinear() {
 }
 void retainedClocks() {
     Fixture f("retained");auto& db=f.db();
+    if(db.execAndGet("SELECT count(*) FROM sqlite_master WHERE name='clip_playback_details'").getInt()>0)return; // N17 is native here; its own tests cover the seam (chain)
     // N17 is an independent schema branch. Exercise the SQL seam without
     // stacking or merging it, including future typed columns.
     db.exec("CREATE TABLE clip_playback_details(clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,"

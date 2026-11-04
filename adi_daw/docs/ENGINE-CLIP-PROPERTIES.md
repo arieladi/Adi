@@ -34,7 +34,7 @@ inherit. These local Live scales are 12-TET; inherited project tunings remain
 available through N32. Selecting signature/scale changes metadata, without
 moving existing notes or implicitly applying Fit to Scale.
 
-Schema 1.11 adds optional `clip_properties` after schema 1.10's marker details.
+Schema 1.16 adds optional `clip_properties` after schema 1.10's marker details.
 NULL means inherited/default; empty rows are permitted. Stored local values are
 also in `rows::Clip` and the text projection. New edits capture only the clip
 row and optional property row, update in place for undo, preserve unknown

@@ -431,7 +431,6 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
-            clip->playEnd = clip->length;
             const auto origin=row.timeBase==0?row.posTicks.value_or(0):tempo.secondsToTicks(static_cast<double>(row.posNs.value_or(0))*1e-9);
             if(origin<0) throw std::runtime_error("negative musical time unsupported by TempoMap");
             const double startSeconds=row.timeBase==0?tempo.ticksToSeconds(origin):static_cast<double>(row.posNs.value_or(0))*1e-9;
@@ -456,6 +455,7 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             // Quantise both absolute endpoints once. Rounding a duration and
             // adding it to a rounded start can lose or add a sample.
             clip->end=samples(endSeconds,rate); clip->offset=duration(row.contentOffsetTicks);
+            clip->playEnd = clip->length; // after the warp length and the source-end pin (chain)
             if (!row.loopEnabled && row.endMarkerTicks) {
                 if (*row.endMarkerTicks <= row.contentOffsetTicks)
                     throw std::runtime_error("invalid audio clip End marker; silent");
