@@ -27,6 +27,11 @@ struct ControllerBinding {
     std::int64_t id = 0;
     Payload binding;
 };
+// Pure target-address producer for a control without an automation lane.
+// controller.bind checks current project target existence at commit time.
+[[nodiscard]] std::optional<OpRequest> learnControllerTarget(std::int64_t bindingId,
+    const std::string& kind,std::int64_t target,const std::string& param,const ControllerCc&,
+    std::span<const int> values,const ControllerPolicy&,std::string& error);
 // Pure heuristic: a nonempty cluster of 1/127 (with zero neutral), or 63..65
 // (64 neutral), is relative. A neutral-only or mixed/other trace is absolute.
 // A single distinctive CC can bind immediately; an absolute knob parked at a
