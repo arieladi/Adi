@@ -14,11 +14,20 @@
 //   OPS.md §6.1  The inverse is built from the state ABOUT TO BE OVERWRITTEN,
 //             before apply, in the same transaction.
 
+#include "adi/split_pan_ops.hpp"
+#include "adi/clip_image.hpp"
+#include "adi/row_capture.hpp"
+#include "adi/clip_edit_ops.hpp"
 #include "adi/blob.hpp"
 #include "adi/ops.hpp"
+#include "adi/note_flags_ops.hpp"
+#include "adi/builtin_catalog.hpp"
 #include "adi/controller_maps.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
+#include "adi/transport_settings.hpp"
+#include "adi/marker_ops.hpp"
+#include "adi/track_recording.hpp"
 #include "adi/summing_flavors.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -428,6 +437,7 @@ void restoreClipAudio(SQLite::Database& db, std::int64_t clip, const Payload& ro
 }
 bool clipCreateApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        if(p.contains("row")) {clip_edit::restoreDeleted(c,p);return true;}
         SQLite::Statement st(c.db,
             "INSERT INTO clips(id, track_id, kind, name, time_base, pos_ticks, "
             "length_ticks) VALUES (?,?,?,?,0,?,?)");
@@ -454,45 +464,14 @@ bool clipCreateInverse(OpContext&, const Payload& p, Payload& inv, std::string& 
 
 bool clipDeleteApply(OpContext& c, const Payload& p, std::string& err) {
     try {
-        SQLite::Statement st(c.db, "DELETE FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (st.exec() == 0) { err = "no such clip"; return false; }
-        return true;
+        auto image=clip_edit::captureDeleted(c,detail::signedInteger(p.at("id")));
+        edit::RowEdits deletion(c.db);clip_edit::deleteImage(deletion,image);
+        return edit::applyRows(c,{{"changes",deletion.changes()}},err);
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
-bool clipDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    try {
-        SQLite::Statement st(c.db,
-            "SELECT track_id, kind, name, pos_ticks, length_ticks FROM clips WHERE id = ?");
-        st.bind(1, p.at("id").get<std::int64_t>());
-        if (!st.executeStep()) { err = "no such clip to capture"; return false; }
-        inv = Payload::object();
-        inv["id"] = p.at("id");
-        inv["track"] = st.getColumn(0).getInt64();
-        inv["kind"] = st.getColumn(1).getString();
-        inv["name"] = st.getColumn(2).getString();
-        inv["pos"] = st.getColumn(3).getInt64();
-        inv["length"] = st.getColumn(4).getInt64();
-        SQLite::Statement attachment(c.db,"SELECT "+audioColumnList()+" FROM audio_clips WHERE clip_id=?");
-        attachment.bind(1,p.at("id").get<std::int64_t>());
-        if(attachment.executeStep()) {
-            Payload row=Payload::object();
-            int i=0;
-            for(const auto* name:audioColumns) {
-                const auto value=attachment.getColumn(i++);
-                if(value.isNull())row[name]=nullptr;
-                else if(std::string_view(name)=="warp_markers") {
-                    row[name]=Payload::array();
-                    const auto* bytes=static_cast<const unsigned char*>(value.getBlob());
-                    for(int n=0;n<value.getBytes();++n)row[name].push_back(bytes[n]);
-                } else if(std::string_view(name)=="warp_mode")row[name]=value.getString();
-                else if(std::string_view(name)=="transpose_semis" || std::string_view(name)=="formant_shift")row[name]=value.getDouble();
-                else row[name]=value.getInt64();
-            }
-            inv["audio"]=std::move(row);
-        }
-        return true;
-    } catch (const std::exception& e) { err = e.what(); return false; }
+bool clipDeleteInverse(OpContext& c,const Payload& p,Payload& inv,std::string& err) {
+    try {inv=clip_edit::captureDeleted(c,detail::signedInteger(p.at("id")));return true;}
+    catch(const std::exception& exception){err=exception.what();return false;}
 }
 
 bool audioAttachApply(OpContext& c, const Payload& p, std::string& err) {
@@ -993,13 +972,29 @@ bool remarkResolveInverse(OpContext& c, const Payload& p, Payload& inv, std::str
 
 // --- transport: the first real ephemeral ops ----------------------------------
 //
-// They persist nothing (ADR-0027), so there is nothing to apply until an engine
-// exists and nothing to undo ever. They still go through the registry -- same
+// Play/stop/seek/record remain driver commands, with no undo (ADR-0027).
+// Loop and click now materialise saved performance state in session_state. They still go through the registry -- same
 // validation, same scopes, same attribution -- and still get a log row tagged
 // `ephemeral`, so "what did the agent do at 14:32" stays answerable while Ctrl-Z
 // lands on the last real edit.
 
 bool transportNoop(OpContext&, const Payload&, std::string&) { return true; }
+
+bool transportSetting(OpContext& c,const Payload& p,std::string& error,bool loop) {
+    try {
+        Payload value;
+        if(loop) {
+            const auto previous=readTransportSettings(c.store);
+            const auto start=p.value("start",previous.loopStartTicks),end=p.value("end",previous.loopEndTicks);
+            if(start<0 || end<=start){error="loop requires nonnegative start and end after start";return false;}
+            value={{"on",p.at("on")},{"start",start},{"end",end}};
+        }else value=p.at("on");
+        SQLite::Statement set(c.db,"INSERT INTO session_state(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value");
+        set.bind(1,loop?"transport.loop":"transport.metronome");set.bind(2,value.dump());set.exec();return true;
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+bool transportLoop(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,true);}
+bool transportMetronome(OpContext& c,const Payload& p,std::string& error){return transportSetting(c,p,error,false);}
 
 // --- field tables ---------------------------------------------------------------
 
@@ -1049,6 +1044,8 @@ constexpr Field kFNoteResize[] = {{"clip", FieldType::Int, true},
 constexpr Field kFNoteVel[] = {{"clip", FieldType::Int, true},
                                {"note", FieldType::Int, true},
                                {"vel", FieldType::Int, true}};
+constexpr Field kFNoteMute[] = {{"clip",FieldType::Int,true},{"note",FieldType::Int,true},
+                                {"muted",FieldType::Bool,true}};
 constexpr Field kFTempoIns[] = {{"pos", FieldType::Int, true},
                                 {"bpm", FieldType::Real, true},
                                 {"curve", FieldType::Int, false}};
@@ -1081,7 +1078,9 @@ constexpr Field kFDeviceInsert[] = {{"id", FieldType::Int, true},
                                     {"params", FieldType::Array, false},
                                     {"state", FieldType::Array, false},
                                     {"route", FieldType::Text, false},
-                                    {"panel", FieldType::Array, false}};
+                                    {"panel", FieldType::Array, false},
+                                    {"rackKind", FieldType::Text, false},
+                                    {"remoteHost", FieldType::Int, false}};
 constexpr Field kFDeviceMove[] = {{"id", FieldType::Int, true},
                                   {"chain", FieldType::Int, true},
                                   {"ord", FieldType::Int, true}};
@@ -1136,6 +1135,16 @@ constexpr Field kFTransportFlag[] = {{"on", FieldType::Bool, true}};
 constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
                                      {"start", FieldType::Int, false},
                                      {"end", FieldType::Int, false}};
+
+constexpr Field kFMarkerCreate[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true},{"time_base",FieldType::Int,false},
+    {"name",FieldType::Text,false},{"kind",FieldType::Text,false},{"length",FieldType::Int,false},{"color",FieldType::Int,false},
+    {"note",FieldType::Text,false},{"prompt",FieldType::Text,false}};
+constexpr Field kFMarkerId[]={{"id",FieldType::Int,true}};
+constexpr Field kFMarkerMove[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true}};
+constexpr Field kFMarkerName[]={{"id",FieldType::Int,true},{"name",FieldType::Text,true}};
+constexpr Field kFMarkerColor[]={{"id",FieldType::Int,true},{"color",FieldType::Int,false}};
+constexpr Field kFMarkerText[]={{"id",FieldType::Int,true},{"text",FieldType::Text,true}};
+constexpr Field kFMarkerLength[]={{"id",FieldType::Int,true},{"length",FieldType::Int,true}};
 
 // --- track.setParent: the first op that is not a function of one row -------
 //
@@ -1354,6 +1363,14 @@ Payload captureState(OpContext& c, std::int64_t deviceId) {
     return arr;
 }
 
+std::int64_t deviceInteger(const Payload& value,const char* key,std::int64_t fallback=0) {
+    if(!value.contains(key))return fallback;
+    const auto& number=value.at(key);
+    if(!number.is_number_integer() ||
+       (number.is_number_unsigned() && number.get<std::uint64_t>()>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())))
+        throw std::runtime_error(std::string("device integer outside signed 64-bit range: ")+key);
+    return number.get<std::int64_t>();
+}
 void replayParams(OpContext& c, std::int64_t deviceId, const Payload& arr) {
     if (!arr.is_array()) return;
     for (const auto& row : arr) {
@@ -1370,7 +1387,7 @@ void replayParams(OpContext& c, std::int64_t deviceId, const Payload& arr) {
             st.bind(5);
         st.bind(6, row.value("display", std::string{}));
         st.bind(7, row.value("unit", std::string{}));
-        st.bind(8, static_cast<std::int64_t>(row.value("flags", 0)));
+        st.bind(8, deviceInteger(row,"flags"));
         st.exec();
     }
 }
@@ -1418,7 +1435,7 @@ bool chainCreateApply(OpContext& c, const Payload& p, std::string& err) {
             st.bind(3, p.at("track").get<std::int64_t>());
         else
             st.bind(3);
-        st.bind(4, static_cast<std::int64_t>(p.value("ord", 0)));
+        st.bind(4, static_cast<std::int64_t>(p.value("ord", std::int64_t{0})));
         st.bind(5, p.value("name", std::string{}));
         st.exec();
         return true;
@@ -1507,29 +1524,33 @@ Payload capturePanel(OpContext& c, std::int64_t dev) {
 
 bool deviceInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
-        const auto id = p.at("id").get<std::int64_t>();
+        const auto id = deviceInteger(p,"id");
         SQLite::Statement st(c.db,
             "INSERT INTO devices(id, chain_id, ord, plugin_ref_id, name, enabled, "
-            "is_rack, preset_name, latency_samples, always_process, missing) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)");
+            "is_rack, preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
         st.bind(1, id);
-        st.bind(2, p.at("chain").get<std::int64_t>());
-        st.bind(3, static_cast<std::int64_t>(p.value("ord", 0)));
+        st.bind(2, deviceInteger(p,"chain"));
+        st.bind(3, deviceInteger(p,"ord"));
         if (p.contains("ref") && !p.at("ref").is_null())
-            st.bind(4, p.at("ref").get<std::int64_t>());
+            st.bind(4, deviceInteger(p,"ref"));
         else
             st.bind(4);
         st.bind(5, p.value("name", std::string{}));
         st.bind(6, p.value("enabled", true) ? 1 : 0);
         st.bind(7, p.value("rack", false) ? 1 : 0);
         st.bind(8, p.value("preset", std::string{}));
-        st.bind(9, static_cast<std::int64_t>(p.value("latency", 0)));
+        st.bind(9, deviceInteger(p,"latency"));
         st.bind(10, p.value("always", false) ? 1 : 0);
         // ADR-0011: a device whose plugin did not load is inserted MISSING
         // rather than not inserted. The flag travels so that undoing the
         // removal of a placeholder restores a placeholder, not a device that
         // claims to have loaded.
         st.bind(11, p.value("missing", false) ? 1 : 0);
+        if(p.contains("rackKind") && !p.at("rackKind").is_null())st.bind(12,p.at("rackKind").get<std::string>());
+        else st.bind(12);
+        if(p.contains("remoteHost") && !p.at("remoteHost").is_null())st.bind(13,deviceInteger(p,"remoteHost"));
+        else st.bind(13);
         st.exec();
 
         if (p.contains("params")) replayParams(c, id, p.at("params"));
@@ -1575,7 +1596,7 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
         const auto id = p.at("id").get<std::int64_t>();
         SQLite::Statement st(c.db,
             "SELECT chain_id, ord, plugin_ref_id, name, enabled, is_rack, "
-            "preset_name, latency_samples, always_process, missing "
+            "preset_name, latency_samples, always_process, missing, rack_kind, remote_host_id "
             "FROM devices WHERE id = ?");
         st.bind(1, id);
         if (!st.executeStep()) { err = "no such device to capture"; return false; }
@@ -1593,6 +1614,8 @@ bool deviceRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::stri
         inv["latency"] = st.getColumn(7).getInt64();
         inv["always"]  = st.getColumn(8).getInt() != 0;
         inv["missing"] = st.getColumn(9).getInt() != 0;
+        inv["rackKind"]=st.getColumn(10).isNull()?Payload{}:Payload(st.getColumn(10).getString());
+        inv["remoteHost"]=st.getColumn(11).isNull()?Payload{}:Payload(st.getColumn(11).getInt64());
 
         // The part that makes undoing a delete actually restore the device
         // rather than a device with that name. Without these the plugin comes
@@ -1945,6 +1968,8 @@ const OpDescriptor kHandWritten[] = {
      kFNoteResize, false, false, noteResizeApply, noteResizeInverse, ""},
     {"note.setVelocity", "Set a note's velocity", Scope::Edit, EngineImpact::Snapshot,
      kFNoteVel, true, false, noteSetVelocityApply, noteSetVelocityInverse, ""},
+    {"note.setMute", "Activate or deactivate a MIDI note", Scope::Edit, EngineImpact::Snapshot,
+     kFNoteMute, false, false, note_flags::mute, note_flags::muteInverse, ""},
 
     {"project.insertTempoEvent", "Add a tempo change", Scope::Edit,
      EngineImpact::Snapshot, kFTempoIns, false, false,
@@ -2016,6 +2041,15 @@ const OpDescriptor kHandWritten[] = {
      EngineImpact::None, kFRemarkResolve, false, false,
      remarkResolveApply, remarkResolveInverse, ""},
 
+    {"marker.create","Create a locator or cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerCreate,false,false,marker::create,marker::createInverse,"marker.delete"},
+    {"marker.delete","Delete a marker and its text",Scope::Edit,EngineImpact::Snapshot,kFMarkerId,false,false,marker::erase,marker::eraseInverse,"marker.create"},
+    {"marker.move","Move a marker in its own time base",Scope::Edit,EngineImpact::Snapshot,kFMarkerMove,true,false,marker::move,marker::moveInverse,""},
+    {"marker.rename","Rename a marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerName,false,false,marker::rename,marker::renameInverse,""},
+    {"marker.setColor","Set or clear a marker palette colour",Scope::Edit,EngineImpact::Snapshot,kFMarkerColor,false,false,marker::color,marker::rowInverse,""},
+    {"marker.resize","Resize a cycle marker",Scope::Edit,EngineImpact::Snapshot,kFMarkerLength,false,false,marker::resize,marker::rowInverse,""},
+    {"marker.setNote","Set a marker's note",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::note,marker::detailsInverse,""},
+    {"marker.setPrompt","Set a marker's literal prompt",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::prompt,marker::detailsInverse,""},
+
     // Ephemeral: performance, not editing. No inverse, and undo skips them.
     {"transport.play", "Start playback", Scope::Transport, EngineImpact::None,
      {}, false, true, transportNoop, nullptr, ""},
@@ -2023,14 +2057,14 @@ const OpDescriptor kHandWritten[] = {
      {}, false, true, transportNoop, nullptr, ""},
     {"transport.seek", "Move the playhead", Scope::Transport, EngineImpact::None,
      kFTransportSeek, false, true, transportNoop, nullptr, ""},
-    {"transport.setLoop", "Set the loop region", Scope::Transport, EngineImpact::None,
-     kFTransportLoop, false, true, transportNoop, nullptr, ""},
+    {"transport.setLoop", "Set the loop region", Scope::Transport, EngineImpact::Snapshot,
+     kFTransportLoop, false, true, transportLoop, nullptr, ""},
     {"transport.setRecord", "Arm or disarm the transport", Scope::Transport,
      EngineImpact::GraphRebuild, kFTransportFlag, false, true,
      transportNoop, nullptr, ""},
     {"transport.setMetronome", "Toggle the metronome", Scope::Transport,
      EngineImpact::Snapshot, kFTransportFlag, false, true,
-     transportNoop, nullptr, ""},
+     transportMetronome, nullptr, ""},
 };
 
 }  // namespace
@@ -2039,6 +2073,11 @@ std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
+        const auto split=splitPanOps();v.insert(v.end(),split.begin(),split.end());
+        const auto editing=clipEditOps();v.insert(v.end(),editing.begin(),editing.end());
+        const auto builtins=builtinReferenceOps();v.insert(v.end(),builtins.begin(),builtins.end());
+        const auto recording=trackRecordingOps();
+        v.insert(v.end(),recording.begin(),recording.end());
         return v;
     }();
     return all;

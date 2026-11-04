@@ -100,6 +100,8 @@ public:
     /// why `LatencyCoalescer` attaches to the HOST and re-reads this every
     /// poll rather than storing it once.
     [[nodiscard]] Graph* currentGraph() const noexcept;
+    /// Audio thread, after process: latency of the graph that actually ran.
+    [[nodiscard]] std::int32_t renderedLatency() const noexcept;
 
     /// The realised graph behind it, for callers that need a track's chain
     /// head or tail -- a clip reader pushing into `inputFor`, or a device

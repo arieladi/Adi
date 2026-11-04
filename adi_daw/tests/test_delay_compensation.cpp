@@ -132,7 +132,7 @@ void trackDelay(Precision precision,int initialDelay,bool initialCompensation) {
     auto& db=store->db();db.exec("UPDATE project SET sample_rate=48000; INSERT INTO tracks(id,kind,name) VALUES(1,'audio','A'),(2,'audio','B'),(9,'master','Main'); INSERT INTO mixer_strip(track_id) VALUES(1),(2),(9)");
     SQLite::Statement set(db,"UPDATE mixer_strip SET delay_samples=? WHERE track_id=1");set.bind(1,initialDelay);set.exec();
     Pulse a,b;Session session;session.graph().setFadeFrames(0);session.setSourcesFor([&](std::int64_t id){return id==1?std::vector<Node*>{&a}:id==2?std::vector<Node*>{&b}:std::vector<Node*>{};});
-    check(session.load(*store,{},SessionSpec{2,48000,64,precision,initialCompensation}),"session loads captured app compensation choice");
+    check(session.load(*store,{},SessionSpec{.channels=2,.sampleRate=48000,.maxFrames=64,.precision=precision,.delayCompensation=initialCompensation}),"session loads captured app compensation choice");
     auto render=[&](int delay) {
         a.position=0;b.position=0;Output output;auto io=output.io();countAllocations=true;{audio::CallbackScope callback;session.process(io);}countAllocations=false;
         bool exact=true;
