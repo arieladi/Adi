@@ -6,6 +6,8 @@ The director explicitly clarified that the early Cubase/Live/Bitwig examples wer
 
 The per-app files contain behavior claims and exact manual pages. This register names requirements and points to their relevant evidence, without asserting that a reference app implements an ADI-only idea. New whole-host tests are in private `WHOLE-HOST-MISSIONS.md`; SDK contracts and cross-source contradictions are in `DAW-RESEARCH-INTEGRATION.md`.
 
+The director's subsequent base-reference clarification extends Live research beyond Dream examples: [ableton-12.md](daws/ableton-12.md) now includes the A-BASE contents inventory and completion dimensions for all host topics. C4 in [cubase-15.md](daws/cubase-15.md) expands export capability contracts; B4 in [bitwig-6.md](daws/bitwig-6.md) establishes the documented version-6 Auto-zoom feature and its measurement gaps. The 220 Dream rows below remain open; the 610 Live host/integration contents entries are a separate index, not another feature count or completion claim.
+
 
 ## 1. Screen and workspace
 
