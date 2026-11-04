@@ -23,6 +23,7 @@
 #pragma once
 
 #include "adi/store_rows.hpp"
+#include "adi/engine/curves.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -39,6 +40,7 @@ struct PlacedPoint {
     double value = 0.0;
     double tension = 0.0;
     std::uint8_t curve = 1;
+    const CurveSlice* slice = nullptr; // owned by the compiled program
 };
 
 struct AutomationLaneProgram {
@@ -74,6 +76,7 @@ public:
 
 private:
     double rate_ = 0.0;
+    std::vector<std::shared_ptr<const CurveSlice>> slices_;
     std::vector<AutomationLaneProgram> lanes_;   ///< by laneId
     std::vector<std::string> problems_;
 };

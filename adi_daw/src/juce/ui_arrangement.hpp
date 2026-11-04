@@ -28,16 +28,48 @@ class ArrangementOverview final : public juce::Component, public juce::SettableT
     ArrangementView &view;
     juce::Point<float> last;
 };
+// The title bar's own editor for Rename: Enter commits, Esc cancels, Tab commits
+// and moves on to the next track's title (Shift+Tab, the previous), as Live.
+class RenameEditor final : public juce::TextEditor {
+  public:
+    bool keyPressed(const juce::KeyPress &) override;
+    std::function<void()> onCommit, onCancel;
+    std::function<void(bool forward)> onTab;
+};
 // The scrub area (Live 12 manual 6.1, p. 161): a click anywhere in it launches
 // playback from that point. Holding to loop waits for the transport's loop.
+// Its time signature markers (manual 6.5): a click on one selects it; its menu holds Insert Time
+// Signature Change, and on a marker Edit Time Signature and Delete.
 class ScrubArea final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit ScrubArea(ArrangementView &);
     void paint(juce::Graphics &) override;
     void mouseDown(const juce::MouseEvent &) override;
+    // A marker dragged follows the mouse, to the nearest grid line while snapping, never before the
+    // first grid line; let go, it moves there, one step (manual 6.5).
+    void mouseDrag(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+    // While a marker is dragged: where it would land; else -1.
+    std::int64_t movingTo() const noexcept { return dragged_ >= 0 ? movingTo_ : -1; }
+    // The position of the time signature marker drawn under `x`, or -1.
+    std::int64_t markerAt(float x) const;
+    // Insert Time Signature Change at `pos` (inserting), or Edit Time Signature on the marker there:
+    // a field over the marker, holding the signature in force there, selected; Enter commits, Esc
+    // cancels. A value refused keeps the field open, and the Status Bar says why.
+    bool beginMeterEdit(std::int64_t pos, bool inserting);
+    std::int64_t meterEditing() const noexcept { return editing_; }
+    // The scrub area's menu at `at` (a tick): Live's two commands on a fragmentary bar join it there.
+    juce::PopupMenu menu(std::int64_t at = -1);
+    RenameEditor editor;
 
   private:
+    juce::Rectangle<float> markerBox(const textproj::Meter &) const;
+    void endMeterEdit();
     ArrangementView &view;
+    std::int64_t editing_ = -1;
+    bool inserting_ = false;
+    // The marker pressed, the ticks from its start to the press, and where a drag would put it.
+    std::int64_t dragged_ = -1, grabbed_ = 0, movingTo_ = -1;
 };
 // The beat-time ruler (Live 12 manual 6.1): bars-beats-sixteenths; drag sideways
 // scrolls, vertically zooms; a double-click zooms to the selection, or out to the
@@ -56,14 +88,6 @@ class TimelineRuler final : public juce::Component, public juce::SettableTooltip
 };
 // One row per track, on the RIGHT of the clips as in Live's Arrangement View (on the left,
 // before the track controls, with the side panels swapped).
-// The title bar's own editor for Rename: Enter commits, Esc cancels, Tab commits
-// and moves on to the next track's title (Shift+Tab, the previous), as Live.
-class RenameEditor final : public juce::TextEditor {
-  public:
-    bool keyPressed(const juce::KeyPress &) override;
-    std::function<void()> onCommit, onCancel;
-    std::function<void(bool forward)> onTab;
-};
 class TrackHeaderList final : public juce::Component, public juce::SettableTooltipClient {
   public:
     explicit TrackHeaderList(ArrangementView &);
@@ -94,6 +118,10 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
         std::int64_t into = 0;
     };
     Drop dropAt(int y) const;
+    // Where a dragged return would land: among the returns at the foot, before the one under the
+    // mouse's upper half or after the one under its lower half; over the tracks, before the first;
+    // over Main or below, after the last.
+    Drop returnDropAt(int y) const;
     // The drop shown while tracks are dragged; empty otherwise.
     std::optional<Drop> drop() const { return moving_ ? std::optional<Drop>(drop_) : std::nullopt; }
 
@@ -113,7 +141,10 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     // is moving; whether the press, on one of several selected tracks, selects it alone on release
     // without a drag (Live keeps the selection for the drag).
     std::int64_t moveId_ = 0;
-    bool moving_ = false, selectOnUp_ = false;
+    bool moving_ = false, selectOnUp_ = false, movingReturn_ = false;
+    // Whether the press was on a fold switch, which does all it does on the press: its release keeps
+    // what the Status Bar says.
+    bool foldPressed_ = false;
     Drop drop_;
 };
 // What a screen reader finds for one clip on screen (UI-ARCHITECTURE §6). The
@@ -188,6 +219,17 @@ class ArrangementCanvas final : public juce::Component,
     std::int64_t moving_ = 0, movingFrom_ = 0, movingTo_ = 0, grabTicks_ = 0, movingSource_ = 0, movingTrack_ = 0;
     std::int64_t resizing_ = 0, resizeStart_ = 0, resizeFrom_ = 0, resizeLength_ = 0;
     bool keyResize_ = false;
+    // A plain press on the bar of one of several selected clips keeps them for the drag; released
+    // without one, it selects that clip alone, from where it was pressed.
+    bool selectOnUp_ = false;
+    juce::Point<int> pressedAt_;
+    // The offset the drag gives every selected clip: the dragged clip's, stopped where the earliest
+    // of them reaches the arrangement's start.
+    std::int64_t movingDelta() const noexcept { return movingTo_ - movingFrom_; }
+    // While several selected clips are dragged across tracks, the ones that change track, each
+    // with the track it lands on (`clipsAcross`); the track a clip is drawn on while dragging.
+    std::vector<std::pair<std::int64_t, std::int64_t>> movingAcross_;
+    std::int64_t movingTargetOf(std::int64_t clip) const noexcept;
     // The clip's bar under a point, and whether the point is on its right edge.
     const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
     // A group's lane, row `at`: Live's overview of the clips of what it holds.
@@ -219,6 +261,15 @@ class ArrangementView final : public juce::Component {
     explicit ArrangementView(AdiRootComponent &);
     void resized() override;
     void paint(juce::Graphics &) override;
+    // Above the track names, Live's Set Locator, Previous and Next Locator buttons and its Automation
+    // Mode and Lock Envelopes toggles (Live 12 manual 6): where paint draws each, and where a click
+    // finds it. Each waits for the engine (locators N25, automation N26); a click says so.
+    enum class TopButton { Set, Previous, Next, Automation, Lock };
+    // What a track's Unfold Track button and U say on a track that is not a group.
+    static constexpr const char *kUnfoldWaits =
+        "Unfolding a track shows its automation lanes, which wait for the engine's automation (window log, N26).";
+    juce::Rectangle<float> topButton(TopButton) const noexcept;
+    void mouseDown(const juce::MouseEvent &) override;
     // The colour of the track at `position` down the rows: its own, an index into Live's palette
     // (ADR-0211), else the colour of its place, as Live's auto-assigned colours.
     juce::Colour colourFor(std::size_t position) const;
@@ -227,6 +278,13 @@ class ArrangementView final : public juce::Component {
     bool command(int);
     void fit(bool selection);
     void wheel(const juce::MouseEvent &, const juce::MouseWheelDetails &);
+    // Live scrolls the lanes while a track, a clip or a selection is dragged to their edge: the mouse
+    // at `y` within kScrollEdge of the lanes' top, or above it, scrolls up; near the foot, or the
+    // lanes' bottom, down; with `sideways`, at `x` near the left or right edge, back or on. The
+    // farther in, the faster. Points are the lanes' (the canvas's and the names'). True when the
+    // view moved; a held mouse repeats the drag (beginDragAutoRepeat), so it keeps going.
+    bool edgeScroll(int x, int y, bool sideways, bool upAndDown = true);
+    static constexpr int kScrollEdge = 16, kAutoRepeatMs = 40;
     // Selects at a point: the clip there, or the insert marker on the grid (§6.10).
     void select(int x, int y, bool snapToGrid = true);
     // Whether a gesture with these keys snaps to the grid.
@@ -263,6 +321,9 @@ class ArrangementView final : public juce::Component {
     // Paused by an edit, a sideways scroll or a click on the ruler; a click in the lanes or
     // the scrub area, or playback starting or stopping, starts it again.
     bool followPaused = false;
+    // The selected time signature marker's position (Live 12 manual 6.5), or -1. A click in the
+    // lanes or on a track's title lets it go; Delete and Ctrl/Cmd+R act on it while it is selected.
+    std::int64_t selectedMeter = -1;
     const SnapshotReader &reader() const;
     // Live 11's measures at 100 % (2026-10-27): the Overview with its margin, the beat
     // ruler with its numbers along its foot, the locator band, a dark gap, then the

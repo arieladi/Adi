@@ -161,6 +161,8 @@ void testUpgradeEachMinor() {
             if (!s) continue;
             check(s->upgradedFromMinor() == minor, v + ": reports what it upgraded from");
             check(s->schemaMinor() == kSchemaMinor, v + ": now reports the current minor");
+            check(s->db().execAndGet("SELECT count(*) FROM clip_warp_fade_domains").getInt() == 0,
+                  v + ": migration creates no retained Warp fades for existing clips");
             check(s->db().execAndGet("PRAGMA user_version").getInt() == kUserVersion,
                   v + ": user_version is current");
             check(s->db().execAndGet("SELECT value FROM adi_meta WHERE key = 'schema_minor'")
@@ -171,8 +173,9 @@ void testUpgradeEachMinor() {
                                     describeDiff(got, fresh));
             check(s->db().execAndGet("SELECT name FROM tracks WHERE id = 1").getString() == "Keys",
                   v + ": the existing data is untouched");
-            check(s->db().execAndGet("SELECT sample_rate FROM project").getInt() == (minor >= 9 ? 44100 : 48000),
-                  v + ": the stored 48 kHz is preserved despite the new 44.1 kHz default");
+            const int storedRate = minor < 9 ? 48000 : 44100;
+            check(s->db().execAndGet("SELECT sample_rate FROM project").getInt() == storedRate,
+                  v + ": the stored sample rate is preserved across the upgrade");
 
             check(addRemark(*s), v + ": remark.add works");
             History h(*s);

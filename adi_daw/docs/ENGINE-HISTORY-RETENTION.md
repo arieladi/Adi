@@ -52,7 +52,7 @@ transaction and legacy embedded-media rows are also protected. Nothing deletes
 these protections to meet a numeric limit. Daily automatic points remain usable
 until the snapshot-budget/user removal path removes them.
 
-Schema 1.10's single history_checkpoint row contains typed project state at the
+Schema 1.19's single history_checkpoint row contains typed project state at the
 new root. Taking it temporarily rewinds under a SQLite savepoint, captures state,
 then rolls back that savepoint; only the checkpoint and old prefix pruning are
 committed. Keep all of this on the document owner, never on the audio callback.

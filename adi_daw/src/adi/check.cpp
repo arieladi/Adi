@@ -271,7 +271,7 @@ void checkNoteExpressionTargets(Ctx& c) {
 void checkHistory(Ctx& c) {
     c.ran();
     try {
-        if (c.db.execAndGet("PRAGMA user_version").getInt() >= 1010) {
+        if (c.db.execAndGet("PRAGMA user_version").getInt() >= 1019) {
             SQLite::Statement checkpoint(
                 c.db, "SELECT c.base_seq,c.state,o.seq,o.parent_seq,o.inverse FROM "
                       "history_checkpoint c LEFT JOIN ops o ON o.seq=c.base_seq WHERE c.id=1");
