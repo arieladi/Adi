@@ -299,6 +299,13 @@ class AdiRootComponent final : public juce::Component {
     // The control bar's Time Signature field (manual 6.5): the signature in force at the play
     // location takes the value typed, one step.
     bool setMeterAtPlay(const std::string &text);
+    // The control bar's Tempo field (manual 9.1.1): the tempo in force at the play location takes the
+    // value typed, 20 to 999 BPM, one step.
+    bool setTempoAtPlay(const std::string &text);
+    // An edit of the start's tempo or signature, where the snapshot cannot tell a stored value from
+    // its own: `tried` (an insert) first; refused, it changed nothing, and `otherwise` (a replace)
+    // follows. One step either way.
+    bool submitStartEdit(std::vector<OpRequest> tried, std::vector<OpRequest> otherwise);
     // Live's track drag (the Arrangement View; manual 18.3): the selected tracks when `dragged` is
     // among them, else that track alone, to `to`; one undo step, "Move Track" or "Move Tracks".
     bool moveTracks(std::int64_t dragged, TrackDrop to);

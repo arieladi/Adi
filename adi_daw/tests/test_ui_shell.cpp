@@ -1342,15 +1342,15 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     check(root.timelineTick() < bar3 && meterOf(0) == "4/4", "the play location is before bar 3, in the start's 4/4");
     check(bar.signature.automationLed, "the field's automation LED is lit: the arrangement holds changes");
     bar.signature.onClick();
-    check(bar.signatureEditor.isVisible() && bar.signatureEditor.getText() == "4/4",
+    check(bar.fieldEditor.isVisible() && bar.fieldEditor.getText() == "4/4",
           "a click on the field: a field over it holding 4/4");
     auto typeSignature = [&](const char *text) {
-        bar.signatureEditor.setText(text, false);
-        bar.signatureEditor.onReturnKey();
+        bar.fieldEditor.setText(text, false);
+        bar.fieldEditor.onReturnKey();
         root.frame();
     };
     typeSignature("3/4");
-    check(!bar.signatureEditor.isVisible() && meterOf(0) == "3/4" && bar.signature.text == "3 / 4" &&
+    check(!bar.fieldEditor.isVisible() && meterOf(0) == "3/4" && bar.signature.text == "3 / 4" &&
               submitter.nextUndo()->label == "Edit Time Signature",
           "3/4 typed: the start's signature, one step, and the field shows it");
     render("adi-signature-field.png");
@@ -1365,15 +1365,46 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
           "4/4 stored, then 2/4: the insert refused by the stored 4/4, the 4/4 replaced, one step");
     bar.signature.onClick();
     typeSignature("2/3");
-    check(bar.signatureEditor.isVisible() && meterOf(0) == "2/4" && root.error().find("3/4") != std::string::npos,
+    check(bar.fieldEditor.isVisible() && meterOf(0) == "2/4" && root.error().find("3/4") != std::string::npos,
           "a value Live takes not keeps the field open, and the Status Bar says what to type");
-    bar.signatureEditor.onEscapeKey();
-    check(!bar.signatureEditor.isVisible(), "Esc closes it");
+    bar.fieldEditor.onEscapeKey();
+    check(!bar.fieldEditor.isVisible(), "Esc closes it");
     for (int i = 0; i < 4; ++i)
         root.command(AppCommands::Undo);
     root.frame();
     check(meterOf(0) == "4/4" && submitter.nextUndo()->txnId == beforeField,
           "four undos, one for each value, and none for the refused insert: as before");
+    // The Tempo field (manual 9.1.1), the same way: 20 to 999 BPM, at the play location.
+    bar.tempo.onClick();
+    check(bar.editing() == &bar.tempo && bar.fieldEditor.getText() == "120.00",
+          "a click on the Tempo field: a field over it holding 120.00");
+    auto typeTempo = [&](const char *text) {
+        bar.fieldEditor.setText(text, false);
+        bar.fieldEditor.onReturnKey();
+        root.frame();
+    };
+    typeTempo("128");
+    check(bar.editing() == nullptr && std::abs(root.bpm() - 128) < 1e-9 && bar.tempo.text == "128.00" &&
+              submitter.nextUndo()->label == "Change Tempo",
+          "128 typed: the start's tempo, one step, and the field shows it");
+    render("adi-tempo-field.png");
+    bar.tempo.onClick();
+    typeTempo("120");
+    bar.tempo.onClick();
+    typeTempo("97.5");
+    check(std::abs(root.bpm() - 97.5) < 1e-9 && submitter.nextUndo()->opCount == 2,
+          "120 stored, then 97.5: the insert refused by the stored 120, the 120 replaced, one step");
+    bar.tempo.onClick();
+    typeTempo("1000");
+    check(bar.editing() == &bar.tempo && std::abs(root.bpm() - 97.5) < 1e-9 &&
+              root.error().find("20 to 999") != std::string::npos,
+          "1000 keeps the field open, and the Status Bar says what to type");
+    bar.fieldEditor.onEscapeKey();
+    for (int i = 0; i < 3; ++i)
+        root.command(AppCommands::Undo);
+    root.frame();
+    check(std::abs(root.bpm() - 120) < 1e-9 && submitter.nextUndo()->txnId == beforeField,
+          "three undos: 120 again, as before");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.

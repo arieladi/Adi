@@ -2,6 +2,7 @@
 #include "ui_shell.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <array>
@@ -1357,16 +1358,33 @@ bool AdiRootComponent::setMeterAtPlay(const std::string &text) {
     if (edit.ops.empty())
         return true;
     // A 4/4 at the start may be stored or the snapshot's own: insert first, and where the project
-    // stores one (the insert refused, nothing changed), replace it.
-    const bool atStart = edit.ops.back().payload.at("pos").get<std::int64_t>() == 0 && edit.ops.size() == 1 && !surely;
-    if (atStart) {
-        auto tried = edit.ops;
-        tried.front().selBefore = session_.advisory();
-        if (const auto result = submitter_.submit(std::move(tried)); result.ok)
-            return edited(result);
-        edit = setMeterAt(current->meters, at, text, true);
-    }
+    // stores one, replace it.
+    if (!surely && edit.ops.size() == 1 && edit.ops.front().payload.at("pos").get<std::int64_t>() == 0)
+        return submitStartEdit(std::move(edit.ops), setMeterAt(current->meters, at, text, true).ops);
     return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::setTempoAtPlay(const std::string &text) {
+    const auto current = view_.current();
+    if (!current || !current->tempo)
+        return fail("The tempo needs an open project.");
+    const auto at = timelineTick();
+    const auto &events = current->tempo->events;
+    const bool surely = tempoSurelyStored(events);
+    auto edit = setTempoAt(events, at, text, surely);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (edit.ops.empty())
+        return true;
+    // A 120 at the start may be stored or the snapshot's own, as for the signature.
+    if (!surely && edit.ops.size() == 1 && edit.ops.front().payload.at("pos").get<std::int64_t>() == 0)
+        return submitStartEdit(std::move(edit.ops), setTempoAt(events, at, text, true).ops);
+    return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::submitStartEdit(std::vector<OpRequest> tried, std::vector<OpRequest> otherwise) {
+    tried.front().selBefore = session_.advisory();
+    if (const auto result = submitter_.submit(std::move(tried)); result.ok)
+        return edited(result);
+    return submitEdits(std::move(otherwise));
 }
 bool AdiRootComponent::deleteMeter(std::int64_t pos) {
     const auto current = view_.current();
