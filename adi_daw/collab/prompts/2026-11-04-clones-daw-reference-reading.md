@@ -15,3 +15,10 @@ No desktop capture, mouse/keyboard automation or GUI-host testing by Codex in th
 Maintain private INVENTORY.md, RESEARCH-MATRIX.md, ENGINE-CONTRACTS.md, SOUND-RESULTS.md, CPU-RESULTS.md, OPEN-QUESTIONS.md, EVIDENCE-INDEX.md and HANDOFF.md. Use deterministic probes, explicit latency/alignment and state sequences. CPU studies stay on SALON-TV with fixed equivalent workloads, warm-up, interleaved A/B and B/A, median/tails/deadline misses and editor/metering separated.
 
 Finish with a useful, bounded milestone: independent behavior contracts now supportable, remaining unknowns, actual sound/CPU measurements (possibly none), Claude tests needed and evidence-supported next implementation. Wait for explicit product-build instruction.
+
+
+## Director expansion — full host research
+
+The director requests deep study of all host features beyond the initial lane questions, prioritizing Cubase F7 Direct Offline Processing and advanced fades/arrangement audio utilities, Live warp and MIDI functions, and Bitwig modular/modulation behavior. Skip built-in effect/instrument implementations. Keep editor transformations, DOP audio utilities, Grid/host modulation semantics, plug-in hosting, routing and integration in scope.
+
+Work in bounded, evidence-backed passes without claiming the entire app is understood. Maintain a coverage inventory with gaps, exact versions and unmeasured behaviors. Connect every recorded contract to ADI's existing decisions/needs. Include ownership, state transitions, persistence, failure/cancel and undo boundaries, not just control descriptions. The v0.2 app files add 127 contract rows and host-wide queues; private DEEP-CLAUDE-MISSIONS.md supplies nine reproducible missions. The no-GUI-testing instruction above continues to apply. No processor algorithm or product implementation is requested.
