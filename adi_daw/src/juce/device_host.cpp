@@ -84,6 +84,7 @@ bool DeviceHost::rebuildNow() {
     if (model == nullptr) { lastError_ = "no model"; return false; }
 
     engine::RealizeOptions opts;
+    opts.monitors=spec_.monitors;
     opts.channels = spec_.channels;
     opts.devicesFor = spec_.devicesFor ? spec_.devicesFor : chainSupplier();
     opts.sourcesFor = spec_.sourcesFor;

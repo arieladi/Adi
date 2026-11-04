@@ -195,6 +195,12 @@ void GraphHost::process(const AudioIo& io) noexcept {
     fadeIn(io);
 }
 
+bool GraphHost::copyRenderedOutput(const Node& node,const AudioIo& io) const noexcept {
+    if(!lastSnap_)return false;
+    const auto& graph=lastSnap_->graph().graph();
+    return graph.copyNodeOutput(graph.find(node),io);
+}
+
 std::int32_t GraphHost::renderedLatency() const noexcept {
     return lastSnap_ ? lastSnap_->graph().graph().latencySamples() : 0;
 }

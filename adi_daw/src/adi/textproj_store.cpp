@@ -126,7 +126,7 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 59> kTables{{
+    static constexpr std::array<TableCoverage, 61> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
@@ -136,10 +136,12 @@ std::span<const TableCoverage> coverage() {
         {"mixer_strip", Coverage::Projected, "inlined on its track"},
         {"mixer_pan_settings", Coverage::Projected, "inlined on its strip track (N12)"},
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
+        {"return_send_taps", Coverage::Projected, "inlined on its return track (ADR-0203 d3)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
         {"clip_playback_details", Coverage::Projected, "inlined onto its clip"},
         {"clip_warp_fade_domains", Coverage::Projected, "retained musical fade clocks on the clip"},
+        {"clip_properties", Coverage::Projected, "Inlined on its clip; NULL inherits."},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
         {"event_streams", Coverage::Projected, "notes decoded; other stream kinds excluded"},
         {"markers", Coverage::Projected, ""},
@@ -349,6 +351,7 @@ Tree buildTree(const rows::Model& m) {
         a.text("playGrid",tr.recording.playGrid,"1/16");
         a.real("playForgivenessMs",tr.recording.playForgivenessMs,0.0);
         a.flag("discardMonitoringLatency",!tr.recording.keepMonitoringLatency);
+        if(tr.returnSendTap && tr.returnSendTap->explicitChoice)a.text("sendTap",tr.returnSendTap->preFader?"pre":"post");
 
         if (const auto it = stripOf.find(tr.id); it != stripOf.end()) {
             const rows::MixerStrip& s = *it->second;
@@ -470,6 +473,12 @@ Tree buildTree(const rows::Model& m) {
         if (c.loopLenTicks) a.raw("loopLen " + renderDuration(*c.loopLenTicks));
         if (c.contentOffsetTicks)
             a.raw("offset " + renderDuration(c.contentOffsetTicks));
+        if (c.endMarkerTicks) a.raw("endMarker " + renderDuration(*c.endMarkerTicks));
+        if (c.signatureNumerator) a.raw("signature " + std::to_string(*c.signatureNumerator) + "/" +
+                                      std::to_string(c.signatureDenominator.value_or(0)));
+        if (c.scaleRoot) a.raw("scaleRoot " + std::to_string(*c.scaleRoot));
+        if (c.scaleId) a.text("scale", *c.scaleId);
+        if (c.scaleMask) a.raw("scaleMask " + std::to_string(*c.scaleMask));
 
         if (const auto it = audioOf.find(c.id); it != audioOf.end()) {
             const rows::AudioClip& ac = *it->second;
@@ -633,7 +642,7 @@ Tree buildTree(const rows::Model& m) {
         Attrs a(t.nodes[n].attrs);
         a.real("gain", r.gainDb, 0.0);
         a.real("pan", r.pan, 0.0);
-        a.flag("preFader", r.preFader);
+        a.flag("preFader", r.storedPreFader.value_or(r.preFader));
         a.flag("disabled", !r.enabled);
 
         // A hardware port is not a row and never was (SPEC 6.7). Rendering it

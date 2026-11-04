@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store_rows.hpp"
+#include "adi/controller_lanes.hpp"
 
 #include "adi/blob.hpp"
 #include "adi/store.hpp"
@@ -113,6 +114,8 @@ Model readModel(const Store& store) {
         m.problems.push_back(std::string("read transaction: ") + e.what());
     }
 
+    const auto returnTaps=readReturnSendTaps(store);
+
     query(m, db, "project",
           "SELECT name, sample_rate, ppq, length_ticks, author, notes "
           "FROM project WHERE id = 1",
@@ -171,6 +174,7 @@ Model readModel(const Store& store) {
               t.inputRef = optText(st, 14);
               t.automationMode = st.getColumn(15).getInt64();
               t.freezeMediaId = optInt(st, 16);
+              if(const auto tap=returnTaps.find(t.id);tap!=returnTaps.end())t.returnSendTap=tap->second;
               m.tracks.push_back(std::move(t));
           });
 
@@ -231,12 +235,11 @@ Model readModel(const Store& store) {
           });
 
     query(m, db, "clips",
-          "SELECT id, track_id, lane_id, kind, name, color, time_base, pos_ticks, "
-          "       pos_ns, length_ticks, length_ns, loop_enabled, loop_start_ticks, "
-          "       loop_len_ticks, content_offset_ticks, muted, gain_db, "
-          "       fade_in_ticks, fade_out_ticks, fade_in_curve, fade_out_curve, "
-          "       alias_of "
-          "FROM clips",
+          "SELECT c.id,c.track_id,c.lane_id,c.kind,c.name,c.color,c.time_base,c.pos_ticks,"
+          "c.pos_ns,c.length_ticks,c.length_ns,c.loop_enabled,c.loop_start_ticks,c.loop_len_ticks,"
+          "c.content_offset_ticks,c.muted,c.gain_db,c.fade_in_ticks,c.fade_out_ticks,c.fade_in_curve,"
+          "c.fade_out_curve,c.alias_of,p.end_marker_ticks,p.signature_numerator,p.signature_denominator,"
+          "p.scale_root,p.scale_id,p.scale_mask FROM clips c LEFT JOIN clip_properties p ON p.clip_id=c.id",
           [&](const SQLite::Statement& st) {
               Clip c;
               c.id = st.getColumn(0).getInt64();
@@ -261,6 +264,9 @@ Model readModel(const Store& store) {
               c.fadeInCurve = st.getColumn(19).getInt64();
               c.fadeOutCurve = st.getColumn(20).getInt64();
               c.aliasOf = optInt(st, 21);
+              c.endMarkerTicks = optInt(st, 22);
+              c.signatureNumerator = optInt(st, 23); c.signatureDenominator = optInt(st, 24);
+              c.scaleRoot = optInt(st, 25); c.scaleId = optText(st, 26); c.scaleMask = optInt(st, 27);
               m.clips.push_back(std::move(c));
           });
 
@@ -381,6 +387,11 @@ Model readModel(const Store& store) {
               r.preFader = flag(st, 9);
               r.enabled = flag(st, 10);
               r.origin = st.getColumn(11).getString();
+              if(r.kind=="send" && r.dstKind=="track")if(const auto tap=returnTaps.find(r.dstId);tap!=returnTaps.end() && tap->second.explicitChoice) {
+                  if(r.preFader!=tap->second.preFader)r.storedPreFader=r.preFader;
+                  r.preFader=tap->second.preFader;
+              }
+
               m.routing.push_back(std::move(r));
           });
 
@@ -568,6 +579,14 @@ Model readModel(const Store& store) {
         d.blob = std::move(*blob);
         m.automationData.push_back(std::move(d));
     }
+
+    auto controllerRows = controllers::readLanes(store);
+    if (!controllerRows.ok)
+        m.problems.push_back("event_streams controllers: " + controllerRows.error);
+    for (const auto &lane : controllerRows.lanes)
+        if (!lane.error.empty())
+            m.problems.push_back("event_streams controller " + std::to_string(lane.id) + ": " + lane.error);
+    m.controllers = std::move(controllerRows.lanes);
 
     // Notes come through the Store's blob accessors rather than a SELECT,
     // because ADR-0009's granularity rule lives there and this should not be a

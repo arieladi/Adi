@@ -373,14 +373,14 @@ Hearing hearing(const rows::Model& model, const GraphPlan& plan, const HearingFl
     for (std::size_t i = 0; i < n; ++i) {
         const auto it = track.find(plan.nodes[i].trackId);
         if (it == track.end()) continue;
-        muted[i] = it->second->muted;
+        muted[i] = it->second->muted || plan.nodes[i].trackId==flags.referenceTrack;
         defeat[i] = it->second->soloDefeat;
         // Soloing the master would solo everything it hears, which is nothing
         // a user means; a VCA carries no audio (ADR-0072), so soloing it
         // would solo nothing and silence the rest. Both are ignored rather
         // than refused.
         const PlannedKind kind = plan.nodes[i].kind;
-        soloed[i] = it->second->soloed && kind != PlannedKind::Master && kind != PlannedKind::Vca;
+        soloed[i] = it->second->soloed && !flags.soloIsCue && plan.nodes[i].trackId!=flags.referenceTrack && kind != PlannedKind::Master && kind != PlannedKind::Vca;
         anySolo = anySolo || soloed[i];
     }
 
@@ -542,15 +542,15 @@ std::shared_ptr<StripAutomation> bindStripAutomation(std::shared_ptr<const Autom
 }
 
 void MixerStrips::sync(const rows::Model& model, const Transport* transport,
-                       const std::shared_ptr<StripAutomation>& automation,bool delayCompensation) {
+                       const std::shared_ptr<StripAutomation>& automation,bool delayCompensation, const HearingFlags& flags) {
     problems_.clear();
     const GraphPlan plan = planGraph(model);
-    const Hearing hears = hearing(model, plan);
+    const Hearing hears = hearing(model, plan, flags);
     const std::map<std::int64_t, bool>& audible = hears.track;
     std::map<std::int64_t, const rows::MixerStrip*> row;
     for (const rows::MixerStrip& s : model.strips) row[s.trackId] = &s;
     std::map<std::int64_t, bool> unmuted;
-    for (const rows::Track& t : model.tracks) unmuted[t.id] = !t.muted;
+    for (const rows::Track& t : model.tracks) unmuted[t.id] = !t.muted && t.id!=flags.referenceTrack;
 
     // ADR-0203 d3: a node for every send the plan made, kept per routing row.
     // Back in the plan after time out of it, in no graph and so never

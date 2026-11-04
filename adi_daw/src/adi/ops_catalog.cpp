@@ -19,17 +19,24 @@
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
 #include "adi/blob.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/note_flags_ops.hpp"
 #include "adi/builtin_catalog.hpp"
 #include "adi/controller_maps.hpp"
 #include "adi/freeze_groups.hpp"
 #include "adi/freeze_state.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/note_transforms.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
+#include "adi/cue_settings.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/marker_ops.hpp"
 #include "adi/track_recording.hpp"
+#include "adi/row_capture.hpp"
+#include "adi/return_send_tap.hpp"
+#include "adi/clip_property_ops.hpp"
+#include "adi/row_capture.hpp"
 #include "adi/summing_flavors.hpp"
 #include "adi/track_image.hpp"
 
@@ -189,6 +196,9 @@ template <std::size_t I>
 bool scalarInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     constexpr auto& S = kScalars[I];
     try {
+        if constexpr(std::string_view(S.op)=="routing.setPreFader")
+            if(!allowSendEdgeTapEdit(c.db,p.at("id").get<std::int64_t>(),p.at("pre").get<bool>(),err))return false;
+
         SQLite::Statement st(c.db, std::string("SELECT ") + S.col + " FROM " + S.table +
                                        " WHERE " + S.idCol + " = ?");
         st.bind(1, p.at("id").get<std::int64_t>());
@@ -336,6 +346,52 @@ bool setProjectNameInverse(OpContext& c, const Payload&, Payload& inv, std::stri
         inv["name"] = st.executeStep() ? st.getColumn(0).getString() : std::string{};
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
+}
+
+// N38: win owns the native nullable tracks.role format/migration. Refuse a
+// write on older schemas; readers can still show an unassigned role.
+bool hasTrackRole(SQLite::Database& db) {
+    SQLite::Statement columns(db,"PRAGMA table_info(tracks)");
+    while(columns.executeStep())if(columns.getColumn(1).getString()=="role")return true;
+    return false;
+}
+bool knownRole(const Payload& role) {
+    return role.is_null() || (role.is_string() && (role=="kick" || role=="bass" || role=="vocal" || role=="reference"));
+}
+bool trackRoleValue(OpContext& c,const Payload& p,Payload& role,std::string& err) {
+    if(!hasTrackRole(c.db)){err="tracks.role format migration has not landed";return false;}
+    if(p.at("id").get<std::int64_t>()<=0){err="track role needs a positive id";return false;}
+    role=p.value("role",Payload(nullptr));
+    if(!knownRole(role)){err="unknown track role";return false;}
+    SQLite::Statement row(c.db,"SELECT kind,role FROM tracks WHERE id=?");row.bind(1,p.at("id").get<std::int64_t>());
+    if(!row.executeStep()){err="no such track";return false;}
+    if(!role.is_null()) {
+        const auto kind=row.getColumn(0).getString();
+        if(kind!="audio" && kind!="midi" && kind!="instrument" && kind!="group" && kind!="return"){err="track kind cannot be an anchor role";return false;}
+        if(role=="reference") {
+            SQLite::Statement other(c.db,"SELECT 1 FROM tracks WHERE role='reference' AND id<>? LIMIT 1");other.bind(1,p.at("id").get<std::int64_t>());
+            if(other.executeStep()){err="clear the existing reference role in the same batch first";return false;}
+        }
+    }
+    return true;
+}
+bool trackRoleApply(OpContext& c,const Payload& p,std::string& err) {
+    try {
+        Payload role;if(!trackRoleValue(c,p,role,err))return false;
+        SQLite::Statement update(c.db,"UPDATE tracks SET role=? WHERE id=?");
+        if(role.is_null())update.bind(1);else update.bind(1,role.get<std::string>());
+        update.bind(2,p.at("id").get<std::int64_t>());return update.exec()==1;
+    }catch(const std::exception& exception){err=exception.what();return false;}
+}
+bool trackRoleInverse(OpContext& c,const Payload& p,Payload& inverse,std::string& err) {
+    try {
+        Payload role;if(!trackRoleValue(c,p,role,err))return false;
+        SQLite::Statement row(c.db,"SELECT role FROM tracks WHERE id=?");row.bind(1,p.at("id").get<std::int64_t>());
+        if(!row.executeStep()){err="no such track";return false;}
+        Payload previous=nullptr;if(!row.getColumn(0).isNull())previous=row.getColumn(0).getString();
+        if(!knownRole(previous)){err="unrecognized stored track role retained";return false;}
+        inverse={{"id",p.at("id")},{"role",previous}};return true;
+    }catch(const std::exception& exception){err=exception.what();return false;}
 }
 
 bool trackCreateApply(OpContext& c, const Payload& p, std::string& err) {
@@ -822,15 +878,25 @@ bool sigRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string&
 
 bool routingConnectApply(OpContext& c, const Payload& p, std::string& err) {
     try {
+        if(p.contains("row")) {
+            const auto& row=p.at("row");
+            if(detail::signedInteger(row.at("id"))!=detail::signedInteger(p.at("id")))throw std::runtime_error("captured routing id differs");
+            detail::restoreRow(c.db,"routing",row);return true;
+        }
+        bool pre=false;
+        if(p.at("kind")=="send" && p.at("dstKind")=="track")
+            if(const auto choice=explicitReturnSendTap(c.db,p.at("dst").get<std::int64_t>()))pre=*choice;
+
         SQLite::Statement st(c.db,
-            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind) "
-            "VALUES (?,?,?,?,?,?)");
+            "INSERT INTO routing(id, src_kind, src_id, dst_kind, dst_id, kind, pre_fader) "
+            "VALUES (?,?,?,?,?,?,?)");
         st.bind(1, p.at("id").get<std::int64_t>());
         st.bind(2, p.at("srcKind").get<std::string>());
         st.bind(3, p.at("src").get<std::int64_t>());
         st.bind(4, p.at("dstKind").get<std::string>());
         st.bind(5, p.at("dst").get<std::int64_t>());
         st.bind(6, p.at("kind").get<std::string>());
+        st.bind(7,pre?1:0);
         st.exec();
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
@@ -862,6 +928,7 @@ bool routingDisconnectInverse(OpContext& c, const Payload& p, Payload& inv, std:
         inv["dstKind"] = st.getColumn(2).getString();
         inv["dst"] = st.getColumn(3).getInt64();
         inv["kind"] = st.getColumn(4).getString();
+        inv["row"] = *detail::captureRow(c.db,"routing","id",p.at("id").get<std::int64_t>());
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1008,6 +1075,7 @@ constexpr Field kFProjectName[] = {{"name", FieldType::Text, true}};
 constexpr Field kFSummingEnabled[] = {{"id", FieldType::Int, true}, {"enabled", FieldType::Bool, true}};
 constexpr Field kFSummingFlavor[] = {{"id", FieldType::Int, true}, {"flavor", FieldType::Text, true}};
 constexpr Field kFSummingDrive[] = {{"id", FieldType::Int, true}, {"db", FieldType::Real, true}};
+constexpr Field kFTrackRole[] = {{"id", FieldType::Int, true}, {"role", FieldType::Text, false}};
 constexpr Field kFTrackCreate[] = {{"id", FieldType::Int, true},
                                    {"kind", FieldType::Text, true},
                                    {"name", FieldType::Text, false},
@@ -1065,7 +1133,8 @@ constexpr Field kFRouting[] = {{"id", FieldType::Int, true},
                                {"src", FieldType::Int, true},
                                {"dstKind", FieldType::Text, true},
                                {"dst", FieldType::Int, true},
-                               {"kind", FieldType::Text, true}};
+                               {"kind", FieldType::Text, true},
+                               {"row", FieldType::Object, false}};
 constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},
@@ -1146,12 +1215,23 @@ constexpr Field kFTransportLoop[] = {{"on", FieldType::Bool, true},
 constexpr Field kFMarkerCreate[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true},{"time_base",FieldType::Int,false},
     {"name",FieldType::Text,false},{"kind",FieldType::Text,false},{"length",FieldType::Int,false},{"color",FieldType::Int,false},
     {"note",FieldType::Text,false},{"prompt",FieldType::Text,false}};
+constexpr Field kFClipMarker[] = {{"id",FieldType::Int,true},{"ticks",FieldType::Int,true}};
+constexpr Field kFClipLoop[] = {{"id",FieldType::Int,true},{"on",FieldType::Bool,true},
+    {"start",FieldType::Int,false},{"length",FieldType::Int,false}};
+constexpr Field kFClipSignature[] = {{"id",FieldType::Int,true},{"num",FieldType::Int,false},{"den",FieldType::Int,false}};
+constexpr Field kFClipScale[] = {{"id",FieldType::Int,true},{"root",FieldType::Int,false},
+    {"scale",FieldType::Text,false},{"mask",FieldType::Int,false}};
 constexpr Field kFMarkerId[]={{"id",FieldType::Int,true}};
 constexpr Field kFMarkerMove[]={{"id",FieldType::Int,true},{"pos",FieldType::Int,true}};
 constexpr Field kFMarkerName[]={{"id",FieldType::Int,true},{"name",FieldType::Text,true}};
 constexpr Field kFMarkerColor[]={{"id",FieldType::Int,true},{"color",FieldType::Int,false}};
 constexpr Field kFMarkerText[]={{"id",FieldType::Int,true},{"text",FieldType::Text,true}};
 constexpr Field kFMarkerLength[]={{"id",FieldType::Int,true},{"length",FieldType::Int,true}};
+
+constexpr Field kFCueFirst[]={{"first",FieldType::Int,true}};
+constexpr Field kFCueDb[]={{"db",FieldType::Real,true}};
+constexpr Field kFCueTrack[]={{"id",FieldType::Int,true},{"on",FieldType::Bool,true}};
+constexpr Field kFCueReference[]={{"on",FieldType::Bool,true},{"id",FieldType::Int,false}};
 
 // --- track.setParent: the first op that is not a function of one row -------
 //
@@ -1946,12 +2026,15 @@ const OpDescriptor kHandWritten[] = {
      kFFreeze, false, false, freeze::groupApply, freeze::groupInverse, ""},
     {"track.setFreeze", "Set captured track freeze state", Scope::Edit, EngineImpact::GraphRebuild, kFFreeze,
      false, false, freeze::apply, freeze::inverse, ""},
-    {"track.create", "Create a track", Scope::Edit, EngineImpact::GraphRebuild, kFTrackCreate, false, false,
-     trackCreateApply, trackCreateInverse, "track.delete"},
-    {"track.delete", "Delete a track", Scope::Edit, EngineImpact::GraphRebuild, kFId, false, false,
-     trackDeleteApply, trackDeleteInverse, "track.create"},
-    {"track.setParent", "Move a track into or out of a group", Scope::Edit, EngineImpact::GraphRebuild,
-     kFSetParent, false, false, trackSetParentApply, trackSetParentInverse, ""},
+    {"track.create", "Create a track", Scope::Edit, EngineImpact::GraphRebuild,
+     kFTrackCreate, false, false, trackCreateApply, trackCreateInverse, "track.delete"},
+    {"track.setRole", "Set an anchor role", Scope::Edit, EngineImpact::GraphRebuild,
+     kFTrackRole, false, false, trackRoleApply, trackRoleInverse, ""},
+    {"track.delete", "Delete a track", Scope::Edit, EngineImpact::GraphRebuild,
+     kFId, false, false, trackDeleteApply, trackDeleteInverse, "track.create"},
+    {"track.setParent", "Move a track into or out of a group", Scope::Edit,
+     EngineImpact::GraphRebuild, kFSetParent, false, false,
+     trackSetParentApply, trackSetParentInverse, ""},
 
     {"clip.create", "Create a clip", Scope::Edit, EngineImpact::Snapshot, kFClipCreate, false, false,
      clipCreateApply, clipCreateInverse, "clip.delete"},
@@ -2040,6 +2123,25 @@ const OpDescriptor kHandWritten[] = {
     {"marker.setNote","Set a marker's note",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::note,marker::detailsInverse,""},
     {"marker.setPrompt","Set a marker's literal prompt",Scope::Edit,EngineImpact::Snapshot,kFMarkerText,false,false,marker::prompt,marker::detailsInverse,""},
 
+    {"cue.setMode", "Use solo buttons as Cue", Scope::Transport, EngineImpact::GraphRebuild,
+     kFTransportFlag,false,true,cueModeApply,nullptr,""},
+    {"cue.setOutput", "Select the stereo Cue Out pair", Scope::Transport, EngineImpact::Snapshot,
+     kFCueFirst,false,true,cueOutputApply,nullptr,""},
+    {"cue.setVolume", "Set Cue Volume", Scope::Transport, EngineImpact::Snapshot,
+     kFCueDb,false,true,cueVolumeApply,nullptr,""},
+    {"cue.setTrack", "Cue a track without changing its solo", Scope::Transport, EngineImpact::GraphRebuild,
+     kFCueTrack,false,true,cueTrackApply,nullptr,""},
+    {"cue.setReference", "Select and audition the exclusive reference", Scope::Transport, EngineImpact::GraphRebuild,
+     kFCueReference,false,true,cueReferenceApply,nullptr,""},
+    {"mixer.setSoloInPlace", "Keep a soloed track's returns audible", Scope::Transport, EngineImpact::GraphRebuild,
+     kFTransportFlag,false,true,soloInPlaceApply,nullptr,""},
+
+    {"clip.setStartMarker","Set the clip source Start marker",Scope::Edit,EngineImpact::Snapshot,kFClipMarker,false,false,clip_properties::start,clip_properties::inverse,""},
+    {"clip.setEndMarker","Set the clip source End marker",Scope::Edit,EngineImpact::Snapshot,kFClipMarker,false,false,clip_properties::end,clip_properties::inverse,""},
+    {"clip.setLoop","Set the clip loop switch and window",Scope::Edit,EngineImpact::Snapshot,kFClipLoop,false,false,clip_properties::loop,clip_properties::inverse,""},
+    {"clip.setTimeSignature","Set or inherit the clip signature",Scope::Edit,EngineImpact::Snapshot,kFClipSignature,false,false,clip_properties::signature,clip_properties::inverse,""},
+    {"clip.setScale","Set or inherit the clip scale",Scope::Edit,EngineImpact::Snapshot,kFClipScale,false,false,clip_properties::scale,clip_properties::inverse,""},
+
     // Ephemeral: performance, not editing. No inverse, and undo skips them.
     {"transport.play", "Start playback", Scope::Transport, EngineImpact::None,
      {}, false, true, transportNoop, nullptr, ""},
@@ -2062,12 +2164,17 @@ const OpDescriptor kHandWritten[] = {
 std::span<const OpDescriptor> builtinOps() {
     static const std::vector<OpDescriptor> all = [] {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
+        const auto noteOps = notes::transformOps();
+        v.insert(v.end(), noteOps.begin(), noteOps.end());
+        const auto controllerOps = controllers::laneOps();
+        v.insert(v.end(), controllerOps.begin(), controllerOps.end());
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
         const auto split=splitPanOps();v.insert(v.end(),split.begin(),split.end());
         const auto editing=clipEditOps();v.insert(v.end(),editing.begin(),editing.end());
         const auto builtins=builtinReferenceOps();v.insert(v.end(),builtins.begin(),builtins.end());
         const auto recording=trackRecordingOps();
         v.insert(v.end(),recording.begin(),recording.end());
+        const auto taps=returnSendTapOps();v.insert(v.end(),taps.begin(),taps.end());
         return v;
     }();
     return all;

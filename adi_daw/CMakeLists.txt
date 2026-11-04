@@ -215,6 +215,10 @@ add_library(adi_core STATIC
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
+    src/adi/audio/mp4_aac.cpp
+    src/adi/audio/stem_manifest.cpp
+    src/adi/render/ni_stems.cpp
+    src/adi/media/stem_import.cpp
     src/adi/blob.cpp
     # Deliberately in adi_core rather than behind ADI_WITH_JUCE: device_core
     # includes no JUCE, so its tests run on all seven ABIs instead of only in
@@ -245,12 +249,14 @@ add_library(adi_core STATIC
     # which is also why it is built on every ABI including the ones where the
     # runtime below is not.
     src/juce/pd_declarations.cpp
+    src/adi/cue_settings.cpp
     src/adi/transport_settings.cpp
     src/adi/store.cpp
     src/adi/project_files.cpp
     src/adi/ops.cpp
     src/adi/row_capture.cpp
     src/adi/marker_ops.cpp
+    src/adi/clip_property_ops.cpp
     src/adi/ops_catalog.cpp
     src/adi/note_flags_ops.cpp
     src/adi/device_copy.cpp
@@ -262,9 +268,16 @@ add_library(adi_core STATIC
     src/adi/row_capture.cpp
     src/adi/row_capture.cpp
     src/adi/track_image.cpp
+    src/adi/row_capture.cpp
+    src/adi/return_send_tap.cpp
+    src/adi/note_transforms.cpp
+    src/adi/controller_lanes.cpp
+    src/juce/builtin_samples.cpp
+    src/adi/sample_slots.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/history_list.cpp
+    src/adi/history_policy.cpp
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
@@ -292,7 +305,10 @@ add_library(adi_core STATIC
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
     src/adi/engine/main_loudness.cpp
+    src/adi/engine/audio_recording.cpp
+    src/adi/recording_commands.cpp
     src/adi/engine/gain_stage.cpp
+    src/adi/engine/cue_monitor.cpp
     src/adi/engine/mixer.cpp
     src/adi/engine/summing.cpp
     src/adi/engine/scope.cpp
@@ -331,6 +347,40 @@ target_link_libraries(adi_core PUBLIC SQLiteCpp nlohmann_json::nlohmann_json)
 target_link_libraries(adi_core PRIVATE adi_warnings adi_blake3 adi_miniz)
 # PUBLIC: dsp/spectrum.cpp includes pffft.h, and nothing else in the tree does.
 target_link_libraries(adi_core PRIVATE adi_pffft)
+
+# AAC remains a worker/platform service, independent of JUCE (ADR-0191/0204).
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    include(TestBigEndian)
+    test_big_endian(ADI_AAC_BIG_ENDIAN)
+    if(ADI_AAC_BIG_ENDIAN)
+        set(_adi_aac_be 1)
+    else()
+        set(_adi_aac_be 0)
+    endif()
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/aac/libavutil")
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/aac/libavutil/avconfig.h"
+        "#pragma once\n#define AV_HAVE_BIGENDIAN ${_adi_aac_be}\n#define AV_HAVE_FAST_UNALIGNED 0\n")
+    foreach(_adi_aac_major 6 7)
+        if(NOT EXISTS "${ADI_THIRD_PARTY}/ffmpeg${_adi_aac_major}/libavcodec/avcodec.h")
+            message(FATAL_ERROR "AAC public headers missing: run tools/fetch_external.sh --build-only")
+        endif()
+        add_library(adi_aac${_adi_aac_major} OBJECT "src/adi/audio/aac_ffmpeg${_adi_aac_major}.cpp")
+        target_include_directories(adi_aac${_adi_aac_major} PRIVATE src)
+        target_include_directories(adi_aac${_adi_aac_major} SYSTEM PRIVATE
+            "${ADI_THIRD_PARTY}/ffmpeg${_adi_aac_major}" "${CMAKE_CURRENT_BINARY_DIR}/generated/aac")
+        target_link_libraries(adi_aac${_adi_aac_major} PRIVATE adi_warnings)
+        target_sources(adi_core PRIVATE $<TARGET_OBJECTS:adi_aac${_adi_aac_major}>)
+    endforeach()
+    target_sources(adi_core PRIVATE src/adi/audio/aac_linux.cpp)
+    target_link_libraries(adi_core PRIVATE ${CMAKE_DL_LIBS})
+elseif(APPLE)
+    target_sources(adi_core PRIVATE src/adi/audio/aac_apple.cpp)
+    target_link_libraries(adi_core PRIVATE "-framework AudioToolbox" "-framework CoreFoundation")
+elseif(WIN32)
+    target_sources(adi_core PRIVATE src/adi/audio/aac_windows.cpp)
+    target_link_libraries(adi_core PRIVATE mfplat mfreadwrite mfuuid ole32)
+endif()
+
 
 # ---------------------------------------------------------------------------
 # libpd -- the Pure Data runtime (ADR-0035, ADR-0183).
@@ -617,6 +667,12 @@ add_executable(adi_note_flags_tests tests/test_note_flags.cpp)
 target_link_libraries(adi_note_flags_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_note_flags_tests COMMAND adi_note_flags_tests)
 
+add_executable(adi_clip_properties_tests tests/test_clip_properties.cpp)
+target_link_libraries(adi_clip_properties_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_clip_properties_tests PRIVATE
+    ADI_CLIP_PROPERTIES_HISTORY="${CMAKE_CURRENT_SOURCE_DIR}/docs/format/history/schema-1.10.sql")
+add_test(NAME adi_clip_properties_tests COMMAND adi_clip_properties_tests)
+
 # History snapshots (ADR-0128): revert never discards, across branches too.
 add_executable(adi_snapshots_tests tests/test_snapshots.cpp)
 target_link_libraries(adi_snapshots_tests PRIVATE adi_core adi_warnings)
@@ -780,6 +836,10 @@ add_executable(adi_device_copy_tests tests/test_device_copy.cpp)
 target_link_libraries(adi_device_copy_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_device_copy_tests COMMAND adi_device_copy_tests)
 
+add_executable(adi_sample_slots_tests tests/test_sample_slots.cpp)
+target_link_libraries(adi_sample_slots_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_sample_slots_tests COMMAND adi_sample_slots_tests)
+
 add_executable(adi_builtin_devices_tests tests/test_builtin_devices.cpp)
 target_link_libraries(adi_builtin_devices_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_builtin_devices_tests COMMAND adi_builtin_devices_tests)
@@ -808,6 +868,10 @@ add_test(NAME adi_realize_tests COMMAND adi_realize_tests)
 # device contract at every block size. No JUCE, so it runs on all seven
 # ABIs; the JUCE half (adi_play) only has to prove a device callback
 # reaches it.
+add_executable(adi_cue_monitor_tests tests/test_cue_monitor.cpp)
+target_link_libraries(adi_cue_monitor_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_cue_monitor_tests COMMAND adi_cue_monitor_tests)
+
 add_executable(adi_transport_settings_tests tests/test_transport_settings.cpp)
 target_link_libraries(adi_transport_settings_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_transport_settings_tests COMMAND adi_transport_settings_tests)
@@ -880,6 +944,28 @@ add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
 add_executable(adi_ui_param_capture_tests tests/test_ui_param_capture.cpp)
 target_link_libraries(adi_ui_param_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_param_capture_tests COMMAND adi_ui_param_capture_tests)
+
+add_executable(adi_track_role_tests tests/test_track_roles.cpp)
+target_link_libraries(adi_track_role_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_track_role_tests COMMAND adi_track_role_tests)
+
+add_executable(adi_snapshot_routing_ids_tests tests/test_snapshot_routing_ids.cpp)
+target_link_libraries(adi_snapshot_routing_ids_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_snapshot_routing_ids_tests COMMAND adi_snapshot_routing_ids_tests)
+
+add_executable(adi_snapshot_audio_tests tests/test_snapshot_audio.cpp)
+target_link_libraries(adi_snapshot_audio_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_snapshot_audio_tests COMMAND adi_snapshot_audio_tests)
+
+add_executable(adi_media_peaks_tests tests/test_media_peaks.cpp)
+target_link_libraries(adi_media_peaks_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_media_peaks_tests PRIVATE ADI_AUDIO_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
+add_test(NAME adi_media_peaks_tests COMMAND adi_media_peaks_tests)
+
+add_executable(adi_return_send_tap_tests tests/test_return_send_tap.cpp)
+target_link_libraries(adi_return_send_tap_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_return_send_tap_tests PRIVATE ADI_SCHEMA_HISTORY_DIR="${CMAKE_CURRENT_SOURCE_DIR}/docs/format/history")
+add_test(NAME adi_return_send_tap_tests COMMAND adi_return_send_tap_tests)
 
 add_executable(adi_engine_tests tests/test_engine.cpp)
 target_link_libraries(adi_engine_tests PRIVATE adi_core adi_warnings)
@@ -1352,7 +1438,7 @@ target_link_libraries(adi_zip_writer_tests PRIVATE adi_core adi_warnings adi_min
 add_test(NAME adi_zip_writer_tests COMMAND adi_zip_writer_tests)
 
 # linux/collect-export: only this assignment's sources and test targets.
-target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp)
+target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp src/adi/media/peaks.cpp)
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
@@ -1396,6 +1482,14 @@ function(adi_add_samplerate)
 endfunction()
 adi_add_samplerate()
 target_sources(adi_core PRIVATE src/adi/engine/transport.cpp src/adi/engine/clip_playback.cpp)
+
+add_executable(adi_audio_recording_tests tests/test_audio_recording.cpp)
+target_link_libraries(adi_audio_recording_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_audio_recording_tests COMMAND adi_audio_recording_tests)
+
+add_executable(adi_recording_commands_tests tests/test_recording_commands.cpp)
+target_link_libraries(adi_recording_commands_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_recording_commands_tests COMMAND adi_recording_commands_tests)
 target_link_libraries(adi_core PRIVATE samplerate)
 add_executable(adi_edit_rows_tests tests/test_edit_rows.cpp)
 target_link_libraries(adi_edit_rows_tests PRIVATE adi_core adi_warnings)
@@ -1526,6 +1620,26 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+
+add_executable(adi_mp4_aac_tests tests/test_mp4_aac.cpp)
+target_link_libraries(adi_mp4_aac_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_mp4_aac_tests COMMAND adi_mp4_aac_tests)
+
+add_executable(adi_ni_stems_tests tests/test_ni_stems.cpp)
+target_link_libraries(adi_ni_stems_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ni_stems_tests COMMAND adi_ni_stems_tests)
+
+add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
+target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_transforms_tests COMMAND adi_note_transforms_tests)
+
+add_executable(adi_controller_lanes_tests tests/test_controller_lanes.cpp)
+target_link_libraries(adi_controller_lanes_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_controller_lanes_tests COMMAND adi_controller_lanes_tests)
+
+add_executable(adi_history_policy_tests tests/test_history_policy.cpp)
+target_link_libraries(adi_history_policy_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_history_policy_tests COMMAND adi_history_policy_tests)
 
 add_executable(adi_freeze_capture_tests tests/test_freeze_capture.cpp)
 target_link_libraries(adi_freeze_capture_tests PRIVATE adi_core adi_warnings)

@@ -26,17 +26,21 @@
 #pragma once
 #include <array>
 
+#include "adi/controller_data.hpp"
 #include "adi/engine/publisher.hpp"
 #include "adi/engine/automation_snapshot.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/track_recording.hpp"
+#include "adi/cue_settings.hpp"
 
 #include <cstdint>
+#include <cstddef>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
+#include "adi/return_send_tap.hpp"
 
 namespace adi {
 class Store;
@@ -67,6 +71,22 @@ struct TempoMap {
     [[nodiscard]] double bpmAt(std::int64_t ticks) const noexcept;
 };
 
+struct AudioMediaIdentity {
+    std::string contentHash;
+    std::optional<std::int64_t> sampleRate,channels,frames;
+    bool missing=false; // stored pool flag, not a fresh filesystem probe
+    friend bool operator==(const AudioMediaIdentity&,const AudioMediaIdentity&)=default;
+};
+struct AudioClipSource {
+    std::int64_t mediaId=0,sourceStartFrames=0,sourceLengthFrames=0,channelMode=0;
+    bool warpEnabled=false,reverse=false;
+    std::string warpMode;
+    std::optional<std::vector<std::byte>> warpMarkers; // NULL differs from empty
+    double transposeSemis=0,formantShift=0;
+    std::optional<AudioMediaIdentity> mediaInfo; // absent if pool row is missing
+    friend bool operator==(const AudioClipSource&,const AudioClipSource&)=default;
+};
+
 struct ClipNode {
     std::string name;
     std::int64_t id = 0;
@@ -79,6 +99,8 @@ struct ClipNode {
     std::optional<std::int64_t> contentOffsetNs,loopBeginNs,loopEndNs,sourceEndNs;
     std::array<std::optional<std::int64_t>,4> fadeClockNs{}; // in begin/end, out begin/end, unrolled source clock
     std::array<std::optional<std::int64_t>,4> fadeClockTicks{}; // retained Warp source musical domain
+    std::optional<AudioClipSource> audio;
+    std::vector<controllers::Lane> controllers = {};
 };
 
 struct TrackNode {
@@ -87,6 +109,7 @@ struct TrackNode {
     std::int64_t indexInParent = 0;
     std::string kind;
     TrackRecordingOptions recording;
+    std::optional<std::string> role; // nullable native tracks.role; absent on older schemas
     std::optional<std::int64_t> color; // absent is distinct from explicit zero
     std::string name;            // owned; the audio thread only reads it
     bool muted = false;
@@ -101,6 +124,7 @@ struct TrackNode {
     std::string panMode = "stereo";
     double panLeft = -1.0, panRight = 1.0;
     std::vector<std::shared_ptr<const ClipNode>> clips;
+    std::optional<ReturnSendTap> returnSendTap{};
 };
 
 /// A routing row with kind='send', including disabled rows. Destinations can
@@ -134,6 +158,17 @@ struct RemarkNode {
     friend bool operator==(const RemarkNode&,const RemarkNode&)=default;
 };
 
+/// Assigned built-in media slot. State hash caches immutable metadata across
+/// rebuilds; file presence and pool metadata are refreshed off the callback.
+struct SampleSlotNode {
+    std::int64_t deviceId=0;
+    std::int32_t slot=0;
+    std::string name,uid,mediaHash,stateHash,problem;
+    std::optional<std::int64_t> mediaId;
+    bool empty=true,missing=false,hasDerivedState=false;
+    friend bool operator==(const SampleSlotNode&,const SampleSlotNode&)=default;
+};
+
 /// What the audio thread sees. Derives from Sequenced so the publisher can
 /// stamp it; nothing else touches `seq`.
 struct Snapshot : Sequenced {
@@ -142,11 +177,16 @@ struct Snapshot : Sequenced {
     // Sorted by persistent id, not a display order. Filter by trackId or the
     // raw target address; unresolved anchors retain all their text/metadata.
     std::vector<std::shared_ptr<const RemarkNode>> remarks;
+    // All routing kinds, including disabled rows. Zero if no positive id.
+    // Observation only: caller must guard INT64_MAX and reserve pending ids.
+    std::int64_t maxRoutingId = 0;
+    std::vector<std::shared_ptr<const SampleSlotNode>> sampleSlots;
     int sampleRate = 44100;
     TransportSettings transport;
     std::vector<std::shared_ptr<const MarkerNode>> markers; // id order, not a mixed-units display order
     std::vector<std::shared_ptr<const AutomationLaneNode>> automationLanes; // lane id order
     bool automationOverridden = false; // session state supplied at rebuild, never saved
+    CueSettings cue;
     // SQL pos_ticks maps to Meter::start_ticks. Copied with the root on every
     // build, while unchanged tracks/clips/tempo retain structural sharing.
     std::vector<textproj::Meter> meters;

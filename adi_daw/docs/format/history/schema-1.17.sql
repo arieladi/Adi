@@ -1,6 +1,6 @@
 -- ============================================================================
 --  ADI DAW  —  .adi project format
---  Normative schema, version 1.17 (prior minors frozen under history/)
+--  Normative schema, version 1.17 (see SPEC.md; older minors are frozen)
 --
 --  This file is executable and is verified by tools/validate_schema.py on
 --  every commit. If you change it, run that script.
@@ -265,6 +265,15 @@ CREATE TABLE track_recording_options (
     keep_monitoring_latency INTEGER NOT NULL DEFAULT 1 CHECK (keep_monitoring_latency IN (0,1))
 ) STRICT;
 
+-- Since 1.15: ADR-0203 d3, one persistent send tap per RETURN. An absent
+-- row leaves legacy edge taps intact; the native return command normalizes
+-- all incoming sends as one undoable choice, including a return with none.
+CREATE TABLE return_send_taps (
+    track_id INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    pre_fader INTEGER NOT NULL DEFAULT 0 CHECK (pre_fader IN (0,1))
+) STRICT;
+
+
 -- Take lanes / comping (SPEC §6.2). A comp is clips across lanes with an
 -- active-region selection — the model both Ableton 11+ and Cubase use.
 CREATE TABLE lanes (
@@ -409,6 +418,20 @@ CREATE TABLE clips (
 ) STRICT;
 CREATE INDEX idx_clips_track ON clips(track_id, pos_ticks);
 CREATE INDEX idx_clips_lane  ON clips(lane_id);
+
+-- Since 1.16 (N33): local Main Clip Properties. NULL inherits the project
+-- signature/scale or the visible source end; start uses content_offset_ticks.
+CREATE TABLE clip_properties (
+    clip_id INTEGER PRIMARY KEY REFERENCES clips(id) ON DELETE CASCADE,
+    end_marker_ticks INTEGER CHECK (end_marker_ticks >= 0),
+    signature_numerator INTEGER CHECK (signature_numerator BETWEEN 1 AND 255),
+    signature_denominator INTEGER CHECK (signature_denominator IN (1,2,4,8,16,32,64,128)),
+    scale_root INTEGER CHECK (scale_root BETWEEN 0 AND 11),
+    scale_id TEXT CHECK (length(scale_id) > 0),
+    scale_mask INTEGER CHECK (scale_mask BETWEEN 1 AND 4095 AND (scale_mask & 1) = 1),
+    CHECK ((signature_numerator IS NULL) = (signature_denominator IS NULL)),
+    CHECK ((scale_root IS NULL) = (scale_id IS NULL) AND (scale_id IS NULL) = (scale_mask IS NULL))
+) STRICT;
 
 -- MIDI content. One blob per clip per stream kind — the granularity rule in
 -- SPEC §6.3. Editing one note rewrites this clip's note blob and nothing else.

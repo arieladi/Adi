@@ -458,8 +458,9 @@ std::string History::defaultSnapshotName(const std::string& projectName,
     return (projectName.empty() ? std::string("Untitled") : projectName) + " " + when;
 }
 
-History::SnapshotResult History::takeSnapshot(const std::string& name, std::int64_t createdUtc,
-                                              int utcOffsetMinutes, bool automatic) {
+History::SnapshotResult History::takeSnapshot(const std::string &name, std::int64_t createdUtc,
+                                              int utcOffsetMinutes, bool automatic,
+                                              const HistorySnapshotPolicy &policy) {
     SnapshotResult r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
     try {
@@ -471,6 +472,10 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
                                                           : std::string{},
                                          createdUtc, utcOffsetMinutes);
         }
+        SQLite::Transaction transaction(db);
+        if (!history_detail::trimSnapshots(db, history_detail::snapshotLimit(policy), 1, std::nullopt,
+                                           r.error))
+            return r;
         SQLite::Statement st(db,
             "INSERT INTO history_snapshots(name, op_seq, branch_id, created_utc, auto) "
             "VALUES (?,?,?,?,?)");
@@ -481,6 +486,7 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
         st.bind(5, automatic ? 1 : 0);
         st.exec();
         r.id = db.getLastInsertRowid();
+        transaction.commit();
         r.ok = true;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -488,12 +494,36 @@ History::SnapshotResult History::takeSnapshot(const std::string& name, std::int6
     return r;
 }
 
+History::Result History::removeSnapshot(std::int64_t id) {
+    Result result;
+    if (store_.readOnly()) {
+        result.error = "project is open read-only";
+        return result;
+    }
+    try {
+        auto &db = store_.db();
+        SQLite::Transaction transaction(db);
+        SQLite::Statement remove(db, "DELETE FROM history_snapshots WHERE id=?");
+        remove.bind(1, id);
+        if (remove.exec() != 1) {
+            result.error = "no such snapshot";
+            return result;
+        }
+        history_detail::clearDailyReference(db, id);
+        transaction.commit();
+        result.ok = true;
+    } catch (const std::exception &error) {
+        result.error = error.what();
+    }
+    return result;
+}
+
 History::Result History::renameSnapshot(std::int64_t snapshotId, const std::string& newName) {
     Result r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
     if (newName.empty()) { r.error = "a snapshot name cannot be empty"; return r; }
     try {
-        SQLite::Statement st(store_.db(), "UPDATE history_snapshots SET name = ? WHERE id = ?");
+        SQLite::Statement st(store_.db(), "UPDATE history_snapshots SET name = ?,auto=0 WHERE id = ?");
         st.bind(1, newName);
         st.bind(2, snapshotId);
         if (st.exec() == 0) { r.error = "no such snapshot"; return r; }

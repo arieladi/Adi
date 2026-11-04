@@ -3,9 +3,15 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/freeze_groups.hpp"
 
+#include "adi/controller_lanes.hpp"
 #include "adi/store.hpp"
+#include "adi/media/media_ops.hpp"
+#include "juce/builtin_samples.hpp"
+#include <filesystem>
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
+#include <stdexcept>
 
 #include <algorithm>
 #include <map>
@@ -32,12 +38,14 @@ bool same(const ClipNode& a, const ClipNode& b) {
            a.fadeOutTicks==b.fadeOutTicks && a.fadeInCurve==b.fadeInCurve && a.fadeOutCurve==b.fadeOutCurve &&
            a.fadeInTension==b.fadeInTension && a.fadeOutTension==b.fadeOutTension &&
            a.contentOffsetNs==b.contentOffsetNs && a.loopBeginNs==b.loopBeginNs &&
-           a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks;
+           a.loopEndNs==b.loopEndNs && a.sourceEndNs==b.sourceEndNs && a.fadeClockNs==b.fadeClockNs && a.fadeClockTicks==b.fadeClockTicks &&
+           a.audio == b.audio &&
+           a.controllers == b.controllers;
 }
 
 bool same(const TrackNode& a, const TrackNode& b) {
     if (a.id != b.id || a.name != b.name || a.parent != b.parent || a.indexInParent != b.indexInParent ||
-        a.kind != b.kind || a.recording != b.recording || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
+        a.kind != b.kind || a.role != b.role || a.recording != b.recording || a.returnSendTap != b.returnSendTap || a.color != b.color || a.muted != b.muted || a.soloed != b.soloed ||
         a.volumeDb != b.volumeDb || a.pan != b.pan || a.panMode != b.panMode ||
         a.panLeft != b.panLeft || a.panRight != b.panRight || a.delaySamples != b.delaySamples ||
         a.clips.size() != b.clips.size() ||
@@ -148,6 +156,7 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const std::set<std::int64_t>& overridden) {
     auto snap = std::make_unique<Snapshot>();
     snap->transport=readTransportSettings(store);
+    snap->cue=readCueSettings(store);
     auto& db = const_cast<SQLite::Database&>(store.db());
     snap->automationLanes = detail::readAutomationSnapshot(db, previous.automationLanes, overridden);
     snap->automationOverridden = !overridden.empty();
@@ -156,6 +165,16 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     std::optional<SQLite::Transaction> readSnapshot;
     if(sqlite3_get_autocommit(db.getHandle())!=0)
         readSnapshot.emplace(db,SQLite::TransactionBehavior::DEFERRED);
+    const auto returnTaps=readReturnSendTaps(store);
+    std::optional<SQLite::Transaction> transaction;
+    if (sqlite3_get_autocommit(db.getHandle()) != 0)
+        transaction.emplace(db, SQLite::TransactionBehavior::DEFERRED);
+    auto controllerRows = controllers::readLanes(store);
+    if (!controllerRows.ok)
+        throw std::runtime_error("controller snapshot: " + controllerRows.error);
+    std::map<std::int64_t, std::vector<controllers::Lane>> controllersByClip;
+    for (auto &lane : controllerRows.lanes)
+        controllersByClip[lane.clipId].push_back(std::move(lane));
 
     // Index the previous snapshot by id so reuse is a lookup rather than a scan.
     std::map<std::int64_t, std::shared_ptr<const TrackNode>> prevTracks;
@@ -258,6 +277,29 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     } catch(const std::exception&) {}
 
+    // Source metadata only: no pool peaks, decoding or filesystem work while
+    // rebuilding a frame. Waveform data is read/built by media/peaks off-thread.
+    std::map<std::int64_t,AudioClipSource> audioSources;
+    try {
+        SQLite::Statement query(db,"SELECT a.clip_id,a.media_id,a.src_start_frames,a.src_len_frames,a.warp_enabled,a.warp_mode,a.warp_markers,a.transpose_semis,a.formant_shift,a.reverse,a.channel_mode,m.id,m.hash_blake3,m.sample_rate,m.channels,m.frames,m.missing FROM audio_clips a LEFT JOIN media_files m ON m.id=a.media_id ORDER BY a.clip_id");
+        while(query.executeStep()) {
+            AudioClipSource source;source.mediaId=query.getColumn(1).getInt64();source.sourceStartFrames=query.getColumn(2).getInt64();source.sourceLengthFrames=query.getColumn(3).getInt64();source.warpEnabled=query.getColumn(4).getInt()!=0;source.warpMode=query.getColumn(5).getString();
+            if(!query.getColumn(6).isNull()) {
+                const auto blob=query.getColumn(6);source.warpMarkers.emplace(static_cast<std::size_t>(blob.getBytes()));
+                if(blob.getBytes()>0)std::copy_n(static_cast<const std::byte*>(blob.getBlob()),source.warpMarkers->size(),source.warpMarkers->data());
+            }
+            source.transposeSemis=query.getColumn(7).getDouble();source.formantShift=query.getColumn(8).getDouble();source.reverse=query.getColumn(9).getInt()!=0;source.channelMode=query.getColumn(10).getInt64();
+            if(!query.getColumn(11).isNull()) {
+                AudioMediaIdentity media;media.contentHash=query.getColumn(12).getString();
+                if(!query.getColumn(13).isNull())media.sampleRate=query.getColumn(13).getInt64();
+                if(!query.getColumn(14).isNull())media.channels=query.getColumn(14).getInt64();
+                if(!query.getColumn(15).isNull())media.frames=query.getColumn(15).getInt64();
+                media.missing=query.getColumn(16).getInt()!=0;source.mediaInfo=std::move(media);
+            }
+            audioSources.emplace(query.getColumn(0).getInt64(),std::move(source));
+        }
+    }catch(const std::exception&){}
+
     // --- clips, grouped by track -------------------------------------------------
     std::map<std::int64_t, std::vector<std::shared_ptr<const ClipNode>>> clipsByTrack;
     try {
@@ -281,6 +323,9 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 c.contentOffsetNs=it->second.offset;c.loopBeginNs=it->second.loopBegin;
                 c.loopEndNs=it->second.loopLength;c.sourceEndNs=it->second.end;c.fadeClockNs=it->second.clock;c.fadeClockTicks=it->second.warpClock;
             }
+            if(const auto source=audioSources.find(c.id);source!=audioSources.end())c.audio=source->second;
+            if (const auto lanes = controllersByClip.find(c.id); lanes != controllersByClip.end())
+                c.controllers = lanes->second;
 
             const auto prev = prevClips.find(c.id);
             if (prev != prevClips.end() && same(*prev->second, c))
@@ -299,6 +344,11 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch(const std::exception&) {} // an older read-only file has default stereo
 
     const auto recording=readTrackRecordingOptions(store);
+    // Native role format/migration belongs to win (N38); older projects have
+    // no assignment. Read the column in the same statement as each track.
+    bool hasRole=false;
+    {SQLite::Statement columns(db,"PRAGMA table_info(tracks)");while(columns.executeStep())hasRole=hasRole || columns.getColumn(1).getString()=="role";}
+
     std::map<std::int64_t, std::int64_t> groupOwners;
     std::set<std::int64_t> groupRoots;
     try {
@@ -316,7 +366,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         SQLite::Statement st(db,
             "SELECT t.id, t.name, t.muted, t.soloed, "
             "  IFNULL(m.volume_db, 0.0), IFNULL(m.pan, 0.0), "
-            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color, IFNULL(m.delay_samples,0) "
+            "  IFNULL(t.parent_id, 0), t.index_in_parent, t.kind, t.color, IFNULL(m.delay_samples,0), " +
+            std::string(hasRole?"t.role ":"NULL ")+ ", t.frozen, t.freeze_media_id, f.track_id "
             "FROM tracks t LEFT JOIN mixer_strip m ON m.track_id = t.id LEFT JOIN frozen_renders f ON f.track_id=t.id "
             "ORDER BY t.index_in_parent, t.id");
         while (st.executeStep()) {
@@ -334,8 +385,10 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             t.parent = st.getColumn(6).getInt64();
             t.indexInParent = st.getColumn(7).getInt64();
             t.kind = st.getColumn(8).getString();
+            if(const auto tap=returnTaps.find(t.id);tap!=returnTaps.end())t.returnSendTap=tap->second;
             if (!st.getColumn(9).isNull()) t.color = st.getColumn(9).getInt64();
             t.delaySamples = st.getColumn(10).getInt64();
+            if (!st.getColumn(11).isNull()) t.role = st.getColumn(11).getString();  // 10 is delay_samples (chain)
             t.frozen = st.getColumn(12).getInt() != 0;  // 10 delay_samples, 11 role (chain)
             if (!st.getColumn(13).isNull())
                 t.freezeMediaId = st.getColumn(13).getInt64();
@@ -359,6 +412,11 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
     } catch (const std::exception&) {
     }
 
+    // Endpoint ids and the filtered send list cannot supply routing identity.
+    // Keep this root observation coherent with the rows in this same frame.
+    try {snap->maxRoutingId=std::max(std::int64_t{0},db.execAndGet("SELECT COALESCE(MAX(id),0) FROM routing").getInt64());}
+    catch(const std::exception&){}
+
     // --- sends ------------------------------------------------------------------
     // Snapshot construction is off the audio thread; every control value is
     // captured once for this rebuild, including muted/disabled send controls.
@@ -374,6 +432,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
             send.order=st.getColumn(5).getInt64();send.gainDb=st.getColumn(6).getDouble();
             send.pan=st.getColumn(7).getDouble();send.preFader=st.getColumn(8).getInt()!=0;
             send.enabled=st.getColumn(9).getInt()!=0;
+            if(send.destinationKind=="track")if(const auto tap=returnTaps.find(send.destinationId);tap!=returnTaps.end() && tap->second.explicitChoice)send.preFader=tap->second.preFader;
+
             const auto prior=prevSends.find(send.id);
             if(prior!=prevSends.end() && same(*prior->second,send))snap->sends.push_back(prior->second);
             else snap->sends.push_back(std::make_shared<const SendRoute>(std::move(send)));
@@ -437,6 +497,56 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
         }
     }catch(const std::exception&){}
     }
+    if (transaction)
+        transaction->commit();
+    // State bytes are immutable: decode only a changed state hash. Ordinary
+    // edits reuse its metadata and check only the small pool row and locator.
+    std::map<std::pair<std::int64_t,std::int32_t>,std::shared_ptr<const SampleSlotNode>> previousSlots;
+    for(const auto& slot:previous.sampleSlots)previousSlots[{slot->deviceId,slot->slot}]=slot;
+    SQLite::Statement slots(db,"SELECT s.device_id,s.stream_role,s.state_hash,p.uid FROM plugin_state s "
+        "JOIN devices d ON d.id=s.device_id JOIN plugin_refs p ON p.id=d.plugin_ref_id "
+        "WHERE p.format='internal' AND s.stream_role LIKE 'sample:%' ORDER BY s.device_id,s.stream_role");
+    while(slots.executeStep()) {
+        SampleSlotNode node;node.deviceId=slots.getColumn(0).getInt64();node.stateHash=slots.getColumn(2).getString();
+        try {
+            const auto role=slots.getColumn(1).getString();
+            if(role!="sample:1")throw std::runtime_error("unknown built-in sample role");
+            node.slot=1;node.name="Impulse";const auto old=previousSlots.find({node.deviceId,node.slot});
+            if(old!=previousSlots.end() && old->second->stateHash==node.stateHash && old->second->problem.empty())node=*old->second;
+            else {
+                SQLite::Statement size(db,"SELECT length(data) FROM state_blobs WHERE hash_blake3=?");size.bind(1,node.stateHash);
+                if(!size.executeStep() || size.getColumn(0).getInt64()<=0 || size.getColumn(0).getInt64()>40LL*1024*1024)
+                    throw std::runtime_error("sample state is missing or too large");
+                const auto bytes=store.getStateBlob(node.stateHash);
+                if(!bytes || bytes->empty() || bytes->size()>40u*1024u*1024u)throw std::runtime_error("sample state is missing or too large");
+                const auto* first=reinterpret_cast<const std::uint8_t*>(bytes->data());
+                const auto value=Payload::from_cbor(first,first+bytes->size());const auto info=device::inspectBuiltinSample(value);
+                if(info.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
+                node.uid=info.uid;node.empty=info.empty;node.mediaHash=info.mediaHash;node.hasDerivedState=!info.empty && value.contains("derived");
+            }
+            if(node.uid!=slots.getColumn(3).getString())throw std::runtime_error("sample state device UID differs");
+            node.mediaId.reset();node.missing=false;
+            if(!node.empty && node.problem.empty()) {
+                SQLite::Statement media(db,"SELECT id,rel_path,abs_path_hint,missing FROM media_files WHERE hash_blake3=?");media.bind(1,node.mediaHash);
+                node.missing=true;
+                if(media.executeStep()) {
+                    node.mediaId=media.getColumn(0).getInt64();
+                    if(media.getColumn(3).getInt()==0) {
+                        std::error_code ec;bool present=false;
+                        if(!media.getColumn(1).isNull()) {
+                            const auto relative=media::pathFromUtf8(media.getColumn(1).getString());
+                            if(!relative.is_absolute())present=std::filesystem::is_regular_file(media::projectFolder(store)/relative,ec);
+                        }
+                        if(!present && !media.getColumn(2).isNull())present=std::filesystem::is_regular_file(media::pathFromUtf8(media.getColumn(2).getString()),ec);
+                        node.missing=!present;
+                    }
+                }
+            }
+        }catch(const std::exception& exception){node.problem=exception.what();node.missing=true;}
+        const auto old=previousSlots.find({node.deviceId,node.slot});
+        if(old!=previousSlots.end() && *old->second==node)snap->sampleSlots.push_back(old->second);
+        else snap->sampleSlots.push_back(std::make_shared<const SampleSlotNode>(std::move(node)));
+    }
     return snap;
 }
 
@@ -468,6 +578,8 @@ std::size_t SnapshotBuilder::sharedNodeCount(const Snapshot& a, const Snapshot& 
     }
     for(const auto& remark:a.remarks)
         if(std::find(b.remarks.begin(),b.remarks.end(),remark)!=b.remarks.end())++shared;
+    for(const auto& slot:a.sampleSlots)
+        if(std::find(b.sampleSlots.begin(),b.sampleSlots.end(),slot)!=b.sampleSlots.end())++shared;
     return shared;
 }
 
