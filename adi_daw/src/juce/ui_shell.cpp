@@ -1345,6 +1345,29 @@ bool AdiRootComponent::moveMeter(std::int64_t from, std::int64_t to) {
     arrangement.scrub.repaint();
     return true;
 }
+bool AdiRootComponent::setMeterAtPlay(const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Time signatures need an open project.");
+    const auto at = timelineTick();
+    const bool surely = startSurelyStored(current->meters);
+    auto edit = setMeterAt(current->meters, at, text, surely);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (edit.ops.empty())
+        return true;
+    // A 4/4 at the start may be stored or the snapshot's own: insert first, and where the project
+    // stores one (the insert refused, nothing changed), replace it.
+    const bool atStart = edit.ops.back().payload.at("pos").get<std::int64_t>() == 0 && edit.ops.size() == 1 && !surely;
+    if (atStart) {
+        auto tried = edit.ops;
+        tried.front().selBefore = session_.advisory();
+        if (const auto result = submitter_.submit(std::move(tried)); result.ok)
+            return edited(result);
+        edit = setMeterAt(current->meters, at, text, true);
+    }
+    return submitEdits(std::move(edit.ops));
+}
 bool AdiRootComponent::deleteMeter(std::int64_t pos) {
     const auto current = view_.current();
     if (!current)

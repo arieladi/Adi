@@ -130,6 +130,14 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         g.setFont(look::font(11.5f));
         g.drawText(text, content, juce::Justification::centred);
     }
+    if (automationLed) {
+        // Live 12's figure: a red dot with a dark rim in the corner (its size to be measured).
+        const juce::Rectangle<float> led(r.getX() + 2.f, r.getY() + 2.f, 5.f, 5.f);
+        g.setColour(juce::Colour(0xffe8453c));
+        g.fillEllipse(led);
+        g.setColour(look::separator);
+        g.drawEllipse(led, .8f);
+    }
     if (ring_) {
         g.setColour(look::accent);
         g.drawRect(getLocalBounds(), 1);
@@ -157,7 +165,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&tempo, "Tempo", "The project's tempo at the playhead, in BPM."},
         {&nudgeDown, "Nudge Down", "Slows playback for as long as it is held."},
         {&nudgeUp, "Nudge Up", "Speeds playback up for as long as it is held."},
-        {&signature, "Time Signature", "The project's time signature."},
+        {&signature, "Time Signature", "The time signature at the play location. Click to type another, "
+                                       "such as 3/4."},
         {&metronome, "Metronome", "Switches the metronome on and off; it plays to Cue Out."},
         {&quantize, "Quantization Menu", "The global launch quantization (with Session View)."},
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
@@ -195,8 +204,20 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
     follow.onClick = [this] { root_.command(AppCommands::Follow); };
     mix.onClick = [this] { root_.command(AppCommands::ToggleMixView); };
+    signature.onClick = [this] { beginSignatureEdit(); };
+    addChildComponent(signatureEditor);
+    signatureEditor.setTitle("Time Signature");
+    signatureEditor.setJustification(juce::Justification::centred);
+    signatureEditor.onReturnKey = [this] {
+        if (root_.setMeterAtPlay(signatureEditor.getText().toStdString()))
+            signatureEditor.setVisible(false);
+        else
+            signatureEditor.selectAll();
+    };
+    signatureEditor.onEscapeKey = [this] { signatureEditor.setVisible(false); };
+    signatureEditor.onFocusLost = [this] { signatureEditor.setVisible(false); };
     for (auto *item : items())
-        if (item != &play && item != &stop && item != &follow && item != &mix)
+        if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -271,9 +292,23 @@ void TransportBar::refresh() {
         shownSignature_ = shown;
         signature.setText(juce::String(meter.numerator) + " / " + juce::String(meter.denominator));
     }
+    // The automation LED while the arrangement holds a change of signature (manual 6.5).
+    if (const bool changes = meters.size() > 1; changes != signature.automationLed) {
+        signature.automationLed = changes;
+        signature.repaint();
+    }
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
 }
 void TransportBar::paint(juce::Graphics &g) { g.fillAll(look::frame); }
 void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }
+void TransportBar::beginSignatureEdit() {
+    const auto &meter = meterAt(root_.timelineTick(), root_.reader().meters());
+    signatureEditor.setBounds(signature.getBounds());
+    signatureEditor.setText(juce::String(meter.numerator) + "/" + juce::String(meter.denominator), false);
+    signatureEditor.setVisible(true);
+    signatureEditor.selectAll();
+    if (signatureEditor.isShowing())
+        signatureEditor.grabKeyboardFocus();
+}
 } // namespace adi::ui

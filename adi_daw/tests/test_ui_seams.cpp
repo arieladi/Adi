@@ -1307,6 +1307,25 @@ void meterMarkers() {
               meters()[1].denominator == 8 && sub.nextUndo()->opCount == 2,
           "6/8 moved a bar and a quarter later, its value kept, one step of two ops");
     check(sub.undo().ok && meters()[1].start_ticks == 2 * bar, "undo: back at bar 3");
+    // The control bar's field (manual 6.5): the signature in force at the play location.
+    check(!ui::startSurelyStored(meters()), "the start's 4/4 may be the snapshot's own");
+    const auto inMarker = ui::setMeterAt(meters(), 2 * bar + 1, "2/4", false);
+    check(inMarker.ops.size() == 2 && inMarker.ops[0].opType == "project.removeTimeSignature" &&
+              inMarker.ops[0].payload.at("pos").get<std::int64_t>() == 2 * bar,
+          "past bar 3: the 6/8 marker's edit");
+    auto first = ui::setMeterAt(meters(), bar, "3/4", false);
+    check(first.ops.size() == 1 && first.ops[0].opType == "project.insertTimeSignature" && sub.submit(std::move(first.ops)).ok &&
+              meters()[0].numerator == 3 && ui::startSurelyStored(meters()),
+          "before it, with none stored: the start's 3/4 inserted, and now surely stored");
+    check(ui::setMeterAt(meters(), 0, "3/4", true).ops.empty(), "the same value: no edit");
+    check(!ui::setMeterAt(meters(), 0, "3/5", true).refusal.empty(), "a value Live takes not: refused");
+    auto replaced = ui::setMeterAt(meters(), 0, "4/4", ui::startSurelyStored(meters()));
+    check(replaced.ops.size() == 2 && sub.submit(std::move(replaced.ops)).ok && meters()[0].numerator == 4 &&
+              !ui::startSurelyStored(meters()),
+          "stored: replaced, 4/4 again, which may again be either");
+    auto clash = ui::setMeterAt(meters(), 0, "2/4", false);
+    check(!sub.submit(std::move(clash.ops)).ok && meters()[0].numerator == 4,
+          "a stored 4/4 refuses the insert, and nothing changes");
 }
 
 void momentaryLatch() {

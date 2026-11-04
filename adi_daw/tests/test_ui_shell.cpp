@@ -1335,6 +1335,45 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     render("adi-fragmentary-bar.png");
     lanes.left = 0;
+    // The control bar's Time Signature field (manual 6.5): typed, it changes the signature in force
+    // at the play location, here the start's, which the project does not store yet.
+    auto &bar = root.transport;
+    const auto beforeField = submitter.nextUndo()->txnId;
+    check(root.timelineTick() < bar3 && meterOf(0) == "4/4", "the play location is before bar 3, in the start's 4/4");
+    check(bar.signature.automationLed, "the field's automation LED is lit: the arrangement holds changes");
+    bar.signature.onClick();
+    check(bar.signatureEditor.isVisible() && bar.signatureEditor.getText() == "4/4",
+          "a click on the field: a field over it holding 4/4");
+    auto typeSignature = [&](const char *text) {
+        bar.signatureEditor.setText(text, false);
+        bar.signatureEditor.onReturnKey();
+        root.frame();
+    };
+    typeSignature("3/4");
+    check(!bar.signatureEditor.isVisible() && meterOf(0) == "3/4" && bar.signature.text == "3 / 4" &&
+              submitter.nextUndo()->label == "Edit Time Signature",
+          "3/4 typed: the start's signature, one step, and the field shows it");
+    render("adi-signature-field.png");
+    bar.signature.onClick();
+    typeSignature("6/8");
+    check(meterOf(0) == "6/8", "6/8: the stored 3/4 replaced");
+    bar.signature.onClick();
+    typeSignature("4/4");
+    bar.signature.onClick();
+    typeSignature("2/4");
+    check(meterOf(0) == "2/4" && submitter.nextUndo()->opCount == 2,
+          "4/4 stored, then 2/4: the insert refused by the stored 4/4, the 4/4 replaced, one step");
+    bar.signature.onClick();
+    typeSignature("2/3");
+    check(bar.signatureEditor.isVisible() && meterOf(0) == "2/4" && root.error().find("3/4") != std::string::npos,
+          "a value Live takes not keeps the field open, and the Status Bar says what to type");
+    bar.signatureEditor.onEscapeKey();
+    check(!bar.signatureEditor.isVisible(), "Esc closes it");
+    for (int i = 0; i < 4; ++i)
+        root.command(AppCommands::Undo);
+    root.frame();
+    check(meterOf(0) == "4/4" && submitter.nextUndo()->txnId == beforeField,
+          "four undos, one for each value, and none for the refused insert: as before");
 }
 // The sends (ADR-0203 d3) on Live's default set: one per return on every track's controls, Live's
 // value boxes on the row under volume and pan, and its knobs under "Sends" in the Mixer View.
@@ -3961,9 +4000,10 @@ int main(int argc, char **argv) {
             sel.start = 0;
             sel.end = 4 * textproj::kPPQ;
             const auto span = integrated.selectionText();
-            check(integrated.transport.signature.text == "3 / 4" && mark.contains("Insert Mark 3.2.3") &&
-                      span.contains("Length: 1.1.0"),
-                  "the signature and the positions in the project's meters: 3/4 makes seven and a half quarters 3.2.3");
+            check(integrated.transport.signature.text == "3 / 4" && !integrated.transport.signature.automationLed &&
+                      mark.contains("Insert Mark 3.2.3") && span.contains("Length: 1.1.0"),
+                  "the signature and the positions in the project's meters: 3/4 makes seven and a half quarters 3.2.3; "
+                  "no change of signature, so no automation LED");
             sel = selWas;
             check(integrated.command(AppCommands::Undo), "undo the signature");
             integrated.mark(DirtySet::All);

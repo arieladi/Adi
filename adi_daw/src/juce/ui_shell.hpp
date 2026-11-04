@@ -296,6 +296,9 @@ class AdiRootComponent final : public juce::Component {
     bool deleteMeter(std::int64_t pos);
     // The marker at `from` moved to `to`, its value kept, one step; it stays selected.
     bool moveMeter(std::int64_t from, std::int64_t to);
+    // The control bar's Time Signature field (manual 6.5): the signature in force at the play
+    // location takes the value typed, one step.
+    bool setMeterAtPlay(const std::string &text);
     // Live's track drag (the Arrangement View; manual 18.3): the selected tracks when `dragged` is
     // among them, else that track alone, to `to`; one undo step, "Move Track" or "Move Tracks".
     bool moveTracks(std::int64_t dragged, TrackDrop to);
