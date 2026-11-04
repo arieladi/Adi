@@ -248,6 +248,7 @@ add_library(adi_core STATIC
     src/adi/engine/session.cpp
     src/adi/engine/gain_stage.cpp
     src/adi/engine/mixer.cpp
+    src/adi/engine/audio_memory.cpp
     src/adi/engine/summing.cpp
     src/adi/engine/scope.cpp
     src/adi/summing_flavors.cpp
@@ -1340,6 +1341,10 @@ add_test(NAME adi_render_queue_tests COMMAND adi_render_queue_tests)
 add_executable(adi_offline_capture_tests tests/test_offline_capture.cpp)
 target_link_libraries(adi_offline_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_offline_capture_tests COMMAND adi_offline_capture_tests)
+
+add_executable(adi_audio_memory_tests tests/test_audio_memory.cpp)
+target_link_libraries(adi_audio_memory_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_audio_memory_tests COMMAND adi_audio_memory_tests)
 
 
 add_executable(adi_controller_maps_tests tests/test_controller_maps.cpp)
