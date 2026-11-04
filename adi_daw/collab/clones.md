@@ -1,5 +1,17 @@
 # Clones lane log
 
+## 2026-11-04 — REAPER and Reason, milestone 10
+
+Research commit b01cc9912d66f310a475157a5404a96508491c90 adds 188 entries: 83 REAPER host, 23 JSFX/ReaScript/developer, 69 Reason documentary and 13 installed static findings. REAPER v0.4 now exceeds the earlier individually referenced scope; Reason 14 v0.1 is new. Each entry has a source, ADI consequence, status and one unexecuted case. Other standalone instruments remain excluded. Current FEATURES, decisions and Live parity remain authoritative; no new priority, editor/runtime, ADR or product code.
+
+Installed identities: REAPER 7.79 and Reason 14.1.0.8292; Reason registration separately says 14.1.0d100. All 55 new module hashes and 272 prior binary hashes remain unchanged. REAPER manual 7.80 is newer; 25 Reason 14/Rack Plugin 14 web sources and seven current Cockos developer pages retain version boundaries. The guide’s routing/capacity/pooled-copy/render examples contain contradictions, preserved as tests rather than adopted rules.
+
+Useful ADI contracts: render dependencies, queue snapshots and postprocessing; source/comp/edited-result ownership; nested-rack and project boundaries; generated-MIDI capture without reprocessing; batch/feedback history; parameter display, automation, state and undo separation; shared asset services and timestamp-preserving controller adapters. Reason’s Inspector/folders/rack cables do not reopen ADR-0047/0044/0113. Existing Pd/native and MIDI-lane work from milestone 9 remains the implementation starting point.
+
+Actual REA 6.8/Ghidra 12.1.4/JDK 21 inspected reaper_wave.dll ReaperPluginEntry; direct Ghidra 12.2/JDK 25 inspected selected Reason REX rate/tempo/preview-batch wrappers. These establish admission/registration/validation interfaces, not complete mixers, scheduler, numerical precision or CPU. Raw dossiers, manual derivatives and shipped source remain private under E55–E58. Independent reviews and 34 artifact checks passed; source hashes, exact case pairing, history/scope and six original input specifications were checked.
+
+REAPER-REASON-MISSIONS-10.md has 188 unexecuted cases; no GUI/audio/CPU, product test/build or reference app/device execution. The separate Claude session owns live tests. Earlier Live L01–L10 remain unresolved for win’s measured-evidence relay. No app update, push, PR, merge or external message.
+
 ## 2026-11-04 — Bitwig MIDI, Grid and Pd feasibility, milestone 9
 
 Research commit `c532d0597c64c3720ae2fb75bcc265729eeb9a30` adds 173 source-bound entries to Bitwig v0.5: 59 Grid, 71 MIDI/Note FX/modulation/container and 43 non-instrument audio-device contracts. Every entry has a source, ADI implication, status and a paired unexecuted case. The complete local v5.2 Grid chapter and module catalog, MIDI/device chapters and narrow 6.0/6.1 overlays retain their version boundaries. Installed 6.1.0.22652 behavior is unmeasured; other built-in instrument devices remain excluded. Grid primitives and Poly Grid shared host/voice semantics are included only as needed for the modular architecture.
