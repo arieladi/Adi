@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "../src/juce/app_audio_page.hpp"
 #include "../src/juce/ui_floating.hpp"
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <new>
 #include <thread>
 #include <tuple>
@@ -5407,6 +5409,38 @@ int main(int argc, char **argv) {
                     once = once && tabOf(*setting) == tab.name;
                 }
         check(once && placed == settings::registry().size(), "every setting is on one tab, once");
+        {
+            // Live's sections in Live's order (N14), then ADI's own settings on the tab, in the
+            // tab's own group: Live 12 manual 2.3.1 lists neither Zoom on Selection, the tooltips
+            // nor the knob modes in its sections.
+            const auto *display = settingsTab("Display & Input");
+            std::vector<std::string> headings;
+            for (const auto &group : display->groups)
+                headings.push_back(group.heading);
+            const std::vector<std::string> live{"Display", "Display Options", "Navigation and Keyboard",
+                                                "Mouse and Pen Input", "Display & Input"};
+            const auto &own = display->groups.back().settings;
+            auto ownHas = [&own](const char *key) {
+                return std::find(own.begin(), own.end(), settings::find(key)) != own.end();
+            };
+            check(headings == live && ownHas("lookfeel.zoomOnSelection") && ownHas("lookfeel.showTooltips") &&
+                      ownHas("lookfeel.tooltipDelayMs") && ownHas("lookfeel.knobMode") &&
+                      ownHas("lookfeel.sliderMode") && ownHas("lookfeel.valueBoxMode"),
+                  "Display & Input: Live's four sections, then ADI's own (Zoom on Selection, tooltips, knob modes)");
+            bool ownLast = true;
+            // (On Tempo & MIDI the tab's own group holds Live's Master Focus Dial, chase and filter
+            // switches, which the registry gives no section, so it keeps their place in Live's order.)
+            for (const char *name : {"Theme & Colors", "Audio", "File & Folder", "Plug-Ins"}) {
+                const auto &groups = settingsTab(name)->groups;
+                for (std::size_t i = 0; i + 1 < groups.size(); ++i)
+                    ownLast = ownLast && groups[i].heading != name;
+            }
+            const auto *licences = settingsTab("Licenses & Updates");
+            check(ownLast && settingsTab("Link")->groups.front().heading == "Link" &&
+                      licences->groups.front().heading == "Licenses & Updates",
+                  "where a tab's own group is ADI's alone it follows Live's sections; one holding Live's settings "
+                  "(Link, Licenses & Updates) keeps its place");
+        }
         auto onTab = [](const char *key) {
             const auto *setting = settings::find(key);
             return setting != nullptr ? tabOf(*setting) : std::string{};
@@ -5469,6 +5503,78 @@ int main(int argc, char **argv) {
                       std::none_of(headed.rows().begin(), headed.rows().end(),
                                [](const auto &row) { return row->setting.key == "audio.driverErrorCompensationMs"; }),
                   "another page lets it go");
+        }
+        {
+            // The Audio page's own head, over a device manager with no device open: Live's three
+            // sections are its own, and the registry's other settings in them stand there, after
+            // Live's lines (N14); the panel draws no second heading for them.
+            juce::AudioDeviceManager devices;
+            AudioDevicePage *page = nullptr;
+            SettingsPanel audio(settings, [&page, &devices] {
+                auto head = std::make_unique<AudioDevicePage>(devices);
+                page = head.get();
+                return head;
+            });
+            audio.setSize(560, 680);
+            audio.showPage("Audio");
+            std::vector<juce::String> panelHeadings;
+            std::function<void(juce::Component &)> collect = [&](juce::Component &c) {
+                for (auto *child : c.getChildren())
+                    if (child != page) {
+                        if (dynamic_cast<SettingsHeading *>(child) != nullptr)
+                            panelHeadings.push_back(child->getTitle());
+                        collect(*child);
+                    }
+            };
+            collect(audio);
+            bool heldInPage = page != nullptr;
+            for (const auto &row : audio.rows())
+                if (std::find(AudioDevicePage::kSections.begin(), AudioDevicePage::kSections.end(),
+                              row->setting.section) != AudioDevicePage::kSections.end())
+                    heldInPage = heldInPage && row->getParentComponent() == page && row->isVisible();
+            check(heldInPage && panelHeadings == std::vector<juce::String>{"Test", "Audio"},
+                  "the Audio page's head holds every row of Audio Device, Sample Rate and Latency; the panel heads "
+                  "Test, then ADI's own");
+            auto y = [page](const char *name) { return page != nullptr ? page->lineY(name) : -1; };
+            check(page != nullptr && 0 == y("Audio Device") && y("Audio Device") < y("Driver Type") &&
+                      y("Driver Type") < y("Audio Output Device") &&
+                      y("Audio Output Device") < y("Channel Configuration") &&
+                      y("Channel Configuration") < y("Sample Rate") && y("Sample Rate") < y("In/Out Sample Rate") &&
+                      y("In/Out Sample Rate") < y("Default SR & Pitch Conversion") &&
+                      y("Default SR & Pitch Conversion") < y("Latency") && y("Latency") < y("Buffer Size") &&
+                      y("Output Latency") < y("Driver Error Compensation") &&
+                      y("Driver Error Compensation") < y("Overall Latency") &&
+                      page->getHeight() > y("Overall Latency"),
+                  "Live's lines first in each section, the held rows after them; Driver Error Compensation "
+                  "between Output and Overall Latency");
+            const auto compensation = std::find_if(audio.rows().begin(), audio.rows().end(), [](const auto &row) {
+                return row->setting.key == "audio.driverErrorCompensationMs";
+            });
+            check(compensation != audio.rows().end() && (*compensation)->getY() == y("Driver Error Compensation"),
+                  "a held row stands at its line");
+            // The two pages at twice their size, for the PR's pictures (ADI_UI_PARITY).
+            if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+                pictures.isNotEmpty())
+                for (const char *tab : {"Audio", "Display & Input"}) {
+                    audio.showPage(tab);
+                    juce::Image image(juce::Image::ARGB, 2 * audio.getWidth(), 2 * audio.getHeight(), true,
+                                      juce::SoftwareImageType{});
+                    {
+                        juce::Graphics g(image);
+                        g.addTransform(juce::AffineTransform::scale(2.f));
+                        audio.paintEntireComponent(g, true);
+                    }
+                    const auto file = juce::File(pictures).getChildFile(
+                        juce::String("settings-sections-") + (tab[0] == 'A' ? "audio" : "display") + ".png");
+                    file.deleteFile();
+                    if (auto stream = file.createOutputStream())
+                        juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+                }
+            audio.showPage("Display & Input");
+            audio.showPage("Audio");
+            check(page->lineY("Driver Error Compensation") > 0 &&
+                      page->lineY("Overall Latency") - page->lineY("Driver Error Compensation") == SettingRow::kHeight,
+                  "shown again, the page holds the new rows only, once each");
         }
         auto rowFor = [&panel](const settings::Setting *s) -> SettingRow * {
             if (s == nullptr)
