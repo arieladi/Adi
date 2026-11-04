@@ -5,7 +5,9 @@
 #include "adi/appdata.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/audio/aac_codec.hpp"
 #include "adi/media/blake3.hpp"
+#include "adi/media/publish_file.hpp"
 
 #define DR_FLAC_NO_STDIO
 #include "dr_flac.h"
@@ -41,6 +43,9 @@ const char* toString(DecodeProblem p) {
     case DecodeProblem::Unsupported: return "decode.unsupported";
     case DecodeProblem::NoSpace: return "decode.no_space";
     case DecodeProblem::CacheWrite: return "decode.cache_write";
+    case DecodeProblem::Cancelled: return "decode.cancelled";
+    case DecodeProblem::CodecUnavailable: return "decode.codec_unavailable";
+    case DecodeProblem::NoAudio: return "decode.no_audio";
     }
     return "decode.unknown";
 }
@@ -49,6 +54,9 @@ DecodeError::DecodeError(DecodeProblem problem, const std::string& detail)
     : std::runtime_error(std::string(toString(problem)) + ": " + detail), problem_(problem) {}
 
 namespace {
+void cancelled(std::stop_token stop) {
+    if(stop.stop_requested())throw DecodeError(DecodeProblem::Cancelled,"decoding cancelled");
+}
 
 std::string display(const fs::path& p) {
     const auto u = p.generic_u8string();
@@ -224,6 +232,8 @@ std::unique_ptr<Decoder> openDecoder(const fs::path& p, SourceFormat f,bool scan
     case SourceFormat::Ogg:
         if (oggIsFlac(p)) return std::make_unique<FlacDecoder>(p);
         return std::make_unique<VorbisDecoder>(p);
+    case SourceFormat::Mp4:
+    case SourceFormat::Adts:
     case SourceFormat::Unknown: break;
     }
     throw DecodeError(DecodeProblem::UnknownFormat, display(p));
@@ -232,13 +242,37 @@ std::unique_ptr<Decoder> openDecoder(const fs::path& p, SourceFormat f,bool scan
 /// Decodes `source` to a float WAV at `out`. `reserve` is told the size
 /// before a byte is written, and may refuse.
 void decodeTo(const fs::path& source, SourceFormat format, const fs::path& out,
-              const std::function<void(std::uint64_t)>& reserve) {
+              const std::function<void(std::uint64_t)>& reserve,std::stop_token stop,
+              const std::function<void()>& checkpoint) {
+    const auto service=[&]{cancelled(stop);if(checkpoint)checkpoint();cancelled(stop);};
+    service();
+    if(format==SourceFormat::Mp4 || format==SourceFormat::Adts) {
+        try {
+            AacTrack track;
+            if(format==SourceFormat::Adts)track=readAdts(source);
+            else {auto movie=readAacAudioMovie(source);track=std::move(movie.tracks.front());}
+            const auto info=aacConfig(track.config);
+            if(track.frames>(std::numeric_limits<std::uint64_t>::max()-4096)/(info.channels*4U))
+                throw DecodeError(DecodeProblem::Unsupported,"AAC decoded size overflow");
+            reserve(track.frames*info.channels*4+4096);cancelled(stop);
+            if(!aacCodecAvailable())throw DecodeError(DecodeProblem::CodecUnavailable,display(source)+": native AAC codec unavailable on this system");
+            decodeAac(track,out,service);service();return;
+        } catch(const DecodeError&){throw;}
+        catch(const AacTransportError& error) {
+            const auto kind=error.problem()==AacTransportProblem::NoAudio?DecodeProblem::NoAudio:
+                error.problem()==AacTransportProblem::Unsupported?DecodeProblem::Unsupported:DecodeProblem::Corrupt;
+            throw DecodeError(kind,display(source)+": "+error.what());
+        } catch(const fs::filesystem_error& error){throw DecodeError(DecodeProblem::Unreadable,error.what());}
+        catch(const std::exception& error){throw DecodeError(DecodeProblem::Corrupt,error.what());}
+    }
     auto d = openDecoder(source, format);
     if (d->channels == 0 || d->channels > kMaxDecodeChannels)
         throw DecodeError(DecodeProblem::Unsupported, display(source) + ": " + std::to_string(d->channels) + " channels");
     if (d->rate == 0 || d->rate > kMaxDecodeRate)
         throw DecodeError(DecodeProblem::Unsupported, display(source) + ": " + std::to_string(d->rate) + " Hz, over 768 kHz");
-    reserve(d->frames * d->channels * 4 + 4096);
+    if(d->frames>(std::numeric_limits<std::uint64_t>::max()-4096)/(d->channels*4U))
+        throw DecodeError(DecodeProblem::Unsupported,"decoded audio size overflow");
+    reserve(d->frames * d->channels * 4 + 4096);cancelled(stop);
 
     constexpr std::uint32_t block = 4096;
     std::vector<float> buffer(static_cast<std::size_t>(block) * d->channels);
@@ -246,6 +280,7 @@ void decodeTo(const fs::path& source, SourceFormat format, const fs::path& out,
     try {
         WavWriter w(out, d->rate, static_cast<std::uint16_t>(d->channels), WavFormat::Float32);
         for (;;) {
+            service();
             const auto got = d->read(buffer.data(), block);
             if (got == 0) break;
             w.write(buffer.data(), static_cast<std::uint32_t>(got));
@@ -358,6 +393,8 @@ SourceFormat sniff(const fs::path& p) {
     if (is(0, "FORM") && (is(8, "AIFF") || is(8, "AIFC"))) return SourceFormat::Aiff;
     if (is(0, "fLaC")) return SourceFormat::Flac;
     if (is(0, "OggS")) return SourceFormat::Ogg;
+    if (is(4,"ftyp")) return SourceFormat::Mp4;
+    if (n>=2 && b[0]==0xff && (b[1]&0xf6)==0xf0) return SourceFormat::Adts;
     if (is(0, "ID3")) return SourceFormat::Mp3;
     if (n >= 2 && b[0] == 0xFF && (b[1] & 0xE0) == 0xE0 && (b[1] & 0x06) != 0) return SourceFormat::Mp3;
     return SourceFormat::Unknown;
@@ -495,9 +532,11 @@ void DecodeCache::evict(std::uint64_t incoming, const std::string& keep) {
     }
 }
 
-fs::path DecodeCache::playable(const fs::path& source) {
+fs::path DecodeCache::playable(const fs::path& source){return playable(source,{});}
+fs::path DecodeCache::playable(const fs::path& source,std::stop_token stop) {
     if (onAudioThread)
         throw DecodeError(DecodeProblem::AudioThread, display(source) + ": decoding is never done on the audio thread");
+    cancelled(stop);
     const auto format = sniff(source);
     if (format == SourceFormat::Riff) {
         try {
@@ -510,8 +549,8 @@ fs::path DecodeCache::playable(const fs::path& source) {
         }
     }
     if (format == SourceFormat::Unknown)
-        throw DecodeError(DecodeProblem::UnknownFormat, display(source) + ": not WAV, AIFF, FLAC, MP3 or Ogg Vorbis");
-    const auto hash = media::blake3File(source);
+        throw DecodeError(DecodeProblem::UnknownFormat, display(source) + ": not WAV, AIFF, FLAC, MP3, Ogg Vorbis or AAC");
+    const auto hash = media::blake3File(source,stop);cancelled(stop);
     if (!hash) throw DecodeError(DecodeProblem::Unreadable, display(source) + ": cannot be hashed");
     const auto target = fileFor(hash.hex);
 
@@ -519,6 +558,12 @@ fs::path DecodeCache::playable(const fs::path& source) {
         std::lock_guard lock(mutex_);
         std::error_code ec;
         if (fs::exists(target, ec)) {   // decoded before, by this process or another
+            try {
+                if(!fs::is_regular_file(fs::symlink_status(target)))throw std::runtime_error("not a real regular file");
+                WavReader probe(target);
+                if(!probe.frames() || !probe.channels() || probe.channels()>kMaxDecodeChannels || !probe.sampleRate() || probe.sampleRate()>kMaxDecodeRate)
+                    throw std::runtime_error("unsupported cached audio dimensions");
+            } catch(const std::exception& error) {throw DecodeError(DecodeProblem::CacheWrite,display(target)+": incomplete/invalid cache target: "+error.what());}
             auto& item = items_[hash.hex];
             item.bytes = static_cast<std::uint64_t>(fs::file_size(target, ec));
             item.lastUse = stamp();
@@ -541,12 +586,23 @@ fs::path DecodeCache::playable(const fs::path& source) {
             if (freeBytes() < limits_.minFreeBytes + estimate)
                 throw DecodeError(DecodeProblem::NoSpace, display(source) + ": decoding needs " + std::to_string(estimate) +
                                                                " bytes and would leave less than the minimum free space");
-        });
-        fs::rename(partial, target);
+        },stop,hooks_.checkpoint);
+        cancelled(stop);const auto after=media::blake3File(source,stop);cancelled(stop);
+        if(!after || after.hex!=hash.hex)throw DecodeError(DecodeProblem::Unreadable,"source changed during decoding");
+        const auto published=media::publishFile(partial,target);
+        if(published.status==media::PublishStatus::exists) {
+            if(!fs::is_regular_file(fs::symlink_status(target)))throw DecodeError(DecodeProblem::CacheWrite,"cache target is not a real regular file");
+            {
+                WavReader expected(partial),actual(target);
+                if(expected.frames()!=actual.frames() || expected.sampleRate()!=actual.sampleRate() || expected.channels()!=actual.channels())
+                    throw DecodeError(DecodeProblem::CacheWrite,"concurrent cache target has different audio dimensions");
+            }
+            fs::remove(partial);
+        } else if(published.status!=media::PublishStatus::published)throw DecodeError(DecodeProblem::CacheWrite,published.error);
+        cancelled(stop);
     } catch (...) {
         fs::remove(partial, ec);
-        if (!fs::exists(target, ec)) throw;
-        // Another decoder of the same source finished first: use its file.
+        throw;
     }
 
     std::lock_guard lock(mutex_);

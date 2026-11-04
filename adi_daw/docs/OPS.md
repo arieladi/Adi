@@ -1122,6 +1122,14 @@ Compaction (SPEC §8.3) may drop ephemeral ops first.
    (swipe-to-comp, promote take) need their own verbs and are not yet named.
 
 
+Ordinary AAC-LC import (`docs/ENGINE-AAC-IMPORT.md`) uses the existing
+`media.import`/`media.relink` and complete native clip producer. Content-sniffed
+M4A/MP4 and ADTS record their original compressed-source hash and exact decoded
+audio dimensions; cache PCM is regenerable, copy-in preserves original bytes.
+Media+clip remain one undo action, with Warp off by default. This adds no opcode
+or project schema; general mono/stereo import does not relax NI Stems' aligned
+stereo export/group-import contract.
+
 The NI Stems worker producer (`media/stem_import.hpp`,
 [ENGINE-NI-STEMS.md](ENGINE-NI-STEMS.md)) captures the original container and
 aligned decoded WAVs, then submits existing `media.import`/`media.relink`,
