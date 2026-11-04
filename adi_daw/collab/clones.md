@@ -1,5 +1,13 @@
 # Clones lane log
 
+## 2026-11-04 — Drum Rack, Packs and legacy variants, milestone 8
+
+Research commit `8955b800a4d994208ede5c97e4fa1299bcc1e06a` adds 66 entries: 25 Drum Rack, 28 Pack-effect, 12 legacy and one installed-location boundary. Drum Rack is explicitly included; other instruments remain excluded except Sampler/Simpler. Eight Pack families have primary-source capability notes; these do not establish complete controls or installed versions. The default Factory Packs directory exists but is empty and Library.cfg's preferred path is blank. Other locations remain unresolved.
+
+Read local Rack chapter pp.471–490, ten primary web sources, and structures of eight hash-bound legacy presets. Every entry links an ADI implication and an unexecuted case in PACK-RACK-MISSIONS-8.md. ADR-0060/0046/0114 review preserves ADI nested-graph latency/tails, open macro ordinals and persistent-routing/nonpersistent-output semantics; Live parameter takeover remains a reference difference. Historical Frequency Shifter location wording conflicts with the later installed legacy preset family and stays qualified.
+
+Ten artifact checks passed; a final ADI review narrowed the macro comparisons. No GUI/audio/CPU measurements, product changes, app or Pack updates, push, PR, merge or external message. No new REA/Ghidra pass claimed. Exact Pack inventory, legacy migration, complete control/default/text/history registries, DSP and CPU remain open. All original window questions remain unresolved for win's measured-evidence relay. Raw resources stay private; authored notes are versioned.
+
 ## 2026-11-04 — Ableton effects and named samplers, milestone 7
 
 Director expands scope to audio/MIDI devices, explicitly including Sampler and Simpler while continuing to exclude other built-in instruments. Research commit `b4c52f0904845f6ff9d18f7f82b0aa8741756aeb` on `clones/daw-reference-reading-20261104` adds 358 contracts across 62 named manual devices: 42 native audio effects, four Max audio effects, eight native MIDI effects, six Max MIDI effects and the two samplers. Every row retains source, ADI implication, evidence status and a paired unexecuted case. Historical scope exclusions remain historical; four stable Simpler index entries are explicitly reopened. No product code, FEATURES, ADR or priority changed.
