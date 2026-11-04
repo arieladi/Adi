@@ -233,6 +233,7 @@ add_library(adi_core STATIC
     src/adi/render/queue.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
+    src/adi/engine/render_workers.cpp
     src/adi/engine/plan.cpp
     src/adi/dsp/biquad.cpp
     src/adi/dsp/limiter.cpp
@@ -745,6 +746,10 @@ add_test(NAME adi_master_summing_tests COMMAND adi_master_summing_tests)
 add_executable(adi_param_automation_tests tests/test_param_automation.cpp)
 target_link_libraries(adi_param_automation_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_automation_tests COMMAND adi_param_automation_tests)
+
+add_executable(adi_graph_workers_tests tests/test_graph_workers.cpp)
+target_link_libraries(adi_graph_workers_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_graph_workers_tests COMMAND adi_graph_workers_tests)
 
 add_executable(adi_graph_tests tests/test_graph.cpp)
 target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)

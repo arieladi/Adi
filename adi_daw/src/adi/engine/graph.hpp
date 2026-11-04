@@ -26,14 +26,15 @@
 // No JUCE, no SQLite, no allocation after `prepare` (ADR-0010, ADR-0036). A
 // `Graph` is a `BlockProcessor`, so `DeviceCore` drives it with no adapter.
 //
-// WHAT THIS IS NOT, yet: one channel count for the whole graph, one input bus
-// and one output per node, and no parallelism across nodes. Each of those is a
-// real DAW requirement and none of them changes the decisions above; they are
-// left out because an untested generalisation is worse than a named limit.
+// One channel count for the whole graph; Main and Sidechain inputs and one
+// output per node. Optional persistent workers execute explicitly independent
+// nodes within dependency levels; source/forward/delivery hooks stay serialized.
+// Small blocks and callback-affine providers retain the serial path.
 
 #pragma once
 
 #include "adi/engine/events.hpp"
+#include "adi/engine/render_workers.hpp"
 #include "adi/engine/held_notes.hpp"
 #include "adi/engine/process.hpp"
 
@@ -174,6 +175,13 @@ public:
 
     /// Audio thread. No allocation, no locks, no throwing.
     virtual void process(const NodeIo& io) noexcept = 0;
+    /// Owner queried at prepare. Opt in only if this instance's process,
+    /// suspension/tail/tap hooks and private render state can run on any audio
+    /// worker, independently of other nodes. Source/forward/delivery hooks
+    /// remain serialized on the callback. Default protects host/device thread
+    /// affinity. Opted-in nodes restore any FP control state they change.
+    /// Duplicate pointers in a graph are always callback-only.
+    [[nodiscard]] virtual bool canProcessOnWorker() const noexcept { return false; }
 
     /// Opt-in device bypass (ADR-0203 d4). The graph keeps a dry delay at
     /// graph precision, including while the node is active, and owns its
@@ -192,11 +200,10 @@ public:
     /// Session retains every tap until audio stops, including after close.
     void setInputTap(ScopeTap* tap) noexcept { inputTap_.store(tap, std::memory_order_release); }
     [[nodiscard]] ScopeTap* inputTap() const noexcept {
-        auto* tap = inputTap_.load(std::memory_order_relaxed);
-        // Off is one relaxed load. On, synchronize the tap's construction
-        // with setInputTap's release before reading its non-atomic capacity.
-        if (tap) std::atomic_thread_fence(std::memory_order_acquire);
-        return tap;
+        // Synchronize construction directly with the publishing release.
+        // One acquire load also gives worker-thread race tools the same
+        // happens-before edge, without a separate conditional fence.
+        return inputTap_.load(std::memory_order_acquire);
     }
 
     /// Prepared source events, once per block BEFORE forwarding/splitting.
@@ -375,6 +382,9 @@ struct GraphStats {
     /// Mix-point segments summed in double (ADR-0207 d2): two or more inputs
     /// that could each add something. One live input needs no sum at all.
     std::int64_t wideMixes = 0;
+    std::int64_t parallelLevels = 0;
+    std::int64_t workerNodeBlocks = 0;
+    std::int64_t workerFallbacks = 0;
 };
 
 /// A fixed delay, applied to one input edge so that two paths of unequal
@@ -764,9 +774,10 @@ private:
 };
 
 /// A DAG of nodes, scheduled per block.
+class RenderWorkers;
 class Graph final : public BlockProcessor {
 public:
-    Graph() = default;
+    Graph();
     ~Graph() override;
 
     // --- construction, message thread only ---------------------------------
@@ -813,6 +824,15 @@ public:
         precision_ = p;
     }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
+
+    /// Owner only, then prepare before rendering. Zero workers preserves the
+    /// serial path. Nonzero uses at most 16 persistent participants; frames
+    /// and eligible level width must meet the explicit measured thresholds.
+    /// No implicit platform heuristic is hidden in the callback.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr) noexcept;
+    [[nodiscard]] std::uint32_t renderWorkerCount() const noexcept;
 
     /// Per-node event capacity. At 500 Hz with heavy polyphony this is a real
     /// design number rather than a formality (events.hpp).
@@ -1011,6 +1031,45 @@ public:
 
 private:
     void writeNodeOutput(NodeId, const AudioIo&) const noexcept;
+    // Private scratch per executing participant; immutable inputs/splits and
+    // independently written Slot outputs are the only data shared by jobs.
+    struct RenderState {
+        // Per-input idleness, and 64-bit accumulators for each main/side mix.
+        std::vector<std::uint8_t> asleep_;
+        std::vector<float> mixBuf_;         ///< summed main inputs for the node in hand
+        std::vector<float*> mixPtrs_;
+        std::vector<float> sideBuf_;        ///< summed sidechain inputs
+        std::vector<float*> sidePtrs_;
+        std::vector<double> mixWide_;
+        std::vector<double*> mixWidePtrs_;
+        std::vector<double> sideWide_;
+        std::vector<double*> sideWidePtrs_;
+        std::vector<float> delayScratch_;   ///< one channel of one segment
+        std::vector<double> delayScratch64_; ///< the same at 64
+        GraphStats stats;
+    };
+    RenderState render_;
+    void prepareRenderState(RenderState&);
+    void collectRenderStats(const RenderState&) noexcept;
+    struct LevelWork {std::vector<NodeId> parallel,serial;};
+    struct Dispatch {
+        Graph* graph=nullptr;
+        const LevelWork* work=nullptr;
+        std::int32_t frames=0,nsplit=0;
+        const TransportInfo* transport=nullptr;
+        std::size_t stride=1;
+        bool reverse=false;
+    };
+    static void executeWorker(void*,std::size_t) noexcept;
+    void runPartition(const Dispatch&,std::size_t partition,RenderState&) noexcept;
+    void runLevel(std::size_t,std::int32_t,std::int32_t,const TransportInfo*) noexcept;
+    std::unique_ptr<RenderWorkers> workers_;
+    std::vector<RenderState> workerRenders_;
+    std::vector<LevelWork> levelWork_;
+    std::uint32_t requestedWorkers_=0,parallelMinimumNodes_=4;
+    std::int32_t parallelMinimumFrames_=256;
+    RenderWorkers::Initializer workerInitializer_=nullptr;
+    void* workerInitializationContext_=nullptr;
     struct Slot {
         Node* node = nullptr;
         bool hasBypass = false;
@@ -1075,7 +1134,7 @@ private:
     /// processing is 32-bit; the SUM is 64-bit and converted once, as Live
     /// sums every mix point (ADR-0207 d2, Audio Fact Sheet 38.2.4). `wide` is
     /// the double accumulator for this bus.
-    bool mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+    bool mix(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
              std::vector<float*>& dst, std::vector<double*>& wide,
              std::int32_t begin, std::int32_t frames) noexcept;
 
@@ -1093,14 +1152,14 @@ private:
     /// the sum: at 32, `float` when at most one input is live and `double`
     /// otherwise; at 64, `double` always.
     template <typename Src, typename Acc>
-    void accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
+    void accumulate(RenderState& r, std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
                     std::int32_t begin, std::int32_t frames, bool first,
                     bool asleep) noexcept;
 
     /// `mix` for a graph at 64: every source, delay line and sum is double,
     /// and the sum is left in `wide` for the node (or narrowed by the caller
     /// for a node that does not process double).
-    bool mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+    bool mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
                  std::vector<double*>& wide, std::int32_t begin, std::int32_t frames) noexcept;
 
     /// One segment of a double sum, converted to the float a node reads.
@@ -1112,16 +1171,16 @@ private:
     [[nodiscard]] static T* const* outputOf(const Slot& s) noexcept;
     /// One channel of one segment, at the width `T`, for a delayed edge.
     template <typename T>
-    [[nodiscard]] T* scratch() noexcept;
+    [[nodiscard]] T* scratch(RenderState& r) noexcept;
 
     /// The last live input of a double sum: added to `wide` and converted
     /// into `dst` in the same pass, so the sum is narrowed once and read once.
-    void accumulateLast(std::vector<float*>& dst, const std::vector<double*>& wide,
+    void accumulateLast(RenderState& r, std::vector<float*>& dst, const std::vector<double*>& wide,
                         const Slot& src, DelayLine& delay, std::int32_t begin,
                         std::int32_t frames) noexcept;
     void computeCompensation();
     void prepareLine(DelayLine& line, std::int32_t delaySamples);
-    void runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
+    void runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t nsplit,
                  const TransportInfo* transport) noexcept;
 
     /// ADR-0091, before the splits are computed: carry each slot's note events
@@ -1143,25 +1202,10 @@ private:
     /// Each slot's arrival, likewise: `retapLatency` recomputes it while the
     /// audio thread stamps an input tap with it.
     std::vector<std::atomic<std::int32_t>> slotArrival_;
-    /// `idle` per input of the mix in hand, sized at prepare to the most
-    /// inputs any slot has.
-    std::vector<std::uint8_t> asleep_;
     std::vector<NodeId> order_;
     NodeId output_ = kInvalidNode;
 
-    std::vector<float> mixBuf_;         ///< summed main inputs for the node in hand
-    std::vector<float*> mixPtrs_;
-    std::vector<float> sideBuf_;        ///< summed sidechain inputs
-    std::vector<float*> sidePtrs_;
-    // ADR-0207 d2: the 64-bit accumulators the two buffers above are
-    // converted from, once per segment, when two or more inputs are live.
-    std::vector<double> mixWide_;
-    std::vector<double*> mixWidePtrs_;
-    std::vector<double> sideWide_;
-    std::vector<double*> sideWidePtrs_;
     std::vector<std::vector<NodeId>> levels_;
-    std::vector<Event> mixEventStore_;
-    EventList mixEvents_;
     std::vector<std::int32_t> splits_;  ///< segment boundaries, sized at prepare
     std::vector<std::uint8_t> frameMark_; ///< one byte per frame: an event lands here
 
@@ -1169,8 +1213,6 @@ private:
     /// delay that crosses any number of block boundaries needs no bookkeeping
     /// beyond one subtraction.
     std::int64_t now_ = 0;
-    std::vector<float> delayScratch_;   ///< one channel of one segment
-    std::vector<double> delayScratch64_; ///< the same at 64
 
     Precision precision_ = Precision::Float32;   ///< ADR-0207 d2
     double sampleRate_ = 0.0;
@@ -1208,6 +1250,7 @@ private:
 class SumNode final : public Node {
 public:
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }
     [[nodiscard]] const char* name() const noexcept override { return "sum"; }
@@ -1226,6 +1269,7 @@ public:
 
     void prepare(double, std::int32_t) override { gain_ = 1.0f; gain64_ = 1.0; }
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
     [[nodiscard]] std::int64_t tailSamples() const noexcept override { return 0; }

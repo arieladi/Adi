@@ -778,6 +778,12 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     rebuild();
 }
 
+bool Session::setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,std::uint32_t minimumNodes,RenderWorkers::Initializer initialize,void* context) {
+    if(!graph_.setParallelRendering(workers,minimumFrames,minimumNodes,initialize,context))return false;
+    if(!loaded_)return true;
+    return rebuild();
+}
+
 bool Session::setPrecision(Precision p) {
     if (p == spec_.precision) return true;
     // A format change of its own: every buffer, sum and ring changes width,

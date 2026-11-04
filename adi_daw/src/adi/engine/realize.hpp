@@ -62,6 +62,7 @@ namespace adi::engine {
 class MixNode final : public Node {
 public:
     void process(const NodeIo& io) noexcept override;
+    [[nodiscard]] bool canProcessOnWorker() const noexcept override { return true; }
     /// A copy is exact at either width (ADR-0207 d2).
     [[nodiscard]] bool processesDouble() const noexcept override { return true; }
 
