@@ -225,6 +225,7 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
+    src/adi/controller_lanes.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -1298,6 +1299,8 @@ set_tests_properties(adi_decode_tests PROPERTIES TIMEOUT 120)
 
 # ADR-0155: immutable MIDI clip schedules, emitted before graph forwarding.
 target_sources(adi_core PRIVATE src/adi/engine/midi_clips.cpp)
+target_sources(adi_core PRIVATE src/adi/engine/midi_controllers.cpp)
+target_sources(adi_core PRIVATE src/adi/engine/midi_memory.cpp)
 add_executable(adi_midi_clips_tests tests/test_midi_clips.cpp)
 target_link_libraries(adi_midi_clips_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
@@ -1357,3 +1360,15 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+
+add_executable(adi_controller_lanes_tests tests/test_controller_lanes.cpp)
+target_link_libraries(adi_controller_lanes_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_controller_lanes_tests COMMAND adi_controller_lanes_tests)
+
+add_executable(adi_midi_controllers_tests tests/test_midi_controllers.cpp)
+target_link_libraries(adi_midi_controllers_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_midi_controllers_tests COMMAND adi_midi_controllers_tests)
+
+add_executable(adi_midi_memory_tests tests/test_midi_memory.cpp)
+target_link_libraries(adi_midi_memory_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_midi_memory_tests COMMAND adi_midi_memory_tests)

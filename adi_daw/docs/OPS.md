@@ -433,7 +433,111 @@ silent truncation in JSON, a non-issue in CBOR.
 | `noteExpression.clear` | e | S | cap | P1 |
 | `cc.write` | e | S | cap | P0 |
 | `cc.delete` | e | S | cap | P0 |
+| `cc.restoreStream` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
+
+Implemented controller-lane editing uses existing addressed `event_streams`
+rows (`stream_kind='cc'`, ACTL), with channel 0..15 and controller 0..127:
+
+- `cc.write {id,clip,channel,controller,points[]}` upserts explicit point IDs in
+  that stream. `id` is its explicit SQL row ID, required even on creation.
+  A point is `{id,time,value,tension?,curve?,flags?}`: positive uint64 ID,
+  signed relative musical ticks, finite normalized double value 0..1, tension
+  -1..1 (default 0), curve 0..5 (default Hold), byte flags (default 0).
+  Duplicate incoming IDs, unsupported layouts, invalid values and slot/ID
+  collisions refuse the whole op. Unmentioned points retain their raw bytes.
+- `cc.delete {id,clip,channel,controller,point_ids[]}` removes only listed
+  points. Empty/duplicate/missing selections refuse. Deleting the last point
+  retains an empty addressed lane.
+- `cc.restoreStream {id,clip,channel,controller,state:{data}}` is the captured
+  inverse. Data is NULL for previous absence, or `{bytes}` containing compact
+  CBOR binary (JSON callers may supply byte integers). Undo of first creation
+  removes its row. Existing streams restore exact bytes, including future
+  record tails/header flags/trailer. The same ID/address collision checks apply.
+
+Streams are sorted stably by time. Updating an existing future record preserves
+its full tail, while insertion of a new record into an unknown wider layout
+refuses. Values retain full normalized precision; MIDI byte quantization belongs
+at the host boundary. `controllers::readLanes` returns typed points, raw bytes and
+per-lane errors; an unbound NULL address is distinct from channel/controller zero.
+ClipNode.controllers publishes the same data immutably, and every field/raw
+change participates in structural sharing. SnapshotBuilder reads all project
+fields in one SQLite read transaction, including when another connection edits
+between the controller and clip queries. The row model carries these lanes too.
+`controllers::prepareWrite` finds the addressed slot, allocates explicit stream
+and point IDs (zero input point IDs request new IDs), and validates the request
+under one owner-side read transaction. It reserves/writes nothing. The returned
+request contains all actual IDs. `commitPrepared` refuses a changed history head
+or another file/open Store client; retain the document generation across async
+work, as with the other prepared editing APIs. The window needs no SQL access.
+These are editing/read APIs; ordinary controller-event playback/host routing is
+the next increment. No schema or audio-callback change accompanies this one.
+
+Playback prepares immutable per-track controller timelines off the callback.
+Musical/linear placement, source offsets, clip loops and step tempo changes use
+musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
+at the same channel/CC use the latest clip start, then greatest clip ID. Empty
+lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
+ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+at one million spans and placed points. Controllers are sampled on a global
+64-sample cadence and at exact point/placement/note boundaries, independent of
+callback size, with exact state chased on start/seek.
+
+Controller values remain doubles through graph compensation and VST3 mapped
+parameters. CLAP uses MIDI bytes on a port advertising MIDI/MIDI-MPE, alongside
+native CLAP notes when that is the chosen note dialect; quantization occurs only
+at that boundary. Unsupported CLAP ports and unmapped VST3 controllers are counted
+by each host's `unsupportedControllers()`. VST3 mapping discovery retains the
+existing limitation to a reachable edit controller; no mapping is invented for a
+two-component plug-in whose controller JUCE does not expose.
+
+Owned sustain/sostenuto/hold-2 (CC64/66/69) are released before note-offs on stop,
+seek, transport/clip wrap, mute or generation replacement. A source keeps pending
+release ownership through graph delay and retries rejected/full-list releases,
+including after the lane disappears. Ordinary CC values hold after a clip ends.
+Controller pressure reserves note-event space and rotates addresses;
+`MidiClips::droppedControllers()` counts deferred/refused updates. Callbacks use
+fixed state and prepared arrays, with no Store access, allocation or locks.
+
+**Retrospective MIDI input memory (ADR-0132 d9).** `engine/midi_memory.hpp`
+provides a bounded `MidiMemory(inputId,trackId,sampleRate,noteChannelBase,capacity)`
+for each explicitly eligible input/track. Allocate it before callbacks; default
+capacity is 65,536 events, bounded 2..1,048,576. One producer serializes controls,
+`push(Event,absoluteDriverSample)` and `advance(exclusiveBlockEnd)`, including
+silent blocks. Armed OR monitored input listens independently of transport
+play/record; neither gate retains input. Queue gate changes to that producer.
+Input on/off, explicit discontinuity, backwards clocks, malformed musical input
+and a pinned-slot drop begin a new epoch. Forward rests preserve the history.
+
+Snapshots retain typed note-on/off, expression and controller events, double
+values, uint64 identities, integer timestamps above 2^53, original packet frames
+and coincident serial order. Input channels are declared rather than guessed:
+MpeParser notes use 1..16, while clip notes use 0..15; controllers always address
+0..15 and controller 0..127. The memory preserves the declared note convention
+and never reconstructs MPE allocation. Note keys/velocities, controller addresses/
+values, finite expression values and times are checked. Unassigned release IDs
+remain unassigned for owner resolution. Addressed ParamValue/ParamMod events are
+ignored without clearing musical history. Feed live input only, never playback
+or controller-delivery feedback. No MIDI byte encoding or float narrowing occurs.
+
+The single owner calls `snapshot(output,error)` off callback and receives an
+immutable bounded history with input/track/format/convention/epoch, current
+exclusive end sample and a `prefixDropped` notice when capacity evicted older
+events. This is not a promise that a retained suffix contains complete notes or
+a complete phrase. A concurrent overwrite/in-flight slot refuses the entire
+snapshot with empty output; callers may retry. Slot ownership avoids data races;
+the producer never waits for a reader, instead dropping/counting that event and
+starting fresh history. Stats distinguish copied/dropped/ignored/invalid input.
+Producer controls/parser/copy calls allocate, lock, log and perform file I/O
+nowhere. Constructor/destructor and snapshot work belong off callback.
+
+This increment supplies exact rolling input and the actual MPE-parser handoff,
+not automatic host/UI wiring, phrase detection, Live tempo/loop inference or a
+native committed clip. Owner-side Capture must resolve complete notes and missing
+prefixes before preparing edits. Existing ANOT velocity bytes and AEXP floats
+cannot preserve every arbitrary captured double; persistence must name/refuse
+that limitation rather than silently narrow it. No schema/new opcode or measured
+Live parity claim is introduced by the RAM memory.
 
 ### 9.6 Automation
 
@@ -650,7 +754,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**172 ops** — 66 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**173 ops** — 67 P0, 54 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

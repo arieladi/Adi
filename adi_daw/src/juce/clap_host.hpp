@@ -406,6 +406,9 @@ public:
     /// What the plugin declared. Read at construction and at every activation
     /// -- the spec allows the scan only while the plugin is deactivated.
     [[nodiscard]] const ClapNotePorts& notePorts() const noexcept { return notePorts_; }
+    [[nodiscard]] std::uint64_t unsupportedControllers() const noexcept {
+        return unsupportedControllers_.load(std::memory_order_relaxed);
+    }
     /// The router, for its counters. Audio thread, or while not processing.
     [[nodiscard]] const engine::MpeRouter& noteRouter() const noexcept { return router_; }
 
@@ -518,6 +521,7 @@ private:
     void applyDialect(ClapDialectChoice choice);
     const clap_plugin_note_ports_t* notePortsExt_ = nullptr;
     ClapNotePorts notePorts_{};
+    std::atomic<std::uint32_t> unsupportedControllers_{0};
     ClapDialect dialect_ = ClapDialect::Clap;        ///< audio thread, and prepare
     std::atomic<std::uint8_t> requestedDialect_{0};  ///< ClapDialectChoice
     std::uint8_t appliedDialect_ = 0;                ///< audio thread, and prepare

@@ -35,6 +35,9 @@ enum class EventType : std::uint8_t {
     /// changed (ADR-0046, ADR-0052). CLAP carries this natively; for VST3 the
     /// host resolves it into a value and keeps the user's setting shadowed.
     ParamMod = 4,
+    /// Ordinary MIDI CC: channel 0..15, paramId 0..127, normalized double.
+    /// The format host alone narrows a value for a MIDI 1 wire.
+    Controller = 5,
 };
 
 /// Does this event belong to a NOTE STREAM, and so travel along the chain until
@@ -46,8 +49,8 @@ enum class EventType : std::uint8_t {
 /// exactly that with any matching id -- so they are delivered where they were
 /// pushed and nowhere else.
 [[nodiscard]] constexpr bool isNoteStream(EventType t) noexcept {
-    return t == EventType::NoteOn || t == EventType::NoteOff ||
-           t == EventType::NoteExpression;
+    return t == EventType::NoteOn || t == EventType::NoteOff || t == EventType::NoteExpression ||
+           t == EventType::Controller;
 }
 
 struct Event {
@@ -68,6 +71,8 @@ struct Event {
 
     /// Anchors expression to its note, matching `ANOT.note_id`. Zero means
     /// unassigned, which is legal for a note that carries no expression.
+    /// Controller sources may use it as an internal delivery token; never a
+    /// MIDI wire note identity in that case.
     std::uint64_t noteId = 0;
 
     std::uint32_t paramId = 0;
