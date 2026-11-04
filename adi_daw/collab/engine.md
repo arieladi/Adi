@@ -12,6 +12,22 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-04 — Native automation point edits ready; continue Phase D
+
+**PR requested** — head `engine/automation-edits` at **`1c37d0563c16580e19510c61631c538dbc71519f`**, base **`engine/log`** at `f3fe7c5c37ea01c450e1878a217b455da66fcfb8`. Title: **Add undoable automation point editing**. The tested branch is pushed; win/window opens the PR, win merges. GitHub GraphQL returned Forbidden, so no opened PR or remote CI success is claimed.
+
+**PR body / window handoff:** The document owner can submit `automation::writePoints`, `deletePoints`, `movePoints`, and `setCurve` through `OpJournal` for an existing arrangement or clip lane. Requests explicitly address the automation_data row, lane, clip (null for arrangement), and full uint64 point IDs. Writes upsert; moves use absolute int64 time/double value; curves use the existing six formulas and finite -1..1 tension. All-or-nothing selection validation, stable coincident-point order, flags/reserved bytes, future record suffixes and trailers are retained. Captured `automation.restoreData` restores exact bytes or original absence. Inserting unknown newer-format fields is refused. OPS §9.6 documents the payloads and limits. No schema, UI, device production or callback changes. This is the native point-editing prerequisite, not completion of shape presets or all Phase D. Stacked on `engine/log` at the base above.
+
+**Validation:** GCC14 full Debug/Werror/PD-on/JUCE-off build and `tools/test_all.sh`: **10,017 checks / 107 suites**, every result and the sum inspected, all validators and binary layout checks clean. New edits suite **46** checks includes deterministic replay, exact undo/redo, finite/range/refusal checks, full-width IDs and values, future-layout reordering/deletion, clip-relative nanosecond flags, owner/data mismatch, engine compilation/evaluation, and final commit-hook rollback. Clang19 Debug/Werror builds the core and passes edits **46**, automation **39**, ops **130**, replay **63**. All three changed translation units pass GCC Wshadow. Five independently compiled fault plants fail normally: value narrowing (2), ignored curves (1), dropped trailer (2), ignored address (4), undo absence retained as an empty row (3). The final plant variants do not edit checkout sources or replace the validated binaries. MSVC, JUCE host/GUI, seven-ABI CI and measured Live parity remain unverified in this Linux seat; win owns merge acceptance. No README count edit.
+
+**Seat and base discrepancy:** The uploaded 4 November work-seat instructions describe Windows and say `engine/log` contains the rebuilt #382–#421 feature stack. This actual machine is Linux; fetched `origin/engine/log` is `f3fe7c5`, carrying the newest handoff but not those feature implementations (including the controller source APIs). The required base was preserved, and this increment has no dependency on absent feature code or schema minors. Win should reconcile the stack base and OPS catalogue count with the existing feature branches during integration; no reset, force push or duplication of those features was performed. The main checkout remains untouched, with code and log in separate worktrees.
+
+**Network:** Existing Git HTTPS authentication works for reads and push. The draft now adds `api.github.com` to the existing network policy, preserving all presets; saving is confirmed but runtime application/publication is not. No token was requested or exposed. The fallback PR title/body is recorded here and a local copy is `/workspace/engine-review/automation-edits-pr.md`. Clang was extracted under `/workspace/adi-clang` from checksum-verified Debian packages obtained through its signed official HTTPS archive; no verification was disabled.
+
+**Queue:** Continue Phase D item 1. Implement native lane creation/deletion and lane enable/visibility/default/clear operations with exact inverses, then Live shape insertion on these point APIs, Automation Arm, clip-envelope playback and automated send levels. Point editing currently requires an already existing lane; it does not introduce a UI SQL path or claim those follow-ups are built. Earlier needs remain taken by the existing feature branches. Capture, Scale Mode, multi-threading, scanner, stem separation, Loudness Drive, Link and scope engine work remain later in the standing queue. No LANES §5 question blocks continuation.
+
+---
+
 
 ## 2026-11-03 — Controller lanes play through the graph and hosts; on to Phase D automation
 
