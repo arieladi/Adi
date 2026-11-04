@@ -225,6 +225,10 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/ops.cpp
     src/adi/ops_catalog.cpp
+    src/adi/automation_edits.cpp
+    src/adi/automation_lanes.cpp
+    src/adi/automation_shapes.cpp
+    src/adi/engine/automation_recording.cpp
     src/adi/controller_maps.cpp
     src/adi/history.cpp
     src/adi/digest.cpp
@@ -1323,7 +1327,8 @@ add_executable(adi_panel_layout_tests tests/test_panel_layout.cpp)
 target_link_libraries(adi_panel_layout_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_panel_layout_tests COMMAND adi_panel_layout_tests)
 # ADR-0159 part two: automation read into the engine, not yet played.
-target_sources(adi_core PRIVATE src/adi/engine/automation.cpp)
+target_sources(adi_core PRIVATE src/adi/engine/automation.cpp
+    src/adi/engine/automation_clips.cpp)
 add_executable(adi_automation_tests tests/test_automation.cpp)
 target_link_libraries(adi_automation_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_automation_tests COMMAND adi_automation_tests)
@@ -1357,3 +1362,26 @@ endforeach()
 
 # Step 7: headless state and the optional JUCE window shell.
 include(src/juce/ui_shell.cmake)
+
+add_executable(adi_automation_edits_tests tests/test_automation_edits.cpp)
+target_link_libraries(adi_automation_edits_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_edits_tests COMMAND adi_automation_edits_tests)
+add_executable(adi_automation_lanes_tests tests/test_automation_lanes.cpp)
+target_link_libraries(adi_automation_lanes_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_lanes_tests COMMAND adi_automation_lanes_tests)
+
+add_executable(adi_automation_shapes_tests tests/test_automation_shapes.cpp)
+target_link_libraries(adi_automation_shapes_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_shapes_tests COMMAND adi_automation_shapes_tests)
+
+add_executable(adi_automation_recording_tests tests/test_automation_recording.cpp)
+target_link_libraries(adi_automation_recording_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_automation_recording_tests COMMAND adi_automation_recording_tests)
+
+add_executable(adi_automation_write_policy_tests tests/test_automation_write_policy.cpp)
+target_link_libraries(adi_automation_write_policy_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_write_policy_tests COMMAND adi_automation_write_policy_tests)
+
+add_executable(adi_clip_envelopes_tests tests/test_clip_envelopes.cpp)
+target_link_libraries(adi_clip_envelopes_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_clip_envelopes_tests COMMAND adi_clip_envelopes_tests)
