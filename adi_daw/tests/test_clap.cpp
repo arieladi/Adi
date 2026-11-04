@@ -321,6 +321,7 @@ struct Fake {
     std::uint32_t tailValue = 0;
     std::uint32_t latencyValue = 0;
     double paramValue = 0.25;
+    bool applyParamValues = false; // optional fake DSP parameter application
     std::vector<std::uint8_t> saved{0xDE, 0x00, 0xAD, 0x00, 0xBE};  // embedded NULs
     int activations = 0, starts = 0, mainThreadCalls = 0;
     std::uint32_t lastFrames = 0;
@@ -379,9 +380,11 @@ struct Fake {
                 for (std::uint32_t i = 0; i < n; ++i) {
                     const clap_event_header_t* h = pd->in_events->get(pd->in_events, i);
                     f.seenEvents.push_back(*h);
-                    if (h->type == CLAP_EVENT_PARAM_VALUE)
-                        f.seenParams.push_back(
-                            *reinterpret_cast<const clap_event_param_value_t*>(h));
+                    if (h->type == CLAP_EVENT_PARAM_VALUE) {
+                        const auto* parameter = reinterpret_cast<const clap_event_param_value_t*>(h);
+                        f.seenParams.push_back(*parameter);
+                        if (f.applyParamValues) f.paramValue = parameter->value;
+                    }
                     if (h->type == CLAP_EVENT_NOTE_EXPRESSION) {
                         const auto* x =
                             reinterpret_cast<const clap_event_note_expression_t*>(h);
@@ -487,6 +490,97 @@ struct Fake {
             return true; };
     }
 };
+
+void testUiParameterQueue() {
+    section("N7 -- accepted UI values, backpressure, stop and recall");
+    Fake fake;fake.paramValue=10010;fake.applyParamValues=true;
+    DeviceIdentity identity;identity.format="clap";
+    ClapDevice device(&fake.plugin,identity);device.prepare(48000,64);
+    std::array<float,64> inL{},inR{},outL{},outR{};
+    const float* input[]={inL.data(),inR.data()};float* output[]={outL.data(),outR.data()};
+    engine::NodeIo io;io.in=input;io.out=output;io.channels=2;io.frames=64;
+    check(device.setParam("1234abcd",ParamValue::fromNormalized(0.8)) && device.hasPendingParamChanges() &&
+              std::abs(device.getParam("1234abcd").normalized-0.8)<1e-12 && fake.paramValue==10010,
+          "getter exposes accepted intent before its audio callback");
+    check(device.setParam("1234abcd",ParamValue::fromNormalized(0.5)),"return to old value queues the overriding intent");
+    device.process(io);
+    check(fake.seenParams.size()==2 && std::abs(device.getParam("1234abcd").normalized-0.5)<1e-12 &&
+              !device.hasPendingParamChanges(),"callback applies accepted values in their original order");
+    device.setParam("1234abcd",ParamValue::fromNormalized(0.2));device.release();
+    check(fake.flushes==1 && std::abs(device.getParam("1234abcd").normalized-0.2)<1e-12 && !device.hasPendingParamChanges(),
+          "driver stop flushes accepted control before the next block can disappear");
+    device.prepare(48000,64);
+    bool accepted=true;
+    for(int i=0;i<256;++i)accepted=device.setParam("1234abcd",ParamValue::fromNormalized(static_cast<double>(i)/255.0)) && accepted;
+    check(accepted && !device.setParam("1234abcd",ParamValue::fromNormalized(0.4)) && device.getParam("1234abcd").normalized==1,
+          "256 usable slots; overflow refuses the new value and retains the last accepted intent");
+    std::size_t seen=0;bool ordered=true;
+    for(int block=0;block<16 && device.hasPendingParamChanges();++block) {
+        device.process(io);
+        for(const auto& parameter:fake.seenParams) {
+            const auto expected=20.0+static_cast<double>(seen)/255.0*19980.0;
+            ordered=ordered && std::abs(parameter.value-expected)<1e-9;++seen;
+        }
+    }
+    check(seen==256 && ordered && !device.hasPendingParamChanges() && device.eventsDropped()==1,
+          "a smaller callback event list retains overflow for later blocks without losing or reordering accepted values");
+    device.setParam("1234abcd",ParamValue::fromNormalized(0.6));fake.failNext=true;device.process(io);
+    check(device.hasPendingParamChanges(),"failed process does not acknowledge pending controls");
+    device.process(io);check(!device.hasPendingParamChanges() && fake.seenParams.size()==1,"next successful process completes the retained control");
+    device.setParam("1234abcd",ParamValue::fromNormalized(0.7));
+    check(device.loadState("chunk",{1,2,3}) && !device.hasPendingParamChanges(),"successful state recall supersedes older pending controls");
+    device.process(io);check(fake.seenParams.empty(),"old queued value cannot overwrite the recalled state");
+    device.setParam("1234abcd",ParamValue::fromNormalized(0.8));
+    check(!device.loadState("unsupported",{}) && device.hasPendingParamChanges(),"refused state recall retains accepted controls");
+    device.prepare(48000,128);
+    check(!device.hasPendingParamChanges() && std::abs(device.getParam("1234abcd").normalized-0.8)<1e-12,
+          "format change flushes accepted controls before reactivation resets storage");
+}
+
+constexpr int kUiQueueTotal = 8192;
+void testConcurrentUiParameterQueue() {
+    section("N7 -- UI producer and audio consumer deliver every accepted control");
+    struct Streaming:Fake {
+        std::uint64_t seen=0;bool ordered=true;
+    };
+    Streaming fake;
+    fake.plugin.process=[](const clap_plugin_t* plugin,const clap_process_t* process)->clap_process_status {
+        auto& state=static_cast<Streaming&>(Fake::self(plugin));
+        const auto* input=process->in_events;
+        for(std::uint32_t i=0;i<input->size(input);++i) {
+            const auto* header=input->get(input,i);
+            if(header->type!=CLAP_EVENT_PARAM_VALUE)continue;
+            const auto* parameter=reinterpret_cast<const clap_event_param_value_t*>(header);
+            ++state.seen;
+            const double expected=20.0+static_cast<double>(state.seen)/kUiQueueTotal*19980.0;
+            state.ordered=state.ordered && std::abs(parameter->value-expected)<1e-9;
+        }
+        for(std::uint32_t bus=0;bus<process->audio_outputs_count;++bus)
+            for(std::uint32_t channel=0;channel<process->audio_outputs[bus].channel_count;++channel)
+                std::fill_n(process->audio_outputs[bus].data32[channel],process->frames_count,0.0f);
+        return CLAP_PROCESS_CONTINUE;
+    };
+    DeviceIdentity identity;identity.format="clap";ClapDevice device(&fake.plugin,identity);device.prepare(48000,64);
+    std::atomic<bool> done{false},timedOut{false};
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+    std::thread audio([&] {
+        std::array<float,64> left{},right{};float* output[]={left.data(),right.data()};
+        engine::NodeIo io;io.out=output;io.channels=2;io.frames=64;
+        while(!done.load(std::memory_order_acquire) || device.hasPendingParamChanges()) {
+            device.process(io);
+            if(std::chrono::steady_clock::now()>deadline){timedOut.store(true);break;}
+        }
+    });
+    int accepted=0;
+    while(accepted<kUiQueueTotal && !timedOut.load()) {
+        if(device.setParam("1234abcd",ParamValue::fromNormalized(static_cast<double>(accepted+1)/kUiQueueTotal)))++accepted;
+        else std::this_thread::yield();
+        if(std::chrono::steady_clock::now()>deadline){timedOut.store(true);break;}
+    }
+    done.store(true,std::memory_order_release);audio.join();
+    check(!timedOut.load() && accepted==kUiQueueTotal && fake.seen==kUiQueueTotal && fake.ordered,
+          "all 8192 accepted values survive concurrent queue wrap and callback backpressure in FIFO order");
+}
 
 void testAgainstAFakePlugin() {
     section("ADR-0075 -- tail, latency, parameters and state, against a real clap_plugin_t");
@@ -3123,6 +3217,8 @@ int main() {
     testParamIdRoundTrip();
     testHostGlueReportsAndReturns();
     testClapDeviceWithNoPluginIsSafe();
+    testUiParameterQueue();
+    testConcurrentUiParameterQueue();
     testAgainstAFakePlugin();
     testNothingIsQueriedBeforeActivate();
     testTheRealProcessCall();
