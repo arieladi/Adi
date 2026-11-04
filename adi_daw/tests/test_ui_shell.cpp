@@ -1391,22 +1391,32 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.mark(DirtySet::All);
     root.frame();
     render("adi-sends.png");
-    // Hide/Show Sends (§42.1, Ctrl/Cmd+Alt+S): the sends out of the track controls and the Mixer
-    // View; ADI-Q and ADI-L move up under volume and pan, the mixer to the strip's head.
+    // Hide/Show Sends (§42.1, Ctrl/Cmd+Alt+S; Live 12's Arrangement Track Controls): the sends out of
+    // the track controls, ADI-Q and ADI-L moving up under volume and pan. The Mixer View keeps its
+    // own (Live 12's Mixer Controls), its strips losing theirs with that toggle alone.
     const auto sendsKey = juce::KeyPress('s', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0);
-    check(root.keyPressed(sendsKey) && !root.state().sends, "Ctrl/Cmd+Alt+S hides the sends");
+    check(root.keyPressed(sendsKey) && !root.state().sends && root.state().mixerSends, "Ctrl/Cmd+Alt+S hides the track controls' sends");
     column = rowOf(root.mixerView, 3);
     auto *mainStrip = rowOf(root.mixerView, 7);
     check(!a.isVisible() && !b.isVisible() && audio->eq.getY() == 37 && audio->limiter.getY() == 37,
           "the row's -inf boxes go; ADI-Q and ADI-L take their row");
+    check(column != nullptr && column->sendsShown() == 2 && column->sendKnobs()[0]->isVisible(),
+          "the Mixer View strips keep theirs");
+    check(root.command(AppCommands::ToggleMixerSends) && !root.state().mixerSends && root.mixerOptionsMenu().getNumItems() > 0,
+          "the Mixer Controls' Sends hides the Mixer View's");
+    column = rowOf(root.mixerView, 3);
+    mainStrip = rowOf(root.mixerView, 7);
     check(column != nullptr && column->sendsShown() == 0 && !column->sendKnobs()[0]->isVisible() &&
               column->volume.getY() == 40 + 6 && mainStrip != nullptr && mainStrip->returnSwitches().size() == 2 &&
               !mainStrip->returnSwitches()[0]->isVisible(),
           "the Mixer View strips lose their Sends section, Main's Pre/Post switches with it");
     render("adi-sends-hidden.png");
-    check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && audio->eq.getY() == 54 &&
-              column->sendsShown() == 2 && column->sendKnobs()[0]->isVisible(),
-          "and again shows them");
+    check(root.keyPressed(sendsKey) && root.state().sends && a.isVisible() && audio->eq.getY() == 54,
+          "Ctrl/Cmd+Alt+S shows the track controls' again");
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && column->sendsShown() == 0 && root.command(AppCommands::ToggleMixerSends) &&
+              root.state().mixerSends && column->sendsShown() == 2 && column->sendKnobs()[0]->isVisible(),
+          "and the Mixer Controls' Sends the Mixer View's");
     // Live 12's Mixer View Control options (manual 18.1): In/Out, Sends, Volume, Track Options,
     // Crossfader, Performance Impact, then Return Tracks; what ADI has not built is dimmed.
     auto mixerOptions = [&root] {
@@ -3223,6 +3233,36 @@ int main(int argc, char **argv) {
                                                     C::TabMovesFocus, C::WrapTabNavigation},
               "the Navigate menu: the views ADI has, the neighbours, then Tab's two switches (§41.1.1)");
         check(!names.contains("Help"), "a menu with no command yet is left out");
+        // Live 12's View menu: the track controls' and the Mixer View's controls in two submenus.
+        {
+            const auto viewMenu = bar->getMenuForIndex(names.indexOf("View"), "View");
+            juce::StringArray submenus;
+            std::vector<int> flat;
+            juce::String trackControls, mixerControls;
+            auto texts = [](const juce::PopupMenu &menu) {
+                juce::StringArray out;
+                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+                    if (!it.getItem().isSeparator)
+                        out.add(it.getItem().text + (it.getItem().isEnabled ? "" : " -"));
+                return out.joinIntoString(", ");
+            };
+            for (juce::PopupMenu::MenuItemIterator it(viewMenu); it.next();) {
+                const auto &item = it.getItem();
+                if (item.subMenu != nullptr) {
+                    submenus.add(item.text);
+                    (item.text == "Mixer Controls" ? mixerControls : trackControls) = texts(*item.subMenu);
+                } else
+                    flat.push_back(item.itemID);
+            }
+            auto has = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) != flat.end(); };
+            check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&
+                      trackControls == "Hide/Show Track Controls, In/Out, Sends, Volume -, Track Options -" &&
+                      mixerControls ==
+                          "In/Out, Sends, Volume -, Track Options -, Crossfader -, Performance Impact -, Return Tracks" &&
+                      !has(C::ToggleInOut) && !has(C::ToggleSends) && !has(C::ToggleReturnTracks) && !has(C::ToggleMixer),
+                  "the View menu holds Live 12's Arrangement Track Controls and Mixer Controls submenus, "
+                  "their toggles no longer loose in it");
+        }
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
                   menuForKey(*bar, juce::KeyPress('E', alt, 0)) == names.indexOf("Edit") &&

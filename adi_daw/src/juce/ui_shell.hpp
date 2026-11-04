@@ -94,7 +94,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         DeactivateSelected,
         ActivateTrack1,
         ActivateTrack8 = ActivateTrack1 + 7,
-        LastId = ActivateTrack8
+        ToggleMixerSends,
+        LastId = ToggleMixerSends
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -256,6 +257,10 @@ class AdiRootComponent final : public juce::Component {
     // Live 12's Mixer View Control options (manual 18.1, "show or hide mixer components"): In/Out,
     // Sends, Volume, Track Options, Crossfader, Performance Impact, then Return Tracks.
     juce::PopupMenu mixerOptionsMenu();
+    // Live 12's Arrangement Track Controls submenu of the View menu: ADI's Hide/Show Track Controls
+    // (the side panel), then the track controls' In/Out and Sends (Ctrl/Cmd+Alt+I, Ctrl/Cmd+Alt+S),
+    // Volume and Track Options. The View menu's Mixer Controls submenu is mixerOptionsMenu().
+    juce::PopupMenu trackControlsMenu();
     juce::Rectangle<int> mixerArea() const noexcept { return mixerArea_; }
     // One edit from a control, as one named undo step; a refusal goes to the Status Bar.
     bool submitEdit(const std::string &op, Payload payload, const char *label);

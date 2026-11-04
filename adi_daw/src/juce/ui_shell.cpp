@@ -104,7 +104,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Activate/Deactivate Track 2", "Activate/Deactivate Track 3",
                                   "Activate/Deactivate Track 4", "Activate/Deactivate Track 5",
                                   "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
-                                  "Activate/Deactivate Track 8"};
+                                  "Activate/Deactivate Track 8", "Mixer Sends"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -265,6 +265,9 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleMixerInOut: // Live 12's Mixer Controls In/Out: the Mixer View's own; no key of its own
         info.setTicked(active_ != nullptr && active_->state().mixerInOut);
+        break;
+    case ToggleMixerSends: // Live 12's Mixer Controls Sends: the Mixer View's own; Ctrl/Cmd+Alt+S is the track controls'
+        info.setTicked(active_ != nullptr && active_->state().mixerSends);
         break;
     case SoloSelected: // §42.19: Solo Selected Tracks, S
         info.addDefaultKeypress('s', 0);
@@ -899,13 +902,29 @@ juce::PopupMenu AdiRootComponent::mixerOptionsMenu() {
     commands_.activate(*this);
     juce::PopupMenu menu;
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerInOut, "In/Out");
-    menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerSends, "Sends");
     menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
     menu.addItem(juce::PopupMenu::Item("Track Options").setEnabled(false));
     menu.addItem(juce::PopupMenu::Item("Crossfader").setEnabled(false));
     menu.addItem(juce::PopupMenu::Item("Performance Impact").setEnabled(false));
     menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleReturnTracks);
+    return menu;
+}
+juce::PopupMenu AdiRootComponent::trackControlsMenu() {
+    // Live 12's Arrangement Track Controls submenu (the View menu; manual 6.1: "You can customize
+    // which controls are shown"; 18.6: Track Options holds Track Delay): the track controls' In/Out
+    // and Sends, with their keys. Volume always shows in ADI; Track Options waits on Track Delay
+    // (N22). Live's full list is to be measured. First, ADI's side panel of track controls, shown or
+    // hidden whole, which the View menu held as "Arrangement Track Controls" before the submenu.
+    commands_.activate(*this);
+    juce::PopupMenu menu;
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixer, "Hide/Show Track Controls");
+    menu.addSeparator();
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleInOut);
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
+    menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    menu.addItem(juce::PopupMenu::Item("Track Options").setEnabled(false));
     return menu;
 }
 void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
@@ -1379,11 +1398,13 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ToggleOverview:
     case AppCommands::ToggleInOut:
     case AppCommands::ToggleSends:
-    case AppCommands::ToggleMixerInOut: {
-        auto &shown = id == AppCommands::ToggleOverview ? state_.overview
-                      : id == AppCommands::ToggleInOut  ? state_.inOut
-                      : id == AppCommands::ToggleSends  ? state_.sends
-                                                        : state_.mixerInOut;
+    case AppCommands::ToggleMixerInOut:
+    case AppCommands::ToggleMixerSends: {
+        auto &shown = id == AppCommands::ToggleOverview  ? state_.overview
+                      : id == AppCommands::ToggleInOut   ? state_.inOut
+                      : id == AppCommands::ToggleSends   ? state_.sends
+                      : id == AppCommands::ToggleMixerSends ? state_.mixerSends
+                                                         : state_.mixerInOut;
         shown = !shown;
         if (!persist()) {
             shown = !shown;
@@ -1516,6 +1537,8 @@ struct MenuEntries {
     const char *name;
     std::vector<int> items;
 };
+// Live 12's View menu submenus, in a menu's items: Arrangement Track Controls and Mixer Controls.
+constexpr int kTrackControlsMenu = -1, kMixerControlsMenu = -2;
 const std::vector<MenuEntries> &menuBar() {
     using C = AppCommands;
     static const std::vector<MenuEntries> bar{
@@ -1530,9 +1553,9 @@ const std::vector<MenuEntries> &menuBar() {
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
-         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, C::ToggleInOut, C::ToggleSends, C::ToggleReturnTracks,
+         {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
-          C::PlayReference, C::ToggleMixer, C::ToggleDeviceView,
+          C::PlayReference, C::ToggleDeviceView,
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},
@@ -1573,6 +1596,10 @@ class ShellMenu final : public juce::MenuBarModel {
                 for (const int id : m.items) {
                     if (id == 0)
                         menu.addSeparator();
+                    else if (id == kTrackControlsMenu)
+                        menu.addSubMenu("Arrangement Track Controls", root.trackControlsMenu());
+                    else if (id == kMixerControlsMenu)
+                        menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu());
                     else
                         menu.addCommandItem(&commands.manager, id);
                 }
