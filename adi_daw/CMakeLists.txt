@@ -1385,3 +1385,7 @@ add_test(NAME adi_automation_write_policy_tests COMMAND adi_automation_write_pol
 add_executable(adi_clip_envelopes_tests tests/test_clip_envelopes.cpp)
 target_link_libraries(adi_clip_envelopes_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clip_envelopes_tests COMMAND adi_clip_envelopes_tests)
+
+add_executable(adi_send_automation_tests tests/test_send_automation.cpp)
+target_link_libraries(adi_send_automation_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_send_automation_tests COMMAND adi_send_automation_tests)

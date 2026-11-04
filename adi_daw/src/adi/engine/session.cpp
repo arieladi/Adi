@@ -496,12 +496,14 @@ bool Session::rebuild() {
     for (auto it = overridden_.begin(); it != overridden_.end();) {
         bool known = false;
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : stripAutomation_->sendLaneFor) known = known || laneId == *it;
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
         it = known ? std::next(it) : overridden_.erase(it);
     }
     for (auto it = writingAutomation_.begin(); it != writingAutomation_.end();) {
         bool known = false;
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : stripAutomation_->sendLaneFor) known = known || laneId == *it;
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
         it = known ? std::next(it) : writingAutomation_.erase(it);
     }
@@ -600,6 +602,8 @@ bool Session::refresh(const Store& store) {
     }
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
+    std::map<std::int64_t, double> sendsBefore;
+    for (const auto& route : model_.routing) if (route.kind == "send") sendsBefore[route.id] = route.gainDb;
     model_ = rows::readModel(store);
     // ADR-0162: an automated strip value that changed is overridden. Compared
     // BEFORE the rebuild, so the new graph already plays the manual value.
@@ -614,6 +618,14 @@ bool Session::refresh(const Store& store) {
                                : key.second == StripParam::Pan    ? b->second.pan != a->second.pan
                                                                   : b->second.muted != a->second.muted;
             if (changed) overridden_.insert(laneId);
+        }
+        std::map<std::int64_t, double> sendsAfter;
+        for (const auto& route : model_.routing) if (route.kind == "send") sendsAfter[route.id] = route.gainDb;
+        for (const auto& [route, laneId] : stripAutomation_->sendLaneFor) {
+            if (overridden_.contains(laneId) || writingAutomation_.contains(laneId)) continue;
+            const auto beforeSend = sendsBefore.find(route), afterSend = sendsAfter.find(route);
+            if (beforeSend != sendsBefore.end() && afterSend != sendsAfter.end() && beforeSend->second != afterSend->second)
+                overridden_.insert(laneId);
         }
     }
     // ADR-0162 for a plug-in's parameters (ADR-0165): a changed stored value --
@@ -765,6 +777,8 @@ bool Session::beginAutomationWrite(std::int64_t laneId) {
     bool known = false;
     if (stripAutomation_)
         for (const auto& [key, id] : stripAutomation_->laneFor) known = known || id == laneId;
+    if (stripAutomation_)
+        for (const auto& [key, id] : stripAutomation_->sendLaneFor) known = known || id == laneId;
     if (deviceAutomation_)
         for (const auto& [key, id] : deviceAutomation_->laneFor) known = known || id == laneId;
     if (!known) return false;

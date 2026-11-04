@@ -97,9 +97,16 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
 
     for (const rows::AutomationLane& row : model.automationLanes) {
         const std::string name = laneName(row.id);
-        if (row.ownerKind != "track" && row.ownerKind != "device") {
+        if (row.ownerKind != "track" && row.ownerKind != "device" && row.ownerKind != "routing") {
             problems_.push_back(name + ": owner '" + row.ownerKind + "' not played yet");
             continue;
+        }
+        if (row.ownerKind == "routing") {
+            const auto route = std::find_if(model.routing.begin(), model.routing.end(), [&](const auto& r) { return r.id == row.ownerId; });
+            if (route == model.routing.end() || route->kind != "send" || route->srcKind != "track") {
+                problems_.push_back(name + ": routing target is not an existing track send; not played");
+                continue;
+            }
         }
         AutomationLaneProgram lane;
         lane.laneId = row.id;

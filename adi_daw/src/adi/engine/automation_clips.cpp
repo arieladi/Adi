@@ -175,7 +175,12 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
             if(c==model.clips.end())throw std::runtime_error("missing clip");
             if(c->muted)continue;
             if(c->aliasOf)throw std::runtime_error("alias envelope unsupported");
-            const auto track=row.ownerKind=="track"?std::optional<std::int64_t>(row.ownerId):deviceTrack(model,row.ownerId);
+            auto track=row.ownerKind=="track"?std::optional<std::int64_t>(row.ownerId):deviceTrack(model,row.ownerId);
+            if(row.ownerKind=="routing") {
+                track.reset();
+                const auto route=std::find_if(model.routing.begin(),model.routing.end(),[&](const auto& r){return r.id==row.ownerId;});
+                if(route!=model.routing.end() && route->kind=="send" && route->srcKind=="track")track=route->srcId;
+            }
             if(!track || *track!=c->trackId)throw std::runtime_error("clip does not belong to lane owner's track");
             if(!lane.clipClock)lane.clipClock=clockFor(model,rate);
             const auto& clock=*lane.clipClock;ClipEnvelope e;e.clipId=c->id;e.nanos=row.timeBase==1;e.loop=c->loopEnabled;

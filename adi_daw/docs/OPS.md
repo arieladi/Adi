@@ -575,8 +575,8 @@ No clip-envelope playback or send-level automation is claimed by recording captu
 
 Session's document-owner write policy is separate from the SPSC producer gates.
 `setAutomationWriteState(armed,recording)` exposes the default on/off policy;
-`beginAutomationWrite(lane)` requires both gates and an existing playable strip
-or device lane. It temporarily excludes that lane from automation binding and
+`beginAutomationWrite(lane)` requires both gates and an existing playable strip,
+send or device lane. It temporarily excludes that lane from automation binding and
 clears its previous ordinary override. Manual parameter/fader ops committed while
 that lane is writing do not create an ordinary override. Other lanes retain the
 usual override behavior. Re-Enable Automation does not cancel active recording.
@@ -596,7 +596,7 @@ producer controls; no automatic host callback wiring or measured Live parity is
 claimed. No schema or opcode change is required.
 
 Clip-relative `automation_data` now plays as absolute-value overlays on existing
-track/device lanes. Values remain in the lane's declared normalized/real/enum
+track/device/send lanes. Values remain in the lane's declared normalized/real/enum
 domain; this does not invent a relative-modulation mode absent from the format.
 The arrangement stream (or default value) remains the fallback outside active
 half-open clip placements. Latest audible clip start wins overlap, with higher
@@ -625,6 +625,33 @@ clocks, aliases, unsupported owners and loops shorter than one session sample
 remain explicitly refused; clip-owned relative gain/modulation semantics are not
 claimed. Ramp tempos remain a reported step-tempo fallback, as in arrangement
 playback. No schema/opcode/UI change or measured Live parity claim is introduced.
+
+Send gain automation addresses an existing track-origin `routing` row of kind
+`send`, with `owner_kind="routing"`, its row ID as `owner_id`,
+`param_ref="gain_db"` and `value_domain="real"` (dB). Other routing parameters,
+domains and non-send targets are named and not played. Disabled lanes do not
+bind; duplicate gain lanes report first-wins ownership. Arrangement and absolute
+clip envelopes use the same compiler as faders; a send's clip must belong to its
+source track. The send's second strip stage reads the lane with the existing
+control cadence and five-millisecond smoothing at either precision, retaining
+the existing silence threshold and +24 dB ceiling. Enable Send and solo remain
+gates; source mute, Pre/Post behavior, source automation and track-delay/PDC
+remain in the first stage. Graph lifetime holders retain both stages' programs.
+
+For solo reachability, an enabled automated send potentially carries signal if
+its arrangement/default or any clip point rises above silence. This conservative
+whole-program decision keeps the edge reachable without rebuilding topology or
+PDC during playback; actual gain always follows the current curve. An arbitrary
+audio destination can therefore remain solo-reachable during a silent section
+of a send that is audible elsewhere. A wholly silent lane does not open it.
+This policy is explicit implementation behavior, not measured Live parity.
+
+Manual `routing.setGain` changes override only that send's lane, independently of
+equal numeric track IDs; Re-Enable resumes its curve. Send lanes participate in
+Session's begin/commit/refresh/finish recording policy above, without permanently
+overriding recorded manual movement. Changing Enable Send does not override gain.
+Existing native lane/point ops supply editing and undo; no schema/new opcode or
+UI/host producer wiring is introduced.
 
 ### 9.7 Devices, chains, macros
 
