@@ -396,8 +396,9 @@ void Session::syncRoute(Entry& e, device::DeviceInstance& inst) {
 // The graph
 // ---------------------------------------------------------------------------
 
-void Session::attach() {
+void Session::attach(std::shared_ptr<const GraphTransportState> timing) {
     device::DeviceHost::RebuildSpec rs;
+    rs.transportState=std::move(timing);
     rs.model = [this] { return &model_; };
     if (!frozenGroupChildren_.empty())
         rs.transformPlan = [this](GraphPlan &plan) {
@@ -567,7 +568,8 @@ bool Session::rebuild() {
         return false;
     }
     (void)mainLoudness_.prepare(spec_.sampleRate,spec_.channels);
-    auto timing = std::make_unique<TimingView>();
+    auto timing = std::make_shared<TimingView>();
+    timing->session=this;
     timing->sampleRate = spec_.sampleRate;
     timing->settings=spec_.performanceState ? transportSettings_ : TransportSettings{};
     // Same construction as MidiClips: TempoMap integrates STEP tempos, even
@@ -630,12 +632,11 @@ bool Session::rebuild() {
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
     cueMonitor_.configure(model_,cueSettings_,&transport_,stripAutomation_,spec_.performanceState);
-    attach();   // the spec, the sources or the placement may have changed
+    attach(std::move(timing)); // publish the matching clock with this graph
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
     else {
-        timing_.publish(std::move(timing));
         cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
         live_ = true;
     }
@@ -1077,7 +1078,6 @@ bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string&
 }
 
 bool Session::tick(std::int64_t nowMs) {
-    timing_.collect();
     mainLoudness_.collect();
     cueMonitor_.collect();
     return devices_.tick(nowMs);
@@ -1154,37 +1154,34 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
     return info;
 }
 
+const TransportInfo* Session::TimingView::beginBlock()const noexcept {
+    if(settings.hasLoop && (!session->loopApplied_ || session->loopOn_!=settings.loopEnabled || session->loopBegin_!=loopBegin || session->loopEnd_!=loopEnd)) {
+        session->loopApplied_=true;session->loopOn_=settings.loopEnabled;session->loopBegin_=loopBegin;session->loopEnd_=loopEnd;
+        session->transport_.loop(loopBegin,loopEnd,settings.loopEnabled);
+    }
+    blockInfo=at(session->transport_);
+    return &blockInfo;
+}
+
 void Session::process(const AudioIo& io) noexcept {
     audio::CallbackScope callback;
     recording_->capture(io,transport_);
     playbackRunning_.store(transport_.playing(), std::memory_order_release);
-    SnapshotPublisher<TimingView>::AudioRead timing(timing_);
-    TransportInfo info;
-    if (timing.valid()) {
-        if(timing->settings.hasLoop && (!loopApplied_ || loopOn_!=timing->settings.loopEnabled || loopBegin_!=timing->loopBegin || loopEnd_!=timing->loopEnd)) {
-            loopApplied_=true;loopOn_=timing->settings.loopEnabled;loopBegin_=timing->loopBegin;loopEnd_=timing->loopEnd;
-            transport_.loop(loopBegin_,loopEnd_,loopOn_);
-        }
-        info = timing->at(transport_);
-    }
-    else {
-        info.playing = transport_.playing();
-        info.timelineSample = transport_.sampleAt(0);
-    }
-    AudioIo block = io;
-    block.transport = &info;
-    graph_.process(block);
+    graph_.process(io);
+    const auto* timing=dynamic_cast<const TimingView*>(graph_.renderedTransportState());
+    AudioIo block=io;
+    if(timing)block.transport=&timing->blockInfo;
     mainLoudness_.process(block);
     struct ClickContext {Session* session;const TimingView* timing;};
-    ClickContext click{this,timing.get()};
+    ClickContext click{this,timing};
     CueMonitor::Click renderClick;
-    if(timing.valid() && timing->settings.metronome && transport_.playing()) {
+    if(timing!=nullptr && timing->settings.metronome && transport_.playing()) {
         renderClick.context=&click;
         renderClick.render=[](void* context,const AudioIo& cueIo) noexcept {
             const auto& call=*static_cast<ClickContext*>(context);call.session->renderMetronome(*call.timing,cueIo);
         };
     }
-    else if(timing.valid())renderMetronome(*timing.get(),AudioIo{});
+    else if(timing!=nullptr)renderMetronome(*timing,AudioIo{});
     cueMonitor_.process(graph_,block,renderClick);
     transport_.advance(io.frames);
 }

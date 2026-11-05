@@ -336,7 +336,7 @@ public:
     [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
-    void attach();
+    void attach(std::shared_ptr<const GraphTransportState>);
     bool readPlayback(const Store &);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
@@ -359,15 +359,17 @@ private:
     std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
-    struct TimingView final : Sequenced {
+    struct TimingView final : GraphTransportState {
+        Session* session=nullptr; // retained Session owns every published graph
+        mutable TransportInfo blockInfo{}; // the single audio driver's scratch
         TransportSettings settings;
         std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         double sampleRate = 48000.0;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
+        [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
     };
-    SnapshotPublisher<TimingView> timing_;
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
