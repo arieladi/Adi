@@ -47,8 +47,11 @@ class FloatingHost {
     FloatingHost(AdiRootComponent &, AppCommands &, ViewStateStore &, engine::ProjectView &,
                  std::function<bool(std::int64_t)> alive, bool native = true);
     ~FloatingHost();
+    // `first`, on the desktop: where the window's content opens the first time, before the window
+    // has a place of its own kept (for the Mix View, where it stood docked).
     bool detach(const std::string &key, std::int64_t device, juce::Component &,
-                juce::Component &dock, std::function<void(const SnapshotReader &)> frame = {});
+                juce::Component &dock, std::function<void(const SnapshotReader &)> frame = {},
+                juce::Rectangle<int> first = {});
     bool openView(const std::string &key, std::int64_t device, std::unique_ptr<juce::Component>,
                   std::function<void(const SnapshotReader &)> frame = {});
     void frame(const std::string &key); // per-window attachment; public for deterministic tests
@@ -58,6 +61,8 @@ class FloatingHost {
     std::size_t count() const noexcept { return entries_.size(); }
     bool hasTooltips(const std::string &key) const;
     juce::Component *content(const std::string &) const;
+    // The window itself, its title bar and frame included; null while it is not open.
+    juce::Component *window(const std::string &) const;
     // Ctrl/Cmd + and - in an ADI view's window zoom that window alone (ADR-0129 d3), held
     // for the session (window log, N4). A plug-in's own window is never scaled by ADI.
     bool zoom(const std::string &key, bool in);

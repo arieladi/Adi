@@ -34,6 +34,7 @@
 
 #pragma once
 
+#include "adi/plugin_scanner.hpp"
 #include "adi/blob.hpp"          // ExpressionDim
 #include "adi/engine/mpe_output.hpp"
 #include "juce/device_model.hpp"
@@ -160,6 +161,7 @@ public:
     [[nodiscard]] std::int32_t size() const noexcept {
         return static_cast<std::int32_t>(events_.size());
     }
+    [[nodiscard]] bool full() const noexcept { return cap_ <= 0 || events_.size() >= static_cast<std::size_t>(cap_); }
 
     /// Translate one ADI event.
     ///
@@ -241,6 +243,8 @@ public:
         return instrument_ ? engine::EventFlow::Consume : engine::EventFlow::Through;
     }
 
+    [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
+
     void prepare(double sampleRate, std::int32_t maxFrames) override;
 
     /// ADR-0207 d2: true when EVERY audio port the plug-in declares says
@@ -271,6 +275,9 @@ public:
     [[nodiscard]] std::string paramText(const std::string& paramId,
                                         double normalized) const override;
     bool setParam(const std::string& paramId, const ParamValue& v) override;
+    [[nodiscard]] bool hasPendingParamChanges() const noexcept override {
+        return pendingRead_.load(std::memory_order_acquire) != pendingWrite_.load(std::memory_order_acquire);
+    }
 
     [[nodiscard]] std::vector<std::string> stateRoles() const override;
     [[nodiscard]] std::vector<std::uint8_t> saveState(const std::string& role) const override;
@@ -333,6 +340,7 @@ public:
     }
 
 private:
+    std::weak_ptr<DeviceEditor> editor_;
     /// What the plugin declares RIGHT NOW, asked rather than remembered.
     /// Used by `prepare` to decide whether reactivating is necessary at all.
     [[nodiscard]] std::vector<std::int32_t> declaredChannels(bool isInput) const;
@@ -380,7 +388,7 @@ public:
     /// Events refused because a queue was full. Non-zero means the capacity
     /// derived at prepare was too small for what arrived (ADR-0056).
     [[nodiscard]] std::int64_t eventsDropped() const noexcept {
-        return events_.dropped() + pendingDropped_;
+        return events_.dropped() + pendingDropped_.load(std::memory_order_relaxed);
     }
 
     /// Events whose frame fell outside the segment they were handed with.
@@ -487,8 +495,11 @@ private:
     /// counted, like every other queue in this project.
     struct PendingParam { clap_id id; double value; };
     std::vector<PendingParam> pending_;
-    std::size_t pendingUsed_ = 0;
-    std::int64_t pendingDropped_ = 0;
+    // One message-thread producer and the audio consumer. prepare/release
+    // change storage only while processing is quiescent.
+    std::atomic<std::size_t> pendingRead_{0}, pendingWrite_{0};
+    std::atomic<std::int64_t> pendingDropped_{0};
+    void flushPendingParams(); // owner thread, processing quiescent, plug-in inactive
 
     /// Audio, allocated at prepare. CLAP wants an array of channel pointers
     /// per bus; the graph hands separate in and out pointers (ADR-0045's port
@@ -674,6 +685,12 @@ public:
     /// plugin simply does less than it was written to do.
     void dispatchMainThread();
 
+    // Callbacks only publish fixed atomic mailboxes; poll() performs GUI work.
+    struct GuiRequests { std::uint64_t size=0; unsigned visibility=0; bool closed=false; bool hints=false; };
+    [[nodiscard]] GuiRequests takeGuiRequests() noexcept;
+    void enableGuiRequests(bool enabled,bool hosted=false) noexcept;
+
+
     /// The plugin this glue serves. Called once, by `ClapHost::makeDevice`,
     /// between `create` and handing the glue to the `ClapDevice` that owns it.
     void registerPlugin(const clap_plugin_t* p);
@@ -689,6 +706,16 @@ public:
     }
 
 private:
+    static void guiHints(const clap_host_t*);
+    static bool guiResize(const clap_host_t*, std::uint32_t, std::uint32_t);
+    static bool guiShow(const clap_host_t*);
+    static bool guiHide(const clap_host_t*);
+    static void guiClosed(const clap_host_t*, bool);
+    clap_host_gui_t guiExt_{};
+    std::atomic<bool> guiEnabled_{false}, guiHosted_{false}, guiClosed_{false}, guiHints_{false};
+    std::atomic<unsigned> guiVisibility_{0};
+    std::atomic<std::uint64_t> guiSize_{0};
+
     static const void* getExtension(const clap_host_t*, const char* id);
     static void latencyChanged(const clap_host_t*);
     static void portsRescan(const clap_host_t*, std::uint32_t flags);
@@ -797,6 +824,7 @@ public:
     /// duplicates (CLAP_PATH may repeat a default). A `.clap` that is a
     /// directory is a macOS bundle: it is a candidate, and it is not entered.
     /// Pure filesystem; nothing is loaded.
+    /// Paths are UTF-8, including on Windows. Refuses callbacks.
     ///
     /// One level was searched until ADR-0098, which is every CLAP on Windows
     /// whose installer uses a vendor folder -- Surge XT's does,
@@ -804,9 +832,10 @@ public:
     [[nodiscard]] static std::vector<std::string> findBundles(
         const std::vector<std::string>& paths);
 
-    /// `findBundles`, then read each bundle's factory. Opening a bundle runs
-    /// its `init`, so a scan is not free and is not a loop to put on a timer.
-    void scan(const std::vector<std::string>& paths);
+    /// Owner-only child discovery with durable quarantine; parent loads no
+    /// libraries. Cancellation/service failure retains the previous catalogue.
+    /// Failures are named in the returned report, never an in-process fallback.
+    scan::Report scan(const std::vector<std::string>& paths, const scan::Config& config = {});
 
     [[nodiscard]] const std::vector<ClapPluginRef>& plugins() const noexcept {
         return found_;

@@ -90,6 +90,7 @@ enum Section : std::int64_t {
     SecTrack = 3,
     SecMarker = 4,
     SecRoute = 5,
+    SecTuning = 7,
     SecRemark = 6,   // only remarks whose anchor is gone are roots (ADR-0139)
 };
 
@@ -126,19 +127,26 @@ std::vector<Meter> metersOf(const std::vector<rows::TimeSignature>& sigs) {
 // ---------------------------------------------------------------------------
 
 std::span<const TableCoverage> coverage() {
-    static constexpr std::array<TableCoverage, 51> kTables{{
+    static constexpr std::array<TableCoverage, 62> kTables{{
         // --- projected ------------------------------------------------------
         {"project", Coverage::Projected, ""},
         {"tempo_map", Coverage::Projected, ""},
         {"time_signature_map", Coverage::Projected, ""},
         {"tracks", Coverage::Projected, ""},
+        {"track_recording_options", Coverage::Projected, "inlined on its track; fixed defaults omitted"},
         {"mixer_strip", Coverage::Projected, "inlined on its track"},
+        {"mixer_pan_settings", Coverage::Projected, "inlined on its strip track (N12)"},
         {"group_summing", Coverage::Projected, "inlined on its group track (ADR-0174)"},
+        {"return_send_taps", Coverage::Projected, "inlined on its return track (ADR-0203 d3)"},
         {"lanes", Coverage::Projected, ""},
         {"clips", Coverage::Projected, ""},
+        {"clip_playback_details", Coverage::Projected, "inlined onto its clip"},
+        {"clip_warp_fade_domains", Coverage::Projected, "retained musical fade clocks on the clip"},
+        {"clip_properties", Coverage::Projected, "Inlined on its clip; NULL inherits."},
         {"audio_clips", Coverage::Projected, "inlined on its clip"},
         {"event_streams", Coverage::Projected, "notes decoded; other stream kinds excluded"},
         {"markers", Coverage::Projected, ""},
+        {"marker_details", Coverage::Projected, "inlined on its marker"},
         {"media_files", Coverage::Projected, "peaks excluded: regenerable, never authoritative"},
         {"routing", Coverage::Projected, ""},
         {"remarks", Coverage::Projected, "a child of the track or clip it is anchored to; a device's on its track (ADR-0139)"},
@@ -153,6 +161,7 @@ std::span<const TableCoverage> coverage() {
         {"session_lock", Coverage::Excluded, "Layer 3"},
         {"controller_maps", Coverage::Excluded, "Layer 3"},
         {"snapshots", Coverage::Excluded, "Layer 3"},
+        {"history_checkpoint", Coverage::Excluded, "Layer 3: replay baseline (ADR-0203 d13)"},
         {"history_snapshots", Coverage::Excluded, "Layer 3: history metadata, like op_branches (ADR-0128)"},
         {"agent_requests", Coverage::Excluded, "Layer 3: log metadata beside a txn, like the ops rows (ADR-0146)"},
         {"op_clients", Coverage::Excluded, "Layer 3: who wrote the log, not the project (ADR-0161)"},
@@ -160,6 +169,8 @@ std::span<const TableCoverage> coverage() {
         {"device_expression_routes", Coverage::Excluded, "devices are not projected yet; the route goes with them (ADR-0146)"},
         {"device_panels", Coverage::Excluded, "devices are not projected yet; the panel goes with them (ADR-0154)"},
         {"device_panel_params", Coverage::Excluded, "devices are not projected yet; the panel goes with them (ADR-0154)"},
+        {"frozen_groups", Coverage::Excluded, "whole-group cache scope and saved record-arm switches"},
+        {"frozen_renders", Coverage::Excluded, "render cache provenance; the track frozen switch and media link are projected"},
         {"adi_meta", Coverage::Excluded, "Layer 0 bookkeeping, not project content"},
 
         // --- excluded pending step 6 ----------------------------------------
@@ -179,15 +190,16 @@ std::span<const TableCoverage> coverage() {
 
         // --- excluded pending their own ops ---------------------------------
         {"automation_lanes", Coverage::Excluded, "no automation op is implemented"},
-        {"automation_data", Coverage::Excluded, "no automation op is implemented"},
+        {"automation_data", Coverage::Excluded, "automation uses the dedicated snapshot; no point text syntax"},
+        {"automation_segment_ranges", Coverage::Excluded, "curve subranges accompany automation data"},
         {"note_expression", Coverage::Excluded, "no expression op is implemented"},
         {"arranger_sections", Coverage::Excluded, "no op writes it"},
         {"arranger_chain", Coverage::Excluded, "no op writes it"},
-        {"key_map", Coverage::Excluded, "no op writes it"},
-        {"tuning_systems", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
-        {"tuning_degrees", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
-        {"key_map_tunings", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
-        {"key_map_degrees", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
+        {"key_map", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
+        {"tuning_systems", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
+        {"tuning_degrees", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
+        {"key_map_tunings", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
+        {"key_map_degrees", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
         {"media_blobs", Coverage::Excluded, "retired and locked since 1.1 (ADR-0136); a 1.0 file's bytes are not projected"},
         {"extensions", Coverage::Excluded, "digest projection not designed"},
     }};
@@ -241,6 +253,41 @@ Tree buildTree(const rows::Model& m) {
             t.nodes[n].attrs.push_back(renderPosition(s.posTicks, meters) + " " +
                                        std::to_string(s.numerator) + "/" +
                                        std::to_string(s.denominator));
+        t.roots.push_back(n);
+    }
+
+    // Tuning definitions are content-labelled nodes; key changes refer to
+    // those nodes, so database identities never leak into the projection.
+    std::unordered_map<std::int64_t,std::size_t> tuningNode;
+    std::map<std::int64_t,std::vector<const rows::TuningDegree*>> degreeRows;
+    for(const auto& degree:m.tuningDegrees)degreeRows[degree.tuningId].push_back(&degree);
+    for(const auto& tuning:m.tunings) {
+        const auto n=addNode(t,"tuning","tuning",tuning.name,{SortKey::integer(SecTuning),SortKey::text(tuning.name),SortKey::text(tuning.source),SortKey::real(tuning.periodCents)});
+        tuningNode[tuning.id]=n;Attrs attributes(t.nodes[n].attrs);
+        attributes.raw("source "+renderLabelToken(tuning.source));attributes.raw("period "+renderF64(tuning.periodCents));attributes.text("description",tuning.description);
+        auto& degrees=degreeRows[tuning.id];
+        std::sort(degrees.begin(),degrees.end(),[](const auto* left,const auto* right){
+            if(left->degree!=right->degree)return left->degree<right->degree;
+            const auto comparison=SortKey::real(left->cents).compare(SortKey::real(right->cents));
+            return comparison!=0?comparison<0:left->name<right->name;
+        });
+        for(const auto* degree:degrees)attributes.raw("degree "+std::to_string(degree->degree)+" cents "+renderF64(degree->cents)+" name "+renderLabelToken(degree->name));
+        t.roots.push_back(n);
+    }
+    std::map<std::int64_t,std::int64_t> keyTuning;
+    for(const auto& reference:m.keyTunings)keyTuning[reference.keyId]=reference.tuningId;
+    std::map<std::int64_t,std::vector<std::int64_t>> keyMembers;
+    for(const auto& member:m.keyDegrees)keyMembers[member.keyId].push_back(member.degree);
+    for(const auto& key:m.keyEvents) {
+        const auto n=addNode(t,"key","key",renderPosition(key.posTicks,meters),{SortKey::integer(SecMap),SortKey::integer(2),SortKey::integer(key.posTicks)});
+        Attrs attributes(t.nodes[n].attrs);attributes.raw("at "+renderPosition(key.posTicks,meters));
+        attributes.raw("root "+std::to_string(key.root));attributes.raw("scale "+renderLabelToken(key.scaleId));attributes.raw("mask "+std::to_string(key.mask));
+        const auto reference=keyTuning.find(key.id);
+        if(reference!=keyTuning.end()) {
+            const auto target=tuningNode.find(reference->second);t.nodes[n].refs.push_back({"tuning",target==tuningNode.end()?Ref::kDangling:target->second,"tuning"});
+            auto& members=keyMembers[key.id];std::sort(members.begin(),members.end());
+            std::string line="degrees";for(const auto degree:members)line+=" "+std::to_string(degree);attributes.raw(std::move(line));
+        }
         t.roots.push_back(n);
     }
 
@@ -335,6 +382,13 @@ Tree buildTree(const rows::Model& m) {
         a.num("monitor", tr.monitorMode, 0);
         a.num("automation", tr.automationMode, 0);
         if (tr.inputRef) a.text("input", *tr.inputRef);
+        a.flag("recQuantizeOff",!tr.recording.recordEnabled);
+        a.text("recGrid",tr.recording.recordGrid,"1/16");
+        a.flag("playQuantize",tr.recording.playEnabled);
+        a.text("playGrid",tr.recording.playGrid,"1/16");
+        a.real("playForgivenessMs",tr.recording.playForgivenessMs,0.0);
+        a.flag("discardMonitoringLatency",!tr.recording.keepMonitoringLatency);
+        if(tr.returnSendTap && tr.returnSendTap->explicitChoice)a.text("sendTap",tr.returnSendTap->preFader?"pre":"post");
 
         if (const auto it = stripOf.find(tr.id); it != stripOf.end()) {
             const rows::MixerStrip& s = *it->second;
@@ -343,6 +397,9 @@ Tree buildTree(const rows::Model& m) {
             a.real("width", s.width, 1.0);
             a.real("inGain", s.inputGainDb, 0.0);
             a.num("panLaw", s.panLaw, 0);
+            a.text("panMode", s.panMode, "stereo");
+            a.real("panLeft", s.panLeft, -1.0);
+            a.real("panRight", s.panRight, 1.0);
             a.num("delay", s.delaySamples, 0);
             a.flag("phaseInvert", s.phaseInvert);
         }
@@ -438,11 +495,27 @@ Tree buildTree(const rows::Model& m) {
         if (c.fadeOutTicks) a.raw("fadeOut " + renderDuration(c.fadeOutTicks));
         a.num("fadeInCurve", c.fadeInCurve, 1);
         a.num("fadeOutCurve", c.fadeOutCurve, 1);
+        if(c.fadeInTension)a.real("fadeInTension",*c.fadeInTension,2.0);
+        if(c.fadeOutTension)a.real("fadeOutTension",*c.fadeOutTension,2.0);
+        if(c.contentOffsetNs)a.raw("contentOffsetNs "+std::to_string(*c.contentOffsetNs));
+        if(c.loopBeginNs)a.raw("loopBeginNs "+std::to_string(*c.loopBeginNs));
+        if(c.loopEndNs)a.raw("loopEndNs "+std::to_string(*c.loopEndNs));
+        if(c.sourceEndNs)a.raw("sourceEndNs "+std::to_string(*c.sourceEndNs));
+        constexpr std::array<const char*,4> fadeClockNames={"fadeInBeginNs","fadeInEndNs","fadeOutBeginNs","fadeOutEndNs"};
+        for(std::size_t i=0;i<4;++i)if(c.fadeClockNs[i])a.raw(std::string(fadeClockNames[i])+" "+std::to_string(*c.fadeClockNs[i]));
+        constexpr std::array<const char*,4> warpFadeNames={"fadeInBeginTicks","fadeInEndTicks","fadeOutBeginTicks","fadeOutEndTicks"};
+        for(std::size_t i=0;i<4;++i)if(c.fadeClockTicks[i])a.raw(std::string(warpFadeNames[i])+" "+std::to_string(*c.fadeClockTicks[i]));
         a.flag("loop", c.loopEnabled);
         if (c.loopStartTicks) a.raw("loopStart " + renderDuration(c.loopStartTicks));
         if (c.loopLenTicks) a.raw("loopLen " + renderDuration(*c.loopLenTicks));
         if (c.contentOffsetTicks)
             a.raw("offset " + renderDuration(c.contentOffsetTicks));
+        if (c.endMarkerTicks) a.raw("endMarker " + renderDuration(*c.endMarkerTicks));
+        if (c.signatureNumerator) a.raw("signature " + std::to_string(*c.signatureNumerator) + "/" +
+                                      std::to_string(c.signatureDenominator.value_or(0)));
+        if (c.scaleRoot) a.raw("scaleRoot " + std::to_string(*c.scaleRoot));
+        if (c.scaleId) a.text("scale", *c.scaleId);
+        if (c.scaleMask) a.raw("scaleMask " + std::to_string(*c.scaleMask));
 
         if (const auto it = audioOf.find(c.id); it != audioOf.end()) {
             const rows::AudioClip& ac = *it->second;
@@ -585,6 +658,9 @@ Tree buildTree(const rows::Model& m) {
         else
             a.raw("at " + std::to_string(k.posNs.value_or(0)) + "ns");
         if (k.lengthTicks) a.raw("len " + renderDuration(*k.lengthTicks));
+        if (k.lengthNs) a.raw("len " + std::to_string(*k.lengthNs) + "ns");
+        a.text("note", k.note);
+        a.text("prompt", k.prompt);
         a.text("kind", k.kind, "position");
         a.num("color", k.color.value_or(-1), -1);
         t.roots.push_back(n);
@@ -603,7 +679,7 @@ Tree buildTree(const rows::Model& m) {
         Attrs a(t.nodes[n].attrs);
         a.real("gain", r.gainDb, 0.0);
         a.real("pan", r.pan, 0.0);
-        a.flag("preFader", r.preFader);
+        a.flag("preFader", r.storedPreFader.value_or(r.preFader));
         a.flag("disabled", !r.enabled);
 
         // A hardware port is not a row and never was (SPEC 6.7). Rendering it
