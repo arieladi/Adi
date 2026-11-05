@@ -213,6 +213,7 @@ add_library(adi_core STATIC
     src/adi/panel.cpp
     src/adi/plugin_registry.cpp
     src/adi/scan_process.cpp
+    src/adi/plugin_scanner.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
@@ -753,9 +754,33 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 add_executable(adi_clap_probe src/juce/clap_probe.cpp)
 target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
 
+add_executable(adi_plugin_scanner src/juce/plugin_scan_host.cpp)
+target_link_libraries(adi_plugin_scanner PRIVATE adi_core adi_warnings)
+add_dependencies(adi_clap_probe adi_plugin_scanner)
+
+foreach(_adi_scan_fixture IN ITEMS adi_scan_clap_fixture adi_scan_clap_static_fixture)
+    add_library(${_adi_scan_fixture} MODULE tests/fixtures/scan_clap.cpp)
+    target_include_directories(${_adi_scan_fixture} SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
+    target_link_libraries(${_adi_scan_fixture} PRIVATE adi_warnings)
+    set_target_properties(${_adi_scan_fixture} PROPERTIES PREFIX "" SUFFIX ".clap")
+endforeach()
+target_compile_definitions(adi_scan_clap_static_fixture PRIVATE ADI_SCAN_STATIC_CRASH=1)
+add_executable(adi_plugin_scanner_tests tests/test_plugin_scanner.cpp)
+target_link_libraries(adi_plugin_scanner_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_plugin_scanner_tests PRIVATE
+    ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>"
+    ADI_SCAN_FIXTURE="$<TARGET_FILE:adi_scan_clap_fixture>"
+    ADI_SCAN_STATIC_FIXTURE="$<TARGET_FILE:adi_scan_clap_static_fixture>")
+add_dependencies(adi_plugin_scanner_tests adi_plugin_scanner adi_scan_clap_fixture adi_scan_clap_static_fixture)
+add_test(NAME adi_plugin_scanner_tests COMMAND adi_plugin_scanner_tests)
+
 add_executable(adi_scan_process_tests tests/test_scan_process.cpp)
 target_link_libraries(adi_scan_process_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_scan_process_tests COMMAND adi_scan_process_tests)
+
+add_executable(adi_scan_quarantine_tests tests/test_scan_quarantine.cpp)
+target_link_libraries(adi_scan_quarantine_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_quarantine_tests COMMAND adi_scan_quarantine_tests)
 
 add_executable(adi_dsp_tests tests/test_dsp.cpp)
 target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
@@ -1167,6 +1192,17 @@ if(ADI_WITH_JUCE)
 
     add_subdirectory("${ADI_JUCE_DIR}" EXCLUDE_FROM_ALL SYSTEM)
 
+    target_link_libraries(adi_plugin_scanner PRIVATE juce::juce_audio_processors_headless)
+    target_compile_definitions(adi_plugin_scanner PRIVATE
+        ADI_SCAN_WITH_VST3=1 JUCE_STANDALONE_APPLICATION=1
+        JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0 JUCE_DISABLE_JUCE_VERSION_PRINTING=1
+        JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_VST=0 JUCE_PLUGINHOST_AU=0
+        JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_ARA=0)
+    get_target_property(_adi_scan_incs juce::juce_audio_processors_headless INTERFACE_INCLUDE_DIRECTORIES)
+    if(_adi_scan_incs)
+        target_include_directories(adi_plugin_scanner SYSTEM PRIVATE ${_adi_scan_incs})
+    endif()
+
     # --- adi_audio_probe ---------------------------------------------------
     # Opens an audio device at a requested block size, reports what it actually
     # got, and closes. No graph, no processing. It exists to prove the
@@ -1205,6 +1241,7 @@ if(ADI_WITH_JUCE)
     # nothing yields a MissingDevice rather than a null (ADR-0011) -- and
     # scans and instantiates only when a plugin is actually there.
     juce_add_console_app(adi_vst3_probe PRODUCT_NAME "adi_vst3_probe")
+    add_dependencies(adi_vst3_probe adi_plugin_scanner)
     target_sources(adi_vst3_probe PRIVATE
         src/juce/vst3_probe.cpp
         tests/test_plugin_editor_juce.cpp
@@ -1358,6 +1395,17 @@ if(ADI_WITH_JUCE)
         endif()
         add_dependencies(adi_vst3_probe adi_test_vst3)
         target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")
+
+        add_executable(adi_vst3_scanner_tests tests/test_vst3_scanner.cpp)
+        target_link_libraries(adi_vst3_scanner_tests PRIVATE adi_core juce::juce_audio_processors_headless adi_warnings)
+        target_compile_definitions(adi_vst3_scanner_tests PRIVATE
+            ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>" ADI_TEST_VST3="${_adi_fixture}"
+            JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
+            JUCE_DISABLE_JUCE_VERSION_PRINTING=1 JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_VST=0
+            JUCE_PLUGINHOST_AU=0 JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_ARA=0)
+        target_include_directories(adi_vst3_scanner_tests SYSTEM PRIVATE ${_adi_scan_incs})
+        add_dependencies(adi_vst3_scanner_tests adi_plugin_scanner adi_test_vst3)
+        add_test(NAME adi_vst3_scanner_tests COMMAND adi_vst3_scanner_tests)
     endif()
 
     # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
@@ -1368,6 +1416,7 @@ if(ADI_WITH_JUCE)
     # is reachable with --fixture on Windows and macOS, the two platforms it
     # is built on.
     juce_add_console_app(adi_play PRODUCT_NAME "adi_play")
+    add_dependencies(adi_play adi_plugin_scanner)
     target_sources(adi_play PRIVATE
         src/juce/play.cpp
         src/juce/juce_device_loader.cpp
@@ -1398,6 +1447,7 @@ if(ADI_WITH_JUCE)
     # Compile the real player into its channel regression test, with its CLI
     # entry point renamed by the test; never open a hardware driver.
     juce_add_console_app(adi_play_render_tests PRODUCT_NAME "adi_play_render_tests")
+    add_dependencies(adi_play_render_tests adi_plugin_scanner)
     target_sources(adi_play_render_tests PRIVATE tests/test_play_render.cpp
         src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/editor_host_component.cpp src/juce/vst3_events.cpp)
     target_compile_features(adi_play_render_tests PRIVATE cxx_std_20)
@@ -1755,3 +1805,21 @@ add_test(NAME adi_send_automation_tests COMMAND adi_send_automation_tests)
 add_executable(adi_midi_memory_tests tests/test_midi_memory.cpp)
 target_link_libraries(adi_midi_memory_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_memory_tests COMMAND adi_midi_memory_tests)
+
+# The scanner is mandatory beside each executable that discovers plug-ins.
+# Always run the copy target when building a consumer: a helper-only change
+# must replace its old copy even when the consumer does not need relinking.
+# TARGET_FILE_DIR is a component expression (CMP0112 NEW), so this introduces
+# no reverse target dependency/cycle. No UI source is modified here.
+if(ADI_WITH_JUCE)
+    foreach(_adi_scan_consumer IN ITEMS adi_vst3_probe adi_play adi_play_render_tests adi_app)
+        if(TARGET ${_adi_scan_consumer})
+            add_custom_target(adi_scanner_beside_${_adi_scan_consumer}
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${_adi_scan_consumer}>"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:adi_plugin_scanner>"
+                    "$<TARGET_FILE_DIR:${_adi_scan_consumer}>/$<TARGET_FILE_NAME:adi_plugin_scanner>"
+                DEPENDS adi_plugin_scanner VERBATIM)
+            add_dependencies(${_adi_scan_consumer} adi_scanner_beside_${_adi_scan_consumer})
+        endif()
+    endforeach()
+endif()
