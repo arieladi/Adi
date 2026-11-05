@@ -37,11 +37,19 @@ on:
     branches: [main, master]
     paths:
       - 'adi_daw/**'
+      # the lanes' logs and notes change nothing a leg builds or checks, except the
+      # ADR reservation table that validate_schema.py reads (check 8)
+      - '!adi_daw/collab/**'
+      - 'adi_daw/collab/README.md'
       - '.github/workflows/ci.yml'
       - '.github/scripts/check_spec_layout.py'
   pull_request:
     paths:
       - 'adi_daw/**'
+      # the lanes' logs and notes change nothing a leg builds or checks, except the
+      # ADR reservation table that validate_schema.py reads (check 8)
+      - '!adi_daw/collab/**'
+      - 'adi_daw/collab/README.md'
       - '.github/workflows/ci.yml'
       - '.github/scripts/check_spec_layout.py'
   workflow_dispatch:
