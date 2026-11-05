@@ -12,6 +12,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-05 — Context checkpoint: progressive decode integration in flight, seat continues
+
+**Continue this item; no stop or PR-ready claim.** Worktree `/workspace/wt-engine-progressive-decode`, branch `engine/progressive-decode`, clean prerequisite merge `e41d0b4d` combines independent PCM `506f4274` and AAC `26d7a64c` (depth two, no main). The current integration edits are local pending their final gate: bounded two-worker/32-job hash-coalesced decode service, private flushed prefixes and complete no-clobber cache publication, native AAC PCM sink plus retained WAV wrapper, unwarped header-only native import, and actual ClipPlayback/Session page consumption before full conversion. Warp and unknown exact header length retain full preparation; no UI/schema/opcode edits. ENGINE-PROGRESSIVE-DECODE.md states ownership, source stability, cancellation, disk/pin/queue limits and unsupported claims.
+
+**Evidence so far, not the final gate:** focused GCC initially 89 clean checks; current focused Clang19 production units/test pass **91** with actual conversion/Wshadow flags against validated GCC cold dependencies. Real Vorbis and native FFmpeg61 AAC Sessions play exact PCM at 32/64 while held incomplete; separate full-cache reference never warms the actual target. 44.1 kHz conversion/right context/source offset/loop seeks match complete WAV. GCC TSAN instrumented job/cache/decoder C+CPP/WAV/hash/publication stress: **2 checks, zero races**, eight jobs/sixteen readers/live cache maintenance. Ten actual GCC Ninja Wshadow syntax checks pass. Compiled plants are still running under `/workspace/engine-review/progressive-review.py`; artifacts/logs `/workspace/engine-review/progressive-review` and `/tmp/progressive-*`.
+
+**Gate correction in progress:** initial full build succeeds; its test_all run identifies the legacy pin assertion immediately after load (the load is now intentionally asynchronous). Update it to assert the pin after complete publication. Also release completed pins synchronously with the last public lease rather than the worker's brief bookkeeping reference; permit fresh retry while an older generation retains a terminal cancelled/failed lease. Those latest changes are already in the 91-check Clang/TSAN evidence but need the final rebuilt GCC full gate. Never claim the older 89-check full-run pin failure as green. Wait for external fault-variant links to finish before relinking their owning Ninja core archive; then rebuild and run all rows/validators. Win opens PRs after the gate/push entry. Next take the analysed folder/library Warp data, Link and the remaining brief queue; model weight access/Drive backend handover remain named open from prior entries. This checkpoint is a log entry, not a seat stop: continue in the same turn through compaction.
+
+---
+
 ## 2026-11-04 — Native PCM pull streams gated; taking progressive decode integration
 
 **PR requested:** head `engine/pcm-decode-stream` at **`506f427418b00c8f52ade37d7c159a30520cc5e7`**, base `engine/log` (`58ed0af4`). Title: **Expose bounded owner-worker PCM decoding streams**. Independent of `engine/aac-import`; no feature prerequisite. Win opens the PR; main stays untouched.
