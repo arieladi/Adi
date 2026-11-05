@@ -794,6 +794,15 @@ cannot preserve every arbitrary captured double; persistence must name/refuse
 that limitation rather than silently narrow it. No schema/new opcode or measured
 Live parity claim is introduced by the RAM memory.
 
+Optional graph workers are runtime scheduling, not project editing.
+Graph/GraphHost/Session::setParallelRendering takes explicit measured frame and
+eligible-width thresholds, with optional owner-created driver initialization.
+Only independently safe nodes opt in; callback-affine providers stay serial.
+Private render scratch/counters, fixed consumer sums and completion barriers
+preserve existing audio/event contracts in both widths. See
+`ENGINE-GRAPH-WORKERS.md` for lifecycle, FP environment, failure and benchmark
+contracts. No project opcode/schema/blob-layout change.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
