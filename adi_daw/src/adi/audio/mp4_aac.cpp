@@ -14,7 +14,10 @@ using Bytes = std::vector<std::uint8_t>;
 using View = std::span<const std::uint8_t>;
 constexpr std::uint64_t maxPackets = 1000000, maxMetadata = 64 * 1024 * 1024;
 [[noreturn]] void bad(const char *why) {
-    throw std::runtime_error(std::string("AAC MP4: ") + why);
+    throw AacTransportError(AacTransportProblem::Corrupt,why);
+}
+[[noreturn]] void unsupported(const char* why) {
+    throw AacTransportError(AacTransportProblem::Unsupported,why);
 }
 std::uint64_t add(std::uint64_t a, std::uint64_t b) {
     if (b > std::numeric_limits<std::uint64_t>::max() - a)
@@ -155,7 +158,7 @@ Bytes configOf(View esds) {
         bad("not MPEG-4 AAC audio");
     at = 13;
     auto cfg = descriptor(dec, at, 5);
-    (void)aacSampleRate(cfg);
+    (void)aacConfig(cfg);
     return {cfg.begin(), cfg.end()};
 }
 void versionZero(View v) {
@@ -200,7 +203,7 @@ Bytes sampleDescription(const AacTrack &t) {
     Bytes entry(6, 0);
     put(entry, 1, 2);
     zeros(entry, 8);
-    put(entry, 2, 2);
+    put(entry, aacConfig(t.config).channels, 2);
     put(entry, 16, 2);
     zeros(entry, 4);
     put(entry, std::uint64_t{t.sampleRate} << 16, 4);
@@ -215,7 +218,7 @@ void matrix(Bytes &b) {
         put(b, v, 4);
 }
 } // namespace
-std::uint32_t aacSampleRate(std::span<const std::uint8_t> config) {
+AacConfig aacConfig(std::span<const std::uint8_t> config) {
     if (config.size() < 2 || config.size() > 64)
         bad("invalid AudioSpecificConfig size");
     std::size_t bit = 0;
@@ -230,20 +233,26 @@ std::uint32_t aacSampleRate(std::span<const std::uint8_t> config) {
         return v;
     };
     if (bits(5) != 2)
-        bad("only AAC-LC is supported");
+        unsupported("only AAC-LC is supported");
     const auto index = bits(4);
     constexpr std::array<std::uint32_t, 13> rates{96000, 88200, 64000, 48000, 44100, 32000, 24000,
                                                   22050, 16000, 12000, 11025, 8000,  7350};
     const auto rate = index == 15 ? bits(24) : (index < rates.size() ? rates[index] : 0);
-    if (!rate || rate > 65535 || bits(4) != 2 || bits(1) != 0 || bits(1) != 0 || bits(1) != 0)
-        bad("unsupported AAC rate, layout or frame mode");
+    const auto channels=bits(4);
+    if (!rate || rate > 65535 || (channels!=1 && channels!=2) || bits(1) != 0 || bits(1) != 0 || bits(1) != 0)
+        unsupported("unsupported AAC rate, layout or frame mode");
     if (config.size() * 8 - bit >= 17 && bits(11) == 0x2b7) {
         if (bits(5) != 5 || bits(1) != 0)
-            bad("HE-AAC sync extension is unsupported");
+            unsupported("HE-AAC sync extension is unsupported");
     }
-    return rate;
+    return {rate,static_cast<std::uint16_t>(channels)};
 }
-AacMovie readAacMovie(const std::filesystem::path &path) {
+std::uint32_t aacSampleRate(std::span<const std::uint8_t> config) {
+    const auto info=aacConfig(config);
+    if(info.channels!=2)unsupported("NI AAC requires stereo");
+    return info.sampleRate;
+}
+static AacMovie readMovie(const std::filesystem::path &path,bool stereoAligned) {
     std::ifstream file(path, std::ios::binary);
     if (!file)
         bad("cannot open file");
@@ -284,13 +293,13 @@ AacMovie readAacMovie(const std::filesystem::path &path) {
             mdats.emplace_back(at + h, at + n);
         }
         if (type == "moof")
-            bad("fragmented MP4 is unsupported");
+            unsupported("fragmented MP4 is unsupported");
         at += n;
     }
     if (!gotMoov || mdats.empty())
         bad("missing movie/media data");
     if (!one(moov, "mvex", false).empty())
-        bad("fragmented MP4 is unsupported");
+        unsupported("fragmented MP4 is unsupported");
     const auto movieClock = clockOf(one(moov, "mvhd")).first;
     if (!movieClock)
         bad("zero movie timescale");
@@ -319,18 +328,20 @@ AacMovie readAacMovie(const std::filesystem::path &path) {
                 bad("multiple sample descriptions");
             const auto entries = boxes(sub(stsd, 8, stsd.size() - 8));
             if (entries.size() != 1 || entries[0].type != "mp4a")
-                bad("not unencrypted mp4a");
+                unsupported("not unencrypted mp4a");
             const auto entry = entries[0].data;
-            if (be(entry, 6, 2) != 1 || be(entry, 8, 2) != 0 || be(entry, 16, 2) != 2)
-                bad("unsupported sample entry");
+            if (be(entry, 6, 2) != 1 || be(entry, 8, 2) != 0)
+                unsupported("unsupported sample entry");
             auto config = configOf(one(sub(entry, 28, entry.size() >= 28 ? entry.size() - 28 : 0), "esds"));
             for (const auto &child : boxes(sub(entry, 28, entry.size() - 28)))
                 if (child.type == "sinf")
-                    bad("encrypted audio is unsupported");
+                    unsupported("encrypted audio is unsupported");
             for (const auto &child : boxes(stbl))
                 if (child.type == "ctts")
-                    bad("AAC composition offsets are unsupported");
-            const auto rate = aacSampleRate(config);
+                    unsupported("AAC composition offsets are unsupported");
+            const auto info=aacConfig(config);const auto rate=info.sampleRate;
+            if(be(entry,16,2)!=info.channels)bad("sample entry channel mismatch");
+            if(stereoAligned && info.channels!=2)unsupported("NI AAC requires stereo");
             if (be(entry, 24, 4) != (std::uint64_t{rate} << 16))
                 bad("sample entry rate mismatch");
             auto stsz = one(stbl, "stsz");
@@ -431,25 +442,55 @@ AacMovie readAacMovie(const std::filesystem::path &path) {
             }
             if (!track.frames || add(track.frames, track.priming) > count * 1024)
                 bad("edit exceeds decoded audio");
-            if (!movie.tracks.empty() &&
+            if (stereoAligned && !movie.tracks.empty() &&
                 (track.sampleRate != movie.tracks[0].sampleRate || track.config != movie.tracks[0].config ||
                  track.frames != movie.tracks[0].frames))
                 bad("audio tracks have different codecs, rates or durations");
             movie.tracks.push_back(std::move(track));
         }
     if (movie.tracks.empty())
-        bad("no AAC audio");
+        throw AacTransportError(AacTransportProblem::NoAudio,"no audio track");
     return movie;
 }
-void writeAacMovie(const std::filesystem::path &path, std::span<const AacTrack> tracks,
-                   const std::string &manifest, const std::function<void()> &checkpoint) {
+AacMovie readAacMovie(const std::filesystem::path& path){return readMovie(path,true);}
+AacMovie readAacAudioMovie(const std::filesystem::path& path){return readMovie(path,false);}
+AacTrack readAdts(const std::filesystem::path& path) {
+    std::ifstream input(path,std::ios::binary);
+    if(!input)bad("cannot open ADTS file");
+    const auto bytes=std::filesystem::file_size(path);AacTrack result;result.file=path;
+    for(std::uint64_t at=0;at<bytes;) {
+        if(result.packets.size()>=maxPackets)unsupported("excessive ADTS packet count");
+        if(bytes-at<7)bad("truncated ADTS header");
+        const auto h=read(input,at,7);
+        if(h[0]!=0xff || (h[1]&0xf6)!=0xf0)bad("invalid ADTS sync/layer");
+        if((h[2]>>6)!=1 || (h[6]&3)!=0)unsupported("ADTS requires one AAC-LC access unit per frame");
+        const auto index=(h[2]>>2)&15U;
+        if(index>=13)unsupported("ADTS requires a standard sample-rate index");
+        const auto channels=((h[2]&1U)<<2)|(static_cast<std::uint32_t>(h[3])>>6);
+        const Bytes config{static_cast<std::uint8_t>(0x10U|(index>>1)),
+                           static_cast<std::uint8_t>(((index&1U)<<7)|(channels<<3))};
+        const auto info=aacConfig(config);
+        if(result.config.empty()){result.config=config;result.sampleRate=info.sampleRate;}
+        else if(result.config!=config)unsupported("ADTS configuration changes within the file");
+        const auto length=((h[3]&3U)<<11)|(static_cast<std::uint32_t>(h[4])<<3)|
+            (static_cast<std::uint32_t>(h[5])>>5);
+        const std::uint32_t header=(h[1]&1U)?7U:9U;
+        if(length<=header || length>bytes-at)bad("truncated/empty ADTS packet");
+        result.packets.push_back({at+header,length-header});at+=length;
+    }
+    if(result.packets.empty())bad("no ADTS audio");
+    result.frames=result.packets.size()*1024;return result;
+}
+static void writeMovie(const std::filesystem::path &path, std::span<const AacTrack> tracks,
+                   const std::string &manifest, const std::function<void()> &checkpoint,bool stereo) {
     if (tracks.empty() || tracks.size() > 5 || manifest.size() > 1024 * 1024)
         bad("invalid output track/manifest count");
     const auto rate = tracks[0].sampleRate;
     const auto frames = tracks[0].frames;
     std::uint64_t payload = 0;
     for (const auto &t : tracks) {
-        if (t.sampleRate != rate || t.frames != frames || !frames || aacSampleRate(t.config) != rate ||
+        const auto info=aacConfig(t.config);
+        if (t.sampleRate != rate || t.frames != frames || !frames || info.sampleRate != rate || (stereo && info.channels!=2) ||
             t.config != tracks[0].config || t.packets.empty() || t.packets.size() > maxPackets ||
             add(t.priming, frames) > t.packets.size() * 1024)
             bad("incompatible output tracks");
@@ -605,5 +646,12 @@ void writeAacMovie(const std::filesystem::path &path, std::span<const AacTrack> 
     out.close();
     if (!out)
         bad("close failed");
+}
+void writeAacMovie(const std::filesystem::path& path,std::span<const AacTrack> tracks,
+                   const std::string& manifest,const std::function<void()>& checkpoint) {
+    writeMovie(path,tracks,manifest,checkpoint,true);
+}
+void writeAacAudioMovie(const std::filesystem::path& path,const AacTrack& track,const std::function<void()>& checkpoint) {
+    writeMovie(path,std::span<const AacTrack>(&track,1),{},checkpoint,false);
 }
 } // namespace adi::audio

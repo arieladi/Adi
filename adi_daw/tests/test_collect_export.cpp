@@ -262,6 +262,31 @@ void exportHistory() {
     StoreError error{};auto copy=Store::open(unpacked/"song.adi",error);
     check(copy && History(*copy).redo().ok && resolves(*copy,7),"ZIP's redo restores media without access to original files");
 }
+// On unix SQLite names a project by its resolved path (macOS's temporary folder
+// /var/... is a link to /private/var/...) and ".." climbs physical parents. A
+// link shallower than its target reproduces that on any unix system: paths
+// rebased against the link's spelling climb too few levels. (Windows keeps the
+// link's spelling and resolves ".." lexically, so there the link is harmless.)
+void linkedOutputFolder() {
+    Fixture f;f.add("media/linked.bin","linked bytes",9);
+    const auto deep=f.temp.path()/"deep"/"er",shortcut=f.temp.path()/"shortcut";fs::create_directories(deep);
+    std::error_code ec;fs::create_directory_symlink(deep,shortcut,ec);
+    if(ec){
+#if defined(_WIN32)
+        std::printf("SKIP folder links unavailable: %s\n",ec.message().c_str());
+#else
+        std::printf("folder link diagnostic: %s\n",ec.message().c_str());
+        check(false,"the test folder takes a directory symlink");
+#endif
+        return;
+    }
+    const auto exported=media::collectExport(f.store->path(),shortcut/"linked.zip");
+    if(!exported.ok)std::printf("linked export diagnostic: %s\n",exported.error.c_str());
+    check(exported.ok && fs::exists(deep/"linked.zip"),"Collect and Export into a folder reached through a symlink");
+    check(f.store->saveCopy(shortcut/"Linked.adi").ok,"Save a Copy into a folder reached through a symlink");
+    StoreError error{};auto copy=Store::open(shortcut/"Linked.adi",error,true);
+    check(copy && resolves(*copy,9),"a copy saved through a symlinked folder resolves its media");
+}
 void legacy(Fixture& f, bool upgraded, bool badSecond = false) {
     auto& db = f.store->db();
     db.exec("DROP TRIGGER media_never_embedded_insert; DROP TRIGGER media_never_embedded_update; DROP TRIGGER media_blobs_forbidden;");
@@ -343,7 +368,7 @@ void rollbackAndCli() {
 }
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    try { publication(); collection(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
+    try { publication(); collection(); collectActiveAndHistory(); collectionRefusals(); collectRelink(); exportHistory(); linkedOutputFolder(); extraction(false); extraction(true); resolution(); rollbackAndCli(); }
     catch (const std::exception& e) { check(false, e.what()); }
     std::printf("%s -- %d checks, %d failure(s)\n", failures ? "FAIL" : "PASS", checks, failures);
     return failures ? 1 : 0;

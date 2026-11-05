@@ -4,6 +4,8 @@
 #include "adi/engine/clip_fade.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/audio/progressive_decode.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -58,6 +60,7 @@ struct Page {
     std::atomic<std::int64_t> number{-1};
     std::vector<float> data;
 };
+struct PrefixPending {};
 struct Clip {
     std::int64_t track = 0, start = 0, end = 0, offset = 0, length = 0;
     std::int64_t loopBegin = 0, loopLength = 0, fadeIn = 0, fadeOut = 0, playEnd = 0;
@@ -74,6 +77,8 @@ struct Clip {
     fs::path path;
     fs::path pinned; // the decoded copy this clip holds in ADI's cache, if any (ADR-0156)
     std::shared_ptr<const audio::PreparedWarp> warped;
+    std::shared_ptr<audio::ProgressiveFile> progressive;
+    bool failed = false; // page worker only
     std::unique_ptr<audio::WavReader> reader; // touched ONLY by worker after construction
     // The pin goes back with the clip. Every rebuild builds new clips and pins
     // the decoded copy again, so without this a session's decoded files stayed
@@ -178,17 +183,24 @@ struct Clip {
         }
         return nullptr;
     }
+    void readSource(std::uint64_t first,float* out,std::uint32_t count) {
+        if(progressive) {
+            const auto result=progressive->read(first,std::span(out,static_cast<std::size_t>(count)*channels));
+            if(result==audio::ProgressiveRead::Pending)throw PrefixPending{};
+            if(result!=audio::ProgressiveRead::Frames)throw std::runtime_error("progressive source failed: "+progressive->error());
+        }else {
+            reader->seek(first);
+            if(reader->read(out,count)!=count)throw std::runtime_error("short WAV source read");
+        }
+    }
     std::vector<float> renderRange(std::int64_t first, std::int64_t count, std::uint32_t currentRate) {
         if (currentRate == sourceRate) {
             std::vector<float> buf(static_cast<std::size_t>(count)*channels, 0.0f);
             const auto readBegin = std::max<std::int64_t>(0, first);
             const auto readEnd = std::min<std::int64_t>(static_cast<std::int64_t>(sourceLength), first + count);
             if (readEnd > readBegin) {
-                reader->seek(sourceStart + static_cast<std::uint64_t>(readBegin));
                 auto* dst = buf.data() + static_cast<std::size_t>(readBegin - first) * channels;
-                if (reader->read(dst, static_cast<std::uint32_t>(readEnd - readBegin)) != readEnd - readBegin) {
-                    throw std::runtime_error("short conversion read");
-                }
+                readSource(sourceStart+static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
             }
             return buf;
         }
@@ -228,8 +240,7 @@ struct Clip {
         std::fill(p.data.begin(),p.data.end(),0.0f);
         const auto count=std::min(pageFrames,length-first);
         if (rate==sourceRate) {
-            reader->seek(sourceStart+static_cast<std::uint64_t>(first));
-            if (reader->read(p.data.data(),static_cast<std::uint32_t>(count))!=count) throw std::runtime_error("short WAV read");
+            readSource(sourceStart+static_cast<std::uint64_t>(first),p.data.data(),static_cast<std::uint32_t>(count));
         } else if (static_cast<double>(rate) / sourceRate > 256.0) {
             std::vector<float> res = renderRange(first, count, rate);
             std::copy_n(res.begin(), static_cast<std::size_t>(count)*channels, p.data.begin());
@@ -250,9 +261,8 @@ struct Clip {
             const auto readBegin=std::max<std::int64_t>(0,begin);
             const auto readEnd=std::min<std::int64_t>(static_cast<std::int64_t>(sourceLength),begin+inputCount);
             if (readEnd>readBegin) {
-                reader->seek(sourceStart+static_cast<std::uint64_t>(readBegin));
                 auto* dst=input.data()+static_cast<std::size_t>(readBegin-begin)*channels;
-                if(reader->read(dst,static_cast<std::uint32_t>(readEnd-readBegin))!=readEnd-readBegin) throw std::runtime_error("short conversion read");
+                readSource(sourceStart+static_cast<std::uint64_t>(readBegin),dst,static_cast<std::uint32_t>(readEnd-readBegin));
             }
             SRC_DATA data{};
             data.data_in=input.data(); data.data_out=output.data();
@@ -266,6 +276,13 @@ struct Clip {
         p.number=number;
     }
     bool service() {
+        if(failed)return false;
+        if(progressive) {
+            const auto status=progressive->snapshot().status;
+            if(status==audio::ProgressiveStatus::Failed || status==audio::ProgressiveStatus::Cancelled) {
+                failed=true;errors.fetch_add(1,std::memory_order_relaxed);return false;
+            }
+        }
         std::array<std::int64_t,slots> w;
         const auto seq=requestSeq.load(std::memory_order_seq_cst);
         if ((seq&1u)!=0) return false;
@@ -288,7 +305,8 @@ struct Clip {
                     p.state.store(2,std::memory_order_release); continue;
                 }
                 try { fill(p,number); }
-                catch(...) { errors.fetch_add(1,std::memory_order_relaxed); p.number=-1; }
+                catch(const PrefixPending&) { p.number=-1;p.state.store(0,std::memory_order_release);break; }
+                catch(...) { failed=true;errors.fetch_add(1,std::memory_order_relaxed); p.number=-1; }
                 p.state.store(p.number>=0?2:0,std::memory_order_release);
                 worked=true; break;
             }
@@ -383,7 +401,7 @@ struct ClipPlayback::Impl {
     ~Impl() { worker.request_stop(); if(worker.joinable()) worker.join(); }
 };
 ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport& transport,
-                           double rate,std::int32_t channels,std::int32_t maxFrames)
+                           double rate,std::int32_t channels,std::int32_t maxFrames, audio::ProgressiveDecoder* decoder)
     :impl_(std::make_shared<Impl>(transport,maxFrames)) {
     if(!project) return;
     if(!std::isfinite(rate) || rate<44100 || rate>768000 || rate!=std::floor(rate) || channels<1 || channels>64 || maxFrames<1 || maxFrames>4096)
@@ -410,15 +428,33 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
             if(media->relPath) clip->path=project->folder/utf8Path(*media->relPath);
             else if(auto h=project->hints.find(media->id);h!=project->hints.end()) clip->path=h->second;
             else throw std::runtime_error("no media path; silent");
-            // WavReader sniffs RIFF/RF64/BW64; no decoder on the callback.
-            // Any other format is decoded here, off it, into the cache (ADR-0156).
-            const auto file=audio::playableFile(clip->path);
-            if(file!=clip->path) clip->pinned=file; // pinned by the cache; released in ~Clip
-            clip->reader=std::make_unique<audio::WavReader>(file);
-            clip->channels=clip->reader->channels(); clip->sourceRate=clip->reader->sampleRate(); clip->rate=static_cast<std::uint32_t>(rate);
-            if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000) throw std::runtime_error("source format outside supported bounds; silent");
-
-            if(a->srcStartFrames<0 || a->srcLenFrames<=0 || static_cast<std::uint64_t>(a->srcStartFrames)>clip->reader->frames() || static_cast<std::uint64_t>(a->srcLenFrames)>clip->reader->frames()-static_cast<std::uint64_t>(a->srcStartFrames)) throw std::runtime_error("source window outside WAV; silent");
+            // Direct WAV remains unchanged. Plain compressed clips consume a
+            // shared worker's flushed prefixes; Warp still needs its complete
+            // offline render and unknown-length sources retain the full path.
+            fs::path file=clip->path;
+            std::uint64_t sourceFrames=0;
+            try {clip->reader=std::make_unique<audio::WavReader>(file);}catch(const std::exception&){}
+            if(!clip->reader && !a->warpEnabled) {
+                const auto info=audio::inspectPcm(clip->path);
+                if(info.frames && *info.frames) {
+                    auto& service=decoder?*decoder:audio::defaultProgressiveDecoder();
+                    clip->progressive=service.open(clip->path);
+                    clip->channels=static_cast<std::uint16_t>(clip->progressive->info().channels);
+                    clip->sourceRate=clip->progressive->info().sampleRate;
+                    sourceFrames=*clip->progressive->info().frames;
+                }
+            }
+            if(!clip->reader && !clip->progressive) {
+                file=audio::playableFile(clip->path);
+                if(file!=clip->path)clip->pinned=file;
+                clip->reader=std::make_unique<audio::WavReader>(file);
+            }
+            if(clip->reader) {
+                clip->channels=clip->reader->channels();clip->sourceRate=clip->reader->sampleRate();sourceFrames=clip->reader->frames();
+            }
+            clip->rate=static_cast<std::uint32_t>(rate);
+            if(clip->channels>64 || clip->sourceRate<1 || clip->sourceRate>768000)throw std::runtime_error("source format outside supported bounds; silent");
+            if(a->srcStartFrames<0 || a->srcLenFrames<=0 || static_cast<std::uint64_t>(a->srcStartFrames)>sourceFrames || static_cast<std::uint64_t>(a->srcLenFrames)>sourceFrames-static_cast<std::uint64_t>(a->srcStartFrames))throw std::runtime_error("source window outside audio; silent");
             clip->pageFrames=static_cast<std::int64_t>(std::ceil(8192.0*rate/48000.0));
             clip->sourceStart=static_cast<std::uint64_t>(a->srcStartFrames); clip->sourceLength=static_cast<std::uint64_t>(a->srcLenFrames);
             clip->length=samples(static_cast<double>(clip->sourceLength)/clip->sourceRate,rate);
@@ -536,11 +572,22 @@ const std::vector<std::string>& ClipPlayback::problems() const noexcept { return
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
 std::uint32_t ClipPlayback::underrunSamples() const noexcept { std::uint32_t n=0;for(const auto& c:impl_->clips)n+=c->underruns.load();return n; }
 std::uint32_t ClipPlayback::readErrors() const noexcept { std::uint32_t n=0;for(const auto& c:impl_->clips)n+=c->errors.load();return n; }
+std::vector<std::string> ClipPlayback::decodeProblems() const {
+    if(audio::onAudioThread)return {};
+    std::vector<std::string> result;
+    for(const auto& clip:impl_->clips)if(clip->progressive) {
+        const auto status=clip->progressive->snapshot().status;
+        if(status==audio::ProgressiveStatus::Failed || status==audio::ProgressiveStatus::Cancelled)
+            result.push_back(clip->progressive->error());
+    }
+    return result;
+}
 bool ClipPlayback::prime(std::chrono::milliseconds timeout) {
     const auto until=std::chrono::steady_clock::now()+timeout;
     for(auto& c:impl_->clips)c->request(c->wanted(impl_->transport,impl_->maxFrames));
     do {
         bool ready=true;
+        for(const auto& c:impl_->clips)if(c->errors.load(std::memory_order_relaxed))return false;
         for(auto& c:impl_->clips) for(const auto n:c->wanted(impl_->transport,impl_->maxFrames)) {
             if(n<0)continue;
             if(auto* p=c->acquire(n))p->state.store(2,std::memory_order_release);else ready=false;
