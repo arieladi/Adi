@@ -23,7 +23,10 @@ void put(std::vector<std::byte>& data,std::size_t at,std::uint64_t value,unsigne
 std::uint64_t get(std::span<const std::byte> data,std::size_t at,unsigned width){std::uint64_t value=0;for(unsigned i=0;i<width;++i)value|=static_cast<std::uint64_t>(std::to_integer<unsigned>(data[at+i]))<<(8*i);return value;}
 void text(std::vector<std::byte>& data,std::size_t at,const std::string& value){for(std::size_t i=0;i<value.size();++i)data[at+i]=static_cast<std::byte>(value[i]);}
 std::string text(std::span<const std::byte> data,std::size_t at,std::size_t count){std::string result(count,' ');for(std::size_t i=0;i<count;++i)result[i]=static_cast<char>(data[at+i]);return result;}
-AnalysisCacheResult failure(AnalysisCacheProblem p,std::string error={}){return {p,std::move(error),{}};}
+// No defaulted message: it would construct and move a second string before the
+// callback refusals return (an allocation under MSVC's Debug iterator proxies).
+AnalysisCacheResult failure(AnalysisCacheProblem p){return {p,{},{}};}
+AnalysisCacheResult failure(AnalysisCacheProblem p,std::string error){return {p,std::move(error),{}};}
 AnalysisCacheResult readFile(const fs::path& file,const AnalysisIdentity& id,std::stop_token stop) {
     if(stop.stop_requested())return failure(AnalysisCacheProblem::Cancelled);
     std::error_code ec;const auto status=fs::symlink_status(file,ec);

@@ -19,7 +19,10 @@
 namespace adi::media {
 namespace {
 constexpr std::size_t headerSize=80,maxBytes=headerSize+8*kMaxPeakValues;
-PeakResult failed(PeakProblem problem,std::string detail={}){return {problem,std::move(detail),{}};}
+// No defaulted detail: it would construct and move a second string before the
+// callback refusals return (an allocation under MSVC's Debug iterator proxies).
+PeakResult failed(PeakProblem problem){return {problem,{},{}};}
+PeakResult failed(PeakProblem problem,std::string detail){return {problem,std::move(detail),{}};}
 PeakResult success(MediaPeaks data){return {PeakProblem::none,{},std::move(data)};}
 int hex(char c){return c>='0' && c<='9'?c-'0':c>='a' && c<='f'?c-'a'+10:-1;}
 bool validHash(const std::string& hash){return hash.size()==64 && std::all_of(hash.begin(),hash.end(),[](char c){return hex(c)>=0;});}
