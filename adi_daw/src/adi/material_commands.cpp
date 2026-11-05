@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/material_commands.hpp"
+#include "adi/sample_defaults.hpp"
+#include "adi/library/index.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/audio/transients.hpp"
 #include "adi/audio/decode.hpp"
 #include "adi/audio/io_audit.hpp"
@@ -90,6 +93,12 @@ void snapshot(Store& store,const fs::path& target) {
 }
 }
 MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate) {
+    return prepareImportAudio(store,options,referenceRate,nullptr);
+}
+MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,library::Index* index) {
+    // The callback refusal is a prvalue built in the caller's slot: guaranteed
+    // elision, not optional NRVO, so it costs exactly one empty result.
+    if(audio::onAudioThread)return {};
     MaterialEdit result;
     if(audio::onAudioThread)return result;
     try {
@@ -112,9 +121,20 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         if(!imported.ok)throw std::runtime_error(imported.error);
         if(!imported.audio)throw std::runtime_error("import prompt needs a supported audio file; video playback is not built");
         const auto& info=*imported.audio;
+        std::optional<library::SampleSettings> saved;
+        if(index) {
+            std::string hash;
+            if(mediaRequest.opType=="media.import")hash=mediaRequest.payload.at("row").at("hash_blake3").get<std::string>();
+            else {SQLite::Statement key(store.db(),"SELECT hash_blake3 FROM media_files WHERE id=?");key.bind(1,imported.mediaId);if(!key.executeStep())throw std::runtime_error("imported source identity is missing");hash=key.getColumn(0).getString();}
+            const auto loaded=index->sampleSettings(hash);
+            if(loaded) {
+                if(loaded.data->sampleRate!=info.sampleRate || loaded.data->channels!=info.channels || loaded.data->frames!=static_cast<std::uint64_t>(info.frames))throw std::runtime_error("saved sample defaults do not match source dimensions");
+                saved=*loaded.data;
+            }else if(loaded.problem!=library::SampleSettingsProblem::Missing)throw std::runtime_error("cannot recall authored sample defaults: "+loaded.error);
+        }
         std::optional<audio::AutoWarpResult> warped;
         std::optional<audio::WarpMapWrite> markers;
-        if(options.warp) {
+        if(options.warp && !saved) {
             if(referenceRate<44100 || referenceRate!=std::floor(referenceRate) || info.sampleRate<8000 ||
                info.sampleRate>768000 || info.channels<1 || info.channels>64 || info.frames<=0 || info.frames>0x7fffffff ||
                !audio::warpModeName(options.warpMode))throw std::runtime_error("audio source is outside supported warp bounds");
@@ -197,6 +217,7 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         } else {playbackValues["content_offset_ns"]=0;playbackValues["source_end_ns"]=duration;}
         image["children"]["audio_clips"]=Payload::array({edit::defaultRow(store.db(),"audio_clips",sourceValues)});
         image["children"]["clip_playback_details"]=Payload::array({edit::defaultRow(store.db(),"clip_playback_details",playbackValues)});
+        if(saved)applySampleDefaults(store,image,*saved,referenceRate);
         edit::RowEdits plan(store.db());createImage(plan,image);
         OpRequest request;request.opType="clip.duplicate";request.payload={{"id",options.clipId},{"changes",plan.changes()}};
         request.label="Import Audio";request.targetKind="clip";request.targetId=options.clipId;result.edit.requests.push_back(std::move(request));

@@ -357,7 +357,7 @@ target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cp
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
   src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
-  src/adi/material_commands.cpp src/adi/warp_commands.cpp)
+  src/adi/material_commands.cpp src/adi/sample_defaults.cpp src/adi/warp_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(adi_core PUBLIC
     ADI_VERSION_STRING="${PROJECT_VERSION}")
@@ -1582,6 +1582,10 @@ target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample
 add_executable(adi_sample_settings_tests tests/test_sample_settings.cpp)
 target_link_libraries(adi_sample_settings_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_sample_settings_tests COMMAND adi_sample_settings_tests)
+add_executable(adi_sample_defaults_tests tests/test_sample_defaults.cpp)
+target_link_libraries(adi_sample_defaults_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_sample_defaults_tests COMMAND adi_sample_defaults_tests)
+
 
 target_link_libraries(adi_core PRIVATE adi_utf8proc Threads::Threads)
 add_executable(adi_library_tests tests/test_library.cpp)
