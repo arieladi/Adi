@@ -149,7 +149,10 @@ public:
     [[nodiscard]] EventFlow eventFlow()const noexcept override{return consume_?EventFlow::Consume:EventFlow::Through;}
     [[nodiscard]] bool hasBypass()const noexcept override{return true;}
     [[nodiscard]] bool bypassed()const noexcept override{return bypass;}
-    bool bypass=false,wrongAudio=false;std::array<std::uint64_t,8192> trace{};std::size_t traceSize=0;
+    // On the heap: a Fixture holds sixteen Works and deterministicGraphs two Fixtures,
+    // and 8192 trace slots inline (1 MiB per Fixture) overflowed MSVC's 1 MB default
+    // stack (0xC00000FD). The owner allocates it at construction, never a callback.
+    bool bypass=false,wrongAudio=false;std::vector<std::uint64_t> trace=std::vector<std::uint64_t>(8192);std::size_t traceSize=0;
 private:
     int latency_=0;bool wide_=true,consume_=false;std::array<std::array<double,32>,2> ring_{};std::size_t position_=0;
 };
