@@ -1553,7 +1553,7 @@ endforeach()
 add_library(adi_decoders STATIC src/adi/audio/decode_libs.c)
 target_include_directories(adi_decoders SYSTEM PUBLIC
     "${ADI_THIRD_PARTY}/dr_libs" "${ADI_THIRD_PARTY}/miniaudio/extras")
-target_sources(adi_core PRIVATE src/adi/audio/decode.cpp)
+target_sources(adi_core PRIVATE src/adi/audio/decode.cpp src/adi/audio/progressive_decode.cpp)
 target_link_libraries(adi_core PRIVATE adi_decoders)
 add_executable(adi_decode_tests tests/test_decode.cpp)
 target_link_libraries(adi_decode_tests PRIVATE adi_core adi_warnings)
@@ -1568,6 +1568,12 @@ target_compile_definitions(adi_pcm_stream_tests PRIVATE
     ADI_PCM_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode"
     ADI_PCM_EXTRA_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pcm_stream")
 add_test(NAME adi_pcm_stream_tests COMMAND adi_pcm_stream_tests)
+add_executable(adi_progressive_decode_tests tests/test_progressive_decode.cpp)
+target_link_libraries(adi_progressive_decode_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_progressive_decode_tests PRIVATE
+    ADI_PCM_EXTRA_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pcm_stream")
+add_test(NAME adi_progressive_decode_tests COMMAND adi_progressive_decode_tests)
+
 
 # ADR-0155: immutable MIDI clip schedules, emitted before graph forwarding.
 target_sources(adi_core PRIVATE src/adi/engine/midi_clips.cpp)

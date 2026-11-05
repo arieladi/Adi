@@ -3,6 +3,7 @@
 #include "blake3.hpp"
 #include "adi/store.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -63,7 +64,7 @@ bool noEmbedded(SQLite::Database& db, std::int64_t id, std::string& error) {
     if (q.getColumn(0).getInt() != 0) { error = "extract embedded media first"; return false; }
     return true;
 }
-std::optional<AudioInfo> captureAudio(const fs::path& source, Payload& row, audio::DecodeCache* supplied,std::stop_token stop) {
+std::optional<AudioInfo> captureAudio(const fs::path& source, Payload& row, audio::DecodeCache* supplied,std::stop_token stop,bool headerOnly) {
     const auto format=audio::sniff(source);
     if (format==audio::SourceFormat::Unknown) return std::nullopt;
     const auto read=[&](const fs::path& playable, bool native) {
@@ -96,6 +97,23 @@ std::optional<AudioInfo> captureAudio(const fs::path& source, Payload& row, audi
         try {return read(source,true);} catch (const std::exception&) {
             // PCM encodings outside WavReader's subset use the same decoding
             // path as playback. A corrupt source still fails that path.
+        }
+    }
+    if(headerOnly) {
+        try {
+            const auto metadata=audio::inspectPcm(source,stop);
+            if(metadata.frames && *metadata.frames && *metadata.frames<=static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+                AudioInfo info{metadata.sampleRate,metadata.channels,static_cast<std::int64_t>(*metadata.frames)};
+                constexpr std::int64_t billion=1000000000;
+                const auto seconds=info.frames/info.sampleRate;
+                if(seconds>(std::numeric_limits<std::int64_t>::max()-billion)/billion)throw std::runtime_error("audio duration exceeds the supported timeline");
+                row["sample_rate"]=info.sampleRate;row["channels"]=info.channels;row["frames"]=info.frames;
+                row["duration_ns"]=seconds*billion+(info.frames%info.sampleRate)*billion/info.sampleRate;
+                return info;
+            }
+        }catch(const audio::DecodeError& e) {
+            if(format==audio::SourceFormat::Mp4 && e.problem()==audio::DecodeProblem::NoAudio){row["format"]="mp4";return std::nullopt;}
+            throw;
         }
     }
     auto& cache=supplied ? *supplied : audio::defaultDecodeCache();
@@ -235,7 +253,9 @@ bool relinkInverse(OpContext& c, const Payload& p, Payload& inverse, std::string
 MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request,
                           audio::DecodeCache* cache) {return prepareImport(store,path,id,time,request,cache,{});}
 MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request,
-                          audio::DecodeCache* cache,std::stop_token stop) {
+                          audio::DecodeCache* cache,std::stop_token stop) {return prepareImport(store,path,id,time,request,cache,stop,false);}
+MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, std::int64_t time, OpRequest& request,
+                          audio::DecodeCache* cache,std::stop_token stop,bool headerOnly) {
     if(audio::onAudioThread)return {};
     request = {};
     try {
@@ -246,7 +266,7 @@ MediaResult prepareImport(Store& store, const fs::path& path, std::int64_t id, s
         if (!hash) return {false, "cannot hash " + pathUtf8(source)};
         Payload row = Payload::object(); for (const auto* key : columns) row[key] = nullptr;
         row["format"]="";
-        const auto info=captureAudio(source,row,cache,stop);
+        const auto info=captureAudio(source,row,cache,stop,headerOnly);
         const auto verified=blake3File(source,stop);
         if(stop.stop_requested())throw std::runtime_error("media import cancelled");
         if (!verified || hash.hex!=verified.hex) return {false,"media changed during import capture"};

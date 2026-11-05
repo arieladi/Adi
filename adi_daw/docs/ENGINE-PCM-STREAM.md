@@ -60,4 +60,6 @@ known-empty WAV, float32 bit preservation, Unicode Vorbis paths, no-Xing unknown
 length and authored frequency/amplitude, and absence of the old whole-compressed
 C++ allocation on a longer Vorbis fixture. See the engine log for actual platform,
 compiler, sanitizer and mutation evidence. Progressive cache jobs and actual
-Session playback before completion remain open until their integration gate.
+Session playback before completion are provided by the later integration in
+[ENGINE-PROGRESSIVE-DECODE.md](ENGINE-PROGRESSIVE-DECODE.md); this pull primitive
+retains its synchronous owner-thread contract.

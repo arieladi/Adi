@@ -590,7 +590,7 @@ bool Session::rebuild() {
     timing->signatures = model_.signatures;
     try {
         clips_ = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
-                                                spec_.channels, spec_.maxFrames);
+                                                spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
         midi_ = std::make_unique<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every

@@ -108,7 +108,7 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
             copyImport(source,files->staged,options.stop);source=files->staged;
         }
         OpRequest mediaRequest;
-        const auto imported=media::prepareImport(store,source,options.mediaId,options.importedUtc,mediaRequest,nullptr,options.stop);
+        const auto imported=media::prepareImport(store,source,options.mediaId,options.importedUtc,mediaRequest,nullptr,options.stop,!options.warp);
         if(!imported.ok)throw std::runtime_error(imported.error);
         if(!imported.audio)throw std::runtime_error("import prompt needs a supported audio file; video playback is not built");
         const auto& info=*imported.audio;

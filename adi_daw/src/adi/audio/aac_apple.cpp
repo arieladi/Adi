@@ -121,7 +121,8 @@ AacTrack encodeAac(const std::filesystem::path &wav, const std::filesystem::path
         throw std::runtime_error("CoreAudio AAC container lost sample-exact duration");
     return track;
 }
-void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
+void decodeAacPcm(const AacTrack &track, const std::filesystem::path &wav, const AacPcmSink &sink, CodecCheckpoint call) {
+    if (!sink) throw std::invalid_argument("AAC PCM sink is empty");
     const auto info=aacConfig(track.config);
     if(info.sampleRate!=track.sampleRate)throw std::invalid_argument("AAC decode config mismatch");
     const auto channels=info.channels;
@@ -148,7 +149,6 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
           "decoded length");
     if (frames < 0 || static_cast<std::uint64_t>(frames) != track.frames)
         throw std::runtime_error("CoreAudio did not honor AAC edit-list duration");
-    WavWriter writer(wav, track.sampleRate, channels, WavFormat::Float32);
     std::array<float, 8192> samples{};
     std::uint64_t done = 0;
     while (done < track.frames) {
@@ -163,10 +163,15 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
         for (std::size_t i = 0; i < static_cast<std::size_t>(count) * channels; ++i)
             if (!std::isfinite(samples[i]))
                 throw std::runtime_error("nonfinite native AAC decode");
-        writer.write(samples.data(), count);
+        sink(std::span(samples.data(), static_cast<std::size_t>(count) * channels));
         done += count;
     }
     file.close();
+}
+void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
+    const auto channels=aacConfig(track.config).channels;
+    WavWriter writer(wav,track.sampleRate,channels,WavFormat::Float32);
+    decodeAacPcm(track,wav,[&](std::span<const float> pcm) { writer.write(pcm.data(),static_cast<std::uint32_t>(pcm.size()/channels)); },std::move(call));
     writer.close();
 }
 } // namespace adi::audio

@@ -74,6 +74,7 @@ namespace adi {
 class Store;
 }
 
+namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 
 class AudioInputRecorder;
@@ -92,6 +93,9 @@ struct SessionSpec {
     bool performanceState = true;
     /// The app's Delay Compensation choice; its registry row is win-owned.
     bool delayCompensation = true;
+    /// Optional app-owned decode service/cache. Must outlive this session and
+    /// retired generations. Null uses the process service; never a callback API.
+    audio::ProgressiveDecoder* progressiveDecoder = nullptr;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
