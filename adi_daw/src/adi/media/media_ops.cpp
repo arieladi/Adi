@@ -111,11 +111,12 @@ std::string pathUtf8(const fs::path& path) {
     return {reinterpret_cast<const char*>(u.data()), u.size()};
 }
 fs::path pathFromUtf8(const std::string& text) { return fs::path(std::u8string(text.begin(), text.end())); }
-fs::path projectFolder(const Store& store) {
-    const auto* filename = sqlite3_db_filename(store.db().getHandle(), "main");
+fs::path projectFolder(const SQLite::Database& db) {
+    const auto* filename = sqlite3_db_filename(db.getHandle(), "main");
     if (!filename || !*filename) throw std::runtime_error("media needs a disk-backed project");
     return pathFromUtf8(filename).parent_path();
 }
+fs::path projectFolder(const Store& store) { return projectFolder(store.db()); }
 Payload mediaRow(SQLite::Database& db, std::int64_t id) {
     SQLite::Statement q(db, "SELECT " + columnList() + " FROM media_files WHERE id=?");
     q.bind(1, id);
