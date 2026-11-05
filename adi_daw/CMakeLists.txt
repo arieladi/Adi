@@ -1674,6 +1674,13 @@ target_compile_definitions(adi_decode_tests PRIVATE
 add_test(NAME adi_decode_tests COMMAND adi_decode_tests)
 set_tests_properties(adi_decode_tests PROPERTIES TIMEOUT 120)
 
+add_executable(adi_pcm_stream_tests tests/test_pcm_stream.cpp)
+target_link_libraries(adi_pcm_stream_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pcm_stream_tests PRIVATE
+    ADI_PCM_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode"
+    ADI_PCM_EXTRA_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pcm_stream")
+add_test(NAME adi_pcm_stream_tests COMMAND adi_pcm_stream_tests)
+
 # ADR-0155: immutable MIDI clip schedules, emitted before graph forwarding.
 target_sources(adi_core PRIVATE src/adi/engine/midi_clips.cpp)
 target_sources(adi_core PRIVATE src/adi/engine/midi_controllers.cpp)
