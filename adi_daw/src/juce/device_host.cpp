@@ -93,7 +93,7 @@ bool DeviceHost::rebuildNow() {
     opts.sendTailFor = spec_.sendTailFor;
     opts.feedbackFor = spec_.feedbackFor;
 
-    if (!host_->rebuild(*model, opts, spec_.sampleRate, spec_.maxFrames, spec_.transformPlan)) {
+    if (!host_->rebuild(*model, opts, spec_.sampleRate, spec_.maxFrames, spec_.transformPlan,spec_.transportState)) {
         lastError_ = host_->error();
         return false;
     }

@@ -25,7 +25,8 @@ std::int32_t GraphHost::latencyHeadroomAt(double sampleRate) const noexcept {
 }
 
 bool GraphHost::rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
-                        std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan) {
+                        std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan,
+                        std::shared_ptr<const GraphTransportState> transportState) {
     error_.clear();
 
     GraphPlan plan = planGraph(model);
@@ -55,7 +56,7 @@ bool GraphHost::rebuild(const rows::Model &model, const RealizeOptions &opts, do
     // line the running graph has not been touched, so a model with a cycle or
     // no master costs a wasted build and nothing else.
     live_ = rg.get();
-    pub_.publish(std::make_unique<PublishedGraph>(std::move(rg)));
+    pub_.publish(std::make_unique<PublishedGraph>(std::move(rg),std::move(transportState)));
     ++stats_.published;
     return true;
 }
@@ -199,8 +200,14 @@ void GraphHost::process(const AudioIo& io) noexcept {
     pub_.announce(snap);
     lastSnap_ = snap;
 
-    snap->graph().graph().process(io);
+    AudioIo block=io;
+    if(const auto* state=snap->transportState())block.transport=state->beginBlock();
+    snap->graph().graph().process(block);
     fadeIn(io);
+}
+
+const GraphTransportState* GraphHost::renderedTransportState()const noexcept {
+    return lastSnap_?lastSnap_->transportState():nullptr;
 }
 
 bool GraphHost::copyRenderedOutput(const Node& node,const AudioIo& io) const noexcept {
