@@ -50,7 +50,7 @@ void prefix() {
     std::vector<float> samples(4096*2,-9);check(file->read(0,samples)==ProgressiveRead::Frames,"published prefix is readable while the codec worker is held");
     DecodeCache reference(temp.path()/"reference",{1ULL<<30,0},cacheHooks());const auto referencePath=reference.playable(source);const auto all=pcm(referencePath);reference.release(referencePath);
     check(std::equal(samples.begin(),samples.end(),all.begin()),"pending prefix exactly matches independent complete native decode");
-    std::fill(samples.begin(),samples.end(),-9);check(file->read(900000,samples)==ProgressiveRead::Pending && std::all_of(samples.begin(),samples.end(),[](float x){return x==-9;}),"an unavailable seek preserves its destination instead of reading unwritten holes");
+    std::fill(samples.begin(),samples.end(),-9.0f);check(file->read(900000,samples)==ProgressiveRead::Pending && std::all_of(samples.begin(),samples.end(),[](float x){return x==-9;}),"an unavailable seek preserves its destination instead of reading unwritten holes");
     const auto hash=media::blake3File(source);const auto target=cache.folder()/(hash.hex+".wav");check(!fs::exists(target) && cache.entries().empty(),"a pending prefix is never visible as a complete shared cache hit");
     std::array<float,3> odd{};check(file->read(0,odd)==ProgressiveRead::InvalidBuffer && file->read(*info.frames,samples)==ProgressiveRead::InvalidBuffer,"partial frames and out-of-range reads refuse");
     const auto io=callbackFileIo.load(),a=allocations.load(),f=frees.load();ProgressiveRead callback;
