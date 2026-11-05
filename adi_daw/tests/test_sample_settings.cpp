@@ -16,6 +16,16 @@
 #include <limits>
 #include <new>
 namespace {std::atomic<unsigned> allocations{0},frees{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed and frees it when that container is
+// destroyed, so an empty result returned from the callback path costs one allocation
+// and one free per container there and none on the other CRTs. The refusal checks
+// below allow exactly what the empty results cost on this CRT, measured once before
+// each baseline is read.
+struct ResultCost {unsigned allocated=0,freed=0;};
+template<class Result> ResultCost emptyResultCost(){const auto a=allocations.load(),f=frees.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return {allocations.load()-a,frees.load()-f};}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p)noexcept{if(p && adi::audio::onAudioThread)++frees;std::free(p);}
@@ -60,9 +70,11 @@ void codec() {
     invalid=json;invalid["fade_clock_ns"][1]=0;check(!decodeSampleSettings(invalid),"a fade clock must have a positive ordered extent");
     invalid=json;invalid["signature_denominator"]=3;check(!decodeSampleSettings(invalid),"unsupported time signatures refuse");
     auto malformed=s;malformed.gainDb=std::numeric_limits<double>::quiet_NaN();std::string error;check(validateSampleSettings(malformed,error)==SampleSettingsProblem::Invalid,"nonfinite authored controls refuse before serialization");
+    // The refused decode returns one empty SampleSettingsResult; the refused validate and encode return no container.
+    const auto cost=emptyResultCost<SampleSettingsResult>();
     const auto io=audio::callbackFileIo.load(),a=allocations.load(),f=frees.load();SampleSettingsProblem decodedProblem{},validatedProblem{};bool empty=false,noException=true;error="keep";
     {audio::CallbackScope callback;try{decodedProblem=decodeSampleSettings(json).problem;validatedProblem=validateSampleSettings(s,error);empty=encodeSampleSettings(s).is_null();}catch(const std::exception&){noException=false;}}
-    check(noException && empty && decodedProblem==SampleSettingsProblem::Realtime && validatedProblem==SampleSettingsProblem::Realtime && error=="keep" && io==audio::callbackFileIo.load() && a==allocations.load() && f==frees.load(),"pure settings codec refuses callbacks without allocating, freeing, I/O or caller mutation");
+    check(noException && empty && decodedProblem==SampleSettingsProblem::Realtime && validatedProblem==SampleSettingsProblem::Realtime && error=="keep" && io==audio::callbackFileIo.load() && a+cost.allocated==allocations.load() && f+cost.freed==frees.load(),"pure settings codec refuses callbacks without allocating, freeing, I/O or caller mutation");
 }
 void persistence() {
     test::TempDirectory temp{"sample_settings","library"};const auto file=temp.path()/"data/library.sqlite";std::string error;auto index=Index::open(file,error,false);if(!index)throw std::runtime_error(error);const auto s=sample();
@@ -81,9 +93,11 @@ void persistence() {
     const auto before=index->exportJson();auto invalid=exported;invalid["media"][other]=exported["media"][hash];invalid["media"][other]["sample_settings"]["source_length"]=0;invalid["media"][hash]["rating"]=1;
     check(!index->importJson(invalid.dump(),error) && index->exportJson()==before,"a bad later imported sample rolls back every earlier metadata/default change");
     invalid=exported;invalid["version"]=1;check(!index->importJson(invalid.dump(),error) && index->exportJson()==before,"legacy envelope cannot silently admit a new authored-settings contract");
+    // The refused read returns one empty SampleSettingsResult and the refused export one empty string.
+    const auto resultCost=emptyResultCost<SampleSettingsResult>(),textCost=emptyResultCost<std::string>();
     const auto io=audio::callbackFileIo.load(),a=allocations.load(),f=frees.load();SampleSettingsProblem read{},write{},clear{};bool noExport=false,noImport=false;error="keep";
     {audio::CallbackScope callback;read=index->sampleSettings(hash).problem;write=index->saveSampleSettings(hash,s,error);clear=index->clearSampleSettings(hash,error);noExport=index->exportJson().empty();noImport=!index->importJson(before,error);}
-    check(read==SampleSettingsProblem::Realtime && write==SampleSettingsProblem::Realtime && clear==SampleSettingsProblem::Realtime && noExport && noImport && error=="keep" && io==audio::callbackFileIo.load() && a==allocations.load() && f==frees.load(),"native settings and exchange APIs refuse callbacks without allocation, free, I/O or caller mutation");
+    check(read==SampleSettingsProblem::Realtime && write==SampleSettingsProblem::Realtime && clear==SampleSettingsProblem::Realtime && noExport && noImport && error=="keep" && io==audio::callbackFileIo.load() && a+resultCost.allocated+textCost.allocated==allocations.load() && f+resultCost.freed+textCost.freed==frees.load(),"native settings and exchange APIs refuse callbacks without allocation, free, I/O or caller mutation");
     check(index->exportJson()==before,"callback misuse changes no authored library data");
     check(index->clearSampleSettings(hash,error)==SampleSettingsProblem::None && index->sampleSettings(hash).problem==SampleSettingsProblem::Missing,"explicitly clearing sample defaults affects only that hash's authored settings");
     exported=Json::parse(index->exportJson());check(exported.at("version")==1 && exported["media"][hash]["tags"]==Json::array({"soft","warm"}) && exported["media"][hash]["rating"]==4,"clearing defaults preserves tags/BPM/rating and legacy-compatible exchange");
