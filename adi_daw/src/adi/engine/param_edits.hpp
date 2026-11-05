@@ -43,6 +43,15 @@ public:
     void seed(std::int64_t deviceId, std::int32_t paramIndex, double value);
     void expectEcho(std::int64_t deviceId, std::int32_t paramIndex, double value,
                     std::int64_t nowMs);
+    /// Consumer: a UI drag can send several values before an asynchronous
+    /// plug-in answers. Keep up to 256 recent expected echoes within the TTL.
+    /// expectEcho retains its original replace/rearm contract.
+    void expectAdditionalEcho(std::int64_t deviceId, std::int32_t paramIndex,
+                              double value, std::int64_t nowMs);
+    void cancelEcho(std::int64_t deviceId, std::int32_t paramIndex);
+    /// Consumer: cancel already-drained gesture state. Queued producer events
+    /// remain queued. ParamOps uses this for its synchronous UI capture only.
+    void cancel(std::int64_t deviceId, std::int32_t paramIndex);
     std::size_t drain(std::int64_t nowMs, std::vector<ParamEdit>& out);
     /// ADR-0142: the drain for an interval in which the plugin signalled a
     /// state change (a preset load). Explicit gestures that END in it are
@@ -72,10 +81,12 @@ public:
 
 private:
     struct Parameter {
+        struct Echo { double value = 0.0; std::int64_t armedMs = 0; };
         bool known = false, open = false, implicit = false, hasValue = false;
         bool guarded = false;
         double last = 0.0, before = 0.0, after = 0.0, echo = 0.0;
         std::int64_t lastValueMs = 0, armedMs = 0;
+        std::vector<Echo> echoes; // consumer only; never inspected by push
     };
     using Key = std::pair<std::int64_t, std::int32_t>;
     void close(const Key&, Parameter&, std::vector<ParamEdit>&);

@@ -110,8 +110,19 @@ struct FeedbackNodes {
 };
 using FeedbackFn = std::function<FeedbackNodes(std::int64_t routingId)>;
 
+/// A monitor feed reuses a track's Post FX audio, then passes a private gain
+/// node and a latency-aligned sink. Main anchors only its sidechain clock;
+/// monitor audio never feeds Main. Caller owns both nodes across rebuilds.
+struct MonitorPoint {
+    std::int64_t trackId=0;
+    Node* source=nullptr; // null means the track junction
+    Node* gain=nullptr;
+    Node* aligned=nullptr;
+};
+
 struct RealizeOptions {
     std::int32_t channels = 2;
+    std::vector<MonitorPoint> monitors;
 
     /// Unset means every track is bare, which is the right behaviour for a
     /// project with no plugins and for every test that is about topology.
@@ -246,6 +257,7 @@ public:
         enum class Leg : std::uint8_t {
             Into,   ///< from a source into the track's junction
             Next,   ///< from the junction or a chain node to the next node
+            Monitor, ///< private cue feed, named by its persistent monitor node
             Send,   ///< from a tap into a send's node, named by its routing row
         };
         std::int64_t track = 0;

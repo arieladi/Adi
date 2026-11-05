@@ -130,10 +130,23 @@ void BarItem::paintButton(juce::Graphics &g, bool over, bool down) {
         g.setFont(look::font(11.5f));
         g.drawText(text, content, juce::Justification::centred);
     }
+    if (automationLed) {
+        // Live 12's figure: a red dot with a dark rim in the corner (its size to be measured).
+        const juce::Rectangle<float> led(r.getX() + 2.f, r.getY() + 2.f, 5.f, 5.f);
+        g.setColour(juce::Colour(0xffe8453c));
+        g.fillEllipse(led);
+        g.setColour(look::separator);
+        g.drawEllipse(led, .8f);
+    }
     if (ring_) {
         g.setColour(look::accent);
         g.drawRect(getLocalBounds(), 1);
     }
+}
+bool BarItem::keyPressed(const juce::KeyPress &key) {
+    if (onKey && onKey(key))
+        return true;
+    return juce::Button::keyPressed(key);
 }
 void BarItem::focusGained(FocusChangeType cause) {
     ring_ = cause != focusChangedByMouseClick;
@@ -153,17 +166,19 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     // The Info View's words for each item (ADR-0131), in Live's order.
     const Info infos[] = {
         {&link, "Link", "Ableton Link: tempo and phase with other applications (P1)."},
-        {&tap, "Tap Tempo", "Tap to set the tempo."},
-        {&tempo, "Tempo", "The project's tempo at the playhead, in BPM."},
+        {&tap, "Tap Tempo", "Click once every beat: the tempo follows your clicking."},
+        {&tempo, "Tempo", "The tempo at the play location, in BPM. Click to type another, from 20 to 999."},
         {&nudgeDown, "Nudge Down", "Slows playback for as long as it is held."},
         {&nudgeUp, "Nudge Up", "Speeds playback up for as long as it is held."},
-        {&signature, "Time Signature", "The project's time signature."},
+        {&signature, "Time Signature", "The time signature at the play location. Click to type another, "
+                                       "such as 3/4."},
         {&metronome, "Metronome", "Switches the metronome on and off; it plays to Cue Out."},
         {&quantize, "Quantization Menu", "The global launch quantization (with Session View)."},
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
                             "(Option+Shift+F on the Mac)."},
-        {&position, "Arrangement Position", "Where the playhead is, in bars, beats and sixteenths."},
+        {&position, "Arrangement Position", "Where the playhead is, in bars, beats and sixteenths. Click to type "
+                                            "another, such as 5.2.3; up and down step a bar. It moves the insert marker."},
         {&play, "Play", "Starts playback from the insert marker, or stops it. Space."},
         {&stop, "Stop", "Stops playback."},
         {&record, "Arrangement Record", "Records into the arrangement. F9."},
@@ -195,8 +210,34 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     stop.onClick = [this] { root_.command(AppCommands::Stop); };
     follow.onClick = [this] { root_.command(AppCommands::Follow); };
     mix.onClick = [this] { root_.command(AppCommands::ToggleMixView); };
+    tempo.onClick = [this] { beginTempoEdit(); };
+    // On the press, so each tap is timed when it lands.
+    tap.setTriggeredOnMouseDown(true);
+    tap.onClick = [this] { root_.tapTempo(static_cast<std::int64_t>(juce::Time::getMillisecondCounter())); };
+    signature.onClick = [this] { beginSignatureEdit(); };
+    position.onClick = [this] { beginPositionEdit(); };
+    position.onKey = [this](const juce::KeyPress &k) {
+        if (k.getModifiers().isAnyModifierKeyDown())
+            return false;
+        if (k.getKeyCode() == juce::KeyPress::upKey || k.getKeyCode() == juce::KeyPress::downKey) {
+            root_.stepPosition(k.getKeyCode() == juce::KeyPress::upKey ? 1 : -1);
+            return true;
+        }
+        return false;
+    };
+    addChildComponent(fieldEditor);
+    fieldEditor.setJustification(juce::Justification::centred);
+    fieldEditor.onReturnKey = [this] {
+        if (commit_ && commit_(fieldEditor.getText().toStdString()))
+            fieldEditor.setVisible(false);
+        else
+            fieldEditor.selectAll();
+    };
+    fieldEditor.onEscapeKey = [this] { fieldEditor.setVisible(false); };
+    fieldEditor.onFocusLost = [this] { fieldEditor.setVisible(false); };
     for (auto *item : items())
-        if (item != &play && item != &stop && item != &follow && item != &mix)
+        if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo &&
+            item != &tap && item != &position)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -271,9 +312,39 @@ void TransportBar::refresh() {
         shownSignature_ = shown;
         signature.setText(juce::String(meter.numerator) + " / " + juce::String(meter.denominator));
     }
+    // The automation LED while the arrangement holds a change of signature (manual 6.5).
+    if (const bool changes = meters.size() > 1; changes != signature.automationLed) {
+        signature.automationLed = changes;
+        signature.repaint();
+    }
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
 }
 void TransportBar::paint(juce::Graphics &g) { g.fillAll(look::frame); }
 void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }
+void TransportBar::beginFieldEdit(BarItem &item, const juce::String &text,
+                                  std::function<bool(const std::string &)> commit) {
+    editing_ = &item;
+    commit_ = std::move(commit);
+    fieldEditor.setTitle(item.getTitle());
+    fieldEditor.setBounds(item.getBounds());
+    fieldEditor.setText(text, false);
+    fieldEditor.setVisible(true);
+    fieldEditor.selectAll();
+    if (fieldEditor.isShowing())
+        fieldEditor.grabKeyboardFocus();
+}
+void TransportBar::beginTempoEdit() {
+    beginFieldEdit(tempo, juce::String(root_.bpm(), 2), [this](const std::string &t) { return root_.setTempoAtPlay(t); });
+}
+void TransportBar::beginPositionEdit() {
+    const auto at = barPosition(root_.timelineTick(), root_.reader().meters());
+    beginFieldEdit(position, juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth),
+                   [this](const std::string &t) { return root_.setPositionAt(t); });
+}
+void TransportBar::beginSignatureEdit() {
+    const auto &meter = meterAt(root_.timelineTick(), root_.reader().meters());
+    beginFieldEdit(signature, juce::String(meter.numerator) + "/" + juce::String(meter.denominator),
+                   [this](const std::string &t) { return root_.setMeterAtPlay(t); });
+}
 } // namespace adi::ui

@@ -665,7 +665,7 @@ void Graph::computeCompensation() {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
-            if (loopEdge(u.node, s.node)) {
+            if (!delayCompensation_ || loopEdge(u.node, s.node)) {
                 // No ring at all, not even the headroom: it never delays,
                 // so a retap that tried to move it would be refused.
                 s.inDelays[k].prepare(channels_, 0, precision_ == Precision::Float64);
@@ -679,8 +679,12 @@ void Graph::computeCompensation() {
             const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
-            const std::int32_t d = s.arrival - ready;
-            prepareLine(s.sideDelays[k], d);
+            const std::int32_t d = delayCompensation_ ? s.arrival - ready : 0;
+            if(delayCompensation_)prepareLine(s.sideDelays[k],d);
+            else {
+                s.sideDelays[k].prepare(channels_,0,precision_==Precision::Float64);
+                s.sideDelays[k].setDelay(0);
+            }
         }
     }
 
@@ -736,7 +740,7 @@ bool Graph::retapLatency() noexcept {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
-            const std::int32_t d = loopEdge(u.node, s.node) ? 0 : s.arrival - ready;
+            const std::int32_t d = !delayCompensation_ || loopEdge(u.node, s.node) ? 0 : s.arrival - ready;
             // EVERYTHING THAT FITS IS MOVED, even when something else does not.
             // A partial correction is closer to right than none, and the edges
             // that failed are about to be rebuilt anyway.
@@ -746,7 +750,7 @@ bool Graph::retapLatency() noexcept {
             const Slot& u = slots_[static_cast<std::size_t>(s.sidechains[k])];
             const std::int32_t ready =
                 u.arrival + (u.node != nullptr ? u.node->latencySamples() : 0);
-            const std::int32_t d = s.arrival - ready;
+            const std::int32_t d = delayCompensation_ ? s.arrival - ready : 0;
             if (!s.sideDelays[k].beginGlide(d > 0 ? d : 0)) allFit = false;
         }
     }
@@ -824,6 +828,9 @@ std::size_t Graph::escalateLatency(Unresolved* left) {
     for (NodeId id : order_) {
         Slot& s = slots_[static_cast<std::size_t>(id)];
         if (s.hasBypass) offer(s.dryDelay, (std::max)(0, s.node->latencySamples()));
+        // Disabled alignment has no required input rings. Bypass delay is
+        // physical and still grows independently through the offer above.
+        if(!delayCompensation_)continue;
         for (std::size_t k = 0; k < s.inputs.size() && k < s.inDelays.size(); ++k) {
             const Slot& u = slots_[static_cast<std::size_t>(s.inputs[k])];
             offer(s.inDelays[k], requiredDelay(s.arrival, u.arrival, u.node, s.node));
@@ -919,6 +926,21 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
 
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
+    controllerSources_.clear();
+    controllerSources_.reserve(slots_.size());
+    for (const auto &slot : slots_)
+        if (slot.node) {
+            const auto prefix = slot.node->controllerSourcePrefix();
+            if (prefix)
+                controllerSources_.push_back({prefix, slot.node});
+        }
+    std::sort(controllerSources_.begin(), controllerSources_.end(),
+              [](const auto &left, const auto &right) { return left.first < right.first; });
+    for (std::size_t i = 1; i < controllerSources_.size(); ++i)
+        if (controllerSources_[i - 1].first == controllerSources_[i].first) {
+            error_ = "duplicate controller source prefix";
+            return;
+        }
 
     // ADR-0042's floor, clamped by ADR-0054's bound. Clamped rather than
     // rejected: a caller asking for 128 at 48 kHz wants fewer segments, and
@@ -1315,10 +1337,27 @@ bool Graph::mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vect
     return true;
 }
 
+void Graph::acknowledgeController(const Event &event, bool delivered) noexcept {
+    const auto prefix = static_cast<std::uint32_t>(event.noteId >> 32);
+    if (!prefix)
+        return;
+    const auto found = std::lower_bound(controllerSources_.begin(), controllerSources_.end(), prefix,
+                                        [](const auto &item, std::uint32_t key) { return item.first < key; });
+    if (found == controllerSources_.end() || found->first != prefix)
+        return;
+    if (delivered)
+        found->second->controllerDelivered(event);
+    else
+        found->second->controllerRejected(event);
+}
 void Graph::forwardEvents(std::int32_t frames) noexcept {
-    auto rejected = [&](const Event& e) {
+    auto rejected = [&](const Event &e) {
+        if (e.type == EventType::Controller)
+            acknowledgeController(e, false);
         if (e.type == EventType::NoteOff)
-            for (auto& source : slots_) if (source.node) source.node->noteOffRejected(e);
+            for (auto &source : slots_)
+                if (source.node)
+                    source.node->noteOffRejected(e);
     };
     const std::int64_t end = now_ + frames;
 
@@ -1452,10 +1491,12 @@ void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t n
     ScopeTap* const inputTap = s.node->inputTap();
     const bool advancing = transport != nullptr && transport->playing;
     const auto firstSample = transport != nullptr ? transport->timelineSample : 0;
-    // The audio thread's copy: `retapLatency` rewrites `s.arrival` as it runs.
+    // With alignment off, scope input timestamps show the heard global time.
+    // Physical maximum path latency remains cached for diagnostics.
+    // The audio thread's copy: retapLatency rewrites s.arrival as it runs.
     const auto slotIndex = static_cast<std::size_t>(&s - slots_.data());
     const std::int32_t arrival =
-        slotIndex < slotArrival_.size() ? slotArrival_[slotIndex].load(std::memory_order_relaxed) : 0;
+        delayCompensation_ && slotIndex < slotArrival_.size() ? slotArrival_[slotIndex].load(std::memory_order_relaxed) : 0;
 
     bool mainSilent = true;
     for (NodeId in : s.inputs)
@@ -1897,8 +1938,14 @@ void Graph::process(const AudioIo& io) noexcept {
         const auto& delivered = slots_[i];
         if (!delivered.node || (static_cast<NodeId>(i) != output_ &&
             delivered.node->eventFlow() != EventFlow::Consume)) continue;
-        for (const auto& e : delivered.events) if (e.type == EventType::NoteOff)
-            for (auto& source : slots_) if (source.node) source.node->noteOffDelivered(e);
+        for (const auto &e : delivered.events) {
+            if (e.type == EventType::Controller)
+                acknowledgeController(e, true);
+            if (e.type == EventType::NoteOff)
+                for (auto &source : slots_)
+                    if (source.node)
+                        source.node->noteOffDelivered(e);
+        }
     }
     for (auto& s : slots_) {
         stats_.eventsDropped += s.events.dropped();

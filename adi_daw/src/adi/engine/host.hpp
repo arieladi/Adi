@@ -85,8 +85,8 @@ public:
     /// model with a cycle or no master leaves the session playing exactly what
     /// it was playing. The alternative — swap first, discover second — turns a
     /// bad edit into silence.
-    bool rebuild(const rows::Model& model, const RealizeOptions& opts,
-                 double sampleRate, std::int32_t maxFrames);
+    bool rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
+                 std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan = {});
 
     /// Free retired graphs the audio thread has demonstrably moved past. Call
     /// it on the same timer that polls the coalescer; it never blocks audio.
@@ -100,6 +100,11 @@ public:
     /// why `LatencyCoalescer` attaches to the HOST and re-reads this every
     /// poll rather than storing it once.
     [[nodiscard]] Graph* currentGraph() const noexcept;
+    /// Audio thread, after process: latency of the graph that actually ran.
+    [[nodiscard]] std::int32_t renderedLatency() const noexcept;
+    /// Audio owner after process, before the next process: protected by its
+    /// current publication. Copies already rendered samples, never runs DSP.
+    [[nodiscard]] bool copyRenderedOutput(const Node&, const AudioIo&) const noexcept;
 
     /// The realised graph behind it, for callers that need a track's chain
     /// head or tail -- a clip reader pushing into `inputFor`, or a device
@@ -129,6 +134,9 @@ public:
                               void* context=nullptr) noexcept;
     void setPrecision(Precision p) noexcept { precision_ = p; }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
+    /// Message-thread policy for the next graph, like Processing Precision.
+    void setDelayCompensation(bool on) noexcept { delayCompensation_=on; }
+    [[nodiscard]] bool delayCompensation() const noexcept { return delayCompensation_; }
     /// What a graph built at `sampleRate` gets (ADR-0157 d3).
     [[nodiscard]] std::int32_t latencyHeadroomAt(double sampleRate) const noexcept;
 
@@ -188,6 +196,7 @@ private:
     std::int32_t headroom_ = 8192;
     std::int32_t fadeFrames_ = 0;
     Precision precision_ = Precision::Float32;
+    bool delayCompensation_ = true;
     std::uint32_t renderWorkers_=0,parallelMinimumNodes_=4;
     std::int32_t parallelMinimumFrames_=256;
     RenderWorkers::Initializer workerInitializer_=nullptr;
