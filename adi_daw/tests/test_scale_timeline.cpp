@@ -13,6 +13,14 @@
 #include <new>
 #include <stdexcept>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed, so a result object returned from the
+// callback path costs one allocation per container there and none on the other
+// CRTs. The final check allows exactly what the one empty Store-read refusal costs
+// on this CRT, measured once before the baseline is read.
+template<class Result> unsigned emptyResultCost(){const auto before=callbackAllocations.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return callbackAllocations.load()-before;}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++callbackAllocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}
@@ -96,7 +104,7 @@ void coherentStoreRead() {
     {SQLite::Transaction outer(f.store->db(),SQLite::TransactionBehavior::DEFERRED);const auto nested=readScaleTimeline(*f.store);check(nested.timeline && sqlite3_get_autocommit(f.store->db().getHandle())==0,"global reader preserves its caller-owned read transaction");}
     f.store->db().exec("UPDATE tuning_degrees SET name='Updated' WHERE tuning_id=4 AND degree=7;DELETE FROM key_map_degrees WHERE key_map_id=20");const auto updated=readScaleTimeline(*f.store);
     check(read.timeline && read.timeline->atTicks(0)->includesDegree(7) && read.timeline->atTicks(0)->degrees()[7].name=="E half-flat" && updated.timeline && !updated.timeline->atTicks(0)->includesDegree(7) && updated.timeline->atTicks(0)->degrees()[7].name=="Updated","held map generation remains immutable across owner SQL edits and empty membership");
-    f.store->db().exec("CREATE TABLE clip_properties(clip_id INTEGER PRIMARY KEY,end_marker_ticks INTEGER,signature_numerator INTEGER,signature_denominator INTEGER,scale_root INTEGER,scale_id TEXT,scale_mask INTEGER);"
+    f.store->db().exec("CREATE TABLE IF NOT EXISTS clip_properties(clip_id INTEGER PRIMARY KEY,end_marker_ticks INTEGER,signature_numerator INTEGER,signature_denominator INTEGER,scale_root INTEGER,scale_id TEXT,scale_mask INTEGER);"
         "INSERT INTO clip_properties(clip_id,scale_root,scale_id,scale_mask) VALUES(10,5,'major',2741);INSERT INTO event_streams(clip_id,stream_kind,data) VALUES(10,'notes',X'0102')");
     unsigned noteReads=0;sqlite3_trace_v2(f.store->db().getHandle(),SQLITE_TRACE_STMT,[](unsigned,void* count,void*,void* raw)->int{const auto* text=static_cast<const char*>(raw);if(text && std::string_view(text).find("event_streams")!=std::string_view::npos)++*static_cast<unsigned*>(count);return 0;},&noteReads);
     const auto global=readScaleTimeline(*f.store);sqlite3_trace_v2(f.store->db().getHandle(),0,nullptr,nullptr);
@@ -111,4 +119,4 @@ void coherentStoreRead() {
     Fixture orphan;orphan.store->db().exec("PRAGMA foreign_keys=OFF;DELETE FROM key_map WHERE id=20");const auto dangling=readScaleTimeline(*orphan.store);check(!dangling.timeline && !dangling.error.empty(),"orphan relational scale rows are diagnosed rather than dropped");
 }
 }
-int main(){try{boundariesAndLifetime();validationAndBudgets();coherentStoreRead();check(callbackAllocations==0 && audio::callbackFileIo==0,"all realtime timeline queries and callback refusals allocate nothing and do no callback file I/O");}catch(const std::exception& exception){std::printf("EXCEPTION: %s\n",exception.what());check(false,"fixtures complete");}std::printf("scale_timeline: %d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{const auto cost=emptyResultCost<adi::engine::ScaleTimelineRead>(),baseline=callbackAllocations.load();boundariesAndLifetime();validationAndBudgets();coherentStoreRead();check(callbackAllocations==baseline+cost && audio::callbackFileIo==0,"all realtime timeline queries and callback refusals allocate nothing and do no callback file I/O");}catch(const std::exception& exception){std::printf("EXCEPTION: %s\n",exception.what());check(false,"fixtures complete");}std::printf("scale_timeline: %d checks, %d failures\n",checks,failures);return failures?1:0;}
