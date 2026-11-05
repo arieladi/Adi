@@ -18,6 +18,14 @@
 #include <windows.h>
 #endif
 namespace {std::atomic<unsigned> allocations{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string, std::vector or std::filesystem::path is constructed, so an empty result
+// returned from the callback path costs one allocation per container there and none on
+// the other CRTs. The callback check allows exactly what the empty results cost on this
+// CRT, measured once before its baseline is read.
+template<class Result> unsigned emptyResultCost(){const auto before=allocations.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return allocations.load()-before;}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}
@@ -195,15 +203,17 @@ void hostAndFailurePolicy() {
     if(rows)for(const auto& row:*rows)noCancelledBlock=noCancelledBlock && row.path.find("init-hang")==row.path.npos;
     check(noCancelledBlock,"cancelled library attempt is explicitly abandoned instead of quarantined");
     const auto scanner=f.scanner();const std::string format="clap",path=utf8(healthy),packet="{}",sentinel="untouched";const std::vector<Plugin> plugins{value()};f.error=sentinel;
-    const std::vector<std::string> roots{utf8(f.temp.path())};
-    bool callback=false;
+    const std::vector<std::string> roots{utf8(f.temp.path())},none{};
+    // The refused calls hand back an empty Result, path and Report and two empty string lists.
+    const auto cost=emptyResultCost<Result>()+emptyResultCost<fs::path>()+emptyResultCost<Report>()+2U*emptyResultCost<std::vector<std::string>>();
+    const auto baseline=allocations.load();bool callback=false;
     {audio::CallbackScope scope;
         const auto refused=scanner->probe(format,healthy);
         callback=refused.state==State::CallbackRefused && !decodeMetadata(packet,format,path,f.error) && !encodeMetadata(format,path,plugins,f.error) &&
-            !Scanner::open(f.config,f.error) && defaultScannerExecutable().empty() && !host.scan({},f.config).complete &&
+            !Scanner::open(f.config,f.error) && defaultScannerExecutable().empty() && !host.scan(none,f.config).complete &&
             device::ClapHost::findBundles(roots).empty() && device::ClapHost::defaultSearchPaths().empty();
     }
-    check(callback && f.error==sentinel && allocations==0 && audio::callbackFileIo==0 && host.plugins().size()==2,"scanner/protocol/host callback guards precede copying, filesystem, SQL and catalogue mutation");
+    check(callback && f.error==sentinel && allocations==baseline+cost && audio::callbackFileIo==0 && host.plugins().size()==2,"scanner/protocol/host callback guards precede copying, filesystem, SQL and catalogue mutation");
 }
 int entry(const std::vector<std::string>& arguments) {
     if(arguments.size()==4 && arguments[1]=="--scan")return fakeHelper(arguments);
