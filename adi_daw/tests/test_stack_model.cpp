@@ -18,6 +18,10 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#include <cstdlib>
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -3329,6 +3333,15 @@ void stress() {
 
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0); // a section name reaches the log before an abort would lose it
+#if defined(_MSC_VER) && defined(_DEBUG)
+    // The debug CRT's assertions and aborts go to stderr, never to a modal dialog: these tests
+    // run unattended on the director's desktop, and a dialog there blocks the run and him.
+    _CrtSetReportMode(_CRT_ASSERT, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ASSERT, _CRTDBG_FILE_STDERR);
+    _CrtSetReportMode(_CRT_ERROR, _CRTDBG_MODE_FILE);
+    _CrtSetReportFile(_CRT_ERROR, _CRTDBG_FILE_STDERR);
+    _set_abort_behavior(0, _WRITE_ABORT_MSG | _CALL_REPORTFAULT);
+#endif
     fisheyeAtBase100();
     fisheyeAtEveryDetent();
     capsAndFloor();
