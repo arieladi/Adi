@@ -810,6 +810,21 @@ contexts offer bounded pitch/membership queries with an explicit absolute
 tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
 non-octave periods and native pitch precision. No new opcode or schema.
 
+Scale highlighting, ruler and Fold projections are runtime read concerns.
+`engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
+tuning degrees coherently without reading notes or writing history. Held
+contexts offer bounded pitch/membership queries with an explicit absolute
+tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
+non-octave periods and native pitch precision. No new opcode or schema.
+
+`engine::readScaleTimeline` resolves the global per-key tuning map in one
+owner snapshot. Held contexts apply at exact inclusive int64 tick boundaries;
+nextChangeAfterTicks returns the next strictly later boundary without overflow.
+Reads/compilation are owner work; bounded callback lookups allocate nothing.
+The global map preserves separate clip-local overrides and never retunes stored
+notes. See `ENGINE-SCALE-TIMELINE.md` for lifetime, budgets and errors. This is
+a runtime read API, with no new opcode or schema.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
