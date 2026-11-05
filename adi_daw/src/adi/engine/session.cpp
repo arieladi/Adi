@@ -590,7 +590,7 @@ bool Session::rebuild() {
     timing->signatures = model_.signatures;
     try {
         clips_ = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
-                                                spec_.channels, spec_.maxFrames);
+                                                spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
         midi_ = std::make_unique<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_);
     } catch (const std::exception& e) { error_ = e.what(); return false; }
     // ADR-0164: the automation this graph plays, bound to strips, less every
@@ -1104,6 +1104,12 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     }
     if (!loaded_) return;   // `process` writes silence until a project arrives
     rebuild();
+}
+
+bool Session::setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,std::uint32_t minimumNodes,RenderWorkers::Initializer initialize,void* context) {
+    if(!graph_.setParallelRendering(workers,minimumFrames,minimumNodes,initialize,context))return false;
+    if(!loaded_)return true;
+    return rebuild();
 }
 
 bool Session::setPrecision(Precision p) {

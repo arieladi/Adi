@@ -74,6 +74,7 @@ namespace adi {
 class Store;
 }
 
+namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 
 class AudioInputRecorder;
@@ -92,6 +93,9 @@ struct SessionSpec {
     bool performanceState = true;
     /// The app's Delay Compensation choice; its registry row is win-owned.
     bool delayCompensation = true;
+    /// Optional app-owned decode service/cache. Must outlive this session and
+    /// retired generations. Null uses the process service; never a callback API.
+    audio::ProgressiveDecoder* progressiveDecoder = nullptr;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -240,6 +244,11 @@ public:
     /// there is no crossfade (the swap is faded in only when
     /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
     /// does nothing. False only when a graph was due and could not be built.
+    /// Owner only. Configures the next graph and rebuilds when loaded; the
+    /// prior graph stays live on failure. Zero workers restores serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr);
     bool setPrecision(Precision p);
 
     /// Message thread. Publish a new alignment policy without reloading

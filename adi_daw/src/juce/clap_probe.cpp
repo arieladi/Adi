@@ -1199,8 +1199,21 @@ int main(int argc, char** argv) {
         std::printf("\n");
     }
 
+    // Discover the requested descriptor in the child before the explicit
+    // runtime instantiation below. The diagnostic tool has no scan bypass.
+    std::string err;auto scanner=adi::scan::Scanner::open({},err);
+    adi::scan::Result discovered;
+    if(scanner)discovered=scanner->probe("clap",std::filesystem::path(std::u8string(path.begin(),path.end())));
+    check(scanner && discovered.state==adi::scan::State::Ready && !discovered.plugins.empty(),
+          "the child describes the factory's first plugin");
+    if(!scanner || discovered.state!=adi::scan::State::Ready || discovered.plugins.empty()) {
+        std::printf("  scan: %s\n",scanner?discovered.error.c_str():err.c_str());
+        std::printf("\nFAILED -- %d checks, %d failure(s)\n",g_checks,g_failures);return 1;
+    }
+    const auto& desc=discovered.plugins.front();
+    std::printf("  %zu plugin(s) in the factory\n",discovered.plugins.size());
+    std::printf("  %s %s by %s\n",desc.name.c_str(),desc.version.c_str(),desc.vendor.c_str());
     adi::device::ClapLibrary lib;
-    std::string err;
     if (!lib.open(path, err)) {
         std::printf("  skip  %s: %s\n", path.c_str(), err.c_str());
         // THE REAL COUNTERS, not a literal. This used to print a hard-coded
@@ -1212,15 +1225,8 @@ int main(int argc, char** argv) {
         return g_failures ? 1 : 0;
     }
     check(lib.isOpen(), "the bundle loaded");
-    std::printf("  %u plugin(s) in the factory\n", lib.pluginCount());
-
-    const clap_plugin_descriptor_t* desc = lib.descriptorAt(0);
-    check(desc != nullptr, "the factory describes its first plugin");
-    if (desc == nullptr) return 1;
-    std::printf("  %s %s by %s\n", desc->name, desc->version, desc->vendor);
-
     adi::device::ClapHostGlue glue;
-    const clap_plugin_t* plugin = lib.create(glue.host(), desc->id);
+    const clap_plugin_t* plugin = lib.create(glue.host(), desc.id.c_str());
     check(plugin != nullptr, "it instantiated through our own factory call");
     if (plugin == nullptr) return 1;
 
@@ -1228,9 +1234,10 @@ int main(int argc, char** argv) {
     {
         adi::device::DeviceIdentity id;
         id.format = "clap";
-        id.name = desc->name;
-        id.vendor = desc->vendor;
-        id.version = desc->version;
+        id.uid = desc.id;
+        id.name = desc.name;
+        id.vendor = desc.vendor;
+        id.version = desc.version;
         adi::device::ClapDevice dev(plugin, id);
 
         check(dev.loaded(), "and reached the device contract");

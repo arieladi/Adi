@@ -8,6 +8,7 @@
 #include <memory>
 #include <vector>
 namespace adi { class Store; }
+namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 struct ClipProject;
 // Read the media hints and immutable rows off the callback. No Store survives.
@@ -15,7 +16,7 @@ std::shared_ptr<const ClipProject> readClipProject(const Store&, const rows::Mod
 class ClipPlayback {
 public:
     ClipPlayback(std::shared_ptr<const ClipProject>, Transport&, double rate, std::int32_t channels,
-                 std::int32_t maxFrames);
+                 std::int32_t maxFrames, audio::ProgressiveDecoder* = nullptr);
     ~ClipPlayback();
     ClipPlayback(const ClipPlayback&) = delete;
     ClipPlayback& operator=(const ClipPlayback&) = delete;
@@ -28,6 +29,9 @@ public:
     void stallForTest(bool stall) noexcept;
     std::uint32_t underrunSamples() const noexcept;
     std::uint32_t readErrors() const noexcept;
+    // Off-callback owner snapshot of terminal asynchronous decode diagnostics.
+    // Initial construction problems remain in problems().
+    std::vector<std::string> decodeProblems() const;
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;

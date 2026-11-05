@@ -144,6 +144,11 @@ public:
 
     /// The Processing Precision every graph is built at (ADR-0207 d2), kept on
     /// the host as the headroom is. Takes effect at the next `rebuild`.
+    /// Owner configuration for future rebuilds. Existing graph remains live
+    /// until a successfully prepared candidate is published. Zero is serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr) noexcept;
     void setPrecision(Precision p) noexcept { precision_ = p; }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
     /// Message-thread policy for the next graph, like Processing Precision.
@@ -209,6 +214,10 @@ private:
     std::int32_t fadeFrames_ = 0;
     Precision precision_ = Precision::Float32;
     bool delayCompensation_ = true;
+    std::uint32_t renderWorkers_=0,parallelMinimumNodes_=4;
+    std::int32_t parallelMinimumFrames_=256;
+    RenderWorkers::Initializer workerInitializer_=nullptr;
+    void* workerInitializationContext_=nullptr;
     bool keepHistory_ = true;
 
     // Audio thread only.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "index.hpp"
 #include "adi/media/media_ops.hpp"
+#include "adi/audio/io_audit.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <nlohmann/json.hpp>
 #include <utf8proc.h>
@@ -18,6 +19,36 @@ namespace fs = std::filesystem;
 using Json = nlohmann::json;
 namespace {
 using Key = std::pair<std::string, std::string>;
+constexpr std::size_t maxLibraryJsonBytes=256*1024*1024;
+class LibraryJsonGuard final:public nlohmann::json_sax<Json> {
+    struct Context {bool object=false;std::set<std::string> keys;};
+    std::vector<Context> stack_;
+    std::size_t tokens_=0;
+    bool token(){return ++tokens_<=16000000;}
+    bool begin(bool object){if(stack_.size()>=16 || !token())return false;stack_.push_back({object,{}});return true;}
+    bool end(bool object){if(stack_.empty() || stack_.back().object!=object || !token())return false;stack_.pop_back();return true;}
+public:
+    bool null()override{return token();}
+    bool boolean(bool)override{return token();}
+    bool number_integer(number_integer_t)override{return token();}
+    bool number_unsigned(number_unsigned_t)override{return token();}
+    bool number_float(number_float_t,const string_t&)override{return token();}
+    bool string(string_t& value)override{return value.size()<=kMaxSampleWarpBytes*2+65536 && token();}
+    bool binary(binary_t&)override{return false;}
+    bool start_object(std::size_t)override{return begin(true);}
+    bool key(string_t& value)override{return !stack_.empty() && stack_.back().object && value.size()<=256 && token() && stack_.back().keys.insert(value).second;}
+    bool end_object()override{return end(true);}
+    bool start_array(std::size_t)override{return begin(false);}
+    bool end_array()override{return end(false);}
+    bool parse_error(std::size_t,const std::string&,const nlohmann::detail::exception&)override{return false;}
+};
+Json libraryJson(const std::string& text) {
+    if(text.size()>maxLibraryJsonBytes)throw std::length_error("library JSON exceeds 256 MiB");
+    LibraryJsonGuard guard;
+    if(!Json::sax_parse(text,&guard))throw std::invalid_argument("invalid, duplicate, excessively deep or oversized library JSON");
+    return Json::parse(text);
+}
+
 std::string normalized(const std::string& s, bool sensitive) {
     utf8proc_uint8_t* data = nullptr;
     const auto flags = static_cast<utf8proc_option_t>(UTF8PROC_STABLE | UTF8PROC_COMPOSE | (sensitive ? 0 : UTF8PROC_CASEFOLD));
@@ -252,21 +283,91 @@ std::vector<Entry> Index::entries() const {
     while(q.executeStep()) result.push_back({q.getColumn(0).getString(),q.getColumn(1).getString(),q.getColumn(4).getString(),q.getColumn(5).getString(),static_cast<std::uintmax_t>(q.getColumn(2).getInt64()),q.getColumn(3).getInt64(),q.getColumn(6).getInt()!=0});
     return result;
 }
+SampleSettingsResult Index::sampleSettings(const std::string& hash) const {
+    if(audio::onAudioThread)return {SampleSettingsProblem::Realtime,{},{}};
+    if(!validHash(hash))return {SampleSettingsProblem::Invalid,"invalid sample content hash",{}};
+    try {
+        std::lock_guard lock(impl_->mutex);
+        SQLite::Statement query(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");query.bind(1,hash);
+        if(!query.executeStep())return {SampleSettingsProblem::Missing,{},{}};
+        const auto field=query.getColumn(0);
+        if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)return {SampleSettingsProblem::Resource,"sample annotation exceeds bounds",{}};
+        const auto payload=libraryJson(field.getString());
+        if(!payload.is_object())return {SampleSettingsProblem::Invalid,"invalid library annotation",{}};
+        if(!payload.contains("sample_settings"))return {SampleSettingsProblem::Missing,{},{}};
+        return decodeSampleSettings(payload.at("sample_settings"));
+    }catch(const std::bad_alloc&){return {SampleSettingsProblem::Resource,{},{}};}
+    catch(const std::exception& e){return {SampleSettingsProblem::Database,e.what(),{}};}
+}
+SampleSettingsProblem Index::saveSampleSettings(const std::string& hash,const SampleSettings& settings,std::string& error) {
+    if(audio::onAudioThread)return SampleSettingsProblem::Realtime;
+    if(!validHash(hash)){error="invalid sample content hash";return SampleSettingsProblem::Invalid;}
+    const auto valid=validateSampleSettings(settings,error);if(valid!=SampleSettingsProblem::None)return valid;
+    try {
+        const auto encoded=encodeSampleSettings(settings);
+        std::lock_guard lock(impl_->mutex);SQLite::Transaction transaction(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
+        Json payload={{"tags",Json::array()},{"bpm",nullptr},{"rating",nullptr}};
+        SQLite::Statement query(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");query.bind(1,hash);
+        if(query.executeStep()) {
+            const auto field=query.getColumn(0);
+            if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536){error="sample annotation exceeds bounds";return SampleSettingsProblem::Resource;}
+            payload=libraryJson(field.getString());if(!payload.is_object()){error="invalid library annotation";return SampleSettingsProblem::Invalid;}
+            if(payload.contains("sample_settings")) {
+                const auto old=decodeSampleSettings(payload.at("sample_settings"));
+                if(!old){error="existing sample settings are not editable: "+old.error;return old.problem;}
+                if(payload.at("sample_settings")==encoded){transaction.commit();error.clear();return SampleSettingsProblem::None;}
+            }
+        }
+        payload["sample_settings"]=encoded;
+        SQLite::Statement put(*impl_->db,"INSERT INTO annotations(hash,payload) VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload");const auto serialized=payload.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536){error="sample annotation exceeds bounds";return SampleSettingsProblem::Resource;}
+        put.bind(1,hash);put.bind(2,serialized);put.exec();transaction.commit();error.clear();return SampleSettingsProblem::None;
+    }catch(const std::bad_alloc&){return SampleSettingsProblem::Resource;}
+    catch(const std::exception& e){error=e.what();return SampleSettingsProblem::Database;}
+}
+SampleSettingsProblem Index::clearSampleSettings(const std::string& hash,std::string& error) {
+    if(audio::onAudioThread)return SampleSettingsProblem::Realtime;
+    if(!validHash(hash)){error="invalid sample content hash";return SampleSettingsProblem::Invalid;}
+    try {
+        std::lock_guard lock(impl_->mutex);SQLite::Transaction transaction(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
+        SQLite::Statement query(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");query.bind(1,hash);
+        if(query.executeStep()) {
+            const auto field=query.getColumn(0);
+            if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536){error="sample annotation exceeds bounds";return SampleSettingsProblem::Resource;}
+            auto payload=libraryJson(field.getString());if(!payload.is_object()){error="invalid library annotation";return SampleSettingsProblem::Invalid;}
+            if(payload.erase("sample_settings")) {
+                SQLite::Statement update(*impl_->db,"UPDATE annotations SET payload=? WHERE hash=?");update.bind(1,payload.dump());update.bind(2,hash);update.exec();
+            }
+        }
+        transaction.commit();error.clear();return SampleSettingsProblem::None;
+    }catch(const std::bad_alloc&){return SampleSettingsProblem::Resource;}
+    catch(const std::exception& e){error=e.what();return SampleSettingsProblem::Database;}
+}
 std::string Index::exportJson() const {
+    if(audio::onAudioThread)return {};
     std::lock_guard lock(impl_->mutex); Json media = Json::object();
     SQLite::Statement q(*impl_->db,"SELECT hash,payload FROM annotations ORDER BY hash");
-    while(q.executeStep()) media[q.getColumn(0).getString()] = Json::parse(q.getColumn(1).getString());
-    return Json{{"version",1},{"media",media}}.dump(2);
+    bool sampleDefaults=false;
+    while(q.executeStep()) {
+        auto payload=libraryJson(q.getColumn(1).getString());sampleDefaults=sampleDefaults || payload.contains("sample_settings");media[q.getColumn(0).getString()]=std::move(payload);
+    }
+    auto encoded=Json{{"version",sampleDefaults?2:1},{"media",media}}.dump(2);
+    if(encoded.size()>maxLibraryJsonBytes)throw std::length_error("library JSON export exceeds 256 MiB");
+    return encoded;
 }
 bool Index::importJson(const std::string& text,std::string& error) {
+    if(audio::onAudioThread)return false;
     try {
-        const auto document=Json::parse(text);
-        if (!document.is_object() || document.size()!=2 || document.at("version")!=1 || !document.at("media").is_object()) throw std::runtime_error("invalid library JSON envelope");
-        std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db);
+        const auto document=libraryJson(text);
+        if (!document.is_object() || document.size()!=2 || !document.at("version").is_number_integer() || (document.at("version")!=1 && document.at("version")!=2) || !document.at("media").is_object()) throw std::runtime_error("invalid library JSON envelope");
+        std::lock_guard lock(impl_->mutex); SQLite::Transaction tx(*impl_->db,SQLite::TransactionBehavior::IMMEDIATE);
         for (const auto& [hash, incoming] : document.at("media").items()) {
             if (!validHash(hash) || !incoming.is_object()) throw std::runtime_error("metadata must be keyed by BLAKE3 hash");
             Json merged={{"tags",Json::array()},{"bpm",nullptr},{"rating",nullptr}};
-            SQLite::Statement old(*impl_->db,"SELECT payload FROM annotations WHERE hash=?"); old.bind(1,hash); if(old.executeStep()) merged=Json::parse(old.getColumn(0).getString());
+            SQLite::Statement old(*impl_->db,"SELECT payload FROM annotations WHERE hash=?");old.bind(1,hash);
+            if(old.executeStep()) {
+                const auto field=old.getColumn(0);if(field.getBytes()<0 || static_cast<std::size_t>(field.getBytes())>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
+                merged=libraryJson(field.getString());
+            }
             for(const auto& [key,value] : incoming.items()) {
                 if (key=="tags") {
                     if(!value.is_array()) throw std::runtime_error("tags must be an array");
@@ -279,9 +380,17 @@ bool Index::importJson(const std::string& text,std::string& error) {
                 } else if(key=="rating") {
                     if(!value.is_null() && (!value.is_number_integer() || value.get<std::int64_t>()<0 || value.get<std::int64_t>()>5)) throw std::runtime_error("invalid rating");
                     merged[key]=value;
+                } else if(key=="sample_settings") {
+                    if(document.at("version")!=2)throw std::runtime_error("sample defaults require library JSON version 2");
+                    const auto decoded=decodeSampleSettings(value);if(!decoded)throw std::runtime_error("invalid imported sample defaults: "+decoded.error);
+                    if(merged.contains(key)) {
+                        const auto oldSettings=decodeSampleSettings(merged.at(key));if(!oldSettings)throw std::runtime_error("existing sample defaults are not editable by this version");
+                    }
+                    merged[key]=encodeSampleSettings(*decoded.data);
                 } else throw std::runtime_error("unknown metadata field");
             }
-            SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); put.bind(1,hash); put.bind(2,merged.dump()); put.exec();
+            SQLite::Statement put(*impl_->db,"INSERT INTO annotations VALUES(?,?) ON CONFLICT(hash) DO UPDATE SET payload=excluded.payload"); const auto serialized=merged.dump();if(serialized.size()>kMaxSampleWarpBytes*2+65536)throw std::length_error("sample annotation exceeds bounds");
+            put.bind(1,hash);put.bind(2,serialized);put.exec();
         }
         tx.commit(); error.clear(); return true;
     } catch(const std::exception& e) { error=e.what(); return false; }

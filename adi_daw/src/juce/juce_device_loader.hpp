@@ -9,7 +9,7 @@
 //   * **How a row is matched to a binary.** `plugin_refs.uid` is the identity
 //     (VST3: JUCE's identifier string, as `identityOf` records it; CLAP: the
 //     descriptor's reverse-DNS id). `path_hint` is tried FIRST for VST3 -- a
-//     file the project remembers is exact and costs one `findAllTypesForFile`
+//     file the project remembers is exact and costs one child probe
 //     rather than a directory scan -- and is the tie-break for CLAP when one id
 //     is installed twice. The scan runs once, lazily, on the first row that
 //     needs it, and again only after a search path is added.
@@ -26,6 +26,7 @@
 #pragma once
 
 #include "adi/engine/session.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "juce/clap_host.hpp"
 #include "juce/vst3_host.hpp"
 
@@ -35,6 +36,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace adi::device {
 
@@ -48,6 +50,15 @@ public:
 
     /// Explicit scan; `fn()` also scans lazily on the first row that needs one.
     void scan();
+
+    /// Owner configuration for the dedicated helper/shared quarantine. Empty
+    /// paths use app defaults. Changing it invalidates the lazy discovery cache.
+    void setScanConfig(const scan::Config& config) {
+        if(audio::onAudioThread)return;
+        scanConfig_=config;scanned_=false;
+    }
+    /// Borrowed on the owner between jobs; copy/publish for another thread.
+    [[nodiscard]] const scan::Report& lastScanReport() const noexcept { return scanReport_; }
 
     /// The session's `DeviceLoader`. Valid while this object lives.
     [[nodiscard]] engine::DeviceLoader fn();
@@ -83,6 +94,8 @@ private:
     std::vector<std::string> clapPaths_;
     bool scanned_ = false;
     Stats stats_;
+    scan::Config scanConfig_;
+    scan::Report scanReport_;
 };
 
 }  // namespace adi::device
