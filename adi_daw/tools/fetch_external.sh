@@ -8,8 +8,8 @@
 # Both target directories are gitignored: each clone is its own git repo, the
 # same arrangement as VST-ADI/vital. Submodules are NOT fetched by default --
 # none of the reference repos needs to build for us to read it -- and an entry
-# that genuinely needs one says `submodules` in a seventh column. libpd is the
-# only one: pure-data is a submodule and is the DSP itself.
+# that genuinely needs one says `submodules` in a seventh column. libpd needs
+# pure-data (the DSP itself); Link needs its pinned standalone Asio.
 #
 # The licence boundary these two directories encode is not cosmetic. See
 # docs/EXTERNAL-CODE.md before copying a single line out of reference/.
@@ -60,6 +60,8 @@ if [ "$WANT_REFERENCE" = 1 ]; then mkdir -p reference; fi
 #          every ABI a large clone to build something none of them build.
 # Moving a pin is a reviewed change, not a refresh: see ADR-0024.
 THIRD_PARTY=(
+  # Musical tempo/phase sync only; the SDK pins standalone Asio by gitlink.
+  "Ableton/link link GPL-2.0-or-later Link-3.1.5 45931b8bd2a7066f1950f2a0beab81a0c51f28fe build submodules"
   # Public headers only: independent ABI shims dynamically load Linux AAC.
   "FFmpeg/FFmpeg ffmpeg6 LGPL-2.1-or-later n6.1.3 01d3f764f79b2f571174a4cec855e651258f20ec build headers"
   "FFmpeg/FFmpeg ffmpeg7 LGPL-2.1-or-later n7.1.5 3a0867c2bfda4a4d4309ca1a8cbdc6175e67f587 build headers"
@@ -75,7 +77,7 @@ THIRD_PARTY=(
   "bungee-audio-stretch/bungee  bungee      MPL-2.0   v2.4.30   8cb6977d0c1a1b411ac320493b3c7f5182ed2d22  later"
   "DNedic/lockfree              lockfree    MIT       3.0.1     ae6c4df124536218b0b1adfc21ab4921810a00a5  later"
   "free-audio/clap              clap        MIT       1.2.10    195b42a004144fab0b3cf95e9c067187d15365b7  build"
-  # libpd is the one entry with a submodule, and it is not optional: pure-data
+  # libpd has a required submodule: pure-data
   # IS the DSP -- libpd without it is a wrapper around nothing. Its commit is
   # fixed by libpd's own tree, so the pin below still answers "what did we build
   # against" with one hash. ADR-0035, ADR-0183.
