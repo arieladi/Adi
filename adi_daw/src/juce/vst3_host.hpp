@@ -113,6 +113,8 @@ public:
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return inst_ != nullptr; }
 
+    [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
+
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void release() override;
     void process(const engine::NodeIo& io) noexcept override;
@@ -228,6 +230,9 @@ public:
     /// Parameter changes refused: no free queue, or a full one. MpeMidi's
     /// IMidiMapping path lands here as well as ordinary automation.
     [[nodiscard]] std::int64_t paramsDropped() const noexcept { return paramChanges_.dropped(); }
+    [[nodiscard]] std::uint32_t unsupportedControllers() const noexcept {
+        return unsupportedControllers_.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] std::int64_t eventsOutOfRange() const noexcept {
         return events_.outOfRange() + routedOutOfRange_;
     }
@@ -297,6 +302,7 @@ private:
 
     void readParameters();
 
+    std::weak_ptr<DeviceEditor> editor_;
     std::unique_ptr<juce::AudioPluginInstance> inst_;
     DeviceIdentity id_;
     std::vector<ParamDescriptor> params_;
@@ -324,6 +330,7 @@ private:
     std::vector<engine::MpeOut> routedStore_;
     engine::MpeOutList routed_;
     std::int64_t routedOutOfRange_ = 0;
+    std::atomic<std::uint32_t> unsupportedControllers_{0};
     std::atomic<std::uint8_t> requestedRoute_{0};    ///< engine::RouteChoice
     std::uint8_t appliedRoute_ = 0;                  ///< audio thread only
     std::atomic<std::uint8_t> routeInUse_{0};        ///< engine::ExpressionRoute

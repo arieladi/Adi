@@ -300,17 +300,21 @@ ProcessResult launch(const std::filesystem::path& executable,
     return result;
 }
 #endif
+// The only named object and the only return, so MSVC elides it even at /Od. A
+// result moved out of runProcess (several different returns, not elided) would
+// cost the callback refusal a second MSVC Debug string-proxy allocation.
+ProcessResult refusal(ProcessStatus status) {
+    ProcessResult result;
+    result.status = status;
+    return result;
+}
 } // namespace
 
 ProcessResult runProcess(const std::filesystem::path& executable,
                          const std::vector<std::string>& arguments, const ProcessOptions& options) {
-    if (audio::onAudioThread) {
-        ProcessResult result; result.status = ProcessStatus::CallbackRefused; return result;
-    }
+    if (audio::onAudioThread) return refusal(ProcessStatus::CallbackRefused);
     if (!valid(executable, arguments, options)) return {};
-    if (cancelled(options)) {
-        ProcessResult result; result.status = ProcessStatus::Cancelled; return result;
-    }
+    if (cancelled(options)) return refusal(ProcessStatus::Cancelled);
     return launch(executable, arguments, options);
 }
 } // namespace adi::scan

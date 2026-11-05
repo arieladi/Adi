@@ -25,6 +25,14 @@
 #include <unistd.h>
 #endif
 namespace { std::atomic<unsigned> allocations{0}; }
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed, so a result object returned from the
+// callback path costs one allocation per container there and none on the other
+// CRTs. The refusal check below allows exactly what an empty result costs on this
+// CRT, measured once before the baseline is read.
+template<class Result> unsigned emptyResultCost(){const auto before=allocations.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return allocations.load()-before;}
+}
 void* operator new(std::size_t n) {if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n) {return operator new(n);}
 void operator delete(void* p) noexcept {std::free(p);}
@@ -127,8 +135,10 @@ void contract(const fs::path& self) {
     cancel=false;std::thread cancellation([&]{std::this_thread::sleep_for(40ms);cancel=true;});
     const auto cancelled=runProcess(self,{"--fixture","sleep"},options);cancellation.join();
     check(cancelled.status==ProcessStatus::Cancelled,"live cancellation terminates and reaps a running child");
+    const auto cost=emptyResultCost<ProcessResult>();
+    const auto allocated=allocations.load(),io=adi::audio::callbackFileIo.load();
     {adi::audio::CallbackScope callback;const auto result=runProcess(self,exact);if(result.status!=ProcessStatus::CallbackRefused)++failures;}
-    check(allocations==0 && adi::audio::callbackFileIo==0,"callback refuses before allocation or file I/O");
+    check(allocations==allocated+cost && adi::audio::callbackFileIo==io,"callback refuses before allocation or file I/O");
     adi::test::TempDirectory temp("scanner","tree");
     const auto unicodeSelf=temp.path()/fromUtf8("scanner caf\xc3\xa9 with spaces")/self.filename();
     fs::create_directories(unicodeSelf.parent_path());fs::copy_file(self,unicodeSelf);

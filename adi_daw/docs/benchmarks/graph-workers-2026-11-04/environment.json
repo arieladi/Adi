@@ -1,0 +1,45 @@
+{
+  "cpu_mask": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "package": 0,
+  "physical_cores": [
+    0,
+    1,
+    2,
+    3
+  ],
+  "cpu_quota": "400000 100000",
+  "compiler": "c++ (Debian 14.2.0-19) 14.2.0",
+  "flags": "CMake Release -O3 -DNDEBUG ADI_WERROR=ON PD=ON JUCE=OFF",
+  "iterations": 1000,
+  "warmup_per_row": 32,
+  "rate": 48000,
+  "channels": 2,
+  "model": "model name\t: AMD EPYC 9V74 80-Core Processor",
+  "baseline_hot_source_commit": "2d73325a4d1cbcb6a3611ac58dc379949153acb1",
+  "baseline_link_note": "Exact baseline graph.cpp/graph.hpp/benchmark compiled with matching Release flags; linked validated feature cold dependencies; baseline contains no new Graph implementation.",
+  "source_sha256": {
+    "src/adi/engine/graph.cpp": "63bbcc0084d8442493110bec977364e3d0cf7d17ca984fd41901520813a80ce4",
+    "src/adi/engine/graph.hpp": "cf2fdd21acd8c9dba7e5e852d48bab7ee1c40ca99901b7188899a54b27bf5b3d",
+    "src/adi/engine/render_workers.cpp": "fe7251a59cfd7402a3138bb8d5a855b49ea4a21412e7fe787aa08db9e9bdc0be",
+    "src/adi/engine/render_workers.hpp": "2e509b529d278bacb0f074d626bf9afe3050daebd5d02fb49dc7a394cfd4a755",
+    "src/adi/engine/host.cpp": "cc52f0471722adef30aa98103e129da72720638623fdbc03e96ad59990bcef42",
+    "src/adi/engine/host.hpp": "5532da048397cede1baf901114d33d2c307835bbc9a0751a439d45bb060b139e",
+    "src/adi/engine/realize.hpp": "8f33aa41f32d45a2b22bf639698c6504543ad7fb2536c5d0efe89fd73542c73b",
+    "src/adi/engine/session.cpp": "add540c927b93f32d633efb846c79b484fdd66211f3e9491879e89e375b71f08",
+    "src/adi/engine/session.hpp": "e48c276a207625f20a4b118cc11bb94a1e8410f70861ce314306d917b25d55c8",
+    "tools/benchmark_blocks.cpp": "747819c635b0fdab7f93a97d0e7ed6718fdebb160ae7abe2aab4eab2f3c58791"
+  },
+  "commands": {
+    "baseline": "baseline benchmark --iterations 1000 --precision BITS",
+    "serial": "adi_block_benchmark --iterations 1000 --precision BITS --workers 0",
+    "forced-workers": "adi_block_benchmark --iterations 1000 --precision BITS --workers 3 --parallel-min-frames 1 --parallel-min-nodes 4",
+    "profile": "adi_block_benchmark --iterations 1000 --precision BITS --workers 3 --parallel-min-frames 4096 --parallel-min-nodes 64"
+  },
+  "affinity_command": "taskset -c 0,1,2,3",
+  "scheduler": "Normal OS scheduling; no driver initializer, no realtime priority requested."
+}
