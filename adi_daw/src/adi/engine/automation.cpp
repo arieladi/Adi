@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/automation.hpp"
+#include "adi/engine/automation_clips.hpp"
 
 #include "adi/blob.hpp"
 #include "adi/engine/curves.hpp"
@@ -8,6 +9,8 @@
 #include <algorithm>
 #include <cmath>
 #include <span>
+#include <map>
+#include <set>
 
 namespace adi::engine {
 namespace {
@@ -41,12 +44,13 @@ double segmentValue(const std::vector<PlacedPoint>& p, std::size_t i, std::int64
     const PlacedPoint& a = p[i - 1];
     const PlacedPoint& b = p[i];
     const double x = static_cast<double>(sample - a.sample) / static_cast<double>(b.sample - a.sample);
-    return curveValue(a.value, b.value, x, a.curve, a.tension);
+    return curveSliceValue(a.value, b.value, x, a.curve, a.tension,a.slice);
 }
 
 }  // namespace
 
 double valueAt(const AutomationLaneProgram& lane, std::int64_t sample) noexcept {
+    if (const auto clip = clipEnvelopeValue(lane, sample)) return *clip;
     const auto& p = lane.points;
     if (p.empty()) return lane.defaultValue;
     const std::size_t i = after(p, sample);
@@ -55,11 +59,20 @@ double valueAt(const AutomationLaneProgram& lane, std::int64_t sample) noexcept 
     return segmentValue(p, i, sample);
 }
 
+std::int64_t automationBoundaryAfter(const AutomationLaneProgram& lane, std::int64_t sample) noexcept {
+    if (!lane.changes.empty()) {
+        const auto at = std::upper_bound(lane.changes.begin(), lane.changes.end(), sample);
+        return at == lane.changes.end() ? INT64_MAX : *at;
+    }
+    const auto i = after(lane.points, sample);
+    return i == lane.points.size() ? INT64_MAX : lane.points[i].sample;
+}
+
 void fill(const AutomationLaneProgram& lane, std::int64_t first, std::int64_t stride, std::size_t count,
           double* out) noexcept {
     if (count == 0 || out == nullptr) return;
     const auto& p = lane.points;
-    if (p.empty() || stride < 0) {
+    if (p.empty() || stride < 0 || !lane.clipRegions.empty()) {
         for (std::size_t k = 0; k < count; ++k)
             out[k] = valueAt(lane, first + static_cast<std::int64_t>(k) * stride);
         return;
@@ -84,16 +97,23 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
     if (std::any_of(tempo.events.begin(), tempo.events.end(), [](const TempoEvent& e) { return e.curve != 0; }))
         problems_.push_back("automation: tempo ramps unsupported; point times use step tempos");
 
-    for (const auto& d : model.automationData)
-        if (d.clipId)
-            problems_.push_back(laneName(d.laneId) + ": clip envelope (clips#" + std::to_string(*d.clipId) +
-                                ") not played yet");
+    std::map<std::int64_t,std::map<std::int64_t,const rows::AutomationSegmentRange*>> rangeIndex;
+    std::set<std::int64_t> duplicateRanges;
+    for(const auto& range:model.automationSegmentRanges)
+        if(!rangeIndex[range.dataId].emplace(range.recordIndex,&range).second)duplicateRanges.insert(range.dataId);
 
     for (const rows::AutomationLane& row : model.automationLanes) {
         const std::string name = laneName(row.id);
-        if (row.ownerKind != "track" && row.ownerKind != "device") {
+        if (row.ownerKind != "track" && row.ownerKind != "device" && row.ownerKind != "routing") {
             problems_.push_back(name + ": owner '" + row.ownerKind + "' not played yet");
             continue;
+        }
+        if (row.ownerKind == "routing") {
+            const auto route = std::find_if(model.routing.begin(), model.routing.end(), [&](const auto& r) { return r.id == row.ownerId; });
+            if (route == model.routing.end() || route->kind != "send" || route->srcKind != "track") {
+                problems_.push_back(name + ": routing target is not an existing track send; not played");
+                continue;
+            }
         }
         AutomationLaneProgram lane;
         lane.laneId = row.id;
@@ -107,6 +127,7 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
         const auto data = std::find_if(model.automationData.begin(), model.automationData.end(),
                                        [&](const rows::AutomationData& d) { return d.laneId == row.id && !d.clipId; });
         if (data == model.automationData.end()) {   // no points: the lane reads its default
+            compileClipEnvelopes(lane, row, model, rate_, problems_);
             lanes_.push_back(std::move(lane));
             continue;
         }
@@ -148,13 +169,35 @@ AutomationProgram::AutomationProgram(const rows::Model& model, double sessionRat
             placed.value = rec->value;
             placed.tension = static_cast<double>(rec->tension);
             placed.curve = rec->curve;
+            const rows::AutomationSegmentRange* range=nullptr;
+            if(const auto parent=rangeIndex.find(data->id);parent!=rangeIndex.end()) {
+                const auto found=parent->second.find(static_cast<std::int64_t>(k));
+                if(found!=parent->second.end())range=found->second;
+            }
+            if(range) {
+                if(range->clipId || !std::isfinite(range->progressBegin) || !std::isfinite(range->progressEnd) ||
+                   !std::isfinite(range->sourceFirst) || !std::isfinite(range->sourceLast) ||
+                   range->progressBegin<0 || range->progressEnd>1 || range->progressEnd<=range->progressBegin) {
+                    refused=at+"invalid curve range";break;
+                }
+                auto slice=std::make_shared<const CurveSlice>(CurveSlice{range->progressBegin,range->progressEnd,range->sourceFirst,range->sourceLast});
+                placed.slice=slice.get();slices_.push_back(std::move(slice));
+            }
             points.push_back(placed);
         }
+        if(duplicateRanges.contains(data->id))refused="duplicate curve range";
+        if(const auto parent=rangeIndex.find(data->id);parent!=rangeIndex.end())
+            for(const auto& [record,range]:parent->second) {
+                (void)range;
+                if(record<0 || static_cast<std::uint64_t>(record)>=reader.count())
+                    refused="curve range refers to a missing record";
+            }
         if (!refused.empty()) {
             problems_.push_back(name + ": refused: " + refused);
             continue;
         }
         lane.points = std::move(points);
+        compileClipEnvelopes(lane, row, model, rate_, problems_);
         lanes_.push_back(std::move(lane));
     }
     std::sort(lanes_.begin(), lanes_.end(),

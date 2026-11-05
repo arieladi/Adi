@@ -216,6 +216,10 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         auto error = manager_.initialise(0, 2, nullptr, true, {}, &setup);
+        // Then the channels each device's record keeps in use: Live's 1, 2 and 1/2 in and out
+        // where none is kept (N20; Live 12 manual 17.2).
+        if (error.isEmpty())
+            error = useChannelConfig(manager_, *settings_);
         if (error.isNotEmpty()) {
             report(error.toStdString());
             return;
@@ -287,7 +291,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 // The smoke shows the page over an unopened device manager.
                 if (!noAudio_ || smokeSettings_)
                     devices = [this]() -> std::unique_ptr<juce::Component> {
-                        return std::make_unique<AudioDevicePage>(manager_);
+                        return std::make_unique<AudioDevicePage>(manager_, *settings_);
                     };
                 settingsWindow_ = std::make_unique<SettingsWindow>(*settings_, std::move(devices));
                 // A change applies at once: the commands re-read what they keep of the
