@@ -22,6 +22,28 @@
 #include <new>
 #include <stdexcept>
 namespace {std::atomic<unsigned> allocations{0},frees{0};}
+namespace {
+// MSVC's STL with iterator debugging on (_ITERATOR_DEBUG_LEVEL 1 or 2; 2 is the
+// Debug default) allocates a container proxy whenever a std::string or std::vector
+// is constructed and frees it when that container is destroyed, so a result object
+// returned from the callback path costs one allocation and one free per container
+// there. Other standard libraries allocate nothing for an empty result, so their
+// allowance is zero and the refusal check below stays exactly allocations==0 &&
+// frees==0. The measurement is taken back out of the counters, which keep counting
+// every callback allocation and free this program made, Session::process included.
+struct ResultCost {unsigned allocated=0,freed=0;};
+template<class Result> ResultCost emptyResultCost() {
+#if defined(_ITERATOR_DEBUG_LEVEL) && _ITERATOR_DEBUG_LEVEL != 0
+    const auto a=allocations.load(),f=frees.load();
+    {adi::audio::CallbackScope scope;Result empty;(void)empty;}
+    const ResultCost cost{allocations.load()-a,frees.load()-f};
+    allocations-=cost.allocated;frees-=cost.freed;
+    return cost;
+#else
+    return {};
+#endif
+}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p) noexcept{if(p && adi::audio::onAudioThread)++frees;std::free(p);}
@@ -218,9 +240,11 @@ void cancellationAndCallbacks() {
     options.checkpoint=[&]{if(++calls==3)during.request_stop();};
     check(!prepareSeparatedStems(*f.store,f.result,options).ready() && count(*f.store,"tracks")==7,"live cancellation during capture leaves no project changes");
     auto captured=f.prepare();if(!captured.ready())throw std::runtime_error(captured.error());
+    const auto preparedCost=emptyResultCost<PreparedSeparation>(),commitCost=emptyResultCost<CommitResult>();
     PreparedSeparation refused;CommitResult commit;
     {audio::CallbackScope scope;refused=prepareSeparatedStems(*f.store,f.result,f.options);commit=commitSeparatedStems(*f.store,captured,7);}
-    check(!refused.ready() && !commit.ok && allocations==0 && frees==0 && audio::callbackFileIo==0,"both entry points refuse callbacks before SQL/file I/O, allocations or frees");
+    check(!refused.ready() && !commit.ok && allocations==preparedCost.allocated+commitCost.allocated &&
+        frees==preparedCost.freed+commitCost.freed && audio::callbackFileIo==0,"both entry points refuse callbacks before SQL/file I/O, allocations or frees");
     check(captured.ready() && commitSeparatedStems(*f.store,captured,7).ok,"callback refusal leaves the owner's valid prepared result intact");
 }
 void boundaries() {

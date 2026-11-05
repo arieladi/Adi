@@ -105,8 +105,10 @@ void request(std::vector<OpRequest>& ops,const char* type,Payload payload) {
 } // namespace
 bool PreparedSeparation::ready() const noexcept{return data_ && !data_->committed && error_.empty();}
 PreparedSeparation prepareSeparatedStems(Store& store,const SeparationResult& result,const SeparationImportOptions& options) {
+    // The callback refusal is a prvalue built in the caller's slot: guaranteed
+    // elision, not optional NRVO, so it costs exactly one empty result.
+    if(audio::onAudioThread)return {};
     PreparedSeparation prepared;
-    if(audio::onAudioThread)return prepared;
     try {
         require(!store.readOnly(),"stem result project is read-only");
         require(result.sourceMedia>0 && result.sourceBegin>=0 && result.frames>0 && hash(result.sourceHash),"invalid separation source identity/window");
@@ -211,7 +213,11 @@ PreparedSeparation prepareSeparatedStems(Store& store,const SeparationResult& re
     return prepared;
 }
 CommitResult commitSeparatedStems(Store& store,PreparedSeparation& prepared,std::uint64_t generation,Actor actor,const CommitOptions& extra) {
-    CommitResult refused;if(audio::onAudioThread)return refused;
+    // The callback refusal is a prvalue built in the caller's slot. A named result
+    // is moved out, not elided (other returns name `result`), which on MSVC Debug
+    // allocates a second set of container proxies on the audio thread.
+    if(audio::onAudioThread)return {};
+    CommitResult refused;
     if(!prepared.ready()){refused.error="stem result is absent or already committed";return refused;}
     const auto data=prepared.data_;
     try {
