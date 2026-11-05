@@ -751,6 +751,10 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 add_executable(adi_clap_probe src/juce/clap_probe.cpp)
 target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
 
+add_executable(adi_scan_quarantine_tests tests/test_scan_quarantine.cpp)
+target_link_libraries(adi_scan_quarantine_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_quarantine_tests COMMAND adi_scan_quarantine_tests)
+
 add_executable(adi_dsp_tests tests/test_dsp.cpp)
 target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
 # The Pd patches are read from the source tree, not copied next to the binary.
