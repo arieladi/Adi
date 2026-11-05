@@ -74,8 +74,10 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
     return prepareImportAudio(store,options,referenceRate,nullptr);
 }
 MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate,library::Index* index) {
+    // The callback refusal is a prvalue built in the caller's slot: guaranteed
+    // elision, not optional NRVO, so it costs exactly one empty result.
+    if(audio::onAudioThread)return {};
     MaterialEdit result;
-    if(audio::onAudioThread)return result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
         if(options.stop.stop_requested())throw std::runtime_error("import cancelled");

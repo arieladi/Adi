@@ -25,6 +25,16 @@
 #include <new>
 #include <numbers>
 namespace {std::atomic<unsigned> allocations{0},frees{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed and frees it when that container is
+// destroyed, so an empty result returned from the callback path costs one allocation
+// and one free per container there and none on the other CRTs. The refusal check
+// below allows exactly what the empty results cost on this CRT, measured once before
+// the baseline is read.
+struct ResultCost {unsigned allocated=0,freed=0;};
+template<class Result> ResultCost emptyResultCost(){const auto a=allocations.load(),f=frees.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return {allocations.load()-a,frees.load()-f};}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p)noexcept{if(p && adi::audio::onAudioThread)++frees;std::free(p);}
@@ -94,9 +104,11 @@ void loopsAndMarkers() {
 void guards() {
     Project source,target;original(source);test::TempDirectory home{"sample_defaults","guards"};std::string error;auto index=library::Index::open(home.path()/"library.sqlite",error,false);if(!index)throw std::runtime_error(error);const auto captured=clip_edit::captureSampleDefaults(*source.store,7,48000);if(!captured.ok)throw std::runtime_error(captured.error);auto wrong=*captured.settings;wrong.frames++;if(index->saveSampleSettings(captured.hash,wrong,error)!=library::SampleSettingsProblem::None)throw std::runtime_error(error);
     auto rejected=clip_edit::prepareImportAudio(*target.store,target.options(source.source()),48000,index.get());check(!rejected.edit.ok && target.store->db().execAndGet("SELECT count(*) FROM ops").getInt()==0 && target.store->db().execAndGet("SELECT count(*) FROM media_files").getInt()==0,"mismatched authored dimensions refuse without native rows or history");
+    // The refused capture returns one empty SampleDefaultsCapture and the refused import one empty MaterialEdit; the refused save returns only its enum.
+    const auto captureCost=emptyResultCost<clip_edit::SampleDefaultsCapture>(),importCost=emptyResultCost<clip_edit::MaterialEdit>();
     const auto io=audio::callbackFileIo.load(),a=allocations.load(),f=frees.load();error="keep";bool capturedAudio=false,importedAudio=false;library::SampleSettingsProblem savedAudio{};const auto options=target.options(source.source());
     {audio::CallbackScope callback;capturedAudio=clip_edit::captureSampleDefaults(*source.store,7,48000).ok;savedAudio=clip_edit::saveSampleDefaults(*source.store,7,48000,*index,error);importedAudio=clip_edit::prepareImportAudio(*target.store,options,48000,index.get()).edit.ok;}
-    check(!capturedAudio && !importedAudio && savedAudio==library::SampleSettingsProblem::Realtime && error=="keep" && io==audio::callbackFileIo.load() && a==allocations.load() && f==frees.load(),"native Save/capture/import callback boundaries allocate, free, query and read nothing");
+    check(!capturedAudio && !importedAudio && savedAudio==library::SampleSettingsProblem::Realtime && error=="keep" && io==audio::callbackFileIo.load() && a+captureCost.allocated+importCost.allocated==allocations.load() && f+captureCost.freed+importCost.freed==frees.load(),"native Save/capture/import callback boundaries allocate, free, query and read nothing");
     source.store->db().exec("ALTER TABLE audio_clips ADD COLUMN future_control BLOB NOT NULL DEFAULT X'00FF'");check(!clip_edit::captureSampleDefaults(*source.store,7,48000).ok,"capturing defaults refuses unknown authored native source fields instead of dropping them");
 }
 void atomicRecall() {

@@ -47,7 +47,10 @@ std::int64_t initialSpan(std::int64_t offset,std::int64_t end,const std::optiona
 }
 }
 SampleDefaultsCapture captureSampleDefaults(Store& store,std::int64_t clipId,double referenceRate) {
-    SampleDefaultsCapture result;if(audio::onAudioThread)return result;
+    // The callback refusal is a prvalue built in the caller's slot: guaranteed
+    // elision, not optional NRVO, so it costs exactly one empty result.
+    if(audio::onAudioThread)return {};
+    SampleDefaultsCapture result;
     try {
         std::optional<SQLite::Transaction> read;if(sqlite3_get_autocommit(store.db().getHandle())!=0)read.emplace(store.db(),SQLite::TransactionBehavior::DEFERRED);
         const auto copied=copyClip(store,clipId,referenceRate);if(!copied.ok)throw std::runtime_error(copied.error);
