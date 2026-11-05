@@ -7,6 +7,11 @@ owns its values and keeps a consistent database read view; it has no store or
 stream handles. A missing clip or SQL failure returns `error` and no partial
 clip. Only the selected clip's note stream is read.
 
+Pass `includeNotes=false` to read properties without selecting or decoding any
+note stream. The reader opens its own deferred read transaction when needed,
+or participates in a caller-owned transaction without committing it. The
+caller owns the Store connection and must serialize access to it.
+
 The returned `clip` includes kind/name/optional palette colour, track/lane/alias
 ids, original tick/ns placement and length, mute/gain, fades and their curves,
 content offset, loop start/length and enabled switch. NULL stays distinct from
@@ -30,6 +35,11 @@ key, attack/release velocity, channel, all flags, probability, tuning and active
 (`NoteFlags::Muted` clear). Times are source-relative. Alias metadata and this
 clip's own stream are reported as stored; the reader does not invent alias
 playback or silently address another clip.
+
+`engine::readClipScaleContext(store, clipId)` uses the properties-only read and
+loads the referenced tuning rows in the same snapshot. See
+[ENGINE-SCALE-CONTEXT.md](ENGINE-SCALE-CONTEXT.md) for immutable degree queries
+and the explicit absolute tonic used by ruler and Fold projections.
 
 An invalid stream or note is named in `notesProblem` with no partial note list;
 other clip properties remain readable. Legacy zero/duplicate ids remain exact

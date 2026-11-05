@@ -3,5 +3,5 @@
 #define ADI_AVUTIL_NAME "libavutil.so.59"
 #define ADI_FF_AVAILABLE ffmpeg61Available
 #define ADI_FF_ENCODE ffmpeg61Encode
-#define ADI_FF_DECODE ffmpeg61Decode
+#define ADI_FF_DECODE ffmpeg61DecodePcm
 #include "aac_ffmpeg.inc"

@@ -212,6 +212,8 @@ add_library(adi_core STATIC
     src/adi/appdata.cpp
     src/adi/panel.cpp
     src/adi/plugin_registry.cpp
+    src/adi/scan_process.cpp
+    src/adi/plugin_scanner.cpp
     src/adi/media/blake3.cpp
     src/adi/media/zip_writer.cpp
     src/adi/audio/wav_file.cpp
@@ -219,6 +221,7 @@ add_library(adi_core STATIC
     src/adi/audio/stem_manifest.cpp
     src/adi/render/ni_stems.cpp
     src/adi/media/stem_import.cpp
+    src/adi/media/separated_stems.cpp
     src/adi/blob.cpp
     # Deliberately in adi_core rather than behind ADI_WITH_JUCE: device_core
     # includes no JUCE, so its tests run on all seven ABIs instead of only in
@@ -293,6 +296,17 @@ add_library(adi_core STATIC
     src/adi/engine/snapshot.cpp
     src/adi/engine/automation_snapshot.cpp
     src/adi/engine/clip_details.cpp
+    src/adi/engine/clip_details.cpp
+    src/adi/engine/scale_context.cpp
+    src/adi/engine/clip_details.cpp
+    src/adi/engine/scale_context.cpp
+    src/adi/engine/scale_timeline.cpp
+    src/adi/engine/clip_details.cpp
+    src/adi/engine/scale_context.cpp
+    src/adi/engine/scala_import.cpp
+    src/adi/engine/clip_details.cpp
+    src/adi/engine/scale_context.cpp
+    src/adi/tuning_ops.cpp
     src/adi/render/queue.cpp
     src/adi/render/freeze_capture.cpp
     src/adi/freeze_fingerprint.cpp
@@ -303,6 +317,7 @@ add_library(adi_core STATIC
     src/adi/render/normalization.cpp
     src/adi/engine/project_view.cpp
     src/adi/engine/graph.cpp
+    src/adi/engine/render_workers.cpp
     src/adi/engine/plan.cpp
     src/adi/dsp/biquad.cpp
     src/adi/dsp/limiter.cpp
@@ -751,6 +766,34 @@ add_test(NAME adi_device_tests COMMAND adi_device_tests)
 add_executable(adi_clap_probe src/juce/clap_probe.cpp)
 target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
 
+add_executable(adi_plugin_scanner src/juce/plugin_scan_host.cpp)
+target_link_libraries(adi_plugin_scanner PRIVATE adi_core adi_warnings)
+add_dependencies(adi_clap_probe adi_plugin_scanner)
+
+foreach(_adi_scan_fixture IN ITEMS adi_scan_clap_fixture adi_scan_clap_static_fixture)
+    add_library(${_adi_scan_fixture} MODULE tests/fixtures/scan_clap.cpp)
+    target_include_directories(${_adi_scan_fixture} SYSTEM PRIVATE "${ADI_THIRD_PARTY}/clap/include")
+    target_link_libraries(${_adi_scan_fixture} PRIVATE adi_warnings)
+    set_target_properties(${_adi_scan_fixture} PROPERTIES PREFIX "" SUFFIX ".clap")
+endforeach()
+target_compile_definitions(adi_scan_clap_static_fixture PRIVATE ADI_SCAN_STATIC_CRASH=1)
+add_executable(adi_plugin_scanner_tests tests/test_plugin_scanner.cpp)
+target_link_libraries(adi_plugin_scanner_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_plugin_scanner_tests PRIVATE
+    ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>"
+    ADI_SCAN_FIXTURE="$<TARGET_FILE:adi_scan_clap_fixture>"
+    ADI_SCAN_STATIC_FIXTURE="$<TARGET_FILE:adi_scan_clap_static_fixture>")
+add_dependencies(adi_plugin_scanner_tests adi_plugin_scanner adi_scan_clap_fixture adi_scan_clap_static_fixture)
+add_test(NAME adi_plugin_scanner_tests COMMAND adi_plugin_scanner_tests)
+
+add_executable(adi_scan_process_tests tests/test_scan_process.cpp)
+target_link_libraries(adi_scan_process_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_process_tests COMMAND adi_scan_process_tests)
+
+add_executable(adi_scan_quarantine_tests tests/test_scan_quarantine.cpp)
+target_link_libraries(adi_scan_quarantine_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scan_quarantine_tests COMMAND adi_scan_quarantine_tests)
+
 add_executable(adi_dsp_tests tests/test_dsp.cpp)
 target_link_libraries(adi_dsp_tests PRIVATE adi_core adi_warnings)
 # The Pd patches are read from the source tree, not copied next to the binary.
@@ -868,6 +911,9 @@ add_test(NAME adi_plan_tests COMMAND adi_plan_tests)
 add_executable(adi_host_tests tests/test_host.cpp)
 target_link_libraries(adi_host_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_host_tests COMMAND adi_host_tests)
+add_executable(adi_transport_generation_tests tests/test_transport_generation.cpp)
+target_link_libraries(adi_transport_generation_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_transport_generation_tests COMMAND adi_transport_generation_tests)
 
 add_executable(adi_retap_tests tests/test_retap.cpp)
 target_link_libraries(adi_retap_tests PRIVATE adi_core adi_warnings)
@@ -946,6 +992,10 @@ add_executable(adi_param_automation_tests tests/test_param_automation.cpp)
 target_link_libraries(adi_param_automation_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_automation_tests COMMAND adi_param_automation_tests)
 
+add_executable(adi_graph_workers_tests tests/test_graph_workers.cpp)
+target_link_libraries(adi_graph_workers_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_graph_workers_tests COMMAND adi_graph_workers_tests)
+
 add_executable(adi_graph_tests tests/test_graph.cpp)
 target_link_libraries(adi_graph_tests PRIVATE adi_core adi_warnings)
 find_package(Threads REQUIRED)   # ADR-0123: one test renders on a second thread
@@ -1011,6 +1061,29 @@ add_test(NAME adi_automation_snapshot_tests COMMAND adi_automation_snapshot_test
 add_executable(adi_clip_details_tests tests/test_clip_details.cpp)
 target_link_libraries(adi_clip_details_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clip_details_tests COMMAND adi_clip_details_tests)
+
+
+add_executable(adi_scale_context_tests tests/test_scale_context.cpp)
+target_link_libraries(adi_scale_context_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scale_context_tests COMMAND adi_scale_context_tests)
+
+
+add_executable(adi_scale_timeline_tests tests/test_scale_timeline.cpp)
+target_link_libraries(adi_scale_timeline_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scale_timeline_tests COMMAND adi_scale_timeline_tests)
+
+
+
+add_executable(adi_scala_import_tests tests/test_scala_import.cpp)
+target_link_libraries(adi_scala_import_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_scala_import_tests COMMAND adi_scala_import_tests)
+
+
+
+add_executable(adi_tuning_ops_tests tests/test_tuning_ops.cpp)
+target_link_libraries(adi_tuning_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_tuning_ops_tests COMMAND adi_tuning_ops_tests)
+
 # ADR-0201: the UI's project-state cell, message thread only.
 add_executable(adi_project_view_tests tests/test_project_view.cpp)
 target_link_libraries(adi_project_view_tests PRIVATE adi_core adi_warnings)
@@ -1160,6 +1233,17 @@ if(ADI_WITH_JUCE)
 
     add_subdirectory("${ADI_JUCE_DIR}" EXCLUDE_FROM_ALL SYSTEM)
 
+    target_link_libraries(adi_plugin_scanner PRIVATE juce::juce_audio_processors_headless)
+    target_compile_definitions(adi_plugin_scanner PRIVATE
+        ADI_SCAN_WITH_VST3=1 JUCE_STANDALONE_APPLICATION=1
+        JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0 JUCE_DISABLE_JUCE_VERSION_PRINTING=1
+        JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_VST=0 JUCE_PLUGINHOST_AU=0
+        JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_ARA=0)
+    get_target_property(_adi_scan_incs juce::juce_audio_processors_headless INTERFACE_INCLUDE_DIRECTORIES)
+    if(_adi_scan_incs)
+        target_include_directories(adi_plugin_scanner SYSTEM PRIVATE ${_adi_scan_incs})
+    endif()
+
     # --- adi_audio_probe ---------------------------------------------------
     # Opens an audio device at a requested block size, reports what it actually
     # got, and closes. No graph, no processing. It exists to prove the
@@ -1198,6 +1282,7 @@ if(ADI_WITH_JUCE)
     # nothing yields a MissingDevice rather than a null (ADR-0011) -- and
     # scans and instantiates only when a plugin is actually there.
     juce_add_console_app(adi_vst3_probe PRODUCT_NAME "adi_vst3_probe")
+    add_dependencies(adi_vst3_probe adi_plugin_scanner)
     target_sources(adi_vst3_probe PRIVATE
         src/juce/vst3_probe.cpp
         tests/test_plugin_editor_juce.cpp
@@ -1351,6 +1436,17 @@ if(ADI_WITH_JUCE)
         endif()
         add_dependencies(adi_vst3_probe adi_test_vst3)
         target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")
+
+        add_executable(adi_vst3_scanner_tests tests/test_vst3_scanner.cpp)
+        target_link_libraries(adi_vst3_scanner_tests PRIVATE adi_core juce::juce_audio_processors_headless adi_warnings)
+        target_compile_definitions(adi_vst3_scanner_tests PRIVATE
+            ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>" ADI_TEST_VST3="${_adi_fixture}"
+            JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
+            JUCE_DISABLE_JUCE_VERSION_PRINTING=1 JUCE_PLUGINHOST_VST3=1 JUCE_PLUGINHOST_VST=0
+            JUCE_PLUGINHOST_AU=0 JUCE_PLUGINHOST_LV2=0 JUCE_PLUGINHOST_LADSPA=0 JUCE_PLUGINHOST_ARA=0)
+        target_include_directories(adi_vst3_scanner_tests SYSTEM PRIVATE ${_adi_scan_incs})
+        add_dependencies(adi_vst3_scanner_tests adi_plugin_scanner adi_test_vst3)
+        add_test(NAME adi_vst3_scanner_tests COMMAND adi_vst3_scanner_tests)
     endif()
 
     # adi_core carries device_core.cpp and, through its PUBLIC include dir, the
@@ -1361,6 +1457,7 @@ if(ADI_WITH_JUCE)
     # is reachable with --fixture on Windows and macOS, the two platforms it
     # is built on.
     juce_add_console_app(adi_play PRODUCT_NAME "adi_play")
+    add_dependencies(adi_play adi_plugin_scanner)
     target_sources(adi_play PRIVATE
         src/juce/play.cpp
         src/juce/juce_device_loader.cpp
@@ -1391,6 +1488,7 @@ if(ADI_WITH_JUCE)
     # Compile the real player into its channel regression test, with its CLI
     # entry point renamed by the test; never open a hardware driver.
     juce_add_console_app(adi_play_render_tests PRODUCT_NAME "adi_play_render_tests")
+    add_dependencies(adi_play_render_tests adi_plugin_scanner)
     target_sources(adi_play_render_tests PRIVATE tests/test_play_render.cpp
         src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/editor_host_component.cpp src/juce/vst3_events.cpp)
     target_compile_features(adi_play_render_tests PRIVATE cxx_std_20)
@@ -1454,7 +1552,11 @@ target_link_libraries(adi_zip_writer_tests PRIVATE adi_core adi_warnings adi_min
 add_test(NAME adi_zip_writer_tests COMMAND adi_zip_writer_tests)
 
 # linux/collect-export: only this assignment's sources and test targets.
-target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp src/adi/media/peaks.cpp)
+target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp src/adi/media/peaks.cpp src/adi/media/analysis_cache.cpp)
+add_executable(adi_analysis_cache_tests tests/test_analysis_cache.cpp)
+target_link_libraries(adi_analysis_cache_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_analysis_cache_tests COMMAND adi_analysis_cache_tests)
+
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
@@ -1476,7 +1578,11 @@ endif()
 add_library(adi_utf8proc STATIC "${ADI_THIRD_PARTY}/utf8proc/utf8proc.c")
 target_include_directories(adi_utf8proc SYSTEM PUBLIC "${ADI_THIRD_PARTY}/utf8proc")
 target_compile_definitions(adi_utf8proc PUBLIC UTF8PROC_STATIC)
-target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
+target_sources(adi_core PRIVATE src/adi/library/index.cpp src/adi/library/sample_settings.cpp src/adi/library/volume.cpp src/adi/library/platform.cpp)
+add_executable(adi_sample_settings_tests tests/test_sample_settings.cpp)
+target_link_libraries(adi_sample_settings_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_sample_settings_tests COMMAND adi_sample_settings_tests)
+
 target_link_libraries(adi_core PRIVATE adi_utf8proc Threads::Threads)
 add_executable(adi_library_tests tests/test_library.cpp)
 target_link_libraries(adi_library_tests PRIVATE adi_core adi_warnings Threads::Threads)
@@ -1566,7 +1672,7 @@ endforeach()
 add_library(adi_decoders STATIC src/adi/audio/decode_libs.c)
 target_include_directories(adi_decoders SYSTEM PUBLIC
     "${ADI_THIRD_PARTY}/dr_libs" "${ADI_THIRD_PARTY}/miniaudio/extras")
-target_sources(adi_core PRIVATE src/adi/audio/decode.cpp)
+target_sources(adi_core PRIVATE src/adi/audio/decode.cpp src/adi/audio/progressive_decode.cpp)
 target_link_libraries(adi_core PRIVATE adi_decoders)
 add_executable(adi_decode_tests tests/test_decode.cpp)
 target_link_libraries(adi_decode_tests PRIVATE adi_core adi_warnings)
@@ -1575,10 +1681,24 @@ target_compile_definitions(adi_decode_tests PRIVATE
 add_test(NAME adi_decode_tests COMMAND adi_decode_tests)
 set_tests_properties(adi_decode_tests PROPERTIES TIMEOUT 120)
 
+add_executable(adi_pcm_stream_tests tests/test_pcm_stream.cpp)
+target_link_libraries(adi_pcm_stream_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_pcm_stream_tests PRIVATE
+    ADI_PCM_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode"
+    ADI_PCM_EXTRA_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pcm_stream")
+add_test(NAME adi_pcm_stream_tests COMMAND adi_pcm_stream_tests)
+add_executable(adi_progressive_decode_tests tests/test_progressive_decode.cpp)
+target_link_libraries(adi_progressive_decode_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_progressive_decode_tests PRIVATE
+    ADI_PCM_EXTRA_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/pcm_stream")
+add_test(NAME adi_progressive_decode_tests COMMAND adi_progressive_decode_tests)
+
+
 # ADR-0155: immutable MIDI clip schedules, emitted before graph forwarding.
 target_sources(adi_core PRIVATE src/adi/engine/midi_clips.cpp)
 target_sources(adi_core PRIVATE src/adi/engine/midi_controllers.cpp)
 target_sources(adi_core PRIVATE src/adi/engine/midi_memory.cpp)
+target_sources(adi_core PRIVATE src/adi/midi_capture.cpp)
 add_executable(adi_midi_clips_tests tests/test_midi_clips.cpp)
 target_link_libraries(adi_midi_clips_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_clips_tests COMMAND adi_midi_clips_tests)
@@ -1659,6 +1779,16 @@ add_test(NAME adi_mp4_aac_tests COMMAND adi_mp4_aac_tests)
 add_executable(adi_ni_stems_tests tests/test_ni_stems.cpp)
 target_link_libraries(adi_ni_stems_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ni_stems_tests COMMAND adi_ni_stems_tests)
+
+add_executable(adi_aac_import_tests tests/test_aac_import.cpp)
+target_link_libraries(adi_aac_import_tests PRIVATE adi_core adi_warnings)
+target_compile_definitions(adi_aac_import_tests PRIVATE
+    ADI_AAC_IMPORT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/aac_import")
+add_test(NAME adi_aac_import_tests COMMAND adi_aac_import_tests)
+
+add_executable(adi_separated_stems_tests tests/test_separated_stems.cpp)
+target_link_libraries(adi_separated_stems_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_separated_stems_tests COMMAND adi_separated_stems_tests)
 
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
 target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)
@@ -1748,3 +1878,36 @@ add_test(NAME adi_send_automation_tests COMMAND adi_send_automation_tests)
 add_executable(adi_midi_memory_tests tests/test_midi_memory.cpp)
 target_link_libraries(adi_midi_memory_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_midi_memory_tests COMMAND adi_midi_memory_tests)
+
+# The scanner is mandatory beside each executable that discovers plug-ins.
+# Always run the copy target when building a consumer: a helper-only change
+# must replace its old copy even when the consumer does not need relinking.
+# TARGET_FILE_DIR is a component expression (CMP0112 NEW), so this introduces
+# no reverse target dependency/cycle. No UI source is modified here.
+if(ADI_WITH_JUCE)
+    foreach(_adi_scan_consumer IN ITEMS adi_vst3_probe adi_play adi_play_render_tests adi_app)
+        if(TARGET ${_adi_scan_consumer})
+            add_custom_target(adi_scanner_beside_${_adi_scan_consumer}
+                COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:${_adi_scan_consumer}>"
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:adi_plugin_scanner>"
+                    "$<TARGET_FILE_DIR:${_adi_scan_consumer}>/$<TARGET_FILE_NAME:adi_plugin_scanner>"
+                DEPENDS adi_plugin_scanner VERBATIM)
+            add_dependencies(${_adi_scan_consumer} adi_scanner_beside_${_adi_scan_consumer})
+        endif()
+    endforeach()
+endif()
+
+
+
+
+add_executable(adi_midi_capture_input_tests tests/test_midi_capture_input.cpp)
+target_link_libraries(adi_midi_capture_input_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_midi_capture_input_tests COMMAND adi_midi_capture_input_tests)
+
+
+
+
+
+add_executable(adi_midi_capture_tests tests/test_midi_capture.cpp)
+target_link_libraries(adi_midi_capture_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_midi_capture_tests COMMAND adi_midi_capture_tests)
