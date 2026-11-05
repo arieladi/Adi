@@ -50,7 +50,7 @@ SampleSettingsProblem validateSampleSettings(const SampleSettings& s,std::string
         if(s.loopLengthTicks && *s.loopLengthTicks>largest-s.loopStartTicks)throw std::invalid_argument("saved sample loop overflows");
         if(s.loopEnabled && (s.warpEnabled || !s.loopBeginNs) && (!s.loopLengthTicks || !*s.loopLengthTicks))throw std::invalid_argument("saved sample loop has no extent");
         if(!s.loopEnabled && s.endMarkerTicks && *s.endMarkerTicks<=s.contentOffsetTicks)throw std::invalid_argument("saved sample End precedes its content offset");
-        if(s.signatureNumerator.has_value()!=s.signatureDenominator.has_value() || (s.signatureNumerator && (*s.signatureNumerator<1 || *s.signatureNumerator>64 || *s.signatureDenominator<1 || *s.signatureDenominator>64 || ((*s.signatureDenominator & (*s.signatureDenominator-1))!=0))))throw std::invalid_argument("invalid saved sample time signature");
+        if(s.signatureNumerator.has_value()!=s.signatureDenominator.has_value() || (s.signatureNumerator && (*s.signatureNumerator<1 || *s.signatureNumerator>255 || *s.signatureDenominator<1 || *s.signatureDenominator>128 || ((*s.signatureDenominator & (*s.signatureDenominator-1))!=0))))throw std::invalid_argument("invalid saved sample time signature");
         if(s.warpMarkers && (s.warpMarkers->size()>kMaxSampleWarpBytes || !audio::readWarpMap(*s.warpMarkers,s.sourceLength)))throw std::invalid_argument("invalid saved sample Warp map");
         if(s.warpEnabled && !s.warpMarkers)throw std::invalid_argument("saved sample Warp needs authored markers");
         error.clear();return SampleSettingsProblem::None;
