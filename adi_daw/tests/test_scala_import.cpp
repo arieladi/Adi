@@ -13,6 +13,14 @@
 #include <new>
 #include <stdexcept>
 namespace {std::atomic<unsigned> callbackAllocations{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed, so a result object returned from the
+// callback path costs one allocation per container there and none on the other
+// CRTs. The refusal check below allows exactly what an empty result costs on this
+// CRT, measured once before the baseline is read.
+template<class Result> unsigned emptyResultCost(){const auto before=callbackAllocations.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return callbackAllocations.load()-before;}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++callbackAllocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}
@@ -84,8 +92,10 @@ void nativeNoteHandoff() {
 }
 void callbackRefusal() {
     const std::string source="D\n1\n2/1\n";bool refused=false;
+    const auto cost=emptyResultCost<ScalaImport>();
+    const auto allocations=callbackAllocations.load(),io=audio::callbackFileIo.load();
     {audio::CallbackScope callback;const auto result=parseScala(source,4,"Name");refused=!result.definition && result.error=="callback";}
-    check(refused && callbackAllocations==0 && audio::callbackFileIo==0,"owner parsing refuses callbacks before copying, allocation or file I/O");
+    check(refused && callbackAllocations.load()==allocations+cost && audio::callbackFileIo.load()==io,"owner parsing refuses callbacks before copying, allocation or file I/O");
 }
 }
 int main(){try{examples();domainsAndBudgets();nativeNoteHandoff();callbackRefusal();}catch(const std::exception& exception){std::printf("EXCEPTION: %s\n",exception.what());check(false,"fixtures complete");}std::printf("scala_import: %d checks, %d failures\n",checks,failures);return failures?1:0;}
