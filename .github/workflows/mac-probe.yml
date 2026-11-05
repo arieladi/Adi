@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# mac-probe: build and run named test targets on one macOS runner, on demand.
+#
+# ci.yml's two heavy macOS legs run only on pushes to main and on dispatch, and they take
+# 53 to 130 minutes of the one macOS runner this account is served. When one of them goes
+# red on main, the fix is win's and goes to the head of the queue (LANES.md §2). A fix is
+# proven here first: only the named targets are built, with the strict leg's libc++
+# hardening and -Werror when `hardened` is on, and only the matching tests run, in minutes
+# instead of hours. ci.yml's full gate on main stays the proof that main is green.
+#
+#   gh workflow run mac-probe.yml --ref <branch> \
+#     -f targets="adi_project_files_tests adi_tool" -f tests="adi_project_files_tests"
+name: mac-probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      targets:
+        description: 'CMake targets to build, space separated (the tests and any tool they run)'
+        required: true
+        default: 'adi_project_files_tests'
+      tests:
+        description: 'ctest -R regular expression of the tests to run'
+        required: true
+        default: 'adi_project_files_tests'
+      hardened:
+        description: 'Build as the strict leg does (libc++ debug hardening, -Werror)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  probe:
+    name: 'macos arm64 · apple clang · probe'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch build dependencies, at their pinned commits
+        run: bash adi_daw/tools/fetch_external.sh --build-only
+
+      - name: Configure
+        env:
+          HARDENED: ${{ inputs.hardened }}
+        run: |
+          set -euo pipefail
+          flags=""
+          werror=OFF
+          if [ "$HARDENED" = "true" ]; then
+            flags="-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG"
+            werror=ON
+          fi
+          cmake -S adi_daw -B build-probe \
+                -DCMAKE_BUILD_TYPE=Debug \
+                -DCMAKE_CXX_COMPILER=clang++ \
+                -DCMAKE_CXX_FLAGS="$flags" \
+                -DADI_WERROR="$werror"
+
+      # The inputs reach the shell only through the environment, never pasted into the
+      # script, so a target name cannot become a command.
+      - name: Build the named targets
+        env:
+          TARGETS: ${{ inputs.targets }}
+        run: |
+          set -euo pipefail
+          read -r -a targets <<< "$TARGETS"
+          cmake --build build-probe --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" \
+                --target "${targets[@]}"
+
+      - name: Run the matching tests
+        env:
+          TESTS: ${{ inputs.tests }}
+        run: ctest --test-dir build-probe --output-on-failure --timeout 600 -R "$TESTS"
