@@ -12,10 +12,19 @@ struct RecordingEdit {
 private:
     struct Files;
     std::shared_ptr<Files> files_;
+    const Store* owner_=nullptr;
+    std::string client_;
     friend RecordingEdit prepareCommit(Store&,const engine::AudioRecordingResult&,std::span<const ClipIds>);
     friend CommitResult commit(Store&,RecordingEdit&,Actor);
 };
-/// Owner/worker project connection. Match ids to captured tracks in order.
+// Owner-only bridge from a captured physical-input snapshot to a recoverable
+// private take. Resolves this Store's source identity; does not change history.
+// Then use prepareCommit/commit below, retaining the caller's document generation.
+[[nodiscard]] engine::AudioRecordingResult captureMemory(Store&,const engine::AudioMemorySnapshot&,
+    std::int64_t track,std::int64_t timelineStartSample,const std::filesystem::path& workFolder);
+/// Owner/worker project connection. Prepare and commit through the same
+/// still-open Store handle; another/reopened connection needs fresh preparation.
+/// Match ids to captured tracks in order.
 /// Retain the originating document generation on the caller; source identity
 /// is also checked here. Actual sample boundaries must round-trip through the
 /// current musical clock exactly. Does not change project rows or publish files.

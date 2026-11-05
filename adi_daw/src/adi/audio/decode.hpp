@@ -142,6 +142,7 @@ public:
     [[nodiscard]] std::vector<std::string> problems() const;
 
 private:
+    friend class ProgressiveDecoder;
     struct Item {
         std::uint64_t bytes = 0;
         std::int64_t lastUse = 0;

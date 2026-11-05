@@ -114,6 +114,7 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
         if (lanes->panRight != nullptr) right = valueAt(*lanes->panRight, at);
         if (lanes->mute != nullptr && valueAt(*lanes->mute, at) >= 0.5) heard = false;
     }
+    vol = std::min(vol, volumeCeiling_.load(std::memory_order_relaxed));
     // Recomputed only when an input moved: a pow and a sin per change, never
     // per sample.
     if (haveLast_ && vol == lastVol_ && pan == lastPan_ && law == lastLaw_ && heard == lastHeard_ &&
@@ -502,6 +503,20 @@ std::shared_ptr<StripAutomation> bindStripAutomation(std::shared_ptr<const Autom
     if (!out->program) return out;
     for (const AutomationLaneProgram& lane : out->program->lanes()) {
         const std::string who = "automation_lanes#" + std::to_string(lane.laneId);
+        if (lane.ownerKind == "routing") {
+            if (lane.paramRef != "gain_db" || lane.valueDomain != "real") {
+                out->problems.push_back(who + ": send automation requires gain_db in real dB; not played");
+                continue;
+            }
+            if (!lane.enabled) continue;
+            if (out->sendLaneFor.contains(lane.ownerId)) {
+                out->problems.push_back(who + ": a second gain_db lane for routing#" + std::to_string(lane.ownerId) + "; the first is played");
+                continue;
+            }
+            out->sendLaneFor[lane.ownerId] = lane.laneId;
+            if (!overridden.contains(lane.laneId)) out->bySend[lane.ownerId].volume = &lane;
+            continue;
+        }
         if (lane.ownerKind != "track") continue;   // devices: ADR-0165's binding; the compiler named the rest
         StripParam param;
         if (lane.paramRef == "volume") param = StripParam::Volume;
@@ -545,7 +560,23 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
                        const std::shared_ptr<StripAutomation>& automation,bool delayCompensation, const HearingFlags& flags) {
     problems_.clear();
     const GraphPlan plan = planGraph(model);
-    const Hearing hears = hearing(model, plan, flags);
+    // Solo reachability must account for an enabled automated send that can
+    // rise above silence even when its stored knob is fully down. Audio gain
+    // still follows the actual curve; no routing/PDC edge changes per sample.
+    rows::Model hearingModel;
+    hearingModel.tracks = model.tracks;
+    hearingModel.routing = model.routing;
+    if (automation) for (auto& route : hearingModel.routing) {
+        const auto at = automation->bySend.find(route.id);
+        if (at == automation->bySend.end() || !at->second.volume) continue;
+        const auto& lane = *at->second.volume;
+        bool carries = lane.points.empty() && lane.defaultValue > kSilenceDb;
+        for (const auto& point : lane.points) carries = carries || point.value > kSilenceDb;
+        for (const auto& clip : lane.clipEnvelopes)
+            for (const auto& point : clip.points) carries = carries || point.value > kSilenceDb;
+        route.gainDb = carries ? 0.0 : kSilenceDb;
+    }
+    const Hearing hears = hearing(hearingModel, plan, flags);
     const std::map<std::int64_t, bool>& audible = hears.track;
     std::map<std::int64_t, const rows::MixerStrip*> row;
     for (const rows::MixerStrip& s : model.strips) row[s.trackId] = &s;
@@ -667,8 +698,13 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         if (r.kind != "send" || !tapOf.count(r.id)) continue;
         SendNode& send = *sends_[r.id];
         const std::string who = "routing#" + std::to_string(r.id);
-        if (std::isnan(r.gainDb)) problems_.push_back(who + ": the send's level is not a number; it is silent");
-        else if (r.gainDb > kSendTopDb)
+        const StripLanes* gainLanes = nullptr;
+        if (automation) {
+            const auto at = automation->bySend.find(r.id);
+            if (at != automation->bySend.end()) gainLanes = &at->second;
+        }
+        if (!gainLanes && std::isnan(r.gainDb)) problems_.push_back(who + ": the send's level is not a number; it is silent");
+        else if (!gainLanes && r.gainDb > kSendTopDb)
             problems_.push_back(who + ": a send level of " + std::to_string(r.gainDb) + " dB is past the top, " +
                                 std::to_string(kSendTopDb) + " dB, and is played there");
         double pan = r.pan;
@@ -701,10 +737,11 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
         }
         const auto gate = hears.send.find(r.id);
         send.set(r.gainDb, pan, PanLaw::Live, r.enabled && gate != hears.send.end() && gate->second);
+        send.setAutomation(gainLanes, gainLanes ? automation : std::shared_ptr<void>{});
         live.insert(r.id);
     }
     for (auto& [id, send] : sends_)
-        if (!live.count(id)) send->set(kSilenceDb, 0.0, PanLaw::Live, false);
+        if (!live.count(id)) { send->set(kSilenceDb, 0.0, PanLaw::Live, false); send->setAutomation(nullptr, {}); }
     liveSends_ = std::move(live);
 }
 
