@@ -13,5 +13,11 @@ using CodecCheckpoint = std::function<void()>;
 [[nodiscard]] AacTrack encodeAac(const std::filesystem::path &stereoWav,
                                  const std::filesystem::path &privatePacketFile,
                                  std::uint32_t bitRate = 256000, CodecCheckpoint = {});
+// Synchronous owner-worker chunks, interleaved and valid only during sink().
+// The caller owns a private scratch pathname (native rewrap on Windows/macOS).
+// A throwing sink/checkpoint cancels delivery; no whole decoded PCM is retained.
+using AacPcmSink = std::function<void(std::span<const float>)>;
+void decodeAacPcm(const AacTrack &, const std::filesystem::path &privateScratch,
+                  const AacPcmSink &, CodecCheckpoint = {});
 void decodeAac(const AacTrack &, const std::filesystem::path &privateWav, CodecCheckpoint = {});
 } // namespace adi::audio

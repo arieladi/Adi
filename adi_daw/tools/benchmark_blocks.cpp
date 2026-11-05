@@ -54,8 +54,9 @@ struct NodeTiming {
     std::size_t calls = 0;
 };
 
-// Benchmark-only decorator. It preserves every scheduling declaration of the
-// node it owns. Clock reads perturb timings: use the ordinary mode as control.
+// Benchmark-only decorator. Routing/suspension follow the inner node; its
+// shared NodeTiming accumulator keeps this decorator callback-only. Clock
+// reads perturb timings: use ordinary mode as control.
 class TimedNode final : public Node {
 public:
     TimedNode(std::unique_ptr<Node> inner, NodeTiming& timing)
@@ -128,12 +129,13 @@ struct Project {
 };
 
 void measure(const Project& project, std::int32_t frames, std::size_t iterations, bool breakdown,
-             Precision precision) {
+             Precision precision,std::uint32_t workers,std::int32_t minimumFrames,std::uint32_t minimumNodes) {
     // Graph does not own nodes. Declare owners first so the graph dies first.
     NodeTiming timing;
     std::vector<std::unique_ptr<Node>> nodes;
     Graph graph;
     graph.setPrecision(precision);   // ADR-0207 d2: --precision 64 times the whole graph in double
+    if(!graph.setParallelRendering(workers,minimumFrames,minimumNodes))throw std::runtime_error("invalid parallel configuration");
     const auto add = [&](std::unique_ptr<Node> node) {
         if (breakdown) node = std::make_unique<TimedNode>(std::move(node), timing);
         const NodeId id = graph.addNode(*node);
@@ -172,11 +174,11 @@ void measure(const Project& project, std::int32_t frames, std::size_t iterations
     struct Callback { std::int64_t processed, skipped; double bodyUs; };
     std::vector<Callback> callbacks(breakdown ? iterations : 0);
     std::uint64_t rejected = 0;
-    std::int64_t warmupDrops = 0;
+    GraphStats warmupStats;
     for (std::size_t block = 0; block < kWarmup + iterations; ++block) {
         if (block == kWarmup) {
             rejected = 0;
-            warmupDrops = graph.stats().eventsDropped;
+            warmupStats = graph.stats();
         }
         // Produce the exact 500 Hz stream on a global sample clock, outside
         // timing. Small blocks must not accidentally emit 500 Hz per block.
@@ -218,7 +220,7 @@ void measure(const Project& project, std::int32_t frames, std::size_t iterations
         io.streamTimeSamples += frames;
     }
     const auto s = summarize(times, static_cast<double>(frames) * 1e6 / kRate);
-    const auto drops = graph.stats().eventsDropped - warmupDrops;
+    const auto drops = graph.stats().eventsDropped - warmupStats.eventsDropped;
     // A broken or empty fixture must not publish impressive silence timings.
     const float expected = 0.001f * static_cast<float>(project.mostlySilent ? 1 : project.tracks);
     const auto valid = [expected](float value) {
@@ -241,10 +243,11 @@ void measure(const Project& project, std::int32_t frames, std::size_t iterations
                 row.processed == 0 ? 0.0 : row.bodyUs / static_cast<double>(row.processed));
         }
     } else {
-        std::printf("%s,%d,%d,%d,%zu,%zu,%.3f,%.3f,%.3f,%zu,%lld,%llu\n",
+        std::printf("%s,%d,%d,%d,%zu,%zu,%.3f,%.3f,%.3f,%zu,%lld,%llu,%u,%u,%lld,%lld\n",
             project.name, project.tracks, project.effects, frames, graph.nodeCount(), iterations,
             s.p50, s.p99, s.maximum, s.deadlineMisses,
-            static_cast<long long>(drops), static_cast<unsigned long long>(rejected));
+            static_cast<long long>(drops), static_cast<unsigned long long>(rejected),workers,graph.renderWorkerCount(),
+            static_cast<long long>(graph.stats().parallelLevels-warmupStats.parallelLevels),static_cast<long long>(graph.stats().workerNodeBlocks-warmupStats.workerNodeBlocks));
     }
     processor.release();
 }
@@ -254,9 +257,13 @@ int main(int argc, char** argv) {
     std::size_t iterations = 1000;
     if (argc == 2 && std::string_view(argv[1]) == "--self-test") return selfTest() ? 0 : 1;
     if (argc == 2 && std::string_view(argv[1]) == "--help") {
-        std::puts("adi_block_benchmark [--iterations N] [--breakdown] [--precision 32|64] | --self-test\n"
+        std::puts("adi_block_benchmark [--iterations N] [--breakdown] [--precision 32|64] [--workers 0..16] [--parallel-min-frames 1..4096] [--parallel-min-nodes 2..65536] | --self-test\n"
                   "N: 1..1000000, default 1000; 32 warmup callbacks per row.\n"
                   "--precision: the graph's Processing Precision (ADR-0207 d2), 32 by default.\n"
+                  "--workers: persistent workers 0..16, default 0 (serial).\n"
+                  "--parallel-min-frames: 1..4096, required with workers; set 1 to measure wake cost.\n"
+                  "--parallel-min-nodes: eligible level width, default 4; profile with the same value.\n"
+                  "Worker CSV includes created threads, parallel levels and worker node-blocks.\n"
                   "Use Release. 48 kHz stereo; CSV times in microseconds.\n"
                   "Block sizes: 32/64/128/256/512/1024/2048/4096 for every project.\n"
                   "dropouts = callback time > frames/sample_rate, not device xruns.\n"
@@ -272,6 +279,7 @@ int main(int argc, char** argv) {
     }
     bool breakdown = false;
     Precision precision = Precision::Float32;
+    std::uint32_t workers=0,minimumNodes=4;std::int32_t minimumFrames=256;bool explicitFrames=false;
     for (int arg = 1; arg < argc; ++arg) {
         const std::string_view option(argv[arg]);
         if (option == "--breakdown") { breakdown = true; continue; }
@@ -281,6 +289,12 @@ int main(int argc, char** argv) {
             else if (value == "64") precision = Precision::Float64;
             else { std::fputs("precision must be 32 or 64\n", stderr); return 2; }
             continue;
+        }
+        if((option=="--workers" || option=="--parallel-min-frames" || option=="--parallel-min-nodes") && arg+1<argc) {
+            unsigned value=0;const std::string_view token(argv[++arg]);const auto parsed=std::from_chars(token.data(),token.data()+token.size(),value);
+            const bool valid=parsed.ec==std::errc{} && parsed.ptr==token.data()+token.size() && (option=="--workers"?value<=16:option=="--parallel-min-nodes"?value>=2 && value<=65536:value>=1 && value<=4096);
+            if(!valid){std::fputs("invalid worker count or parallel frame/width threshold\n",stderr);return 2;}
+            if(option=="--workers")workers=value;else if(option=="--parallel-min-nodes")minimumNodes=value;else {minimumFrames=static_cast<std::int32_t>(value);explicitFrames=true;}continue;
         }
         if (option != "--iterations" || arg + 1 == argc) {
             std::fputs("use --help for usage\n", stderr); return 2;
@@ -292,9 +306,11 @@ int main(int argc, char** argv) {
             std::fputs("iterations must be an integer in 1..1000000\n", stderr); return 2;
         }
     }
+    if(workers>0 && !explicitFrames){std::fputs("workers require explicit --parallel-min-frames; use 1 to measure wake cost\n",stderr);return 2;}
+    if(breakdown && workers>0){std::fputs("breakdown clocks share a serial accumulator; use ordinary mode for workers\n",stderr);return 2;}
     std::puts(breakdown ?
         "project,frames,callback,processed_nodes,skipped_nodes,callback_us,node_body_us,residual_us,body_us_per_processed_node,skipped_scheduler_us" :
-        "project,tracks,effects_per_track,frames,nodes,callbacks,p50_us,p99_us,max_us,dropouts,event_drops,rejected_events");
+        "project,tracks,effects_per_track,frames,nodes,callbacks,p50_us,p99_us,max_us,dropouts,event_drops,rejected_events,requested_workers,created_workers,parallel_levels,worker_node_blocks");
     try {
         for (const Project& project : std::array<Project, 4>{{
                  {"active", 8, 4, false, false},
@@ -303,7 +319,7 @@ int main(int argc, char** argv) {
                  {"mpe-storm", 8, 4, false, true}}}) {
             if (breakdown && project.tracks != 64) continue;
             for (std::int32_t frames : {32, 64, 128, 256, 512, 1024, 2048, 4096})
-                measure(project, frames, iterations, breakdown, precision);
+                measure(project, frames, iterations, breakdown, precision,workers,minimumFrames,minimumNodes);
         }
     } catch (const std::exception& error) {
         std::fprintf(stderr, "benchmark failed: %s\n", error.what()); return 1;

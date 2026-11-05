@@ -18,8 +18,8 @@
 //                  channel pressure and CC74 are that note's X, Y and Z.
 //   MPE+           the Continuum's higher resolution: 14-bit CCs, sent as an
 //                  MSB on CC n and an LSB on CC n+32, at up to 500 Hz.
-//   plain MIDI     a note on channel 1 with no zone configured still works;
-//                  it simply has no per-note expression.
+//   plain MIDI     per-key note identities support same-channel chords;
+//                  ordinary CC travels as normalized typed Controller events.
 //
 // WHAT IT DELIBERATELY DOES NOT DO
 //
@@ -107,6 +107,9 @@ private:
     struct ChannelState {
         std::uint64_t noteId = 0;
         std::uint8_t  key    = 0;
+        // Outside an MPE member channel, multiple different keys can sound
+        // together. A channel's latest note is not every key's release target.
+        std::array<std::uint64_t,128> plainNotes{};
         /// Last value seen for every controller, so an LSB can find its MSB.
         /// A 14-bit CC whose MSB has not arrived is NOT promoted to 14 bits:
         /// pretending otherwise invents precision the wire did not carry.

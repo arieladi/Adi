@@ -57,5 +57,5 @@ struct ClipDetailsRead {
 /// Call on the store's owner/message thread after the journal moves, outside
 /// its mutation transaction. Includes muted notes and their original identity.
 /// It reads only this clip's stream. No playback or op is triggered.
-[[nodiscard]] ClipDetailsRead readClipDetails(const Store&, std::int64_t clipId);
+[[nodiscard]] ClipDetailsRead readClipDetails(const Store&, std::int64_t clipId,bool includeNotes=true);
 } // namespace adi::engine

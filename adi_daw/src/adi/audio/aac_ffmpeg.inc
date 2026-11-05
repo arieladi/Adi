@@ -222,8 +222,10 @@ AacTrack ADI_FF_ENCODE(const std::filesystem::path &wav, const std::filesystem::
         throw std::runtime_error("AAC packet close failed");
     return result;
 }
-void ADI_FF_DECODE(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
-    if (aacSampleRate(track.config) != track.sampleRate)
+void ADI_FF_DECODE(const AacTrack &track, const AacPcmSink &sink, CodecCheckpoint call) {
+    if (!sink) throw std::invalid_argument("AAC PCM sink is empty");
+    const auto info=aacConfig(track.config);const auto channels=info.channels;
+    if (info.sampleRate != track.sampleRate)
         throw std::invalid_argument("AAC decode config mismatch");
     State s;
     s.allocate(s.api.avcodec_find_decoder_(AV_CODEC_ID_AAC));
@@ -238,7 +240,6 @@ void ADI_FF_DECODE(const AacTrack &track, const std::filesystem::path &wav, Code
     std::ifstream input(track.file, std::ios::binary);
     if (!input)
         throw std::runtime_error("AAC packet source open failed");
-    WavWriter writer(wav, track.sampleRate, 2, WavFormat::Float32);
     std::uint64_t decoded = 0, written = 0;
     auto receive = [&] {
         for (;;) {
@@ -247,7 +248,7 @@ void ADI_FF_DECODE(const AacTrack &track, const std::filesystem::path &wav, Code
             if (status == AVERROR(EAGAIN) || status == AVERROR_EOF)
                 break;
             check(status, "decode");
-            if (s.frame->format != AV_SAMPLE_FMT_FLTP || s.frame->ch_layout.nb_channels != 2 ||
+            if (s.frame->format != AV_SAMPLE_FMT_FLTP || s.frame->ch_layout.nb_channels != channels ||
                 s.frame->sample_rate != static_cast<int>(track.sampleRate) || s.frame->nb_samples <= 0 ||
                 s.frame->nb_samples > 2048)
                 throw std::runtime_error("AAC decoder returned an unsupported frame");
@@ -256,17 +257,17 @@ void ADI_FF_DECODE(const AacTrack &track, const std::filesystem::path &wav, Code
             for (int i = 0; i < s.frame->nb_samples; ++i, ++decoded) {
                 if (decoded < track.priming || written >= track.frames)
                     continue;
-                for (std::size_t channel = 0; channel < 2; ++channel) {
+                for (std::size_t channel = 0; channel < channels; ++channel) {
                     const auto v = reinterpret_cast<const float *>(s.frame->data[channel])[i];
                     if (!std::isfinite(v))
                         throw std::runtime_error("nonfinite AAC decode");
-                    pcm[count * 2 + channel] = v;
+                    pcm[static_cast<std::size_t>(count) * channels + channel] = v;
                 }
                 ++count;
                 ++written;
             }
             if (count)
-                writer.write(pcm.data(), count);
+                sink(std::span(pcm.data(), static_cast<std::size_t>(count) * channels));
         }
     };
     for (const auto &packet : track.packets) {
@@ -288,6 +289,5 @@ void ADI_FF_DECODE(const AacTrack &track, const std::filesystem::path &wav, Code
     receive();
     if (written != track.frames)
         throw std::runtime_error("AAC decoder produced incomplete audio after priming");
-    writer.close();
 }
 } // namespace adi::audio

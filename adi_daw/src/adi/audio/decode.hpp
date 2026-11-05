@@ -6,7 +6,8 @@
 // The timeline plays PCM with no real-time decoding. A file the WavReader
 // already plays (RIFF, RF64 or BW64; 16- or 24-bit PCM, 32-bit float) is used
 // as it is. Anything else -- FLAC, AIFF/AIFC, MP3, Ogg Vorbis, and the WAVs the
-// WavReader refuses (8-bit, 32-bit integer, 64-bit float, A-law, mu-law...) --
+// WavReader refuses (8-bit, 32-bit integer, 64-bit float, A-law, mu-law...),
+// plus supported mono/stereo AAC-LC in M4A/MP4 or ADTS --
 // is decoded once, off the audio thread, to a 32-bit float WAV:
 //
 //   <appdata cache>/decoded/<BLAKE3 of the source>.wav
@@ -15,6 +16,10 @@
 // file, wherever it lies, decodes nothing. Any rate up to 768 kHz, lower
 // rates included (ADR-0157); the file keeps the source's rate and the clip
 // path converts.
+// AAC uses the native platform codec, dynamically loaded libavcodec 60/61 on
+// Linux. ISO-BMFF edit-list priming/duration are preserved; raw ADTS retains
+// all coded frames because it has no authored gapless duration. See
+// docs/ENGINE-AAC-IMPORT.md for accepted profiles, limits and errors.
 //
 // The cache obeys the Decoding Cache settings: a maximum size and a minimum
 // free space on its disk. The least recently used file goes first, and never
@@ -31,6 +36,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <stop_token>
 #include <vector>
 
 namespace adi::audio {
@@ -45,6 +51,9 @@ enum class DecodeProblem {
     Unsupported,    // decodes, but outside the bounds: over 768 kHz, 0 or over 64 channels
     NoSpace,        // the minimum free space cannot be kept, even after eviction
     CacheWrite,     // the cache folder cannot be written
+    Cancelled,
+    CodecUnavailable,
+    NoAudio,
 };
 [[nodiscard]] const char* toString(DecodeProblem);
 
@@ -57,7 +66,7 @@ private:
 };
 
 /// What the first bytes of a file say it is. The extension is never read.
-enum class SourceFormat { Riff, Aiff, Flac, Mp3, Ogg, Unknown };
+enum class SourceFormat { Riff, Aiff, Flac, Mp3, Ogg, Unknown, Mp4, Adts };
 [[nodiscard]] SourceFormat sniff(const std::filesystem::path&);
 
 inline constexpr std::uint32_t kMaxDecodeRate = 768000;   // ADR-0157
@@ -86,6 +95,9 @@ struct DecodeCacheHooks {
     std::function<std::int64_t()> clock;
     /// Bytes free on the cache's disk. Default: std::filesystem::space.
     std::function<std::uint64_t(const std::filesystem::path&)> freeSpace;
+    /// Owner worker service point between PCM blocks/AAC packets. Called
+    /// outside the cache mutex; must not reenter this cache. Empty by default.
+    std::function<void()> checkpoint;
 };
 
 class DecodeCache {
@@ -97,6 +109,9 @@ public:
     /// it. The copy is pinned for this process (see release). Throws
     /// DecodeError. Refused on the audio thread, before any file I/O.
     [[nodiscard]] std::filesystem::path playable(const std::filesystem::path& source);
+    /// Same owner-worker operation, cancellable during hashing/PCM blocks/AAC
+    /// packets and draining. Cancellation removes only this call's private files.
+    [[nodiscard]] std::filesystem::path playable(const std::filesystem::path& source,std::stop_token);
 
     /// A live session stopped reading a file playable() returned. Pins count:
     /// each playable() needs its own release before the file can be evicted.
@@ -127,6 +142,7 @@ public:
     [[nodiscard]] std::vector<std::string> problems() const;
 
 private:
+    friend class ProgressiveDecoder;
     struct Item {
         std::uint64_t bytes = 0;
         std::int64_t lastUse = 0;
