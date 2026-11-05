@@ -133,6 +133,9 @@ public:
     /// Message thread: the model's values. `audible` is mute and solo together.
     void setStatic(double volumeDb, double pan, PanLaw law, bool audible) noexcept;
     void setPanMode(PanMode mode, double left, double right) noexcept;
+    /// Message thread. Sends use their existing ceiling for both static and
+    /// automated gain; ordinary strips retain the unlimited default.
+    void setVolumeCeiling(double db) noexcept { volumeCeiling_.store(std::isnan(db) ? std::numeric_limits<double>::infinity() : db, std::memory_order_relaxed); }
 
     /// Message thread, before the graph that plays them is published: the lanes
     /// now driving this strip (null for none), and what keeps them alive. The
@@ -281,6 +284,7 @@ private:
     Ramp<double> ramp64_;
     std::int8_t lastWidth_ = 0;   ///< audio thread: 32 or 64 once a ramp has run, 0 before
     std::atomic<std::int32_t> rampFrames_{240};
+    std::atomic<double> volumeCeiling_{std::numeric_limits<double>::infinity()};
 };
 
 /// A send's highest level. Live's top is not read yet (AWAITING 7(a)); this is
@@ -307,7 +311,7 @@ inline constexpr double kSendTopDb = 24.0;
 /// plays without the solo, at either precision.
 class SendNode final : public Node {
 public:
-    SendNode() noexcept { source_.setStatic(0.0, 0.0, PanLaw::Live, true); }
+    SendNode() noexcept { source_.setStatic(0.0, 0.0, PanLaw::Live, true); gain_.setVolumeCeiling(kSendTopDb); }
 
     /// Message thread. A level at or below kSilenceDb is silent, and so is
     /// one that is not a number; one past kSendTopDb, +inf included, plays at
@@ -326,12 +330,17 @@ public:
     /// plan's preMute, on until Live is measured). The same transport every
     /// time, as every strip is given it, so a send turned from Pre to Post
     /// never changes it under a graph.
-    void setSource(const StripConfig& source, const Transport* transport) noexcept {
+    void setSource(const StripConfig& source, const Transport* transport) {
         source_.configure(source, source.unmuted, transport);
         gain_.setTransport(transport);
+        retainAutomation();
+    }
+    void setAutomation(const StripLanes* lanes, std::shared_ptr<void> program) {
+        gain_.setLanes(lanes, std::move(program));
+        retainAutomation();
     }
 
-    [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return source_.sourceLifetime(); }
+    [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return automationLife_; }
     /// The source's track delay, as its strip reports it: so the edge after
     /// this node waits as the edge after the strip does.
     [[nodiscard]] std::int32_t latencySamples() const noexcept override { return source_.latencySamples(); }
@@ -361,6 +370,13 @@ public:
     [[nodiscard]] const char* name() const noexcept override { return "send"; }
 
 private:
+    struct AutomationLife { std::shared_ptr<void> source, gain; };
+    void retainAutomation() {
+        auto source = source_.sourceLifetime(), gain = gain_.sourceLifetime();
+        if (!source && !gain) { automationLife_.reset(); return; }
+        automationLife_ = std::make_shared<AutomationLife>(AutomationLife{std::move(source), std::move(gain)});
+    }
+    std::shared_ptr<AutomationLife> automationLife_;
     StripNode source_;   ///< what the source plays at the tap
     StripNode gain_;     ///< the send's own level, pan and switch
 };
@@ -556,16 +572,19 @@ enum class StripParam { Volume, Pan, Mute, PanLeft, PanRight };
 struct StripAutomation {
     std::shared_ptr<const AutomationProgram> program;
     std::map<std::int64_t, StripLanes> byTrack;   ///< lanes not overridden
+    std::map<std::int64_t, StripLanes> bySend;    ///< routing row -> its gain stage
+    std::map<std::int64_t, std::int64_t> sendLaneFor; ///< separate from track IDs
     /// Every strip lane in the program, overridden or not: what a user edit to
     /// that track's parameter would override.
     std::map<std::pair<std::int64_t, StripParam>, std::int64_t> laneFor;
     std::vector<std::string> problems;
 };
 
-/// Bind a program's track lanes to strips. A lane in `overridden` is known but
+/// Bind track lanes to strips and routing-owned gain_db lanes to sends.
+/// A lane in `overridden` is known but
 /// not bound. Named, never dropped: a lane for a parameter the strip does not
 /// have, a volume or pan lane not in real units, a second lane for one
-/// parameter, and every device lane (not played yet).
+/// parameter. Device lanes are bound separately by bindDeviceAutomation.
 [[nodiscard]] std::shared_ptr<StripAutomation> bindStripAutomation(
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& overridden);
 

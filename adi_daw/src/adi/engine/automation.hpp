@@ -1,29 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Automation read into the engine, not yet played (ADR-0159, part two).
+// Immutable arrangement automation and absolute clip-relative envelopes.
 //
 // An AutomationProgram is compiled OFF the audio thread from the model, the
 // tempo map and the session rate, as MidiClips are (ADR-0155). It is
 // immutable once built: the audio thread only reads it.
 //
 //   * One lane per arrangement lane: owner 'track' or 'device', and the
-//     stream with no clip. Points are in session samples: time_base 0 through
+//     arrangement stream plus clip overlays. Arrangement points are in samples: time_base 0 through
 //     the tempo map, 1 from nanoseconds. Values stay in the lane's
 //     value_domain.
-//   * A lane with one bad point is refused whole, with a named problem, never
-//     kept in part.
+//   * An arrangement with a bad point refuses its whole lane; a bad clip stream
+//     refuses that overlay. Both report named problems and keep no partial stream.
 //   * valueAt is O(log n); fill writes `count` values at a stride into the
 //     caller's buffer. Both are noexcept and allocate nothing.
 //   * Before the first point a lane reads its first value; after the last,
 //     its last value. A lane with no points reads its default_value.
 //
-// Emitting parameter events from this is the next mission: user override,
-// touch and latch wait on the director's rulings.
+// Strip and parameter bindings read these immutable programs; clips override
+// the arrangement only while their half-open placement is active.
 
 #pragma once
 
 #include "adi/store_rows.hpp"
 #include "adi/engine/curves.hpp"
+#include "adi/blob.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -43,6 +44,19 @@ struct PlacedPoint {
     const CurveSlice* slice = nullptr; // owned by the compiled program
 };
 
+struct AutomationClock;
+struct ClipEnvelope {
+    std::int64_t clipId = 0, begin = 0, end = 0;
+    long double originTick = 0, originSeconds = 0, offsetTicks = 0;
+    long double loopStart = 0, loopLength = 0;
+    bool nanos = false, loop = false;
+    std::vector<AutomationPoint> points; // original clip-relative units/curves
+};
+struct ClipAutomationRegion {
+    std::int64_t begin = 0, end = 0;
+    std::size_t envelope = 0;
+};
+
 struct AutomationLaneProgram {
     std::int64_t laneId = 0;
     std::string ownerKind;
@@ -52,10 +66,16 @@ struct AutomationLaneProgram {
     bool enabled = true;
     double defaultValue = 0.0;
     std::vector<PlacedPoint> points;   ///< by sample; equal samples are a step
+    std::shared_ptr<const AutomationClock> clipClock;
+    std::vector<ClipEnvelope> clipEnvelopes;
+    std::vector<ClipAutomationRegion> clipRegions; // disjoint, by begin
+    std::vector<std::int64_t> changes; // arrangement + clip/point/wrap boundaries
 };
 
 /// The value of a lane at a session sample. O(log n), noexcept, no allocation.
 [[nodiscard]] double valueAt(const AutomationLaneProgram&, std::int64_t sample) noexcept;
+/// First exact change boundary strictly after sample; INT64_MAX if none.
+[[nodiscard]] std::int64_t automationBoundaryAfter(const AutomationLaneProgram&, std::int64_t sample) noexcept;
 
 /// `count` values from `first`, `stride` samples apart, into `out`.
 /// noexcept and allocation-free; a forward stride walks the points once.

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/recording_commands.hpp"
+#include "adi/engine/audio_memory.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/engine/snapshot.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
@@ -62,11 +64,22 @@ std::int64_t tickAt(const engine::TempoMap& tempo,std::int64_t sample,std::uint3
     return tick;
 }
 }
+engine::AudioRecordingResult captureMemory(Store& store,const engine::AudioMemorySnapshot& memory,
+    std::int64_t track,std::int64_t timelineStartSample,const fs::path& workFolder) {
+    try {
+        if(audio::onAudioThread)throw std::runtime_error("capture audio memory off callback");
+        if(store.readOnly())throw std::runtime_error("project is read-only");
+        return engine::AudioRecordingResult::fromMemory(memory,{workFolder,identity(store),track,timelineStartSample});
+    }catch(const std::exception& exception) {
+        engine::AudioRecordingResult result;result.failure=engine::RecordingFailure::InvalidCapture;result.error=exception.what();return result;
+    }
+}
 RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& recorded,std::span<const ClipIds> ids) {
     RecordingEdit result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
-        Read read(store.db());result.sourceProject=identity(store);
+        if(audio::onAudioThread)throw std::runtime_error("prepare recording off callback");
+        Read read(store.db());result.sourceProject=identity(store);result.owner_=&store;result.client_=store.clientId();
         if(recorded.sourceProject().empty() || recorded.sourceProject()!=result.sourceProject)throw std::runtime_error("recording belongs to a different project");
         if(recorded.failure!=engine::RecordingFailure::None || recorded.frames==0 || recorded.sampleRate<8000 || recorded.sampleRate>768000 ||
            recorded.startSample<0 || recorded.frames>static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()-recorded.startSample) ||
@@ -130,6 +143,9 @@ RecordingEdit prepareCommit(Store& store,const engine::AudioRecordingResult& rec
 CommitResult commit(Store& store,RecordingEdit& edit,Actor actor) {
     CommitResult refused;
     if(!edit.ok){refused.error=edit.error;return refused;}
+    if(audio::onAudioThread || edit.owner_!=&store || edit.client_!=store.clientId()) {
+        refused.error="recording edit belongs to another open document or callback";return refused;
+    }
     try {if(identity(store)!=edit.sourceProject){refused.error="recording belongs to a different project";return refused;}}
     catch(const std::exception& exception){refused.error=exception.what();return refused;}
     const auto files=edit.files_;
