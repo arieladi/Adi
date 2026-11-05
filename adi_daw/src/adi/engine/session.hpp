@@ -74,6 +74,7 @@ namespace adi {
 class Store;
 }
 
+namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 
 class AudioInputRecorder;
@@ -92,6 +93,13 @@ struct SessionSpec {
     bool performanceState = true;
     /// The app's Delay Compensation choice; its registry row is win-owned.
     bool delayCompensation = true;
+    /// Optional app-owned decode service/cache. Must outlive this session and
+    /// retired generations. Null uses the process service; never a callback API.
+    audio::ProgressiveDecoder* progressiveDecoder = nullptr;
+    /// Owner-selected performance clock, e.g. Link. A new prepared generation
+    /// uses this constant tempo for ALL musical playback and clock consumers;
+    /// authored project tempo rows remain intact. Not an offline export option.
+    std::optional<double> externalTempoBpm = std::nullopt;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -195,6 +203,22 @@ public:
     /// lane too; false if rebuilding the requested binding failed (error()).
     bool overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId);
 
+    // Document-owner recording policy. Queue matching gate changes to each
+    // recorder's producer separately; these methods never touch its SPSC ring.
+    // Turning a gate off prevents new writes but keeps a pending write suspended
+    // until its captured data is committed/refreshed and explicitly finished.
+    void setAutomationWriteState(bool armed, bool recording) noexcept;
+    [[nodiscard]] bool automationArmed() const noexcept { return automationArmed_; }
+    [[nodiscard]] bool automationRecording() const noexcept { return automationRecording_; }
+    [[nodiscard]] const std::set<std::int64_t>& writingAutomationLanes() const noexcept { return writingAutomation_; }
+    // As with reenableAutomation(), a rebuild failure leaves the requested
+    // policy installed for an owner-side rebuild() retry; false is not readiness.
+    bool beginAutomationWrite(std::int64_t laneId);
+    // After commit + refresh, follow=true resumes the newly recorded lane.
+    // On recording failure, follow=false retains the manual value as a normal
+    // override until Re-Enable Automation. This is an explicit caller choice.
+    bool finishAutomationWrite(std::int64_t laneId, bool follow = true);
+
     /// ADR-0165: the device lanes this rebuild plays, per device. Message
     /// thread, for tests and the UI: null until the first rebuild.
     [[nodiscard]] const DeviceAutomationBinding* deviceAutomation() const noexcept {
@@ -224,6 +248,11 @@ public:
     /// there is no crossfade (the swap is faded in only when
     /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
     /// does nothing. False only when a graph was due and could not be built.
+    /// Owner only. Configures the next graph and rebuilds when loaded; the
+    /// prior graph stays live on failure. Zero workers restores serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr);
     bool setPrecision(Precision p);
 
     /// Message thread. Publish a new alignment policy without reloading
@@ -320,7 +349,7 @@ public:
     [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
-    void attach();
+    void attach(std::shared_ptr<const GraphTransportState>);
     bool readPlayback(const Store &);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
@@ -343,15 +372,17 @@ private:
     std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
-    struct TimingView final : Sequenced {
+    struct TimingView final : GraphTransportState {
+        Session* session=nullptr; // retained Session owns every published graph
+        mutable TransportInfo blockInfo{}; // the single audio driver's scratch
         TransportSettings settings;
         std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         double sampleRate = 48000.0;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
+        [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
     };
-    SnapshotPublisher<TimingView> timing_;
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
@@ -387,6 +418,8 @@ private:
     std::vector<std::string> deviceSourceProblems_;
     void bindDeviceSources();
     std::set<std::int64_t> overridden_;   ///< ADR-0162: lane ids
+    std::set<std::int64_t> writingAutomation_;
+    bool automationArmed_ = true, automationRecording_ = false;
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;

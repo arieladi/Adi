@@ -69,7 +69,9 @@ Json encodeSampleSettings(const SampleSettings& s) {
         {"fade_clock_ns",encodeClock(s.fadeClockNs)},{"fade_clock_ticks",encodeClock(s.fadeClockTicks)},{"signature_numerator",optional(s.signatureNumerator)},{"signature_denominator",optional(s.signatureDenominator)}};
 }
 SampleSettingsResult decodeSampleSettings(const Json& json) {
-    if(audio::onAudioThread)return failure(SampleSettingsProblem::Realtime);
+    // Not failure(): its error argument is a second string, which MSVC's Debug CRT
+    // gives its own iterator-proxy allocation and free on the audio thread.
+    if(audio::onAudioThread)return {SampleSettingsProblem::Realtime,{},{}};
     try {
         if(!json.is_object() || !json.contains("version") || !json.at("version").is_number_integer())return failure(SampleSettingsProblem::Invalid,"invalid sample settings envelope");
         if(json.at("version")!=1)return failure(SampleSettingsProblem::Unsupported,"unsupported sample settings version");

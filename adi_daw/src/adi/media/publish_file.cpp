@@ -94,6 +94,14 @@ struct Cleanup {
     ~Cleanup() { if (owned) { std::error_code ignored; fs::remove(target, ignored); } }
 };
 }
+std::error_code replaceCacheFile(const fs::path& source,const fs::path& target) noexcept {
+#if defined(_WIN32)
+    if(MoveFileExW(source.c_str(),target.c_str(),MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH))return {};
+    return {static_cast<int>(GetLastError()),std::system_category()};
+#else
+    std::error_code error;fs::rename(source,target,error);return error;
+#endif
+}
 PublishResult publishFile(const fs::path& source, const fs::path& target, PublishHooks hooks) noexcept {
     Cleanup cleanup{target};
     try {
