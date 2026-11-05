@@ -111,7 +111,7 @@ void linearAndTuningContext() {
 void optionalLocalProperties() {
     Fixture f("local");
     // Read compatibility with N33's additive format, not a migration claim.
-    f.store->db().exec("CREATE TABLE clip_properties(clip_id INTEGER PRIMARY KEY,end_marker_ticks INTEGER,signature_numerator INTEGER,signature_denominator INTEGER,scale_root INTEGER,scale_id TEXT,scale_mask INTEGER)");
+    f.store->db().exec("CREATE TABLE IF NOT EXISTS clip_properties(clip_id INTEGER PRIMARY KEY,end_marker_ticks INTEGER,signature_numerator INTEGER,signature_denominator INTEGER,scale_root INTEGER,scale_id TEXT,scale_mask INTEGER)");
     f.store->db().exec("INSERT INTO clip_properties VALUES(10,919,5,4,7,'major',2741)");
     const auto value = f.read();
     check(value.endMarkerTicks == 919 && value.endMarkerLocal && value.signature.local && value.signature.numerator == 5 &&

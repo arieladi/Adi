@@ -2931,15 +2931,26 @@ void testOverride() {
 #define ADI_TEST_MASTER_SUMMING 0
 #endif
 
-int runMixerSuites(bool masterOnly) {
+#ifndef ADI_TEST_GROUP_SUMMING
+#define ADI_TEST_GROUP_SUMMING 0
+#endif
+
+// MSVC's checked Debug iterators make the console sweeps much slower than
+// ordinary mixer checks. Separate ctest entries keep each within the existing
+// timeout; every render and assertion still runs exactly once.
+int runMixerSuites(bool masterOnly, bool groupOnly) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::printf(masterOnly ? "adi_master_summing_tests -- master console summing (ADR-0203 d14)\n\n" :
-                            "adi_mixer_tests -- the mixer strip (ADR-0163)\n\n");
+                            (groupOnly ? "adi_group_summing_tests -- group consoles and send levels (ADR-0174)\n\n" :
+                                         "adi_mixer_tests -- the mixer strip (ADR-0163)\n\n"));
     try {
         if (masterOnly) {
             testGroupSumming(true, Precision::Float32);
             testGroupSumming(true, Precision::Float64);
             testNestedMasterSumming();
+        } else if (groupOnly) {
+            testGroupSumming();
+            testSendsHoldTheirLevel();
         } else {
             testPanLaws();
             testASendNode();
@@ -2956,9 +2967,7 @@ int runMixerSuites(bool masterOnly) {
             testTheFeedbackLoop();
             testTheLoopsRing();
             testSendsPlay();
-            testSendsHoldTheirLevel();
             testPreSendsAndTheSendsPan();
-            testGroupSumming();
             testScopeTaps();
         }
     } catch (const std::exception& e) {
@@ -2968,4 +2977,4 @@ int runMixerSuites(bool masterOnly) {
     return g_failures ? 1 : 0;
 }
 
-int main() { return runMixerSuites(ADI_TEST_MASTER_SUMMING != 0); }
+int main() { return runMixerSuites(ADI_TEST_MASTER_SUMMING != 0, ADI_TEST_GROUP_SUMMING != 0); }

@@ -15,6 +15,14 @@
 #include <new>
 #include <stdexcept>
 namespace {std::atomic<unsigned> allocations{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed, so a result object returned from the
+// callback path costs one allocation per container there and none on the other
+// CRTs. The final check allows exactly what the two refusal results (one ScaleGrid,
+// one ScaleContextRead) cost empty on this CRT, measured before the baseline is read.
+template<class Result> unsigned emptyResultCost(){const auto before=allocations.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return allocations.load()-before;}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p) noexcept{std::free(p);}
@@ -129,7 +137,7 @@ void ownerReads() {
     const auto changed=readClipScaleContext(*f.store,10);
     check(first.context && first.context->degrees()[7].name=="E half-flat" && first.context->includesDegree(7) && changed.context && changed.context->degrees()[7].name=="New label" &&
         changed.context->grid(6000,7199,6000,true).rows.empty(),"held immutable contexts survive later owner tuning/name/membership edits");
-    f.store->db().exec("CREATE TABLE clip_properties(clip_id INTEGER PRIMARY KEY,end_marker_ticks INTEGER,signature_numerator INTEGER,signature_denominator INTEGER,scale_root INTEGER,scale_id TEXT,scale_mask INTEGER);"
+    f.store->db().exec("CREATE TABLE IF NOT EXISTS clip_properties(clip_id INTEGER PRIMARY KEY,end_marker_ticks INTEGER,signature_numerator INTEGER,signature_denominator INTEGER,scale_root INTEGER,scale_id TEXT,scale_mask INTEGER);"
         "INSERT INTO clip_properties(clip_id,scale_root,scale_id,scale_mask) VALUES(10,5,'major',2741)");
     const auto local=readClipScaleContext(*f.store,10);
     check(local.context && local.context->degrees().size()==12 && local.context->scale()->local && local.context->scale()->root==5 && !local.context->scale()->tuningId && local.context->contains(6700,6500),"N33-compatible local Live scale overrides inherited microtonal tuning as N32 already defines");
@@ -154,6 +162,7 @@ void noteIndependenceAndClockErrors() {
     check(!ramp.context && !ramp.error.empty(),"ambiguous inherited linear/ramp context is named rather than guessed");
 }
 }
-int main(){try{basic();microtonal();boundsAndRealtime();malformed();ownerReads();noteIndependenceAndClockErrors();check(allocations==0 && audio::callbackFileIo==0,"context queries and callback refusal allocate nothing and perform no callback I/O");}
+int main(){const auto refusalCost=emptyResultCost<adi::engine::ScaleGrid>()+emptyResultCost<adi::engine::ScaleContextRead>();const auto baseline=allocations.load();
+try{basic();microtonal();boundsAndRealtime();malformed();ownerReads();noteIndependenceAndClockErrors();check(allocations==baseline+refusalCost && audio::callbackFileIo==0,"context queries and callback refusal allocate nothing and perform no callback I/O");}
 catch(const std::exception& e){std::printf("EXCEPTION: %s\n",e.what());check(false,"fixture must complete");}
 std::printf("scale_context: %d checks, %d failures\n",checks,failures);return failures?1:0;}

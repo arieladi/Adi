@@ -1,12 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/render_workers.hpp"
 
 #include <cmath>
 #include <cstring>
 #include <utility>
 
 namespace adi::engine {
+
+bool GraphHost::setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,std::uint32_t minimumNodes,RenderWorkers::Initializer initialize,void* context) noexcept {
+    if(workers>RenderWorkers::maximum || minimumFrames<1 || minimumNodes<2)return false;
+    renderWorkers_=workers;parallelMinimumFrames_=minimumFrames;parallelMinimumNodes_=minimumNodes;
+    workerInitializer_=initialize;workerInitializationContext_=context;return true;
+}
 
 std::int32_t GraphHost::latencyHeadroomAt(double sampleRate) const noexcept {
     // ADR-0157 d3: the configured headroom is samples at 48 kHz; a higher
@@ -17,11 +24,13 @@ std::int32_t GraphHost::latencyHeadroomAt(double sampleRate) const noexcept {
     return static_cast<std::int32_t>(scaled < kMax ? scaled : kMax);
 }
 
-bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
-                        double sampleRate, std::int32_t maxFrames) {
+bool GraphHost::rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
+                        std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan) {
     error_.clear();
 
-    const GraphPlan plan = planGraph(model);
+    GraphPlan plan = planGraph(model);
+    if (transformPlan)
+        transformPlan(plan);
     std::unique_ptr<RealizedGraph> rg = realize(plan, opts);
     problems_ = rg->problems();
 
@@ -33,6 +42,8 @@ bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts,
 
     rg->graph().setLatencyHeadroom(latencyHeadroomAt(sampleRate));
     rg->graph().setPrecision(precision_);
+    rg->graph().setDelayCompensation(delayCompensation_);
+    rg->graph().setParallelRendering(renderWorkers_,parallelMinimumFrames_,parallelMinimumNodes_,workerInitializer_,workerInitializationContext_);
     rg->graph().prepare(sampleRate, maxFrames);
     if (!rg->graph().ok()) {
         error_ = rg->graph().error();
@@ -190,6 +201,16 @@ void GraphHost::process(const AudioIo& io) noexcept {
 
     snap->graph().graph().process(io);
     fadeIn(io);
+}
+
+bool GraphHost::copyRenderedOutput(const Node& node,const AudioIo& io) const noexcept {
+    if(!lastSnap_)return false;
+    const auto& graph=lastSnap_->graph().graph();
+    return graph.copyNodeOutput(graph.find(node),io);
+}
+
+std::int32_t GraphHost::renderedLatency() const noexcept {
+    return lastSnap_ ? lastSnap_->graph().graph().latencySamples() : 0;
 }
 
 }  // namespace adi::engine
