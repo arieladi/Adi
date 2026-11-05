@@ -35,7 +35,11 @@ MediaResult importMedia(Store&, const std::filesystem::path&, std::int64_t id,
                         std::int64_t importedUtc, Actor actor = Actor::User);
 MediaResult relinkMedia(Store&, std::int64_t id, const std::filesystem::path&,
                         Actor actor = Actor::User);
+// The folder SQLite names the database file in: the base a rel_path is
+// resolved against. On unix SQLite resolves every symlink in that name (macOS:
+// /var is /private/var), so make rel_paths relative to this spelling.
 std::filesystem::path projectFolder(const Store&);
+std::filesystem::path projectFolder(const SQLite::Database&);
 std::string pathUtf8(const std::filesystem::path&);
 std::filesystem::path pathFromUtf8(const std::string&);
 // Resolution verifies the first existing candidate; a mismatch is fatal.

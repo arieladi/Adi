@@ -15,14 +15,12 @@
 #include "adi/audio/io_audit.hpp"
 #include "juce/clap_host.hpp"
 #include "adi/engine/audio_recording.hpp"
-#include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
 #include <numbers>
 #include <limits>
 #include <cmath>
 #include <cstddef>
-#include <limits>
 #include <string>
 #include <utility>
 
@@ -597,13 +595,23 @@ bool Session::rebuild() {
     // lane the user overrode. An override of a lane that is gone goes with it.
     const std::shared_ptr<const AutomationProgram> program =
         compileAutomation(playbackModel_, spec_.sampleRate);
-    stripAutomation_ = bindStripAutomation(program, overridden_);
-    deviceAutomation_ = bindDeviceAutomation(program, overridden_, transport_, spec_.sampleRate);
+    auto suspended = overridden_;
+    suspended.insert(writingAutomation_.begin(), writingAutomation_.end());
+    stripAutomation_ = bindStripAutomation(program, suspended);
+    deviceAutomation_ = bindDeviceAutomation(program, suspended, transport_, spec_.sampleRate);
     for (auto it = overridden_.begin(); it != overridden_.end();) {
         bool known = false;
         for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : stripAutomation_->sendLaneFor) known = known || laneId == *it;
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
         it = known ? std::next(it) : overridden_.erase(it);
+    }
+    for (auto it = writingAutomation_.begin(); it != writingAutomation_.end();) {
+        bool known = false;
+        for (const auto& [key, laneId] : stripAutomation_->laneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : stripAutomation_->sendLaneFor) known = known || laneId == *it;
+        for (const auto& [key, laneId] : deviceAutomation_->laneFor) known = known || laneId == *it;
+        it = known ? std::next(it) : writingAutomation_.erase(it);
     }
     for (const auto& track : model_.tracks) {
         double db = 0.0;
@@ -851,6 +859,8 @@ bool Session::refresh(const Store& store) {
     }
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
+    std::map<std::int64_t, double> sendsBefore;
+    for (const auto& route : model_.routing) if (route.kind == "send") sendsBefore[route.id] = route.gainDb;
     model_ = rows::readModel(store);
     transportSettings_=readTransportSettings(store);
     cueSettings_=readCueSettings(store);
@@ -859,7 +869,7 @@ bool Session::refresh(const Store& store) {
     if (stripAutomation_) {
         const std::map<std::int64_t, StripValues> after = stripValues(model_);
         for (const auto& [key, laneId] : stripAutomation_->laneFor) {
-            if (overridden_.count(laneId)) continue;
+            if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
             const auto b = before.find(key.first);
             const auto a = after.find(key.first);
             if (b == before.end() || a == after.end()) continue;
@@ -870,6 +880,14 @@ bool Session::refresh(const Store& store) {
                                                                   : b->second.muted != a->second.muted;
             if (changed) overridden_.insert(laneId);
         }
+        std::map<std::int64_t, double> sendsAfter;
+        for (const auto& route : model_.routing) if (route.kind == "send") sendsAfter[route.id] = route.gainDb;
+        for (const auto& [route, laneId] : stripAutomation_->sendLaneFor) {
+            if (overridden_.contains(laneId) || writingAutomation_.contains(laneId)) continue;
+            const auto beforeSend = sendsBefore.find(route), afterSend = sendsAfter.find(route);
+            if (beforeSend != sendsBefore.end() && afterSend != sendsAfter.end() && beforeSend->second != afterSend->second)
+                overridden_.insert(laneId);
+        }
     }
     // ADR-0162 for a plug-in's parameters (ADR-0165): a changed stored value --
     // an op, a knob in ADI, a gesture in the plug-in's own window turned into
@@ -878,7 +896,7 @@ bool Session::refresh(const Store& store) {
     if (deviceAutomation_) {
         const std::map<std::pair<std::int64_t, std::string>, double> paramsAfter = paramValues(model_);
         for (const auto& [key, laneId] : deviceAutomation_->laneFor) {
-            if (overridden_.count(laneId)) continue;
+            if (overridden_.count(laneId) || writingAutomation_.count(laneId)) continue;
             const auto b = paramsBefore.find(key);
             const auto a = paramsAfter.find(key);
             const bool had = b != paramsBefore.end(), has = a != paramsAfter.end();
@@ -1015,6 +1033,33 @@ bool Session::reenableAutomation() {
     return rebuild();
 }
 
+void Session::setAutomationWriteState(bool armed, bool recording) noexcept {
+    automationArmed_ = armed;
+    automationRecording_ = recording;
+}
+
+bool Session::beginAutomationWrite(std::int64_t laneId) {
+    if (!loaded_ || !automationArmed_ || !automationRecording_) return false;
+    if (writingAutomation_.contains(laneId)) return true;
+    bool known = false;
+    if (stripAutomation_)
+        for (const auto& [key, id] : stripAutomation_->laneFor) known = known || id == laneId;
+    if (stripAutomation_)
+        for (const auto& [key, id] : stripAutomation_->sendLaneFor) known = known || id == laneId;
+    if (deviceAutomation_)
+        for (const auto& [key, id] : deviceAutomation_->laneFor) known = known || id == laneId;
+    if (!known) return false;
+    overridden_.erase(laneId);
+    writingAutomation_.insert(laneId);
+    return rebuild();
+}
+
+bool Session::finishAutomationWrite(std::int64_t laneId, bool follow) {
+    if (writingAutomation_.erase(laneId) == 0) return false;
+    if (!follow) overridden_.insert(laneId);
+    return rebuild();
+}
+
 bool Session::reenableAutomation(std::int64_t laneId) {
     if (overridden_.erase(laneId) == 0) return false;
     return rebuild();
@@ -1059,6 +1104,12 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     }
     if (!loaded_) return;   // `process` writes silence until a project arrives
     rebuild();
+}
+
+bool Session::setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,std::uint32_t minimumNodes,RenderWorkers::Initializer initialize,void* context) {
+    if(!graph_.setParallelRendering(workers,minimumFrames,minimumNodes,initialize,context))return false;
+    if(!loaded_)return true;
+    return rebuild();
 }
 
 bool Session::setPrecision(Precision p) {

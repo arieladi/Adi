@@ -16,6 +16,16 @@
 #include <numbers>
 #include <thread>
 namespace {std::atomic<unsigned> allocations{0},frees{0};std::atomic<bool> trackPeak{false};std::atomic<std::size_t> peak{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed and frees it when the container is
+// destroyed, so a result object returned from the callback path costs one allocation
+// and one free per container there and none on the other CRTs. The refusal check
+// below allows exactly what an empty result costs on this CRT, measured once before
+// the baselines are read.
+struct CallbackCost {unsigned allocated=0,freed=0;};
+template<class Result> CallbackCost emptyResultCost(){const auto allocated=allocations.load(),freed=frees.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return {allocations.load()-allocated,frees.load()-freed};}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(trackPeak){auto old=peak.load();while(old<n && !peak.compare_exchange_weak(old,n)){}}if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p) noexcept{if(p && adi::audio::onAudioThread)++frees;std::free(p);}
@@ -66,8 +76,9 @@ void controls(){
     {std::jthread worker([&]{foreign=stream.read(out);});}
     check(foreign.status==PcmReadStatus::WrongOwner && out==original && stream.error().empty() && stream.framesRead()==0,"another worker refuses before mutable codec state or buffers are touched");
     const auto source=fixture("tone16.flac");PcmOpenResult refused;PcmReadResult callback;
+    const auto cost=emptyResultCost<PcmOpenResult>();const auto allocated=allocations.load(),freed=frees.load();
     {CallbackScope scope;refused=openPcmStream(source);callback=stream.read(out);}
-    check(refused.status==PcmOpenStatus::AudioThread && !refused.stream && callback.status==PcmReadStatus::AudioThread && out==original && allocations==0 && frees==0 && callbackFileIo==0,"factory and reads refuse callbacks before allocation/free, file I/O or output mutation");
+    check(refused.status==PcmOpenStatus::AudioThread && !refused.stream && callback.status==PcmReadStatus::AudioThread && out==original && allocations==allocated+cost.allocated && frees==freed+cost.freed && callbackFileIo==0,"factory and reads refuse callbacks before allocation/free, file I/O or output mutation");
     const auto resumed=stream.read(out);
     check(resumed.status==PcmReadStatus::Frames && resumed.frames==8 && std::equal(out.begin(),out.end(),reference.begin()),"cancelled/invalid/foreign/callback calls leave the next owner's initial samples intact");
     std::stop_source cancelled;cancelled.request_stop();check(openPcmStream(source,cancelled.get_token()).status==PcmOpenStatus::Cancelled,"pre-cancelled open reports cancellation before source I/O");
