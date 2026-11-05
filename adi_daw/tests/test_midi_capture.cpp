@@ -20,6 +20,7 @@
 #include <limits>
 #include <new>
 #include <stdexcept>
+#include <utility>
 namespace {std::atomic<unsigned> allocations{0};}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
@@ -33,6 +34,14 @@ constexpr std::int64_t inputStart=(std::int64_t{1}<<53)+19;
 constexpr double controlValue=0.25+0x1p-43;
 int checks=0,failures=0;
 void check(bool ok,const char* label){++checks;if(!ok){++failures;std::printf("FAIL: %s\n",label);}}
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed, so the CommitResult that commitMidi's
+// callback refusal returns costs one allocation per container there for each of its
+// two constructions (built, then moved out: its returns name different objects) and
+// none on the other CRTs. The refusal check allows exactly that, measured once on the
+// callback before its baseline is read; the measurement itself is not counted.
+template<class Result> unsigned returnedResultCost(){const auto before=allocations.load();
+    {audio::CallbackScope scope;Result built;Result returned(std::move(built));(void)returned;}return allocations.exchange(before)-before;}
 MidiMemorySnapshot transcript(std::uint32_t rate=48000) {
     MidiMemory memory(8,1,rate,NoteChannelBase::One,64);memory.setListening(true,false);MpeParser parser;
     const auto sink=[](void* context,const Event& e)->bool{return static_cast<MidiMemory*>(context)->push(e,inputStart+e.frame);};
@@ -161,9 +170,13 @@ void guardsAndTransactions() {
     check(!rejected.ok && digestProject(*f.store).text==current,"late Capture rejection rolls back notes, controllers, clip and history together");if(rejected.ok)return;
     Fixture other;check(!capture::commitMidi(*other.store,*prepared).ok,"another project cannot commit a prepared Capture");
     unsigned queries=0;sqlite3_trace_v2(f.store->db().getHandle(),SQLITE_TRACE_STMT,[](unsigned,void* context,void*,void*)->int{++*static_cast<unsigned*>(context);return 0;},&queries);
-    bool refused=false;{audio::CallbackScope callback;refused=!capture::prepareMidi(*f.store,source,spec(),error) && !capture::commitMidi(*f.store,*prepared).ok;}
+    // The request is built before the callback, as its owner would build it; the refusal's own allocations
+    // are checked here and taken back out, so the final total still holds every other callback to zero.
+    const auto request=spec();const auto cost=returnedResultCost<CommitResult>();const auto allocated=allocations.load();
+    bool refused=false;{audio::CallbackScope callback;refused=!capture::prepareMidi(*f.store,source,request,error) && !capture::commitMidi(*f.store,*prepared).ok;}
     sqlite3_trace_v2(f.store->db().getHandle(),0,nullptr,nullptr);
-    check(refused && queries==0 && error=="callback","owner preparation/commit refuse callback before SQL or allocation");
+    const auto spent=allocations.exchange(allocated)-allocated;
+    check(refused && queries==0 && error=="callback" && spent==cost,"owner preparation/commit refuse callback before SQL or allocation");
     {SQLite::Transaction outer(f.store->db(),SQLite::TransactionBehavior::DEFERRED);prepared=capture::prepareMidi(*f.store,source,spec(),error);
         check(prepared && sqlite3_get_autocommit(f.store->db().getHandle())==0,"preparation respects a caller-owned read transaction");}
     check(prepared && capture::commitMidi(*f.store,*prepared).ok,"fresh Capture preparation can commit after rollback or stale work");
