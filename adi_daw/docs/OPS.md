@@ -1484,6 +1484,13 @@ state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
 ## 10. Ops that are not undoable, and why that is fine
 
+Plug-in scan child management is an owner-side application service, not a
+project operation. `scan::runProcess` provides explicit executable/argument
+launch, bounded stdout, deadline/cancellation and child-tree cleanup; it refuses
+audio callbacks before allocation or OS access. See ENGINE-SCAN-PROCESS.md.
+This process boundary alone does not change the CLAP/VST3 discovery methods or
+implement their durable quarantine; those integration items remain separate.
+
 The `transport.*` ops are **performance**, not editing. They write no project
 state, and appending them to undo history would bury the last real edit under
 navigation.
