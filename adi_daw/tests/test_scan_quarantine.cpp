@@ -82,12 +82,14 @@ void validationAndCallbacks() {
     check(!reg.beginScan("vst3",f.path,-1,f.error) && !reg.blockScan("clap",f.path,"negative",-1,f.error) && !reg.finishScan(*ticket,ScanDisposition::Succeeded,"",-1,f.error),"negative explicit timestamps refuse without changing pending");
     check(!reg.finishScan(*ticket,ScanDisposition::Succeeded,"ignored",2,f.error) && !reg.finishScan(*ticket,static_cast<ScanDisposition>(99),"",2,f.error),"unknown completion values and extraneous success diagnostics refuse");
     check(!reg.scanBlocks(f.error,0) && !reg.scanBlocks(f.error,PluginRegistry::kMaximumScanBlocks+1),"read bounds refuse zero/oversized requests");
-    const std::string format="clap",reason="crash",uid="known";f.error="untouched";
+    // Every argument is built before the callback scope: MSVC's Debug CRT allocates an
+    // iterator proxy whenever a std::string is constructed, even an empty one.
+    const std::string format="clap",reason="crash",uid="known",none;f.error="untouched";
     bool callback=false;
     {audio::CallbackScope scope;
         callback=!PluginRegistry::open(f.file,f.error) && !reg.route(format,uid) &&
             !reg.remember(format,uid,engine::RouteChoice::Plain,2,f.error) &&
-            !reg.beginScan(format,f.path,2,f.error) && !reg.finishScan(*ticket,ScanDisposition::Succeeded,"",2,f.error) &&
+            !reg.beginScan(format,f.path,2,f.error) && !reg.finishScan(*ticket,ScanDisposition::Succeeded,none,2,f.error) &&
             !reg.blockScan(format,f.path,reason,2,f.error) && !reg.unblockScan(format,f.path,f.error) && !reg.scanBlocks(f.error);
     }
     check(callback && f.error=="untouched" && allocations==0 && audio::callbackFileIo==0,"all registry callback entry points refuse before allocating or mutating diagnostics");
