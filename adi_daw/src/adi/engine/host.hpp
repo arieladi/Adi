@@ -42,9 +42,19 @@ namespace adi::engine {
 
 /// One realised graph, published. The `Sequenced` base is what the publisher
 /// numbers; everything else here is the payload.
+// Immutable generation identity/clock data; any scratch belongs only to the
+// single audio reader. Construct/retire on the owner, never from a callback.
+class GraphTransportState {
+public:
+    virtual ~GraphTransportState()=default;
+    // Called once, after adopting this graph and before running any node.
+    // Returned metadata lives through this block. No allocation/lock/I/O.
+    [[nodiscard]] virtual const TransportInfo* beginBlock()const noexcept=0;
+};
 class PublishedGraph final : public Sequenced {
 public:
-    explicit PublishedGraph(std::unique_ptr<RealizedGraph> g) : graph_(std::move(g)) {}
+    explicit PublishedGraph(std::unique_ptr<RealizedGraph> g,std::shared_ptr<const GraphTransportState> state={})
+        : transportState_(std::move(state)),graph_(std::move(g)) {}
 
     /// NON-CONST through a const `PublishedGraph`, on purpose. `AudioRead`
     /// hands out `const PublishedGraph*` because the snapshot's IDENTITY is
@@ -53,8 +63,11 @@ public:
     /// every block. `const` on a `unique_ptr` does not propagate to the
     /// pointee, so this needs no `mutable` and no cast.
     [[nodiscard]] RealizedGraph& graph() const noexcept { return *graph_; }
+    [[nodiscard]] const GraphTransportState* transportState()const noexcept{return transportState_.get();}
 
 private:
+    // The graph retires first; its block metadata remains alive through it.
+    std::shared_ptr<const GraphTransportState> transportState_;
     std::unique_ptr<RealizedGraph> graph_;
 };
 
@@ -86,7 +99,8 @@ public:
     /// it was playing. The alternative — swap first, discover second — turns a
     /// bad edit into silence.
     bool rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
-                 std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan = {});
+                 std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan = {},
+                 std::shared_ptr<const GraphTransportState> transportState = {});
 
     /// Free retired graphs the audio thread has demonstrably moved past. Call
     /// it on the same timer that polls the coalescer; it never blocks audio.
@@ -102,6 +116,9 @@ public:
     [[nodiscard]] Graph* currentGraph() const noexcept;
     /// Audio thread, after process: latency of the graph that actually ran.
     [[nodiscard]] std::int32_t renderedLatency() const noexcept;
+    /// Single audio reader, after process and before the next process. Protected
+    /// by the same publication as the graph that actually ran; no refcounting.
+    [[nodiscard]] const GraphTransportState* renderedTransportState()const noexcept;
     /// Audio owner after process, before the next process: protected by its
     /// current publication. Copies already rendered samples, never runs DSP.
     [[nodiscard]] bool copyRenderedOutput(const Node&, const AudioIo&) const noexcept;
@@ -127,6 +144,11 @@ public:
 
     /// The Processing Precision every graph is built at (ADR-0207 d2), kept on
     /// the host as the headroom is. Takes effect at the next `rebuild`.
+    /// Owner configuration for future rebuilds. Existing graph remains live
+    /// until a successfully prepared candidate is published. Zero is serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr) noexcept;
     void setPrecision(Precision p) noexcept { precision_ = p; }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
     /// Message-thread policy for the next graph, like Processing Precision.
@@ -192,6 +214,10 @@ private:
     std::int32_t fadeFrames_ = 0;
     Precision precision_ = Precision::Float32;
     bool delayCompensation_ = true;
+    std::uint32_t renderWorkers_=0,parallelMinimumNodes_=4;
+    std::int32_t parallelMinimumFrames_=256;
+    RenderWorkers::Initializer workerInitializer_=nullptr;
+    void* workerInitializationContext_=nullptr;
     bool keepHistory_ = true;
 
     // Audio thread only.

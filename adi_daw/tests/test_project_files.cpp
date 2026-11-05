@@ -143,6 +143,31 @@ void historyBranches() {
     auto final=Store::open(third,error);
     check(final && History(*final).undo().ok && resolves(*final),"unlink's captured media row resolves after two relocations");
 }
+void symlinkedDestination() {
+    // SQLite resolves the symlinks in a path it opens and projectFolder() reads that
+    // spelling: macOS's temporary folder /var/... opens as /private/var/... A copy
+    // saved through a symlink to a folder at another depth must count its relative
+    // media paths from the folder it opens in, not from the caller's spelling.
+    Fixture f;const auto real=f.temp.path()/"nested/real";fs::create_directories(real);
+    std::error_code linked;fs::create_directory_symlink(real,f.temp.path()/"link",linked);
+    if(linked){
+#if defined(_WIN32)
+        // Windows grants symlinks only to elevated or Developer Mode sessions.
+        std::printf("SKIP symlinked destination checks: %s\n",linked.message().c_str());
+#else
+        // Unix always grants one here: a refusal fails rather than drops the guard.
+        check(false,"the test folder takes a directory symlink");
+#endif
+        return;
+    }
+    const auto target=f.temp.path()/"link/Copy.adi";
+    check(f.store->saveCopy(target).ok,"Copy publishes through a symlinked destination folder");
+    StoreError error{};auto copy=Store::open(target,error);
+    check(copy && resolves(*copy),"a copy saved through a symlink resolves media from the folder it opens in");
+    if(!copy)return;
+    History history(*copy);
+    check(history.undo().ok && history.redo().ok && resolves(*copy),"its captured import paths resolve there too");
+}
 void unknownMajorAndReaders() {
     Fixture f;f.store->db().exec("PRAGMA busy_timeout=0");
     {
@@ -166,5 +191,5 @@ void unknownMajorAndReaders() {
     check(!newer->saveAs(refused).ok && !fs::exists(refused),"Save As cannot turn an unsupported major into an editable project");
 }
 }
-int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}

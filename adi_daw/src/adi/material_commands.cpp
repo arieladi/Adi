@@ -2,6 +2,7 @@
 #include "adi/material_commands.hpp"
 #include "adi/audio/transients.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/engine/warp_projection.hpp"
 #include "adi/clip_image.hpp"
 #include "adi/edit_time.hpp"
@@ -12,6 +13,8 @@
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <atomic>
+#include <array>
+#include <fstream>
 #include <algorithm>
 #include <cmath>
 #include <chrono>
@@ -21,6 +24,25 @@
 
 namespace adi::clip_edit {
 namespace fs=std::filesystem;
+namespace {
+void copyImport(const fs::path& source,const fs::path& target,std::stop_token stop) {
+    const auto expected=fs::file_size(source);std::uintmax_t total=0;
+    std::ifstream input(source,std::ios::binary);std::ofstream output(target,std::ios::binary);
+    if(!input || !output)throw std::runtime_error("cannot open import copy");
+    std::array<char,65536> bytes{};
+    for(;;) {
+        if(stop.stop_requested())throw std::runtime_error("import cancelled");
+        input.read(bytes.data(),static_cast<std::streamsize>(bytes.size()));const auto got=input.gcount();
+        if(static_cast<std::uintmax_t>(got)>expected-total)throw std::runtime_error("import source changed size during copy");
+        total+=static_cast<std::uintmax_t>(got);output.write(bytes.data(),got);
+        if(!output)throw std::runtime_error("import copy write failed");
+        if(input.eof())break;
+        if(!input)throw std::runtime_error("import copy read failed");
+    }
+    output.close();
+    if(!output || total!=expected)throw std::runtime_error("import copy close/size check failed");
+}
+}
 struct MaterialFiles {
     fs::path directory,staged,target;
     std::string hash;
@@ -69,6 +91,7 @@ void snapshot(Store& store,const fs::path& target) {
 }
 MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double referenceRate) {
     MaterialEdit result;
+    if(audio::onAudioThread)return result;
     try {
         if(store.readOnly())throw std::runtime_error("project is read-only");
         if(options.stop.stop_requested())throw std::runtime_error("import cancelled");
@@ -82,10 +105,10 @@ MaterialEdit prepareImportAudio(Store& store,const ImportOptions& options,double
         auto files=stage(media::projectFolder(store));files->stop=options.stop;result.files=files;
         if(options.copyIn) {
             files->staged=files->directory/source.filename();
-            fs::copy_file(source,files->staged,fs::copy_options::none);source=files->staged;
+            copyImport(source,files->staged,options.stop);source=files->staged;
         }
         OpRequest mediaRequest;
-        const auto imported=media::prepareImport(store,source,options.mediaId,options.importedUtc,mediaRequest);
+        const auto imported=media::prepareImport(store,source,options.mediaId,options.importedUtc,mediaRequest,nullptr,options.stop,!options.warp);
         if(!imported.ok)throw std::runtime_error(imported.error);
         if(!imported.audio)throw std::runtime_error("import prompt needs a supported audio file; video playback is not built");
         const auto& info=*imported.audio;
