@@ -3,6 +3,7 @@
 // See juce_device_loader.hpp. ADR-0122.
 
 #include "juce/juce_device_loader.hpp"
+#include "juce/builtin_host.hpp"
 
 #include <string>
 #include <utility>
@@ -54,9 +55,13 @@ std::unique_ptr<DeviceInstance> JuceDeviceLoader::make(const engine::DeviceReque
     const std::string& f = rq.ref->format;
     if (f == "vst3") return makeVst3(rq, err);
     if (f == "clap") return makeClap(rq, err);
+    if (f == "internal") {
+        auto instance=makeBuiltinDevice(rq,err);
+        if(instance)++stats_.builtin;else ++stats_.failed;
+        return instance;
+    }
     ++stats_.unhosted;
-    err = (f == "internal") ? std::string("internal devices are not built yet")
-                            : "format '" + f + "' is not hosted (ADR-0041)";
+    err = "format '" + f + "' is not hosted (ADR-0041)";
     return nullptr;
 }
 

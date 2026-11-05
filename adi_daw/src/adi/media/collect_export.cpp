@@ -134,42 +134,20 @@ FileResult collectExport(const fs::path& input, const fs::path& output) {
         StoreError error;
         auto source = Store::open(fs::absolute(input), error, true);
         if (!source || error != StoreError::Ok) return {false, "cannot open source: " + pathUtf8(input) + ": " + toString(error)};
-        const auto originalFolder = projectFolder(*source);
         Stage stage(target.parent_path());
         const auto project = stage.path / "project"; fs::create_directory(project);
         const auto filename = input.extension() == ".adi" ? safeName(pathUtf8(input.filename()), 0) : std::string("project.adi");
         const auto copyPath = project / pathFromUtf8(filename);
-        {
-            SQLite::Database copy(pathUtf8(copyPath), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
-            SQLite::Backup backup(copy, source->db());
-            if (backup.executeStep() != SQLITE_DONE) throw std::runtime_error("database snapshot busy or incomplete");
-        }
+        const auto saved=source->saveCopy(copyPath);
+        if(!saved.ok)throw std::runtime_error(saved.error);
         source.reset();
         auto copy = Store::open(copyPath, error);
         if (!copy || copy->readOnly()) throw std::runtime_error("cannot open snapshot for relocation");
-        const auto legacyList = embeddedIds(copy->db());
-        const std::set<std::int64_t> legacy(legacyList.begin(), legacyList.end());
         const auto extraction = extractMedia(*copy);
         if (!extraction.ok) throw std::runtime_error(extraction.error);
+        const auto collected=copy->collectAllAndSave();
+        if(!collected.ok)throw std::runtime_error(collected.error);
         audioDirectory(project);
-        Published published;
-        {
-            SQLite::Transaction transaction(copy->db());
-            std::vector<std::int64_t> ids;
-            { SQLite::Statement q(copy->db(), "SELECT id FROM media_files ORDER BY id"); while (q.executeStep()) ids.push_back(q.getColumn(0).getInt64()); }
-            for (const auto id : ids) {
-                if (legacy.contains(id)) continue;
-                const auto row = mediaRow(copy->db(), id); std::string resolveError;
-                const auto resolved = resolveMedia(originalFolder, row, resolveError);
-                if (resolved.empty()) throw std::runtime_error(resolveError);
-                const auto staged = stage.path / "media.tmp";
-                fs::copy_file(resolved, staged, fs::copy_options::overwrite_existing);
-                verify(staged, row.at("hash_blake3").get<std::string>());
-                const auto dest = publish(staged, project, row.at("orig_name").get<std::string>(), id, published);
-                relocate(copy->db(), id, project, dest);
-            }
-            transaction.commit(); published.committed = true;
-        }
         const auto report = checkProject(*copy, true);
         if (!report.clean()) throw std::runtime_error("collected project failed check: " + report.findings.front().detail);
         if (!copy->close()) throw std::runtime_error("could not fold copied database WAL");
