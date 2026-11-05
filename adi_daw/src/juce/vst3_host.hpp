@@ -41,6 +41,7 @@
 #pragma once
 
 #include "juce/device_model.hpp"
+#include "adi/plugin_scanner.hpp"
 #include "juce/vst3_events.hpp"
 
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -68,9 +69,14 @@ public:
     /// Where the OS keeps VST3s. Read from JUCE rather than hardcoded.
     [[nodiscard]] juce::FileSearchPath defaultSearchPaths() const;
 
-    /// Blocking scan. Message thread; a plugin's factory runs arbitrary code
-    /// and some of them are slow.
-    void scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into);
+    /// Blocking owner discovery, always in the dedicated child with quarantine.
+    /// Directory enumeration is filesystem-only. No in-process fallback.
+    scan::Report scan(const juce::FileSearchPath& paths, juce::KnownPluginList& into,
+                      const scan::Config& config = {});
+    /// Same boundary for a project's explicit path hint. Replaces `into` only
+    /// after a completed scan; failed/cancelled service retains the old list.
+    scan::Report scanFile(const juce::String& file, juce::KnownPluginList& into,
+                          const scan::Config& config = {});
 
     /// Instantiate, or return nullptr and set `error`.
     ///
@@ -106,6 +112,8 @@ public:
 
     [[nodiscard]] const DeviceIdentity& identity() const noexcept override { return id_; }
     [[nodiscard]] bool loaded() const noexcept override { return inst_ != nullptr; }
+
+    [[nodiscard]] std::shared_ptr<DeviceEditor> createEditor(EditorMode, std::string& error) override;
 
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void release() override;
@@ -222,6 +230,9 @@ public:
     /// Parameter changes refused: no free queue, or a full one. MpeMidi's
     /// IMidiMapping path lands here as well as ordinary automation.
     [[nodiscard]] std::int64_t paramsDropped() const noexcept { return paramChanges_.dropped(); }
+    [[nodiscard]] std::uint32_t unsupportedControllers() const noexcept {
+        return unsupportedControllers_.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] std::int64_t eventsOutOfRange() const noexcept {
         return events_.outOfRange() + routedOutOfRange_;
     }
@@ -291,6 +302,7 @@ private:
 
     void readParameters();
 
+    std::weak_ptr<DeviceEditor> editor_;
     std::unique_ptr<juce::AudioPluginInstance> inst_;
     DeviceIdentity id_;
     std::vector<ParamDescriptor> params_;
@@ -318,6 +330,7 @@ private:
     std::vector<engine::MpeOut> routedStore_;
     engine::MpeOutList routed_;
     std::int64_t routedOutOfRange_ = 0;
+    std::atomic<std::uint32_t> unsupportedControllers_{0};
     std::atomic<std::uint8_t> requestedRoute_{0};    ///< engine::RouteChoice
     std::uint8_t appliedRoute_ = 0;                  ///< audio thread only
     std::atomic<std::uint8_t> routeInUse_{0};        ///< engine::ExpressionRoute
