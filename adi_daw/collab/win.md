@@ -6,6 +6,86 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-04 — The engine's forty PRs become one stack; the Codex work seat; five compilers' worth of fixes
+
+**Why the forty could not merge as they stood.** The engine's #382 to #421 (3 November, below) were
+each cut from main on their own, and five of them each took schema minor 1.10 with its own
+`history/schema-1.9.sql` freeze, `migrationSteps()` row and `kSchemaMinor`; four more stood on a
+branch of their own. The first to merge would have made every other one a conflict on the same
+lines, and the merger stops at the first. So today win rebuilt them as one stack, in the engine's
+own order: each branch now contains its predecessor (a merge commit, "the engine stack of
+4 November"), the minors are renumbered in merge order, 1.10 markers, 1.11 split stereo pan, 1.12
+and 1.13 phase C editing, 1.14 track recording options, 1.15 return send taps, 1.16 clip
+properties, 1.17 and 1.18 freeze, 1.19 history compaction, each with its predecessor's `schema.sql`
+frozen byte for byte, and every PR's base is its predecessor's branch. The first keeps main. The
+chain heads replaced the branches on origin as fast-forwards; nothing of the engine's was
+rewritten, only merged into.
+
+**What the merge needed, beyond resolving the same lines forty times.** The rules are in the
+session's `chain_step.py`, kept because every one of them will recur as long as lanes cut from
+main independently: a `snapshot.cpp` early `return` on a project without remarks (snapshot-remarks)
+became a guarded block, because every later item appends sections after it and the sample-slot
+suite crashed on the first one skipped; a test that creates a table another branch owns
+(`automation_segment_ranges`, `clip_properties`, `clip_playback_details`) now creates it only if it
+is missing and tolerates the native table's CHECK and UNIQUE, or skips when the native table is
+there; a test that "reconstructs the frozen predecessor" by dropping its own table and marking the
+file 1.9 now drops everything `tablesAddedAfter(9)`, because the migration steps are plain
+`CREATE TABLE` and a 1.19 file marked 1.9 with one table missing cannot migrate; clip-properties'
+play-end limit, set right after the unwarped source length, moved below phase C's warp length, or
+a warped clip stopped at its unwarped end (the three warp "heard" suites); phase C's
+`captureDeleted` restores a deleted clip's row exactly on undo, as Live does, where main's inverse
+recreated it without its muted state, and the window's seams test had leaned on that loss
+(it deactivated two clips, computed but never submitted their reactivation, deleted and undid
+them, and expected them back active; it now submits what it computed); and the engine's
+default-returns answered the window's N41 while the window's #330 wrote New's tests for a
+five-track Set, so those tests count Live's seven, A Reverb and B Delay before Main, and add their
+own track as id 8. The migrate suite's fixture, kTables count and `test_migrate` expectations are
+regenerated at every link rather than merged.
+
+**Five compilers.** The engine builds on GCC and Clang on Linux; CI's other legs found, on nine
+branches: Apple arm64's `long double` is 64-bit, so an `int64` operand in a `long double`
+expression is an error there (explicit casts in `auto_warp.cpp`, `warp_projection.cpp`,
+`warp_commands.cpp`, `freeze_commands.cpp`, `session.cpp`); MSVC 14.51's C4245 on a Media
+Foundation enum against DWORD and C4456 shadowing (`aac_windows.cpp`); and MSVC's Debug CRT, which
+turns a vector subscript out of range in a test into a modal dialog that stalls `test_all.sh` (the
+process stays alive holding its exe, so the next link fails with LNK1168). Each fix is its own
+commit on the branch, measured in its message. The stack builds on MSVC with `/WX` and passes the
+whole suite on this machine before it is pushed; CI proves the rest per PR.
+
+**The Codex work seat.** The engine lane's cloud seat is now a Codex seat (the director, this
+morning). Its first run reported, correctly, that it is a Linux sandbox without the GitHub API or
+MSVC, so the cloud seat's rules apply unchanged and win opens its PRs; it also saw that `engine/log`
+did not yet carry the stack and based its work so that nothing depended on it. It stopped after
+one item because win's prompt said "one heavy mission, report once", and again after four for a
+"context checkpoint"; the director's order is that it never stops unless a really good reason
+needs it, named in its log, so the prompt
+(`collab/prompts/2026-11-04-engine-lane-codex.md`, #429) now says so. Its PRs of today, #424 to #428 and
+#430 to #434 (automation point edits, lane lifecycle, shape insertion, Automation Arm capture, the
+Session write policy, clip envelopes, send automation, retrospective audio and MIDI memory and
+its capture), are open, each on the branch it declares as its dependency, and queue behind the
+stack in that order.
+
+**The duty, restated.** Opening the engine's PRs the day they are requested is what keeps this
+from recurring: a PR opened the same day is one merge, a week of them is a stack. Win reads
+`origin/engine/log` at the start of every session and after every seat report.
+
+---
+
+## 2026-11-03 (evening) — The table count leaves the README (the director's ruling)
+
+**Ruled this evening: the README states no table count.** `validate_schema.py` check 7 had compared
+the README's hand-written "N tables" with `docs/format/schema.sql`. That made every PR that adds a
+table red until win re-typed the number (LANES.md §6: the count is win's), and because every such
+branch then changed the same line to a different number, each one conflicted with main after the
+previous one merged. Six engine PRs went red on it in one day (#385, #393, #413, #416, #419 and
+their stacks), each a merger stop and a CI re-queue behind the macOS runner. The number was derived
+and hand-written; it now lives where it is generated, in `schema.sql` itself and in the Master
+Reference. Check 7 now fails if the README states a table count again, and still holds the ADR count
+to `DECISIONS.md`, whose numbers are win's alone. The six branches that carry win's count edits get
+main merged in once this lands; the one-line conflict on each is resolved to main's text in that pass.
+
+---
+
 ## 2026-11-03 (afternoon) — CI: the two heavy macOS legs leave the PR gate; the engine's 41 unopened PRs
 
 **The director said go on the macOS gate change (proposed this morning, below).** GitHub serves this
