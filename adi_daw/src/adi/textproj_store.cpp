@@ -90,6 +90,7 @@ enum Section : std::int64_t {
     SecTrack = 3,
     SecMarker = 4,
     SecRoute = 5,
+    SecTuning = 7,
     SecRemark = 6,   // only remarks whose anchor is gone are roots (ADR-0139)
 };
 
@@ -194,11 +195,11 @@ std::span<const TableCoverage> coverage() {
         {"note_expression", Coverage::Excluded, "no expression op is implemented"},
         {"arranger_sections", Coverage::Excluded, "no op writes it"},
         {"arranger_chain", Coverage::Excluded, "no op writes it"},
-        {"key_map", Coverage::Excluded, "no op writes it"},
-        {"tuning_systems", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
-        {"tuning_degrees", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
-        {"key_map_tunings", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
-        {"key_map_degrees", Coverage::Excluded, "no op writes it; arrives with scale-aware editing (ADR-0178)"},
+        {"key_map", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
+        {"tuning_systems", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
+        {"tuning_degrees", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
+        {"key_map_tunings", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
+        {"key_map_degrees", Coverage::Projected, "ADR-0178: scale context; identities resolved through content designators"},
         {"media_blobs", Coverage::Excluded, "retired and locked since 1.1 (ADR-0136); a 1.0 file's bytes are not projected"},
         {"extensions", Coverage::Excluded, "digest projection not designed"},
     }};
@@ -252,6 +253,41 @@ Tree buildTree(const rows::Model& m) {
             t.nodes[n].attrs.push_back(renderPosition(s.posTicks, meters) + " " +
                                        std::to_string(s.numerator) + "/" +
                                        std::to_string(s.denominator));
+        t.roots.push_back(n);
+    }
+
+    // Tuning definitions are content-labelled nodes; key changes refer to
+    // those nodes, so database identities never leak into the projection.
+    std::unordered_map<std::int64_t,std::size_t> tuningNode;
+    std::map<std::int64_t,std::vector<const rows::TuningDegree*>> degreeRows;
+    for(const auto& degree:m.tuningDegrees)degreeRows[degree.tuningId].push_back(&degree);
+    for(const auto& tuning:m.tunings) {
+        const auto n=addNode(t,"tuning","tuning",tuning.name,{SortKey::integer(SecTuning),SortKey::text(tuning.name),SortKey::text(tuning.source),SortKey::real(tuning.periodCents)});
+        tuningNode[tuning.id]=n;Attrs attributes(t.nodes[n].attrs);
+        attributes.raw("source "+renderLabelToken(tuning.source));attributes.raw("period "+renderF64(tuning.periodCents));attributes.text("description",tuning.description);
+        auto& degrees=degreeRows[tuning.id];
+        std::sort(degrees.begin(),degrees.end(),[](const auto* left,const auto* right){
+            if(left->degree!=right->degree)return left->degree<right->degree;
+            const auto comparison=SortKey::real(left->cents).compare(SortKey::real(right->cents));
+            return comparison!=0?comparison<0:left->name<right->name;
+        });
+        for(const auto* degree:degrees)attributes.raw("degree "+std::to_string(degree->degree)+" cents "+renderF64(degree->cents)+" name "+renderLabelToken(degree->name));
+        t.roots.push_back(n);
+    }
+    std::map<std::int64_t,std::int64_t> keyTuning;
+    for(const auto& reference:m.keyTunings)keyTuning[reference.keyId]=reference.tuningId;
+    std::map<std::int64_t,std::vector<std::int64_t>> keyMembers;
+    for(const auto& member:m.keyDegrees)keyMembers[member.keyId].push_back(member.degree);
+    for(const auto& key:m.keyEvents) {
+        const auto n=addNode(t,"key","key",renderPosition(key.posTicks,meters),{SortKey::integer(SecMap),SortKey::integer(2),SortKey::integer(key.posTicks)});
+        Attrs attributes(t.nodes[n].attrs);attributes.raw("at "+renderPosition(key.posTicks,meters));
+        attributes.raw("root "+std::to_string(key.root));attributes.raw("scale "+renderLabelToken(key.scaleId));attributes.raw("mask "+std::to_string(key.mask));
+        const auto reference=keyTuning.find(key.id);
+        if(reference!=keyTuning.end()) {
+            const auto target=tuningNode.find(reference->second);t.nodes[n].refs.push_back({"tuning",target==tuningNode.end()?Ref::kDangling:target->second,"tuning"});
+            auto& members=keyMembers[key.id];std::sort(members.begin(),members.end());
+            std::string line="degrees";for(const auto degree:members)line+=" "+std::to_string(degree);attributes.raw(std::move(line));
+        }
         t.roots.push_back(n);
     }
 

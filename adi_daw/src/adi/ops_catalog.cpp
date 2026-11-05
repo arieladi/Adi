@@ -39,6 +39,7 @@
 #include "adi/clip_property_ops.hpp"
 #include "adi/summing_flavors.hpp"
 #include "adi/track_image.hpp"
+#include "adi/tuning_ops.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -2179,6 +2180,8 @@ std::span<const OpDescriptor> builtinOps() {
         v.insert(v.end(), automation.begin(), automation.end());
         const auto lanes = automation::laneDescriptors();
         v.insert(v.end(), lanes.begin(), lanes.end());
+        const auto tuningOps=tunings::ops();
+        v.insert(v.end(),tuningOps.begin(),tuningOps.end());
         return v;
     }();
     return all;

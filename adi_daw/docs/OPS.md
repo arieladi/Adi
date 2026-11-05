@@ -358,11 +358,22 @@ silent truncation in JSON, a non-issue in CBOR.
 | `project.setTempoCurve` | e | S | sym | P2 |
 | `project.insertTimeSignature` | e | S | pair `removeTimeSignature` | P0 |
 | `project.removeTimeSignature` | e | S | cap | P0 |
-| `project.insertKeyEvent` | e | N | pair `removeKeyEvent` | P2 |
-| `project.removeKeyEvent` | e | N | cap | P2 |
+| `project.insertKeyEvent` | e | S | pair `removeKeyEvent` | P2 |
+| `project.removeKeyEvent` | e | S | cap | P2 |
+| `project.setKeyScale` | e | S | sym | P2 |
+| `tuning.create` | e | S | pair `tuning.delete` | P2 |
+| `tuning.delete` | e | S | cap | P2 |
+| `tuning.replace` | e | S | sym | P2 |
 | `project.setSampleRate` | e | **P** | sym | P0 |
 | `project.setTimecodeOrigin` | e | N | sym | P3 |
 | `project.setFrameRate` | e | N | sym | P3 |
+
+Native key changes and ADR-0178 tuning definitions use the explicit-ID
+payloads in `ENGINE-TUNING-EDITS.md`. Inserts never upsert. Replacing a tuning
+validates all existing selected degrees; deleting a referenced tuning refuses.
+All six handlers capture complete inverses, use the journal transaction, and
+request a snapshot update without retuning notes. The text projection covers
+the five existing relational scale tables. No schema/binary-layout change.
 
 ### 9.2 Tracks and lanes
 
@@ -838,6 +849,13 @@ tuning degrees coherently without reading notes or writing history. Held
 contexts offer bounded pitch/membership queries with an explicit absolute
 tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
 non-octave periods and native pitch precision. No new opcode or schema.
+
+Scale highlighting, ruler and Fold projections are runtime read concerns.
+`engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
+tuning degrees coherently without reading notes or writing history. Held
+contexts offer bounded pitch/membership queries with an explicit absolute
+tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
+non-octave periods and native pitch precision. This read concern adds no opcode or schema; native scale writes are in §9.1.
 
 ### 9.6 Automation
 
@@ -1512,7 +1530,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**205 ops** — 70 P0, 83 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**209 ops** — 70 P0, 83 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

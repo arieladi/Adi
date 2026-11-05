@@ -303,6 +303,9 @@ add_library(adi_core STATIC
     src/adi/engine/clip_details.cpp
     src/adi/engine/scale_context.cpp
     src/adi/engine/scala_import.cpp
+    src/adi/engine/clip_details.cpp
+    src/adi/engine/scale_context.cpp
+    src/adi/tuning_ops.cpp
     src/adi/render/queue.cpp
     src/adi/render/freeze_capture.cpp
     src/adi/freeze_fingerprint.cpp
@@ -1067,6 +1070,12 @@ add_test(NAME adi_scale_timeline_tests COMMAND adi_scale_timeline_tests)
 add_executable(adi_scala_import_tests tests/test_scala_import.cpp)
 target_link_libraries(adi_scala_import_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_scala_import_tests COMMAND adi_scala_import_tests)
+
+
+
+add_executable(adi_tuning_ops_tests tests/test_tuning_ops.cpp)
+target_link_libraries(adi_tuning_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_tuning_ops_tests COMMAND adi_tuning_ops_tests)
 
 # ADR-0201: the UI's project-state cell, message thread only.
 add_executable(adi_project_view_tests tests/test_project_view.cpp)
