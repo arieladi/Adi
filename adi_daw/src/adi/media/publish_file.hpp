@@ -4,6 +4,11 @@
 #include <string>
 #include <system_error>
 namespace adi::media {
+// Atomic replacement for optional app-owned cache data, same filesystem only.
+// The source is private and closed. No exclusive-copy fallback exposes partial
+// replacement bytes. This must never publish authoritative user media/settings.
+[[nodiscard]] std::error_code replaceCacheFile(const std::filesystem::path& source,
+                                              const std::filesystem::path& target) noexcept;
 enum class PublishStatus { published, exists, failed };
 struct PublishResult {
     PublishStatus status = PublishStatus::failed;

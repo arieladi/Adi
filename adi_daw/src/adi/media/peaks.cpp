@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/media/peaks.hpp"
+#include "adi/media/analysis_cache.hpp"
 #include "adi/media/blake3.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/audio/decode.hpp"
@@ -119,6 +120,10 @@ PeakResult readMediaPeaks(const Store& store,std::int64_t id) {
 }
 PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maximum,std::stop_token stop,audio::DecodeCache* supplied) {
     if(audio::onAudioThread)return failed(PeakProblem::audioThread);
+    return buildMediaPeaks(store,id,maximum,stop,supplied,&defaultAnalysisCache());
+}
+PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maximum,std::stop_token stop,audio::DecodeCache* supplied,AnalysisCache* shared) {
+    if(audio::onAudioThread)return failed(PeakProblem::audioThread);
     if(stop.stop_requested())return failed(PeakProblem::cancelled);
     if(maximum==0 || maximum>kMaxPeakValues)return failed(PeakProblem::invalidRequest);
     auto cached=readMediaPeaks(store,id);if(cached)return cached;
@@ -126,6 +131,15 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
     try {
         const auto source=plan(store,id);if(!source)return failed(PeakProblem::unknownMedia);
         if(!validHash(source->hash))return failed(PeakProblem::invalidSource,"invalid source identity");
+        if(shared && source->rate && source->channels && source->frames && *source->rate>0 && *source->rate<=audio::kMaxDecodeRate && *source->channels>0 && *source->channels<=audio::kMaxDecodeChannels && *source->frames>=0) {
+            const AnalysisIdentity identity{source->hash,static_cast<std::uint32_t>(*source->rate),static_cast<std::uint32_t>(*source->channels),static_cast<std::uint64_t>(*source->frames)};
+            const auto analysis=shared->read(identity,stop);
+            if(analysis.problem==AnalysisCacheProblem::Cancelled)throw Cancelled{};
+            if(analysis)if(const auto section=analysis.data->sections.find("APKS");section!=analysis.data->sections.end() && section->second.version==1 && section->second.configuration==0) {
+                auto decoded=decodePeaks(section->second.bytes);
+                if(decoded && matches(*decoded.data,*source))return decoded;
+            }
+        }
         const auto path=locate(store,*source,stop);if(path.empty())return failed(PeakProblem::missingMedia);
         cancelled(stop);auto& cache=supplied?*supplied:audio::defaultDecodeCache();const auto playable=cache.playable(path);
         struct Release {audio::DecodeCache& cache;const std::filesystem::path& path;~Release(){cache.release(path);}} release{cache,playable};
@@ -150,6 +164,17 @@ PeakResult buildMediaPeaks(const Store& store,std::int64_t id,std::uint32_t maxi
         }
         cancelled(stop);const auto hash=blake3File(path,stop);if(hash.error==HashError::cancelled)throw Cancelled{};
         if(!hash || hash.hex!=data.contentHash)return failed(PeakProblem::invalidSource,"source changed during peaks read");
+        if(shared) {
+            try {
+                std::string error;
+                const auto written=shared->update({data.contentHash,data.sampleRate,data.channels,data.frames},"APKS",{1,0,encodePeaks(data)},error,stop);
+                if(written==AnalysisCacheProblem::Cancelled)throw Cancelled{};
+            }catch(const Cancelled&){throw;}
+            catch(const std::exception&) {
+                // Serialization/resource failure is also optional. Keep the
+                // already computed bins even when another cache copy cannot fit.
+            }
+        }
         return success(std::move(data));
     }catch(const Cancelled&){return failed(PeakProblem::cancelled);}
     catch(const std::bad_alloc&){return failed(PeakProblem::resource);}

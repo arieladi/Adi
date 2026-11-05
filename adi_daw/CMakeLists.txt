@@ -1441,7 +1441,11 @@ target_link_libraries(adi_zip_writer_tests PRIVATE adi_core adi_warnings adi_min
 add_test(NAME adi_zip_writer_tests COMMAND adi_zip_writer_tests)
 
 # linux/collect-export: only this assignment's sources and test targets.
-target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp src/adi/media/peaks.cpp)
+target_sources(adi_core PRIVATE src/adi/media/media_ops.cpp src/adi/media/collect_export.cpp src/adi/media/peaks.cpp src/adi/media/analysis_cache.cpp)
+add_executable(adi_analysis_cache_tests tests/test_analysis_cache.cpp)
+target_link_libraries(adi_analysis_cache_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_analysis_cache_tests COMMAND adi_analysis_cache_tests)
+
 add_executable(adi_media_ops_tests tests/test_media_ops.cpp)
 target_compile_definitions(adi_media_ops_tests PRIVATE
     ADI_DECODE_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/decode")
