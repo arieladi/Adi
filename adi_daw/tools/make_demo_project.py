@@ -83,15 +83,19 @@ def main():
     c = sqlite3.connect(a.adi)
     c.execute("PRAGMA foreign_keys = ON")
     # `adi_tool create` writes Live's default Set (Main, two MIDI, two audio
-    # tracks and their strips; ADR-0209 section 10 d10, engine #307). A
-    # pristine one has no clip, device or op; this script replaces its tracks
-    # with the demo's own. Anything already edited is left alone.
+    # tracks and their strips; ADR-0209 section 10 d10, engine #307; since
+    # engine #415 also the A Reverb and B Delay returns with their wet-only
+    # devices and the tracks' sends). A pristine one has no clip and no op;
+    # this script replaces its tracks with the demo's own. Anything already
+    # edited is left alone.
     if c.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]:
         edited = any(c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
-                     for t in ('clips', 'devices', 'ops'))
+                     for t in ('clips', 'ops'))
         if edited:
             raise SystemExit(a.adi + ' already has edits: start from `adi_tool create`')
-        c.execute("DELETE FROM tracks")   # strips and lanes cascade
+        c.execute("DELETE FROM tracks")   # strips, lanes, chains and devices cascade
+        c.execute("DELETE FROM routing")  # the default sends name tracks without a key
+        c.execute("DELETE FROM plugin_refs")  # the returns' built-ins, now unreferenced
     c.execute("INSERT OR REPLACE INTO project(id, name, sample_rate) VALUES (1, 'demo', ?)", (a.project_rate,))
 
     ns = 1_000_000_000

@@ -37,11 +37,19 @@ on:
     branches: [main, master]
     paths:
       - 'adi_daw/**'
+      # the lanes' logs and notes change nothing a leg builds or checks, except the
+      # ADR reservation table that validate_schema.py reads (check 8)
+      - '!adi_daw/collab/**'
+      - 'adi_daw/collab/README.md'
       - '.github/workflows/ci.yml'
       - '.github/scripts/check_spec_layout.py'
   pull_request:
     paths:
       - 'adi_daw/**'
+      # the lanes' logs and notes change nothing a leg builds or checks, except the
+      # ADR reservation table that validate_schema.py reads (check 8)
+      - '!adi_daw/collab/**'
+      - 'adi_daw/collab/README.md'
       - '.github/workflows/ci.yml'
       - '.github/scripts/check_spec_layout.py'
   workflow_dispatch:
@@ -235,8 +243,19 @@ jobs:
       # --config is required by the multi-config Visual Studio generator on
       # windows-latest and ignored by single-config generators, so one line
       # serves every leg.
+      #
+      # A COUNTED --parallel, never a bare one. A bare `--parallel` hands make a
+      # bare `-j`, one compiler per source file at once (the trap the probe step
+      # below documents for macOS). When the engine stack of 4 November nearly
+      # doubled adi_core, GCC running every translation unit at once ran the
+      # Linux runners out of memory: each GCC leg died about a minute into the
+      # core library with "The runner has received a shutdown signal" (#420,
+      # #421), while the clang legs, lighter per file, still passed. One
+      # compiler per processor builds the same tree without the cliff.
       - name: Build
-        run: cmake --build adi_daw/build --config Debug --parallel
+        run: |
+          jobs="${NUMBER_OF_PROCESSORS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+          cmake --build adi_daw/build --config Debug --parallel "$jobs"
 
       # A HUNG TEST MUST NAME ITSELF, and before this step it could not. Turning
       # the Pd tier on for MSVC (ADR-0192 d5) left this step running for 4h39m
@@ -462,7 +481,8 @@ jobs:
                 -DCMAKE_CXX_COMPILER="$CXX" \
                 -DCMAKE_CXX_FLAGS="$HARDEN" \
                 -DADI_WERROR=ON
-          cmake --build build-strict --parallel
+          # Counted, as the Build step above says why.
+          cmake --build build-strict --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
           # Every registered test, run -- not merely compiled.
           ctest --test-dir build-strict --output-on-failure
@@ -620,7 +640,7 @@ jobs:
           set -euo pipefail
           cmake -S adi_daw -B adi_daw/build-fuzz \
                 -DCMAKE_BUILD_TYPE=Debug -DADI_BUILD_FUZZERS=ON
-          cmake --build adi_daw/build-fuzz --target adi_fuzzers --parallel
+          cmake --build adi_daw/build-fuzz --target adi_fuzzers --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
       # Deterministic. Every seed is a shape that has already mattered: the four
       # findings from the first audit, the boundaries of the rules ADR-0023
