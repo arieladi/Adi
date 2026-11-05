@@ -92,6 +92,10 @@ struct SessionSpec {
     bool performanceState = true;
     /// The app's Delay Compensation choice; its registry row is win-owned.
     bool delayCompensation = true;
+    /// Owner-selected performance clock, e.g. Link. A new prepared generation
+    /// uses this constant tempo for ALL musical playback and clock consumers;
+    /// authored project tempo rows remain intact. Not an offline export option.
+    std::optional<double> externalTempoBpm = std::nullopt;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
