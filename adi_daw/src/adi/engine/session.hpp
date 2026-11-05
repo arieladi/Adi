@@ -96,6 +96,10 @@ struct SessionSpec {
     /// Optional app-owned decode service/cache. Must outlive this session and
     /// retired generations. Null uses the process service; never a callback API.
     audio::ProgressiveDecoder* progressiveDecoder = nullptr;
+    /// Owner-selected performance clock, e.g. Link. A new prepared generation
+    /// uses this constant tempo for ALL musical playback and clock consumers;
+    /// authored project tempo rows remain intact. Not an offline export option.
+    std::optional<double> externalTempoBpm = std::nullopt;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format

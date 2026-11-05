@@ -574,7 +574,7 @@ bool Session::rebuild() {
     timing->settings=spec_.performanceState ? transportSettings_ : TransportSettings{};
     // Same construction as MidiClips: TempoMap integrates STEP tempos, even
     // when a stored event requests a ramp. Do not create a second converter.
-    for (const auto& e : model_.tempo)
+    for (const auto& e : playbackModel_.tempo)
         timing->tempo.events.push_back({e.posTicks, e.bpm, static_cast<int>(e.curve)});
     if (timing->tempo.events.empty()) timing->tempo.events.push_back({0, 120.0, 0});
     auto loopSample=[&](std::int64_t ticks){
@@ -674,6 +674,8 @@ bool Session::readPlayback(const Store &store) {
         freeze::validate(const_cast<Store &>(store));
         freeze::remember(const_cast<Store &>(store));
         const auto cached = freeze::renders(const_cast<SQLite::Database &>(store.db()));
+        if(spec_.externalTempoBpm && !cached.empty())
+            throw std::runtime_error("unfreeze cached tracks before preparing an external tempo generation");
         std::set<std::int64_t> before, after;
         for (const auto &entry : frozenSources_)
             before.insert(entry.first);
@@ -682,6 +684,8 @@ bool Session::readPlayback(const Store &store) {
         if (loaded_ && playbackRunning_.load(std::memory_order_acquire) && before != after)
             throw std::runtime_error("stop playback before freezing or unfreezing");
         playbackModel_ = model_;
+        if(spec_.externalTempoBpm)
+            playbackModel_.tempo={rows::TempoEvent{0,*spec_.externalTempoBpm,0,0}};
         frozenSources_.clear();
         frozenGroupChildren_.clear();
         for (const auto &[root, members] : freeze::groups(const_cast<SQLite::Database &>(store.db()))) {
@@ -790,11 +794,17 @@ bool Session::readPlayback(const Store &store) {
 }
 
 bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
+    if(audio::onAudioThread)return false;
     error_.clear();
     if (loaded_) {
         // One session, one project. A second project is a second session --
         // the instances this one holds are in a graph that may be rendering.
         error_ = "a project is already loaded in this session";
+        return false;
+    }
+    if(spec.externalTempoBpm && (!spec.performanceState || !std::isfinite(*spec.externalTempoBpm) ||
+       *spec.externalTempoBpm<20 || *spec.externalTempoBpm>999)) {
+        error_="external tempo needs a performance generation and finite 20..999 BPM";
         return false;
     }
     loader_ = std::move(loader);
