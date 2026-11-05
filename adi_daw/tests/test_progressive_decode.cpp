@@ -20,6 +20,16 @@
 #include <new>
 #include <thread>
 namespace {std::atomic<unsigned> allocations{0},frees{0};}
+namespace {
+// MSVC's Debug CRT (_ITERATOR_DEBUG_LEVEL 2) allocates an iterator proxy whenever a
+// std::string or std::vector is constructed and frees it when the container is
+// destroyed, so an empty result returned from the callback path costs one allocation
+// and one free per container there and none on the other CRTs. The refusal check
+// below allows exactly what an empty result costs on this CRT, measured once before
+// the baseline is read.
+struct CallbackCost {unsigned allocated=0,freed=0;};
+template<class Result> CallbackCost emptyResultCost(){const auto allocated=allocations.load(),freed=frees.load();{adi::audio::CallbackScope scope;Result empty;(void)empty;}return {allocations.load()-allocated,frees.load()-freed};}
+}
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;if(void* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
 void* operator new[](std::size_t n){return operator new(n);}
 void operator delete(void* p)noexcept{if(p && adi::audio::onAudioThread)++frees;std::free(p);}
@@ -177,9 +187,10 @@ void conversionAndLoop() {
     file->cancel();check(wait([&]{return file->snapshot().status!=ProgressiveStatus::Pending;}) && wait([&]{return live.clips()->readErrors()!=0;}),"terminal decode cancellation reaches the live page worker's error counter");
     check(!live.clips()->prime(std::chrono::seconds(1)) && live.clips()->readErrors()==1,"prime refuses a terminal job promptly and the page worker reports it only once");
     const auto problems=live.clips()->decodeProblems();check(problems.size()==1 && problems.front().find("cancel")!=std::string::npos,"the owner can read the actual terminal decode diagnostic without touching a codec or Store");
+    const auto cost=emptyResultCost<std::vector<std::string>>();
     const auto io=callbackFileIo.load(),allocated=allocations.load(),freed=frees.load();bool refused=false;
     {CallbackScope scope;try{refused=live.clips()->decodeProblems().empty();}catch(const std::exception&){}}
-    check(refused && callbackFileIo.load()==io && allocations.load()==allocated && frees.load()==freed,"asynchronous diagnostic snapshot refuses callbacks without allocation, free, locking or I/O");
+    check(refused && callbackFileIo.load()==io && allocations.load()==allocated+cost.allocated && frees.load()==freed+cost.freed,"asynchronous diagnostic snapshot refuses callbacks without allocation, free, locking or I/O");
     reference.release(wav);
 }
 void nativeAac() {

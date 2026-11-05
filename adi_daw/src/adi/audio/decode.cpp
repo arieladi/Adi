@@ -30,6 +30,9 @@
 #include <random>
 #include <system_error>
 #include <thread>
+#if defined(_WIN32)
+#include <share.h>
+#endif
 
 namespace adi::audio {
 namespace fs = std::filesystem;
@@ -184,7 +187,11 @@ public:
         std::FILE* native=nullptr;
         fileIoPoint();
 #if defined(_WIN32)
-        if(_wfopen_s(&native,p.c_str(),L"rb")!=0)native=nullptr;
+        // Not _wfopen_s: its secure mode denies every other writer while this
+        // stream is open, a lock POSIX fopen and the ifstream FLAC/MP3/WAV
+        // readers never take. Share as they do; the cache and progressive jobs
+        // re-hash the source after decoding and refuse one that changed.
+        native=_wfsopen(p.c_str(),L"rb",_SH_DENYNO);
 #else
         native=std::fopen(p.c_str(),"rb");
 #endif
