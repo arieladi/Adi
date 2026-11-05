@@ -825,6 +825,20 @@ The global map preserves separate clip-local overrides and never retunes stored
 notes. See `ENGINE-SCALE-TIMELINE.md` for lifetime, budgets and errors. This is
 a runtime read API, with no new opcode or schema.
 
+Scala file parsing is owner preparation, not a log operation.
+`engine::parseScala(bytes,id,name)` captures an explicit owned definition,
+including the final repeat period and double cent offsets. See
+`ENGINE-SCALA-IMPORT.md` for its bounded accepted grammar and errors. Native
+writer integration logs resolved values; replay never reads the original file
+or recomputes ratios. No opcode/schema/binary-layout change in the parser.
+
+Scale highlighting, ruler and Fold projections are runtime read concerns.
+`engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
+tuning degrees coherently without reading notes or writing history. Held
+contexts offer bounded pitch/membership queries with an explicit absolute
+tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
+non-octave periods and native pitch precision. No new opcode or schema.
+
 ### 9.6 Automation
 
 | Op | S | E | Inv | P |
