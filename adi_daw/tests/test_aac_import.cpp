@@ -85,7 +85,7 @@ void decode(){
     test::TempDirectory temp{"aac_import","decode"};DecodeCache cache(temp.path()/"cache",roomy(),hooks());
     for(const std::string name:{"mono","stereo"})for(const bool adts:{false,true}){
         const auto source=fixture(name+(adts?".aac":".m4a"));const auto output=cache.playable(source);WavReader reader(output);
-        check(reader.format()==WavFormat::Float32 && reader.channels()==(name=="mono"?1:2) && reader.sampleRate()==(name=="mono"?44100:48000),"general AAC cache retains native rate and mono/stereo as float32");
+        check(reader.format()==WavFormat::Float32 && reader.channels()==(name=="mono"?1:2) && reader.sampleRate()==(name=="mono"?44100u:48000u),"general AAC cache retains native rate and mono/stereo as float32");
         const auto expected=adts?readAdts(source).frames:readAacAudioMovie(source).tracks.front().frames;
         check(reader.frames()==expected && closeAudio(wave(output),wave(fixture(name+(adts?"-adts-reference.wav":"-reference.wav")))),"all decoded frames/priming/channel order agree with an independent encoder/demuxer/decoder reference");
         const auto renamed=temp.path()/(name+(adts?"-adts.bin":"-mp4.bin"));fs::copy_file(source,renamed);
