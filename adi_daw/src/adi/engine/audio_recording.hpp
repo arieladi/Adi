@@ -11,6 +11,12 @@
 #include <vector>
 namespace adi::engine {
 class Transport;
+struct AudioMemorySnapshot;
+struct AudioMemoryTakeSpec {
+    std::filesystem::path workFolder;
+    std::string sourceProject; // resolved by recording::captureMemory on the owner
+    std::int64_t trackId=0,startSample=0; // explicit destination timeline, NOT input stream clock
+};
 struct RecordingTarget {
     std::int64_t trackId=0;
     std::vector<std::uint32_t> channels; // indices in the current AudioIo.in
@@ -22,7 +28,7 @@ struct AudioRecordingSpec {
     audio::WavFormat format=audio::WavFormat::Float32;
     std::vector<RecordingTarget> targets;
 };
-enum class RecordingFailure : std::uint8_t {None,Overflow,MissingInput,BlockSize,Discontinuity,Cancelled,Io,NoFrames};
+enum class RecordingFailure : std::uint8_t {None,Overflow,MissingInput,BlockSize,Discontinuity,Cancelled,Io,NoFrames,InvalidCapture};
 struct RecordedTrack {
     std::int64_t trackId=0;
     std::uint16_t channels=0;
@@ -41,6 +47,12 @@ public:
     [[nodiscard]] const std::filesystem::path& directory()const noexcept;
     [[nodiscard]] const std::string& sourceProject()const noexcept{return sourceProject_;}
     void discard(); // owner thread, after recording has finished
+    // Owner/worker only. Creates a private Float32 WAV, preserving snapshot
+    // bits, for the existing prepareCommit/commit publication and undo path.
+    // No project rows change; failure cleans only this attempt's private work.
+    // Keep the snapshot for retry. Placement is supplied explicitly in session
+    // samples at the captured rate, independently of the input stream clock.
+    [[nodiscard]] static AudioRecordingResult fromMemory(const AudioMemorySnapshot&,const AudioMemoryTakeSpec&);
 private:
     struct Files;
     std::shared_ptr<Files> files_;

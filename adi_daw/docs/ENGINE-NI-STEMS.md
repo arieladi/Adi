@@ -85,7 +85,11 @@ Foundation. The native adapters require explicit, sample-exact priming/duration
 metadata. Some Media Foundation codec versions omit it: `aacCodecAvailable()`
 probes the real native round trip once and returns false if alignment cannot be
 verified. That Windows codec limitation remains open for export and import on those
-versions; no delay constant is guessed. Native platform compilation and round-trip results require their CI
+versions; no delay constant is guessed. CoreAudio (measured on macOS 26) records
+an export's priming/remainder as iTunSMPB rather than an edit list, and its MP4
+reader ignores edit lists, assuming its own 2112-frame priming; the macOS adapter
+therefore reads and sets the exact trim through CoreAudio's packet table, checked
+against the encoder's reported priming. Native platform compilation and round-trip results require their CI
 runners; local proof here is Linux GCC/Clang. Import still reports native decode
 errors rather than substituting or renaming WAV bytes as AAC.
 
