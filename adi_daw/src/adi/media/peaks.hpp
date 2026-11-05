@@ -9,6 +9,7 @@
 #include <vector>
 namespace adi {class Store;namespace audio {class DecodeCache;}}
 namespace adi::media {
+class AnalysisCache;
 inline constexpr std::size_t kMaxPeakValues=1024*1024;
 struct PeakBin {
     float minimum=0,maximum=0;
@@ -38,10 +39,15 @@ PeakResult decodePeaks(std::span<const std::byte>);
 // Cached pool BLOB only, no filesystem access or project writes.
 PeakResult readMediaPeaks(const Store&,std::int64_t mediaId);
 // A worker-local read-only Store is suitable. Reuses a valid pool cache, otherwise
-// hashes/resolves/decodes/streams the source. No pool/op/history writes; the window
+// reuses the shared analysed file or hashes/resolves/decodes/streams the source.
+// No pool/op/history writes; the window
 // may memoize by contentHash and must discard stale document/generation results.
 // maxBinsPerChannel applies to newly built data. DecodeCache decoding itself is
 // not interruptible; cancellation is checked before/after it and per hash/read.
 PeakResult buildMediaPeaks(const Store&,std::int64_t mediaId,std::uint32_t maxBinsPerChannel=4096,
     std::stop_token={},audio::DecodeCache* = nullptr);
+// Explicit shared analysis cache, or nullptr to disable it. The legacy
+// overload uses the process analysed folder. Cache write failure is nonfatal.
+PeakResult buildMediaPeaks(const Store&,std::int64_t mediaId,std::uint32_t maxBinsPerChannel,
+    std::stop_token,audio::DecodeCache*,AnalysisCache*);
 }

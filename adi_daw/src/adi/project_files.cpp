@@ -140,7 +140,12 @@ StoreFileResult Store::saveCopy(const std::filesystem::path& output) const {
                 SQLite::Backup backup(destination,*db_);
                 if(backup.executeStep()!=SQLITE_DONE)throw std::runtime_error("database snapshot busy or incomplete");
             }
-            if(major_==kSchemaMajor)rebaseHistory(destination,media::projectFolder(*this),target.parent_path());
+            // Rebase between the folders as SQLite names them, the bases that
+            // resolveMedia() joins rel_path onto (the stage sits inside the
+            // copy's folder). On unix SQLite resolves symlinks (macOS: /var is
+            // /private/var) and ".." climbs physical parents, so a path made
+            // relative to fs::absolute()'s spelling climbs the wrong distance.
+            if(major_==kSchemaMajor)rebaseHistory(destination,media::projectFolder(*this),media::projectFolder(destination).parent_path());
             destination.exec("PRAGMA wal_checkpoint(TRUNCATE)");
             destination.exec("PRAGMA journal_mode=DELETE");
         }
