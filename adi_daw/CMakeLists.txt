@@ -221,6 +221,7 @@ add_library(adi_core STATIC
     src/adi/audio/stem_manifest.cpp
     src/adi/render/ni_stems.cpp
     src/adi/media/stem_import.cpp
+    src/adi/media/separated_stems.cpp
     src/adi/blob.cpp
     # Deliberately in adi_core rather than behind ADI_WITH_JUCE: device_core
     # includes no JUCE, so its tests run on all seven ABIs instead of only in
@@ -1778,6 +1779,10 @@ target_link_libraries(adi_aac_import_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_aac_import_tests PRIVATE
     ADI_AAC_IMPORT_FIXTURES="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/aac_import")
 add_test(NAME adi_aac_import_tests COMMAND adi_aac_import_tests)
+
+add_executable(adi_separated_stems_tests tests/test_separated_stems.cpp)
+target_link_libraries(adi_separated_stems_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_separated_stems_tests COMMAND adi_separated_stems_tests)
 
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
 target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)

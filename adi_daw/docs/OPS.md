@@ -1895,6 +1895,14 @@ Media+clip remain one undo action, with Warp off by default. This adds no opcode
 or project schema; general mono/stereo import does not relax NI Stems' aligned
 stereo export/group-import contract.
 
+The completed model/service result gateway (`media/separated_stems.hpp`,
+`docs/ENGINE-SEPARATED-STEMS.md`) captures N phase-aligned named WAVs and creates
+their owned media, group, tracks and Warp-off clips in one native journal action.
+Exact request/model/source provenance is inserted into the existing
+`agent_requests` audit table in that same transaction; it is not a new opcode or
+schema and is not removed by music undo. Failed SQL may retain unreferenced
+content-addressed pool audio for safe GC/retry. This gateway runs no inference.
+
 The NI Stems worker producer (`media/stem_import.hpp`,
 [ENGINE-NI-STEMS.md](ENGINE-NI-STEMS.md)) captures the original container and
 aligned decoded WAVs, then submits existing `media.import`/`media.relink`,
