@@ -51,6 +51,9 @@ relink, clip.create and clip.attachAudio requests. Current musical placement
 must round-trip both captured sample boundaries exactly at the recording rate;
 an ambiguous/extreme clock refuses. This follows the existing N5 audio-import
 placement and Warp-off playback; it does not add new tempo-edit semantics.
+Preparation and commit now require the same still-open Store handle/client.
+Reopening even the same filename/head requires fresh preparation; a worker
+connection must complete its commit there or prepare again on the owner.
 
 recording::commit groups the entire pass into one native undo step. Replay
 uses captured values and never records, hashes or analyzes again. Identical
@@ -66,9 +69,32 @@ discard a retained source after success, because Undo may need its old path.
 Undo retains the owned asset; Redo restores the playing clips without the
 private preparation directory. Repeat commit cannot remove a successful asset.
 
-This increment is continuous linear audio-input recording. It captures the
+For retrospective audio Capture, keep one `AudioMemory` per enabled physical
+input as described in OPS §9.10. On its owner, take an immutable snapshot and
+call `recording::captureMemory(store,snapshot,track,timelineStartSample,workFolder)`.
+This resolves the originating project identity and creates a private Float32
+WAV through `AudioRecordingResult::fromMemory`. The explicit destination sample
+position is independent of the snapshot's driver stream clock; never use the
+stream timestamp as a project placement. The owner chooses the Capture placement.
+The WAV preserves the input sample bits, with no resampling/normalizing/dither.
+Only supported nonempty snapshots (8–768 kHz, up to 64 channels, at most 30 seconds
+and 256 MiB) and representable nonnegative timeline extents are accepted.
+
+Pass this result through the same prepareCommit/commit path above. One native
+undo restores the project before Capture, while Redo/reopen hears the retained
+PCM. Failed/stale/reopened-document preparation or commit leaves the private take
+for a fresh prepare/retry; failed materialization cleans only its own directory,
+and the immutable snapshot remains usable. `InvalidCapture` names invalid memory
+metadata/placement; I/O failures retain their reason. Owner materialization and
+preparation reject callbacks before file/database access. This supplies a real
+engine path from input memory to a playing undoable clip, without automatically
+wiring physical input adapters or the UI Capture command. Automatic placement,
+multi-input Capture policy and Live MIDI tempo/loop inference remain integration
+work rather than inferred from a driver timestamp.
+
+Continuous linear audio-input recording captures the
 raw driver callback timeline; hardware/manual latency calibration, monitoring,
-punch/loop takes, MIDI recording, record quantization and the 30-second Capture
-memory are separate work. It does not open a device, configure its ports or
+punch/loop takes, MIDI recording and record quantization are separate work.
+It does not open a device, configure its ports or
 claim measured Live recording parity. The window can wire its recording action
 and failure/recovery status to this API while its per-device settings are built.

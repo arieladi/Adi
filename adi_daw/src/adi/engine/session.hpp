@@ -195,6 +195,22 @@ public:
     /// lane too; false if rebuilding the requested binding failed (error()).
     bool overrideDeviceAutomation(std::int64_t deviceId, const std::string& paramId);
 
+    // Document-owner recording policy. Queue matching gate changes to each
+    // recorder's producer separately; these methods never touch its SPSC ring.
+    // Turning a gate off prevents new writes but keeps a pending write suspended
+    // until its captured data is committed/refreshed and explicitly finished.
+    void setAutomationWriteState(bool armed, bool recording) noexcept;
+    [[nodiscard]] bool automationArmed() const noexcept { return automationArmed_; }
+    [[nodiscard]] bool automationRecording() const noexcept { return automationRecording_; }
+    [[nodiscard]] const std::set<std::int64_t>& writingAutomationLanes() const noexcept { return writingAutomation_; }
+    // As with reenableAutomation(), a rebuild failure leaves the requested
+    // policy installed for an owner-side rebuild() retry; false is not readiness.
+    bool beginAutomationWrite(std::int64_t laneId);
+    // After commit + refresh, follow=true resumes the newly recorded lane.
+    // On recording failure, follow=false retains the manual value as a normal
+    // override until Re-Enable Automation. This is an explicit caller choice.
+    bool finishAutomationWrite(std::int64_t laneId, bool follow = true);
+
     /// ADR-0165: the device lanes this rebuild plays, per device. Message
     /// thread, for tests and the UI: null until the first rebuild.
     [[nodiscard]] const DeviceAutomationBinding* deviceAutomation() const noexcept {
@@ -387,6 +403,8 @@ private:
     std::vector<std::string> deviceSourceProblems_;
     void bindDeviceSources();
     std::set<std::int64_t> overridden_;   ///< ADR-0162: lane ids
+    std::set<std::int64_t> writingAutomation_;
+    bool automationArmed_ = true, automationRecording_ = false;
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;

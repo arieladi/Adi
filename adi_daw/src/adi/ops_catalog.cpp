@@ -19,6 +19,8 @@
 #include "adi/row_capture.hpp"
 #include "adi/clip_edit_ops.hpp"
 #include "adi/blob.hpp"
+#include "adi/automation_edits.hpp"
+#include "adi/automation_lanes.hpp"
 #include "adi/controller_lanes.hpp"
 #include "adi/note_flags_ops.hpp"
 #include "adi/builtin_catalog.hpp"
@@ -33,10 +35,8 @@
 #include "adi/transport_settings.hpp"
 #include "adi/marker_ops.hpp"
 #include "adi/track_recording.hpp"
-#include "adi/row_capture.hpp"
 #include "adi/return_send_tap.hpp"
 #include "adi/clip_property_ops.hpp"
-#include "adi/row_capture.hpp"
 #include "adi/summing_flavors.hpp"
 #include "adi/track_image.hpp"
 
@@ -2175,6 +2175,10 @@ std::span<const OpDescriptor> builtinOps() {
         const auto recording=trackRecordingOps();
         v.insert(v.end(),recording.begin(),recording.end());
         const auto taps=returnSendTapOps();v.insert(v.end(),taps.begin(),taps.end());
+        const auto automation = automation::descriptors();
+        v.insert(v.end(), automation.begin(), automation.end());
+        const auto lanes = automation::laneDescriptors();
+        v.insert(v.end(), lanes.begin(), lanes.end());
         return v;
     }();
     return all;
