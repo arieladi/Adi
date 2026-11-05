@@ -842,6 +842,65 @@ void dwell() {
     gap.pointerMove(600, 520, false, 1000); // row 2's gap, 503 to 543
     gap.advance(3000);
     check(gap.enlarged().track == 3 && !gap.pointerRow().valid(), "T13: a gap is no row");
+    // the dwell runs from the first entry: moves inside the same row do not restart it
+    Fixture i = uniform(40);
+    auto inside = model(i);
+    t = 100;
+    restWith(inside, 2, 0, t);
+    inside.pointerMove(600, 560, false, 1000); // row 3, 543 to 672
+    inside.pointerMove(600, 562, false, 1020);
+    inside.pointerMove(601, 563, false, 1040);
+    inside.advance(1059);
+    check(inside.enlarged().track == 3 && inside.pointerRow().track == 4, "T13: still row 2 at 59 ms after the entry");
+    inside.advance(1060);
+    check(inside.enlarged().track == 4, "T13: row 3 at 60 ms after the entry, not after the last move");
+    // the same for the hold-off: a jiggle after the notch does not push the promotion past 120 ms
+    Fixture j = uniform(40);
+    auto jiggle = model(j);
+    t = 100;
+    restWith(jiggle, 2, 0, t);
+    jiggle.pointerMove(600, 450, false, 900);
+    WheelDelta notch;
+    notch.notches = 1;
+    jiggle.wheel(600, 450, notch, Mods{}, 1000);
+    jiggle.pointerMove(600, 452, false, 1050);
+    jiggle.pointerMove(601, 452, false, 1090);
+    jiggle.advance(1119);
+    check(jiggle.enlarged().track == 3 && jiggle.pointerRow().track == 4, "T13: still row 2 at 119 ms after the notch");
+    jiggle.advance(1120);
+    check(jiggle.enlarged().track == 4, "T13: the pointer's row at 120 ms after the notch, the jiggle changed nothing");
+    // nothing is promoted while a button is down; the dwell counts from the release
+    Fixture u = uniform(40);
+    auto held = model(u);
+    held.pointerMove(600, 300, false, 100);
+    held.advance(1000);
+    const TrackId a = held.enlarged().track;
+    held.pointerDown(600, 300, Button::Left, Mods{}, 1, 1000);
+    held.pointerMove(600, 560, true, 1050);
+    held.advance(1600);
+    const TrackId b = held.pointerRow().track;
+    check(a != 0 && b != 0 && b != a && held.enlarged().track == a, "T13: a drag into another row (no capture) promotes nothing while the button is down");
+    held.pointerUp(600, 560, 1600);
+    held.advance(1659);
+    check(held.enlarged().track == a, "T13: ... nor at once on the release");
+    held.advance(1660);
+    check(held.enlarged().track == b, "T13: ... the row under the pointer grows 60 ms after the release");
+    // a jump moving the rows under a still pointer: the dwell counts from where they settle
+    Fixture k = uniform(40);
+    auto jump = model(k);
+    jump.setSearchMode(SearchMode::Jump, 0);
+    jump.pointerMove(600, 300, false, 990);
+    jump.wheel(600, 300, notch, Mods{}, 1000); // another row under the pointer: hold-off until 1120
+    jump.setSearch("track 30", 1050);          // a 140 ms jump to track 30, until 1190
+    jump.advance(1120);
+    check(!jump.enlarged().valid() && jump.jumpTarget().track == 30, "T13: no promotion while the jump moves");
+    jump.advance(1190);
+    check(jump.row(29).top == 8 && !jump.enlarged().valid(), "T13: the jump arrived, nothing enlarged yet");
+    const TrackId under = jump.pointerRow().track;
+    jump.advance(1249);
+    check(under != 0 && !jump.enlarged().valid(), "T13: the row that arrived under the pointer waits its own dwell");
+    jump.advance(1250);
+    check(jump.enlarged().track == under, "T13: and grows 60 ms after the arrival");
 }
 
 void keyboardAtOnce() {
@@ -926,6 +985,24 @@ void anchor() {
     b.advance(1400);
     check(b.row(13).top == 410 && b.scroll() == 1344 && b.pointerRow().track == 14,
           "T15: then revealed to 410 (scroll 1344), the pointer still in it");
+    // the non-default anchor: the pointer's fraction of its row holds still, not the row's top
+    Constants fractionC;
+    fractionC.anchor = Anchor::PointerRowFraction;
+    Fixture h = uniform(40);
+    auto fr = model(h, 1264, 600, fractionC);
+    t = 100;
+    restWith(fr, 2, 0, t);
+    fr.pointerMove(600, 560, false, 1000); // row 3 at 543, 129 tall: the pointer at 17/129 of it
+    const double fraction = 17.0 / 129.0;
+    bool kept = true, moved = false;
+    for (TimeMs s = 1060; s <= 1220; s += 4) {
+        fr.advance(s);
+        const RowGeo r = fr.row(3);
+        kept = kept && near((560 - r.top) / r.height, fraction, 1e-9);
+        moved = moved || !near(r.top, 543);
+    }
+    check(kept && moved && near(fr.row(3).top, 560 - fraction * 190, 1e-9),
+          "T15: PointerRowFraction keeps the pointer's fraction of the row (its top moves) until the reveal");
 }
 
 void topSlack() {
@@ -954,12 +1031,40 @@ void noScrollWithButton() {
     TimeMs t = 100;
     restWith(m, 12, 1310, t);
     m.pointerMove(500, 560, false, 1000);
-    m.pointerDown(500, 560, Button::Left, Mods{}, 1, 1000);
+    m.advance(1100); // promoted at 1060, the heights moving until 1220
+    m.pointerDown(500, 560, Button::Left, Mods{}, 1, 1100);
     m.advance(1300);
     check(m.row(13).top == 543 && m.scroll() == 1211, "T17: held at 543 with the button down");
     m.pointerUp(500, 560, 1400);
     m.advance(1700);
     check(m.row(13).top == 410 && m.scroll() == 1344, "T17: revealed after the release");
+    // a press during the reveal stops it where it is; the release finishes it
+    Fixture g = uniform(40);
+    auto mid = model(g);
+    t = 100;
+    restWith(mid, 12, 1310, t);
+    mid.pointerMove(500, 560, false, 1000);
+    mid.advance(1250); // the reveal runs 1220 to 1340
+    const double stopped = mid.row(13).top;
+    mid.pointerDown(500, 560, Button::Left, Mods{}, 1, 1250);
+    mid.advance(1300);
+    check(stopped < 543 && stopped > 410 && mid.row(13).top == stopped && !mid.busy(),
+          "T17: a press during the reveal freezes the scroll where it is");
+    mid.pointerUp(500, 560, 1400);
+    mid.advance(1700);
+    check(mid.row(13).top == 410 && mid.scroll() == 1344, "T17: ... and the release finishes the reveal");
+    // a release the owner reports only through pointerMove runs the reveal then, not at a later click
+    Fixture h = uniform(40);
+    auto viaMove = model(h);
+    t = 100;
+    restWith(viaMove, 12, 1310, t);
+    viaMove.pointerMove(500, 560, false, 1000);
+    viaMove.advance(1100);
+    viaMove.pointerDown(500, 560, Button::Left, Mods{}, 1, 1100);
+    viaMove.advance(1300);
+    viaMove.pointerMove(500, 560, false, 1400);
+    viaMove.advance(1700);
+    check(viaMove.row(13).top == 410 && viaMove.scroll() == 1344, "T17: a release reported by a move reveals then");
 }
 
 void stillPointerEverywhere() {
@@ -1084,6 +1189,20 @@ void leaving() {
     k.pointerExit(5000);
     k.advance(5300);
     check(k.enlarged().track == 1, "T20: with the keys in STACK the focused row stays enlarged");
+    // keyboard focus lost and regained with the pointer outside: the focused row shrinks, then grows again
+    Fixture back = uniform(40);
+    auto kb = model(back);
+    kb.setKeyboardFocus(true, 50);
+    kb.focusRow(kb.rowRef(5), 60);
+    kb.advance(500);
+    check(kb.enlarged().track == 5 && kb.row(4).height == 190, "T20: the focused row enlarged with the pointer outside");
+    kb.setKeyboardFocus(false, 1000);
+    kb.advance(1500);
+    check(!kb.enlarged().valid() && kb.row(4).height == 100, "T20: the keys gone: back to base");
+    kb.setKeyboardFocus(true, 2000);
+    check(kb.enlarged().track == 5, "T20: the keys back: the focused row is the enlarged one again");
+    kb.advance(2500);
+    check(kb.row(4).height == 190, "T20: ... at its full height");
     Fixture h = uniform(40);
     auto x = model(h);
     x.pointerMove(600, 300, false, 100);
@@ -1214,6 +1333,7 @@ void paint(const StackModel &m) {
         m.forEachChainItem(r.shown, [](const ItemGeo &) {});
         m.forEachModuleCell(r.shown, [](const CellGeo &) {});
         (void)m.chip(r.shown);
+        (void)m.collisionReference(r.ref); // the chip's button state, per visible row
     });
     m.forEachNavigatorLine([](const NavLine &) {});
 }
@@ -1286,12 +1406,16 @@ void workCounter() {
     check(a.allocs == 0 && b.allocs == 0 && c.allocs == 0, "T25: the minute allocates nothing");
 }
 
-Work editingMinute(std::size_t n) {
+Work editingMinute(std::size_t n, const char *jumpQuery = nullptr) {
     Fixture f = withChains(n);
     for (auto &t : f.tracks)
         t.revision = 1;
     auto m = model(f);
     TimeMs t = 1000;
+    if (jumpQuery != nullptr) {
+        m.setSearchMode(SearchMode::Jump, t);
+        m.setSearch(jumpQuery, t);
+    }
     m.scrollTo(30.0 * 131, t);
     m.resetStats();
     for (int k = 0; k < 60; ++k) {
@@ -1323,6 +1447,26 @@ void incrementalRows() {
     check(a.rows == 60u && b.rows == 60u && c.rows == 60u, "M10: one row updated per edit");
     check(a.entries == 0u && c.entries == 0u, "M10: the shown list untouched");
     check(a.lines == 60u * 64u && c.lines == 60u * 20000u, "M10: the cheap per-track compare is the only O(rows) step");
+    // in Jump mode with a query the matches are rebuilt only when a row's match or the shown list moved
+    const Work j = editingMinute(1000, "kick"), jk = editingMinute(20000, "kick");
+    check(j.full == 0u && jk.full == 0u && j.rows == 60u, "M10: Jump mode: no match pass for edits that match as before");
+    Fixture jf = withChains(500);
+    auto jm = model(jf);
+    jm.setSearchMode(SearchMode::Jump, 5);
+    jm.setSearch("track 7", 10);
+    jm.searchKey(Key::Down, 20);
+    jm.searchKey(Key::Down, 30);
+    check(jm.jumpTarget().track == 71, "M10: the third match is track 71");
+    jm.resetStats();
+    jf.track(300).name = jf.keep("Renamed");
+    jf.generation = 2;
+    jm.setRows(jf.input(), 40);
+    check(jm.stats().fullPasses == 0 && jm.jumpTarget().track == 71, "M10: a rename that matches as before: no pass, the cursor stays");
+    jf.track(8).name = jf.keep("Track 7 copy");
+    jf.generation = 3;
+    jm.setRows(jf.input(), 50);
+    check(jm.stats().fullPasses == 1 && jm.jumpTarget().track == 71,
+          "M10: a rename that matches now: one counted pass, the cursor stays on its track");
     // without revision tokens the compare is deeper but still folds only what changed
     Fixture f = withChains(500);
     auto m = model(f);
@@ -1452,6 +1596,30 @@ void generations() {
     m.setRows(f.input(), 110);
     check(m.chainRef(2, 88).gen == 0 && m.moduleRef(2, kQ).device == 88,
           "M1: the processor's own device is never a chain item");
+    // a generation is never reused for an item or a module either
+    const ItemRef eq2 = m.chainRef(3, 31);
+    const ItemInput eqBack = f.chains[f.at(3)][0];
+    f.chains[f.at(3)].erase(f.chains[f.at(3)].begin());
+    f.generation = 13;
+    m.setRows(f.input(), 120);
+    check(eq2.gen != 0 && !m.live(eq2), "T26: the device removed: its ref is dead");
+    f.chains[f.at(3)].insert(f.chains[f.at(3)].begin(), eqBack);
+    f.generation = 14;
+    m.setRows(f.input(), 130);
+    check(!m.live(eq2) && m.live(m.chainRef(3, 31)) && m.chainRef(3, 31).gen != eq2.gen,
+          "T26: back with the same device and identity: a new item, the old ref stays dead");
+    const ItemRef l5 = m.moduleRef(5, kL);
+    const std::uint64_t instance = f.module(5, kL).instance;
+    f.module(5, kL) = ModuleInput{};
+    f.generation = 15;
+    m.setRows(f.input(), 140);
+    check(l5.gen != 0 && !m.live(l5), "T26: the module absent: its ref is dead");
+    f.module(5, kL).state = ModuleState::Dormant;
+    f.module(5, kL).instance = instance;
+    f.generation = 16;
+    m.setRows(f.input(), 150);
+    check(!m.live(l5) && m.live(m.moduleRef(5, kL)) && m.moduleRef(5, kL).gen != l5.gen,
+          "T26: back with the same instance: a new module, the old ref stays dead");
 }
 
 void capturedTargetStaysPut() {
@@ -1596,6 +1764,32 @@ void refusals() {
           "T28: an earlier capture's token ends nothing");
     m.endCapture(c5.ref, 220);
     check(m.captureStatus(c5.ref) == CaptureStatus::Ended, "T28: ended");
+    // a capture on a module of the channel processor: the instance and the state
+    const auto c6 = m.beginCapture(CaptureKind::Drag, m.moduleRef(2, kQ), 230);
+    f.module(2, kQ).state = ModuleState::Engaged;
+    f.generation = 6;
+    fx = m.setRows(f.input(), 240);
+    check(c6.refusal == CaptureRefusal::None && fx.captureLost == CaptureStatus::Live &&
+              m.captureStatus(c6.ref) == CaptureStatus::Live,
+          "T28: the module engaged under the capture: still live");
+    f.module(2, kQ).instance = 4242;
+    f.generation = 7;
+    fx = m.setRows(f.input(), 250);
+    check(fx.captureLost == CaptureStatus::ItemReplaced && m.captureStatus(c6.ref) == CaptureStatus::ItemReplaced &&
+              !m.capture(),
+          "T28: its instance changed: ItemReplaced");
+    const auto c7 = m.beginCapture(CaptureKind::Drag, m.moduleRef(2, kQ), 260);
+    f.module(2, kQ).state = ModuleState::Dormant;
+    f.generation = 8;
+    fx = m.setRows(f.input(), 270);
+    check(c7.refusal == CaptureRefusal::None && fx.captureLost == CaptureStatus::Live &&
+              m.captureStatus(c7.ref) == CaptureStatus::Live,
+          "T28: switched off with its settings kept: still live");
+    f.module(2, kQ) = ModuleInput{};
+    f.generation = 9;
+    fx = m.setRows(f.input(), 280);
+    check(fx.captureLost == CaptureStatus::ItemRemoved && m.captureStatus(c7.ref) == CaptureStatus::ItemRemoved,
+          "T28: the module gone: ItemRemoved");
     // M3: identity is required
     Fixture bad = uniform(3);
     bad.track(2).identity = 0;
@@ -1743,6 +1937,30 @@ void escape() {
     m.clearOpenedFrom(110);
     fx = m.key(Key::Escape, Mods{}, 120);
     check(fx.escape == EscapeStep::None, "T32: not after clearOpenedFrom");
+    // all four at once: the chain's order, one step per Esc, each leaving the rest as it was
+    Fixture g = uniform(20);
+    auto all = model(g);
+    all.maximise(all.rowRef(2), 10);
+    all.setSearch("track", 20);
+    all.openFromChip(5, ItemKey{}, 30);
+    const auto held = all.beginCapture(CaptureKind::Text, ItemRef{all.rowRef(2), ItemPlace::None, 0, 0, all.rowRef(2).gen}, 40);
+    check(held.refusal == CaptureRefusal::None && all.maximised().track == 2 && all.windowView().search == "track" &&
+              all.openedFrom() == 5,
+          "T32: a capture, Max, a search and an opened-from track at once");
+    fx = all.key(Key::Escape, Mods{}, 50);
+    check(fx.escape == EscapeStep::Capture && all.capture().has_value() && all.maximised().track == 2 &&
+              all.windowView().search == "track" && all.openedFrom() == 5,
+          "T32: Esc 1 names the capture and changes nothing else");
+    all.endCapture(held.ref, 60);
+    fx = all.key(Key::Escape, Mods{}, 70);
+    check(fx.escape == EscapeStep::RestoreMax && !all.maximised().valid() && all.windowView().search == "track" &&
+              all.openedFrom() == 5,
+          "T32: Esc 2 restores Max, the search and the opened-from track stay");
+    fx = all.key(Key::Escape, Mods{}, 80);
+    check(fx.escape == EscapeStep::ClearSearch && all.windowView().search.empty() && all.openedFrom() == 5,
+          "T32: Esc 3 clears the search, the opened-from track stays");
+    fx = all.key(Key::Escape, Mods{}, 90);
+    check(fx.escape == EscapeStep::CloseMixView, "T32: Esc 4 closes the Mix View");
 }
 
 void selectionIsRead() {
@@ -1768,8 +1986,8 @@ void selectionIsRead() {
     const ChipGeo g0 = m.chip(0);
     fx = m.pointerDown(g0.pin.x + 2, g0.pin.y + 2, Button::Left, Mods{}, 1, 1000);
     check(fx.select == 0 && fx.hit.part == HitPart::ChipPin, "T33: the pin does not");
-    fx = m.pointerDown(g0.masking.x + 2, g0.masking.y + 2, Button::Left, Mods{}, 1, 1000);
-    check(fx.select == 0 && fx.hit.part == HitPart::ChipMasking, "T33: nor the masking button");
+    fx = m.pointerDown(g0.collision.x + 2, g0.collision.y + 2, Button::Left, Mods{}, 1, 1000);
+    check(fx.select == 0 && fx.hit.part == HitPart::ChipCollision, "T33: nor the collision reference button");
     fx = m.pointerDown(g0.kick.x + 2, g0.kick.y + 2, Button::Left, Mods{}, 1, 1000);
     check(fx.select == 0 && fx.hit.part == HitPart::ChipKick, "T33: nor Kick");
     fx = m.pointerDown(519, m.row(1).top + 50, Button::Left, Mods{}, 1, 1000); // between the lane and the columns
@@ -1858,12 +2076,12 @@ void navigatorGeometry() {
     auto c = model(u);
     const double top = c.row(0).top;
     ChipGeo g = c.chip(0);
-    check(g.chip == Rect{6, top + 41, 116, 18} && g.buttonsAbove && g.pin.x == 6 && g.masking.x == 26 && g.kick.x == 46 &&
+    check(g.chip == Rect{6, top + 41, 116, 18} && g.buttonsAbove && g.pin.x == 6 && g.collision.x == 26 && g.kick.x == 46 &&
               g.pin.y == top + 21,
           "T35: at base 100 the buttons above the chip");
     c.setBaseHeight(28, 10);
     g = c.chip(0);
-    check(g.chip == Rect{6, c.row(0).top + 5, 56, 18} && !g.buttonsAbove && g.pin.x == 66 && g.masking.x == 86 &&
+    check(g.chip == Rect{6, c.row(0).top + 5, 56, 18} && !g.buttonsAbove && g.pin.x == 66 && g.collision.x == 86 &&
               g.kick.x == 106 && g.pin.y == c.row(0).top + 6,
           "T35: at base 28 beside it");
     c.setBaseHeight(44, 20);
@@ -1941,9 +2159,9 @@ void filter() {
     check(lines == 2 && m.navigator().lineSpan.size() == 2, "T39: the navigator has exactly the shown lines");
     m.pin(m.rowRef(3), Mods{}, 40);
     m.pin(m.rowRef(5), Mods{}, 50);
-    m.setPinnedOnly(true, 60);
+    m.setFilterPinned(true, 60);
     check(shownIds(m) == std::vector<TrackId>{5}, "T39: pins only and a search both apply");
-    m.setPinnedOnly(false, 70);
+    m.setFilterPinned(false, 70);
     m.setSearch("", 80);
     m.toggleFold(m.rowRef(8), 90);
     m.setSearch("impact", 100);
@@ -1956,7 +2174,7 @@ void filter() {
     check(m.scroll() == 0 && m.shownCount() > 3, "T39: a new query starts at the top");
     Fixture g = eleven();
     auto p = model(g);
-    p.setPinnedOnly(true, 10);
+    p.setFilterPinned(true, 10);
     check(p.shownCount() == 0 && p.contentHeight() == 0, "m17: pins only with no pins shows no row");
 }
 
@@ -2027,7 +2245,7 @@ void pins() {
     check(pinned() == std::vector<TrackId>{3, 5, 6}, "T42: one more");
     m.recallPinSet("Vox", 80);
     check(pinned() == std::vector<TrackId>{5, 6}, "T42: a stored set comes back");
-    m.setPinnedOnly(true, 90);
+    m.setFilterPinned(true, 90);
     check(shownIds(m) == std::vector<TrackId>{5, 6}, "T42: pins only");
     m.pinSameColour(m.rowRef(7), 100);
     check(pinned() == std::vector<TrackId>{5, 6, 7} && shownIds(m) == std::vector<TrackId>{5, 6, 7},
@@ -2050,7 +2268,7 @@ void pins() {
 }
 
 void reference() {
-    section("T43 the comparison pair and the masking reference");
+    section("T43 the comparison pair and the collision reference");
     Fixture f = eleven();
     auto m = model(f);
     m.pointerMove(1200, 16 + 14 * 3 + 5, false, 5);
@@ -2062,22 +2280,22 @@ void reference() {
     m.pointerDown(1200, 16 + 5, Button::Left, shift, 1, 20);
     auto fx = m.pointerUp(1200, 16 + 5, 20);
     check(m.comparePair() == ComparePair{4, 1} && fx.sharedViewChanged, "T43: Shift-click lines of tracks 4 then 1");
-    check(m.maskingReference(m.rowRef(4)) == 1 && m.maskingReference(m.rowRef(1)) == 4 &&
-              m.maskingReference(m.rowRef(3)) == 4,
+    check(m.collisionReference(m.rowRef(4)) == 1 && m.collisionReference(m.rowRef(1)) == 4 &&
+              m.collisionReference(m.rowRef(3)) == 4,
           "T43: with a pair its first member is everyone's reference, and the two each other's");
     m.clearComparePair(30);
-    check(m.maskingReference(m.rowRef(4)) == 1 && m.maskingReference(m.rowRef(1)) == 4 &&
-              m.maskingReference(m.rowRef(3)) == 0,
+    check(m.collisionReference(m.rowRef(4)) == 1 && m.collisionReference(m.rowRef(1)) == 4 &&
+              m.collisionReference(m.rowRef(3)) == 0,
           "T43: without a pair: the role partner, else nothing to compare with");
     m.focusRow(m.rowRef(6), 40);
-    check(m.maskingReference(m.rowRef(3)) == 6, "T43: else the focused row");
+    check(m.collisionReference(m.rowRef(3)) == 6, "T43: else the focused row");
     m.openFromChip(2, ItemKey{}, 50);
     m.focusRow(m.rowRef(6), 60);
-    check(m.maskingReference(m.rowRef(3)) == 2, "T43: the opened-from track before the focus");
-    m.setMaskingRule(MaskingRule::Focused, 70);
-    check(m.maskingReference(m.rowRef(3)) == 6, "T43: the Focused rule");
-    m.maskingButton(m.rowRef(3), 80);
-    check(m.comparePair() == ComparePair{3, 6}, "T43: the masking button: (this row, the focused row)");
+    check(m.collisionReference(m.rowRef(3)) == 2, "T43: the opened-from track before the focus");
+    m.setCollisionRule(CollisionRule::Focused, 70);
+    check(m.collisionReference(m.rowRef(3)) == 6, "T43: the Focused rule");
+    m.collisionButton(m.rowRef(3), 80);
+    check(m.comparePair() == ComparePair{3, 6}, "T43: the collision reference button: (this row, the focused row)");
     m.clearComparePair(90);
     m.pointerDown(1200, 16 + 14 * 2 + 5, Button::Left, shift, 1, 100);
     m.pointerUp(1200, 16 + 14 * 2 + 5, 100);
@@ -2103,7 +2321,7 @@ void viewStateRoundTrip() {
     m.setShowChain(false, t += 10);
     m.setShowDormant(false, t += 10);
     m.setRowSpectrum(RowSpectrum::Off, t += 10);
-    m.setMaskingRule(MaskingRule::Focused, t += 10);
+    m.setCollisionRule(CollisionRule::Focused, t += 10);
     m.setOverlay(true, t += 10);
     m.setLook(Look::Dark, t += 10);
     m.setModuleRange(RangeEntry{4, kL, 0, DisplayRange::Db12}, t += 10);
@@ -2162,6 +2380,26 @@ void viewStateRoundTrip() {
     h.generation = 3;
     p.setRows(h.input(), 30);
     check(p.row(*p.shownIndex(6)).pinned, "T44: and its track comes back pinned");
+    // a stored pin of a track not in the rows survives applyViewState (an undone delete gets it back)
+    ViewState ghost = p.viewState();
+    ghost.shared.pins.push_back(999);
+    std::sort(ghost.shared.pins.begin(), ghost.shared.pins.end());
+    p.applyViewState(ghost, 40);
+    const ViewState exported = p.viewState();
+    check(p.pinned(999) && p.pinned(6) &&
+              std::binary_search(exported.shared.pins.begin(), exported.shared.pins.end(), 999),
+          "T44: a pin of a track not in the rows survives applyViewState and is exported again");
+    // filterPinned round-trips and the fresh model shows the same rows
+    p.setFilterPinned(true, 50);
+    const ViewState onlyPinned = p.viewState();
+    StackModel q;
+    q.setViewport(1264, 600, 0);
+    Fixture hq = eleven();
+    q.setRows(hq.input(), 0);
+    q.applyViewState(onlyPinned, 10);
+    check(onlyPinned.window.filterPinned && q.windowView().filterPinned && shownIds(q) == shownIds(p) &&
+              shownIds(p) == std::vector<TrackId>{6},
+          "T44: filterPinned round-trips: the fresh model shows the pinned rows only");
     // m14: an enlarged first row does not move the reopened view
     Fixture e = uniform(40);
     auto en = model(e);
@@ -2628,6 +2866,9 @@ void refCommands() {
     check(m.focusRow(r, 1800).refused && m.reveal(r, 1810).refused, "M7: a stale row is refused");
     const ItemRef staleItem = ItemRef{r, ItemPlace::Module, kQ, 0, 1};
     check(m.focusItem(staleItem, 1820).refused, "M7: a stale item is refused");
+    check(m.moduleName(0) == "ADI-Q" && m.moduleName(1) == "Ducking" && m.moduleName(3) == "ADI-L" &&
+              m.moduleName(kMaxModules).empty(),
+          "M7: the module kinds' names come from the model, for pills, cells and the accessibility proxies");
 }
 
 void clockContract() {
@@ -2642,10 +2883,21 @@ void clockContract() {
     check(m.stats().clockRebases == 1 && !m.enlarged().valid(), "m6: rebased, the dwell still pending");
     m.advance(5030);
     check(m.enlarged().valid(), "m6: and it completes 60 ms after it began");
+    // a timer stamped by an event behind the clock counts from now, not from the stale time
+    Fixture g = uniform(40);
+    auto s = model(g);
+    s.pointerMove(600, 300, false, 1000);
+    s.advance(2000);
+    const TrackId was = s.enlarged().track;
+    s.pointerExit(1500); // 500 ms behind: treated as 2000
+    s.advance(2299);
+    check(was != 0 && s.enlarged().track == was, "m6: a leave stamped behind the clock still waits 300 ms from now");
+    s.advance(2300);
+    check(!s.enlarged().valid(), "m6: ... and fires then");
 }
 
 void lifetimes() {
-    section("m17 focus and Max when their rows go (and m16: captured is not enlarged)");
+    section("m17 focus and Max when their rows go (and m16: a capture freezes the heights, the captured row is not grown)");
     Fixture f = uniform(10);
     auto m = model(f);
     m.focusRow(m.rowRef(5), 10);
@@ -2674,7 +2926,7 @@ void lifetimes() {
     c.advance(1500);
     check(c.enlarged().track == hovered && c.row(*c.shownIndex(pressed)).captured &&
               !c.row(*c.shownIndex(pressed)).enlarged,
-          "m16: captured before its dwell: not enlarged, nothing grows");
+          "m16: captured before its dwell: the heights freeze as they are, the captured row is not grown (win's placement)");
     c.endCapture(cap.ref, 1500);
     c.advance(1559);
     check(c.enlarged().track == hovered, "m16: at the end the heights wait for a fresh dwell");
@@ -2683,7 +2935,7 @@ void lifetimes() {
 }
 
 void chipTiming() {
-    section("m3 a chip click maximises by the base row's tier, whatever the dwell");
+    section("m3 a chip click maximises by the base row's tier (win's placement), whatever the dwell");
     Fixture f = uniform(20);
     auto early = model(f);
     early.setBaseHeight(68, 0);
@@ -2697,6 +2949,17 @@ void chipTiming() {
     late.advance(400); // after it: the row is 129 (T3)
     pressChip(late, 0, 400);
     check(late.maximised().track == 1, "m3: after the dwell too");
+    // a double-click: its first click maximised, its second shows the devices and undoes that Max
+    late.advance(800);
+    const ChipGeo cg = late.chip(0);
+    auto fx = late.pointerDown(cg.chip.x + 4, cg.chip.y + 4, Button::Left, Mods{}, 2, 800);
+    late.pointerUp(cg.chip.x + 4, cg.chip.y + 4, 800);
+    check(fx.showDevices.track == 1 && !late.maximised().valid(),
+          "m3: the double-click shows the devices and restores the Max its first click began");
+    Fixture h = uniform(20);
+    auto tall = model(h);
+    pressChip(tall, 0, 100); // base 100 is T3: no Max from a chip click
+    check(!tall.maximised().valid(), "m3: at base 100 a chip click does not maximise");
 }
 
 // --- a seeded stream of every kind of event, checking what must always hold -------------------------
@@ -2953,7 +3216,7 @@ const char *stream(std::uint64_t seed, int frameStep, std::vector<std::uint64_t>
                 break;
             case 12:
                 if (rng.below(3) == 0)
-                    m.setPinnedOnly(rng.below(2) == 0, t);
+                    m.setFilterPinned(rng.below(2) == 0, t);
                 else if (const TrackId id = randomRow(); id != 0)
                     m.pin(m.rowRef(id), mods, t);
                 break;
@@ -3065,6 +3328,7 @@ void stress() {
 } // namespace
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0); // a section name reaches the log before an abort would lose it
     fisheyeAtBase100();
     fisheyeAtEveryDetent();
     capsAndFloor();

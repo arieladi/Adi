@@ -395,8 +395,8 @@ ViewState ViewState::normalised(const Constants &c) const {
         w.moduleLayout = ModuleLayout::Columns;
     if (static_cast<unsigned>(w.rowSpectrum) > static_cast<unsigned>(RowSpectrum::TrackInput))
         w.rowSpectrum = RowSpectrum::ProcessorInput;
-    if (static_cast<unsigned>(w.maskingRule) > static_cast<unsigned>(MaskingRule::Focused))
-        w.maskingRule = MaskingRule::RolePartner;
+    if (static_cast<unsigned>(w.collisionRule) > static_cast<unsigned>(CollisionRule::Focused))
+        w.collisionRule = CollisionRule::RolePartner;
     if (static_cast<unsigned>(w.look) > static_cast<unsigned>(Look::Dark))
         w.look = Look::Live;
     std::string search;
@@ -859,11 +859,79 @@ void StackModel::scopeAdd(const Rec &r, int sign) noexcept {
         auto &count = scope_[k][static_cast<std::size_t>(r.modules[k].state)];
         count = sign > 0 ? count + 1 : count - 1;
     }
+    // the role partners: the record's index is its place in track order while the order stands
+    const auto rec = static_cast<std::uint32_t>(&r - rows_.data());
+    for (std::size_t which = 0; which < 2; ++which) {
+        const std::uint8_t bit = which == 0 ? role::Kick : role::Bass;
+        if ((r.roles & bit) == 0)
+            continue;
+        auto &first = rolePartners_[which];
+        auto &count = roleCounts_[which];
+        if (sign > 0) {
+            ++count;
+            if (first[0] == rec || first[1] == rec)
+                continue;
+            if (first[0] == kNoRec || rec < first[0]) {
+                first[1] = first[0];
+                first[0] = rec;
+            } else if (first[1] == kNoRec || rec < first[1])
+                first[1] = rec;
+        } else {
+            --count;
+            if (first[0] == rec) {
+                first[0] = first[1];
+                first[1] = kNoRec;
+            } else if (first[1] == rec)
+                first[1] = kNoRec; // a third, if any, is unknown: rolePartnersStale() says so
+        }
+    }
+}
+
+bool StackModel::rolePartnersStale() const noexcept {
+    for (std::size_t which = 0; which < 2; ++which) {
+        const auto &first = rolePartners_[which];
+        const std::uint32_t known = (first[0] != kNoRec ? 1u : 0u) + (first[1] != kNoRec ? 1u : 0u);
+        if (known < std::min(roleCounts_[which], 2u))
+            return true;
+    }
+    return false;
+}
+
+void StackModel::recountRolePartners() noexcept {
+    ++stats_.fullPasses;
+    rolePartners_ = {{{kNoRec, kNoRec}, {kNoRec, kNoRec}}};
+    roleCounts_ = {};
+    for (std::uint32_t i = 0; i < rows_.size(); ++i) {
+        const Rec &r = rows_[i];
+        if (!inScope(r))
+            continue;
+        for (std::size_t which = 0; which < 2; ++which) {
+            const std::uint8_t bit = which == 0 ? role::Kick : role::Bass;
+            auto &first = rolePartners_[which];
+            if ((r.roles & bit) != 0) {
+                ++roleCounts_[which];
+                if (first[0] == kNoRec)
+                    first[0] = i;
+                else if (first[1] == kNoRec)
+                    first[1] = i;
+            }
+        }
+    }
+}
+
+TrackId StackModel::rolePartnerFor(std::uint8_t roleBit, TrackId notThis) const noexcept {
+    const auto &first = rolePartners_[roleBit == role::Kick ? 0 : 1];
+    for (const std::uint32_t rec : first)
+        if (rec != kNoRec && rec < rows_.size() && rows_[rec].id != notThis)
+            return rows_[rec].id;
+    return 0;
 }
 
 void StackModel::recountScope() {
     for (auto &k : scope_)
         k = {};
+    rolePartners_ = {{{kNoRec, kNoRec}, {kNoRec, kNoRec}}};
+    roleCounts_ = {};
     for (const auto &r : rows_)
         scopeAdd(r, +1);
 }
@@ -878,7 +946,7 @@ bool StackModel::memberPlain(std::uint32_t rec) const noexcept {
             return false;
     } else if (r.underFold)
         return false;
-    if (view_.pinnedOnly && !pinned(r.id))
+    if (view_.filterPinned && !pinned(r.id))
         return false;
     return true;
 }
@@ -946,10 +1014,13 @@ void StackModel::editShown(std::uint32_t rec, bool memberNow) {
 Effects StackModel::setRows(const RowsInput &input, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
+    const TrackId matchCursor = jumpTarget().track; // read before the records move: Jump mode keeps its place
     if (rowsSet_ && (input.generation != 0 || input.providerRevision != 0) && input.generation == rowsGeneration_ &&
-        input.providerRevision == providerRevision_)
+        input.providerRevision == providerRevision_) {
+        endEvent(fx, before);
         return fx;
+    }
     rowsSet_ = true;
     rowsGeneration_ = input.generation;
     providerRevision_ = input.providerRevision;
@@ -975,7 +1046,7 @@ Effects StackModel::setRows(const RowsInput &input, TimeMs now) {
     bool structural = n != rows_.size();
     for (std::size_t i = 0; !structural && i < n; ++i)
         structural = rows_[i].id != in.tracks[i].id;
-    bool rematch = false, rebuild = kindsChanged;
+    bool rematch = false, rebuild = kindsChanged, matchMoved = false;
     std::array<std::uint32_t, kMaxFlips> flips{};
     std::size_t flipCount = 0;
     if (!structural) {
@@ -997,8 +1068,11 @@ Effects StackModel::setRows(const RowsInput &input, TimeMs now) {
                 structural = true;
             if (ch.groupName && !queryFold_.empty())
                 rematch = true;
-            if (ch.text || ch.membership)
+            if (ch.text || ch.membership) {
+                const bool was = r.match;
                 r.match = computeMatch(rec);
+                matchMoved = matchMoved || r.match != was;
+            }
             if (member(rec) != wasMember) {
                 if (flipCount < flips.size())
                     flips[flipCount++] = rec;
@@ -1040,6 +1114,8 @@ Effects StackModel::setRows(const RowsInput &input, TimeMs now) {
     }
     if (kindsChanged && !structural)
         recountScope();
+    else if (rolePartnersStale())
+        recountRolePartners(); // a cached ★ Kick or ★ Bass left the scope with a further one unknown: one counted pass
     // capacities for the steady state: a capture's frozen lane, the shown list, the matches
     std::size_t longest = 0;
     for (const auto &r : rows_)
@@ -1061,8 +1137,10 @@ Effects StackModel::setRows(const RowsInput &input, TimeMs now) {
     if (shownVersion_ != versionBefore)
         afterShownChange(now, oldFocusShown);
     replan();
-    if (view_.searchMode == SearchMode::Jump && !queryFold_.empty())
-        rebuildMatches();
+    // Jump mode's matches follow the shown list: rebuilt only when it or a row's match moved, and
+    // the current match stays on its track
+    if (view_.searchMode == SearchMode::Jump && !queryFold_.empty() && (shownVersion_ != versionBefore || matchMoved))
+        rebuildMatches(matchCursor);
     solveScroll();
     rehit(now);
     updateNavScroll();
@@ -1142,11 +1220,13 @@ void StackModel::replan() {
 Effects StackModel::setViewport(double listWidth, double listHeight, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     listWidth = std::isfinite(listWidth) ? std::max(0.0, listWidth) : 0.0;
     listHeight = std::isfinite(listHeight) ? std::max(0.0, listHeight) : 0.0;
-    if (listWidth == listW_ && listHeight == listH_)
+    if (listWidth == listW_ && listHeight == listH_) {
+        endEvent(fx, before);
         return fx;
+    }
     if (!cap_.active && !jump_.active)
         anchorFirstVisible();
     listW_ = listWidth;
@@ -1165,9 +1245,11 @@ Effects StackModel::setViewport(double listWidth, double listHeight, TimeMs now)
 Effects StackModel::setSelection(TrackId id, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
-    if (id == selection_)
+    now = advanceTo(now);
+    if (id == selection_) {
+        endEvent(fx, before);
         return fx;
+    }
     selection_ = id;
     bump();
     if (c_.followSelection && !cap_.active)
@@ -1182,9 +1264,11 @@ Effects StackModel::setSelection(TrackId id, TimeMs now) {
 Effects StackModel::setKeyboardFocus(bool on, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
-    if (on == keyboardFocus_)
+    now = advanceTo(now);
+    if (on == keyboardFocus_) {
+        endEvent(fx, before);
         return fx;
+    }
     keyboardFocus_ = on;
     if (!on) {
         focusOwns_ = false;
@@ -1196,6 +1280,13 @@ Effects StackModel::setKeyboardFocus(bool on, TimeMs now) {
             retarget(now);
             solveScroll();
         }
+    } else if (!inside_ && leaveAt_ == kNever && view_.autoZoom && maximised_ == 0 && !cap_.active && focusRow_ != 0 &&
+               enlarged_ != focusRow_ && shownIndex(focusRow_)) {
+        // the keys came back with the pointer outside: the focused row is the enlarged one again
+        setEnlarged(focusRow_, now);
+        anchorFirstVisible();
+        retarget(now);
+        solveScroll();
     }
     bump();
     endEvent(fx, before);
@@ -1801,8 +1892,10 @@ TimeMs StackModel::leaveDeadline() const noexcept { return cap_.active ? kNever 
 bool StackModel::landingActive() const noexcept { return landed_ != 0 && now_ < landingEnd_; }
 
 TimeMs StackModel::promotionDeadline() const noexcept {
+    // never while a button is down (a drag the owner did not capture must not shrink its row), nor
+    // while a jump moves the rows under the pointer (the dwell counts from where they settle)
     if (!view_.autoZoom || cap_.active || maximised_ != 0 || focusOwns_ || !inside_ || candidate_ == 0 ||
-        landed_ != 0 || candidate_ == enlarged_)
+        landed_ != 0 || candidate_ == enlarged_ || buttonDown_ || (jump_.active && jump_.moving))
         return kNever;
     return std::max({enteredAt_ + c_.dwellMs, lastScrollAt_ + c_.scrollHoldOffMs, captureEndAt_ + c_.dwellMs});
 }
@@ -1830,7 +1923,7 @@ bool StackModel::busy() const noexcept {
     return false;
 }
 
-void StackModel::advanceTo(TimeMs t) {
+TimeMs StackModel::advanceTo(TimeMs t) {
     t = normaliseTime(t);
     const bool wasBusy = busy();
     const TimeMs was = now_;
@@ -1846,6 +1939,7 @@ void StackModel::advanceTo(TimeMs t) {
         if (t != was)
             bump();
     }
+    return t;
 }
 
 void StackModel::processAt(TimeMs d) {
@@ -1919,6 +2013,12 @@ void StackModel::onLeave(TimeMs d) {
 }
 
 void StackModel::promote(TimeMs d) {
+    // rule 1 reads the row's current bounds: a row that moved under the still pointer since the
+    // last event starts its own dwell instead
+    const TrackId was = candidate_;
+    rehit(d);
+    if (candidate_ != was)
+        return;
     setEnlarged(candidate_, d);
     jump_ = Jump{};
     anchorPointer();
@@ -1938,7 +2038,7 @@ void StackModel::setEnlarged(TrackId id, TimeMs now) {
 Effects StackModel::advance(TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now); // the navigator's own scroll moves only at events and deadlines: no frame rate in it
+    now = advanceTo(now); // the navigator's own scroll moves only at events and deadlines: no frame rate in it
     endEvent(fx, before);
     return fx;
 }
@@ -1961,6 +2061,33 @@ void StackModel::rehit(TimeMs now) {
         return;
     candidate_ = r;
     enteredAt_ = now;
+}
+
+void StackModel::buttonPressed(TimeMs now) {
+    if (buttonDown_)
+        return;
+    buttonDown_ = true;
+    // rule 3: a reveal or jump still moving stops where the rows are; what it was for waits for the release
+    if (jump_.active && jump_.moving) {
+        const double at = jumpTop(now);
+        jump_.moving = false;
+        jump_.to = at;
+        releaseJumpIfDone();
+        revealPending_ = true;
+    }
+}
+
+void StackModel::buttonReleased(TimeMs now) {
+    if (!buttonDown_)
+        return;
+    buttonDown_ = false;
+    if (candidate_ != 0 && candidate_ != enlarged_)
+        enteredAt_ = now; // the dwell counts from the release
+    if (revealPending_) {
+        revealPending_ = false;
+        if (!animActive_ && !cap_.active && !jump_.active)
+            startRevealIfCut(now);
+    }
 }
 
 ItemRef StackModel::chipRef(TrackId id) const noexcept {
@@ -2184,8 +2311,14 @@ void StackModel::pressRow(const Hit &hit, Button button, Mods mods, int clicks, 
     switch (hit.part) {
     case HitPart::Chip:
         focusByClick(hit.shown, chipRef(hit.row.track), now, fx);
-        if (left && clicks >= 2)
+        if (left && clicks >= 2) {
+            // Live's title-bar double-click shows the devices; the Max the first click began is undone
+            if (maximised_ == hit.row.track && !cap_.active)
+                doRestore(now);
             fx.showDevices = hit.row;
+        }
+        // Max by the BASE row's tier (the clicked row's own would depend on whether its dwell had
+        // elapsed): win's placement, see Constants::chipMaxesUpTo
         if (left && clicks == 1 && !cap_.active && maximised_ != hit.row.track &&
             tierFor(static_cast<double>(base()), false, c_) <= c_.chipMaxesUpTo)
             doMaximise(hit.shown, now);
@@ -2198,9 +2331,9 @@ void StackModel::pressRow(const Hit &hit, Button button, Mods mods, int clicks, 
         if (left)
             fx = mergeFlags(fx, pinNow(hit.row, mods, now));
         break;
-    case HitPart::ChipMasking:
+    case HitPart::ChipCollision:
         if (left)
-            fx = mergeFlags(fx, maskingNow(hit.row));
+            fx = mergeFlags(fx, collisionNow(hit.row));
         break;
     case HitPart::ChipKick:
         break; // W7's
@@ -2245,12 +2378,15 @@ Effects StackModel::mergeFlags(Effects into, const Effects &from) noexcept {
 Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const bool moved = !pointerKnown_ || x != px_ || y != py_;
     px_ = x;
     py_ = y;
     pointerKnown_ = true;
-    buttonDown_ = buttonDown;
+    if (buttonDown) // a press or release the owner reports only through the move counts as one
+        buttonPressed(now);
+    else
+        buttonReleased(now);
     const bool in = x >= 0 && y >= 0 && x < listW_ && y < listH_;
     if (navPress_.active && buttonDown_)
         navDrag(x, y, now);
@@ -2292,7 +2428,7 @@ Effects StackModel::pointerMove(double x, double y, bool buttonDown, TimeMs now)
 Effects StackModel::pointerExit(TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (inside_) {
         inside_ = false;
         candidate_ = 0;
@@ -2306,12 +2442,12 @@ Effects StackModel::pointerExit(TimeMs now) {
 Effects StackModel::pointerDown(double x, double y, Button button, Mods mods, int clicks, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const bool moved = !pointerKnown_ || x != px_ || y != py_;
     px_ = x;
     py_ = y;
     pointerKnown_ = true;
-    buttonDown_ = true;
+    buttonPressed(now);
     if (x >= 0 && y >= 0 && x < listW_ && y < listH_ && !inside_) {
         inside_ = true;
         leaveAt_ = kNever;
@@ -2348,10 +2484,9 @@ Effects StackModel::pointerDown(double x, double y, Button button, Mods mods, in
 Effects StackModel::pointerUp(double x, double y, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     px_ = x;
     py_ = y;
-    buttonDown_ = false;
     if (navPress_.active) {
         const double t = c_.dragThreshold;
         const bool click = !navPress_.dragging && navPress_.onLine && std::abs(y - navPress_.y) <= t &&
@@ -2361,11 +2496,7 @@ Effects StackModel::pointerUp(double x, double y, TimeMs now) {
         if (click)
             navClick(press.line, press.shift, now, fx);
     }
-    if (revealPending_) {
-        revealPending_ = false;
-        if (!animActive_ && !cap_.active && !jump_.active)
-            startRevealIfCut(now);
-    }
+    buttonReleased(now);
     endEvent(fx, before);
     return fx;
 }
@@ -2423,7 +2554,7 @@ void StackModel::navClick(std::size_t line, bool shift, TimeMs now, Effects &fx)
 Effects StackModel::wheel(double x, double y, const WheelDelta &delta, Mods mods, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     fx.consumed = true;
     if (mods.ctrl || cap_.active) { // Ctrl+wheel does nothing in STACK; a capture ignores the wheel
         endEvent(fx, before);
@@ -2488,7 +2619,7 @@ Effects StackModel::wheel(double x, double y, const WheelDelta &delta, Mods mods
 Effects StackModel::key(Key k, Mods mods, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const std::size_t count = shown_.size();
     switch (k) {
     case Key::Up:
@@ -2644,7 +2775,7 @@ Effects StackModel::setBaseNow(int px, TimeMs now, bool snap) {
 
 Effects StackModel::setBaseHeight(int px, TimeMs now) {
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     Effects fx = setBaseNow(px, now, true);
     endEvent(fx, before);
     return fx;
@@ -2652,7 +2783,7 @@ Effects StackModel::setBaseHeight(int px, TimeMs now) {
 
 Effects StackModel::stepBaseHeight(int detents, TimeMs now) {
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     Effects fx = stepBaseNow(detents, now);
     endEvent(fx, before);
     return fx;
@@ -2661,9 +2792,11 @@ Effects StackModel::stepBaseHeight(int detents, TimeMs now) {
 Effects StackModel::setAutoZoom(bool on, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
-    if (view_.autoZoom == on)
+    now = advanceTo(now);
+    if (view_.autoZoom == on) {
+        endEvent(fx, before);
         return fx;
+    }
     view_.autoZoom = on;
     focusOwns_ = false;
     if (!on && !cap_.active && maximised_ == 0) {
@@ -2705,7 +2838,7 @@ void StackModel::layoutChanged(TimeMs now, Effects &fx) {
 Effects StackModel::setRowLayout(RowLayout layout, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.layout != layout) {
         view_.layout = layout;
         layoutChanged(now, fx);
@@ -2717,7 +2850,7 @@ Effects StackModel::setRowLayout(RowLayout layout, TimeMs now) {
 Effects StackModel::setModuleLayout(ModuleLayout layout, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.moduleLayout != layout) {
         view_.moduleLayout = layout;
         layoutChanged(now, fx);
@@ -2729,7 +2862,7 @@ Effects StackModel::setModuleLayout(ModuleLayout layout, TimeMs now) {
 Effects StackModel::setShowChain(bool on, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.showChain != on) {
         view_.showChain = on;
         layoutChanged(now, fx);
@@ -2741,7 +2874,7 @@ Effects StackModel::setShowChain(bool on, TimeMs now) {
 Effects StackModel::setShowDormant(bool on, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.showDormant != on) {
         view_.showDormant = on;
         layoutChanged(now, fx);
@@ -2753,7 +2886,7 @@ Effects StackModel::setShowDormant(bool on, TimeMs now) {
 Effects StackModel::setNavigator(bool shown, bool collapsed, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.navigator != shown || view_.navigatorCollapsed != collapsed) {
         view_.navigator = shown;
         view_.navigatorCollapsed = collapsed;
@@ -2781,12 +2914,12 @@ void StackModel::membershipChanged(TimeMs now, bool toTop) {
     bump();
 }
 
-Effects StackModel::setPinnedOnly(bool on, TimeMs now) {
+Effects StackModel::setFilterPinned(bool on, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
-    if (view_.pinnedOnly != on) {
-        view_.pinnedOnly = on;
+    now = advanceTo(now);
+    if (view_.filterPinned != on) {
+        view_.filterPinned = on;
         membershipChanged(now, false);
         fx.windowViewChanged = true;
     }
@@ -2804,19 +2937,24 @@ void StackModel::applySearchChange(TimeMs now) {
         membershipChanged(now, true); // a new query starts at the top
     } else {
         membershipChanged(now, false);
-        rebuildMatches();
+        rebuildMatches(0); // a new query starts at its first match
         jumpToMatch(now);
     }
 }
 
-void StackModel::rebuildMatches() {
+void StackModel::rebuildMatches(TrackId cursor) {
     matches_.clear();
     matchAt_ = 0;
     if (queryFold_.empty())
         return;
-    for (const std::uint32_t rec : shown_)
-        if (rows_[rec].match)
-            matches_.push_back(rec);
+    ++stats_.fullPasses; // O(shown)
+    for (const std::uint32_t rec : shown_) {
+        if (!rows_[rec].match)
+            continue;
+        if (rows_[rec].id == cursor)
+            matchAt_ = matches_.size();
+        matches_.push_back(rec);
+    }
 }
 
 void StackModel::jumpToMatch(TimeMs now) {
@@ -2831,7 +2969,7 @@ void StackModel::jumpToMatch(TimeMs now) {
 Effects StackModel::setSearch(std::string_view text, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     normaliseSearchText(text, boundOf(c_.searchMaxBytes), scratch_);
     if (scratch_ == view_.search) {
         endEvent(fx, before);
@@ -2857,7 +2995,7 @@ void StackModel::clearSearch(TimeMs now, Effects &fx) {
 Effects StackModel::setSearchMode(SearchMode mode, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.searchMode != mode) {
         view_.searchMode = mode;
         applySearchChange(now);
@@ -2870,7 +3008,7 @@ Effects StackModel::setSearchMode(SearchMode mode, TimeMs now) {
 Effects StackModel::searchKey(Key k, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     switch (k) {
     case Key::Up:
     case Key::Down:
@@ -2912,12 +3050,12 @@ Effects StackModel::searchKey(Key k, TimeMs now) {
     return fx;
 }
 
-Effects StackModel::setMaskingRule(MaskingRule rule, TimeMs now) {
+Effects StackModel::setCollisionRule(CollisionRule rule, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
-    if (view_.maskingRule != rule) {
-        view_.maskingRule = rule;
+    now = advanceTo(now);
+    if (view_.collisionRule != rule) {
+        view_.collisionRule = rule;
         fx.windowViewChanged = true;
         bump();
     }
@@ -2928,7 +3066,7 @@ Effects StackModel::setMaskingRule(MaskingRule rule, TimeMs now) {
 Effects StackModel::setRowSpectrum(RowSpectrum spectrum, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.rowSpectrum != spectrum) {
         view_.rowSpectrum = spectrum;
         fx.windowViewChanged = true;
@@ -2941,7 +3079,7 @@ Effects StackModel::setRowSpectrum(RowSpectrum spectrum, TimeMs now) {
 Effects StackModel::setOverlay(bool on, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.overlay != on) {
         view_.overlay = on;
         fx.windowViewChanged = true;
@@ -2954,7 +3092,7 @@ Effects StackModel::setOverlay(bool on, TimeMs now) {
 Effects StackModel::setLook(Look look, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (view_.look != look) {
         view_.look = look;
         fx.windowViewChanged = true;
@@ -2967,7 +3105,7 @@ Effects StackModel::setLook(Look look, TimeMs now) {
 Effects StackModel::setModuleRange(const RangeEntry &entry, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (entry.track <= 0 || (entry.module != 0) == (entry.device != 0) || entry.device < 0 ||
         static_cast<unsigned>(entry.range) > static_cast<unsigned>(DisplayRange::Db30)) {
         fx.refused = true;
@@ -3021,7 +3159,7 @@ bool StackModel::setPinned(TrackId id, bool on) {
 
 void StackModel::pinsChanged(TimeMs now, std::span<const TrackId> touched, bool bulk) {
     bump();
-    if (!view_.pinnedOnly)
+    if (!view_.filterPinned)
         return; // membership does not depend on pins: nothing to rebuild
     if (bulk || touched.size() > kMaxTouched) {
         membershipChanged(now, false);
@@ -3079,7 +3217,7 @@ Effects StackModel::pinNow(const RowRef &ref, Mods mods, TimeMs now) {
 
 Effects StackModel::pin(const RowRef &ref, Mods mods, TimeMs now) {
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     Effects fx = pinNow(ref, mods, now);
     endEvent(fx, before);
     return fx;
@@ -3088,7 +3226,7 @@ Effects StackModel::pin(const RowRef &ref, Mods mods, TimeMs now) {
 Effects StackModel::pinSameColour(const RowRef &ref, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const Rec *r = live(ref) ? recFor(ref.track) : nullptr;
     if (r == nullptr) {
         fx.refused = true;
@@ -3116,7 +3254,7 @@ Effects StackModel::pinSameColour(const RowRef &ref, TimeMs now) {
 Effects StackModel::storePinSet(std::string_view name, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (name.empty() || name.size() > boundOf(c_.maxPinSetName)) {
         fx.refused = true;
         endEvent(fx, before);
@@ -3143,7 +3281,7 @@ Effects StackModel::storePinSet(std::string_view name, TimeMs now) {
 Effects StackModel::recallPinSet(std::string_view name, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const auto &sets = shared_.pinSets;
     const auto at = std::find_if(sets.begin(), sets.end(), [&](const PinSet &s) { return s.name == name; });
     if (at == sets.end()) {
@@ -3163,7 +3301,7 @@ Effects StackModel::recallPinSet(std::string_view name, TimeMs now) {
 Effects StackModel::deletePinSet(std::string_view name, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     auto &sets = shared_.pinSets;
     const auto at = std::find_if(sets.begin(), sets.end(), [&](const PinSet &s) { return s.name == name; });
     if (at == sets.end())
@@ -3180,7 +3318,7 @@ Effects StackModel::deletePinSet(std::string_view name, TimeMs now) {
 Effects StackModel::setComparePair(TrackId a, TrackId b, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (!(a > 0 && b >= 0 && a != b)) {
         fx.refused = true;
         endEvent(fx, before);
@@ -3198,7 +3336,7 @@ Effects StackModel::setComparePair(TrackId a, TrackId b, TimeMs now) {
 Effects StackModel::clearComparePair(TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (!(shared_.comparePair == ComparePair{})) {
         shared_.comparePair = {};
         fx.sharedViewChanged = true;
@@ -3209,7 +3347,7 @@ Effects StackModel::clearComparePair(TimeMs now) {
     return fx;
 }
 
-Effects StackModel::maskingNow(const RowRef &ref) {
+Effects StackModel::collisionNow(const RowRef &ref) {
     Effects fx;
     if (!live(ref)) {
         fx.refused = true;
@@ -3225,10 +3363,10 @@ Effects StackModel::maskingNow(const RowRef &ref) {
     return fx;
 }
 
-Effects StackModel::maskingButton(const RowRef &ref, TimeMs now) {
+Effects StackModel::collisionButton(const RowRef &ref, TimeMs now) {
     const auto before = beginEvent();
-    advanceTo(now);
-    Effects fx = maskingNow(ref);
+    now = advanceTo(now);
+    Effects fx = collisionNow(ref);
     endEvent(fx, before);
     return fx;
 }
@@ -3236,7 +3374,7 @@ Effects StackModel::maskingButton(const RowRef &ref, TimeMs now) {
 Effects StackModel::maximise(const RowRef &ref, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const auto at = live(ref) ? shownIndex(ref.track) : std::nullopt;
     if (!at || cap_.active)
         fx.refused = true;
@@ -3249,7 +3387,7 @@ Effects StackModel::maximise(const RowRef &ref, TimeMs now) {
 Effects StackModel::restore(TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (cap_.active)
         fx.refused = true;
     else
@@ -3261,7 +3399,7 @@ Effects StackModel::restore(TimeMs now) {
 Effects StackModel::scrollLane(const RowRef &ref, int items, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const std::uint32_t rec = live(ref) ? recOf(ref.track) : kNoRec;
     if (rec == kNoRec || (cap_.active && cap_.target.row.track == ref.track)) {
         fx.refused = true;
@@ -3313,7 +3451,7 @@ Effects StackModel::toggleFoldNow(const RowRef &ref, TimeMs now) {
 
 Effects StackModel::toggleFold(const RowRef &group, TimeMs now) {
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     Effects fx = toggleFoldNow(group, now);
     endEvent(fx, before);
     return fx;
@@ -3322,7 +3460,7 @@ Effects StackModel::toggleFold(const RowRef &group, TimeMs now) {
 Effects StackModel::focusRow(const RowRef &ref, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const auto at = live(ref) ? shownIndex(ref.track) : std::nullopt;
     if (!at)
         fx.refused = true;
@@ -3337,7 +3475,7 @@ Effects StackModel::focusRow(const RowRef &ref, TimeMs now) {
 Effects StackModel::focusItem(const ItemRef &ref, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const auto at = live(ref) ? shownIndex(ref.row.track) : std::nullopt;
     if (!at)
         fx.refused = true;
@@ -3358,7 +3496,7 @@ Effects StackModel::focusItem(const ItemRef &ref, TimeMs now) {
 Effects StackModel::reveal(const RowRef &ref, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const auto at = live(ref) ? shownIndex(ref.track) : std::nullopt;
     if (!at || cap_.active)
         fx.refused = true;
@@ -3374,7 +3512,7 @@ Effects StackModel::reveal(const RowRef &ref, TimeMs now) {
 Effects StackModel::scrollTo(double contentY, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (cap_.active)
         fx.refused = true;
     else {
@@ -3388,7 +3526,7 @@ Effects StackModel::scrollTo(double contentY, TimeMs now) {
 Effects StackModel::scrollBy(double dy, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (cap_.active)
         fx.refused = true;
     else {
@@ -3402,7 +3540,7 @@ Effects StackModel::scrollBy(double dy, TimeMs now) {
 Effects StackModel::openFromChip(TrackId track, ItemKey landOn, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     const auto at = shownIndex(track);
     if (!at) {
         fx.refused = true;
@@ -3454,7 +3592,7 @@ Effects StackModel::openFromChip(TrackId track, ItemKey landOn, TimeMs now) {
 Effects StackModel::clearOpenedFrom(TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     openedFrom_ = 0;
     endEvent(fx, before);
     return fx;
@@ -3466,7 +3604,7 @@ CaptureResult StackModel::beginCapture(CaptureKind kind, const ItemRef &target, 
     CaptureResult result;
     const auto before = beginEvent();
     Effects fx;
-    advanceTo(now);
+    now = advanceTo(now);
     if (cap_.active)
         result.refusal = CaptureRefusal::Busy;
     else if (!live(target.row))
@@ -3568,7 +3706,7 @@ std::optional<CaptureRef> StackModel::capture() const noexcept {
 Effects StackModel::endCapture(const CaptureRef &ref, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (cap_.active && ref.token == cap_.token)
         finishCapture(now, CaptureStatus::Ended);
     endEvent(fx, before);
@@ -3757,6 +3895,10 @@ std::string_view StackModel::trackName(TrackId id) const noexcept {
 
 std::uint32_t StackModel::moduleKey(std::size_t kindIndex) const noexcept {
     return kindIndex < kindCount_ ? kinds_[kindIndex].key : 0;
+}
+
+std::string_view StackModel::moduleName(std::size_t kindIndex) const noexcept {
+    return kindIndex < kindCount_ ? std::string_view(kinds_[kindIndex].name) : std::string_view{};
 }
 
 bool StackModel::isCapturedShown(std::size_t shown) const noexcept {
@@ -4126,7 +4268,7 @@ ChipGeo StackModel::chipAt(std::size_t shown, double top, double h) const noexce
         return Rect{x + w + bgap + k * (button + bgap), y + c_.chipButtonDy, button, button};
     };
     g.pin = buttonAt(0);
-    g.masking = buttonAt(1);
+    g.collision = buttonAt(1);
     g.kick = buttonAt(2);
     if (r.group)
         g.fold = {x + c_.foldInsetX, y + c_.foldInsetY, static_cast<double>(c_.foldSize), static_cast<double>(c_.foldSize)};
@@ -4153,9 +4295,9 @@ Hit StackModel::hitRow(std::size_t shown, double x, double y, double top, double
         if (g.pin.contains(x, y)) {
             hit.part = HitPart::ChipPin;
             hit.rect = g.pin;
-        } else if (g.masking.contains(x, y)) {
-            hit.part = HitPart::ChipMasking;
-            hit.rect = g.masking;
+        } else if (g.collision.contains(x, y)) {
+            hit.part = HitPart::ChipCollision;
+            hit.rect = g.collision;
         } else if (g.kick.contains(x, y)) {
             hit.part = HitPart::ChipKick;
             hit.rect = g.kick;
@@ -4410,7 +4552,7 @@ RowRef StackModel::jumpTarget() const noexcept {
     return {r.id, r.gen};
 }
 
-TrackId StackModel::maskingReference(const RowRef &ref) const noexcept {
+TrackId StackModel::collisionReference(const RowRef &ref) const noexcept {
     const Rec *r = live(ref) ? recFor(ref.track) : nullptr;
     if (r == nullptr)
         return 0;
@@ -4422,12 +4564,8 @@ TrackId StackModel::maskingReference(const RowRef &ref) const noexcept {
             return pair.b;
         // a pair of one: its member falls back to the rule
     }
-    const auto firstWith = [&](std::uint8_t bit) -> TrackId {
-        for (const auto &other : rows_)
-            if (inScope(other) && (other.roles & bit) != 0 && other.id != r->id)
-                return other.id;
-        return 0;
-    };
+    ++stats_.rowEvaluations; // one read of the role-partner cache, never a pass
+    const auto firstWith = [&](std::uint8_t bit) -> TrackId { return rolePartnerFor(bit, r->id); };
     const auto openedOrFocused = [&]() -> TrackId {
         if (openedFrom_ != 0 && openedFrom_ != r->id && recFor(openedFrom_) != nullptr)
             return openedFrom_;
@@ -4435,8 +4573,8 @@ TrackId StackModel::maskingReference(const RowRef &ref) const noexcept {
             return focusRow_;
         return 0;
     };
-    switch (view_.maskingRule) {
-    case MaskingRule::RolePartner: {
+    switch (view_.collisionRule) {
+    case CollisionRule::RolePartner: {
         TrackId partner = 0;
         if ((r->roles & role::Bass) != 0)
             partner = firstWith(role::Kick);
@@ -4444,9 +4582,9 @@ TrackId StackModel::maskingReference(const RowRef &ref) const noexcept {
             partner = firstWith(role::Bass);
         return partner != 0 ? partner : openedOrFocused();
     }
-    case MaskingRule::OpenedFrom:
+    case CollisionRule::OpenedFrom:
         return openedOrFocused();
-    case MaskingRule::Focused:
+    case CollisionRule::Focused:
         return focusRow_ != r->id ? focusRow_ : 0;
     }
     return 0;
@@ -4486,7 +4624,7 @@ ViewState StackModel::viewState() const {
 Effects StackModel::applyViewState(const ViewState &state, TimeMs now) {
     Effects fx;
     const auto before = beginEvent();
-    advanceTo(now);
+    now = advanceTo(now);
     if (cap_.active) {
         fx.refused = true;
         endEvent(fx, before);
@@ -4515,7 +4653,7 @@ Effects StackModel::applyViewState(const ViewState &state, TimeMs now) {
     afterShownChange(now, oldFocusShown);
     snapEntries();
     replan();
-    rebuildMatches();
+    rebuildMatches(0);
     anchor_ = AnchorHold{};
     scroll_ = 0;
     if (const auto at = shownIndex(v.window.scroll.track))

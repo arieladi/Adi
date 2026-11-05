@@ -102,17 +102,17 @@ struct Constants {
     int scrollHoldOffMs = 120;         // hover waits this long after the last scroll; win's placement, provisional until experiment X2
     int leaveMs = 300;                 // rows go back to base this long after the pointer leaves; win's placement, provisional until experiment X2
     int revealMs = 120;                // an enlarged row cut off at the bottom scrolls into view over this; win's placement, provisional until experiment X2
-    Anchor anchor = Anchor::PointerRowTop; // what holds still under the pointer; win's placement, provisional until experiment X2
+    Anchor anchor = Anchor::PointerRowTop; // what holds still under the pointer: "the content point under the pointer" is read as the pointer's row's top (PointerRowFraction holds the pointer's fraction of the row instead); win's placement, provisional until experiment X2
     // --- tiers ---
     std::array<int, 5> tierFloors{44, 68, 100, 136, 184}; // the lowest height of T1 to T5; win's placement, provisional until experiment X1
-    Tier chipMaxesUpTo = Tier::T2; // a chip click maximises while the base row is at or below this tier; win's placement, provisional until experiment X2
+    Tier chipMaxesUpTo = Tier::T2; // a chip click maximises while the BASE row is at or below this tier (the clicked row's own tier would make the click depend on whether its dwell had elapsed); win's placement, provisional until experiment X2
     // --- the chip column ---
     int chipColumn = 128;    // the name column; win's placement, provisional until experiment X1
     int chipHeight = 18;     // the chip; win's placement, provisional until experiment X1
     int chipInset = 6;       // the chip's inset in its column; win's placement, provisional until experiment X1
     int chipIndent = 8;      // the chip's indent per group level; win's placement, provisional until experiment X1
     int chipMinWidth = 40;   // the indent never narrows the chip below this; win's placement, provisional until experiment X1
-    int chipButton = 16;     // the pin, masking-reference and Kick buttons; win's placement, provisional until experiment X1
+    int chipButton = 16;     // the pin, collision-reference and Kick buttons; win's placement, provisional until experiment X1
     int chipButtonGap = 4;   // between those buttons and from the chip; win's placement, provisional until experiment X1
     int chipButtonClear = 2; // room left above the buttons before they move beside the chip; win's placement, provisional until experiment X1
     int chipButtonDy = 1;    // the buttons' drop beside the chip; win's placement, provisional until experiment X1
@@ -286,7 +286,7 @@ enum class CaptureStatus : std::uint8_t {
 };
 enum class HitPart : std::uint8_t {
     None, Above, Gap, Below, RowSpace, // RowSpace: inside a row, on nothing
-    Chip, ChipFold, ChipPin, ChipMasking, ChipKick,
+    Chip, ChipFold, ChipPin, ChipCollision, ChipKick,
     ChainItem, ChainPill, ChevronLeft, ChevronRight,
     ModuleItem, ModulePreview, ModulePill, ModuleRefused,
     NavigatorHeader, NavigatorLine, NavigatorEmpty
@@ -378,7 +378,7 @@ struct CellGeo {
     bool operator==(const CellGeo &) const = default;
 };
 struct ChipGeo {
-    Rect chip, fold, pin, masking, kick;
+    Rect chip, fold, pin, collision, kick;
     bool buttonsAbove = true;
     bool operator==(const ChipGeo &) const = default;
 };
@@ -445,7 +445,7 @@ struct CaptureResult {
 
 enum class SearchMode : std::uint8_t { Filter, Jump };
 enum class RowSpectrum : std::uint8_t { ProcessorInput, Off, TrackInput }; // carried for W5
-enum class MaskingRule : std::uint8_t { RolePartner, OpenedFrom, Focused };
+enum class CollisionRule : std::uint8_t { RolePartner, OpenedFrom, Focused };
 enum class Look : std::uint8_t { Live, Dark };                              // carried for W2
 enum class DisplayRange : std::uint8_t { Auto, Db3, Db6, Db12, Db30 };      // carried for W6
 struct ScrollAnchor {
@@ -470,20 +470,20 @@ struct RangeEntry {
     DisplayRange range = DisplayRange::Auto;
     bool operator==(const RangeEntry &) const = default;
 };
-// Per window, beside WindowState's Mix View fields. Keys in ui_view, under mixview.stack.:
-// baseHeight, autoZoom, navigator, navigatorCollapsed, pinnedOnly, search, searchMode, layout,
-// processorLayout, showChain, showDormant, rowSpectrum, maskingRule, overlay, look, scroll,
-// moduleRange, folded.
+// Per window, beside WindowState's Mix View fields. Keys in ui_view, under mixview.stack., each
+// named as its field: baseHeight, autoZoom, navigator, navigatorCollapsed, filterPinned, search,
+// searchMode, layout, moduleLayout, showChain, showDormant, rowSpectrum, collisionRule, overlay,
+// look, scroll, moduleRange, folded. W2's store writes these names, no translation between.
 struct WindowViewState {
     int baseHeight = 100;
-    bool autoZoom = true, navigator = true, navigatorCollapsed = false, pinnedOnly = false;
+    bool autoZoom = true, navigator = true, navigatorCollapsed = false, filterPinned = false;
     std::string search;
     SearchMode searchMode = SearchMode::Filter;
     RowLayout layout = RowLayout::ChainFirst;
     ModuleLayout moduleLayout = ModuleLayout::Columns;
     bool showChain = true, showDormant = true;
     RowSpectrum rowSpectrum = RowSpectrum::ProcessorInput;
-    MaskingRule maskingRule = MaskingRule::RolePartner;
+    CollisionRule collisionRule = CollisionRule::RolePartner;
     bool overlay = false;
     Look look = Look::Live;
     ScrollAnchor scroll;
@@ -605,6 +605,16 @@ class StackModel {
     stack::Effects key(stack::Key, stack::Mods, stack::TimeMs now);
     stack::Effects advance(stack::TimeMs now);
     stack::TimeMs nextDeadline() const noexcept; // the next timer or animation end; kNever when idle
+    // The enlarged row (§1.4): the row under the pointer after its dwell; the keyboard-focused row
+    // while the pointer is outside the list; and, win's placements until the director strikes them:
+    // - a key or command that moves the focus (Up, Down, focusRow, a navigator click) makes the
+    //   focused row the enlarged one even while the pointer rests in another row, until the pointer
+    //   moves (it is the only way the key's effect is visible under a resting pointer);
+    // - "locked to the dragged row" while a drag is in progress is read as: no row's height changes
+    //   for the length of the capture, so the captured target never moves (the brief's retention
+    //   rule); the captured row keeps the height it had when the capture began, it is not grown to
+    //   it. enlarged() keeps naming the row the heights enlarge, capture() the captured target;
+    // - nothing is promoted while a mouse button is down; the dwell restarts at the release.
     bool busy() const noexcept;                  // something moves: keep the frame clock running
 
     // --- commands (toolbar, menus, other items) ---
@@ -616,11 +626,11 @@ class StackModel {
     stack::Effects setShowChain(bool, stack::TimeMs now);
     stack::Effects setShowDormant(bool, stack::TimeMs now);
     stack::Effects setNavigator(bool shown, bool collapsed, stack::TimeMs now);
-    stack::Effects setPinnedOnly(bool, stack::TimeMs now);
+    stack::Effects setFilterPinned(bool, stack::TimeMs now);
     stack::Effects setSearch(std::string_view, stack::TimeMs now); // allocates only past the reserved bound
     stack::Effects setSearchMode(stack::SearchMode, stack::TimeMs now);
     stack::Effects searchKey(stack::Key, stack::TimeMs now); // Up, Down, Enter, Escape while the field has focus
-    stack::Effects setMaskingRule(stack::MaskingRule, stack::TimeMs now);
+    stack::Effects setCollisionRule(stack::CollisionRule, stack::TimeMs now);
     stack::Effects setRowSpectrum(stack::RowSpectrum, stack::TimeMs now);
     stack::Effects setOverlay(bool, stack::TimeMs now);
     stack::Effects setLook(stack::Look, stack::TimeMs now);
@@ -632,7 +642,7 @@ class StackModel {
     stack::Effects deletePinSet(std::string_view name, stack::TimeMs now);
     stack::Effects setComparePair(stack::TrackId a, stack::TrackId b, stack::TimeMs now);
     stack::Effects clearComparePair(stack::TimeMs now);
-    stack::Effects maskingButton(const stack::RowRef &, stack::TimeMs now); // the pair (this row, the focused row)
+    stack::Effects collisionButton(const stack::RowRef &, stack::TimeMs now); // the pair (this row, the focused row)
     stack::Effects maximise(const stack::RowRef &, stack::TimeMs now);
     stack::Effects restore(stack::TimeMs now);
     stack::Effects scrollLane(const stack::RowRef &, int items, stack::TimeMs now);
@@ -701,6 +711,7 @@ class StackModel {
     std::string_view trackName(stack::TrackId) const noexcept;
     std::size_t moduleKindCount() const noexcept { return kindCount_; }
     std::uint32_t moduleKey(std::size_t kindIndex) const noexcept;
+    std::string_view moduleName(std::size_t kindIndex) const noexcept; // the kind's short name, for pills, cells and accessibility
     stack::Hit hitTest(double x, double y) const noexcept;
     stack::NavGeo navigator() const noexcept;
     stack::NavLine navigatorLine(std::size_t shown) const noexcept;
@@ -709,7 +720,7 @@ class StackModel {
         walkLines(stack::detail::sinkFor<stack::NavLine>(f));
     }
 
-    // --- state ---
+    // --- state: O(1) or O(log rows) each, collisionReference included (it reads a cache kept with the scope) ---
     const stack::Stats &stats() const noexcept { return stats_; }
     void resetStats() noexcept { stats_ = {}; }
     stack::RowRef enlarged() const noexcept;  // the row the heights enlarge (not the captured one)
@@ -720,7 +731,7 @@ class StackModel {
     bool pinned(stack::TrackId) const noexcept;
     const std::vector<stack::TrackId> &pins() const noexcept { return shared_.pins; }
     stack::ComparePair comparePair() const noexcept { return shared_.comparePair; }
-    stack::TrackId maskingReference(const stack::RowRef &) const noexcept;
+    stack::TrackId collisionReference(const stack::RowRef &) const noexcept;
     const stack::WindowViewState &windowView() const noexcept { return view_; }
     const stack::SharedViewState &sharedView() const noexcept { return shared_; }
     stack::TrackId selection() const noexcept { return selection_; }
@@ -828,6 +839,9 @@ class StackModel {
     const Rec *recFor(stack::TrackId) const noexcept;
     void scopeAdd(const Rec &, int sign) noexcept;
     void recountScope();
+    void recountRolePartners() noexcept;
+    bool rolePartnersStale() const noexcept;
+    stack::TrackId rolePartnerFor(std::uint8_t roleBit, stack::TrackId notThis) const noexcept;
     bool inScope(const Rec &r) const noexcept { return r.valid && r.inView && !r.reference; }
     bool memberPlain(std::uint32_t rec) const noexcept;
     bool member(std::uint32_t rec) const noexcept;
@@ -886,7 +900,7 @@ class StackModel {
     stack::TimeMs promotionDeadline() const noexcept;
     stack::TimeMs laneDeadline() const noexcept;
     stack::TimeMs internalDeadline() const noexcept;
-    void advanceTo(stack::TimeMs);
+    stack::TimeMs advanceTo(stack::TimeMs); // runs what is due and answers the normalised time: every stamp uses it
     void processAt(stack::TimeMs);
     void onAnimEnd(stack::TimeMs);
     void onJumpArrive(stack::TimeMs);
@@ -897,6 +911,8 @@ class StackModel {
     // interaction
     std::optional<std::size_t> pointerRowIndex() const noexcept;
     void rehit(stack::TimeMs now);
+    void buttonPressed(stack::TimeMs now);  // rule 3: a moving reveal or jump stops where it is
+    void buttonReleased(stack::TimeMs now); // the dwell starts again; a reveal held back runs
     stack::ItemRef chipRef(stack::TrackId) const noexcept;
     void focusByKey(std::size_t shown, const stack::ItemRef &, stack::TimeMs now, stack::Effects &);
     void focusByClick(std::size_t shown, const stack::ItemRef &, stack::TimeMs now, stack::Effects &);
@@ -915,13 +931,13 @@ class StackModel {
     void layoutChanged(stack::TimeMs now, stack::Effects &);
     void membershipChanged(stack::TimeMs now, bool toTop);
     void applySearchChange(stack::TimeMs now);
-    void rebuildMatches();
+    void rebuildMatches(stack::TrackId keepCursorOn); // an O(shown) pass, counted; keepCursorOn: the match stays on this track (0: the first)
     void jumpToMatch(stack::TimeMs now);
     void clearSearch(stack::TimeMs now, stack::Effects &);
     bool setPinned(stack::TrackId, bool on);
     void pinsChanged(stack::TimeMs now, std::span<const stack::TrackId> touched, bool bulk);
     stack::Effects pinNow(const stack::RowRef &, stack::Mods, stack::TimeMs now);
-    stack::Effects maskingNow(const stack::RowRef &);
+    stack::Effects collisionNow(const stack::RowRef &);
     stack::Effects toggleFoldNow(const stack::RowRef &, stack::TimeMs now);
     void freezeCapturedRow(std::size_t shown, double top, double height);
     void finishCapture(stack::TimeMs now, stack::CaptureStatus);
@@ -957,6 +973,11 @@ class StackModel {
     std::array<KindRec, stack::kMaxModules> kinds_{};
     std::size_t kindCount_ = 0;
     std::array<std::array<std::uint32_t, 3>, stack::kMaxModules> scope_{}; // per kind: rows Absent, Dormant, Engaged
+    // the first two rows in scope with ★ Kick and with ★ Bass (records, kNoRec for none), so the role
+    // partner is a read, not a pass; with the count of each, so a cached row leaving the scope costs
+    // one recount only when a further one exists
+    std::array<std::array<std::uint32_t, 2>, 2> rolePartners_{{{kNoRec, kNoRec}, {kNoRec, kNoRec}}};
+    std::array<std::uint32_t, 2> roleCounts_{};
     std::uint64_t rowsGeneration_ = 0, providerRevision_ = 0;
     bool rowsSet_ = false;
     std::uint32_t gens_ = 0;
