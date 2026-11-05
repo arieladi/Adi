@@ -47,12 +47,12 @@ void tick(const CodecCheckpoint &call) {
     if (call)
         call();
 }
-ComPtr<IMFMediaType> mediaType(const GUID &subtype, std::uint32_t rate, std::uint32_t bits) {
+ComPtr<IMFMediaType> mediaType(const GUID &subtype, std::uint32_t rate, std::uint32_t bits,std::uint32_t channels=2) {
     ComPtr<IMFMediaType> type;
     check(MFCreateMediaType(&type), "media type");
     check(type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio), "major type");
     check(type->SetGUID(MF_MT_SUBTYPE, subtype), "subtype");
-    check(type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2), "channels");
+    check(type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, channels), "channels");
     check(type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, rate), "sample rate");
     check(type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, bits), "sample width");
     return type;
@@ -193,7 +193,11 @@ AacTrack encodeAac(const std::filesystem::path &wav, const std::filesystem::path
                                  "Stems export unavailable on this codec version");
     return track;
 }
-static void decodeNative(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
+static void decodeNativePcm(const AacTrack &track, const std::filesystem::path &wav, const AacPcmSink &sink, CodecCheckpoint call) {
+    if (!sink) throw std::invalid_argument("AAC PCM sink is empty");
+    const auto info=aacConfig(track.config);
+    if(info.sampleRate!=track.sampleRate)throw std::invalid_argument("AAC decode config mismatch");
+    const auto channels=info.channels;const auto frameBytes=static_cast<DWORD>(channels)*4;
     Runtime runtime;
     auto path = wav;
     path += L".m4a";
@@ -204,7 +208,7 @@ static void decodeNative(const AacTrack &track, const std::filesystem::path &wav
             std::filesystem::remove(path, ec);
         }
     } cleanup{path};
-    writeAacMovie(path, std::span<const AacTrack>(&track, 1));
+    writeAacAudioMovie(path,track,call);
     ComPtr<IMFSourceReader> reader;
     check(MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader), "source reader");
     // MSVC /WX: the MF_SOURCE_READER_* stream ids are an enum, and passing one as the DWORD
@@ -213,10 +217,9 @@ static void decodeNative(const AacTrack &track, const std::filesystem::path &wav
     constexpr DWORD audioStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM);
     check(reader->SetStreamSelection(allStreams, FALSE), "deselect");
     check(reader->SetStreamSelection(audioStream, TRUE), "select");
-    auto type = mediaType(MFAudioFormat_Float, track.sampleRate, 32);
+    auto type = mediaType(MFAudioFormat_Float, track.sampleRate, 32,channels);
     check(reader->SetCurrentMediaType(audioStream, nullptr, type.Get()),
           "decode format");
-    WavWriter writer(wav, track.sampleRate, 2, WavFormat::Float32);
     std::uint64_t done = 0;
     for (;;) {
         tick(call);
@@ -237,22 +240,22 @@ static void decodeNative(const AacTrack &track, const std::filesystem::path &wav
             BYTE *bytes = nullptr;
             DWORD length = 0;
             check(buffer->Lock(&bytes, nullptr, &length), "PCM lock");
-            if (length % 8) {
+            if (length % frameBytes) {
                 buffer->Unlock();
                 throw std::runtime_error("unaligned AAC PCM");
             }
             const auto count = static_cast<std::uint32_t>(
-                (std::min)(static_cast<std::uint64_t>(length / 8), track.frames - done));
+                (std::min)(static_cast<std::uint64_t>(length / frameBytes), track.frames - done));
             try {
                 if (count) {
                     if (count > 65536)
                         throw std::runtime_error("AAC PCM block exceeds bound");
-                    std::vector<float> aligned(static_cast<std::size_t>(count) * 2);
-                    std::memcpy(aligned.data(), bytes, static_cast<std::size_t>(count) * 8);
+                    std::vector<float> aligned(static_cast<std::size_t>(count) * channels);
+                    std::memcpy(aligned.data(), bytes, static_cast<std::size_t>(count) * frameBytes);
                     for (const auto value : aligned)
                         if (!std::isfinite(value))
                             throw std::runtime_error("nonfinite native AAC decode");
-                    writer.write(aligned.data(), count);
+                    sink(aligned);
                 }
             } catch (...) {
                 buffer->Unlock();
@@ -266,7 +269,16 @@ static void decodeNative(const AacTrack &track, const std::filesystem::path &wav
     }
     if (done != track.frames)
         throw std::runtime_error("Media Foundation did not honor AAC edit-list duration");
+}
+static void decodeNative(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
+    const auto channels=aacConfig(track.config).channels;
+    WavWriter writer(wav,track.sampleRate,channels,WavFormat::Float32);
+    decodeNativePcm(track,wav,[&](std::span<const float> pcm) { writer.write(pcm.data(),static_cast<std::uint32_t>(pcm.size()/channels)); },std::move(call));
     writer.close();
+}
+void decodeAacPcm(const AacTrack &track, const std::filesystem::path &scratch, const AacPcmSink &sink, CodecCheckpoint call) {
+    if (!aacCodecAvailable()) throw std::runtime_error("Media Foundation AAC cannot verify sample-exact priming/duration on this codec version");
+    decodeNativePcm(track,scratch,sink,std::move(call));
 }
 void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
     if (!aacCodecAvailable())

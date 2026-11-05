@@ -42,15 +42,15 @@ struct File {
         check(ExtAudioFileDispose(f), "close");
     }
 };
-AudioStreamBasicDescription pcm(std::uint32_t rate) {
+AudioStreamBasicDescription pcm(std::uint32_t rate,std::uint32_t channels=2) {
     AudioStreamBasicDescription f{};
     f.mSampleRate = rate;
     f.mFormatID = kAudioFormatLinearPCM;
     f.mFormatFlags = kAudioFormatFlagsNativeFloatPacked;
-    f.mBytesPerPacket = 8;
+    f.mBytesPerPacket = channels*4;
     f.mFramesPerPacket = 1;
-    f.mBytesPerFrame = 8;
-    f.mChannelsPerFrame = 2;
+    f.mBytesPerFrame = channels*4;
+    f.mChannelsPerFrame = channels;
     f.mBitsPerChannel = 32;
     return f;
 }
@@ -139,7 +139,11 @@ AacTrack encodeAac(const std::filesystem::path &wav, const std::filesystem::path
     track.frames = valid;
     return track;
 }
-void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
+void decodeAacPcm(const AacTrack &track, const std::filesystem::path &wav, const AacPcmSink &sink, CodecCheckpoint call) {
+    if (!sink) throw std::invalid_argument("AAC PCM sink is empty");
+    const auto info=aacConfig(track.config);
+    if(info.sampleRate!=track.sampleRate)throw std::invalid_argument("AAC decode config mismatch");
+    const auto channels=info.channels;
     auto source = wav;
     source += ".m4a";
     struct Cleanup {
@@ -149,7 +153,7 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
             std::filesystem::remove(path, ec);
         }
     } cleanup{source};
-    writeAacMovie(source, std::span<const AacTrack>(&track, 1));
+    writeAacAudioMovie(source,track,call);
     Url url(source);
     File file;
     check(ExtAudioFileOpenURL(url.value, &file.value), "open");
@@ -163,7 +167,7 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
     table.mRemainderFrames = static_cast<SInt32>(track.packets.size() * 1024 - track.priming - track.frames);
     check(ExtAudioFileSetProperty(file.value, kExtAudioFileProperty_PacketTable, sizeof(table), &table),
           "packet table");
-    auto client = pcm(track.sampleRate);
+    auto client = pcm(track.sampleRate,channels);
     check(
         ExtAudioFileSetProperty(file.value, kExtAudioFileProperty_ClientDataFormat, sizeof(client), &client),
         "decode format");
@@ -174,7 +178,6 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
     if (applied.mNumberValidFrames != table.mNumberValidFrames ||
         applied.mPrimingFrames != table.mPrimingFrames || applied.mRemainderFrames != table.mRemainderFrames)
         throw std::runtime_error("CoreAudio did not honor AAC edit-list duration");
-    WavWriter writer(wav, track.sampleRate, 2, WavFormat::Float32);
     std::array<float, 8192> samples{};
     std::uint64_t done = 0;
     while (done < track.frames) {
@@ -182,14 +185,14 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
         UInt32 count = static_cast<UInt32>((std::min)(track.frames - done, std::uint64_t{4096}));
         AudioBufferList buffers{};
         buffers.mNumberBuffers = 1;
-        buffers.mBuffers[0] = {2, count * 8, samples.data()};
+        buffers.mBuffers[0] = {channels, count * channels * 4, samples.data()};
         check(ExtAudioFileRead(file.value, &count, &buffers), "decode");
         if (!count)
             throw std::runtime_error("CoreAudio AAC decode ended early");
-        for (std::size_t i = 0; i < static_cast<std::size_t>(count) * 2; ++i)
+        for (std::size_t i = 0; i < static_cast<std::size_t>(count) * channels; ++i)
             if (!std::isfinite(samples[i]))
                 throw std::runtime_error("nonfinite native AAC decode");
-        writer.write(samples.data(), count);
+        sink(std::span(samples.data(), static_cast<std::size_t>(count) * channels));
         done += count;
     }
     // The decode must also end exactly at the track's duration.
@@ -201,6 +204,11 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
     if (extra)
         throw std::runtime_error("CoreAudio did not honor AAC edit-list duration");
     file.close();
+}
+void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
+    const auto channels=aacConfig(track.config).channels;
+    WavWriter writer(wav,track.sampleRate,channels,WavFormat::Float32);
+    decodeAacPcm(track,wav,[&](std::span<const float> pcm) { writer.write(pcm.data(),static_cast<std::uint32_t>(pcm.size()/channels)); },std::move(call));
     writer.close();
 }
 } // namespace adi::audio

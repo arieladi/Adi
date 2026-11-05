@@ -5,6 +5,7 @@
 #include "adi/clip_commands.hpp"
 #include "adi/history.hpp"
 #include "adi/audio/decode.hpp"
+#include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/store.hpp"
@@ -451,7 +452,13 @@ void decodedPins() {
                            "INSERT INTO clips(id,track_id,kind,time_base,pos_ns,length_ns) VALUES(1,1,'audio',1,0,100000000);"
                            "INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(1,2,0,4800)");
         f.load(512);
-        check(pins()==1,"a decoded clip pins its cache copy while it plays");
+        // Loading no longer waits for complete compressed conversion. The
+        // private prefix has no LRU entry; assert this pin after publication.
+        auto decoded=audio::defaultProgressiveDecoder().open(f.dir.path()/"tone.flac");
+        const auto until=std::chrono::steady_clock::now()+std::chrono::seconds(10);
+        while(decoded->snapshot().status==audio::ProgressiveStatus::Pending && std::chrono::steady_clock::now()<until)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        check(decoded->snapshot().status==audio::ProgressiveStatus::Complete && pins()==1,"a completed decoded clip pins its cache copy while it plays");
         for(int i=0;i<5;++i) {
             f.store->db().exec("UPDATE clips SET gain_db=gain_db-1");
             if(!f.session.refresh(*f.store))throw std::runtime_error(f.session.error());

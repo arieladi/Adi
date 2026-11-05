@@ -3,6 +3,7 @@
 #include "adi/ops.hpp"
 #include <filesystem>
 #include <optional>
+#include <stop_token>
 namespace adi::audio { class DecodeCache; }
 namespace adi::media {
 struct AudioInfo {
@@ -23,6 +24,13 @@ struct MediaResult {
 // Non-audio files retain nullable audio metadata. Known corrupt audio fails.
 MediaResult prepareImport(Store&, const std::filesystem::path&, std::int64_t id,
                           std::int64_t importedUtc, OpRequest&, audio::DecodeCache* = nullptr);
+MediaResult prepareImport(Store&, const std::filesystem::path&, std::int64_t id,
+                          std::int64_t importedUtc, OpRequest&, audio::DecodeCache*,std::stop_token);
+// Header-only import for the normal unwarped material command. Exact container
+// dimensions are captured without validating the whole PCM payload; a later
+// decode error is surfaced by playback. Unknown lengths use full validation.
+MediaResult prepareImport(Store&, const std::filesystem::path&, std::int64_t id,
+                          std::int64_t importedUtc, OpRequest&, audio::DecodeCache*,std::stop_token,bool headerOnly);
 MediaResult importMedia(Store&, const std::filesystem::path&, std::int64_t id,
                         std::int64_t importedUtc, Actor actor = Actor::User);
 MediaResult relinkMedia(Store&, std::int64_t id, const std::filesystem::path&,
