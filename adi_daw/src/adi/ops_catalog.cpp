@@ -24,6 +24,7 @@
 #include "adi/controller_lanes.hpp"
 #include "adi/note_flags_ops.hpp"
 #include "adi/builtin_catalog.hpp"
+#include "adi/midi_capture.hpp"
 #include "adi/controller_maps.hpp"
 #include "adi/freeze_groups.hpp"
 #include "adi/freeze_state.hpp"
@@ -2169,6 +2170,8 @@ std::span<const OpDescriptor> builtinOps() {
         v.insert(v.end(), noteOps.begin(), noteOps.end());
         const auto controllerOps = controllers::laneOps();
         v.insert(v.end(), controllerOps.begin(), controllerOps.end());
+        const auto captureOps = capture::midiOps();
+        v.insert(v.end(), captureOps.begin(), captureOps.end());
         appendScalars(v, std::make_index_sequence<kScalarCount>{});
         const auto split=splitPanOps();v.insert(v.end(),split.begin(),split.end());
         const auto editing=clipEditOps();v.insert(v.end(),editing.begin(),editing.end());
