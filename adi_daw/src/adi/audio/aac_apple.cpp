@@ -111,14 +111,32 @@ AacTrack encodeAac(const std::filesystem::path &wav, const std::filesystem::path
     check(AudioConverterGetProperty(converter, kAudioConverterPrimeInfo, &size, &prime), "priming");
     file.close();
     tick(call);
+    // CoreAudio's M4A writer records priming, valid and remainder frames as iTunSMPB
+    // metadata, not as an edit list (measured on macOS 26), and reports them as the
+    // file's packet table. Packets and config still come from the container.
+    AudioFilePacketTableInfo table{};
+    {
+        File written;
+        check(ExtAudioFileOpenURL(url.value, &written.value), "reopen");
+        size = sizeof(table);
+        check(ExtAudioFileGetProperty(written.value, kExtAudioFileProperty_PacketTable, &size, &table),
+              "packet table");
+    }
     auto movie = readAacMovie(path);
     if (movie.tracks.size() != 1)
         throw std::runtime_error("CoreAudio returned multiple AAC tracks");
     auto track = std::move(movie.tracks[0]);
-    if (track.priming != prime.leadingFrames)
+    const auto priming = static_cast<std::uint64_t>(table.mPrimingFrames);
+    const auto valid = static_cast<std::uint64_t>(table.mNumberValidFrames);
+    if (table.mPrimingFrames < 0 || table.mRemainderFrames < 0 || table.mNumberValidFrames < 0 ||
+        priming + valid + static_cast<std::uint64_t>(table.mRemainderFrames) != track.packets.size() * 1024)
+        throw std::runtime_error("CoreAudio AAC packet table does not match its packets");
+    if (priming != prime.leadingFrames)
         throw std::runtime_error("CoreAudio container/encoder priming mismatch");
-    if (track.frames != reader.frames())
+    if (valid != reader.frames())
         throw std::runtime_error("CoreAudio AAC container lost sample-exact duration");
+    track.priming = priming;
+    track.frames = valid;
     return track;
 }
 void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecCheckpoint call) {
@@ -135,15 +153,26 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
     Url url(source);
     File file;
     check(ExtAudioFileOpenURL(url.value, &file.value), "open");
+    // CoreAudio's MP4 reader ignores edit lists, version 0 or 1 (measured on macOS 26:
+    // without iTunSMPB it assumes its own encoder's 2112-frame priming and no
+    // remainder), so apply the track's priming and duration explicitly.
+    // writeAacMovie bounded both by the packets and left a remainder below one packet.
+    AudioFilePacketTableInfo table{};
+    table.mNumberValidFrames = static_cast<SInt64>(track.frames);
+    table.mPrimingFrames = static_cast<SInt32>(track.priming);
+    table.mRemainderFrames = static_cast<SInt32>(track.packets.size() * 1024 - track.priming - track.frames);
+    check(ExtAudioFileSetProperty(file.value, kExtAudioFileProperty_PacketTable, sizeof(table), &table),
+          "packet table");
     auto client = pcm(track.sampleRate);
     check(
         ExtAudioFileSetProperty(file.value, kExtAudioFileProperty_ClientDataFormat, sizeof(client), &client),
         "decode format");
-    SInt64 frames = 0;
-    UInt32 size = sizeof(frames);
-    check(ExtAudioFileGetProperty(file.value, kExtAudioFileProperty_FileLengthFrames, &size, &frames),
+    AudioFilePacketTableInfo applied{};
+    UInt32 size = sizeof(applied);
+    check(ExtAudioFileGetProperty(file.value, kExtAudioFileProperty_PacketTable, &size, &applied),
           "decoded length");
-    if (frames < 0 || static_cast<std::uint64_t>(frames) != track.frames)
+    if (applied.mNumberValidFrames != table.mNumberValidFrames ||
+        applied.mPrimingFrames != table.mPrimingFrames || applied.mRemainderFrames != table.mRemainderFrames)
         throw std::runtime_error("CoreAudio did not honor AAC edit-list duration");
     WavWriter writer(wav, track.sampleRate, 2, WavFormat::Float32);
     std::array<float, 8192> samples{};
@@ -163,6 +192,14 @@ void decodeAac(const AacTrack &track, const std::filesystem::path &wav, CodecChe
         writer.write(samples.data(), count);
         done += count;
     }
+    // The decode must also end exactly at the track's duration.
+    UInt32 extra = 4096;
+    AudioBufferList buffers{};
+    buffers.mNumberBuffers = 1;
+    buffers.mBuffers[0] = {2, extra * 8, samples.data()};
+    check(ExtAudioFileRead(file.value, &extra, &buffers), "decode");
+    if (extra)
+        throw std::runtime_error("CoreAudio did not honor AAC edit-list duration");
     file.close();
     writer.close();
 }
