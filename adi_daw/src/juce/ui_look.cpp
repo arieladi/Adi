@@ -143,6 +143,10 @@ void LiveLook::drawLinearSlider(juce::Graphics &g, int x, int y, int w, int h, f
     if (style == juce::Slider::LinearBar || style == juce::Slider::LinearBarVertical) {
         // Live's value box: light, filled in blue up to the value.
         box(g, r.reduced(0.5f), chooser);
+        // A value field dragged up or down (the Track Delay's, manual 18.7): the number alone in
+        // the box, as Live's figure shows it; JUCE's vertical bar gives it Live's drag axis.
+        if (s.getProperties()["live.valueField"])
+            return;
         g.setColour(value);
         const auto inner = r.reduced(1.f);
         if (style == juce::Slider::LinearBarVertical)

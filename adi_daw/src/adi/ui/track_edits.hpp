@@ -3,6 +3,7 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -414,6 +415,39 @@ inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std:
         stay.erase(std::remove_if(stay.begin(), stay.end(), moving), stay.end());
         renumber(edit.ops, stay, label);
     }
+    return edit;
+}
+// Live's Track Delay (manual 18.7): a track's output delayed, or pre-delayed by a negative value, in
+// milliseconds. The format keeps samples at the project's rate (`TrackNode::delaySamples`,
+// `Snapshot::sampleRate`; ADR-0172): the window writes ms × rate / 1000, to the nearest sample, and
+// reads back 1000 × samples / rate, so a typed value shows what the sample grid kept.
+inline double trackDelayMs(std::int64_t samples, int sampleRate) noexcept {
+    return sampleRate > 0 ? 1000. * static_cast<double>(samples) / sampleRate : 0.;
+}
+inline std::int64_t trackDelaySamples(double ms, int sampleRate) noexcept {
+    return std::llround(ms * sampleRate / 1000.);
+}
+// One `mixer.setDelay` on track `id`, one undo step; no ops when the sample grid would keep the
+// delay it has. Main's is shown and written as every track's (Master Reference 8.1).
+inline TrackEdit setTrackDelay(const SnapshotTracks &tracks, int sampleRate, std::int64_t id, double ms) {
+    TrackEdit edit;
+    const auto *t = track_edits_detail::find(tracks, id);
+    if (t == nullptr) {
+        edit.refusal = "Select a track to delay.";
+        return edit;
+    }
+    if (!std::isfinite(ms)) {
+        edit.refusal = "Track Delay takes a number of milliseconds.";
+        return edit;
+    }
+    if (sampleRate <= 0) {
+        edit.refusal = "The project has no sample rate to count the delay in.";
+        return edit;
+    }
+    const auto samples = trackDelaySamples(ms, sampleRate);
+    if (samples != t->delaySamples)
+        edit.ops.push_back(
+            track_edits_detail::op("mixer.setDelay", {{"id", id}, {"samples", samples}}, "Change Track Delay"));
     return edit;
 }
 // A group's tracks back where the group stood, in their order, and the group removed; the first

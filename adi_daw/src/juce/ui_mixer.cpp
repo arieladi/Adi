@@ -4,6 +4,7 @@
 #include "adi/engine/mixer.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/ui/track_edits.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -183,6 +184,39 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             panel_.submit("mixer.setPan", {{"id", track_}, {"pan", pan.getValue()}},
                           "Change Track Panning");
     };
+    // Live's Track Delay (manual 18.7): a value box reading the delay in ms to two places, Live's
+    // "ms" box beside it (paintDelayUnit); a negative value pre-delays. Hidden until Live's Track
+    // Options shows it (resized). Dragged up or down, as Live's value fields are (manual 6.3, the
+    // Arrangement Position fields; 7.1, the scene fields): JUCE's vertical bar, drawn as the number
+    // alone (LiveLook, `live.valueField`), a pixel 0.1 ms, PROVISIONAL until Live's step is
+    // measured (M1-06). Its travel is the engine's playable second either way (ADR-0172,
+    // `StripNode::kMaxDelaySeconds`); Live's own range is to be measured.
+    delay.setSliderStyle(juce::Slider::LinearBarVertical);
+    delay.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
+    delay.setSliderSnapsToMousePosition(false);
+    delay.setColour(juce::Slider::textBoxTextColourId, look::text);
+    delay.getProperties().set("live.valueField", true);
+    delay.setRange(-1000, 1000, .01);
+    delay.setMouseDragSensitivity(kDelayDragPixels);
+    delay.textFromValueFunction = [](double v) { return juce::String(v, 2); };
+    // Typed with or without its unit: "10", "10 ms", "-2.5ms".
+    delay.valueFromTextFunction = [](const juce::String &text) {
+        return text.trim().upToFirstOccurrenceOf("ms", false, true).trim().getDoubleValue();
+    };
+    delay.updateText();
+    delay.setTitle("Track Delay");
+    delay.setTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
+    delay.setScrollWheelEnabled(false);
+    delay.onDragStart = [this] { dragging_ = true; };
+    delay.onDragEnd = [this] {
+        dragging_ = false;
+        commitDelay();
+    };
+    delay.onValueChange = [this] {
+        if (!dragging_)
+            commitDelay();
+    };
+    addChildComponent(delay);
     active.setTitle("Track Activator");
     active.setTooltip("Turns the track's output on or off.");
     solo.setTitle("Solo");
@@ -296,6 +330,8 @@ void MixerStrip::frame(bool changed) noexcept {
         volume.setValue(std::max(kFloorDb, static_cast<double>(t->volumeDb)),
                         juce::dontSendNotification);
         pan.setValue(t->pan, juce::dontSendNotification);
+        // The delay as the sample grid keeps it, in ms at the project's rate (manual 18.7).
+        delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
         solo.setToggleState(t->soloed, juce::dontSendNotification);
         // A group holding a soloed track shows its Solo half coloured (Live 12 manual 18.3). The
@@ -377,9 +413,17 @@ void MixerStrip::resized() {
         // Live 12's In/Out section under ADI's slots, when the Mixer Controls show it and the strip
         // has room for it and the mixer; then as many rows of sends as leave the mixer its room.
         io_ = panel_.root.state().mixerInOut && getHeight() - kMixerTop - kInOutHeight >= kMixerRoom ? kInOutHeight : 0;
+        // Live's Track Delay section under the mixer (manual 18.7), when the Mixer Controls' Track
+        // Options shows it and the strip keeps the mixer its room; then the sends.
+        delay_ = panel_.root.state().mixerTrackOptions && getHeight() - kMixerTop - io_ - kDelayHeight >= kMixerRoom
+                     ? kDelayHeight
+                     : 0;
         shown_ = showsSends() ? returnCount_ : 0;
-        while (shown_ > 0 && getHeight() - sendsTop() - sendsHeight(shown_) < kMixerRoom)
+        while (shown_ > 0 && mixerBottom() - sendsTop() - sendsHeight(shown_) < kMixerRoom)
             --shown_;
+        // Live's figure: the box across the strip, the "ms" box at its right edge.
+        delay.setVisible(delay_ > 0);
+        delay.setBounds(4, mixerBottom() + 19, getWidth() - 32, 13);
         for (std::size_t i = 0; i < sends_.size(); ++i) {
             sends_[i]->setVisible(i < shown_);
             sends_[i]->setBounds(sendBounds(i));
@@ -399,7 +443,7 @@ void MixerStrip::resized() {
         volume.setVisible(audio_);
         pan.setVisible(audio_);
         peakHold.setVisible(audio_);
-        const int top = mixerTop(), bottom = getHeight();
+        const int top = mixerTop(), bottom = mixerBottom();
         eq.setBounds(4, 22, 29, 13);
         limiter.setBounds(37, 22, 29, 13);
         peakHold.setBounds(11, top + 5, 35, 12);
@@ -465,6 +509,11 @@ void MixerStrip::resized() {
     const int slots = (audio_ ? 2 : 1) + (sends ? sendRows() : 0);
     place(eq, slots, {x + 4, 3 + 17 * slots, 29, 13});
     place(limiter, slots, {x + 37, 3 + 17 * slots, 29, 13});
+    // Live's Track Delay on the row after the slots, with its "ms" box (paintDelayUnit), while the
+    // track controls' Track Options shows it (the D selector).
+    place(delay, slots + 1, {x + 4, 3 + 17 * (slots + 1), 45, 13});
+    if (!panel_.root.state().trackOptions)
+        delay.setVisible(false);
 }
 juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     // Live's Mixer View sends: A on the left, B to its right and lower, C under A, each 22 pt under
@@ -475,7 +524,7 @@ juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
 juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     // Under a tall strip's numeric field, the meter stops short of the foot.
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
-    return {53, mixerTop() + 6, 11, std::max(0, getHeight() - mixerTop() - 10 - (tall ? 15 : 0))};
+    return {53, mixerTop() + 6, 11, std::max(0, mixerBottom() - mixerTop() - 10 - (tall ? 15 : 0))};
 }
 bool MixerStrip::showsSends() const noexcept {
     // The Mixer View's own Sends (Live 12's Mixer Controls), apart from the track controls'.
@@ -517,6 +566,21 @@ void MixerStrip::paint(juce::Graphics &g) {
                            b.getBottom() - 9, b.getWidth(), 12, juce::Justification::centred);
             }
         }
+        if (delay_ > 0) {
+            // Live's Track Delay section under the mixer (manual 18.7, its figure): a band darker
+            // than the mixer above it, across every strip, a rule over it; its title, the value box
+            // across the strip with the lit "ms" box at its right. The band's shade is the figure's,
+            // not measured (LK-03).
+            const int top = mixerBottom();
+            g.setColour(look::frame);
+            g.fillRect(0, top, w, delay_);
+            g.setColour(look::separator);
+            g.fillRect(0, top, w, 2);
+            g.setColour(look::text);
+            g.setFont(look::font(11.5f, true));
+            g.drawText("Track Delay", 5, top + 4, w - 10, 13, juce::Justification::centredLeft);
+            paintDelayUnit(g);
+        }
         if (position_ > 0) {
             g.setColour(panel_.root.arrangement.colourFor(position_ - 1));
             g.fillRect(0, 0, w, 17);
@@ -550,10 +614,38 @@ void MixerStrip::paint(juce::Graphics &g) {
         g.fillRect(x - 1, 0, 1, getHeight());
         paintInOut(g, 2);
     }
+    if (delay.isVisible())
+        paintDelayUnit(g);
     if (audio_)
         paintMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
     else
         paintMidiMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+}
+void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
+    // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
+    const auto b = delay.getBounds();
+    const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
+    look::box(g, r, look::accent);
+    g.setColour(look::text);
+    g.setFont(look::font(11.5f));
+    g.drawText("ms", r, juce::Justification::centred);
+}
+void MixerStrip::commitDelay() {
+    // From the CURRENT cell, as every action is (ADR-0201): ms into samples at the project's rate,
+    // one op, one undo step. The box then shows what the sample grid kept; a refusal puts it back
+    // to the track's delay and the Status Bar says why.
+    const auto current = panel_.root.current();
+    if (!current)
+        return;
+    auto edit = setTrackDelay(current->tracks, current->sampleRate, track_, delay.getValue());
+    if (!edit.refusal.empty() || edit.ops.empty()) {
+        if (const auto *t = current->findTrack(track_))
+            delay.setValue(trackDelayMs(t->delaySamples, current->sampleRate), juce::dontSendNotification);
+        if (!edit.refusal.empty())
+            panel_.root.say(edit.refusal);
+        return;
+    }
+    panel_.root.submitEdits(std::move(edit.ops));
 }
 void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
     // Live's MIDI meter: a column of dots down the meter's place that light while notes play (Live 12
@@ -1229,9 +1321,9 @@ SideStrip::SideStrip() {
     inOut.setToggleState(true, juce::dontSendNotification);
     returns.setToggleState(true, juce::dontSendNotification);
     mixer.setToggleState(true, juce::dontSendNotification);
-    // Mixer and Delay only show their state: neither has a toggle to switch yet.
+    // Mixer only shows its state: the track controls' mixer has no toggle to switch. Delay is off
+    // until Track Options shows the Track Delay (Live's default Set hides it).
     mixer.setInterceptsMouseClicks(false, false);
-    delay.setInterceptsMouseClicks(false, false);
 }
 void SideStrip::resized() {
     // Under the two view switches: the flip arrows, then the track height. At the foot, over the

@@ -73,6 +73,14 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // refresh, and when the panel is asked to (MixerPanel::resolveMeters).
     void resolveMeter();
     juce::Slider volume, pan;
+    // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
+    // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
+    // the row under ADI's slots in the track controls, and as the section under the mixer in the
+    // Mixer View.
+    juce::Slider delay;
+    // The drag's travel: the box's 2000 ms over this many pixels, 0.1 ms a pixel (PROVISIONAL,
+    // Live's step is M1-06).
+    static constexpr int kDelayDragPixels = 20000;
     juce::TextButton active, eq{"Q"}, limiter{"L"};
     SoloButton solo{"S"};
     ArmButton arm;
@@ -114,6 +122,13 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // and the strip has room for it and the mixer. It stands under the slots, over the sends.
     bool showsMixerInOut() const noexcept { return io_ > 0; }
     static constexpr int kInOutHeight = 120;
+    // Whether the Mixer View strip shows Live's Track Delay section under its mixer: when the Mixer
+    // Controls' Track Options shows it and the strip has room for it and the mixer.
+    bool showsTrackDelay() const noexcept { return delay_ > 0; }
+    static constexpr int kDelayHeight = 36;
+    // Commits the track's delay at the box's value, in ms, as one undo step: what a drag's end and
+    // a typed value do. The project's rate turns it into samples (`setTrackDelay`).
+    void commitDelay();
     // Commits the send at `index` at its knob's value, as one undo step; a new send writes its
     // row first. What a knob's drag and a typed value do.
     void commitSend(std::size_t index);
@@ -130,6 +145,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void paintInOut(juce::Graphics &, int x) const;
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
     void paintMixerInOut(juce::Graphics &) const;
+    // Live's "ms" unit box beside the Track Delay's value box, lit as Live's.
+    void paintDelayUnit(juce::Graphics &) const;
     // The Mixer View strip's meter, under its fader.
     juce::Rectangle<int> meterArea() const noexcept;
     void panMenu();
@@ -157,6 +174,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     static constexpr int kMixerRoom = 110;
     int sendsTop() const noexcept { return kMixerTop + io_; }
     int mixerTop() const noexcept { return sendsTop() + sendsHeight(shown_); }
+    // Where the Mixer View strip's mixer ends: at the Track Delay section when it shows, else the foot.
+    int mixerBottom() const noexcept { return getHeight() - delay_; }
     std::vector<std::unique_ptr<juce::Slider>> sends_;
     std::vector<std::unique_ptr<juce::TextButton>> returnSwitches_;
     std::string kind_;
@@ -172,6 +191,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     std::vector<char> sendOn_;
     std::size_t shown_ = 0, returnCount_ = 0;
     int io_ = 0; // the In/Out section's height in the Mixer View, 0 while it is hidden
+    int delay_ = 0; // the Track Delay section's height in the Mixer View, 0 while it is hidden
     std::size_t position_ = 0; // the track's place, 1-based: what the activator shows
     std::size_t group_ = 0;    // its group's place, 1-based; 0 at the top
     bool dragging_ = false, selected_ = false;
@@ -274,8 +294,8 @@ class SelectorButton final : public juce::Button {
 // between Arrangement and Session View at its head, the flip arrows and the track height
 // under them, the In/Out, Returns, Mixer and Delay selectors at its foot. Flipped, it moves to
 // the window's left edge, so the track controls meet the lanes (the director, 28 October 2026).
-// In/Out and Returns switch their View menu toggles; Mixer stays lit, and Delay unlit until
-// Track Delay is built (window log, N22).
+// In/Out, Returns and Delay switch their View menu toggles (Delay the track controls' Track Options,
+// Live's Track Delay); Mixer stays lit, as the track controls' mixer has no toggle.
 class SideStrip final : public juce::Component {
   public:
     SideStrip();
@@ -285,7 +305,8 @@ class SideStrip final : public juce::Component {
     TrackHeightButton tracks;
     SelectorButton inOut{"I-O", "In/Out: show or hide the track controls' In/Out (Ctrl/Cmd+Alt+I)."},
         returns{"R", "Return Tracks: show or hide the return tracks (Ctrl/Cmd+Alt+R)."},
-        mixer{"M", "Mixer: the track controls' mixer."}, delay{"D", "Track Delay: not built yet."};
+        mixer{"M", "Mixer: the track controls' mixer."},
+        delay{"D", "Track Delay: show or hide the track controls' Track Delay (Live's Track Options)."};
 };
 // The Mixer View's top edge: drag it up for taller strips.
 class MixerViewResizer final : public juce::Component {

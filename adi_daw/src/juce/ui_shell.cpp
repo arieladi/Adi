@@ -125,7 +125,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Activate/Deactivate Track 4", "Activate/Deactivate Track 5",
                                   "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
                                   "Activate/Deactivate Track 8", "Mixer Sends",
-                                  "Insert Time Signature Change", "Solo in Place"};
+                                  "Insert Time Signature Change", "Solo in Place",
+                                  "Track Options", "Mixer Track Options"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -303,6 +304,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleMixerSends: // Live 12's Mixer Controls Sends: the Mixer View's own; Ctrl/Cmd+Alt+S is the track controls'
         info.setTicked(active_ != nullptr && active_->state().mixerSends);
+        break;
+    case ToggleTrackOptions: // Live's Track Options (manual 18.7): the track controls' Track Delay; no key
+        info.setTicked(active_ != nullptr && active_->state().trackOptions);
+        break;
+    case ToggleMixerTrackOptions: // Live 12's Mixer Controls Track Options: the Mixer View's own Track Delay
+        info.setTicked(active_ != nullptr && active_->state().mixerTrackOptions);
         break;
     case SoloSelected: // §42.19: Solo Selected Tracks, S
         info.addDefaultKeypress('s', 0);
@@ -562,6 +569,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
     // Live's selectors at the strip's foot repeat the View menu's toggles (manual 18.1).
     strip.inOut.onClick = [this] { command(AppCommands::ToggleInOut); };
     strip.returns.onClick = [this] { command(AppCommands::ToggleReturnTracks); };
+    strip.delay.onClick = [this] { command(AppCommands::ToggleTrackOptions); };
     // The Overview spans the track headers too, as Live's (ui_arrangement.hpp).
     addAndMakeVisible(arrangement.overview);
     addChildComponent(mixerView);
@@ -831,6 +839,7 @@ void AdiRootComponent::resized() {
     strip.tracks.setToggleState(state_.largeTracks, juce::dontSendNotification);
     strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
     strip.returns.setToggleState(!state_.hideReturns, juce::dontSendNotification);
+    strip.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
     arrangement.setBounds(centreX, top, centreW, mid - mixerViewArea_.getHeight());
     // The Mix View, docked (ADR-0209, UI-ARCHITECTURE §12): in place of the arrangement, its Mixer
     // View and its track controls, which a lane-less view has no use for. The browser, the strip
@@ -943,16 +952,20 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
-juce::PopupMenu AdiRootComponent::mixerOptionsMenu() {
+juce::PopupMenu AdiRootComponent::mixerOptionsMenu(bool viewMenu) {
     // Live 12's order (manual 18.1, the Mixer View Control's options menu). Volume always shows in
-    // ADI; Track Options waits on Track Delay (N22), the crossfader and Performance Impact on the
-    // engine.
+    // ADI; Track Options is the Mixer View's Track Delay section (manual 18.7); the crossfader and
+    // Performance Impact wait on the engine. The View menu's Mixer Controls submenu (manual 6.1,
+    // its figure) draws a separator after Volume too; the Mixer View Control's own menu (18.1, its
+    // figure) only the one before Return Tracks.
     commands_.activate(*this);
     juce::PopupMenu menu;
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerInOut, "In/Out");
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerSends, "Sends");
     menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
-    menu.addItem(juce::PopupMenu::Item("Track Options").setEnabled(false));
+    if (viewMenu)
+        menu.addSeparator();
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerTrackOptions, "Track Options");
     menu.addItem(juce::PopupMenu::Item("Crossfader").setEnabled(false));
     menu.addItem(juce::PopupMenu::Item("Performance Impact").setEnabled(false));
     menu.addSeparator();
@@ -961,10 +974,11 @@ juce::PopupMenu AdiRootComponent::mixerOptionsMenu() {
 }
 juce::PopupMenu AdiRootComponent::trackControlsMenu() {
     // Live 12's Arrangement Track Controls submenu (the View menu; manual 6.1: "You can customize
-    // which controls are shown"; 18.6: Track Options holds Track Delay): the track controls' In/Out
-    // and Sends, with their keys. Volume always shows in ADI; Track Options waits on Track Delay
-    // (N22). Live's full list is to be measured. First, ADI's side panel of track controls, shown or
-    // hidden whole, which the View menu held as "Arrangement Track Controls" before the submenu.
+    // which controls are shown"; 18.7: Track Options holds Track Delay): the track controls' In/Out
+    // and Sends, with their keys. Volume always shows in ADI; Track Options is the rows' Track Delay
+    // box, the D selector's (Live 11's). Live 12's full list is to be measured: its 6.1 says track
+    // delays are the mixer's only. First, ADI's side panel of track controls, shown or hidden whole,
+    // which the View menu held as "Arrangement Track Controls" before the submenu.
     commands_.activate(*this);
     juce::PopupMenu menu;
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixer, "Hide/Show Track Controls");
@@ -972,7 +986,7 @@ juce::PopupMenu AdiRootComponent::trackControlsMenu() {
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleInOut);
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleSends);
     menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
-    menu.addItem(juce::PopupMenu::Item("Track Options").setEnabled(false));
+    menu.addCommandItem(&commands_.manager, AppCommands::ToggleTrackOptions);
     return menu;
 }
 void AdiRootComponent::setMixProvider(const MixViewProvider &provider) {
@@ -1702,11 +1716,15 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::ToggleInOut:
     case AppCommands::ToggleSends:
     case AppCommands::ToggleMixerInOut:
-    case AppCommands::ToggleMixerSends: {
+    case AppCommands::ToggleMixerSends:
+    case AppCommands::ToggleTrackOptions:
+    case AppCommands::ToggleMixerTrackOptions: {
         auto &shown = id == AppCommands::ToggleOverview  ? state_.overview
                       : id == AppCommands::ToggleInOut   ? state_.inOut
                       : id == AppCommands::ToggleSends   ? state_.sends
                       : id == AppCommands::ToggleMixerSends ? state_.mixerSends
+                      : id == AppCommands::ToggleTrackOptions ? state_.trackOptions
+                      : id == AppCommands::ToggleMixerTrackOptions ? state_.mixerTrackOptions
                                                          : state_.mixerInOut;
         shown = !shown;
         if (!persist()) {
@@ -1723,6 +1741,7 @@ bool AdiRootComponent::command(int id) {
                 row->repaint();
             }
         strip.inOut.setToggleState(state_.inOut, juce::dontSendNotification);
+        strip.delay.setToggleState(state_.trackOptions, juce::dontSendNotification);
         break;
     }
     case AppCommands::FullScreen: {
@@ -1934,7 +1953,7 @@ class ShellMenu final : public juce::MenuBarModel {
                     else if (id == kTrackControlsMenu)
                         menu.addSubMenu("Arrangement Track Controls", root.trackControlsMenu());
                     else if (id == kMixerControlsMenu)
-                        menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu());
+                        menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu(true));
                     else
                         menu.addCommandItem(&commands.manager, id);
                 }
