@@ -45,8 +45,12 @@ void ParameterFeed::publish(engine::Session &session) {
                     r.text = instance->paramText(d->id, r.playing);
                     r.shape = static_cast<panel::Shape>(d->shape);
                     r.stepCount = d->stepCount;
-                    if (const auto *lanes = session.deviceAutomation()) {
-                        const auto lane = lanes->laneFor.find({row.id, d->id});
+                    // The lane's ref is decimal where a CLAP id is hex (ADR-0165): the session's
+                    // own spelling, so a CLAP parameter's lane is found as its override is.
+                    const auto *lanes = session.deviceAutomation();
+                    const auto ref = engine::automationParamRef(instance->identity().format, d->id);
+                    if (lanes && ref) {
+                        const auto lane = lanes->laneFor.find({row.id, *ref});
                         if (lane != lanes->laneFor.end()) {
                             r.automated = true;
                             r.overridden = session.overriddenLanes().contains(lane->second);

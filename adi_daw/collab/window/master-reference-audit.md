@@ -94,7 +94,7 @@ MR § is the Master Reference's section.
 | A gain handle on every audio clip | 4.3 | Waits: `clip.setGain` exists, but the snapshot does not carry the gain (N6) |
 | Markers and locators, a marker holding a note and a prompt | 3.3 | Waits: no marker ops (new Need) |
 | The loop brace, punch in and out | 3.6 | Waits (N19) |
-| Automation lanes over the clips or in sub-lanes; Re-Enable Automation lit while a lane is overridden; Automation Arm; Alt-drag bends a segment | 6.1 | Partial: the two buttons are drawn; the lanes wait for the automation data in the snapshot (new Need) |
+| Automation lanes over the clips or in sub-lanes; Re-Enable Automation lit while a lane is overridden; Automation Arm; Alt-drag bends a segment | 6.1 | Partial: Re-Enable Automation is lit from the snapshot while any lane is overridden and a click follows every envelope again, and Automation Arm is the session's switch (`window/automation-arm`, parity-7.2 row 32); the lanes and their editing wait for C7 (the data is in the snapshot since #386) |
 | MIDI Learn on every lane header | 6.1 | Later (P2) |
 | Clip names; the Main track last | 3.3 | Waits (N6) |
 | Take lanes and comping | 4.6 | Later (P1, engine first) |
@@ -130,7 +130,7 @@ MR § is the Master Reference's section.
 
 | Item | MR § | Window today |
 |---|---|---|
-| Link and Tap, BPM, nudge, time signature, metronome, quantization, Follow, position, transport, Automation Arm, Re-Enable, loop and punch, Draw Mode, computer MIDI keyboard, Key and MIDI map modes, CPU meter, MIDI indicators | 3.6 | Built as Live's controls; the metronome and the loop wait (N19); Link waits for the engine (P1) |
+| Link and Tap, BPM, nudge, time signature, metronome, quantization, Follow, position, transport, Automation Arm, Re-Enable, loop and punch, Draw Mode, computer MIDI keyboard, Key and MIDI map modes, CPU meter, MIDI indicators | 3.6 | Built as Live's controls; Automation Arm and Re-Enable Automation are live (`window/automation-arm`); the metronome and the loop wait (N19); Link waits for the engine (P1) |
 | Count-In in the metronome's menu | V.2 §9 | Missing (the menu); counting in waits with the metronome (N19) |
 | **ADI's additions:** project tabs for several open projects | 3.6, 11.1 | Missing (the window's, large: one store per open tab, inactive tabs offline) |
 | **ADI's additions:** the current view state | 3.6, 3.7 | Missing, with the view states (section 1) |

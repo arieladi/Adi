@@ -141,6 +141,14 @@ public:
         return snapshot_ && snapshot_->anySoloed();
     }
 
+    /// Live's Re-Enable Automation button, lit (manual 25.4): a manual change
+    /// has overridden at least one automation lane this run (ADR-0162). The
+    /// session's state, carried by the snapshot so every window reads one
+    /// truth (N26); false when invalid.
+    [[nodiscard]] bool automationOverridden() const noexcept {
+        return snapshot_ && snapshot_->automationOverridden;
+    }
+
     /// The whole model, for a component that needs more than the accessors.
     /// Null when invalid. Borrowed: it is valid for this reader's lifetime and
     /// storing it defeats the point of the deleted copy constructor.

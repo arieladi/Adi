@@ -12,13 +12,19 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 namespace adi::test {
 class Knobs final : public device::DeviceInstance {
   public:
-    Knobs() {
+    // Cutoff's id is "cutoff" unless a test needs the numeric id an automation lane's `param_ref`
+    // must parse as (the engine binds a device lane only to a parameter id that is a number; a
+    // "test" plug-in's id is its lane ref as it stands, where a CLAP id is hex turned decimal).
+    // The format is "test" unless a test needs the session to read the ids as a CLAP plug-in's
+    // ("clap": eight hex digits, the lane's ref their decimal, ADR-0165).
+    explicit Knobs(std::string cutoffId = "cutoff", std::string format = "test") {
         identity_.name = "UI knobs";
-        identity_.format = "test";
-        params_[0].id = "cutoff";
+        identity_.format = std::move(format);
+        params_[0].id = std::move(cutoffId);
         params_[0].name = "Cutoff";
         params_[0].hasRealRange = true;
         params_[0].minReal = 20;
@@ -36,7 +42,7 @@ class Knobs final : public device::DeviceInstance {
     // reads as Live's Device View does: Cutoff in Hz or kHz, Gain in dB over -36 to +12.
     std::string paramText(const std::string &id, double normalized) const override {
         char text[32];
-        if (id == "cutoff") {
+        if (id == params_[0].id) {
             const double hz = hertz(normalized);
             if (hz < 1000)
                 std::snprintf(text, sizeof text, "%.0f Hz", hz);
@@ -89,15 +95,16 @@ class Knobs final : public device::DeviceInstance {
 // so the row says "clap", as the engine's own test does.
 inline constexpr const char *kKnobsUid = "test.knobs";
 // The loader a document opens with: a Knobs for every plug-in reference with that uid, nothing
-// for any other, so a real plug-in in the same project stays a placeholder.
-inline engine::DeviceLoader knobsLoader() {
-    return [](const engine::DeviceRequest &request, std::string &error)
+// for any other, so a real plug-in in the same project stays a placeholder. `cutoffId` and
+// `format` as above.
+inline engine::DeviceLoader knobsLoader(std::string cutoffId = "cutoff", std::string format = "test") {
+    return [cutoffId, format](const engine::DeviceRequest &request, std::string &error)
                -> std::unique_ptr<device::DeviceInstance> {
         if (request.ref == nullptr || request.ref->uid != kKnobsUid) {
             error = "not a test plug-in";
             return nullptr;
         }
-        return std::make_unique<Knobs>();
+        return std::make_unique<Knobs>(cutoffId, format);
     };
 }
 } // namespace adi::test

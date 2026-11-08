@@ -81,6 +81,7 @@
 #include <concepts>
 #include <cstdint>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -162,15 +163,26 @@ public:
             return none;
         }
         auto r = History(store_).undo();
-        if (r.ok) view_.refresh(store_);
+        if (r.ok) view_.refresh(store_, overrides());
         return r;
     }
 
     History::Result redo() {
         auto r = History(store_).redo();
-        if (r.ok) view_.refresh(store_);
+        if (r.ok) view_.refresh(store_, overrides());
         return r;
     }
+
+    /// The session's overridden lanes (ADR-0162), handed to every refresh this
+    /// submitter makes, a commit, an undo or a redo, so the snapshot's
+    /// `automationOverridden` and each lane's `overridden` read the session's
+    /// truth and not the offline view's "nothing overridden" (N26). Without
+    /// one, the view is the no-session view, as `ProjectView::refresh` says.
+    /// The set is read at each refresh, never copied: the session's own, which
+    /// outlives this submitter's last write. An override the session finds
+    /// only when it re-reads the rows, AFTER this refresh, is the document's to
+    /// reconcile (`ProjectDocument::synchronise`).
+    void followOverrides(const std::set<std::int64_t>& lanes) noexcept { overridden_ = &lanes; }
 
     /// What the undo and redo menu items show and whether they are enabled.
     /// Passed through rather than wrapped: `History::Step::label` is already
@@ -299,8 +311,13 @@ private:
         // A prepared batch with nothing in it reports success and no seqs, as
         // `submit` of an empty vector does: nothing was written, so nothing
         // refreshes (ADR-0201 refreshes after a COMMITTED op).
-        if (s.ok && !s.seqs.empty()) s.generation = view_.refresh(store_);
+        if (s.ok && !s.seqs.empty()) s.generation = view_.refresh(store_, overrides());
         return s;
+    }
+
+    [[nodiscard]] const std::set<std::int64_t>& overrides() const noexcept {
+        static const std::set<std::int64_t> none;
+        return overridden_ ? *overridden_ : none;
     }
 
     [[nodiscard]] bool isRoot(const History::Step& step) const {
@@ -315,6 +332,7 @@ private:
     Actor actor_;
     std::string actorDetail_;
     std::string root_;
+    const std::set<std::int64_t>* overridden_ = nullptr;
 };
 
 }  // namespace adi::ui

@@ -6,7 +6,11 @@
 namespace adi::ui {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_),
-      sessionState_(*store_) {}
+      sessionState_(*store_) {
+    // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
+    // the session's own member, alive as long as this document.
+    ops_.followOverrides(session_.overriddenLanes());
+}
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error) {
@@ -91,21 +95,57 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     return true;
 }
 bool ProjectDocument::synchronise() {
-    if (realisedGeneration_ == view_.generation())
-        return true;
-    if (!session_.refresh(*store_)) {
-        error_ = session_.error();
-        return false;
+    if (realisedGeneration_ != view_.generation()) {
+        if (!session_.refresh(*store_)) {
+            error_ = session_.error();
+            return false;
+        }
+        realisedGeneration_ = view_.generation();
+        for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+            const auto &entry = session_.entryAt(i);
+            if (entry.retired)
+                parameterOps_.detach(entry.deviceId);
+        }
+        parameterOps_.attachSession(session_);
+        error_.clear();
     }
-    realisedGeneration_ = view_.generation();
-    for (std::size_t i = 0; i < session_.entryCount(); ++i) {
-        const auto &entry = session_.entryAt(i);
-        if (entry.retired)
-            parameterOps_.detach(entry.deviceId);
-    }
-    parameterOps_.attachSession(session_);
-    error_.clear();
+    // The session re-read the rows after the submitter's refresh, so an override it found there,
+    // or one a gesture set since the last frame, reaches the snapshot now.
+    followOverrides();
     return true;
+}
+void ProjectDocument::followOverrides() {
+    const auto snapshot = view_.current();
+    if (!snapshot)
+        return;
+    const auto &lanes = session_.overriddenLanes();
+    bool agree = snapshot->automationOverridden == !lanes.empty();
+    for (const auto &lane : snapshot->automationLanes)
+        agree = agree && lane->overridden == lanes.contains(lane->id);
+    if (agree)
+        return;
+    // The same rows under a new generation: when the session had realised the view, it has
+    // nothing to re-read, and every window takes the new snapshot at its next frame. A view the
+    // session has not caught up with (a commit that skipped `synchronise()`) stays unrealised, so
+    // the next `synchronise()` re-reads it.
+    const bool realised = realisedGeneration_ == view_.generation();
+    view_.refresh(*store_, lanes);
+    if (realised)
+        realisedGeneration_ = view_.generation();
+}
+bool ProjectDocument::reenableAutomation() {
+    const bool ok = session_.reenableAutomation();
+    const std::string refusal = ok ? std::string{} : session_.error();
+    // The session reads nothing overridden now, whether or not its rebuild went through: the
+    // snapshot unlights the switch and the strip's marks go back from overridden to automated in
+    // the same call, so the window never shows a set the session no longer holds.
+    followOverrides();
+    feed_.publish(session_);
+    error_ = refusal;
+    return ok;
+}
+void ProjectDocument::setAutomationArmed(bool armed) noexcept {
+    session_.setAutomationWriteState(armed, false);
 }
 std::int64_t ProjectDocument::captureNowMs() noexcept {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -191,6 +231,9 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     const bool taken = parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
     const bool appended = !requests.empty();
     const bool committed = commitCaptured(requests); // error_ says why when the store refused
+    // A value taken overrode its lane with no op (ADR-0162): the snapshot says so before any
+    // frame, so Re-Enable Automation lights with the knob's move.
+    followOverrides();
     if (appended && committed)
         feed_.publish(session_);
     if (!committed)

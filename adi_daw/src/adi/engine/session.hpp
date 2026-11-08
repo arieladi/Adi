@@ -111,6 +111,13 @@ struct DeviceRequest {
 using DeviceLoader = std::function<std::unique_ptr<device::DeviceInstance>(
     const DeviceRequest&, std::string& error)>;
 
+/// The `param_ref` an automation lane on a device parameter carries, from the id
+/// the plug-in spells (ADR-0165: lane refs stay decimal for every format, so a
+/// CLAP id's hex becomes its decimal; every other format's id is its ref as it
+/// stands). Empty for a CLAP id that is not hex. The UI's lookup of a
+/// parameter's lane goes through this, as the session's own does.
+std::optional<std::string> automationParamRef(const std::string& format, const std::string& id);
+
 enum class OfflineTap { PreFader, PostFader };
 struct OfflineOutput {
     NodeId node = kInvalidNode;
