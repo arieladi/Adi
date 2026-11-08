@@ -27,8 +27,15 @@ namespace {std::atomic<unsigned> allocations{0},frees{0},sized{0},failAt{~0u},en
 void* operator new(std::size_t n){if(adi::audio::onAudioThread)++allocations;const bool counted=n && n==failSize;const auto at=counted?sized++:0u;
     if(counted && at==failAt){failedAllocation=true;throw std::bad_alloc();}void* p=std::malloc(n?n:1);if(!p)throw std::bad_alloc();if(counted && at<sizedBuffers.size())sizedBuffers[at]=p;return p;}
 void* operator new[](std::size_t n){return operator new(n);}
-void operator delete(void* p)noexcept{if(p && adi::audio::onAudioThread)++frees;
-    for(unsigned at=0;p && at<sizedBuffers.size();++at)if(sizedBuffers[at]==p){sizedBuffers[at]=nullptr;if(at<encoderAt && std::memcmp(p,"APKS",4)==0)encoderAt=at;}std::free(p);}
+void operator delete(void* p)noexcept{
+    if(p && adi::audio::onAudioThread)++frees;
+    for(unsigned at=0;p && at<sizedBuffers.size();++at) {
+        if(sizedBuffers[at]!=p)continue;
+        sizedBuffers[at]=nullptr;
+        if(at<encoderAt && std::memcmp(p,"APKS",4)==0)encoderAt=at;
+    }
+    std::free(p);
+}
 void operator delete[](void* p)noexcept{operator delete(p);}
 void operator delete(void* p,std::size_t)noexcept{operator delete(p);}
 void operator delete[](void* p,std::size_t)noexcept{operator delete(p);}
