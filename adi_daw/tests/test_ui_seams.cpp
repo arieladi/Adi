@@ -463,6 +463,16 @@ clip_edit::PreparedEdit splitInHalf(Store& s, std::int64_t rightId) {
     return clip_edit::prepareSplit(s, 7, rightId, {0, kHalfTicks}, 48000);
 }
 
+/// How many ops of transaction `txnId` are stamped agent/adi-vst, as the
+/// agent submitter above stamps them.
+std::size_t stampedRows(Store& s, std::int64_t txnId) {
+    SQLite::Statement st(s.db(),
+                         "SELECT COUNT(*) FROM ops WHERE txn_id = ? AND actor = ? AND actor_detail = 'adi-vst'");
+    st.bind(1, txnId);
+    st.bind(2, std::string(toString(Actor::Agent)));
+    return st.executeStep() ? static_cast<std::size_t>(st.getColumn(0).getInt64()) : 0;
+}
+
 void aPreparedBatchCommitsAsOneStep() {
     section("A2: a prepared batch whose head still matches commits as ONE step and refreshes once");
     adi::test::TempDirectory temp("ui_seams", "prepared");
@@ -525,19 +535,39 @@ void aPreparedBatchTakesOneOpOfTheWindows() {
     check(clipLength(*store, 17) == kHalfTicks, "the right part is a clip");
     check(clipMuted(*store, 17), "and it is deactivated");
     check(!clipMuted(*store, 7), "the left part is not");
-
-    SQLite::Statement st(store->db(),
-                         "SELECT COUNT(*) FROM ops WHERE txn_id = ? AND actor = ? AND actor_detail = 'adi-vst'");
-    st.bind(1, r.txnId);
-    st.bind(2, std::string(toString(Actor::Agent)));
-    const auto stamped = st.executeStep() ? st.getColumn(0).getInt64() : -1;
-    check(static_cast<std::size_t>(stamped) == prepared + 1,
+    check(stampedRows(*store, r.txnId) == prepared + 1,
           "every op of the transaction, the window's included, is stamped as submit stamps");
 
     const auto step = agent.nextUndo();
     check(step && static_cast<std::size_t>(step->opCount) == prepared + 1, "ONE undo step");
     check(agent.undo().ok, "undo applied");
     check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "and takes both back together");
+}
+
+void aHelperOwnedBatchIsStampedThroughItsRequests() {
+    section("A2: a batch the helper owns is stamped through its requests, detail included (E5's form)");
+    adi::test::TempDirectory temp("ui_seams", "owned");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter agent(*store, view, Actor::Agent, "adi-vst");
+
+    // commitMaterial's shape: the helper takes the edit it was given, not a
+    // batch the submitter hands it. The requests are in reach, so they are
+    // stamped before the helper runs, as `MaterialEdit::edit.requests` will be.
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    const auto prepared = split.requests.size();
+    const auto r = agent.commitPrepared(split.requests, [&split](Store& s, Actor a) {
+        return clip_edit::commitPrepared(s, split, a);
+    });
+    check(r.ok, "committed");
+    check(r.seqs.size() == prepared, "every prepared op, and nothing else");
+    check(stampedRows(*store, r.txnId) == prepared,
+          "every row of the transaction carries the agent and its detail");
+    check(r.generation == 1 && view.generation() == 1, "the commit refreshed the view once");
+    check(clipLength(*store, 17) == kHalfTicks, "and the right part is a clip");
 }
 
 void aStalePreparedBatchIsRefused() {
@@ -590,6 +620,8 @@ void aHelpersRefusalLeavesTheView() {
     const auto r = sub.commitPrepared(std::move(split), &clip_edit::commitPrepared);
     check(!r.ok, "refused");
     check(!r.error.empty(), "and said why");
+    check(r.stale && !r.headFound,
+          "stale with no head found: the file, not the head, so E1 can word the two apart");
     check(r.generation == 0, "a refused write reports no generation");
     check(view.generation() == 1, "the view is as it was");
     check(clipLength(*here, 17) == -1 && clipLength(*there, 17) == -1, "neither project was written");
@@ -1762,6 +1794,7 @@ int main() {
     aFrameKeepsItsSnapshot();
     aPreparedBatchCommitsAsOneStep();
     aPreparedBatchTakesOneOpOfTheWindows();
+    aHelperOwnedBatchIsStampedThroughItsRequests();
     aStalePreparedBatchIsRefused();
     aHelpersRefusalLeavesTheView();
     projectViewTree();

@@ -115,8 +115,13 @@ struct SubmitResult {
     std::vector<std::int64_t> seqs;          ///< one per op, in order
     std::string error;
     std::vector<ValidationIssue> issues;
-    /// ADR-0153: refused because the undo head had moved. Nothing was written,
-    /// and the UI should re-read and re-ask rather than retrying blindly.
+    /// ADR-0153: the engine refused a prepared batch. Nothing was written, and
+    /// the UI should re-read and re-ask rather than retrying blindly. Two
+    /// causes, told apart by `headFound`: the undo head moved (`headFound` is
+    /// the head the journal met), or the project is no longer the file the
+    /// batch was prepared on (`headFound` empty; the helper's own check, made
+    /// before any transaction). A refusal worded "the project moved" fits
+    /// only the first.
     bool stale = false;
     std::optional<std::int64_t> headFound;
     /// The `ProjectView` generation after the refresh this write triggered.
@@ -238,9 +243,32 @@ public:
         return run(helper(store_, prepared, actor_));
     }
 
-    /// The same for a batch whose ops the helper keeps to itself
-    /// (`clip_edit::commitMaterial`, `commitTrackBounce`): the actor goes in
-    /// through the helper, and there is nothing to append to.
+    /// The same for a batch the helper owns but whose requests are in reach
+    /// (`clip_edit::MaterialEdit::edit.requests`, for `commitMaterial`): the
+    /// requests are stamped first, as `submit` stamps them, then the helper
+    /// runs with this submitter's actor. Neither `commitMaterial` nor
+    /// `commitPrepared` has the `(Store&, Actor)` shape itself: wrap it in a
+    /// lambda that captures the edit,
+    ///
+    ///     sub.commitPrepared(material.edit.requests,
+    ///         [&](Store& s, Actor a) { return clip_edit::commitMaterial(s, material, a); });
+    ///
+    /// The engine's helpers set the actor on every request and leave the
+    /// detail alone, so the stamp survives the commit. Nothing to append to:
+    /// an import or a bounce is the whole of what its batch is about.
+    template <class Helper>
+        requires std::is_invocable_r_v<CommitResult, Helper&, Store&, Actor>
+    SubmitResult commitPrepared(std::vector<OpRequest>& requests, Helper helper) {
+        for (auto& r : requests) stamp(r);
+        return run(helper(store_, actor_));
+    }
+
+    /// And for a batch whose ops the helper keeps entirely to itself
+    /// (`commitTrackBounce`, whose requests sit behind `TrackBounce::Data`):
+    /// the actor goes in through the helper, again a lambda that captures the
+    /// bounce and the document generation it takes. KNOWN LIMIT: this form
+    /// cannot stamp `actorDetail`, so an agent's bounce lands with the detail
+    /// empty until `commitTrackBounce` takes one (the engine lane's).
     template <class Helper>
         requires std::is_invocable_r_v<CommitResult, Helper&, Store&, Actor>
     SubmitResult commitPrepared(Helper helper) {
