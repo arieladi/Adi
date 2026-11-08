@@ -755,7 +755,11 @@ add_executable(adi_clap_probe src/juce/clap_probe.cpp)
 target_link_libraries(adi_clap_probe PRIVATE adi_core adi_warnings)
 
 add_executable(adi_plugin_scanner src/juce/plugin_scan_host.cpp)
-target_link_libraries(adi_plugin_scanner PRIVATE adi_core adi_warnings)
+# Our warning policy on our one source, not on JUCE's module translation units, which
+# this target compiles when it links the headless VST3 format (as ui_shell.cmake does).
+target_link_libraries(adi_plugin_scanner PRIVATE adi_core)
+set_source_files_properties(src/juce/plugin_scan_host.cpp PROPERTIES
+    COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
 add_dependencies(adi_clap_probe adi_plugin_scanner)
 
 foreach(_adi_scan_fixture IN ITEMS adi_scan_clap_fixture adi_scan_clap_static_fixture)
