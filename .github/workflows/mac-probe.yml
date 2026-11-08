@@ -57,7 +57,7 @@ jobs:
           JUCE: ${{ inputs.juce }}
         run: |
           set -euo pipefail
-          if [ "$JUCE" = "true" ]; then bash adi_daw/tools/fetch_external.sh --build-only --with-juce; else bash adi_daw/tools/fetch_external.sh --build-only; fi
+          if [ "$JUCE" = "true" ]; then bash adi_daw/tools/fetch_external.sh --with-juce; else bash adi_daw/tools/fetch_external.sh --build-only; fi
 
       - name: Configure
         env:
