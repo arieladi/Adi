@@ -168,8 +168,13 @@ class AdiApplication final : public juce::JUCEApplication,
         root->automationArmed = [this] { return document_->automationArmed(); };
         root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         for (auto *panel : {&root->mixer, &root->mixerView}) {
-            panel->tap = [this](std::int64_t track) {
-                return document_->session().openScope(track, .1, engine::ScopePoint::PostFader);
+            // The strips' meters: the engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381),
+            // through the session; null until the session has a strip for the track. The strips
+            // live as long as the session, and the session outlives the root (`document_` is
+            // replaced after `window_`, above).
+            panel->meter = [this](std::int64_t track) -> const engine::StripMeter * {
+                const auto *strip = document_->session().strips().stripFor(track);
+                return strip != nullptr ? &strip->meter() : nullptr;
             };
             panel->autoGain = [this](bool lufs) {
                 const bool ok = document_->autoGainStage(lufs);
@@ -248,10 +253,11 @@ class AdiApplication final : public juce::JUCEApplication,
         bridge_ = std::make_unique<device::DeviceBridge>(*document_);
         bridge_->setRequestedBlockSize(setup.bufferSize);
         manager_.addAudioCallback(bridge_.get());
-        // The meters read taps the running session holds; take them again.
+        // The meters are the session's strips', which outlive a device change; a strip bound
+        // while the session had none for its track finds it now.
         if (root_) {
-            root_->mixer.retap();
-            root_->mixerView.retap();
+            root_->mixer.resolveMeters();
+            root_->mixerView.resolveMeters();
         }
         if (bridge_->mismatchReport().isNotEmpty())
             report(bridge_->mismatchReport().toStdString());

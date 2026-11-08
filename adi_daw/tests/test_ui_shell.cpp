@@ -5674,20 +5674,26 @@ int main(int argc, char **argv) {
         arrangement.geometry.selection.track = 2;
         integrated.frame();
         integrated.resizeDevices(169);
-        // Step 7.6 (#205): the mixer, its rows in the arrangement's lanes.
-        auto meterTap = std::make_shared<engine::ScopeTap>(48000, .1);
-        {
-            std::array<float, 1024> half{};
-            for (std::size_t i = 0; i < half.size(); ++i)
-                half[i] = .5f * static_cast<float>(std::sin(2 * 3.141592653589793 * 16 *
-                                                            static_cast<double>(i) / 1024.));
-            meterTap->write(half.data(), half.data(), 1024, 0, true);
-        }
+        // Step 7.6 (#205): the mixer, its rows in the arrangement's lanes. The meters read the
+        // engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381; worklist B3) through the
+        // panel's lookup: fixed values here, track 2 at a half-scale sine's peak and RMS, the
+        // others silent, so nothing plays and no tap is opened. The clock is the test's.
+        const float halfSineRms = std::sqrt(.125f); // .5 / sqrt 2
+        engine::StripMeter fixed, other;
+        fixed.peak.store(.5f);
+        fixed.rms.store(halfSineRms);
+        other.peak.store(.25f);
+        other.rms.store(.1f);
+        const engine::StripMeter *meterOfTwo = &fixed;
+        int lookups = 0;
+        double clock = 0;
         auto &mixer = integrated.mixer;
-        mixer.tap = [&](std::int64_t id) {
-            return id == 2 ? std::shared_ptr<const engine::ScopeTap>(meterTap) : nullptr;
+        mixer.meter = [&](std::int64_t id) {
+            ++lookups;
+            return id == 2 ? meterOfTwo : nullptr;
         };
-        mixer.retap();
+        mixer.clock = [&] { return clock; };
+        mixer.resolveMeters();
         integrated.resized();
         integrated.mark(DirtySet::All);
         integrated.frame();
@@ -5702,8 +5708,47 @@ int main(int argc, char **argv) {
                   row->getHeight() == arrangement.geometry.heightFor(2),
               "a mixer row sits level with its track's lane, as Live's track controls");
         if (row) {
-            check(std::abs(row->peak() - .5f) < .01f && row->rms() > .3f && row->rms() < .4f,
-                  "the meter reads the track's tap: peak and RMS");
+            MixerStrip *unmetered = nullptr;
+            for (const auto &s : mixer.strips())
+                if (s->isVisible() && s->track() != 2 && unmetered == nullptr)
+                    unmetered = s.get();
+            check(row->hasMeter() && row->peak() == .5f && row->rms() == halfSineRms && unmetered != nullptr &&
+                      !unmetered->hasMeter() && unmetered->peak() == 0 && unmetered->rms() == 0,
+                  "the meter draws the engine's peak and RMS for its strip; a track with no strip yet draws silence");
+            // A refresh finds the meter again (a track's strip arrives with the session's next sync,
+            // after the row was bound): what the lookup now gives is drawn, five seconds on so the
+            // ballistics have let the old values go.
+            const int lookupsBefore = lookups;
+            meterOfTwo = &other;
+            clock = 5;
+            integrated.mark(DirtySet::Layout);
+            integrated.frame();
+            check(lookups > lookupsBefore && row->track() == 2 && row->peak() == .25f && row->rms() == .1f,
+                  "after a refresh the meter is resolved again");
+            meterOfTwo = &fixed;
+            integrated.mark(DirtySet::Layout);
+            integrated.frame();
+            check(row->peak() == .5f && row->rms() == halfSineRms, "and again, back to the first");
+            // The ballistics, the window's (win's placement until Readings M1-02 to M1-04): the
+            // engine's value gone, the level falls 24 dB a second; the peak line holds a second first.
+            fixed.peak.store(0);
+            fixed.rms.store(0);
+            clock = 5.5;
+            integrated.frame();
+            const float twelveDown = std::pow(10.f, -12.f / 20);
+            check(std::abs(row->rms() - halfSineRms * twelveDown) < .002f && row->peak() == .5f,
+                  "half a second of silence: the level is 12 dB down, the peak line still held");
+            clock = 6.5;
+            integrated.frame();
+            check(std::abs(row->peak() - .5f * twelveDown) < .002f && row->rms() < .01f,
+                  "a second and a half: the line, let go after its second, is 12 dB down");
+            clock = 15;
+            integrated.frame();
+            check(row->peak() == 0 && row->rms() == 0, "ten seconds on: the meter is at rest");
+            fixed.peak.store(.5f);
+            fixed.rms.store(halfSineRms);
+            integrated.frame();
+            check(row->peak() == .5f && row->rms() == halfSineRms, "a new value is drawn at once: the rise is instant");
             row->volume.onDragStart();
             row->volume.setValue(-6, juce::sendNotificationSync);
             check(std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
@@ -5829,7 +5874,8 @@ int main(int argc, char **argv) {
             }
         }
         auto &mixerView = integrated.mixerView;
-        mixerView.tap = mixer.tap;
+        mixerView.meter = mixer.meter;
+        mixerView.clock = mixer.clock;
         const int arrangementBefore = integrated.arrangement.getHeight();
         check(!integrated.state().mixerView && !mixerView.isVisible(),
               "the Mixer View starts hidden");
@@ -5879,6 +5925,41 @@ int main(int argc, char **argv) {
             check(std::abs(held.held - .5f) < .01f, "and it holds the next peak it meets");
             check(!silent->peakHold.isVisible() || silent->peakHold.held == 0,
                   "a silent track's peak level stays at -Inf");
+            // Over 0 dBFS the Peak Level turns red (manual 18.1: "resettable peak level indicators";
+            // Live's goes red once the track has clipped): read in the pill's own pixels, away from
+            // its text.
+            fixed.peak.store(1.2f);
+            integrated.frame();
+            juce::Image pill(juce::Image::ARGB, held.getWidth(), held.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(pill);
+                held.paintEntireComponent(g, true);
+            }
+            const auto edge = pill.getPixelAt(3, held.getHeight() / 2);
+            check(held.held == 1.2f && sounding->peak() == 1.2f && edge.getRed() > 200 && edge.getGreen() < 100 &&
+                      edge.getBlue() < 100,
+                  "a peak over 0 dBFS turns the Peak Level red");
+            // The window at twice its size, for the PR's picture (ADI_UI_PARITY): the strips with
+            // 3 Audio's meter sounding and its Peak Level red.
+            if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+                juce::Image shot(juce::Image::ARGB, 2 * integrated.getWidth(), 2 * integrated.getHeight(), true,
+                                 juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(shot);
+                    g.addTransform(juce::AffineTransform::scale(2.f));
+                    integrated.paintEntireComponent(g, true);
+                }
+                const auto file = juce::File(pictures).getChildFile("adi-strip-meters.png");
+                file.deleteFile();
+                if (auto stream = file.createOutputStream())
+                    juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
+            }
+            fixed.peak.store(.5f);
+            held.onClick();
+            clock = 20;
+            integrated.frame();
+            check(held.held == .5f && sounding->peak() == .5f && sounding->rms() == halfSineRms,
+                  "reset and ten seconds on, the strip is back at the engine's value");
         }
         check(std::abs(meterDepth(0) - .06) < 1e-9 && std::abs(meterLevel(meterDepth(-24)) + 24) < 1e-9 &&
                   !columns.empty() &&

@@ -1,13 +1,30 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixer.hpp"
 #include "ui_shell.hpp"
+#include "adi/engine/mixer.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <string_view>
 namespace adi::ui {
 namespace {
+// The meter's ballistics, the window's (UI-ARCHITECTURE §9: the engine writes {peak, rms} per
+// callback and holds nothing between reads, so the fall is what keeps a value on screen between
+// frames). The level rises at once and falls kFallDbPerSecond; the peak line rises at once, holds
+// kPeakHoldSeconds and then falls at the same rate. win's placement until Live 12's are read
+// (Readings M1-02 to M1-04).
+constexpr double kFallDbPerSecond = 24, kPeakHoldSeconds = 1;
+// `shown` after `seconds` of falling at the rate, never under `now`, the engine's value; silence
+// once under the meter's floor.
+float fallen(float shown, float now, double seconds) noexcept {
+    if (now >= shown)
+        return now;
+    const double db = 20 * std::log10(static_cast<double>(shown)) - kFallDbPerSecond * seconds;
+    const auto level = static_cast<float>(std::pow(10., db / 20));
+    return level <= 1.e-6f ? now : std::max(now, level);
+}
 // The Solo's half-coloured state (look::LiveLook draws it), named once.
 const juce::Identifier kHalfLit{"live.half"};
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
@@ -232,10 +249,11 @@ void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
 void MixerStrip::bind(std::int64_t id) {
     track_ = id;
     position_ = 0;
-    tap_ = panel_.tap ? panel_.tap(id) : nullptr;
     peak_ = rms_ = 0;
+    lastFrame_ = -1;
     frame(true);
 }
+void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
     // A device put on a MIDI track or taken off it may give it an audio mixer or take it away.
@@ -315,22 +333,31 @@ void MixerStrip::frame(bool changed) noexcept {
             showPost(*returnSwitches_[i], returns_[i]);
         repaint();
     }
-    // The meter reads the newest frames of the track's tap: wait-free, no allocation.
-    float p = 0, r = 0;
-    std::int64_t stamp = 0;
-    if (tap_ && tap_->read(left_, right_, stamp)) {
-        double energy = 0;
-        for (std::size_t i = 0; i < left_.size(); ++i) {
-            p = std::max(p, std::max(std::abs(left_[i]), std::abs(right_[i])));
-            energy += static_cast<double>(left_[i]) * left_[i] +
-                      static_cast<double>(right_[i]) * right_[i];
-        }
-        r = static_cast<float>(std::sqrt(energy / static_cast<double>(2 * left_.size())));
-    }
-    if (panel_.vertical() && p > peakHold.held) {
-        peakHold.held = p;
+    // The meter: the engine's {peak, rms} for the strip, written per callback by the audio thread
+    // and read with relaxed loads (UI-ARCHITECTURE §9; #381), never a tap, no allocation. A strip
+    // bound before the session had a strip for its track finds the meter on a refresh.
+    if (changed)
+        resolveMeter();
+    const float peakNow = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
+    const float rmsNow = meter_ != nullptr ? meter_->rms.load(std::memory_order_relaxed) : 0.f;
+    const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
+    const double seconds = lastFrame_ < 0 ? 0 : std::max(0., now - lastFrame_);
+    lastFrame_ = now;
+    // Live's peak level holds the highest peak it is shown (manual 18.1); the engine holds nothing
+    // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
+    if (panel_.vertical() && peakNow > peakHold.held) {
+        peakHold.held = peakNow;
         peakHold.repaint();
     }
+    // The window's ballistics: the level falls from where it was drawn; the peak line holds
+    // kPeakHoldSeconds from its last rise, then falls for the part of this frame past the hold.
+    const float r = fallen(rms_, rmsNow, seconds);
+    float p = peak_;
+    if (peakNow >= peak_) {
+        p = peakNow;
+        peakSince_ = now;
+    } else if (const double falling = std::min(seconds, now - peakSince_ - kPeakHoldSeconds); falling > 0)
+        p = fallen(peak_, peakNow, falling);
     if (p != peak_ || r != rms_) {
         peak_ = p;
         rms_ = r;
@@ -890,10 +917,9 @@ bool MixerPanel::submit(const std::string &op, Payload payload, const char *labe
     return root.submitEdit(op, std::move(payload), label);
 }
 void MixerPanel::resized() { place(); }
-void MixerPanel::retap() {
+void MixerPanel::resolveMeters() {
     for (auto &s : strips_)
-        if (s->track() != 0)
-            s->bind(s->track());
+        s->resolveMeter();
 }
 bool MixerPanel::focusTrack(std::int64_t track) {
     if (const auto rows = root.arrangement.geometry.rows(root.reader()); rows.find(track) < rows.size())
