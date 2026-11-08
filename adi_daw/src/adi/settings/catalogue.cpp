@@ -19,6 +19,11 @@ const char* toString(Absence a) {
     return "?";
 }
 
+// The order of a Part II section matters: the Settings window lays Live's tabs out from it
+// (src/adi/ui/settings_tabs.hpp), so Live's own rows come first, in Live's order on the tab,
+// and the rows that are ADI's additions to the tab follow them, in the catalogue's order among
+// themselves. The catalogue's Markdown may interleave them (Processing Precision among the
+// latencies, the LAN audio node before PTP); this list does not.
 const std::vector<AnsweredRow>& answeredRows() {
     static const std::vector<AnsweredRow> rows = {
         {"1. Display & Input / Language",
@@ -89,12 +94,14 @@ const std::vector<AnsweredRow>& answeredRows() {
          {"audio.srcQuality"}},
         {"3. Audio / Buffer Size",
          {"audio.bufferSize"}},
-        {"3. Audio / Processing Precision",
-         {"audio.processingPrecision"}},
         {"3. Audio / Driver Error Compensation",
          {"audio.driverErrorCompensationMs"}},
         {"3. Audio / Test Tone, Tone Volume, Tone Frequency, CPU Usage Simulator",
          {"audio.testTone", "audio.testToneVolumeDb", "audio.testToneFrequencyHz", "audio.cpuSimulatorPercent"}},
+        // ADI's additions to the Audio tab, after Live's four sections: Processing Precision has no
+        // section of Live's (ADR-0207 d2), so it heads the tab's own group.
+        {"3. Audio / Processing Precision",
+         {"audio.processingPrecision"}},
         {"3. Audio / Loopback input",
          {"audio.loopbackSource"}},
         {"3. Audio / Close device when the app is inactive",
@@ -113,11 +120,12 @@ const std::vector<AnsweredRow>& answeredRows() {
          {"sync.showLinkToggle"}},
         {"4. Link / Start Stop Sync",
          {"sync.linkStartStopSync"}},
-        // The node's defaults sit on the Link tab, labelled as not Link Audio (ADR-0126, ADR-0204).
-        {"4. Link / LAN audio node",
-         {"sync.lanJitterBufferMs", "sync.lanCodec", "sync.lanBitrateKbps"}},
+        // ADI's additions to the Link tab: PTP beside Link (ADR-0145 d7), then the node's defaults,
+        // labelled as not Link Audio (ADR-0126, ADR-0204).
         {"4. Link / PTP",
          {"sync.ptpEnabled", "sync.ptpDomain", "sync.ptpAdapters", "sync.ptpGrandmasters"}},
+        {"4. Link / LAN audio node",
+         {"sync.lanJitterBufferMs", "sync.lanCodec", "sync.lanBitrateKbps"}},
         {"5. Tempo & MIDI / Control Surface 1-6: Control Surface / Input / Output / Dump",
          {"midi.autoAddControllers", "midi.controlSurfaceScripts"}},
         {"5. Tempo & MIDI / Master Focus Dial",
