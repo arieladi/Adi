@@ -74,6 +74,7 @@ namespace adi {
 class Store;
 }
 
+namespace adi::audio { class ProgressiveDecoder; }
 namespace adi::engine {
 
 class AudioInputRecorder;
@@ -92,6 +93,13 @@ struct SessionSpec {
     bool performanceState = true;
     /// The app's Delay Compensation choice; its registry row is win-owned.
     bool delayCompensation = true;
+    /// Optional app-owned decode service/cache. Must outlive this session and
+    /// retired generations. Null uses the process service; never a callback API.
+    audio::ProgressiveDecoder* progressiveDecoder = nullptr;
+    /// Owner-selected performance clock, e.g. Link. A new prepared generation
+    /// uses this constant tempo for ALL musical playback and clock consumers;
+    /// authored project tempo rows remain intact. Not an offline export option.
+    std::optional<double> externalTempoBpm = std::nullopt;
 };
 
 /// What a loader is asked for: the row, the identity it names, and the format
@@ -247,6 +255,11 @@ public:
     /// there is no crossfade (the swap is faded in only when
     /// `graph().setFadeFrames` is non-zero, 0 by default). The same precision
     /// does nothing. False only when a graph was due and could not be built.
+    /// Owner only. Configures the next graph and rebuilds when loaded; the
+    /// prior graph stays live on failure. Zero workers restores serial.
+    bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
+                              std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
+                              void* context=nullptr);
     bool setPrecision(Precision p);
 
     /// Message thread. Publish a new alignment policy without reloading
@@ -343,7 +356,7 @@ public:
     [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
-    void attach();
+    void attach(std::shared_ptr<const GraphTransportState>);
     bool readPlayback(const Store &);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
@@ -366,15 +379,17 @@ private:
     std::string recordingProject_;
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
-    struct TimingView final : Sequenced {
+    struct TimingView final : GraphTransportState {
+        Session* session=nullptr; // retained Session owns every published graph
+        mutable TransportInfo blockInfo{}; // the single audio driver's scratch
         TransportSettings settings;
         std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
         double sampleRate = 48000.0;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
+        [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
     };
-    SnapshotPublisher<TimingView> timing_;
     MainLoudness mainLoudness_;
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
