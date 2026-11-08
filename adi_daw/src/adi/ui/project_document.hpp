@@ -35,7 +35,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // new `.adi` and carries on in it (`Store::saveAs`, #380), called with no live statement held
     // (SPEC §3.7); the name, the view and the session follow, and the caller retitles the window.
     // The store never overwrites, so an existing destination is refused and `error()` says why,
-    // where Live asks first and then replaces. A warning the store reports is in `warning()`.
+    // where Live asks first and then replaces. False means nothing moved; once the store has
+    // switched the save stands and is true, a warning the store reports, or a session that
+    // failed to re-read the new file, in `warning()`.
     bool saveAs(const std::filesystem::path &);
     const std::string &warning() const noexcept { return warning_; }
     bool synchronise();

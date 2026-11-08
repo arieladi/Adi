@@ -4023,11 +4023,11 @@ int main(int argc, char **argv) {
             }
             if (id == AppCommands::SaveAs) {
                 // As the application does once its chooser has a file (Live 41.3; N3): the
-                // document carries on in the new file and the Status Bar says so, or why not.
+                // document carries on in the new file; the Status Bar says nothing on success,
+                // as after New and Open (only a warning), and why on a refusal.
                 ++saveAs;
                 const bool saved = document->saveAs(temp.path() / "integrated-as.adi");
-                integrated.say(saved ? "Saved as integrated-as.adi; carrying on in it."
-                                     : document->error());
+                integrated.say(saved ? document->warning() : document->error());
                 return saved;
             }
             if (id != AppCommands::TakeSnapshot)
@@ -4117,12 +4117,13 @@ int main(int argc, char **argv) {
         };
         const auto saveAsKey = juce::KeyPress(
             's', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0);
-        check(integrated.keyPressed(saveAsKey) && saveAs == 1 &&
-                  integrated.error() == "Saved as integrated-as.adi; carrying on in it." &&
+        integrated.say("a message a success clears");
+        check(integrated.keyPressed(saveAsKey) && saveAs == 1 && integrated.error().empty() &&
                   document->name() == "integrated-as" &&
                   std::filesystem::equivalent(document->store().path(), temp.path() / "integrated-as.adi") &&
                   document->session().model().tracks.size() == 2,
-              "Ctrl/Cmd+Shift+S saves as: the document carries on in the new file (Live 41.3)");
+              "Ctrl/Cmd+Shift+S saves as: the document carries on in the new file, the Status Bar "
+              "cleared (Live 41.3)");
         integrated.frame();
         shotIntegrated("adi-save-as.png");
         check(integrated.keyPressed(saveAsKey) && saveAs == 2 &&

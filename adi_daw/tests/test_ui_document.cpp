@@ -260,12 +260,17 @@ int main(int argc, char **argv) {
             const auto folder = temp.path() / "saved";
             std::filesystem::create_directories(folder);
             const auto after = folder / "after.adi";
+            const auto generationBefore = saving->view().generation();
             check(saving->saveAs(after) && saving->error().empty() && saving->warning().empty() &&
                       std::filesystem::equivalent(saving->store().path(), after) && saving->name() == "after",
                   "Save As writes the new file and the document carries on in it, under its name");
             check(saving->snapshotName(noon, 120) == "after 2025-10-27 14:00",
                   "the Take Snapshot prompt is pre-filled with the new name");
-            check(saving->view().current()->findTrack(8) != nullptr && saving->session().model().tracks.size() == 8,
+            // The re-read the Store header asks for after a Save As: a new generation of the
+            // view, which the session has already caught up with.
+            check(saving->view().generation() > generationBefore && saving->synchronise() &&
+                      saving->view().current()->findTrack(8) != nullptr &&
+                      saving->session().model().tracks.size() == 8,
                   "the view and the session read the new file");
             OpRequest second;
             second.opType = "track.create";

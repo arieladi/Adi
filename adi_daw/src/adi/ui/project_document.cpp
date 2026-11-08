@@ -78,10 +78,15 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     const auto stem = store_->path().stem().u8string();
     name_.assign(reinterpret_cast<const char *>(stem.data()), stem.size());
     // The same rows, read again from the new file: the generation moves, the session follows
-    // through synchronise(), and every window follows at its next frame.
+    // through synchronise(), and every window follows at its next frame. The store has switched
+    // by now, so false would lie ("nothing moved"): a session that fails to re-read is a warning
+    // on a save that stands, and the next synchronise() tries again.
     view_.refresh(*store_);
-    if (!synchronise())
-        return false;
+    if (!synchronise()) {
+        if (!warning_.empty())
+            warning_ += ' ';
+        warning_ += "Saved, but the session did not re-read the file: " + error_;
+    }
     error_.clear();
     return true;
 }

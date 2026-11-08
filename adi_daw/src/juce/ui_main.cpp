@@ -8,6 +8,17 @@
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
 namespace adi::ui {
+namespace {
+// A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
+// `withFileExtension` cuts the name at its last dot, so "Song v1.2" would become "Song v1.adi"
+// where Live writes "Song v1.2.als". The native choosers on Windows and macOS add the extension
+// themselves; Linux's hand the typed name back.
+juce::File withAdiExtension(const juce::File &file) {
+    if (file.hasFileExtension("adi"))
+        return file;
+    return file.getParentDirectory().getChildFile(file.getFileName() + ".adi");
+}
+} // namespace
 class AdiApplication final : public juce::JUCEApplication,
                              private juce::Timer,
                              private juce::ChangeListener {
@@ -263,9 +274,11 @@ class AdiApplication final : public juce::JUCEApplication,
             true);
     }
     // Save As, once the chooser has a file: the document carries on in it and the window takes
-    // its name. The store never overwrites, so an existing file is refused and the Status Bar
-    // says why, where Live asks first and then replaces; a warning the store reports goes there
-    // too.
+    // its name, and that is all Live shows (manual 5.4.1). As after New and Open, a success says
+    // nothing in the Status Bar and clears what a refusal left there (parity-7.2-shell row 4);
+    // only a warning the store or the session reports goes there. The store never overwrites,
+    // so an existing file is refused and the Status Bar says why, where Live asks first and
+    // then replaces.
     void saveAs(const juce::File &file) {
         if (!document_ || !root_ || !window_)
             return;
@@ -274,10 +287,7 @@ class AdiApplication final : public juce::JUCEApplication,
             return;
         }
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
-        auto said = "Saved as " + file.getFileName().toStdString() + "; carrying on in it.";
-        if (!document_->warning().empty())
-            said += " " + document_->warning();
-        root_->say(std::move(said));
+        root_->say(document_->warning());
     }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {
@@ -302,7 +312,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                   [this](const juce::FileChooser &chooser) {
                                       const auto file = chooser.getResult();
                                       if (file != juce::File{})
-                                          saveAs(file.withFileExtension("adi"));
+                                          saveAs(withAdiExtension(file));
                                       juce::MessageManager::callAsync([this] {
                                           if (juce::JUCEApplicationBase::getInstance() == this)
                                               chooser_.reset();
@@ -349,7 +359,7 @@ class AdiApplication final : public juce::JUCEApplication,
             auto file = chooser.getResult();
             if (file != juce::File{}) {
                 if (create)
-                    file = file.withFileExtension("adi");
+                    file = withAdiExtension(file);
                 install(file, create);
             }
             // Do not destroy the chooser while its completion callback is on the stack.
