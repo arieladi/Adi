@@ -295,8 +295,9 @@ class AdiRootComponent final : public juce::Component {
     // Drag the Mixer View's top edge: taller strips, never past one track row.
     void resizeMixerView(int height);
     // Live 12's Mixer View Control options (manual 18.1, "show or hide mixer components"): In/Out,
-    // Sends, Volume, Track Options, Crossfader, Performance Impact, then Return Tracks.
-    juce::PopupMenu mixerOptionsMenu();
+    // Sends, Volume, Track Options, Crossfader, Performance Impact, then Return Tracks. The View
+    // menu's Mixer Controls submenu is the same list with Live's separator after Volume (manual 6.1).
+    juce::PopupMenu mixerOptionsMenu(bool viewMenu = false);
     // Live 12's Arrangement Track Controls submenu of the View menu: ADI's Hide/Show Track Controls
     // (the side panel), then the track controls' In/Out and Sends (Ctrl/Cmd+Alt+I, Ctrl/Cmd+Alt+S),
     // Volume and Track Options. The View menu's Mixer Controls submenu is mixerOptionsMenu().

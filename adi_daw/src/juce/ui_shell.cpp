@@ -952,15 +952,19 @@ void AdiRootComponent::resizeDevices(int height) {
     resized();
 }
 bool AdiRootComponent::persist() { return persistence_.save(window_, state_, error_); }
-juce::PopupMenu AdiRootComponent::mixerOptionsMenu() {
+juce::PopupMenu AdiRootComponent::mixerOptionsMenu(bool viewMenu) {
     // Live 12's order (manual 18.1, the Mixer View Control's options menu). Volume always shows in
     // ADI; Track Options is the Mixer View's Track Delay section (manual 18.7); the crossfader and
-    // Performance Impact wait on the engine.
+    // Performance Impact wait on the engine. The View menu's Mixer Controls submenu (manual 6.1,
+    // its figure) draws a separator after Volume too; the Mixer View Control's own menu (18.1, its
+    // figure) only the one before Return Tracks.
     commands_.activate(*this);
     juce::PopupMenu menu;
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerInOut, "In/Out");
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerSends, "Sends");
     menu.addItem(juce::PopupMenu::Item("Volume").setTicked(true).setEnabled(false));
+    if (viewMenu)
+        menu.addSeparator();
     menu.addCommandItem(&commands_.manager, AppCommands::ToggleMixerTrackOptions, "Track Options");
     menu.addItem(juce::PopupMenu::Item("Crossfader").setEnabled(false));
     menu.addItem(juce::PopupMenu::Item("Performance Impact").setEnabled(false));
@@ -1949,7 +1953,7 @@ class ShellMenu final : public juce::MenuBarModel {
                     else if (id == kTrackControlsMenu)
                         menu.addSubMenu("Arrangement Track Controls", root.trackControlsMenu());
                     else if (id == kMixerControlsMenu)
-                        menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu());
+                        menu.addSubMenu("Mixer Controls", root.mixerOptionsMenu(true));
                     else
                         menu.addCommandItem(&commands.manager, id);
                 }

@@ -495,6 +495,22 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
               shownRows(root.mixer) == std::vector<std::int64_t>{1, 2, 3, 4},
           "Project shows every track again, the button unlit");
 }
+// A menu on one line: its items in order, a disabled one dashed, a ticked one starred when `ticks`
+// is set, a separator a bar, so a check sees Live's groups too.
+juce::String menuLine(const juce::PopupMenu &menu, bool ticks = true) {
+    juce::String out;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+        const auto &item = it.getItem();
+        if (item.isSeparator) {
+            out << " | ";
+            continue;
+        }
+        if (out.isNotEmpty() && !out.endsWith(" | "))
+            out << ", ";
+        out << item.text << (ticks && item.isTicked ? " *" : "") << (item.isEnabled ? "" : " -");
+    }
+    return out;
+}
 // A mouse press at a point of a component, for its own mouseDown.
 juce::MouseEvent pressAt(juce::Component &c, juce::Point<float> at, juce::ModifierKeys mods = {}) {
     const auto now = juce::Time::getCurrentTime();
@@ -1970,16 +1986,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
           "and the Mixer Controls' Sends the Mixer View's");
     // Live 12's Mixer View Control options (manual 18.1): In/Out, Sends, Volume, Track Options,
     // Crossfader, Performance Impact, then Return Tracks; what ADI has not built is dimmed.
-    auto mixerOptions = [&root] {
-        juce::StringArray out;
-        const auto menu = root.mixerOptionsMenu();
-        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
-            if (!it.getItem().isSeparator)
-                out.add(it.getItem().text + (it.getItem().isTicked ? " *" : "") + (it.getItem().isEnabled ? "" : " -"));
-        return out.joinIntoString(", ");
-    };
-    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options, Crossfader -, Performance Impact -, Return Tracks *",
-          "the Mixer View's options in Live's order, In/Out and Track Options off");
+    auto mixerOptions = [&root] { return menuLine(root.mixerOptionsMenu()); };
+    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options, Crossfader -, Performance Impact - | Return Tracks *",
+          "the Mixer View's options in Live's order and groups (manual 18.1, its figure), In/Out and Track Options off");
     // Its In/Out: Live 12's section under ADI's slots and over the sends; as many sends as still
     // leave the mixer its room, then the rest when the strip is taller.
     check(root.command(AppCommands::ToggleMixerInOut) && root.state().mixerInOut && mixerOptions().startsWith("In/Out *"),
@@ -2011,20 +2020,13 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     // under each strip's mixer, Main's too (Master Reference 8.1); the box reads ms to two places,
     // typed or dragged, a negative value pre-delays, and each change is one undo step written in
     // samples at the project's rate (N22, `TrackNode::delaySamples`).
-    auto trackControls = [&root] {
-        juce::StringArray out;
-        const auto menu = root.trackControlsMenu();
-        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
-            if (!it.getItem().isSeparator)
-                out.add(it.getItem().text + (it.getItem().isTicked ? " *" : "") + (it.getItem().isEnabled ? "" : " -"));
-        return out.joinIntoString(", ");
-    };
+    auto trackControls = [&root] { return menuLine(root.trackControlsMenu()); };
     check(trackControls().endsWith("Volume * -, Track Options"), "the Arrangement Track Controls' Track Options, off");
     // The selection was set on the geometry alone; published, as a click publishes it, so each
     // delay step's undo puts it back (ADR-0021) rather than the session's older empty one.
     root.publishSelection();
     check(root.command(AppCommands::ToggleMixerTrackOptions) && root.state().mixerTrackOptions && !root.state().trackOptions &&
-              mixerOptions() == "In/Out, Sends *, Volume * -, Track Options *, Crossfader -, Performance Impact -, Return Tracks *" &&
+              mixerOptions() == "In/Out, Sends *, Volume * -, Track Options *, Crossfader -, Performance Impact - | Return Tracks *" &&
               trackControls().endsWith("Track Options"),
           "the Mixer Controls' Track Options shows the Mixer View's Track Delay, ticked; the track controls' stays off");
     column = rowOf(root.mixerView, 3);
@@ -2065,11 +2067,50 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                   "undone, 3 Audio reads 10.00 ms again");
         }
         if (column != nullptr) {
+            // The box's own grid is a hundredth: 10.004 snaps to the 10.00 it holds and nothing
+            // is committed.
             column->delay.setValue(10.004, juce::sendNotificationSync);
             root.frame();
             column = rowOf(root.mixerView, 3);
             check(column != nullptr && submitter.nextUndo()->txnId == stepTen && column->delay.getValue() == 10.,
-                  "10.004 ms is the same sample: nothing written, the box shows the grid's 10.00");
+                  "10.004 ms is the box's 10.00: nothing committed");
+        }
+        if (column != nullptr) {
+            // 10.01 ms the box takes, but at 44.1 kHz it is the 441st sample again (441.44): the
+            // helper writes no op and the box goes back to the grid's 10.00.
+            column->delay.setValue(column->delay.getValueFromText("10.01"), juce::sendNotificationSync);
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            const auto *same = root.reader().findTrack(3);
+            check(column != nullptr && same != nullptr && same->delaySamples == 441 && submitter.nextUndo()->txnId == stepTen &&
+                      column->delay.getTextFromValue(column->delay.getValue()) == "10.00",
+                  "10.01 ms typed is the same sample on the grid: nothing written, the box back at 10.00");
+        }
+        if (column != nullptr) {
+            // Dragged up or down, as Live's value fields are (manual 6.3, 7.1), not sideways: 20 px
+            // up from 10.00 is 12.00 ms at 0.1 ms a pixel (PROVISIONAL, M1-06), 529 samples at
+            // 44.1 kHz, written once at the drag's end.
+            const auto centre = column->delay.getLocalBounds().getCentre().toFloat();
+            const auto up = centre.translated(0.f, -20.f);
+            column->delay.mouseDown(pressAt(column->delay, centre));
+            column->delay.mouseDrag(dragAt(column->delay, centre, up));
+            const bool held = column->dragging() && column->delay.getValue() == 12. &&
+                              root.reader().findTrack(3) != nullptr && root.reader().findTrack(3)->delaySamples == 441;
+            column->delay.mouseUp(dragAt(column->delay, centre, up));
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            const auto *dragged = root.reader().findTrack(3);
+            check(held && column != nullptr && dragged != nullptr && dragged->delaySamples == 529 &&
+                      submitter.nextUndo()->txnId != stepTen && submitter.nextUndo()->label == "Change Track Delay" &&
+                      submitter.nextUndo()->opCount == 1 &&
+                      column->delay.getTextFromValue(column->delay.getValue()) == "12.00",
+                  "20 px up drags 10.00 to 12.00 ms, nothing written until the drag ends, then 529 samples in one step");
+            check(root.command(AppCommands::Undo), "undo the drag");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            check(column != nullptr && submitter.nextUndo()->txnId == stepTen && root.reader().findTrack(3) != nullptr &&
+                      root.reader().findTrack(3)->delaySamples == 441,
+                  "undone, 3 Audio is at its 441 samples again");
         }
     }
     check(root.command(AppCommands::ToggleMixerTrackOptions) && !root.state().mixerTrackOptions, "Track Options off again");
@@ -4483,14 +4524,18 @@ int main(int argc, char **argv) {
               "the Options menu: Follow (§6.2), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
-        // The new id's name through getCommandInfo: `names[id - PlayStop]` is a table by position, so
-        // an entry out of order mislabels a menu item with no compile error, and window/track-delay
-        // (B4) extends the same tail; whichever lands second re-aligns it and this check reads it.
+        // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
+        // an entry out of order mislabels a menu item with no compile error. B5 (Solo in Place) landed
+        // first and B4 (window/track-delay) extends the same tail: SoloInPlace, then the two Track
+        // Options toggles, ToggleMixerTrackOptions the last id; this check reads the tail as aligned.
         {
-            juce::ApplicationCommandInfo info(C::SoloInPlace);
-            commands.getCommandInfo(C::SoloInPlace, info);
-            check(info.shortName == "Solo in Place" && C::LastId == C::SoloInPlace,
-                  "AppCommands::SoloInPlace is named Solo in Place and is the last id");
+            juce::ApplicationCommandInfo solo(C::SoloInPlace), rows(C::ToggleTrackOptions), mixer(C::ToggleMixerTrackOptions);
+            commands.getCommandInfo(C::SoloInPlace, solo);
+            commands.getCommandInfo(C::ToggleTrackOptions, rows);
+            commands.getCommandInfo(C::ToggleMixerTrackOptions, mixer);
+            check(solo.shortName == "Solo in Place" && rows.shortName == "Track Options" &&
+                      mixer.shortName == "Mixer Track Options" && C::LastId == C::ToggleMixerTrackOptions,
+                  "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options (the last id), each named");
         }
         // The Options menu as drawn, with Solo in Place ticked, for the picture beside Live 12's.
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -4547,13 +4592,8 @@ int main(int argc, char **argv) {
             juce::StringArray submenus;
             std::vector<int> flat;
             juce::String trackControls, mixerControls;
-            auto texts = [](const juce::PopupMenu &menu) {
-                juce::StringArray out;
-                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
-                    if (!it.getItem().isSeparator)
-                        out.add(it.getItem().text + (it.getItem().isEnabled ? "" : " -"));
-                return out.joinIntoString(", ");
-            };
+            // A ticked item is not marked here: the submenus' groups and dimmed items are the point.
+            auto texts = [](const juce::PopupMenu &menu) { return menuLine(menu, false); };
             for (juce::PopupMenu::MenuItemIterator it(viewMenu); it.next();) {
                 const auto &item = it.getItem();
                 if (item.subMenu != nullptr) {
@@ -4563,13 +4603,15 @@ int main(int argc, char **argv) {
                     flat.push_back(item.itemID);
             }
             auto has = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) != flat.end(); };
+            // Live 12's groups (manual 6.1, the Mixer Controls submenu's figure): In/Out, Sends,
+            // Volume | Track Options, Crossfader, Performance Impact | Return Tracks.
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&
-                      trackControls == "Hide/Show Track Controls, In/Out, Sends, Volume -, Track Options" &&
+                      trackControls == "Hide/Show Track Controls | In/Out, Sends, Volume -, Track Options" &&
                       mixerControls ==
-                          "In/Out, Sends, Volume -, Track Options, Crossfader -, Performance Impact -, Return Tracks" &&
+                          "In/Out, Sends, Volume - | Track Options, Crossfader -, Performance Impact - | Return Tracks" &&
                       !has(C::ToggleInOut) && !has(C::ToggleSends) && !has(C::ToggleReturnTracks) && !has(C::ToggleMixer),
-                  "the View menu holds Live 12's Arrangement Track Controls and Mixer Controls submenus, "
-                  "their toggles no longer loose in it");
+                  "the View menu holds Live 12's Arrangement Track Controls and Mixer Controls submenus in Live's "
+                  "groups, their toggles no longer loose in it");
         }
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&

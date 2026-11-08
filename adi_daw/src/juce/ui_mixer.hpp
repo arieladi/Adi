@@ -65,10 +65,14 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     float peak() const noexcept { return peak_; }
     float rms() const noexcept { return rms_; }
     juce::Slider volume, pan;
-    // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged, a negative
-    // value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on the row
-    // under ADI's slots in the track controls, and as the section under the mixer in the Mixer View.
+    // Live's Track Delay (manual 18.7): a value box in milliseconds, typed or dragged up or down, a
+    // negative value pre-delaying; its "ms" unit box beside it. Shown by Live's Track Options: on
+    // the row under ADI's slots in the track controls, and as the section under the mixer in the
+    // Mixer View.
     juce::Slider delay;
+    // The drag's travel: the box's 2000 ms over this many pixels, 0.1 ms a pixel (PROVISIONAL,
+    // Live's step is M1-06).
+    static constexpr int kDelayDragPixels = 20000;
     juce::TextButton active, eq{"Q"}, limiter{"L"};
     SoloButton solo{"S"};
     ArmButton arm;

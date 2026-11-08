@@ -169,21 +169,24 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     };
     // Live's Track Delay (manual 18.7): a value box reading the delay in ms to two places, Live's
     // "ms" box beside it (paintDelayUnit); a negative value pre-delays. Hidden until Live's Track
-    // Options shows it (resized). Its travel is the engine's playable second either way (ADR-0172,
+    // Options shows it (resized). Dragged up or down, as Live's value fields are (manual 6.3, the
+    // Arrangement Position fields; 7.1, the scene fields): JUCE's vertical bar, drawn as the number
+    // alone (LiveLook, `live.valueField`), a pixel 0.1 ms, PROVISIONAL until Live's step is
+    // measured (M1-06). Its travel is the engine's playable second either way (ADR-0172,
     // `StripNode::kMaxDelaySeconds`); Live's own range is to be measured.
-    delay.setSliderStyle(juce::Slider::LinearBar);
+    delay.setSliderStyle(juce::Slider::LinearBarVertical);
     delay.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
     delay.setSliderSnapsToMousePosition(false);
     delay.setColour(juce::Slider::textBoxTextColourId, look::text);
-    delay.getProperties().set("live.bipolar", true);
+    delay.getProperties().set("live.valueField", true);
     delay.setRange(-1000, 1000, .01);
+    delay.setMouseDragSensitivity(kDelayDragPixels);
     delay.textFromValueFunction = [](double v) { return juce::String(v, 2); };
     // Typed with or without its unit: "10", "10 ms", "-2.5ms".
     delay.valueFromTextFunction = [](const juce::String &text) {
         return text.trim().upToFirstOccurrenceOf("ms", false, true).trim().getDoubleValue();
     };
     delay.updateText();
-    delay.setDoubleClickReturnValue(true, 0);
     delay.setTitle("Track Delay");
     delay.setTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
     delay.setScrollWheelEnabled(false);
@@ -391,8 +394,9 @@ void MixerStrip::resized() {
         shown_ = showsSends() ? returnCount_ : 0;
         while (shown_ > 0 && mixerBottom() - sendsTop() - sendsHeight(shown_) < kMixerRoom)
             --shown_;
+        // Live's figure: the box across the strip, the "ms" box at its right edge.
         delay.setVisible(delay_ > 0);
-        delay.setBounds(4, mixerBottom() + 19, 52, 13);
+        delay.setBounds(4, mixerBottom() + 19, getWidth() - 32, 13);
         for (std::size_t i = 0; i < sends_.size(); ++i) {
             sends_[i]->setVisible(i < shown_);
             sends_[i]->setBounds(sendBounds(i));
@@ -536,9 +540,13 @@ void MixerStrip::paint(juce::Graphics &g) {
             }
         }
         if (delay_ > 0) {
-            // Live's Track Delay section under the mixer (manual 18.7, its figure): a rule, its
-            // title, the value box with the lit "ms" box beside it.
+            // Live's Track Delay section under the mixer (manual 18.7, its figure): a band darker
+            // than the mixer above it, across every strip, a rule over it; its title, the value box
+            // across the strip with the lit "ms" box at its right. The band's shade is the figure's,
+            // not measured (LK-03).
             const int top = mixerBottom();
+            g.setColour(look::frame);
+            g.fillRect(0, top, w, delay_);
             g.setColour(look::separator);
             g.fillRect(0, top, w, 2);
             g.setColour(look::text);
