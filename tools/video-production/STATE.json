@@ -171,6 +171,17 @@
       "why": "Adi 2026-11-04: retakes move better but patch rounds look less coherent; even Draft 1 lacks the YouTube reference's continuity, recurring motifs, music-driven transitions and hits on drum/melody transients. Plan: finish weak redo -> DRAFT 4 (best-of learning draft), meanwhile music-first prep on CPU, then a 30-60 s from-scratch pilot; Adi also wants a drum-sample test (a character playing on the beat, Adi judges sync).",
       "hit_map": "analyse_hits.py -> track-hits.json: 276 bars of 16th-note kick/mid/high onsets + 63 accents; grid phase confirmed (low band peaks on 8ths in the drop). Kick vs rolling bass not separable by band alone.",
       "late_start": "video_onset.py on Draft 1: no shot starts late inside itself (0 of 198 moving slots onset >0.5 s). The 'still then suddenly moves' effect = frozen bar A (1.7 s) followed by moving chained bar B: 19 same-subject pairs, 30 frozen->moving cuts. Recipe rule: gate bar A before rendering bar B."
+    },
+    "draft4": {
+      "date": "2026-11-08",
+      "plan": "plan_draft4.json",
+      "file": "D:/AvasthaAI/CosmicRainFull-20261027/Cosmic Rain - DRAFT 4 - full track keyframe edit - with music.mp4",
+      "phone": "Cosmic Rain - DRAFT 4 - phone.mp4",
+      "changed_from_draft3": 63,
+      "weak_redo": "160/160 slots complete 2026-11-06, 248 takes; eye verdicts moves 45, weak 68, still 42, broken 5",
+      "w3_rule": "a -w3 take replaces a slot only on a strictly better verdict",
+      "video_onset": "245 slots: 5 frozen (K038b, K059b, K115, K120, K142a), 3 start 0.5-1 s late (K042b, K047a, K083b)",
+      "status": "sent to Adi, awaiting verdict; drum test and pilot not started"
     }
   },
   "avastha": {
