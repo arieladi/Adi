@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
-#include "adi/engine/scope.hpp"
 #include "adi/ops.hpp"
 #include <array>
 #include <functional>
@@ -8,6 +7,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+namespace adi::engine {
+struct StripMeter; // adi/engine/mixer.hpp: the engine's {peak, rms} per strip (#381)
+}
 namespace adi::ui {
 class AdiRootComponent;
 class MixerPanel;
@@ -62,8 +64,14 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     bool hitTest(int x, int y) override;
     std::int64_t track() const noexcept { return track_; }
     bool dragging() const noexcept { return dragging_; }
+    // What the meter draws, linear: the level and the peak line, after the window's ballistics.
     float peak() const noexcept { return peak_; }
     float rms() const noexcept { return rms_; }
+    // Whether the strip has found the engine's meter for its track.
+    bool hasMeter() const noexcept { return meter_ != nullptr; }
+    // Finds the engine's meter for the track again (MixerPanel::meter): on binding, on every
+    // refresh, and when the panel is asked to (MixerPanel::resolveMeters).
+    void resolveMeter();
     juce::Slider volume, pan;
     juce::TextButton active, eq{"Q"}, limiter{"L"};
     SoloButton solo{"S"};
@@ -169,9 +177,15 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     bool dragging_ = false, selected_ = false;
     int resizeFrom_ = -1; // the track's height when its split line was pressed; -1 while not resizing
     bool onSplitLine(const juce::MouseEvent &) const noexcept;
+    // The engine's scalar meter for the track (UI-ARCHITECTURE §9; `StripNode::meter()`, #381),
+    // written per callback by the audio thread and read here with relaxed loads; null until the
+    // session has a strip for the track. The strips live as long as the session (ADR-0122's
+    // rule), and the session as long as the root that holds this panel.
+    const engine::StripMeter *meter_ = nullptr;
+    // What the meter draws after the window's ballistics: the level, falling once the engine's
+    // value drops, and the peak line, held and then falling; the clock readings they need.
     float peak_ = 0, rms_ = 0;
-    std::shared_ptr<const engine::ScopeTap> tap_;
-    std::array<float, 1024> left_{}, right_{};
+    double lastFrame_ = -1, peakSince_ = 0;
 };
 // Two shapes over one strip: rows level with the arrangement's lanes (the track
 // controls), or Live's Mixer View, vertical strips left to right (manual 18.1).
@@ -198,8 +212,9 @@ class MixerPanel final : public juce::Component {
     // Where the track controls' rows show, level with the arrangement's lanes, in this panel's
     // coordinates; the whole height for the Mixer View.
     juce::Range<int> rowsBand() const noexcept;
-    // Fetch every bound row's tap again: after the audio device changes, the taps do.
-    void retap();
+    // Find every bound strip's meter again: when the session has gained strips (the audio device
+    // attached; a refresh does the same for each strip shown).
+    void resolveMeters();
     // Move Focus to Mixer (§42.16): the Track Activator of the track's strip, else of the
     // first strip shown. False when no strip is shown.
     bool focusTrack(std::int64_t track);
@@ -214,8 +229,12 @@ class MixerPanel final : public juce::Component {
     void reveal(std::size_t index);
     bool submit(const std::string &op, Payload payload, const char *label);
     AdiRootComponent &root;
-    // Where a strip's meter reads from: the track's post-fader scope tap (ADR-0175).
-    std::function<std::shared_ptr<const engine::ScopeTap>(std::int64_t)> tap;
+    // Where a strip's meter reads from: the engine's {peak, rms} per strip (UI-ARCHITECTURE §9;
+    // `Session::strips().stripFor(track)->meter()`, #381), written by the audio thread and read
+    // with relaxed loads, never a tap. Null for a track the session has no strip for yet.
+    std::function<const engine::StripMeter *(std::int64_t)> meter;
+    // The ballistics' clock, in seconds; JUCE's while unset (the tests set their own).
+    std::function<double()> clock;
     // Auto Gain Stage, the one offline command (ADR-0195 d4, ADR-0203 d14): LUFS or RMS.
     std::function<bool(bool lufs)> autoGain;
     const std::vector<std::unique_ptr<MixerStrip>> &strips() const noexcept { return strips_; }
