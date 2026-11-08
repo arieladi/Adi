@@ -287,8 +287,13 @@ jobs:
       #                   stood at 42 minutes with the mixer suite cut off;
       #                   healthy work at that pace needs the hour. The mixer
       #                   suite's own TIMEOUT is 1200 for the same reason.
+      #                   60 became 90 on 2026-11-08 (win): with 168 suites the
+      #                   Windows Debug leg stood at 60 minutes with ten suites
+      #                   still to run (#465), every one of them passing, and the
+      #                   engine's next chain brings the count to 187. 90 still
+      #                   fails a hang in minutes, not hours.
       - name: adi_tests
-        timeout-minutes: 60
+        timeout-minutes: 90
         run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure --timeout 600
 
       # The Visual Studio generator puts binaries in build/Debug/, everything
