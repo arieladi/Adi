@@ -159,24 +159,36 @@ bool duplicateInverse(OpContext&,const Payload& payload,Payload& inverse,std::st
 }
 void validSplit(const Payload& payload,bool joining) {
     const auto id=detail::signedInteger(payload.at("id"));
-    const Payload* sourceBefore=nullptr;const Payload* sourceAfter=nullptr;const Payload* right=nullptr;
-    std::int64_t rightId=0;
+    const Payload* sourceBefore=nullptr;const Payload* sourceAfter=nullptr;
+    std::array<const Payload*,2> pieces{};
+    std::array<std::int64_t,2> createdIds{};
+    std::size_t created=0;
+    auto createdOwner=[&](std::int64_t owner) {
+        for(std::size_t i=0;i<created;++i) {
+            if(createdIds[i]==owner)return true;
+        }
+        return false;
+    };
     for(const auto& change:payload.at("changes"))if(change.at("table")=="clips") {
         const auto key=detail::signedInteger(change.at("id"));
         if(key==id) {
             if(sourceBefore || !change.at("before").is_object() || !change.at("after").is_object())throw std::runtime_error("split needs its original clip");
             sourceBefore=&change.at("before");sourceAfter=&change.at("after");
         } else {
-            if(right)throw std::runtime_error("split needs one second clip");
+            if(created==pieces.size() || createdOwner(key))
+                throw std::runtime_error("split needs one or two distinct new clip identities");
             const auto& absent=change.at(joining?"after":"before");
             const auto& present=change.at(joining?"before":"after");
             if(!absent.is_null() || !present.is_object())throw std::runtime_error("split/join direction differs");
-            right=&present;rightId=key;
+            pieces[created]=&present;createdIds[created]=key;++created;
         }
     }
-    if(!sourceBefore || !sourceAfter || !right)throw std::runtime_error("split needs two clip identities");
-    if(right->at("kind")!=sourceBefore->at("kind") || right->at("track_id")!=sourceBefore->at("track_id"))
-        throw std::runtime_error("split must keep the track and kind");
+    if(!sourceBefore || !sourceAfter || created==0)throw std::runtime_error("split needs its source and new pieces");
+    for(std::size_t i=0;i<created;++i) {
+        if(pieces[i]->at("kind")!=sourceBefore->at("kind") || pieces[i]->at("track_id")!=sourceBefore->at("track_id") ||
+           pieces[i]->at("time_base")!=sourceBefore->at("time_base"))
+            throw std::runtime_error("split must keep the track, kind and time base");
+    }
     const std::set<std::string> changedCore={"length_ticks","length_ns","fade_in_ticks","fade_out_ticks"};
     for(auto it=sourceBefore->begin();it!=sourceBefore->end();++it)
         if(!changedCore.contains(it.key()) && sourceAfter->at(it.key())!=it.value())
@@ -188,7 +200,7 @@ void validSplit(const Payload& payload,bool joining) {
         if(table=="clips")continue;
         for(const auto* row:{&change.at("before"),&change.at("after")})if(!row->is_null()) {
             const auto owner=detail::signedInteger(row->at("clip_id"));
-            if(owner!=id && owner!=rightId)throw std::runtime_error("split child belongs to another clip");
+            if(owner!=id && !createdOwner(owner))throw std::runtime_error("split child belongs to another clip");
             if(owner==id && table!="clip_playback_details" && table!="clip_warp_fade_domains")throw std::runtime_error("split cannot rewrite the original material");
         }
         const auto& before=change.at("before");const auto& after=change.at("after");
@@ -242,7 +254,7 @@ constexpr std::array<Field,3> arrangerFields={{{"id",FieldType::Int},{"changes",
 const std::array<OpDescriptor,5> descriptors={{
     {"arranger.splice","Apply a captured arrangement edit",Scope::Edit,EngineImpact::GraphRebuild,arrangerFields,false,false,arrangerApply,arrangerInverse,""},
     {"clip.split","Split a clip with captured source clocks",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,splitApply<false>,splitInverse<false>,"clip.join"},
-    {"clip.join","Restore the two sides of a captured split",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,splitApply<true>,splitInverse<true>,"clip.split"},
+    {"clip.join","Restore the pieces of a captured split",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,splitApply<true>,splitInverse<true>,"clip.split"},
     {"clip.duplicate","Paste a captured independent clip",Scope::Edit,EngineImpact::GraphRebuild,changeFields,false,false,duplicateApply,duplicateInverse,"clip.delete"},
     {"clip.setFades","Set audio clip fade lengths and continuous curvature",Scope::Edit,EngineImpact::Snapshot,fields,false,false,fadeApply,fadeInverse,""}
 }};

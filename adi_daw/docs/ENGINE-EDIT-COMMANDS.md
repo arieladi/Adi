@@ -18,12 +18,23 @@ retains its tick-relative offset, loop window, note IDs and opaque streams.
 
 Available entry points:
 
-- copyClip, preparePaste, prepareDuplicate and prepareSplit. The caller supplies
-  the new clip ID; child IDs are allocated during capture and stored in the op.
+- copyClip, preparePaste and prepareDuplicate. The caller supplies the new
+  clip ID; child IDs are allocated during capture and stored in the op.
   Clip/range clipboards retain media content identities. Paste refuses a pool
   ID reused for another file after history changes. Hashed media can relocate
   without changing identity; legacy unhashed rows retain locator/dimensions.
   Peaks and media bytes are not copied into the clipboard.
+- prepareSplit has one-cut and two-cut overloads. One cut takes sourceId,
+  rightId and TimePoint; two cuts take sourceId, middleId, rightId, begin and
+  end, followed by referenceRate. Both endpoints use the same explicit input
+  clock and must remain ordered and strictly inside the stored clip after
+  conversion. The left piece keeps sourceId; the other supplied IDs must be
+  distinct and unused. The two-cut overload prepares both cuts in memory from
+  one captured image and one read snapshot, returning one clip.split request.
+  The middle piece is exactly the selected span. To deactivate that span,
+  append clip.setMute for middleId to the prepared requests and commit once;
+  both cuts and the mute share one expected-head check, transaction and Undo.
+  A boundary on an existing edge uses the one-cut or no-split path instead.
 - copyRange and prepareDeleteRange trim every intersecting clip on selected
   tracks. prepareCutRange returns a clipboard and deletion captured in one read
   snapshot; prepareCutClip does the same for one clip. Commit the prepared edit.
@@ -84,8 +95,10 @@ Split/copy also supports attached Warp audio. Its retained fade domains use
 source musical ticks (schema 1.13); unwarped audio retains nanoseconds. The
 source map and window stay unchanged, and a new placement follows its tempo.
 Aliases still return a named refusal. Splitting through
-a fade retains the original envelope on both pieces, with no new internal
-edge fade. A subsequent handle edit replaces that side's retained domain;
+a fade retains the original envelope on every piece, with no new internal
+edge fade. Two cuts retain the same source, loop and fade domains on all three
+pieces; only their visible spans and source-relative offsets change. A subsequent
+handle edit replaces that side's retained domain;
 undo restores it exactly. The captured clip.join op restores its split; this
 API does not promise arbitrary source joining or consolidation.
 

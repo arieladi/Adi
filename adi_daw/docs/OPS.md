@@ -497,8 +497,17 @@ Each selected side must set at least one known field. Both sides are one edit;
 its inverse captures native fields and the full typed details row or absence.
 
 The clip.split op and its captured inverse clip.join take {id,changes}:
-full typed before/after rows, never ambient ID allocation. The clip.duplicate
-op creates only one captured clip and its children; its inverse is clip.delete.
+full typed before/after rows, never ambient ID allocation. One cut creates one
+new piece; two ordered interior cuts create a middle and a right piece in the
+same op. The left piece keeps id, and the one or two new clip IDs are distinct
+from it and each other. All pieces keep the source track, kind and time_base.
+Captured children belong only to those pieces; the source's existing material
+is not rewritten. clip.join restores the captured source and removes all new
+pieces, without allocating IDs or recapturing their source clocks. A prepared
+two-cut split and an appended clip.setMute for its middle piece can be committed
+as one expected-head transaction and one undo step (ADR-0153; N17).
+The clip.duplicate op creates only one captured clip and its children; its inverse
+is clip.delete.
 Delete captures full native rows, opaque children and external alias links.
 The arranger.splice op applies arrangement-only captured row deltas; its inverse
 swaps them. Project changes are limited to length_ticks. Before-image mismatch,
