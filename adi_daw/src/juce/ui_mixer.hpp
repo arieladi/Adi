@@ -114,8 +114,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Live's Enable All Sends, on a return's strip: every one of its sends on, one undo step.
     void enableAllSends();
     // The Solo button's menu (Live 12 manual 18.6): Solo in Place, ticked from the project's one
-    // field, which the Options menu's entry shares (#412); picked, it writes `mixer.setSoloInPlace`
-    // outside undo. What a right-click on Solo shows.
+    // field, which the Options menu's entry shares (#412); picked, the root's toggle writes
+    // `mixer.setSoloInPlace` outside undo. What a right-click on Solo shows.
     juce::PopupMenu soloMenu();
 
   private:

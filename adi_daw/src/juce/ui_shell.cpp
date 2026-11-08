@@ -1331,6 +1331,13 @@ bool AdiRootComponent::setSoloInPlace(bool on) {
     dirty_.mark(DirtySet::All);
     return true;
 }
+bool AdiRootComponent::toggleSoloInPlace() {
+    // From the CURRENT cell (ADR-0201), not the presented frame's, read at pick time: the Options
+    // menu and the Solo button's menu (the Mix View's own window too) share the field, and one
+    // left open while another threw it still toggles what the project holds now.
+    const auto current = view_.current();
+    return setSoloInPlace(!(current && current->cue.soloInPlace));
+}
 bool AdiRootComponent::activateTrack(std::int64_t id, bool withSelection) {
     // From the CURRENT cell (ADR-0201); the batch is one undo step.
     const auto current = view_.current();
@@ -1780,13 +1787,10 @@ bool AdiRootComponent::command(int id) {
         if (!soloTrack(arrangement.geometry.selection.track, false))
             return false;
         break;
-    case AppCommands::SoloInPlace: {
-        // Thrown from the CURRENT cell (ADR-0201), not the presented frame's. Complete on its own,
-        // the Solo button's menu calling it too: the session's re-read, the Status Bar and the marks
-        // are its, so the tail below is not run a second time.
-        const auto current = view_.current();
-        return setSoloInPlace(!(current && current->cue.soloInPlace));
-    }
+    case AppCommands::SoloInPlace:
+        // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
+        // and the marks are setSoloInPlace's, so the tail below is not run a second time.
+        return toggleSoloInPlace();
     case AppCommands::DeactivateSelected:
         if (!activateTrack(arrangement.geometry.selection.track))
             return false;

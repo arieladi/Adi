@@ -311,6 +311,9 @@ class AdiRootComponent final : public juce::Component {
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
     bool setSoloInPlace(bool on);
+    // The toggle both entries pick: the field's opposite as the CURRENT cell holds it at pick time,
+    // so a menu left open while the other entry threw the switch still toggles, never a no-op.
+    bool toggleSoloInPlace();
     // Live's Track Activator on track `id`: with `withSelection`, the selected tracks together when
     // `id` is among them (a switch, or 0 on the selection); without, that track alone (F1…F8).
     bool activateTrack(std::int64_t id, bool withSelection = true);

@@ -854,12 +854,14 @@ void MixerStrip::sendMenu(std::size_t index) {
 }
 juce::PopupMenu MixerStrip::soloMenu() {
     // Live's Solo button menu (manual 18.6): Solo in Place, ticked from the project's one field, on
-    // by default (#412); the Options menu's entry reads the same field, so the two agree.
+    // by default (the engine's #412 default; Live's factory default is unmeasured, F-02 NOT RUN);
+    // the Options menu's entry reads the same field, so the two agree. The pick is the root's one
+    // toggle, read at pick time from the CURRENT cell: the other menu, or the Mix View's own
+    // window, may have thrown the field while this menu was open, and the pick is never a no-op.
     juce::PopupMenu m;
-    const bool on = panel_.root.reader().soloInPlace();
-    m.addItem("Solo in Place", true, on, [safe = SafePointer<MixerStrip>(this), on] {
+    m.addItem("Solo in Place", true, panel_.root.reader().soloInPlace(), [safe = SafePointer<MixerStrip>(this)] {
         if (safe)
-            safe->panel_.root.setSoloInPlace(!on);
+            safe->panel_.root.toggleSoloInPlace();
     });
     return m;
 }

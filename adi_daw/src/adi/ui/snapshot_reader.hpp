@@ -144,7 +144,9 @@ public:
     /// Live's Solo in Place (manual 18.6): a soloed track leaves the returns
     /// audible. The project's one field (`Snapshot::cue.soloInPlace`, #412),
     /// which the Solo button's menu and the Options menu's entry share; on by
-    /// default as Live's, so true when invalid.
+    /// default (the engine's #412 default; Live's factory default is unmeasured,
+    /// F-02 NOT RUN, the director's profile reads it ticked, F-07), so true when
+    /// invalid.
     [[nodiscard]] bool soloInPlace() const noexcept {
         return !snapshot_ || snapshot_->cue.soloInPlace;
     }

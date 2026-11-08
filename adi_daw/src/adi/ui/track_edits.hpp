@@ -134,8 +134,11 @@ inline TrackEdit soloTracks(const SnapshotTracks &tracks, std::int64_t clicked, 
 }
 // Live's Solo in Place (Live 12 manual 18.6; the Solo button's menu and the Options menu's entry):
 // soloing leaves the returns audible. One project field for both entries (`mixer.setSoloInPlace`,
-// #412), on by default as Live's; the op is outside undo, as the catalogue says (ephemeral, in the
-// transport scope), and saved with the project. No op when the snapshot already holds `on`.
+// #412), on by default (the engine's default; Live's factory default is unmeasured, F-02 NOT RUN,
+// the director's profile reads it ticked, F-07). The manual gives the Options entry a second role,
+// "the default behavior", which ADI has no field for until it is measured (parity-7.6 row 7). The
+// op is outside undo, as the catalogue says (ephemeral, in the transport scope), and saved with
+// the project. No op when the snapshot already holds `on`.
 inline TrackEdit soloInPlaceEdit(const engine::Snapshot &snapshot, bool on) {
     TrackEdit edit;
     if (snapshot.cue.soloInPlace != on)

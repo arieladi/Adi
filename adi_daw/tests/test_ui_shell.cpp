@@ -267,6 +267,16 @@ void renderMenu(juce::LookAndFeel &look, const juce::PopupMenu &menu, const juce
         const auto &item = it.getItem();
         Row row{item.text, item.shortcutKeyDescription, item.isSeparator, item.isEnabled, item.isTicked,
                 item.subMenu != nullptr, 0};
+        // A command item's key text is filled only as the menu shows (JUCE's
+        // ItemComponent::updateShortcutKeyDescription), so it is built here the same way.
+        if (row.shortcut.isEmpty() && item.commandManager != nullptr && item.itemID != 0) {
+            juce::StringArray keys;
+            for (const auto &press : item.commandManager->getKeyMappings()->getKeyPressesAssignedToCommand(item.itemID)) {
+                const auto key = press.getTextDescriptionWithIcons();
+                keys.add(key.length() == 1 && key[0] < 128 ? "shortcut: '" + key + "'" : key);
+            }
+            row.shortcut = keys.joinIntoString(", ").trim();
+        }
         int w = 0;
         look.getIdealPopupMenuItemSize(row.text, row.separator, 0, w, row.height);
         if (row.shortcut.isNotEmpty())
@@ -1752,6 +1762,41 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         check(root.reader().soloInPlace() && synchronised == 4 && undoStep() == stepBeforeSip,
               "each a re-read, none an undo step");
         root.afterEdit = nullptr;
+    }
+    // The right-click half of it: a press and release with the popup modifier on the Solo switch
+    // opens its menu, never puts the switch down and solos nothing (JUCE's Button takes any
+    // release after a press as a click), where a plain press and release still solos the track.
+    {
+        auto isSoloed = [&root](std::int64_t id) {
+            for (const auto &t : root.reader().tracks())
+                if (t && t->id == id)
+                    return t->soloed;
+            return false;
+        };
+        auto undoHead = [&submitter] { return submitter.nextUndo() ? submitter.nextUndo()->txnId : 0; };
+        int opened = 0;
+        auto menu = std::move(audio->solo.onMenu);
+        audio->solo.onMenu = [&opened] { ++opened; };
+        const auto at = audio->solo.getLocalBounds().getCentre().toFloat();
+        const auto headBeforeClicks = undoHead();
+        const auto right = juce::ModifierKeys::rightButtonModifier;
+        audio->solo.mouseDown(pressAt(audio->solo, at, right));
+        const bool downOnRight = audio->solo.isDown();
+        audio->solo.mouseUp(pressAt(audio->solo, at, right));
+        root.frame();
+        check(opened == 1 && !downOnRight && !audio->solo.isDown() && !isSoloed(3) && undoHead() == headBeforeClicks &&
+                  root.error().empty(),
+              "a right-click on 3 Audio's Solo: the menu once, the switch never down, nothing soloed, no undo step");
+        audio->solo.onMenu = std::move(menu);
+        const auto left = juce::ModifierKeys::leftButtonModifier;
+        audio->solo.mouseDown(pressAt(audio->solo, at, left));
+        audio->solo.mouseUp(pressAt(audio->solo, at, left));
+        root.frame();
+        check(opened == 1 && isSoloed(3) && submitter.nextUndo().has_value() && submitter.nextUndo()->label == "Solo Track",
+              "a left-click still solos it, one undo step, the menu not opened");
+        check(root.command(AppCommands::Undo), "undone");
+        root.frame();
+        check(!isSoloed(3) && undoHead() == headBeforeClicks, "3 Audio unsoloed, the undo stack as it was");
     }
 
     // Enable Send on A Reverb's send B: on, at full alpha, taking clicks; made after B's Pre, the new
@@ -4336,6 +4381,15 @@ int main(int argc, char **argv) {
               "the Options menu: Follow (§6.2), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
               "(§2.3)");
 #endif
+        // The new id's name through getCommandInfo: `names[id - PlayStop]` is a table by position, so
+        // an entry out of order mislabels a menu item with no compile error, and window/track-delay
+        // (B4) extends the same tail; whichever lands second re-aligns it and this check reads it.
+        {
+            juce::ApplicationCommandInfo info(C::SoloInPlace);
+            commands.getCommandInfo(C::SoloInPlace, info);
+            check(info.shortName == "Solo in Place" && C::LastId == C::SoloInPlace,
+                  "AppCommands::SoloInPlace is named Solo in Place and is the last id");
+        }
         // The Options menu as drawn, with Solo in Place ticked, for the picture beside Live 12's.
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
