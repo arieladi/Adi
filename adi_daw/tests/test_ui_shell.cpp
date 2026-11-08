@@ -16,6 +16,7 @@
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -2021,6 +2022,11 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     // typed or dragged, a negative value pre-delays, and each change is one undo step written in
     // samples at the project's rate (N22, `TrackNode::delaySamples`).
     auto trackControls = [&root] { return menuLine(root.trackControlsMenu()); };
+    // The box holds JUCE's snapped double, `start + interval * floor(...)`: Apple clang on arm64
+    // contracts that to a fused multiply-add, and -1000 + 0.01 * 101000 comes out 10.000000000000021,
+    // still "10.00" and still the 441st sample, so the checks read the box on its hundredth grid,
+    // never bit-exactly.
+    auto boxAt = [](const juce::Slider &box, double ms) { return std::abs(box.getValue() - ms) < 1e-9; };
     check(trackControls().endsWith("Volume * -, Track Options"), "the Arrangement Track Controls' Track Options, off");
     // The selection was set on the geometry alone; published, as a click publishes it, so each
     // delay step's undo puts it back (ADR-0021) rather than the session's older empty one.
@@ -2046,7 +2052,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         const auto stepTen = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
         check(column != nullptr && delayed != nullptr && root.reader().sampleRate() == 44100 && delayed->delaySamples == 441 &&
                   stepTen != stepUndelayed && submitter.nextUndo()->label == "Change Track Delay" &&
-                  submitter.nextUndo()->opCount == 1 && column->delay.getValue() == 10. &&
+                  submitter.nextUndo()->opCount == 1 && boxAt(column->delay, 10.) &&
                   column->delay.getTextFromValue(column->delay.getValue()) == "10.00",
               "10 ms typed at 44.1 kHz writes 441 samples in one undo step and reads back 10.00 ms");
         if (column != nullptr) {
@@ -2072,7 +2078,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             column->delay.setValue(10.004, juce::sendNotificationSync);
             root.frame();
             column = rowOf(root.mixerView, 3);
-            check(column != nullptr && submitter.nextUndo()->txnId == stepTen && column->delay.getValue() == 10.,
+            check(column != nullptr && submitter.nextUndo()->txnId == stepTen && boxAt(column->delay, 10.),
                   "10.004 ms is the box's 10.00: nothing committed");
         }
         if (column != nullptr) {
@@ -2094,7 +2100,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
             const auto up = centre.translated(0.f, -20.f);
             column->delay.mouseDown(pressAt(column->delay, centre));
             column->delay.mouseDrag(dragAt(column->delay, centre, up));
-            const bool held = column->dragging() && column->delay.getValue() == 12. &&
+            const bool held = column->dragging() && boxAt(column->delay, 12.) &&
                               root.reader().findTrack(3) != nullptr && root.reader().findTrack(3)->delaySamples == 441;
             column->delay.mouseUp(dragAt(column->delay, centre, up));
             root.frame();
