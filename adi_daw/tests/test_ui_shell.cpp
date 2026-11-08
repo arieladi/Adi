@@ -4022,9 +4022,13 @@ int main(int argc, char **argv) {
                 return true;
             }
             if (id == AppCommands::SaveAs) {
+                // As the application does once its chooser has a file (Live 41.3; N3): the
+                // document carries on in the new file and the Status Bar says so, or why not.
                 ++saveAs;
-                integrated.say("Save As waits for the engine's (ADR-0203 d6)");
-                return false;
+                const bool saved = document->saveAs(temp.path() / "integrated-as.adi");
+                integrated.say(saved ? "Saved as integrated-as.adi; carrying on in it."
+                                     : document->error());
+                return saved;
             }
             if (id != AppCommands::TakeSnapshot)
                 return false;
@@ -4092,11 +4096,42 @@ int main(int argc, char **argv) {
         check(document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
                   opsBeforeSnapshot,
               "and writes no op");
-        check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier |
-                                                            juce::ModifierKeys::shiftModifier,
-                                                   0)) &&
-                  saveAs == 1 && !integrated.error().empty(),
-              "Save As reaches the application, which says why it cannot yet");
+        // Save As (Live 12 manual 5.4.1, 41.3): the window at 1440 x 900 points for the PR's
+        // picture, the Status Bar along its foot (ADI_UI_PARITY).
+        integrated.setSize(1440, 900);
+        auto shotIntegrated = [&integrated](const char *name) {
+            const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+            if (pictures.isEmpty())
+                return;
+            juce::Image image(juce::Image::ARGB, 2 * integrated.getWidth(), 2 * integrated.getHeight(),
+                              true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                integrated.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile(name);
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        };
+        const auto saveAsKey = juce::KeyPress(
+            's', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0);
+        check(integrated.keyPressed(saveAsKey) && saveAs == 1 &&
+                  integrated.error() == "Saved as integrated-as.adi; carrying on in it." &&
+                  document->name() == "integrated-as" &&
+                  std::filesystem::equivalent(document->store().path(), temp.path() / "integrated-as.adi") &&
+                  document->session().model().tracks.size() == 2,
+              "Ctrl/Cmd+Shift+S saves as: the document carries on in the new file (Live 41.3)");
+        integrated.frame();
+        shotIntegrated("adi-save-as.png");
+        check(integrated.keyPressed(saveAsKey) && saveAs == 2 &&
+                  integrated.error().find("already exists") != std::string::npos &&
+                  document->name() == "integrated-as",
+              "the same file again is refused, the Status Bar saying why; nothing moves");
+        integrated.frame();
+        shotIntegrated("adi-save-as-refused.png");
+        integrated.say({});
         OpRequest tempoChange;
         tempoChange.opType = "project.insertTempoEvent";
         tempoChange.payload = {{"pos", 2 * textproj::kPPQ}, {"bpm", 60.0}, {"curve", 0}};

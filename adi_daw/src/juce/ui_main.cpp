@@ -262,6 +262,23 @@ class AdiApplication final : public juce::JUCEApplication,
             }),
             true);
     }
+    // Save As, once the chooser has a file: the document carries on in it and the window takes
+    // its name. The store never overwrites, so an existing file is refused and the Status Bar
+    // says why, where Live asks first and then replaces; a warning the store reports goes there
+    // too.
+    void saveAs(const juce::File &file) {
+        if (!document_ || !root_ || !window_)
+            return;
+        if (!document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()))) {
+            root_->say(document_->error());
+            return;
+        }
+        window_->setName("ADI - " + file.getFileNameWithoutExtension());
+        auto said = "Saved as " + file.getFileName().toStdString() + "; carrying on in it.";
+        if (!document_->warning().empty())
+            said += " " + document_->warning();
+        root_->say(std::move(said));
+    }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {
             systemRequestedQuit();
@@ -272,10 +289,26 @@ class AdiApplication final : public juce::JUCEApplication,
             return true;
         }
         if (id == AppCommands::SaveAs) {
-            // Live's Save As writes a new file and carries on in it (ADR-0203 d6). The
-            // store has no Save As yet; it is the engine lane's (LANES §3 item 6).
-            root_->say("Save As is not built yet: it waits for the engine's Save As.");
-            return false;
+            // Live's Save Live Set As (manual 5.4.1, 41.3; ADR-0203 d6): a new file the project
+            // carries on in. A save chooser for `.adi`, opened beside the current file; the
+            // document copies and switches (`Store::saveAs`, #380, N3).
+            if (chooser_)
+                return false;
+            const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
+                document_->store().path().u8string().c_str())));
+            chooser_ = std::make_unique<juce::FileChooser>("Save ADI project as", current, "*.adi");
+            chooser_->launchAsync(juce::FileBrowserComponent::saveMode |
+                                      juce::FileBrowserComponent::canSelectFiles,
+                                  [this](const juce::FileChooser &chooser) {
+                                      const auto file = chooser.getResult();
+                                      if (file != juce::File{})
+                                          saveAs(file.withFileExtension("adi"));
+                                      juce::MessageManager::callAsync([this] {
+                                          if (juce::JUCEApplicationBase::getInstance() == this)
+                                              chooser_.reset();
+                                      });
+                                  });
+            return true;
         }
         // The Mix View in a window of its own, or docked back (ADR-0209 d11); F4 while it opens
         // in a window opens or closes that window.

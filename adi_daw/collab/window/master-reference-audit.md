@@ -140,7 +140,7 @@ MR § is the Master Reference's section.
 
 | Item | MR § | Window today |
 |---|---|---|
-| File: New, Open, Take Snapshot (Ctrl+S, the name pre-filled), Save As (Ctrl+Shift+S) | 3.6, 12 | Built; Save As says it waits (N3) |
+| File: New, Open, Take Snapshot (Ctrl+S, the name pre-filled), Save As (Ctrl+Shift+S) | 3.6, 12 | Built; Save As through `Store::saveAs` (`window/save-as`, N3), never replacing an existing file |
 | File: Save a Copy, Collect All and Save, the ZIP export beside it (no key) | 1.6, 11.3 | Missing as commands; each waits on the store (new Need) |
 | File: Back up project to cloud; Link ArtCraft app… | 11.4, 9.5 | Later (P2) |
 | Edit: Undo, Redo, Delete, Rename | 3.6 | Built |
