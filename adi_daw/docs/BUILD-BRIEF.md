@@ -16,9 +16,11 @@ Cubase and a short list of things no DAW has (a built-in scope that compares any
 Loudness Drive, projects that stay local with branching history, collaboration through the user's
 own storage, an AI agent that works through the same ops). The format, the op vocabulary, the store,
 the engine, both plug-in hosts, the Settings registry and most of Live's devices are built and
-tested headless (7,826 checks in 95 suites on 7 ABIs). **No window exists yet.** The next things,
-in order: make sends and returns play (closes step 6); the first window, purely as Live (step 7);
-the P0 editing set; the P1 set; then the Mac and Linux builds immediately, then P2.
+tested headless (the README's count, which win measures after each merge). The first window
+exists, and the director's remarks R1 to R7 on build `add5102` (2 November) passed the
+first-window gate. The next things, in order: make sends and returns play (closes step 6); the
+first window, purely as Live (step 7); the P0 editing set; the P1 set; then the Mac and Linux
+builds immediately, then P2. Since 5 November the order of work is the plan's milestones (§6.0).
 
 ## 1. The documents, and which one wins
 
@@ -89,19 +91,19 @@ these; it never contradicts them on purpose.
 
 | Area | State | Where |
 |---|---|---|
-| The `.adi` format, schema 1.8, 51 tables; five layers; older files upgrade in place | built, validated by two schema checkers | `docs/format/`, `src/adi/store*.cpp`, `tools/validate_schema.py` |
-| The op vocabulary: 170 ops designed, 76 playing; undo, branches, snapshots, digests | built | `docs/OPS.md`, `src/adi/ops*.cpp`, `tools/validate_ops.py` |
+| The `.adi` format, schema 1.19, 62 tables; five layers; older files upgrade in place | built, validated by two schema checkers | `docs/format/`, `src/adi/store*.cpp`, `tools/validate_schema.py` |
+| The op vocabulary: the op catalogue as measured at the merge (205 on main on 8 November, `tools/validate_ops.py`); undo, branches, snapshots, digests | built | `docs/OPS.md`, `src/adi/ops*.cpp`, `tools/validate_ops.py` |
 | The store, the op log, history as a snapshot tree, text export, remarks (anchors only) | built | `src/adi/store*.cpp`, `history.cpp`, `textproj*.cpp` |
 | The engine: graph, snapshot handoff, transport, delay compensation (8,192 samples headroom), suspension of silent nodes, track delay ±1 s, Live's pan law and three more, mixer automation and device automation playing, group analog summing (8 flavours), Auto Gain Stage | built, headless | `src/adi/engine/`, `docs/BENCHMARKS.md` |
 | VST3 and CLAP hosting, plug-in parameter ops (one undo step per gesture), the plug-in panel contract, MPE routing (VST3), missing-plug-in placeholders, `adi_play` | built | `src/juce/` |
-| The Pure Data tier: libpd inside the engine, top-level patches, `[adi.param]`, `[adi.transport]`, `[adi.array]`, `[adi.sample]`, MIDI into patches | built | `src/juce/pd_*`, `pd/` |
-| Live's devices: 15 audio effects as Pd devices (Auto Filter, Chorus-Ensemble, Delay, EQ Eight, Echo, Multiband Dynamics, Overdrive, Phaser-Flanger, Redux, Resonators, Reverb, Saturator, Shifter, Utility, Vocoder), bit-exact or measured against Live; the MIDI effects, OneShot (Simpler) and Sampler native; the two color-bass devices; the analyser | built, each with a test against Live's render | `pd/devices/`, `src/adi/dsp/`, `src/adi/pd_builtins/` |
-| The plug-in line: ADI RMSC, Smartelectronix ×11, ADI Airwindows (160 algorithms in 11 suites, auto gain). The ZL-based Dynamic EQ was retired on 2026-10-18 (ADR-0204 d1); the director's own clones (ADI-Q, the Pro-Q 4 clone → the channel EQ; ADI-L, the Pro-L 2 clone → the channel limiter and the cascade's end; ADI Still, soothe2-class; ADI Prism, Serum 2-class), built from measurements, join when he hands them over | built as CLAP | `plugins/` |
+| The Pure Data tier: libpd inside the engine, top-level patches, `[adi.param]`, `[adi.transport]`, `[adi.array]`, `[adi.sample]`, MIDI into patches | the runtime, declarations, arrays and sample slots built and tested; no user-patch loader or parameter and state bridge yet; racks and their children are skipped (DEV-09, DEV-10, DEV-01) | `src/juce/pd_*`, `pd/` |
+| Live's devices: 16 of Live's audio effects plus Chord Comb and Color Cab as canvases, with native cores for 17, tested on synthetic oracles and none yet against a Live 12 render (DEV-22); the MIDI effects (#207) and Sampler (#208) are to be ported; OneShot is a draft (#278); the analyser | built as stated, each with a synthetic test; the Live 12 renders wait for the measurement seat | `pd/devices/`, `src/adi/dsp/`, `src/adi/pd_builtins/` |
+| The plug-in line: ADI RMSC, Smartelectronix ×11, ADI Airwindows (160 algorithms in 11 suites, auto gain). The ZL-based Dynamic EQ was retired on 2026-10-18 (ADR-0204 d1); the director's own clones (ADI-Q, ADI-L, ADI-Clip, ADI Still, ADI Prism: his clones, loaded as ordinary plug-ins; the ruling of 5 November), built from measurements | built as CLAP | `plugins/` |
 | The Settings registry (App, Project, Device scopes), the catalogue, bundles, Safe Mode, the Find box's matching | built, no window | `src/adi/settings/`, `docs/SETTINGS.md` |
 | The library index (`.adi-volume-id`), the decoding cache, relink by content hash | built | `src/adi/library/`, `src/adi/media/` |
 | The control API, the one parameter feed, surface clients (Stream Deck first), MIDI 2.0/MIDI-CI/OSCQuery/CV/TUIO/Link protocol design | designed; the feed built | ADR-0181, ADR-0184, ADR-0185 |
 | The Windows virtual audio device (sysvad-derived, MS-PL under `drivers/` only) | built in CI, unsigned | `drivers/` |
-| Step 7, the first window: 7.1 the seams (headless) merged; 7.2 `AdiRootComponent` + `TransportBar` begun | in progress, **no window yet** | `docs/STEP-7-PLAN.md` |
+| Step 7, the first window: 7.1 the seams (headless) merged; 7.2 `AdiRootComponent` + `TransportBar` begun | the first window built; his remarks R1 to R7 received; the window lane continues (worklist of 5 November) | `docs/STEP-7-PLAN.md` |
 | ADiJ (the DJ application), ADI Mobile | designed, not started | ADR-0105/0133/0191, ADR-0200 |
 
 ## 5. What the rulings change in code that is already built
@@ -110,7 +112,7 @@ Do these as their phase comes; each is a small ADR-cited PR with a test that can
 
 | Change | Ruling | Where |
 |---|---|---|
-| ADI-Q (the EQ) and ADI-L (the limiter) built into every channel and group, present but off: device nodes not calculated while off, bit-transparent at unity, 5 ms ramps on switching, their delay added to compensation only once engaged; one window for all instances; EQ Match in ADI-Q; the DJ Filter on its cores; the per-channel ADI-L instances are the Loudness Drive's cascade | ADR-0204 d1 (amends ADR-0203 d14) | the strip's device chain, `src/adi/engine/`, step 7's mixer and a new EQ window |
+| ~~ADI-Q and ADI-L built into every channel and group, present but off: device nodes not calculated while off, bit-transparent at unity, 5 ms ramps on switching, their delay added to compensation only once engaged; one window for all instances; EQ Match in ADI-Q; the DJ Filter on its cores; the per-channel ADI-L instances are the Loudness Drive's cascade~~ Withdrawn by the director on 5 November: no reserved slots and no separate built-in ADI-Q or ADI-L; his plug-ins load as ordinary plug-ins; their source becomes one unified built-in feature after his list | the record ADR of 5 November (P-6; amends ADR-0203 d14, ADR-0204 d1 and ADR-0209 d11) | — |
 | Sends and returns play: the planner accepts send rows, compensates across them, allows the Live loop (a return's enabled send to a return or itself), refuses every other loop; Pre/Post per return; Enable Send; Solo in Place; the three tap points; sends into any track and a pan on a send (ADI's addition) | ADR-0203 d3 | `src/adi/engine/` (the planner), the `mixer.*` and routing ops in `src/adi/ops*.cpp` |
 | A bypassed device is not calculated and keeps its delay as a plain delay line | d4 (amends ADR-0057 d6) | the graph's device node |
 | The Pd adapter's fixed 64-sample block removed for the built-ins; user patches in 64-multiples run without it; remainders reported | d4 (ADR-0183 d12) | `src/juce/pd_*` |
@@ -131,14 +133,24 @@ Each phase ends with: `/WX` clean, `test_all.sh` green, CI green on 7 ABIs, the 
 able to fail, the agent's log entry, and from step 7 on the parity checklist run against Live and
 signed. win measures `main` and updates the README count after each merge.
 
+### 6.0 The milestones (from 5 November)
+
+**The order of work is `docs/PLAN.md` §2:** M0 green main and the records; M1 the window on what
+the engine merged, his plug-ins as ordinary plug-ins; M2 the edit kernel and the gesture; M3 time,
+media, MIDI in and safe files; M4 signal paths as Live, one meter, the Mix View's P1; M5 renders,
+export, crash safety, DAWproject; M6 notes, pitch, takes, automation passes, warp; M7 the device
+platform; Track C, the control core, on the director's timing (Q-C: now, on a seat of its own);
+then P2 by priority. The phases below stay the scope map; where their order differs, the
+milestones win.
+
 ### Phase A — close step 6: sends and returns play (P0)
 
 0. Precision (ADR-0207 d2): Live's scheme by default — first the double summing at every mix point (ADR-0205 d6), `Graph::accumulate` and every other sum
-   accumulate in double and convert once; the Fact Sheet's cancellation case as a test. **The
-   processing precision itself is the director's open choice (ADR-0205 d10)**: if he takes 64-bit
-   end to end (win's recommendation), the sample type is templated through `AudioIo`/`NodeIo`, the
-   nodes, the hosts and the Pd tier (`PD_FLOATSIZE=64`) in this phase, with a 32/64 switch on the
-   Audio page; do the double summing first in either case.
+   accumulate in double and convert once; the Fact Sheet's cancellation case as a test. The
+   processing precision was ruled on 25 October (ADR-0207 d2): Live's scheme by default (32-bit
+   processing, 64-bit summing), 64-bit end to end as the option on the Audio page; the sample type
+   is templated through `AudioIo`/`NodeIo`, the nodes, the hosts and the Pd tier
+   (`PD_FLOATSIZE=64`) so the switch is one graph; do the double summing first.
 
 1. The planner: send rows planned, delay-compensated, the Live loop allowed, all other loops refused
    (test: a ring of two returns is refused; a return's self-send plays with measured latency).
@@ -183,12 +195,13 @@ In this order unless a dependency says otherwise:
 5. The plug-in scanner out of process, always (R-17, D-03).
 6. Stem separation built in: the 4-stem model in the installer, its own process; services for N
    stems; the model's licence under the two refusals.
-7. The Loudness Drive (VCA over the leaf tracks' input gain, the whole cascade), with export LUFS
-   targeting (default no normalising) and the Export settings page; the Pro-L 2-class limiter (the
-   director's clone) as the cascade's end.
-7a. ADI-Q and ADI-L, present but off on every channel and group, and the window that lists them
+7. The Loudness Drive as one automatable gain over the leaf tracks' input gain (ADR-0203 d14),
+   engaging nothing: the cascade is whatever clippers and limiters the user places, his own
+   plug-ins included; with export LUFS targeting (default no normalising) and the Export settings
+   page.
+7a. ~~ADI-Q and ADI-L, present but off on every channel and group, and the window that lists them
    all (ADR-0204 d1), once the director hands over the two clones; until then both slots exist and
-   are empty.
+   are empty.~~ Withdrawn on 5 November.
 7b. The installer with tiers (ADR-0204 d2): base · + tools · + ADI plug-ins · + local AI · + AI on
 7c. The export queue with stem jobs (ADR-0071, P1 by ADR-0205 d5): one pass renders the ticked
 7d. NI Stems export (`.stem.mp4`) as a queue job, P1 (ADR-0205 d8); the Export page's Cubase + REAPER
@@ -266,14 +279,15 @@ registry default that says "once measured" changes on the reading, as an amendme
 - `adi_changeset_tests`' preview bound, raised in `win/v1.0-settings`.
 - The Vital fork's folder (`adi-vst/vital` → `adi-vital/vital`), outside this project.
 - The director's macro device file, for matching D-06's summing exactly.
-- The director's clones ADI-Q, ADI-L, ADI Still and ADI Prism: their hand-over dates; they are
+- The director's list of plug-ins to rework (the unified feature waits for it); his plug-ins are
+  measurement-based and are never re-questioned (ADR-0204 d3).
+- The Live 12 measurement seat (G-1): answered 5 November, the director himself from Sunday 9 November; the readings themselves are still to come.
+- The plan's choices Q-A1 to Q-N2 (PLAN §6): Q-A1 to Q-E, Q-K and Q-GRID answered 5 November; the rest as their milestone comes.
 - The per-scene chunk schema (File 2) of `docs/EXPORT-VISUAL-STORY.md`, to be supplied by the director.
 - The AI companion (ADR-0205 d7): a direction with no priority until the director rules.
-- Processing precision: the director chooses between 64-bit end to end (Cubase's switch, REAPER's default; recommended) and Live's scheme (ADR-0205 d10); the double summing is built either way.
 - A stem container CDJs read from USB: none exists; AWAITING row 17 (ADR-0205 d8).
 - ArtCraft: FilmCraft's `--control 0` behaviour, whether `file.importAaf` can target an existing sequence, EffectCraft's command set (unverified; read when phase F starts); whether the director proposes `events.subscribe` upstream (ADR-0206 d5).
 - `files.sampleEditorOpens` default → `inPlace` (Live's way; ADR-0206 d6) with the next registry PR, together with the `record.warpDetectTempoChanges` help fix.
-  measurement-based and are never re-questioned (ADR-0204 d3).
 - The registry help of `record.warpDetectTempoChanges` cites Live 12 manual 9.2.3; the sentence is
   in 9.2.1 (one-line fix with the next registry PR).
 
@@ -285,4 +299,6 @@ change a licence or ask the director about one; publish anything under `AdiGuard
 undo a listed deviation because Live differs; hide an addition in Settings; call a step "done" that
 the director has not signed as verified; add delay anywhere Live has none; open a second control
 server for any external application, or let the core know a Craft app exists (ADR-0206 d1); write a row
-into `external_sessions` or `external_links` except through their ops (ADR-0206 d3).
+into `external_sessions` or `external_links` except through their ops (ADR-0206 d3); design the
+unified built-in feature before the director's list; reserve a slot for his plug-ins; host his
+VST3 inside a built-in device.

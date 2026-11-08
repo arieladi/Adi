@@ -4,7 +4,34 @@ The first-window gate (`docs/LANES.md` §5): the director opens the Windows buil
 says what is wrong, and each remark becomes a window-lane item that comes before new items
 (LANES §4 window item 4). Win writes them here the same day, in the director's words first, then
 win's reading of the cause. A remark is struck when the PR that answers it merges. Newest build at
-the top. Only win writes to this file.
+the top. Only win writes to this file. Since 5 November it also holds his answers to the plan's choices (`docs/PLAN.md` §6), in his words where he gave them, so LANES §5 can point here.
+
+---
+
+## 2026-11-05 — the plan's first choices, answered in chat (binding; recorded 8 November)
+
+The plan (`docs/PLAN.md`, #462) asked six choices now (Q-A1, Q-A2, Q-B, Q-C, Q-D, Q-E), the gate
+G-1, and in §6.3 the Pd editor's three (Q-K1 to Q-K3) and Q-GRID. He answered them all in chat on
+5 November. The letters are the plan's options; the ADR that records each is named.
+
+| Choice | His answer | Where it is recorded |
+|---|---|---|
+| Q-A1, what stays reachable at the undo cap | **A**: every named snapshot and every dead end kept as deduplicated stored states; the cap always holds; compaction best-effort (P-10 stands) | ADR-0213 |
+| Q-A2, Live's Backup folder | **(a)**: ten timestamped copies in the project's Backup folder from the second Take Snapshot, as Live | ADR-0213 |
+| Q-B, what STACK shows before the unified feature | **(a)**, in his words: "each track's own devices, Live's and VST3s loaded as plug-ins, like in the Ableton device area, only with the FabFilter Pro-Q instance view where what I am standing on and tinkering with gets a zoomed-in vibe, bigger than the rest, and I can move to the rest and they get bigger instead; VST3s as live tiles with the fisheye; when the processor lands, it joins the row" | ADR-0212 (its Q-B paragraph); LANES §3b item 2 |
+| Q-C, the control API | **(a)**: it starts now, on a seat of its own | ADR-0232; LANES §1 and §3c; `collab/prompts/2026-11-05-control-api-seat.md` |
+| Q-D, one beat, tempo and key analyser | **(a)**: benchmark first, then one analyser for ADI and ADiJ; qm-dsp in the DAW meanwhile behind one interface | ADR-0226 |
+| Q-E, short samples on drop | **(a)**: every drop arrives clean; Live's short-sample result on Warp or from the import prompt; the setting offers Live's four choices | ADR-0214 |
+| G-1, the Live 12 measurement seat | he runs the Live 12 readings himself, with a Claude session on the second Windows machine, from Sunday 9 November; his brief is in his private `Live12-readings` folder | LANES §1 (measurement seat) and §5; ADR-0220 |
+| Q-K1, the Pd editor's route | **A**: vanilla Pd's editor attached to the running device, edits heard at once | ADR-0215 |
+| Q-K2, a user patch's delay | **1**: no added delay when the buffer is a multiple of 64, events on Pd's tick; one reported block otherwise | ADR-0215 |
+| Q-K3, editing a built-in | **1**: editing makes a copy "<Device> (edited)" on the Pd path | ADR-0215 |
+| Q-GRID, the Grid-style tier | **(a)**: the hybrid on Pd with host-owned timing (DEV-15) | no ADR yet: the plan places that ADR before any Grid-style work (M7); LANES §3 item 6 and §4b item 3 carry the answer meanwhile |
+
+His ruling of 5 November on the slots (no reserved plug-in slots; no separate built-in ADI-Q or
+ADI-L; his VST3 and CLAP builds stay ordinary plug-ins; one unified built-in feature from their
+source when his list arrives; it never hosts the VST3) is ADR-0212. The placements told with the
+questions (`docs/PLAN.md` §6.2, P-1 to P-10) stand unless he strikes one.
 
 ---
 
