@@ -1,11 +1,14 @@
 # Step 7.2: persistence has no GUI dependency; the window tier is optional.
-target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/project_document.cpp src/adi/ui/parameter_feed.cpp src/adi/ui/session_state.cpp)
+target_sources(adi_core PRIVATE src/adi/ui/window_state.cpp src/adi/ui/project_document.cpp src/adi/ui/parameter_feed.cpp src/adi/ui/session_state.cpp src/adi/ui/stack_model.cpp)
 add_executable(adi_ui_document_tests tests/test_ui_document.cpp)
 target_link_libraries(adi_ui_document_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_document_tests COMMAND adi_ui_document_tests)
 add_executable(adi_ui_window_state_tests tests/test_ui_window_state.cpp)
 target_link_libraries(adi_ui_window_state_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_window_state_tests COMMAND adi_ui_window_state_tests)
+add_executable(adi_ui_stack_model_tests tests/test_stack_model.cpp)
+target_link_libraries(adi_ui_stack_model_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ui_stack_model_tests COMMAND adi_ui_stack_model_tests)
 if(ADI_WITH_JUCE)
     # JUCE's generated resource/artefact paths exceed MAX_PATH in deep worktrees.
     if(WIN32)
