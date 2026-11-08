@@ -98,7 +98,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ActivateTrack8 = ActivateTrack1 + 7,
         ToggleMixerSends,
         InsertTimeSignatureChange,
-        LastId = InsertTimeSignatureChange
+        SoloInPlace,
+        LastId = SoloInPlace
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -306,6 +307,10 @@ class AdiRootComponent final : public juce::Component {
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);
+    // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
+    // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
+    // #412); outside undo, saved with the project; the session re-reads the project after it.
+    bool setSoloInPlace(bool on);
     // Live's Track Activator on track `id`: with `withSelection`, the selected tracks together when
     // `id` is among them (a switch, or 0 on the selection); without, that track alone (F1…F8).
     bool activateTrack(std::int64_t id, bool withSelection = true);
