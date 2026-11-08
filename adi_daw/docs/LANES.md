@@ -89,7 +89,7 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    `group.setFreezeScope` as the freeze ops and strikes `track.freeze` / `track.unfreeze`, which
    `ops_catalog.cpp` does not have (ADR-0223 d4); OPS §6.4's 300 ms merge gives way to the gesture
    contract, the quiet window only as the end detector for sources that send no release
-   (ADR-0216 d5; the window's N57); OPS §11 item 4 closes with the comp verbs named, `lane.*` as
+   (ADR-0216 d5; the window's N44); OPS §11 item 4 closes with the comp verbs named, `lane.*` as
    §9.2 plus `clip.setLane`, the auditioned lane as session state and not an op (ADR-0225 d2);
    the six tuning and key ops of #444 (`tuning.create`, `tuning.delete`, `tuning.replace`,
    `project.insertKeyEvent`, `project.removeKeyEvent`, `project.setKeyScale`) listed at P1
@@ -98,7 +98,7 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    ADR-0110, ADR-0203 d10); SPEC §6.2 reworded to Live's model, one main lane plays, take lanes
    are auditioned, a comp is copies on the main lane, a NULL `lane_id` is the main lane, ADR-0037's
    comping wording superseded (ADR-0225 d1, d2). SPEC §3.7's rewording rides with the window's
-   N58, SPEC §8.3's with HI-02's PR (ADR-0213), SPEC §6.5's with TM-SV-02's minor and SPEC §12
+   N45, SPEC §8.3's with HI-02's PR (ADR-0213), SPEC §6.5's with TM-SV-02's minor and SPEC §12
    item 6 with CO-01 (both P2).
 4. **M2, the edit kernel and the gesture (P0)**, right after the Link consumer reaches its gate
    (item 1's exception) and once win's gesture and EditScope ADRs are in: N29 and N17's open part;
