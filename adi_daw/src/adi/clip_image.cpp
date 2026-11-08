@@ -58,7 +58,7 @@ void deleteImage(edit::RowEdits& plan,const Payload& image) {
         }
     plan.set("clips",id,std::nullopt);
 }
-Payload captureDeleted(OpContext& context,std::int64_t id) {
+Payload captureImage(OpContext& context,std::int64_t id) {
     const auto root=detail::captureRow(context.db,"clips","id",id);
     if(!root)throw std::runtime_error("no such clip");
     Payload result={{"id",id},{"row",*root},{"children",Payload::object()},{"alias_links",Payload::array()}};
@@ -71,6 +71,10 @@ Payload captureDeleted(OpContext& context,std::int64_t id) {
     }
     SQLite::Statement aliases(context.db,"SELECT id FROM clips WHERE alias_of=? ORDER BY id");aliases.bind(1,id);
     while(aliases.executeStep())result["alias_links"].push_back(aliases.getColumn(0).getInt64());
+    return result;
+}
+Payload captureDeleted(OpContext& context,std::int64_t id) {
+    auto result=captureImage(context,id);
     edit::RowEdits removal(context.db);deleteImage(removal,result);std::string error;
     if(!edit::validateRows(context,{{"changes",removal.changes()}},error))throw std::runtime_error(error);
     return result;

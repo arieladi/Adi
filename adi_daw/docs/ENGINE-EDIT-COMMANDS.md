@@ -1,5 +1,8 @@
 # Arrangement editing API (N17)
 
+For literal scopes, group moves, anchored end resize, shared overlap replacement
+and captured edit policy, see [material placement](ENGINE-EDIT-PLACEMENT.md).
+
 The window can call the owner-thread preparation functions in
 [clip_commands.hpp](../src/adi/clip_commands.hpp) and
 [material_commands.hpp](../src/adi/material_commands.hpp). They capture complete

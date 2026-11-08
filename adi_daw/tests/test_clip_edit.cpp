@@ -2,6 +2,7 @@
 #include "temp_directory.hpp"
 #include "adi/engine/clip_fade.hpp"
 #include "adi/clip_commands.hpp"
+#include "adi/edit_plan.hpp"
 #include "adi/blob.hpp"
 #include "adi/engine/automation.hpp"
 #include "adi/store_rows.hpp"
@@ -108,7 +109,11 @@ void clipboardAndSplits() {
           db.execAndGet("SELECT hex(data) FROM automation_data WHERE id=71").getString()=="060504" &&
           db.execAndGet("SELECT in_tension FROM clip_playback_details WHERE clip_id=8").getDouble()==0.4 &&
           db.execAndGet("SELECT alias_of FROM clips WHERE id=9").getInt64()==8,"undo returns future bytes, every native child and aliases exactly");
-    const auto pasted=clip_edit::preparePaste(*p.store,clipboard,18,21,{0,1000},48000);
+    // This fixture tests opaque copying and existing alias ownership. Keep its
+    // authored global lanes locked and place into free space; overlap and
+    // unlocked-automation admission have their own placement fixtures.
+    edit_plan::Options locked;locked.policy.automationFollowsClips=false;
+    const auto pasted=clip_edit::preparePaste(*p.store,clipboard,18,21,{0,11531520},locked);
     check(pasted.ok && clip_edit::commitPrepared(*p.store,pasted).ok,"paste prepared image as one independent clip");
     check(db.execAndGet("SELECT id FROM event_streams WHERE clip_id=18").getInt64()>100 &&
           db.execAndGet("SELECT id FROM automation_data WHERE clip_id=18").getInt64()>201,"child id allocation accounts for every existing row, including global automation");
@@ -133,7 +138,7 @@ void clipboardAndSplits() {
     db.exec("UPDATE clips SET lane_id=301 WHERE id=8");
     db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'audio','Destination')");
     const auto laneCopy=clip_edit::copyClip(*p.store,8,48000);
-    const auto lanePaste=clip_edit::preparePaste(*p.store,laneCopy,70,22,{0,0},48000);
+    const auto lanePaste=clip_edit::preparePaste(*p.store,laneCopy,70,22,{0,0},locked);
     check(lanePaste.ok && clip_edit::commitPrepared(*p.store,lanePaste).ok &&
           db.execAndGet("SELECT lane_id IS NULL FROM clips WHERE id=70").getInt()==1,"paste to another track clears the source track's comp lane");
     Project other;const auto foreign=clip_edit::preparePaste(*other.store,clipboard,70,21,{0,0},48000);
@@ -410,7 +415,8 @@ void rangeTailChildrenAndClocks() {
         db.exec("INSERT INTO clip_warp_fade_domains(clip_id,in_begin_ticks,in_end_ticks,out_begin_ticks,out_end_ticks) VALUES(7,2882880,14414400,14414400,25945920)");
         if(pinned)db.exec("INSERT INTO clip_playback_details(clip_id,in_tension,out_tension,content_offset_ns,in_begin_ns,in_end_ns,out_begin_ns,out_end_ns) VALUES(7,0.4,-0.2,0,0,1500000000,1500000000,3500000000)");
         const auto before=rangeRows(*p.store);const int writes=sqlite3_total_changes(db.getHandle());
-        const auto edit=clip_edit::prepareDeleteRange(*p.store,{{21},{0,0},{0,3*q}},48000);
+        edit_plan::Options locked;locked.policy.automationFollowsClips=false;
+        const auto edit=clip_edit::prepareDeleteRange(*p.store,{{21},{0,0},{0,3*q}},locked);
         check(edit.ok && rangeRows(*p.store)==before && sqlite3_total_changes(db.getHandle())==writes,
               "sole-tail preparation captures audio/MIDI children and source clocks without writes");
         if(!edit.ok)continue;
