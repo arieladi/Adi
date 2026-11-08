@@ -66,7 +66,7 @@ MR § is the Master Reference's section.
 | The one EQ window listing every channel's EQ and limiter, opened from the strip | 1.3, 3.2, 8.1 | Built (View › Channel EQ; the slots wait for N16) |
 | Split Stereo Pan from the pan control's context menu | 3.2, 8.1 | Built: listed, disabled, says why (N12) |
 | Solo in Place, a switch in the Solo button's context menu and in the Options menu; Exclusive Solo; Solo/Cue, Cue Out and Cue Volume | 8.1 | Built: Solo in Place in both menus, the project's one field (`mixer.setSoloInPlace`, #412; `window/solo-in-place`); Exclusive Solo followed from the registry (`window/solo-rules`). Solo/Cue, Cue Out and Cue Volume wait for the cue path's window half (worklist B6, N43) |
-| Track Delay in milliseconds on every strip; the master's shown, not played | 7, 8.1 | Waits: `mixer.setDelay` exists, but the snapshot does not carry a track's delay (new Need) |
+| Track Delay in milliseconds on every strip; the master's shown, not played | 7, 8.1 | Built (`window/track-delay`, N22): Live's Track Options shows the ms box on every strip, Main's too; written as samples at the project's rate, the engine plays it as latency (ADR-0172) |
 | Delay Compensation, Live's switch in the Options menu; Track Delay off while it is off | 7, 8.4 | Waits: no setting and no engine switch (new Need) |
 | Reduced Latency When Monitoring in the Options menu | 8.4, V.2 §3 | Missing: the setting exists (`audio.reducedLatencyWhenMonitoring`); the menu item is the window's |
 | Auto Gain Stage, one command | 1.3, 8.1 | Built (the track controls' right-click menu, two choices) |

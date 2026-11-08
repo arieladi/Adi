@@ -1978,8 +1978,8 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
                 out.add(it.getItem().text + (it.getItem().isTicked ? " *" : "") + (it.getItem().isEnabled ? "" : " -"));
         return out.joinIntoString(", ");
     };
-    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options -, Crossfader -, Performance Impact -, Return Tracks *",
-          "the Mixer View's options in Live's order, In/Out off");
+    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options, Crossfader -, Performance Impact -, Return Tracks *",
+          "the Mixer View's options in Live's order, In/Out and Track Options off");
     // Its In/Out: Live 12's section under ADI's slots and over the sends; as many sends as still
     // leave the mixer its room, then the rest when the strip is taller.
     check(root.command(AppCommands::ToggleMixerInOut) && root.state().mixerInOut && mixerOptions().startsWith("In/Out *"),
@@ -2007,7 +2007,108 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.resizeMixerView(320);
     root.mark(DirtySet::All);
     root.frame();
+    // Live's Track Options (manual 18.7): the Mixer Controls' item shows the Track Delay section
+    // under each strip's mixer, Main's too (Master Reference 8.1); the box reads ms to two places,
+    // typed or dragged, a negative value pre-delays, and each change is one undo step written in
+    // samples at the project's rate (N22, `TrackNode::delaySamples`).
+    auto trackControls = [&root] {
+        juce::StringArray out;
+        const auto menu = root.trackControlsMenu();
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (!it.getItem().isSeparator)
+                out.add(it.getItem().text + (it.getItem().isTicked ? " *" : "") + (it.getItem().isEnabled ? "" : " -"));
+        return out.joinIntoString(", ");
+    };
+    check(trackControls().endsWith("Volume * -, Track Options"), "the Arrangement Track Controls' Track Options, off");
+    // The selection was set on the geometry alone; published, as a click publishes it, so each
+    // delay step's undo puts it back (ADR-0021) rather than the session's older empty one.
+    root.publishSelection();
+    check(root.command(AppCommands::ToggleMixerTrackOptions) && root.state().mixerTrackOptions && !root.state().trackOptions &&
+              mixerOptions() == "In/Out, Sends *, Volume * -, Track Options *, Crossfader -, Performance Impact -, Return Tracks *" &&
+              trackControls().endsWith("Track Options"),
+          "the Mixer Controls' Track Options shows the Mixer View's Track Delay, ticked; the track controls' stays off");
+    column = rowOf(root.mixerView, 3);
+    mainStrip = rowOf(root.mixerView, 7);
+    check(column != nullptr && column->showsTrackDelay() && column->delay.isVisible() && column->sendsShown() == 2 &&
+              column->delay.getY() == column->getHeight() - MixerStrip::kDelayHeight + 19 &&
+              column->arm.getBottom() <= column->getHeight() - MixerStrip::kDelayHeight &&
+              column->delay.getTextFromValue(column->delay.getValue()) == "0.00" && column->delay.getTitle() == "Track Delay" &&
+              mainStrip != nullptr && mainStrip->showsTrackDelay() && mainStrip->delay.isVisible(),
+          "the section under the mixer, which moves up for it: 0.00 on 3 Audio and on Main, both sends kept");
+    if (column != nullptr && column->delay.isVisible()) {
+        const auto stepUndelayed = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+        column->delay.setValue(column->delay.getValueFromText("10 ms"), juce::sendNotificationSync);
+        root.frame();
+        column = rowOf(root.mixerView, 3);
+        const auto *delayed = root.reader().findTrack(3);
+        const auto stepTen = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+        check(column != nullptr && delayed != nullptr && root.reader().sampleRate() == 44100 && delayed->delaySamples == 441 &&
+                  stepTen != stepUndelayed && submitter.nextUndo()->label == "Change Track Delay" &&
+                  submitter.nextUndo()->opCount == 1 && column->delay.getValue() == 10. &&
+                  column->delay.getTextFromValue(column->delay.getValue()) == "10.00",
+              "10 ms typed at 44.1 kHz writes 441 samples in one undo step and reads back 10.00 ms");
+        if (column != nullptr) {
+            column->delay.setValue(column->delay.getValueFromText("-2.5"), juce::sendNotificationSync);
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            delayed = root.reader().findTrack(3);
+            check(column != nullptr && delayed != nullptr && delayed->delaySamples == -110 &&
+                      column->delay.getTextFromValue(column->delay.getValue()) == "-2.49",
+                  "-2.5 ms pre-delays: -110 samples on the grid, read back as -2.49 ms");
+            render("adi-track-delay.png");
+            check(root.command(AppCommands::Undo), "undo the pre-delay");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            delayed = root.reader().findTrack(3);
+            check(column != nullptr && delayed != nullptr && delayed->delaySamples == 441 &&
+                      column->delay.getTextFromValue(column->delay.getValue()) == "10.00",
+                  "undone, 3 Audio reads 10.00 ms again");
+        }
+        if (column != nullptr) {
+            column->delay.setValue(10.004, juce::sendNotificationSync);
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            check(column != nullptr && submitter.nextUndo()->txnId == stepTen && column->delay.getValue() == 10.,
+                  "10.004 ms is the same sample: nothing written, the box shows the grid's 10.00");
+        }
+    }
+    check(root.command(AppCommands::ToggleMixerTrackOptions) && !root.state().mixerTrackOptions, "Track Options off again");
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && !column->showsTrackDelay() && !column->delay.isVisible() &&
+              column->arm.getBottom() == column->getHeight() - 4,
+          "the section goes and the mixer is back at the strip's foot");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+    // The track controls' own Track Options (the D selector, Live 11's; View › Arrangement Track
+    // Controls): the box on the row after ADI-Q and ADI-L, reading the same delay. 3 Audio's row is
+    // brought into view first, and the lanes put back where they were after.
+    const int scrollBefore = root.arrangement.geometry.scrollY;
+    root.mixer.reveal(root.arrangement.geometry.rows(root.reader()).find(3));
+    root.frame();
+    auto *audioRow = rowOf(root.mixer, 3);
+    check(audioRow != nullptr && !root.strip.delay.getToggleState() && !audioRow->delay.isVisible() &&
+              root.command(AppCommands::ToggleTrackOptions) && root.state().trackOptions && !root.state().mixerTrackOptions &&
+              root.strip.delay.getToggleState() && trackControls().endsWith("Track Options *"),
+          "Arrangement Track Controls › Track Options shows the rows' Track Delay; D lights, the Mixer View's stays off");
+    root.frame();
+    audioRow = rowOf(root.mixer, 3);
+    if (audioRow != nullptr) {
+        const int rx = audioRow->showsInOut() ? MixerPanel::kInOutWidth : 0;
+        check(audioRow->delay.isVisible() && audioRow->delay.getBounds() == juce::Rectangle<int>(rx + 4, 71, 45, 13) &&
+                  audioRow->delay.getTextFromValue(audioRow->delay.getValue()) == "10.00",
+              "3 Audio's row shows its 10.00 ms on the row after the slots");
+    } else
+        check(false, "3 Audio's row in view");
+    render("adi-track-delay-rows.png");
+    root.strip.delay.onClick();
+    audioRow = rowOf(root.mixer, 3);
+    check(!root.state().trackOptions && !root.strip.delay.getToggleState() && audioRow != nullptr && !audioRow->delay.isVisible(),
+          "D hides it again");
+    root.arrangement.geometry.scrollY = scrollBefore;
+    root.arrangement.changed();
+    root.frame();
+    check(root.command(AppCommands::Undo), "undo the 10 ms");
+    root.frame();
+    check(root.reader().findTrack(3) != nullptr && root.reader().findTrack(3)->delaySamples == 0, "3 Audio plays undelayed");
     // Hide/Show Return Tracks (§18.4, Ctrl/Cmd+Alt+R): the returns out of the lanes and the controls.
     auto shownLanes = [&root] {
         std::vector<std::int64_t> out;
@@ -4463,9 +4564,9 @@ int main(int argc, char **argv) {
             }
             auto has = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) != flat.end(); };
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&
-                      trackControls == "Hide/Show Track Controls, In/Out, Sends, Volume -, Track Options -" &&
+                      trackControls == "Hide/Show Track Controls, In/Out, Sends, Volume -, Track Options" &&
                       mixerControls ==
-                          "In/Out, Sends, Volume -, Track Options -, Crossfader -, Performance Impact -, Return Tracks" &&
+                          "In/Out, Sends, Volume -, Track Options, Crossfader -, Performance Impact -, Return Tracks" &&
                       !has(C::ToggleInOut) && !has(C::ToggleSends) && !has(C::ToggleReturnTracks) && !has(C::ToggleMixer),
                   "the View menu holds Live 12's Arrangement Track Controls and Mixer Controls submenus, "
                   "their toggles no longer loose in it");

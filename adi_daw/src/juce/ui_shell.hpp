@@ -99,7 +99,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ToggleMixerSends,
         InsertTimeSignatureChange,
         SoloInPlace,
-        LastId = SoloInPlace
+        ToggleTrackOptions,
+        ToggleMixerTrackOptions,
+        LastId = ToggleMixerTrackOptions
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
