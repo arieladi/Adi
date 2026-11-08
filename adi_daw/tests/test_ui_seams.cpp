@@ -1066,7 +1066,7 @@ void sendsAsBatches() {
           "without a row: fully down; a track's send on, a return's off until Enable Send");
 
     // Turning Kick's send A up writes the row, then its level: one undo step.
-    auto edit = ui::setSend(view.current()->sends, 2, 10, -12);
+    auto edit = ui::setSend(*view.current(), 2, 10, -12);
     check(edit.refusal.empty() && edit.ops.size() == 2 && edit.ops[0].opType == "routing.connect" &&
               edit.ops[0].payload["kind"] == "send" && edit.ops[0].payload["src"] == 2 &&
               edit.ops[0].payload["dst"] == 10 && edit.ops[1].opType == "routing.setGain" &&
@@ -1082,23 +1082,23 @@ void sendsAsBatches() {
     const auto first = send != nullptr ? send->id : 0;
 
     // A row that exists: its level only. The bottom stop writes silence; the top stays at 0 dB.
-    auto again = ui::setSend(view.current()->sends, 2, 10, ui::kSendFloorDb);
+    auto again = ui::setSend(*view.current(), 2, 10, ui::kSendFloorDb);
     check(again.ops.size() == 1 && again.ops[0].opType == "routing.setGain" && again.ops[0].payload["id"] == first &&
               again.ops[0].payload["db"] == ui::kSendSilenceDb,
           "fully down writes silence (-150 dB), on the same row");
     check(sub.submit(std::move(again.ops)).ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == ui::kSendSilenceDb,
           "and lands");
-    check(ui::setSend(view.current()->sends, 2, 10, -90).ops.empty() &&
-              ui::setSend(view.current()->sends, 3, 10, ui::kSendFloorDb).ops.empty(),
+    check(ui::setSend(*view.current(), 2, 10, -90).ops.empty() &&
+              ui::setSend(*view.current(), 3, 10, ui::kSendFloorDb).ops.empty(),
           "a level that would not change writes nothing: no empty undo step, no row left fully down");
-    auto top = ui::setSend(view.current()->sends, 2, 10, 6);
+    auto top = ui::setSend(*view.current(), 2, 10, 6);
     check(top.ops.size() == 1 && top.ops[0].payload["db"] == ui::kSendTopDb, "past the top stays at 0 dB");
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == -12.0, "undo brings -12 dB back");
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10) == nullptr, "and then removes the row");
     check(sub.redo().ok && ui::findSend(view.current()->sends, 2, 10) != nullptr, "redo");
 
     // A second send gets the next id.
-    auto second = ui::setSend(view.current()->sends, 3, 11, -6);
+    auto second = ui::setSend(*view.current(), 3, 11, -6);
     check(second.ops.size() == 2 && second.ops[0].payload["id"] == first + 1 && sub.submit(std::move(second.ops)).ok &&
               ui::findSend(view.current()->sends, 3, 11) != nullptr &&
               ui::findSend(view.current()->sends, 3, 11)->gainDb == -6.0,
@@ -1106,57 +1106,90 @@ void sendsAsBatches() {
 
     // A return's send: off until Enable Send, which makes the row fully down; Enable Send again
     // (unticked) switches it off; a return may send to itself.
-    auto enable = ui::enableSend(view.current()->sends, 10, 11, true);
+    auto enable = ui::enableSend(*view.current(), 10, 11, true);
     check(enable.refusal.empty() && enable.ops.size() == 2 && enable.ops[0].opType == "routing.connect" &&
               enable.ops[1].payload["db"] == ui::kSendSilenceDb && sub.submit(std::move(enable.ops)).ok &&
               sub.nextUndo()->label == "Enable Send",
           "Enable Send on A's send B: the row, fully down, one step");
     const auto* ab = ui::findSend(view.current()->sends, 10, 11);
     check(ab != nullptr && ab->enabled && ui::sendOn(*view.current()->findTrack(10), ab), "A's send B is on");
-    check(ui::enableSend(view.current()->sends, 10, 11, true).refusal == "The send is on already." &&
-              ui::enableSend(view.current()->sends, 10, 10, false).refusal == "The send is off already.",
+    check(ui::enableSend(*view.current(), 10, 11, true).refusal == "The send is on already." &&
+              ui::enableSend(*view.current(), 10, 10, false).refusal == "The send is off already.",
           "nothing to do is said, not written");
-    auto off = ui::enableSend(view.current()->sends, 10, 11, false);
+    auto off = ui::enableSend(*view.current(), 10, 11, false);
     check(off.ops.size() == 1 && off.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(off.ops)).ok &&
               !ui::findSend(view.current()->sends, 10, 11)->enabled &&
               !ui::sendOn(*view.current()->findTrack(10), ui::findSend(view.current()->sends, 10, 11)),
           "unticked: the row switched off, kept");
-    auto on = ui::enableSend(view.current()->sends, 10, 11, true);
+    auto on = ui::enableSend(*view.current(), 10, 11, true);
     check(on.ops.size() == 1 && on.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(on.ops)).ok &&
               ui::findSend(view.current()->sends, 10, 11)->enabled,
           "ticked again: the same row back on");
-    auto loop = ui::enableSend(view.current()->sends, 10, 10, true);
+    auto loop = ui::enableSend(*view.current(), 10, 10, true);
     check(sub.submit(std::move(loop.ops)).ok && ui::findSend(view.current()->sends, 10, 10) != nullptr,
           "A may send to itself (Live's feedback loop)");
 
-    // A return's Pre/Post (ADR-0203 d3): one switch on the return, every send into it moved.
-    check(!ui::returnPre(view.current()->sends, 10) && !ui::returnPre(view.current()->sends, 12),
-          "a return reads Post; one no send reaches reads Post too");
-    auto pre = ui::setReturnPre(view.current()->sends, 10, true);
-    check(pre.refusal.empty() && pre.ops.size() == 2 && pre.ops[0].opType == "routing.setPreFader" &&
-              pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
-              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 2 &&
-              ui::returnPre(view.current()->sends, 10) && ui::findSend(view.current()->sends, 2, 10)->preFader,
-          "Pre moves both sends into A before the fader, one undo step");
-    auto newPre = ui::setSend(view.current()->sends, 3, 10, -9);
-    check(newPre.ops.size() == 3 && newPre.ops[1].opType == "routing.setPreFader" && sub.submit(std::move(newPre.ops)).ok &&
-              ui::findSend(view.current()->sends, 3, 10)->preFader && ui::returnPre(view.current()->sends, 10),
-          "a new send into a Pre return taps before the fader too");
-    check(ui::setReturnPre(view.current()->sends, 12, true).refusal ==
-              "No track sends to this return yet, so there is nothing to switch.",
-          "a return no send reaches has nothing to switch, and says so");
-    check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->sends, 10), "undo puts A back to Post");
+    // A return's Pre/Post (ADR-0203 d3) is the return's own (#405, N42): one switch on the return, read
+    // from `TrackNode::returnSendTap`, written as one `return.setSendTap` that the engine spreads over
+    // every send into the return; it holds with no send, and a send made afterwards follows it.
+    const auto *reverbTap = view.current()->findTrack(10)->returnSendTap ? &*view.current()->findTrack(10)->returnSendTap : nullptr;
+    check(reverbTap != nullptr && !reverbTap->explicitChoice && !ui::returnPre(view.current()->tracks, 10) &&
+              !ui::returnPre(view.current()->tracks, 11) && !ui::returnPre(view.current()->tracks, 2) &&
+              !ui::returnPre(view.current()->tracks, 12),
+          "a return with no choice yet reads Post from its sends; a track, or no track, reads Post");
+    auto pre = ui::setReturnPre(10, true);
+    check(pre.refusal.empty() && pre.ops.size() == 1 && pre.ops[0].opType == "return.setSendTap" &&
+              pre.ops[0].payload["id"] == 10 && pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
+              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 1 &&
+              ui::returnPre(view.current()->tracks, 10) && view.current()->findTrack(10)->returnSendTap->explicitChoice &&
+              ui::findSend(view.current()->sends, 2, 10)->preFader && ui::findSend(view.current()->sends, 10, 10)->preFader,
+          "Pre on A: one op, one undo step; the return holds the choice and both sends into it tap before the fader");
+    auto newPre = ui::setSend(*view.current(), 3, 10, -9);
+    check(newPre.ops.size() == 2 && newPre.ops[0].opType == "routing.connect" && newPre.ops[1].opType == "routing.setGain" &&
+              sub.submit(std::move(newPre.ops)).ok && ui::findSend(view.current()->sends, 3, 10)->preFader &&
+              ui::returnPre(view.current()->tracks, 10),
+          "a new send into a Pre return taps before the fader, with nothing added to its batch: the row reads the return's choice");
+    // A third return, C, that no send reaches: Pre is one op and holds; a send made afterwards follows it.
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok && view.current()->findTrack(12)->returnSendTap &&
+                  !view.current()->findTrack(12)->returnSendTap->explicitChoice && !ui::returnPre(view.current()->tracks, 12),
+              "C Return, no send into it: Post, no choice held");
+    }
+    auto emptyPre = ui::setReturnPre(12, true);
+    check(emptyPre.refusal.empty() && emptyPre.ops.size() == 1 && sub.submit(std::move(emptyPre.ops)).ok &&
+              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 1 &&
+              ui::returnPre(view.current()->tracks, 12) && view.current()->findTrack(12)->returnSendTap->explicitChoice,
+          "Pre on a return no send reaches: one op, one undo step, and the return holds it");
+    auto later = ui::setSend(*view.current(), 2, 12, -3);
+    check(later.ops.size() == 2 && sub.submit(std::move(later.ops)).ok && ui::findSend(view.current()->sends, 2, 12) != nullptr &&
+              ui::findSend(view.current()->sends, 2, 12)->preFader && ui::returnPre(view.current()->tracks, 12),
+          "a send made afterwards taps before the fader");
+    auto post = ui::setReturnPre(12, false);
+    check(post.ops.size() == 1 && sub.submit(std::move(post.ops)).ok && !ui::returnPre(view.current()->tracks, 12) &&
+              view.current()->findTrack(12)->returnSendTap->explicitChoice && !ui::findSend(view.current()->sends, 2, 12)->preFader,
+          "Post again moves the send after the fader; the choice stays the return's");
+    check(sub.undo().ok && ui::returnPre(view.current()->tracks, 12) && ui::findSend(view.current()->sends, 2, 12)->preFader &&
+              sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->tracks, 12) && sub.undo().ok &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: Pre again, the send gone, C back to Post, then C gone");
+    check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->tracks, 10) &&
+              !view.current()->findTrack(10)->returnSendTap->explicitChoice && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+          "undo puts A back to Post, its choice gone and its sends after the fader");
 
     // Enable All Sends on B Delay (Live 12 §18.4): a row to A and to itself, each with its own id, fully
     // down, one step; again, nothing to do.
     const std::vector<std::int64_t> both{10, 11};
-    auto all = ui::enableAllSends(view.current()->sends, 11, both);
+    auto all = ui::enableAllSends(*view.current(), 11, both);
     check(all.refusal.empty() && all.ops.size() == 4 && all.ops[0].opType == "routing.connect" &&
               all.ops[2].opType == "routing.connect" && all.ops[2].payload["id"] != all.ops[0].payload["id"] &&
               sub.submit(std::move(all.ops)).ok && sub.nextUndo()->label == "Enable All Sends" &&
               ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr,
           "Enable All Sends: B to A and B to itself, two new rows, one undo step");
-    check(ui::enableAllSends(view.current()->sends, 11, both).refusal == "Every send of this return is on already.",
+    check(ui::enableAllSends(*view.current(), 11, both).refusal == "Every send of this return is on already.",
           "again: every send is on already");
 }
 

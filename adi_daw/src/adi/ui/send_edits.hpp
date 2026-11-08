@@ -79,61 +79,63 @@ inline OpRequest connect(std::int64_t id, std::int64_t source, std::int64_t dest
 // What a knob's value writes: silence at its bottom stop, never past its top.
 inline double written(double db) noexcept { return db <= kSendFloorDb ? kSendSilenceDb : std::min(db, kSendTopDb); }
 } // namespace send_edits_detail
-// A return's Pre/Post (ADR-0203 d3: one switch on each return, not on each send): Pre when every send
-// into it taps before the fader. The format keeps the tap on each send row, so a return no send reaches
-// yet has no switch of its own to hold and reads Post, where a new send starts (window log, N42).
-inline bool returnPre(const SnapshotSends &sends, std::int64_t ret) noexcept {
-    bool any = false;
-    for (const auto &s : sends)
-        if (s && s->destinationKind == "track" && s->destinationId == ret) {
-            if (!s->preFader)
-                return false;
-            any = true;
-        }
-    return any;
+// A return's Pre/Post (ADR-0203 d3: one switch on each return, not on each send) is the return's own
+// (#405, window log N42): `TrackNode::returnSendTap` holds it, explicit once the switch was thrown and
+// kept while no send reaches the return, else read from its sends, Pre only when every one taps before
+// the fader (an older file's mixed sends read Post). Any other track, or none, reads Post.
+inline bool returnPre(const engine::TrackNode *ret) noexcept {
+    return ret != nullptr && ret->returnSendTap && ret->returnSendTap->preFader;
 }
-// The return's switch thrown: every send into it moved before or after the fader, one batch.
-inline TrackEdit setReturnPre(const SnapshotSends &sends, std::int64_t ret, bool pre) {
-    constexpr const char *label = "Change Pre/Post";
+inline bool returnPre(const SnapshotTracks &tracks, std::int64_t ret) noexcept {
+    return returnPre(track_edits_detail::find(tracks, ret));
+}
+namespace send_edits_detail {
+// What a new send into `ret` carries to follow the return's switch: nothing once the return holds a
+// choice, since `routing.connect` reads it (#405); `routing.setPreFader` for an older file whose sends
+// are all Pre with no choice written, as the engine's own `prepareSendToReturn` adds it.
+inline bool inheritsPre(const engine::TrackNode *ret) noexcept {
+    return ret != nullptr && ret->returnSendTap && !ret->returnSendTap->explicitChoice && ret->returnSendTap->preFader;
+}
+inline void follow(TrackEdit &edit, const engine::TrackNode *ret, std::int64_t id, const char *label) {
+    if (inheritsPre(ret))
+        edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", id}, {"pre", true}}, label));
+}
+} // namespace send_edits_detail
+// The return's switch thrown: one `return.setSendTap`, which the engine spreads over every send into
+// the return, those it has and each one connected after. It holds with no send, so it never refuses.
+inline TrackEdit setReturnPre(std::int64_t ret, bool pre) {
     TrackEdit edit;
-    bool any = false;
-    for (const auto &s : sends)
-        if (s && s->destinationKind == "track" && s->destinationId == ret) {
-            any = true;
-            if (s->preFader != pre)
-                edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", s->id}, {"pre", pre}}, label));
-        }
-    if (!any)
-        edit.refusal = "No track sends to this return yet, so there is nothing to switch.";
+    edit.ops.push_back(track_edits_detail::op("return.setSendTap", {{"id", ret}, {"pre", pre}}, "Change Pre/Post"));
     return edit;
 }
 // The send from `source` to `destination` set to `db`, as one batch: the row's level when the row
 // exists; else the row, then its level (a new row starts at the format's 0 dB, and the batch lands
-// whole or not at all). No ops when the level would not change, so a click that moves nothing
+// whole or not at all). The batch reads the snapshot an action lands on: its sends for the rows and
+// the new id, its tracks for the return's switch. No ops when the level would not change, so a click that moves nothing
 // leaves no undo step; nor for a send without a row left fully down.
-inline TrackEdit setSend(const SnapshotSends &sends, std::int64_t source, std::int64_t destination, double db) {
+inline TrackEdit setSend(const engine::Snapshot &snapshot, std::int64_t source, std::int64_t destination, double db) {
     using namespace send_edits_detail;
     constexpr const char *label = "Change Send Level";
     TrackEdit edit;
+    const auto &sends = snapshot.sends;
     const auto *s = findSend(sends, source, destination);
     if (written(db) == (s != nullptr ? s->gainDb : kSendSilenceDb))
         return edit;
     const auto id = s != nullptr ? s->id : newId(sends);
     if (s == nullptr) {
         edit.ops.push_back(connect(id, source, destination, label));
-        // A new send follows its return's switch.
-        if (returnPre(sends, destination))
-            edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", id}, {"pre", true}}, label));
+        follow(edit, snapshot.findTrack(destination), id, label); // a new send follows its return's switch
     }
     edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", written(db)}}, label));
     return edit;
 }
 // Live's Enable Send, and its undoing: a row switched on or off; a new row, fully down, when there
 // is none to switch on. Nothing to do when the send is already as asked.
-inline TrackEdit enableSend(const SnapshotSends &sends, std::int64_t source, std::int64_t destination, bool on) {
+inline TrackEdit enableSend(const engine::Snapshot &snapshot, std::int64_t source, std::int64_t destination, bool on) {
     using namespace send_edits_detail;
     const char *label = on ? "Enable Send" : "Disable Send";
     TrackEdit edit;
+    const auto &sends = snapshot.sends;
     const auto *s = findSend(sends, source, destination);
     if (s != nullptr ? s->enabled == on : !on) {
         edit.refusal = on ? "The send is on already." : "The send is off already.";
@@ -145,18 +147,18 @@ inline TrackEdit enableSend(const SnapshotSends &sends, std::int64_t source, std
     }
     const auto id = newId(sends);
     edit.ops.push_back(connect(id, source, destination, label));
-    if (returnPre(sends, destination))
-        edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", id}, {"pre", true}}, label));
+    follow(edit, snapshot.findTrack(destination), id, label);
     edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
     return edit;
 }
 // Live's Enable All Sends (§18.4: "right-click on a Return track's Send knob and select Enable Send or
 // Enable All Sends"): every send of the return `source` switched on, to each return, itself included,
 // as one batch; a new row for each that has none, fully down, each with its own id.
-inline TrackEdit enableAllSends(const SnapshotSends &sends, std::int64_t source, const std::vector<std::int64_t> &returns) {
+inline TrackEdit enableAllSends(const engine::Snapshot &snapshot, std::int64_t source, const std::vector<std::int64_t> &returns) {
     using namespace send_edits_detail;
     constexpr const char *label = "Enable All Sends";
     TrackEdit edit;
+    const auto &sends = snapshot.sends;
     auto id = newId(sends);
     for (const auto destination : returns) {
         const auto *s = findSend(sends, source, destination);
@@ -166,8 +168,7 @@ inline TrackEdit enableAllSends(const SnapshotSends &sends, std::int64_t source,
             continue;
         }
         edit.ops.push_back(connect(id, source, destination, label));
-        if (returnPre(sends, destination))
-            edit.ops.push_back(track_edits_detail::op("routing.setPreFader", {{"id", id}, {"pre", true}}, label));
+        follow(edit, snapshot.findTrack(destination), id, label);
         edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
         ++id;
     }
