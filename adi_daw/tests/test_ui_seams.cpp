@@ -47,6 +47,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -1065,6 +1066,19 @@ void sendsAsBatches() {
               ui::sendOn(*kick, nullptr) && !ui::sendOn(*reverb, nullptr),
           "without a row: fully down; a track's send on, a return's off until Enable Send");
 
+    // A routing row of another kind, which the snapshot's `sends` leave out: a sidechain from Kick into
+    // the group, with an id above every send's. A new send's id comes from the highest routing id of
+    // any kind, `Snapshot::maxRoutingId` (#403, N39), never from the sends alone.
+    auto sidechain = [&sub](std::int64_t id) {
+        OpRequest r;
+        r.opType = "routing.connect";
+        r.payload = {{"id", id}, {"srcKind", "track"}, {"src", 2}, {"dstKind", "track"}, {"dst", 3}, {"kind", "sidechain"}};
+        r.label = "Connect";
+        return sub.submit(std::move(r)).ok;
+    };
+    check(sidechain(500) && view.current()->maxRoutingId == 500 && view.current()->sends.empty(),
+          "a sidechain row, id 500: the highest routing id, and no send");
+
     // Turning Kick's send A up writes the row, then its level: one undo step.
     auto edit = ui::setSend(*view.current(), 2, 10, -12);
     check(edit.refusal.empty() && edit.ops.size() == 2 && edit.ops[0].opType == "routing.connect" &&
@@ -1072,6 +1086,7 @@ void sendsAsBatches() {
               edit.ops[0].payload["dst"] == 10 && edit.ops[1].opType == "routing.setGain" &&
               edit.ops[1].payload["id"] == edit.ops[0].payload["id"] && edit.ops[1].payload["db"] == -12.0,
           "a new send: the row, then its level");
+    check(edit.ops.size() == 2 && edit.ops[0].payload["id"] == 501, "its id is one past the highest routing id, past the sidechain's");
     check(sub.submit(std::move(edit.ops)).ok && sub.nextUndo() && sub.nextUndo()->opCount == 2 &&
               sub.nextUndo()->label == "Change Send Level",
           "one undo step, named");
@@ -1210,16 +1225,50 @@ void sendsAsBatches() {
           "undo puts A back to Post, its choice gone and its sends after the fader");
 
     // Enable All Sends on B Delay (Live 12 §18.4): a row to A and to itself, each with its own id, fully
-    // down, one step; again, nothing to do.
+    // down, one step; again, nothing to do. A second sidechain row, above every send's id again: the
+    // batch's ids are consecutive from the highest routing id.
+    check(sidechain(700) && view.current()->maxRoutingId == 700, "a second sidechain row, id 700, above every send's");
     const std::vector<std::int64_t> both{10, 11};
     auto all = ui::enableAllSends(*view.current(), 11, both);
     check(all.refusal.empty() && all.ops.size() == 4 && all.ops[0].opType == "routing.connect" &&
-              all.ops[2].opType == "routing.connect" && all.ops[2].payload["id"] != all.ops[0].payload["id"] &&
+              all.ops[2].opType == "routing.connect" && all.ops[0].payload["id"] == 701 && all.ops[2].payload["id"] == 702 &&
               sub.submit(std::move(all.ops)).ok && sub.nextUndo()->label == "Enable All Sends" &&
-              ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr,
-          "Enable All Sends: B to A and B to itself, two new rows, one undo step");
+              ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr &&
+              view.current()->maxRoutingId == 702,
+          "Enable All Sends: B to A and B to itself, two new rows with consecutive ids past the sidechain's, one undo step");
     check(ui::enableAllSends(*view.current(), 11, both).refusal == "Every send of this return is on already.",
           "again: every send is on already");
+
+    // No id left: a routing row at INT64_MAX. A new send, from a knob, Enable Send or Enable All Sends,
+    // is refused with the reason and writes nothing; an existing row's level still moves. The row
+    // undone, the next send takes the id after the highest again.
+    constexpr auto lastId = std::numeric_limits<std::int64_t>::max();
+    check(sidechain(lastId) && view.current()->maxRoutingId == lastId, "a routing row at INT64_MAX: the highest id the file can hold");
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok, "C Return again, which no send of B reaches");
+    }
+    auto noId = ui::setSend(*view.current(), 2, 11, -6);
+    check(noId.ops.empty() && noId.refusal == ui::kSendNoIdLeft, "a new send from a knob is refused: no routing id is left");
+    auto noIdEnable = ui::enableSend(*view.current(), 3, 10, true);
+    check(noIdEnable.ops.empty() && noIdEnable.refusal == ui::kSendNoIdLeft, "Enable Send on a send without a row: refused the same");
+    auto noIdAll = ui::enableAllSends(*view.current(), 11, {10, 11, 12});
+    check(noIdAll.ops.empty() && noIdAll.refusal == ui::kSendNoIdLeft,
+          "Enable All Sends needing one new row: refused whole, nothing switched on");
+    auto level = ui::setSend(*view.current(), 2, 10, -20);
+    check(level.refusal.empty() && level.ops.size() == 1 && sub.submit(std::move(level.ops)).ok &&
+              ui::findSend(view.current()->sends, 2, 10)->gainDb == -20.0,
+          "an existing row's level still moves");
+    check(sub.undo().ok && sub.undo().ok && sub.undo().ok && view.current()->maxRoutingId == 702 &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: the level, C Return and the INT64_MAX row");
+    auto after = ui::setSend(*view.current(), 2, 11, -6);
+    check(after.refusal.empty() && after.ops.size() == 2 && after.ops[0].payload["id"] == 703 && sub.submit(std::move(after.ops)).ok &&
+              ui::findSend(view.current()->sends, 2, 11) != nullptr && ui::findSend(view.current()->sends, 2, 11)->id == 703,
+          "the next send takes 703, one past the highest again, and commits");
 }
 
 void audioDropAsOneStep() {

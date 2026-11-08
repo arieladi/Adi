@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <new>
 #include <optional>
 #include <set>
@@ -1767,6 +1768,47 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.mark(DirtySet::All);
     root.frame();
     render("adi-sends.png");
+    // No routing id left (N39): a routing row at INT64_MAX, then 3 Audio's send B, which has no row,
+    // turned up in the Mixer View. Nothing lands: the knob goes back fully down, no undo step, and the
+    // Status Bar says why. The row undone, the knob commits a row with the id after the highest.
+    {
+        OpRequest r;
+        r.opType = "routing.connect";
+        r.payload = {{"id", std::numeric_limits<std::int64_t>::max()}, {"srcKind", "track"}, {"src", 3},
+                     {"dstKind", "track"}, {"dst", 4}, {"kind", "sidechain"}};
+        r.label = "Connect";
+        check(submitter.submit(std::move(r)).ok, "a sidechain row at INT64_MAX");
+        root.frame();
+        column = rowOf(root.mixerView, 3);
+        const auto stepAtTop = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+        check(column != nullptr && column->sendKnobs().size() == 2 && findSend(root.reader().sends(), 3, 6) == nullptr &&
+                  root.reader().get() != nullptr && root.reader().get()->maxRoutingId == std::numeric_limits<std::int64_t>::max(),
+              "3 Audio's send B has no row, and the file's highest routing id is the largest it can hold");
+        if (column != nullptr && column->sendKnobs().size() == 2) {
+            column->sendKnobs()[1]->setValue(-6, juce::sendNotificationSync);
+            root.frame();
+            check(root.error() == kSendNoIdLeft && findSend(root.reader().sends(), 3, 6) == nullptr &&
+                      column->sendKnobs()[1]->getValue() <= kSendFloorDb && submitter.nextUndo()->txnId == stepAtTop,
+                  "turned up with no id left: refused, the knob back fully down, no undo step, the Status Bar says why");
+            render("adi-send-no-id.png");
+            check(root.command(AppCommands::Undo), "undo the INT64_MAX row");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            const auto highest = root.reader().get()->maxRoutingId;
+            check(column != nullptr && highest < std::numeric_limits<std::int64_t>::max(), "the highest id is the sends' again");
+            if (column != nullptr) {
+                column->sendKnobs()[1]->setValue(-6, juce::sendNotificationSync);
+                root.frame();
+                const auto *sendB = findSend(root.reader().sends(), 3, 6);
+                check(sendB != nullptr && sendB->id == highest + 1 && submitter.nextUndo()->label == "Change Send Level" &&
+                          submitter.nextUndo()->opCount == 2,
+                      "the row gone, the knob commits 3 Audio's send B with the id after the highest, one step");
+                check(root.command(AppCommands::Undo), "undo");
+                root.frame();
+                column = rowOf(root.mixerView, 3);
+            }
+        }
+    }
     // Hide/Show Sends (§42.1, Ctrl/Cmd+Alt+S; Live 12's Arrangement Track Controls): the sends out of
     // the track controls, ADI-Q and ADI-L moving up under volume and pan. The Mixer View keeps its
     // own (Live 12's Mixer Controls), its strips losing theirs with that toggle alone.

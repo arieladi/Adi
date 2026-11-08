@@ -808,6 +808,14 @@ void MixerStrip::commitSend(std::size_t index) {
     if (!current || index >= sends_.size())
         return;
     auto edit = setSend(*current, track_, returns_[index], sends_[index]->getValue());
+    if (!edit.refusal.empty()) {
+        // A new row with no routing id left (N39): nothing lands, so the knob goes back to its row's
+        // level, fully down without one, and the Status Bar says why.
+        sends_[index]->setValue(std::clamp(sendLevel(findSend(current->sends, track_, returns_[index])), kSendFloorDb, kSendTopDb),
+                                juce::dontSendNotification);
+        panel_.root.say(edit.refusal);
+        return;
+    }
     panel_.root.submitEdits(std::move(edit.ops));
 }
 void MixerStrip::enableSend(std::size_t index, bool on) {
