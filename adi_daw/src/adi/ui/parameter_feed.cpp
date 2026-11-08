@@ -30,6 +30,7 @@ void ParameterFeed::publish(engine::Session &session) {
                     if (!d)
                         continue;
                     data.declared.push_back({d->id, d->name, d->automatable && !d->missing});
+                    data.defaults[d->id] = d->defaultValue.normalized;
                     panel::Record r;
                     r.id = d->id;
                     r.name = d->name;

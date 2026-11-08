@@ -65,7 +65,7 @@ def clean(t):
 lines = [
     "# Settings catalogue",
     "",
-    "Every setting the Settings Reference (v0.4) describes, generated from its",
+    "Every setting the Settings Reference describes, generated from its",
     "source so the two cannot drift, for the settings registry (`src/adi/settings/`,",
     "ADR-0152) to fill from. Our own columns only: the setting, ADI's answer and its",
     "status. The Live-manual column and the screenshots stay in the Word document",

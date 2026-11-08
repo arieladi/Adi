@@ -8,6 +8,17 @@
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
 namespace adi::ui {
+namespace {
+// A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
+// `withFileExtension` cuts the name at its last dot, so "Song v1.2" would become "Song v1.adi"
+// where Live writes "Song v1.2.als". The native choosers on Windows and macOS add the extension
+// themselves; Linux's hand the typed name back.
+juce::File withAdiExtension(const juce::File &file) {
+    if (file.hasFileExtension("adi"))
+        return file;
+    return file.getParentDirectory().getChildFile(file.getFileName() + ".adi");
+}
+} // namespace
 class AdiApplication final : public juce::JUCEApplication,
                              private juce::Timer,
                              private juce::ChangeListener {
@@ -262,6 +273,22 @@ class AdiApplication final : public juce::JUCEApplication,
             }),
             true);
     }
+    // Save As, once the chooser has a file: the document carries on in it and the window takes
+    // its name, and that is all Live shows (manual 5.4.1). As after New and Open, a success says
+    // nothing in the Status Bar and clears what a refusal left there (parity-7.2-shell row 4);
+    // only a warning the store or the session reports goes there. The store never overwrites,
+    // so an existing file is refused and the Status Bar says why, where Live asks first and
+    // then replaces.
+    void saveAs(const juce::File &file) {
+        if (!document_ || !root_ || !window_)
+            return;
+        if (!document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()))) {
+            root_->say(document_->error());
+            return;
+        }
+        window_->setName("ADI - " + file.getFileNameWithoutExtension());
+        root_->say(document_->warning());
+    }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {
             systemRequestedQuit();
@@ -272,10 +299,26 @@ class AdiApplication final : public juce::JUCEApplication,
             return true;
         }
         if (id == AppCommands::SaveAs) {
-            // Live's Save As writes a new file and carries on in it (ADR-0203 d6). The
-            // store has no Save As yet; it is the engine lane's (LANES §3 item 6).
-            root_->say("Save As is not built yet: it waits for the engine's Save As.");
-            return false;
+            // Live's Save Live Set As (manual 5.4.1, 41.3; ADR-0203 d6): a new file the project
+            // carries on in. A save chooser for `.adi`, opened beside the current file; the
+            // document copies and switches (`Store::saveAs`, #380, N3).
+            if (chooser_)
+                return false;
+            const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
+                document_->store().path().u8string().c_str())));
+            chooser_ = std::make_unique<juce::FileChooser>("Save ADI project as", current, "*.adi");
+            chooser_->launchAsync(juce::FileBrowserComponent::saveMode |
+                                      juce::FileBrowserComponent::canSelectFiles,
+                                  [this](const juce::FileChooser &chooser) {
+                                      const auto file = chooser.getResult();
+                                      if (file != juce::File{})
+                                          saveAs(withAdiExtension(file));
+                                      juce::MessageManager::callAsync([this] {
+                                          if (juce::JUCEApplicationBase::getInstance() == this)
+                                              chooser_.reset();
+                                      });
+                                  });
+            return true;
         }
         // The Mix View in a window of its own, or docked back (ADR-0209 d11); F4 while it opens
         // in a window opens or closes that window.
@@ -316,7 +359,7 @@ class AdiApplication final : public juce::JUCEApplication,
             auto file = chooser.getResult();
             if (file != juce::File{}) {
                 if (create)
-                    file = file.withFileExtension("adi");
+                    file = withAdiExtension(file);
                 install(file, create);
             }
             // Do not destroy the chooser while its completion callback is on the stack.

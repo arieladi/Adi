@@ -9,6 +9,7 @@
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -2913,6 +2914,130 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
+// d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
+// producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
+void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "strip-undo.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "a project whose plug-ins the loader makes");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "strip");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    // As ui_main.cpp wires it: a refusal's reason goes to the Status Bar.
+    root.devices.gesture = [&](std::int64_t id, const std::string &param, engine::ParamEventKind kind,
+                               double value) {
+        const bool ok = document->parameterGesture(id, param, kind, value);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    document->tick(0); // the timer's frame publishes the feed
+    root.frame();
+    root.frame();
+    const bool shown = root.devices.panels.size() == 1 && root.devices.panels[0]->controls.size() == 2 &&
+                       root.devices.panels[0]->controls[0]->slider.isVisible();
+    check(shown, "the strip shows the device's two controls, from the document's feed");
+    if (!shown) {
+        document->release();
+        return;
+    }
+    auto &cutoff = root.devices.panels[0]->controls[0]->slider;
+    auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(3));
+    const auto titleBefore = root.undoTitle(false);
+    cutoff.onDragStart();
+    cutoff.setValue(.65, juce::sendNotificationSync);
+    cutoff.setValue(.8, juce::sendNotificationSync);
+    check(knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .8) < 1e-9 &&
+              root.undoTitle(false) == titleBefore && root.error().empty(),
+          "while the mouse is down the knob moves the plug-in at once and nothing is written");
+    cutoff.onDragEnd();
+    document->tick(0);
+    root.frame();
+    check(root.undoTitle(false) == "Undo UI knobs: Cutoff" && root.error().empty() &&
+              std::abs(root.devices.panels[0]->controls[0]->slider.getValue() - .8) < 1e-9,
+          "mouse up: ONE undo step, named for the device and its control, and the knob stays where it was left");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-strip-param-undo.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    auto rowsOf = [&] {
+        std::size_t rows = 0;
+        for (const auto &p : document->session().model().pluginParams)
+            rows += p.deviceId == 3 ? 1 : 0;
+        return rows;
+    };
+    auto rowValue = [&] {
+        for (const auto &p : document->session().model().pluginParams)
+            if (p.deviceId == 3 && p.paramId == "cutoff")
+                return p.normalized;
+        return -1.0;
+    };
+    check(root.devices.panels[0]->controls[0]->getWantsKeyboardFocus() && !cutoff.getWantsKeyboardFocus() &&
+              root.devices.panels[0]->controls[0]->getNumChildComponents() > 0,
+          "a click on the knob lands the focus on its control: the slider declines it (manual 41.6's keys need it)");
+    // Live 12 manual 41.6: Delete on a control is Return to Default, where the device's Delete is
+    // Delete (row 6). Through the peer, as the key arrives: the focused control takes it.
+    {
+        UiPeerRoot host;
+        host.setSize(root.getWidth(), root.getHeight());
+        host.addAndMakeVisible(root);
+        host.setVisible(true);
+        host.addToDesktop(0);
+        std::vector<std::string> submitted;
+        root.devices.submit = [&](const std::string &op, Payload) {
+            submitted.push_back(op);
+            return true;
+        };
+        auto &control = *root.devices.panels[0]->controls[0];
+        control.grabKeyboardFocus();
+        auto *peer = host.getPeer();
+        const juce::KeyPress del(juce::KeyPress::deleteKey);
+        check(peer != nullptr && control.hasKeyboardFocus(false) && peer->handleKeyPress(del) && submitted.empty() &&
+                  knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
+                  root.devices.panels.size() == 1 && root.error().empty(),
+              "Delete on the focused knob returns the parameter to the plug-in's default and removes no device");
+        document->tick(0);
+        root.frame();
+        check(root.undoTitle(false) == "Undo UI knobs: Cutoff" && rowsOf() == 1 && std::abs(rowValue() - .5) < 1e-9 &&
+                  std::abs(cutoff.getValue() - .5) < 1e-9,
+              "Return to Default is one undo step of its own, and the knob shows the default");
+        root.devices.panels[0]->grabKeyboardFocus();
+        check(root.devices.panels[0]->hasKeyboardFocus(false) && peer->handleKeyPress(del) &&
+                  submitted == std::vector<std::string>{"device.remove"},
+              "Delete on the focused device is still Delete");
+        root.devices.submit = nullptr;
+        host.removeChildComponent(&root);
+        host.removeFromDesktop();
+    }
+    check(root.command(AppCommands::Undo) && root.undoTitle(false) == "Undo UI knobs: Cutoff" && rowsOf() == 1 &&
+              std::abs(rowValue() - .8) < 1e-9,
+          "one Undo takes Return to Default back to where the drag left the parameter");
+    check(root.command(AppCommands::Undo) && root.undoTitle(false) == titleBefore && rowsOf() == 0,
+          "and one more takes the whole drag back: the parameter is never touched again, as before it (ADR-0124 d4)");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
@@ -4022,9 +4147,13 @@ int main(int argc, char **argv) {
                 return true;
             }
             if (id == AppCommands::SaveAs) {
+                // As the application does once its chooser has a file (Live 41.3; N3): the
+                // document carries on in the new file; the Status Bar says nothing on success,
+                // as after New and Open (only a warning), and why on a refusal.
                 ++saveAs;
-                integrated.say("Save As waits for the engine's (ADR-0203 d6)");
-                return false;
+                const bool saved = document->saveAs(temp.path() / "integrated-as.adi");
+                integrated.say(saved ? document->warning() : document->error());
+                return saved;
             }
             if (id != AppCommands::TakeSnapshot)
                 return false;
@@ -4092,11 +4221,43 @@ int main(int argc, char **argv) {
         check(document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
                   opsBeforeSnapshot,
               "and writes no op");
-        check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier |
-                                                            juce::ModifierKeys::shiftModifier,
-                                                   0)) &&
-                  saveAs == 1 && !integrated.error().empty(),
-              "Save As reaches the application, which says why it cannot yet");
+        // Save As (Live 12 manual 5.4.1, 41.3): the window at 1440 x 900 points for the PR's
+        // picture, the Status Bar along its foot (ADI_UI_PARITY).
+        integrated.setSize(1440, 900);
+        auto shotIntegrated = [&integrated](const char *name) {
+            const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+            if (pictures.isEmpty())
+                return;
+            juce::Image image(juce::Image::ARGB, 2 * integrated.getWidth(), 2 * integrated.getHeight(),
+                              true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                integrated.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile(name);
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        };
+        const auto saveAsKey = juce::KeyPress(
+            's', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0);
+        integrated.say("a message a success clears");
+        check(integrated.keyPressed(saveAsKey) && saveAs == 1 && integrated.error().empty() &&
+                  document->name() == "integrated-as" &&
+                  std::filesystem::equivalent(document->store().path(), temp.path() / "integrated-as.adi") &&
+                  document->session().model().tracks.size() == 2,
+              "Ctrl/Cmd+Shift+S saves as: the document carries on in the new file, the Status Bar "
+              "cleared (Live 41.3)");
+        integrated.frame();
+        shotIntegrated("adi-save-as.png");
+        check(integrated.keyPressed(saveAsKey) && saveAs == 2 &&
+                  integrated.error().find("already exists") != std::string::npos &&
+                  document->name() == "integrated-as",
+              "the same file again is refused, the Status Bar saying why; nothing moves");
+        integrated.frame();
+        shotIntegrated("adi-save-as-refused.png");
+        integrated.say({});
         OpRequest tempoChange;
         tempoChange.opType = "project.insertTempoEvent";
         tempoChange.payload = {{"pos", 2 * textproj::kPPQ}, {"bpm", 60.0}, {"curve", 0}};
@@ -5889,6 +6050,7 @@ int main(int argc, char **argv) {
     groupTracks(commands, temp.path());
     footRows(commands, temp.path());
     newProject(commands, temp.path());
+    stripParamUndo(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     rangeSelection(commands, temp.path());

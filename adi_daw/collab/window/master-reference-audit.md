@@ -106,8 +106,8 @@ MR § is the Master Reference's section.
 |---|---|---|
 | The device chain: DAW-drawn panels, fold, delete, rename, Configure | 3.4, 9.2 | Built |
 | ADI's searchable Parameter List button beside Configure | 3.4, 9.2 (ADR-0150 d3) | Missing |
-| The parameter context menu: Edit MIDI Map, Show Automation, Return to Default | 3.7 | Missing: the menu is the window's; Return to Default waits for N7 |
-| A drag on a control is one undo step | 9.1 | Waits (N7) |
+| The parameter context menu: Edit MIDI Map, Show Automation, Return to Default | 3.7 | Partial: Return to Default is built as Live's key, Delete on a clicked control (`window/strip-param-undo`, parity-7.4 row 16), a gesture to the plug-in's declared default; the menu itself is missing, and its Edit MIDI Map and Show Automation wait for MIDI mapping and the automation lanes in the window |
+| A drag on a control is one undo step | 9.1 | Built (`window/strip-param-undo`, N7): Begin, Values and End through `ParamOps::uiEvent`, one step with its opener; the undone value reaches the plug-in at the next load only (N44) |
 | A plug-in's own window, floating, from the wrench | 3.4 | Waits (N8) |
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
 | Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Waits: the sample slot has no op the window can call (new Need) |
@@ -140,7 +140,7 @@ MR § is the Master Reference's section.
 
 | Item | MR § | Window today |
 |---|---|---|
-| File: New, Open, Take Snapshot (Ctrl+S, the name pre-filled), Save As (Ctrl+Shift+S) | 3.6, 12 | Built; Save As says it waits (N3) |
+| File: New, Open, Take Snapshot (Ctrl+S, the name pre-filled), Save As (Ctrl+Shift+S) | 3.6, 12 | Built; Save As through `Store::saveAs` (`window/save-as`, N3), never replacing an existing file |
 | File: Save a Copy, Collect All and Save, the ZIP export beside it (no key) | 1.6, 11.3 | Missing as commands; each waits on the store (new Need) |
 | File: Back up project to cloud; Link ArtCraft app… | 11.4, 9.5 | Later (P2) |
 | Edit: Undo, Redo, Delete, Rename | 3.6 | Built |

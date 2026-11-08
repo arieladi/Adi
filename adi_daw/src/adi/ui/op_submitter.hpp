@@ -30,6 +30,16 @@
 // be left describing itself as complete. There is nothing for this type to add
 // and no RAII scope to invent — `submit(span)` is the mechanism.
 //
+// A PREPARED BATCH IS THE ENGINE'S, AND ITS HELPER COMMITS IT. The engine
+// prepares an edit off the callback (a split, a device paste, a built-in
+// insert, a sample assignment) as ops plus the undo head it expects
+// (ADR-0153), and its own `commit*` helper refuses when the project is no
+// longer the file it was prepared on or the head has moved. `commitPrepared`
+// runs that helper against this submitter's store and adds only what `submit`
+// adds: the actor stamp, the refresh, `stale` and `headFound`. The window may
+// put ONE op of its own on the end, so "split here and deactivate the right
+// part" is one undo step.
+//
 // WHAT THIS DELIBERATELY DOES NOT DO: COALESCE A DRAG.
 //
 // A fader drag emits many values and must leave ONE undo entry. An earlier
@@ -68,10 +78,12 @@
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 
+#include <concepts>
 #include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -80,6 +92,14 @@ class Store;
 }
 
 namespace adi::ui {
+
+/// A batch the engine prepared (ADR-0153): its ops, and in `options` the undo
+/// head it expects. `clip_edit::PreparedEdit`, `PreparedDevicePaste`,
+/// `PreparedBuiltinInsert` and `PreparedSampleAssignment` all have this shape.
+template <class P>
+concept PreparedBatch = requires(P& p) {
+    { p.requests } -> std::same_as<std::vector<OpRequest>&>;
+};
 
 /// What the caller gets back. A narrowed `CommitResult`: the fields a UI can
 /// actually act on, and nothing invented.
@@ -95,8 +115,13 @@ struct SubmitResult {
     std::vector<std::int64_t> seqs;          ///< one per op, in order
     std::string error;
     std::vector<ValidationIssue> issues;
-    /// ADR-0153: refused because the undo head had moved. Nothing was written,
-    /// and the UI should re-read and re-ask rather than retrying blindly.
+    /// ADR-0153: the engine refused a prepared batch. Nothing was written, and
+    /// the UI should re-read and re-ask rather than retrying blindly. Two
+    /// causes, told apart by `headFound`: the undo head moved (`headFound` is
+    /// the head the journal met), or the project is no longer the file the
+    /// batch was prepared on (`headFound` empty; the helper's own check, made
+    /// before any transaction). A refusal worded "the project moved" fits
+    /// only the first.
     bool stale = false;
     std::optional<std::int64_t> headFound;
     /// The `ProjectView` generation after the refresh this write triggered.
@@ -184,6 +209,72 @@ public:
         return run(OpJournal(store_).commit(std::span<const OpRequest>(requests)));
     }
 
+    /// A PREPARED batch, through the engine's own commit helper (ADR-0153).
+    ///
+    /// The engine prepares an edit off the callback -- `clip_edit::prepareSplit`,
+    /// `prepareDevicePaste`, `prepareBuiltinInsert`, `prepareSampleAssignment` --
+    /// as ops plus the undo head it expects, and its `commit*` helper checks
+    /// two things the journal alone cannot: that the project is still the file
+    /// the batch was prepared on, and, inside the transaction, that the head
+    /// has not moved. Neither check belongs here; what belongs here is what
+    /// `submit` does around a commit and no caller should repeat: the actor
+    /// stamp, the refresh on success, `stale` and `headFound` on a moved head.
+    /// So this runs `helper(store, prepared, actor)` against this submitter's
+    /// store and hands the result to the same `run` as `submit`.
+    ///
+    /// `appended` is the window's ONE op of its own on the end of the batch,
+    /// so "split here and deactivate the right part" is one undo step: a
+    /// `clip.setMute` after `prepareSplit`. One, not many: a second op of the
+    /// window's is a second thing the batch is about, and that is a prepared
+    /// edit for the engine to offer.
+    ///
+    /// By value: a prepared batch is used once, because the head it expects is
+    /// stale the moment it commits. Move it in.
+    template <class Prepared, class Helper>
+        requires PreparedBatch<Prepared> &&
+                 std::is_invocable_r_v<CommitResult, Helper&, Store&, Prepared&, Actor>
+    SubmitResult commitPrepared(Prepared prepared, Helper helper,
+                                std::optional<OpRequest> appended = std::nullopt) {
+        for (auto& r : prepared.requests) stamp(r);
+        if (appended) {
+            stamp(*appended);
+            prepared.requests.push_back(std::move(*appended));
+        }
+        return run(helper(store_, prepared, actor_));
+    }
+
+    /// The same for a batch the helper owns but whose requests are in reach
+    /// (`clip_edit::MaterialEdit::edit.requests`, for `commitMaterial`): the
+    /// requests are stamped first, as `submit` stamps them, then the helper
+    /// runs with this submitter's actor. Neither `commitMaterial` nor
+    /// `commitPrepared` has the `(Store&, Actor)` shape itself: wrap it in a
+    /// lambda that captures the edit,
+    ///
+    ///     sub.commitPrepared(material.edit.requests,
+    ///         [&](Store& s, Actor a) { return clip_edit::commitMaterial(s, material, a); });
+    ///
+    /// The engine's helpers set the actor on every request and leave the
+    /// detail alone, so the stamp survives the commit. Nothing to append to:
+    /// an import or a bounce is the whole of what its batch is about.
+    template <class Helper>
+        requires std::is_invocable_r_v<CommitResult, Helper&, Store&, Actor>
+    SubmitResult commitPrepared(std::vector<OpRequest>& requests, Helper helper) {
+        for (auto& r : requests) stamp(r);
+        return run(helper(store_, actor_));
+    }
+
+    /// And for a batch whose ops the helper keeps entirely to itself
+    /// (`commitTrackBounce`, whose requests sit behind `TrackBounce::Data`):
+    /// the actor goes in through the helper, again a lambda that captures the
+    /// bounce and the document generation it takes. KNOWN LIMIT: this form
+    /// cannot stamp `actorDetail`, so an agent's bounce lands with the detail
+    /// empty until `commitTrackBounce` takes one (the engine lane's).
+    template <class Helper>
+        requires std::is_invocable_r_v<CommitResult, Helper&, Store&, Actor>
+    SubmitResult commitPrepared(Helper helper) {
+        return run(helper(store_, actor_));
+    }
+
     [[nodiscard]] Actor actor() const noexcept { return actor_; }
     [[nodiscard]] const std::string& actorDetail() const noexcept { return actorDetail_; }
 
@@ -205,7 +296,10 @@ private:
         s.issues = std::move(c.issues);
         s.stale = c.stale;
         s.headFound = c.headFound;
-        if (s.ok) s.generation = view_.refresh(store_);
+        // A prepared batch with nothing in it reports success and no seqs, as
+        // `submit` of an empty vector does: nothing was written, so nothing
+        // refreshes (ADR-0201 refreshes after a COMMITTED op).
+        if (s.ok && !s.seqs.empty()) s.generation = view_.refresh(store_);
         return s;
     }
 
