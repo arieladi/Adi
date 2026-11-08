@@ -806,7 +806,7 @@ void testChannelConfig() {
 void testCatalogue() {
     section("the catalogue: every row a setting, or deliberately absent with a reason (ADR-0156)");
     const auto rows = readCatalogue();
-    check(rows.size() == 211, "the catalogue has the Settings Reference's 211 rows, read " + std::to_string(rows.size()));
+    check(rows.size() == 236, "the catalogue has the Settings Reference's 236 rows (v1.2), read " + std::to_string(rows.size()));
 
     std::map<std::string, int> inAnswered, inAbsent;
     for (const auto& a : answeredRows()) ++inAnswered[a.row];
@@ -826,7 +826,7 @@ void testCatalogue() {
     for (const auto& [name, n] : inAbsent) if (!names.count(name)) unknown += "\n        " + name;
     check(unknown.empty(), "every listed row is a row of the catalogue:" + unknown);
     check(answeredRows().size() + absentRows().size() == rows.size(),
-          "answered " + std::to_string(answeredRows().size()) + " + absent " + std::to_string(absentRows().size()) + " = 211");
+          "answered " + std::to_string(answeredRows().size()) + " + absent " + std::to_string(absentRows().size()) + " = 236");
 
     std::string missingKeys;
     bool nonEmpty = true;
