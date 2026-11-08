@@ -183,8 +183,10 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&stop, "Stop", "Stops playback."},
         {&record, "Arrangement Record", "Records into the arrangement. F9."},
         {&overdub, "MIDI Arrangement Overdub", "Records MIDI on top of what is there."},
-        {&automationArm, "Automation Arm", "Records automation while recording."},
-        {&reEnable, "Re-Enable Automation", "Brings back automation you overrode."},
+        {&automationArm, "Automation Arm", "While on, a control moved during Arrangement Record "
+                                           "becomes automation."},
+        {&reEnable, "Re-Enable Automation", "Lit while a control you moved overrides its automation. "
+                                            "Click to follow every envelope again."},
         {&capture, "Capture MIDI", "Turns what you just played into a clip."},
         {&sessionRecord, "Session Record", "Records into Session View (P2)."},
         {&loopStart, "Loop Start", "Where the arrangement loop starts."},
@@ -235,13 +237,33 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     };
     fieldEditor.onEscapeKey = [this] { fieldEditor.setVisible(false); };
     fieldEditor.onFocusLost = [this] { fieldEditor.setVisible(false); };
+    // Live 12 manual 25.4: lit while any automated control's manual value stands in for its
+    // envelope; a click follows every envelope again, "on tape". Not an undo step.
+    reEnable.onClick = [this] {
+        if (!root_.reenableAutomation) {
+            root_.say("Re-Enable Automation: no session holds automation to re-enable.");
+            return;
+        }
+        root_.reenableAutomation(); // a refusal says why; the snapshot unlights the switch
+    };
+    // Live 12 manual 25.1: whether a control moved while Arrangement Record is on becomes automation.
+    automationArm.onClick = [this] {
+        if (!root_.armAutomation) {
+            root_.say("Automation Arm: no session to arm.");
+            return;
+        }
+        const bool armed = !automationArm.getToggleState();
+        root_.armAutomation(armed);
+        automationArm.setToggleState(armed, juce::dontSendNotification);
+        root_.mark(DirtySet::Transport);
+    };
     for (auto *item : items())
         if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo &&
-            item != &tap && item != &position)
+            item != &tap && item != &position && item != &automationArm && item != &reEnable)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
-    automationArm.setToggleState(true, juce::dontSendNotification); // on in Live's default set
+    automationArm.setToggleState(true, juce::dontSendNotification); // on in Live's new Set
 }
 std::vector<BarItem *> TransportBar::items() {
     return {&link,     &tap,           &tempo,    &nudgeDown,     &nudgeUp,   &signature,
@@ -319,6 +341,10 @@ void TransportBar::refresh() {
     }
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
+    // Re-Enable Automation lights from the frame's snapshot (manual 25.4); Automation Arm from the
+    // session, on without one as Live's new Set (manual 25.1).
+    reEnable.setToggleState(root_.reader().automationOverridden(), juce::dontSendNotification);
+    automationArm.setToggleState(!root_.automationArmed || root_.automationArmed(), juce::dontSendNotification);
 }
 void TransportBar::paint(juce::Graphics &g) { g.fillAll(look::frame); }
 void TransportBar::focus() { lastFocused_->grabKeyboardFocus(); }

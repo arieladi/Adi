@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
+#include "adi/automation_lanes.hpp"
 #include "adi/ui/project_document.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
@@ -425,6 +426,116 @@ int main(int argc, char **argv) {
                       strip->parameterGesture(3,"cutoff", ParamEventKind::End, .4) && strip->ops().nextUndo() &&
                       strip->ops().nextUndo()->opCount == 1 && strip->ops().nextUndo()->label == "UI knobs: Cutoff",
                   "a later gesture on the same parameter needs no opener: one op, one step");
+        } catch (const std::exception &e) {
+            check(false, e.what());
+        }
+    }
+    {
+        // Re-Enable Automation lit, and Automation Arm (N26, worklist C1; Live 12 manual 25.1 and
+        // 25.4; MR 6.1, audit rows 97 and 133). A3's device, its Cutoff under the numeric id a
+        // lane's param_ref must parse as, and a lane on it: a strip gesture overrides the lane
+        // (ADR-0162), the snapshot says so, and Re-Enable follows the envelope again. The
+        // reference row says vst3 so the session's own re-read of a changed row finds the
+        // override too (a clap row's ids are hex, which "7" is not); the loader goes by uid.
+        using engine::ParamEventKind;
+        auto armed = ui::ProjectDocument::open(temp.path() / "arm.adi", true, test::knobsLoader("7"), error);
+        check(armed != nullptr, "a project for the automated device");
+        if (armed) try {
+            armed->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','") +
+                                   test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            check(armed->ops().submit(std::move(make)).ok && armed->synchronise(), "a device on 1 MIDI");
+            automation::LaneSpec spec;
+            spec.id = 1;
+            spec.ownerKind = "device";
+            spec.ownerId = 3;
+            spec.paramRef = "7";
+            spec.paramName = "Cutoff";
+            spec.defaultValue = .5;
+            check(armed->ops().submit(automation::createLane(spec)).ok && armed->synchronise(),
+                  "a lane on its Cutoff, with no points: the lane plays its default");
+            armed->tick(0); // the timer's frame: the feed publishes the device
+            auto *knobs = dynamic_cast<test::Knobs *>(armed->session().instanceFor(3));
+            auto snapshot = [&] { return armed->view().current(); };
+            auto laneOverridden = [&] {
+                const auto *lane = snapshot()->findAutomationLane(1);
+                return lane != nullptr && lane->overridden;
+            };
+            auto cutoffRecord = [&]() -> const panel::Record * {
+                const auto feed = armed->parameterFeed().current();
+                if (feed)
+                    for (const auto &data : *feed)
+                        if (data.id == 3 && !data.records.empty())
+                            return &data.records[0];
+                return nullptr;
+            };
+            auto opCount = [&] { return armed->store().db().execAndGet("SELECT count(*) FROM ops").getInt(); };
+            auto headTxn = [&] {
+                const auto head = armed->ops().nextUndo();
+                return head ? head->txnId : std::int64_t{0};
+            };
+            check(knobs != nullptr && snapshot()->automationLanes.size() == 1 && !snapshot()->automationOverridden &&
+                      !laneOverridden() && !armed->session().automationOverridden(),
+                  "nothing is overridden: Re-Enable Automation is unlit");
+            check(cutoffRecord() != nullptr && cutoffRecord()->id == "7" && cutoffRecord()->automated &&
+                      !cutoffRecord()->overridden,
+                  "the strip's feed marks Cutoff automated, not overridden");
+            check(armed->automationArmed() && armed->session().automationArmed() && !armed->session().automationRecording(),
+                  "Automation Arm is on in a new Set (manual 25.1), and the window never records");
+            const auto generationBefore = armed->view().generation();
+            const auto opsBeforeDrag = opCount();
+            const auto txnBefore = headTxn();
+            check(armed->parameterGesture(3, "7", ParamEventKind::Begin, .5) &&
+                      armed->parameterGesture(3, "7", ParamEventKind::Value, .8) && armed->error().empty() &&
+                      armed->session().overriddenLanes().contains(1) && snapshot()->automationOverridden &&
+                      laneOverridden() && armed->view().generation() == generationBefore + 1 && opCount() == opsBeforeDrag &&
+                      headTxn() == txnBefore,
+                  "a value the plug-in takes overrides the lane at once, with no op: the snapshot says so "
+                  "before any frame, under a new generation, and the undo list is untouched (ADR-0162)");
+            check(armed->parameterGesture(3, "7", ParamEventKind::End, .8) && armed->error().empty() &&
+                      opCount() == opsBeforeDrag + 2 && snapshot()->automationOverridden && laneOverridden(),
+                  "End commits the gesture, and the override stands through the submitter's refresh");
+            check(cutoffRecord() != nullptr && cutoffRecord()->overridden, "the strip's feed marks Cutoff overridden");
+            const auto generationAfterEnd = armed->view().generation();
+            armed->tick(0);
+            check(armed->view().generation() == generationAfterEnd && snapshot()->automationOverridden,
+                  "a frame that changes nothing rebuilds nothing, and the switch stays lit");
+            check(armed->ops().undo().ok && armed->synchronise() && snapshot()->automationOverridden && laneOverridden() &&
+                      armed->ops().redo().ok && armed->synchronise() && snapshot()->automationOverridden,
+                  "undo and redo of the move edit the stored value, not the override: it stands (not an op)");
+            const auto opsBeforeReenable = opCount();
+            const auto txnBeforeReenable = headTxn();
+            check(armed->reenableAutomation() && armed->error().empty() && !armed->session().automationOverridden() &&
+                      !snapshot()->automationOverridden && !laneOverridden() && opCount() == opsBeforeReenable &&
+                      headTxn() == txnBeforeReenable,
+                  "Re-Enable Automation: every lane follows its envelope again, in the same call; not an op, "
+                  "not an undo step (manual 25.4)");
+            check(cutoffRecord() != nullptr && cutoffRecord()->automated && !cutoffRecord()->overridden,
+                  "and the strip's feed marks Cutoff automated again at once");
+            check(armed->reenableAutomation() && armed->error().empty() && !snapshot()->automationOverridden,
+                  "with nothing overridden it succeeds and changes nothing");
+            // An override the session finds on its own re-read of the rows (ADR-0162: an op, the
+            // agent, anything that changes an automated value): the submitter refreshes before the
+            // session re-reads, and synchronise() brings the snapshot up in the same call.
+            OpRequest op;
+            op.opType = "device.setParam";
+            op.payload = {{"dev", 3}, {"param", "7"}, {"norm", .3}};
+            const auto generationBeforeOp = armed->view().generation();
+            check(armed->ops().submit(op).ok && !snapshot()->automationOverridden && armed->synchronise() &&
+                      armed->session().overriddenLanes().contains(1) && snapshot()->automationOverridden &&
+                      laneOverridden() && armed->view().generation() == generationBeforeOp + 2,
+                  "an op on the automated parameter: the session finds the override when it re-reads, and "
+                  "synchronise() puts it in the snapshot (one more generation, the rows unchanged)");
+            check(armed->reenableAutomation() && !snapshot()->automationOverridden, "and Re-Enable clears that too");
+            armed->setAutomationArmed(false);
+            check(!armed->automationArmed() && !armed->session().automationArmed() && !armed->session().automationRecording(),
+                  "Automation Arm off: the session is told, recording still never on");
+            armed->setAutomationArmed(true);
+            check(armed->automationArmed(), "and on again");
         } catch (const std::exception &e) {
             check(false, e.what());
         }

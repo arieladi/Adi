@@ -16,6 +16,7 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/automation_lanes.hpp"
 #include "adi/clip_commands.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/history.hpp"
@@ -394,6 +395,52 @@ void everyWriteRefreshesTheView() {
     check(redone.ok, "redo applied");
     check(view.generation() == 3, "redo refreshed the view too");
     check(ui::SnapshotReader{view.current()}.trackCount() == 1, "and the track is back");
+}
+
+void aSubmitterFollowsTheSessionsOverrides() {
+    section("N26: every refresh the submitter makes carries the session's overridden lanes");
+    adi::test::TempDirectory temp("ui_seams", "overrides");
+    auto store = freshProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    check(sub.submit(trackCreate(1, "Drums")).ok, "a track to own a lane");
+    automation::LaneSpec spec;
+    spec.id = 7;
+    spec.ownerKind = "track";
+    spec.ownerId = 1;
+    spec.paramRef = "volume";
+    spec.paramName = "Volume";
+    spec.valueDomain = "real";
+    spec.unit = "dB";
+    check(sub.submit(automation::createLane(spec)).ok, "and a lane on its volume");
+    auto overriddenInView = [&] {
+        const auto current = view.current();
+        const auto* lane = current ? current->findAutomationLane(7) : nullptr;
+        return current && current->automationOverridden && lane && lane->overridden;
+    };
+    check(view.current() && view.current()->findAutomationLane(7) != nullptr && !overriddenInView(),
+          "without a session's set, the offline view: nothing overridden");
+
+    // The set stands for the session's own (Session::overriddenLanes), read at each refresh.
+    std::set<std::int64_t> overridden{7};
+    sub.followOverrides(overridden);
+    check(!overriddenInView(), "following the set rebuilds nothing by itself (the document reconciles)");
+    check(sub.submit(trackCreate(2, "Bass")).ok && overriddenInView(),
+          "the next commit's refresh marks the snapshot and the lane overridden");
+    check(sub.undo().ok && overriddenInView(), "so does an undo's refresh");
+    check(sub.redo().ok && overriddenInView(), "and a redo's");
+    overridden.clear();
+    check(sub.submit(trackCreate(3, "Keys")).ok && !overriddenInView() && view.current()->findAutomationLane(7) != nullptr,
+          "the set cleared (Re-Enable Automation): the next refresh reads nothing overridden, the lane still there");
+    OpRequest bad;
+    bad.opType = "track.create";
+    bad.payload = {{"id", 4}};
+    overridden.insert(7);
+    const auto generation = view.generation();
+    check(!sub.submit(bad).ok && view.generation() == generation && !overriddenInView(),
+          "a refused write refreshes nothing, so the set is not read either");
 }
 
 void aFrameKeepsItsSnapshot() {
@@ -1791,6 +1838,7 @@ int main() {
     stampsTheActor();
     aRefusedOpWritesNothing();
     everyWriteRefreshesTheView();
+    aSubmitterFollowsTheSessionsOverrides();
     aFrameKeepsItsSnapshot();
     aPreparedBatchCommitsAsOneStep();
     aPreparedBatchTakesOneOpOfTheWindows();

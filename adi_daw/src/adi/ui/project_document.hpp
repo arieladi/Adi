@@ -66,6 +66,17 @@ class ProjectDocument final : public engine::BlockProcessor {
     // refuses outright drains nothing, and the older gesture commits on the timer's next frame.
     bool parameterGesture(std::int64_t id, const std::string &param, engine::ParamEventKind,
                           double normalized);
+    // Live's Re-Enable Automation (manual 25.4; MR 6.1; N26): every lane a manual change overrode
+    // this run follows its envelope again, from the playhead at once, and the snapshot's
+    // `automationOverridden` and each lane's `overridden` follow in the same call. Not an op and
+    // not an undo step: the override is session state (ADR-0162), and so is its end. True with
+    // nothing overridden too; false with `error()` when the session's rebuild failed.
+    bool reenableAutomation();
+    // Live's Automation Arm (manual 25.1): whether a control moved while the Arrangement Record
+    // button is on becomes automation. The session's switch, on in a new Set as Live's. The window
+    // does not record yet, so the session is never told that recording is on.
+    void setAutomationArmed(bool armed) noexcept;
+    bool automationArmed() const noexcept { return session_.automationArmed(); }
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
@@ -88,6 +99,12 @@ class ProjectDocument final : public engine::BlockProcessor {
     // Why the producer refused a gesture, for the Status Bar: the device, the parameter or the
     // value, in that order.
     std::string refusalReason(std::int64_t id, const std::string &param);
+    // The snapshot follows the session's overridden lanes (ADR-0162, N26): the session finds an
+    // override when it re-reads the rows, after the submitter's refresh, or a live gesture sets one
+    // with no op at all, and Re-Enable clears them. The view is rebuilt only when the two disagree,
+    // so a frame that changes nothing builds nothing; the rows did not move, so the session has
+    // nothing to re-read after it.
+    void followOverrides();
     std::unique_ptr<Store> store_;
     std::string name_;
     engine::ProjectView view_;

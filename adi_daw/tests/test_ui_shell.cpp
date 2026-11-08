@@ -4,6 +4,7 @@
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/automation_lanes.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -3038,6 +3039,121 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
           "and one more takes the whole drag back: the parameter is never touched again, as before it (ADR-0124 d4)");
     document->release();
 }
+// Re-Enable Automation lit, and Automation Arm (N26, worklist C1; Live 12 manual 25.1 and 25.4;
+// MR 6.1, audit rows 97 and 133): the control bar's two switches over the document's session,
+// wired as ui_main.cpp wires them. A3's device with a lane on its Cutoff, under the numeric id a
+// lane's param_ref must parse as; a drag on the knob overrides the lane (ADR-0162).
+void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-arm.adi", true, test::knobsLoader("7"), error);
+    check(document != nullptr, "a project whose plug-ins the loader makes");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    automation::LaneSpec spec;
+    spec.id = 1;
+    spec.ownerKind = "device";
+    spec.ownerId = 3;
+    spec.paramRef = "7";
+    spec.paramName = "Cutoff";
+    spec.defaultValue = .5;
+    make.push_back(automation::createLane(spec));
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI with a lane on its Cutoff");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "arm");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.gesture = [&](std::int64_t id, const std::string &param, engine::ParamEventKind kind,
+                               double value) {
+        const bool ok = document->parameterGesture(id, param, kind, value);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.reenableAutomation = [&] {
+        const bool ok = document->reenableAutomation();
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.automationArmed = [&] { return document->automationArmed(); };
+    root.armAutomation = [&](bool armed) { document->setAutomationArmed(armed); };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    document->tick(0); // the timer's frame publishes the feed
+    root.frame();
+    root.frame();
+    auto &reEnable = root.transport.reEnable;
+    auto &arm = root.transport.automationArm;
+    check(!reEnable.getToggleState() && arm.getToggleState() && reEnable.getTitle() == "Re-Enable Automation" &&
+              arm.getTitle() == "Automation Arm",
+          "nothing overridden: Re-Enable Automation is unlit, and Automation Arm is on as Live's new Set");
+    const bool shown = root.devices.panels.size() == 1 && root.devices.panels[0]->controls.size() == 2 &&
+                       root.devices.panels[0]->controls[0]->slider.isVisible();
+    check(shown, "the strip shows the automated device's two controls");
+    if (!shown) {
+        document->release();
+        return;
+    }
+    auto &cutoff = root.devices.panels[0]->controls[0]->slider;
+    const auto titleBefore = root.undoTitle(false);
+    cutoff.onDragStart();
+    cutoff.setValue(.8, juce::sendNotificationSync);
+    root.frame();
+    check(reEnable.getToggleState() && root.undoTitle(false) == titleBefore && root.error().empty(),
+          "with the mouse still down, the moved knob's override lights Re-Enable Automation (manual 25.4), nothing written");
+    cutoff.onDragEnd();
+    document->tick(0);
+    root.frame();
+    check(reEnable.getToggleState() && root.undoTitle(false) == "Undo UI knobs: Cutoff",
+          "lit after the gesture commits its one undo step");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-automation-arm.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    const auto titleOverridden = root.undoTitle(false);
+    reEnable.onClick();
+    root.frame();
+    check(!reEnable.getToggleState() && root.undoTitle(false) == titleOverridden && root.error().empty() &&
+              !document->session().automationOverridden(),
+          "a click follows every envelope again: unlit, no undo step, nothing said");
+    reEnable.onClick();
+    root.frame();
+    check(!reEnable.getToggleState() && root.error().empty(), "with nothing overridden a click changes nothing");
+    arm.onClick();
+    root.frame();
+    check(!arm.getToggleState() && !document->automationArmed() && root.error().empty(),
+          "Automation Arm clicked: off on the switch and in the session (manual 25.1)");
+    arm.onClick();
+    root.frame();
+    check(arm.getToggleState() && document->automationArmed(), "and on again");
+    // A root with no session (the hooks unset) says so instead of toggling.
+    root.reenableAutomation = nullptr;
+    root.armAutomation = nullptr;
+    root.automationArmed = nullptr;
+    reEnable.onClick();
+    check(root.error() == "Re-Enable Automation: no session holds automation to re-enable.",
+          "without a session, Re-Enable Automation says so");
+    arm.onClick();
+    root.frame();
+    check(root.error() == "Automation Arm: no session to arm." && arm.getToggleState(),
+          "and Automation Arm says so, showing Live's default, on");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
@@ -6051,6 +6167,7 @@ int main(int argc, char **argv) {
     footRows(commands, temp.path());
     newProject(commands, temp.path());
     stripParamUndo(commands, temp.path());
+    automationArm(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     rangeSelection(commands, temp.path());

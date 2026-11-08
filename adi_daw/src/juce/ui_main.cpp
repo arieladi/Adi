@@ -157,6 +157,16 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        // The control bar's Re-Enable Automation and Automation Arm (manual 25.4, 25.1; N26): the
+        // session's state, through the document.
+        root->reenableAutomation = [this] {
+            const bool ok = document_->reenableAutomation();
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->automationArmed = [this] { return document_->automationArmed(); };
+        root->armAutomation = [this](bool armed) { document_->setAutomationArmed(armed); };
         for (auto *panel : {&root->mixer, &root->mixerView}) {
             panel->tap = [this](std::int64_t track) {
                 return document_->session().openScope(track, .1, engine::ScopePoint::PostFader);
