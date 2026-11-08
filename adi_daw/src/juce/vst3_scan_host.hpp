@@ -16,16 +16,24 @@ inline std::vector<scan::Plugin> probeVst3Bundle(const std::string& path) {
     juce::ScopedJuceInitialiser_GUI initialize;
     juce::VST3PluginFormatHeadless format;
     juce::OwnedArray<juce::PluginDescription> descriptions;
-    format.findAllTypesForFile(descriptions,juce::String::fromUTF8(path.c_str()));
+    const auto requested=juce::String::fromUTF8(path.c_str());
+    format.findAllTypesForFile(descriptions,requested);
     if(descriptions.size()<=0 || static_cast<std::size_t>(descriptions.size())>scan::kMaximumPlugins)
         throw std::runtime_error("VST3 scanner descriptor bound");
+    // JUCE binds each description to the library it enumerated: the bundle on
+    // macOS and Linux, but on Windows the DLL inside a bundle directory
+    // (getLibraryPaths), unless a moduleinfo.json bound the bundle first. The
+    // protocol identity is the requested canonical path, and the owner refuses
+    // any other spelling, so bind every description to it before its
+    // identifier string and XML are serialized.
     std::vector<scan::Plugin> result;
-    for(const auto* description:descriptions) {
-        if(description==nullptr)throw std::runtime_error("missing VST3 scanner descriptor");
-        scan::Plugin value;value.id=description->createIdentifierString().toStdString();
-        value.name=description->name.toStdString();value.vendor=description->manufacturerName.toStdString();
-        value.version=description->version.toStdString();value.features=description->category.toStdString();
-        value.instrument=description->isInstrument;value.data=description->createXml()->toString().toStdString();
+    for(const auto* found:descriptions) {
+        if(found==nullptr)throw std::runtime_error("missing VST3 scanner descriptor");
+        juce::PluginDescription description=*found;description.fileOrIdentifier=requested;
+        scan::Plugin value;value.id=description.createIdentifierString().toStdString();
+        value.name=description.name.toStdString();value.vendor=description.manufacturerName.toStdString();
+        value.version=description.version.toStdString();value.features=description.category.toStdString();
+        value.instrument=description.isInstrument;value.data=description.createXml()->toString().toStdString();
         result.push_back(std::move(value));
     }
     return result;
