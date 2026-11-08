@@ -24,6 +24,10 @@ on:
         description: 'ctest -R regular expression of the tests to run'
         required: true
         default: 'adi_project_files_tests'
+      juce:
+        description: 'Build with JUCE on and Pd off, as the Step 7 UI workflow does (fetches JUCE)'
+        type: boolean
+        default: false
       hardened:
         description: 'Build as the strict leg does (libc++ debug hardening, -Werror)'
         type: boolean
@@ -49,11 +53,16 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Fetch build dependencies, at their pinned commits
-        run: bash adi_daw/tools/fetch_external.sh --build-only
+        env:
+          JUCE: ${{ inputs.juce }}
+        run: |
+          set -euo pipefail
+          if [ "$JUCE" = "true" ]; then bash adi_daw/tools/fetch_external.sh --build-only --with-juce; else bash adi_daw/tools/fetch_external.sh --build-only; fi
 
       - name: Configure
         env:
           HARDENED: ${{ inputs.hardened }}
+          JUCE: ${{ inputs.juce }}
         run: |
           set -euo pipefail
           flags=""
@@ -62,11 +71,13 @@ jobs:
             flags="-D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_DEBUG"
             werror=ON
           fi
+          juceflags=""
+          if [ "$JUCE" = "true" ]; then juceflags="-DADI_WITH_JUCE=ON -DADI_WITH_PD=OFF"; fi
           cmake -S adi_daw -B build-probe \
                 -DCMAKE_BUILD_TYPE=Debug \
                 -DCMAKE_CXX_COMPILER=clang++ \
                 -DCMAKE_CXX_FLAGS="$flags" \
-                -DADI_WERROR="$werror"
+                -DADI_WERROR="$werror" $juceflags
 
       # The inputs reach the shell only through the environment, never pasted into the
       # script, so a target name cannot become a command.
