@@ -4398,6 +4398,28 @@ int main(int argc, char **argv) {
                                                 C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Group and "
               "Ungroup Tracks");
+        // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
+        // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does. Worklist
+        // F1: what undo brings back is pinned in the seams test; this is the menu that offers it.
+        {
+            auto &edits = window.root();
+            std::int64_t victim = 0;
+            for (const auto &t : view.current()->tracks)
+                if (victim == 0 && (t->kind == "audio" || t->kind == "midi") && t->parent == 0)
+                    victim = t->id;
+            const auto countBefore = view.current()->tracks.size();
+            commands.activate(edits); // the Edit menu names the step of the active root
+            edits.arrangement.geometry.selection.track = victim;
+            check(victim != 0 && edits.command(C::DeleteTrack) && view.current()->tracks.size() + 1 == countBefore &&
+                      edits.undoTitle(false) == "Undo Delete Track",
+                  "Delete Track from the menu bar's window: the Undo item names the step");
+            if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
+                renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Edit"), "Edit"),
+                           juce::File(pictures).getChildFile("adi-edit-menu.png"));
+            check(edits.command(C::Undo) && view.current()->tracks.size() == countBefore &&
+                      view.current()->findTrack(victim) != nullptr,
+                  "and undo brings the track back");
+        }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
                                                   C::InsertTimeSignatureChange},
               "the Create menu inserts tracks, returns too (§18.4), then a time signature change (§6.5)");
