@@ -58,17 +58,18 @@ inline bool sendOn(const engine::TrackNode &source, const engine::SendRoute *s) 
     return s != nullptr ? s->enabled : source.kind != "return";
 }
 // Why a new send's batch is refused when no routing id is left (window log N39): the op carries its id
-// (ADR-0021), and the snapshot's highest is already the largest the file can hold.
+// (ADR-0021), and the snapshot's highest is already the largest the project can hold. "The project" is
+// what every other Status Bar line of the shell calls the open document.
 inline constexpr const char *kSendNoIdLeft =
-    "No routing id is left: the file's highest routing id is already the largest it can hold.";
+    "No routing id is left: the project's highest routing id is already the largest it can hold.";
 namespace send_edits_detail {
 // A new row's id: one past the highest routing id of any kind, `Snapshot::maxRoutingId` (#403, window
 // log N39), so it cannot collide with a main, sidechain, VCA or cue row, which the snapshot's `sends`
 // leave out; a batch that makes several rows takes the next ids after it. The snapshot's maximum is an
 // observation, not an allocator: the batch commits against the head it read, and another writer's row
 // in between refuses it there. A frame never holds a send above its maximum (the engine's doc).
-// The first of `count` new ids; 0 when `count` ids do not fit below INT64_MAX, which refuses the edit
-// with `kSendNoIdLeft`.
+// The first of `count` new ids; 0 when `count` ids do not fit at or below INT64_MAX (the last may equal
+// it), which refuses the edit with `kSendNoIdLeft`. 0 is never an id: `maxRoutingId` is at least 0.
 inline std::int64_t newIds(const engine::Snapshot &snapshot, std::int64_t count) noexcept {
     const auto highest = snapshot.maxRoutingId;
     return count <= std::numeric_limits<std::int64_t>::max() - highest ? highest + 1 : 0;

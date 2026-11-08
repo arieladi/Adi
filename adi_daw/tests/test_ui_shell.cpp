@@ -1783,7 +1783,7 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         const auto stepAtTop = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
         check(column != nullptr && column->sendKnobs().size() == 2 && findSend(root.reader().sends(), 3, 6) == nullptr &&
                   root.reader().get() != nullptr && root.reader().get()->maxRoutingId == std::numeric_limits<std::int64_t>::max(),
-              "3 Audio's send B has no row, and the file's highest routing id is the largest it can hold");
+              "3 Audio's send B has no row, and the project's highest routing id is the largest it can hold");
         if (column != nullptr && column->sendKnobs().size() == 2) {
             column->sendKnobs()[1]->setValue(-6, juce::sendNotificationSync);
             root.frame();
