@@ -24,20 +24,23 @@ Available entry points:
   ID reused for another file after history changes. Hashed media can relocate
   without changing identity; legacy unhashed rows retain locator/dimensions.
   Peaks and media bytes are not copied into the clipboard.
-- copyRange and prepareDeleteRange trim every intersecting clip on selected
-  tracks. prepareCutRange returns a clipboard and deletion captured in one read
+- copyRange and prepareDeleteRange select intersecting main-lane clips
+  (lane_id IS NULL) on the selected tracks. Take-lane clips are not selected.
+  prepareCutRange returns a clipboard and deletion captured in one read
   snapshot; prepareCutClip does the same for one clip. Commit the prepared edit.
   Copy is a value, never an op.
-- preparePasteRange replaces its destination span, preserving outside pieces.
-  Supply one destination track for each source track, in the same order.
-  Destination comp lanes are cleared because they belong to another track.
-- prepareDuplicateRange places an independent copy at the selection's end.
-- prepareInsertSilence shifts the Set, including tick/ns clips, maps, locators,
-  spanning cycle markers, the saved transport loop, arranger sections, declared project end and global
-  automation. Crossing clips split. Initial tempo/meter/key events at zero stay
+- preparePasteRange replaces its main-lane destination span, preserving
+  outside pieces and independent take-lane clips. Supply one destination track
+  for each source track, in the same order. Copied material lands on the main
+  lane; source take-lane bindings are not destination bindings.
+- prepareDuplicateRange copies selected main-lane material to the selection's end.
+- prepareInsertSilence shifts the Set, including tick/ns clips on every lane,
+  maps, locators, spanning cycle markers, the saved transport loop, arranger
+  sections, declared project end and global automation. Crossing clips split. Initial tempo/meter/key events at zero stay
   at zero. The inserted duration for linear objects uses the tempo immediately
   before the insertion; an event exactly there moves after the gap.
-- prepareDeleteTime removes a musical span across every track. Linear objects
+- prepareDeleteTime removes a musical span across every track and lane.
+  Linear objects
   move by the original integrated tempo duration. Crossing clips are trimmed;
   source and fade clocks remain pinned. The join keeps the old end's tempo,
   meter and key, including its tuning and degree overrides. Locators, cycles,
@@ -46,10 +49,13 @@ Available entry points:
   this particular Live behavior has not yet been measured.
 - preparePasteRange/prepareDuplicateRange with insertTime=true first insert
   musical time across the Set, then place the captured **material**. They are
-  one undo step. The clipboard includes clip envelopes, not global automation
-  or tempo/meter/key events. These remain material-only APIs.
+  one undo step. The selected material is main-lane only; insertion still
+  shifts existing clips on every lane throughout the Set. The clipboard includes
+  clip envelopes, not global automation or tempo/meter/key events. These remain
+  material-only APIs.
 - copyTime, prepareCutTime, preparePasteTime and prepareDuplicateTime operate on
-  the whole Set, including its global timeline. TimeCopy owns clipped material,
+  the whole Set, including its global timeline. TimeCopy captures clipped
+  material from every lane on every track, including hidden and grouped tracks,
   each map's carry/interior events, tuned-key bindings/degree overrides,
   locators/cycles, clipped arranger sections and every global automation lane.
   Cut captures the clipboard and deletion under one read snapshot; Duplicate
@@ -57,7 +63,9 @@ Available entry points:
   with its original integrated physical duration, then restores the target's
   tempo/meter/key and automation at the far join. It also works at tick zero.
   Existing arranger playlist references follow the insertion; copied sections
-  do not duplicate that playback playlist.
+  do not duplicate that playback playlist. Existing clips shifted by Time
+  commands retain their lane bindings. This does not add take-lane clipboard
+  placement: preparePasteTime still places copied material on the main lane.
   These clipboards currently target the same project and captured track ids;
   missing tracks or changed kinds refuse. Media and tuning content identities,
   the full automation lane contract and the reference render rate are checked.
@@ -69,6 +77,18 @@ Available entry points:
   tension is nullable [-1,1]. NULL selects legacy arithmetic. The snapshot
   carries lengths, curve kinds, tensions and retained fade domains. The window
   can use engine/clip_fade.hpp and engine/curves.hpp to draw the same curve.
+
+Range removal preserves a sole surviving piece's clip ID and existing material
+child IDs. A surviving tail is trimmed in place, retaining source/loop/fade clocks,
+opaque note/expression bytes and external aliases to the original clip. If both
+sides survive, the left keeps the original ID and the right gets a captured new
+identity. A sole prefix is also trimmed in place; no discarded piece consumes
+clip or child IDs. This also applies before Delete Time relocates the retained pieces.
+Undo restores complete original rows, including previously absent clock rows.
+Complete deletion still captures and detaches external aliases for referential
+integrity; undo restores those links, including aliases outside the selected lane.
+Main-lane material scope follows PLAN ED-01 and ADR-0225; whole-Set Time scope
+continues to follow PLAN ED-02.
 
 Insert Silence, Delete Time and the whole-Set clipboard retain nonlinear global
 automation curves through automation_segment_ranges, including after repeated

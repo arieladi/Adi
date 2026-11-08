@@ -10,6 +10,13 @@
 #include "adi/store.hpp"
 #include "adi/textproj_store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -300,5 +307,296 @@ void reusedMediaIds() {
     check(legacy.ok && !clip_edit::preparePaste(*p.store,legacy,17,21,{0,5765760},48000).ok,"legacy unhashed media retains locator/dimension identity");
 }
 
+// Typed snapshots include future columns and distinguish NULL, BLOB and REAL.
+Payload rangeTable(SQLite::Database& db,const char* table,const char* suffix="") {
+    Payload rows=Payload::array();
+    SQLite::Statement query(db,std::string("SELECT * FROM ")+table+" "+suffix+" ORDER BY 1");
+    while(query.executeStep()) {
+        Payload row=Payload::object();
+        for(int column=0;column<query.getColumnCount();++column) {
+            const auto cell=query.getColumn(column);Payload value;
+            if(cell.isInteger())value=cell.getInt64();
+            else if(cell.isFloat())value=cell.getDouble();
+            else if(cell.isText())value=cell.getString();
+            else if(cell.isBlob()) {
+                std::vector<std::uint8_t> bytes;
+                if(cell.getBytes()>0) {
+                    const auto* data=static_cast<const std::uint8_t*>(cell.getBlob());
+                    bytes.assign(data,data+cell.getBytes());
+                }
+                value=Payload::binary(bytes);
+            }
+            row[query.getColumnName(column)]=Payload::array({cell.getType(),value});
+        }
+        rows.push_back(std::move(row));
+    }
+    return rows;
+}
+Payload rangeRows(Store& store) {
+    Payload rows=Payload::object();
+    for(const char* table:{"clips","event_streams","note_expression","audio_clips","automation_data",
+        "automation_segment_ranges","clip_properties","clip_playback_details","clip_warp_fade_domains",
+        "tracks","lanes","project","tempo_map","time_signature_map","key_map","markers"})
+        rows[table]=rangeTable(store.db(),table);
+    return rows;
+}
+bool rangeSpan(SQLite::Database& db,std::int64_t id,int base,std::int64_t at,std::int64_t length,std::int64_t offset) {
+    SQLite::Statement row(db,base==0?
+        "SELECT count(*) FROM clips WHERE id=? AND time_base=0 AND pos_ticks=? AND length_ticks=? AND content_offset_ticks=?":
+        "SELECT count(*) FROM clips WHERE id=? AND time_base=1 AND pos_ns=? AND length_ns=? AND content_offset_ticks=?");
+    row.bind(1,id);row.bind(2,at);row.bind(3,length);row.bind(4,offset);
+    return row.executeStep() && row.getColumn(0).getInt()==1;
+}
+void rangeSurvivorRelations() {
+    constexpr std::int64_t q=5765760;
+    // Source [2,6): disjoint, touching, whole, prefix, suffix and interior erase.
+    const std::array<std::pair<int,int>,9> intervals={{{0,1},{7,8},{0,2},{6,7},{2,6},{1,3},{5,7},{3,5},{2,3}}};
+    for(const int base:{0,1})for(const auto& [begin,end]:intervals) {
+        Project p;auto& db=p.store->db();const std::int64_t unit=base==0?q:500000000;
+        db.exec("DELETE FROM clips WHERE id<>8;DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+        if(base==0)db.exec("UPDATE clips SET pos_ticks=11531520,length_ticks=23063040,content_offset_ticks=2882880 WHERE id=8");
+        else db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=1000000000,length_ns=2000000000,content_offset_ticks=2882880 WHERE id=8");
+        db.exec("INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(61,8,'notes',X'00FF01')");
+        const auto before=rangeRows(*p.store);const int writes=sqlite3_total_changes(db.getHandle());
+        const auto edit=clip_edit::prepareDeleteRange(*p.store,{{21},{base,begin*unit},{base,end*unit}},48000);
+        check(edit.ok && rangeRows(*p.store)==before && sqlite3_total_changes(db.getHandle())==writes,
+              "range relation preparation is read-only for tick and ns clips");
+        if(!edit.ok)continue;
+        const bool intersects=begin<6 && end>2;
+        if(!intersects) {
+            check(edit.requests.empty() && rangeRows(*p.store)==before,"disjoint and touching half-open ranges make no operation or zero-length survivor");
+            continue;
+        }
+        check(edit.requests.size()==1 && clip_edit::commitPrepared(*p.store,edit).ok,"intersecting range erase is one captured operation");
+        const int leftEnd=std::min(begin,6),rightBegin=std::max(end,2);
+        const bool left=begin>2,right=end<6;const int count=(left?1:0)+(right?1:0);
+        bool geometry=db.execAndGet("SELECT count(*) FROM clips").getInt()==count &&
+            db.execAndGet("SELECT count(*) FROM event_streams").getInt()==count;
+        if(left || right) {
+            const int first=left?2:rightBegin,last=left?leftEnd:6;
+            geometry=geometry && rangeSpan(db,8,base,first*unit,(last-first)*unit,q/2+(first-2)*q) &&
+                db.execAndGet("SELECT count(*) FROM event_streams WHERE id=61 AND clip_id=8 AND hex(data)='00FF01'").getInt()==1;
+        }
+        if(left && right) {
+            SQLite::Statement tail(db,"SELECT id FROM clips WHERE id<>8");
+            const bool found=tail.executeStep();
+            geometry=geometry && found;
+            if(found)geometry=geometry && rangeSpan(db,tail.getColumn(0).getInt64(),base,rightBegin*unit,(6-rightBegin)*unit,q/2+(rightBegin-2)*q);
+        }
+        check(geometry,"sole survivors keep original clip and child IDs; two survivors keep the left ID and one offset-correct new tail");
+        const auto after=rangeRows(*p.store);
+        check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
+              History(*p.store).redo().ok && rangeRows(*p.store)==after,
+              "every intersecting range relation restores exact typed rows and captured identities through undo/redo");
+    }
+}
+void rangeTailChildrenAndClocks() {
+    constexpr std::int64_t q=5765760;
+    for(const int base:{0,1})for(const bool pinned:{false,true}) {
+        Project p;auto& db=p.store->db();
+        db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'audio','External alias');UPDATE clips SET track_id=22,alias_of=7 WHERE id=9");
+        db.exec("DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120),(11531520,60)");
+        db.exec("UPDATE clips SET pos_ticks=5765760,length_ticks=23063040,content_offset_ticks=2882880,fade_in_ticks=11531520,fade_out_ticks=11531520,loop_enabled=1,loop_start_ticks=0,loop_len_ticks=23063040 WHERE id IN (7,8)");
+        if(base==1)db.exec("UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=500000000,length_ns=3500000000 WHERE id IN (7,8)");
+        db.exec("ALTER TABLE clips ADD COLUMN future_root BLOB NOT NULL DEFAULT X'';UPDATE clips SET future_root=X'0001FF' WHERE id IN (7,8)");
+        db.exec("ALTER TABLE event_streams ADD COLUMN future_blob BLOB;INSERT INTO event_streams(id,clip_id,stream_kind,data,future_blob) VALUES(61,8,'notes',X'010203',X'00FF')");
+        db.exec("INSERT INTO note_expression(id,clip_id,note_id,dimension,data) VALUES(62,8,-1,0,X'040506')");
+        db.exec("INSERT INTO media_files(id,hash_blake3,rel_path,format,sample_rate,channels,frames) VALUES(300,'range-audio','range.wav','wav',44100,1,441000)");
+        db.exec("INSERT INTO audio_clips(clip_id,media_id,src_start_frames,src_len_frames) VALUES(7,300,17,400000)");
+        db.exec("INSERT INTO clip_properties(clip_id,end_marker_ticks,signature_numerator,signature_denominator) VALUES(7,34594560,3,4),(8,34594560,3,4)");
+        db.exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,value_domain) VALUES(91,'track',21,'pan','real')");
+        db.exec("INSERT INTO automation_data(id,lane_id,clip_id,data) VALUES(71,91,8,X'070809')");
+        db.exec("INSERT INTO automation_segment_ranges(id,data_id,clip_id,record_index,progress_begin,progress_end,source_first,source_last) VALUES(72,71,8,0,0.2,0.7,0,1)");
+        db.exec("INSERT INTO clip_warp_fade_domains(clip_id,in_begin_ticks,in_end_ticks,out_begin_ticks,out_end_ticks) VALUES(7,2882880,14414400,14414400,25945920)");
+        if(pinned)db.exec("INSERT INTO clip_playback_details(clip_id,in_tension,out_tension,content_offset_ns,in_begin_ns,in_end_ns,out_begin_ns,out_end_ns) VALUES(7,0.4,-0.2,0,0,1500000000,1500000000,3500000000)");
+        const auto before=rangeRows(*p.store);const int writes=sqlite3_total_changes(db.getHandle());
+        const auto edit=clip_edit::prepareDeleteRange(*p.store,{{21},{0,0},{0,3*q}},48000);
+        check(edit.ok && rangeRows(*p.store)==before && sqlite3_total_changes(db.getHandle())==writes,
+              "sole-tail preparation captures audio/MIDI children and source clocks without writes");
+        if(!edit.ok)continue;
+        const bool committed=clip_edit::commitPrepared(*p.store,edit).ok;
+        check(committed,"sole-tail audio/MIDI erase commits with external aliases and opaque children");
+        if(!committed)continue;
+        const auto after=rangeRows(*p.store);
+        bool children=true;
+        for(const char* table:{"event_streams","note_expression","audio_clips","automation_data","automation_segment_ranges","clip_properties","clip_warp_fade_domains"})
+            children=children && after.at(table)==before.at(table);
+        check(children && db.execAndGet("SELECT count(*) FROM clips WHERE id=9 AND alias_of=7").getInt()==1 &&
+              db.execAndGet("SELECT count(*) FROM clips WHERE id IN (7,8) AND hex(future_root)='0001FF'").getInt()==2,
+              "sole-tail trimming retains every child ID/byte/parent, future root BLOB, fade domain and external alias");
+        const std::int64_t at=base==0?3*q:2000000000,length=base==0?2*q:2000000000;
+        SQLite::Statement clock(db,"SELECT count(*) FROM clip_playback_details WHERE clip_id=7 AND content_offset_ns=? AND loop_begin_ns=0 AND loop_end_ns=3500000000 AND source_end_ns=5500000000");
+        clock.bind(1,static_cast<std::int64_t>(pinned?1500000000:1750000000));
+        bool clocks=clock.executeStep() && clock.getColumn(0).getInt()==1;
+        if(pinned)clocks=clocks && db.execAndGet("SELECT count(*) FROM clip_playback_details WHERE clip_id=7 AND in_tension=0.4 AND out_tension=-0.2 AND in_begin_ns=0 AND in_end_ns=1500000000 AND out_begin_ns=1500000000 AND out_end_ns=3500000000").getInt()==1;
+        check(rangeSpan(db,7,base,at,length,5*q/2) && rangeSpan(db,8,base,at,length,5*q/2) && clocks,
+              "retained tail advances source phase across tempo change, treats pinned zero as present and retains loop/end/fade clocks");
+        check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
+              History(*p.store).redo().ok && rangeRows(*p.store)==after,
+              "sole-tail undo/redo restores exact typed rows, aliases and optional clock-row absence");
+    }
+}
+void ordinaryRangeLaneScope() {
+    constexpr std::int64_t q=5765760;
+    for(const int action:{0,1,2,3}) {
+        Project p;auto& db=p.store->db();
+        db.exec("DELETE FROM clips;DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+        db.exec("INSERT INTO tracks(id,kind,name) VALUES(22,'midi','Unselected');INSERT INTO lanes(id,track_id,kind) VALUES(301,21,'take')");
+        db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks,lane_id) VALUES(8,21,'midi',0,5765760,NULL),(9,21,'midi',5765760,5765760,NULL),(80,21,'midi',0,17297280,301),(81,21,'video',0,NULL,301),(99,22,'midi',0,17297280,NULL)");
+        db.exec("INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(61,8,'notes',X'010203'),(62,80,'notes',X'040506'),(63,99,'notes',X'070809')");
+        const auto before=rangeRows(*p.store);const auto protectedRows=rangeTable(db,"clips","WHERE lane_id IS NOT NULL OR track_id<>21");
+        const auto protectedChildren=rangeTable(db,"event_streams","WHERE clip_id IN (80,81,99)");
+        const int writes=sqlite3_total_changes(db.getHandle());
+        const clip_edit::RangeSelection selection{{21},{0,0},{0,q}};
+        const auto copy=clip_edit::copyRange(*p.store,selection,48000);
+        check(copy.ok && copy.images.size()==1 && copy.images[0].at("row").at("id")==8 &&
+              rangeRows(*p.store)==before && sqlite3_total_changes(db.getHandle())==writes,
+              "ordinary range reader captures only selected main material and ignores unsupported nonfinite take metadata");
+        if(!copy.ok)continue;
+        clip_edit::PreparedEdit edit;
+        if(action==0) {
+            const auto cut=clip_edit::prepareCutRange(*p.store,selection,48000);
+            check(cut.copy.ok && cut.copy.images==copy.images,"ordinary Cut uses the same main-lane clipboard as Copy");
+            edit=cut.edit;
+        } else if(action==1)edit=clip_edit::prepareDeleteRange(*p.store,selection,48000);
+        else if(action==2)edit=clip_edit::preparePasteRange(*p.store,copy,{21},{0,q},48000);
+        else edit=clip_edit::prepareDuplicateRange(*p.store,selection,48000);
+        check(edit.ok && rangeRows(*p.store)==before && sqlite3_total_changes(db.getHandle())==writes,
+              "ordinary Cut/Delete/Paste/Duplicate preparation leaves every lane and global row untouched");
+        if(!edit.ok)continue;
+        const bool committed=clip_edit::commitPrepared(*p.store,edit).ok;
+        check(committed,"ordinary Cut/Delete/Paste/Duplicate succeeds despite an unsupported take on the selected track");
+        if(!committed)continue;
+        const auto after=rangeRows(*p.store);bool globals=true;
+        for(const char* table:{"tracks","lanes","project","tempo_map","time_signature_map","key_map","markers"})
+            globals=globals && after.at(table)==before.at(table);
+        const int expectedMain=action<2?1:2;
+        const bool material=action<2?
+            db.execAndGet("SELECT count(*) FROM clips WHERE id=8").getInt()==0 && rangeSpan(db,9,0,q,q,0):
+            rangeSpan(db,8,0,0,q,0) && db.execAndGet("SELECT count(*) FROM clips WHERE id=9").getInt()==0 &&
+            db.execAndGet("SELECT count(*) FROM clips c JOIN event_streams e ON e.clip_id=c.id WHERE c.track_id=21 AND c.lane_id IS NULL AND c.pos_ticks=5765760 AND c.length_ticks=5765760 AND hex(e.data)='010203'").getInt()==1;
+        check(material && db.execAndGet("SELECT count(*) FROM clips WHERE track_id=21 AND lane_id IS NULL").getInt()==expectedMain &&
+              rangeTable(db,"clips","WHERE lane_id IS NOT NULL OR track_id<>21")==protectedRows &&
+              rangeTable(db,"event_streams","WHERE clip_id IN (80,81,99)")==protectedChildren && globals,
+              "ordinary range commands affect only main-lane material, preserving independent takes, unselected tracks and global maps");
+        check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
+              History(*p.store).redo().ok && rangeRows(*p.store)==after,
+              "ordinary main-lane range commands retain exact one-step captured undo/redo");
+    }
+}
+
+void rangeSurvivorExhaustedIds() {
+    constexpr std::int64_t q=5765760,maximum=std::numeric_limits<std::int64_t>::max();
+    for(const int mode:{0,1,2,3}) {
+        Project p;auto& db=p.store->db();
+        db.exec("DELETE FROM clips");
+        if(mode==3) {
+            db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(9223372036854775806,21,'midi',0,23063040)");
+            db.exec("INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(9223372036854775806,9223372036854775806,'notes',X'0001FF')");
+        } else {
+            db.exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(9223372036854775807,21,'midi',0,23063040)");
+            db.exec("INSERT INTO event_streams(id,clip_id,stream_kind,data) VALUES(9223372036854775807,9223372036854775807,'notes',X'0001FF')");
+        }
+        const auto before=rangeRows(*p.store);const int writes=sqlite3_total_changes(db.getHandle());
+        const auto head=OpJournal(*p.store).headSeq();const auto ops=OpJournal(*p.store).count();
+        const clip_edit::RangeSelection selection{{21},{0,mode==0?0:mode==1?3*q:q},{0,mode==0?q:mode==1?4*q:3*q}};
+        const auto edit=clip_edit::prepareDeleteRange(*p.store,selection,48000);
+        const bool unchanged=rangeRows(*p.store)==before && sqlite3_total_changes(db.getHandle())==writes &&
+            OpJournal(*p.store).headSeq()==head && OpJournal(*p.store).count()==ops;
+        if(mode==2) {
+            check(!edit.ok && unchanged,"two surviving pieces refuse exhausted new IDs atomically");
+            continue;
+        }
+        if(mode==3) {
+            check(edit.ok && unchanged,"two survivors prepare with exactly one clip and material-child identity remaining");
+            if(!edit.ok)continue;
+            const bool committed=clip_edit::commitPrepared(*p.store,edit).ok;
+            check(committed && rangeSpan(db,maximum-1,0,0,q,0) && rangeSpan(db,maximum,0,3*q,q,3*q) &&
+                  db.execAndGet("SELECT count(*) FROM clips").getInt()==2 &&
+                  db.execAndGet("SELECT count(*) FROM event_streams WHERE id=clip_id AND id IN(9223372036854775806,9223372036854775807) AND hex(data)='0001FF'").getInt()==2,
+                  "interior erase creates exactly one independent right piece using the sole remaining clip and child IDs");
+            if(!committed)continue;
+            const auto after=rangeRows(*p.store);
+            check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
+                  History(*p.store).redo().ok && rangeRows(*p.store)==after,
+                  "one-slot interior erase has exact captured undo/redo without discarded-middle identities");
+            continue;
+        }
+        check(edit.ok && unchanged,"a sole left or right survivor prepares with exhausted clip and material-child IDs");
+        if(!edit.ok)continue;
+        const bool committed=clip_edit::commitPrepared(*p.store,edit).ok;
+        check(committed && rangeSpan(db,maximum,0,mode==0?q:0,3*q,mode==0?q:0) &&
+              rangeRows(*p.store).at("event_streams")==before.at("event_streams"),
+              "sole-side trimming needs no fresh identity and retains the maximum existing root and child IDs");
+        if(!committed)continue;
+        const auto after=rangeRows(*p.store);
+        check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
+              History(*p.store).redo().ok && rangeRows(*p.store)==after,
+              "exhausted-ID sole survivors retain exact captured undo/redo");
+    }
+}
+
+void rangeTimeLaneScope() {
+    constexpr std::int64_t q=5765760;
+    for(int mode=0;mode<4;++mode) {
+        Project p;auto& db=p.store->db();
+        db.exec("DELETE FROM clips;DELETE FROM tempo_map;INSERT INTO tempo_map(pos_ticks,bpm) VALUES(0,120)");
+        db.exec("INSERT INTO tracks(id,kind,name) VALUES(23,'group','Group')");
+        db.exec("INSERT INTO tracks(id,parent_id,kind,name) VALUES(22,23,'midi','Grouped')");
+        db.exec("INSERT INTO lanes(id,track_id,kind) VALUES(301,21,'take'),(302,22,'take')");
+        db.exec("INSERT INTO clips(id,track_id,lane_id,kind,pos_ticks,length_ticks) VALUES"
+                "(8,21,NULL,'midi',8648640,8648640),(9,21,301,'midi',8648640,8648640)");
+        db.exec("INSERT INTO clips(id,track_id,lane_id,kind,time_base,pos_ns,length_ns) VALUES(10,22,302,'midi',1,750000000,750000000)");
+        db.exec("INSERT INTO markers(id,pos_ticks,kind) VALUES(91,17297280,'position');UPDATE project SET length_ticks=23063040");
+        const auto before=rangeRows(*p.store);const int writes=sqlite3_total_changes(db.getHandle());
+        const auto head=OpJournal(*p.store).headSeq();const auto ops=OpJournal(*p.store).count();
+        if(mode==0) {
+            const auto copy=clip_edit::copyTime(*p.store,q,2*q,48000);
+            check(copy.ok && copy.material.images.size()==3 && copy.ticks==q && copy.nanos==500000000 &&
+                  rangeRows(*p.store)==before && sqlite3_total_changes(db.getHandle())==writes && OpJournal(*p.store).headSeq()==head && OpJournal(*p.store).count()==ops,
+                  "Copy Time reads main and take material on every track in both clocks without writing");
+        }
+        clip_edit::PreparedEdit edit;bool captured=true;
+        if(mode==0)edit=clip_edit::prepareDeleteTime(*p.store,q,2*q,48000);
+        else if(mode==1) {
+            const auto cut=clip_edit::prepareCutTime(*p.store,q,2*q,48000);
+            captured=cut.copy.ok && cut.copy.material.images.size()==3;edit=cut.edit;
+        } else if(mode==2)edit=clip_edit::prepareInsertSilence(*p.store,q,q,48000);
+        else {
+            const auto copy=clip_edit::copyRange(*p.store,{{21},{0,q},{0,2*q}},48000);
+            captured=copy.ok && copy.images.size()==1;
+            edit=clip_edit::preparePasteRange(*p.store,copy,{21},{0,0},48000,true);
+        }
+        check(captured && edit.ok && edit.requests.size()==1 && rangeRows(*p.store)==before && sqlite3_total_changes(db.getHandle())==writes &&
+              OpJournal(*p.store).headSeq()==head && OpJournal(*p.store).count()==ops,
+              "Time clearing and insertion prepare one read-only packet; Range insertion captures selected main-lane material only");
+        if(!captured || !edit.ok || edit.requests.size()!=1)continue;
+        const auto committed=clip_edit::commitPrepared(*p.store,edit);
+        check(committed.ok,"all-lane Time operation commits its captured packet");
+        if(!committed.ok)continue;
+        const bool lanes=db.execAndGet("SELECT count(*) FROM clips WHERE (id=9 AND lane_id=301) OR (id=10 AND lane_id=302)").getInt()==2;
+        bool geometry=false;
+        if(mode<=1) {
+            geometry=db.execAndGet("SELECT count(*) FROM clips WHERE id IN(8,9) AND pos_ticks=5765760 AND length_ticks=5765760 AND content_offset_ticks=2882880").getInt()==2 &&
+                db.execAndGet("SELECT count(*) FROM clips WHERE id=10 AND pos_ns=500000000 AND length_ns=500000000 AND content_offset_ticks=2882880").getInt()==1 &&
+                db.execAndGet("SELECT count(*) FROM clips").getInt()==3 &&
+                db.execAndGet("SELECT count(*) FROM markers WHERE id=91 AND pos_ticks=11531520").getInt()==1;
+        } else {
+            geometry=db.execAndGet("SELECT count(*) FROM clips WHERE id IN(8,9) AND pos_ticks=14414400 AND length_ticks=8648640 AND content_offset_ticks=0").getInt()==2 &&
+                db.execAndGet("SELECT count(*) FROM clips WHERE id=10 AND pos_ns=1250000000 AND length_ns=750000000 AND content_offset_ticks=0").getInt()==1 &&
+                db.execAndGet("SELECT count(*) FROM clips").getInt()==(mode==2?3:4) &&
+                db.execAndGet("SELECT count(*) FROM markers WHERE id=91 AND pos_ticks=23063040").getInt()==1;
+            if(mode==3)geometry=geometry && db.execAndGet("SELECT count(*) FROM clips WHERE id NOT IN(8,9,10) AND track_id=21 AND lane_id IS NULL AND pos_ticks=2882880 AND length_ticks=2882880").getInt()==1;
+        }
+        check(lanes && geometry,mode<=1?
+              "Delete and Cut Time trim every lane, keep each sole-tail identity, relocate both clocks and retain original take lanes":
+              "Time insertion shifts main and independent take originals on every track; Range insertion pastes only its main-lane clipboard");
+        const auto after=rangeRows(*p.store);
+        check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
+              History(*p.store).redo().ok && rangeRows(*p.store)==after,
+              "Time lane edits undo and redo exact captured rows, original identities, lane links and global placement");
+    }
+}
+
 } // namespace
-int main(){try{stateAndSharing();refusalAndCurves();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{stateAndSharing();refusalAndCurves();clipboardAndSplits();silenceAndCurves();rangeCommands();clockSharing();pureLoopAndCut();reusedMediaIds();rangeSurvivorRelations();rangeTailChildrenAndClocks();ordinaryRangeLaneScope();rangeSurvivorExhaustedIds();rangeTimeLaneScope();}catch(const std::exception& error){check(false,error.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

@@ -199,37 +199,70 @@ void packet(Store& store,PreparedEdit& result,const char* name,const char* label
     }
     result.sourceFile=filename(store);result.ok=true;
 }
+struct ImageCut {
+    const char* position=nullptr;
+    const char* length=nullptr;
+    std::int64_t first=0,last=0,cut=0,beforeTicks=0,afterTicks=0;
+    std::int64_t fadeIn=0,fadeOut=0,rightOffsetTicks=0;
+    std::optional<std::int64_t> rightOffsetNs;
+};
+ImageCut prepareImageCut(Store& store,Payload& image,TimePoint point,
+                         const edit::TimeMap& time,double referenceRate) {
+    const auto kind=image.at("row").at("kind").get<std::string>();
+    if(kind!="audio" && kind!="midi")throw std::runtime_error("this clip kind has no split playback");
+    if(!image.at("row").at("alias_of").is_null())throw std::runtime_error("split needs alias resolution");
+    const auto old=image.at("row");
+    const int base=static_cast<int>(detail::signedInteger(old.at("time_base")));
+    ImageCut result;
+    result.position=base==0?"pos_ticks":"pos_ns";result.length=base==0?"length_ticks":"length_ns";
+    result.first=detail::signedInteger(old.at(result.position));
+    const auto extent=detail::signedInteger(old.at(result.length));
+    result.last=edit::addTime(result.first,extent);result.cut=coordinate(point,base,time);
+    if(extent<=0 || result.cut<=result.first || result.cut>=result.last)
+        throw std::runtime_error("split must lie strictly inside the clip");
+    // Freeze the original source domains before changing either visible span.
+    // A single surviving side uses the same math without cloning its children.
+    freezeAudio(store,image,time,referenceRate);
+    const auto splitTick=base==0?result.cut:time.ticks(result.cut);
+    const auto firstTick=originTicks(old,time),lastTick=base==0?result.last:time.ticks(result.last);
+    result.beforeTicks=splitTick-firstTick;result.afterTicks=lastTick-splitTick;
+    if(result.beforeTicks<0 || result.afterTicks<0)throw std::runtime_error("split has an invalid musical span");
+    result.fadeIn=detail::signedInteger(old.at("fade_in_ticks"));
+    result.fadeOut=detail::signedInteger(old.at("fade_out_ticks"));
+    if(result.fadeIn<0 || result.fadeOut<0)throw std::runtime_error("split needs valid existing fades");
+    result.rightOffsetTicks=edit::addTime(detail::signedInteger(old.at("content_offset_ticks")),result.beforeTicks);
+    if(kind=="audio") {
+        const auto* clock=playback(image);
+        if(clock && !clock->at("content_offset_ns").is_null()) {
+            const auto offset=sample(static_cast<double>(detail::signedInteger(clock->at("content_offset_ns")))*1e-9,referenceRate);
+            const double cutSeconds=base==0?time.seconds(result.cut):static_cast<double>(result.cut)*1e-9;
+            const auto passed=sample(cutSeconds,referenceRate)-sample(startSeconds(old,time),referenceRate);
+            result.rightOffsetNs=sampleNanos(edit::addTime(offset,passed),referenceRate);
+        }
+    }
+    return result;
+}
+void keepLeft(Payload& image,const ImageCut& cut) {
+    auto& row=image["row"];
+    row[cut.length]=cut.cut-cut.first;row["fade_out_ticks"]=0;
+    row["fade_in_ticks"]=std::min(cut.fadeIn,cut.beforeTicks);
+}
+void keepRight(Payload& image,const ImageCut& cut) {
+    auto& row=image["row"];
+    row[cut.position]=cut.cut;row[cut.length]=cut.last-cut.cut;row["fade_in_ticks"]=0;
+    row["fade_out_ticks"]=std::min(cut.fadeOut,cut.afterTicks);
+    row["content_offset_ticks"]=cut.rightOffsetTicks;
+    if(cut.rightOffsetNs) {
+        auto* clock=playback(image);
+        if(!clock)throw std::runtime_error("right clip lost its captured source clock");
+        (*clock)["content_offset_ns"]=*cut.rightOffsetNs;
+    }
+}
 Payload splitImage(Store& store,Payload& image,std::int64_t rightId,TimePoint point,
                    const edit::TimeMap& time,double referenceRate,CopyIds& ids) {
-        const auto kind=image.at("row").at("kind").get<std::string>();
-        if(kind!="audio" && kind!="midi")throw std::runtime_error("this clip kind has no split playback");
-        if(!image.at("row").at("alias_of").is_null())throw std::runtime_error("split needs alias resolution");
-        const auto old=image.at("row");
-        const int base=static_cast<int>(detail::signedInteger(old.at("time_base")));
-        const char* position=base==0?"pos_ticks":"pos_ns";const char* length=base==0?"length_ticks":"length_ns";
-        const auto first=detail::signedInteger(old.at(position)),extent=detail::signedInteger(old.at(length));
-        const auto last=edit::addTime(first,extent),cut=coordinate(point,base,time);
-        if(extent<=0 || cut<=first || cut>=last)throw std::runtime_error("split must lie strictly inside the clip");
-        freezeAudio(store,image,time,referenceRate);
-        auto right=cloneImage(image,rightId,ids);
-        image["row"][length]=cut-first;image["row"]["fade_out_ticks"]=0;
-        right["row"][position]=cut;right["row"][length]=last-cut;right["row"]["fade_in_ticks"]=0;
-        const auto splitTick=base==0?cut:time.ticks(cut);
-        const auto firstTick=originTicks(old,time),lastTick=base==0?last:time.ticks(last);
-        const auto before=splitTick-firstTick,after=lastTick-splitTick;
-        if(before<0 || after<0)throw std::runtime_error("split has an invalid musical span");
-        const auto fadeIn=detail::signedInteger(old.at("fade_in_ticks")),fadeOut=detail::signedInteger(old.at("fade_out_ticks"));
-        if(fadeIn<0 || fadeOut<0)throw std::runtime_error("split needs valid existing fades");
-        image["row"]["fade_in_ticks"]=std::min(fadeIn,before);
-        right["row"]["fade_out_ticks"]=std::min(fadeOut,after);
-        right["row"]["content_offset_ticks"]=edit::addTime(detail::signedInteger(old.at("content_offset_ticks")),before);
-        if(kind=="audio" && playback(right) && !playback(right)->at("content_offset_ns").is_null()) {
-            auto& clock=*playback(right);
-            const auto offset=sample(static_cast<double>(detail::signedInteger(clock.at("content_offset_ns")))*1e-9,referenceRate);
-            const double cutSeconds=base==0?time.seconds(cut):static_cast<double>(cut)*1e-9;
-            const auto passed=sample(cutSeconds,referenceRate)-sample(startSeconds(old,time),referenceRate);
-            clock["content_offset_ns"]=sampleNanos(edit::addTime(offset,passed),referenceRate);
-        }
+    const auto cut=prepareImageCut(store,image,point,time,referenceRate);
+    auto right=cloneImage(image,rightId,ids);
+    keepLeft(image,cut);keepRight(right,cut);
     return right;
 }
 void validRange(const RangeSelection& range) {
@@ -239,11 +272,17 @@ void validRange(const RangeSelection& range) {
     std::set<std::int64_t> tracks;
     for(const auto id:range.tracks)if(!tracks.insert(id).second)throw std::runtime_error("range has duplicate tracks");
 }
+enum class ClipLaneScope { MainLane, AllLanes };
+const char* clipRangeQuery(ClipLaneScope scope) {
+    return scope==ClipLaneScope::MainLane?
+        "SELECT id FROM clips WHERE track_id=? AND lane_id IS NULL ORDER BY id":
+        "SELECT id FROM clips WHERE track_id=? ORDER BY id";
+}
 void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelection& range,
-                const edit::TimeMap& time,double rate) {
+                const edit::TimeMap& time,double rate,ClipLaneScope scope) {
     OpContext context{store,store.db()};
     for(const auto track:range.tracks) {
-        SQLite::Statement clips(store.db(),"SELECT id FROM clips WHERE track_id=? ORDER BY id");clips.bind(1,track);
+        SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,track);
         while(clips.executeStep()) {
             const auto id=clips.getColumn(0).getInt64();auto image=captureDeleted(context,id);
             const auto& core=image.at("row");const int base=static_cast<int>(detail::signedInteger(core.at("time_base")));
@@ -253,16 +292,20 @@ void eraseRange(Store& store,edit::RowEdits& plan,CopyIds& ids,const RangeSelect
             const auto begin=coordinate(range.begin,base,time),end=coordinate(range.end,base,time);
             if(last<=begin || first>=end)continue;
             if(first>=begin && last<=end){deleteImage(plan,image);continue;}
-            if(first<begin) {
+            if(first<begin && last>end) {
                 auto tail=splitImage(store,image,ids.next("clips"),{base,begin},time,rate,ids);
-                plan.set("clips",id,image.at("row"));
-                retainDetails(plan,image);
-                if(last>end) {
-                    auto after=splitImage(store,tail,ids.next("clips"),{base,end},time,rate,ids);createImage(plan,after);
-                }
+                const auto cut=prepareImageCut(store,tail,{base,end},time,rate);
+                keepRight(tail,cut);
+                plan.set("clips",id,image.at("row"));retainDetails(plan,image);
+                createImage(plan,tail);
+            } else if(first<begin) {
+                const auto cut=prepareImageCut(store,image,{base,begin},time,rate);
+                keepLeft(image,cut);
+                plan.set("clips",id,image.at("row"));retainDetails(plan,image);
             } else {
-                auto after=splitImage(store,image,ids.next("clips"),{base,end},time,rate,ids);
-                deleteImage(plan,captureDeleted(context,id));createImage(plan,after);
+                const auto cut=prepareImageCut(store,image,{base,end},time,rate);
+                keepRight(image,cut);
+                plan.set("clips",id,image.at("row"));retainDetails(plan,image);
             }
         }
     }
@@ -433,7 +476,7 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
         while(trackRows.executeStep())tracks.push_back(trackRows.getColumn(0).getInt64());
         // The same allocator spans trimming and relocation, including newly
         // created right pieces. No intermediate edit is committed.
-        if(!tracks.empty())eraseRange(store,plan,ids,{tracks,{0,beginTicks},{0,endTicks}},time,referenceRate);
+        if(!tracks.empty())eraseRange(store,plan,ids,{tracks,{0,beginTicks},{0,endTicks}},time,referenceRate,ClipLaneScope::AllLanes);
         std::set<std::int64_t> candidates;
         SQLite::Statement clips(db,"SELECT id FROM clips ORDER BY id");
         while(clips.executeStep())candidates.insert(clips.getColumn(0).getInt64());
@@ -547,13 +590,14 @@ PreparedEdit prepareDeleteTime(Store& store,std::int64_t beginTicks,std::int64_t
     return result;
 }
 
-RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenceRate) {
+namespace {
+RangeCopy copyRangeImpl(Store& store,const RangeSelection& selection,double referenceRate,ClipLaneScope scope) {
     RangeCopy result;result.selection=selection;
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());
         result.sourceFile=filename(store);edit::TimeMap time(store.db());CopyIds ids(store.db());OpContext context{store,store.db()};
         for(std::size_t track=0;track<selection.tracks.size();++track) {
-            SQLite::Statement clips(store.db(),"SELECT id FROM clips WHERE track_id=? ORDER BY id");clips.bind(1,selection.tracks[track]);
+            SQLite::Statement clips(store.db(),clipRangeQuery(scope));clips.bind(1,selection.tracks[track]);
             while(clips.executeStep()) {
                 auto image=captureDeleted(context,clips.getColumn(0).getInt64());captureMediaKeys(store,image);
                 const int base=static_cast<int>(detail::signedInteger(image.at("row").at("time_base")));
@@ -574,6 +618,10 @@ RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenc
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
+} // namespace
+RangeCopy copyRange(Store& store,const RangeSelection& selection,double referenceRate) {
+    return copyRangeImpl(store,selection,referenceRate,ClipLaneScope::MainLane);
+}
 RangeCut prepareCutRange(Store& store,const RangeSelection& selection,double referenceRate) {
     RangeCut result;
     try {
@@ -589,7 +637,7 @@ PreparedEdit prepareDeleteRange(Store& store,const RangeSelection& selection,dou
     try {
         validRange(selection);validRate(referenceRate);Read read(store.db());expectedHead(store,result);
         edit::TimeMap time(store.db());CopyIds ids(store.db());ids.reserve("clips",reserveClipId);edit::RowEdits plan(store.db());
-        eraseRange(store,plan,ids,selection,time,referenceRate);packet(store,result,"arranger.splice","Delete Material",0,plan);
+        eraseRange(store,plan,ids,selection,time,referenceRate,ClipLaneScope::MainLane);packet(store,result,"arranger.splice","Delete Material",0,plan);
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
@@ -617,7 +665,7 @@ PreparedEdit preparePasteRange(Store& store,const RangeCopy& copy,const std::vec
                 plan.set(table,id,change.at("after").is_null()?std::optional<Payload>{}:std::optional<Payload>{change.at("after")});
                 if(!change.at("after").is_null() && std::string(edit::rowSpec(table).key)=="id")ids.reserve(table,id);
             }
-        } else eraseRange(store,plan,ids,destination,time,referenceRate);
+        } else eraseRange(store,plan,ids,destination,time,referenceRate,ClipLaneScope::MainLane);
         // Range clipping can assign an identity above every stored clip.
         // Reserve those clipboard identities as well as live/insertion ids.
         for(const auto& image:copy.images)ids.reserve("clips",detail::signedInteger(image.at("id")));
@@ -712,7 +760,7 @@ TimeCopy copyTime(Store& store,std::int64_t beginTicks,std::int64_t endTicks,dou
         if(result.nanos<=0)throw std::runtime_error("Copy Time is shorter than a nanosecond");
         std::vector<std::int64_t> tracks;
         SQLite::Statement rows(db,"SELECT id FROM tracks ORDER BY id");while(rows.executeStep())tracks.push_back(rows.getColumn(0).getInt64());
-        if(!tracks.empty())result.material=copyRange(store,{tracks,{0,beginTicks},{0,endTicks}},referenceRate);
+        if(!tracks.empty())result.material=copyRangeImpl(store,{tracks,{0,beginTicks},{0,endTicks}},referenceRate,ClipLaneScope::AllLanes);
         else {result.material.ok=true;result.material.sourceFile=filename(store);result.material.selection={{},{0,beginTicks},{0,endTicks}};}
         if(!result.material.ok)throw std::runtime_error(result.material.error);
         auto& timeline=result.timeline;timeline={{"maps",Payload::array()},{"tuningKeys",Payload::array()},{"markers",Payload::array()},{"sections",Payload::array()},{"tracks",Payload::array()}};
