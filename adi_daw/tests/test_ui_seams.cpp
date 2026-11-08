@@ -16,6 +16,7 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/clip_commands.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
@@ -420,6 +421,189 @@ void aFrameKeepsItsSnapshot() {
     const ui::SnapshotReader nextFrame{view.current()};
     check(nextFrame.trackCount() == 2, "the next frame sees both");
     check(!frame.sameAs(nextFrame), "and is a different publication");
+}
+
+
+// --- A2: a prepared batch through the submitter (ADR-0153) -------------------
+//
+// The engine prepares an edit as ops plus the head it expects, and its own
+// helper commits it. The submitter's part is what `submit` does around a
+// commit: the stamp, the refresh, `stale` and `headFound`. These checks pin
+// that, and the one op of the window's own that may ride on the end.
+
+// A project with one audio clip, as test_clip_edit.cpp builds it. Store::create
+// seeds the project row and the tempo map a clip edit reads.
+constexpr std::int64_t kClipTicks = 5765760;
+constexpr std::int64_t kHalfTicks = kClipTicks / 2;
+
+std::unique_ptr<Store> clipProject(const fs::path& p) {
+    StoreError err = StoreError::Ok;
+    auto st = Store::create(p, err);
+    if (!st) return st;
+    st->db().exec("INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Guitar')");
+    st->db().exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(7,21,'audio',0,5765760)");
+    return st;
+}
+
+/// The clip's length in ticks, or -1 when there is no such clip.
+std::int64_t clipLength(Store& s, std::int64_t id) {
+    SQLite::Statement st(s.db(), "SELECT length_ticks FROM clips WHERE id = ?");
+    st.bind(1, id);
+    return st.executeStep() ? st.getColumn(0).getInt64() : -1;
+}
+
+bool clipMuted(Store& s, std::int64_t id) {
+    SQLite::Statement st(s.db(), "SELECT muted FROM clips WHERE id = ?");
+    st.bind(1, id);
+    return st.executeStep() && st.getColumn(0).getInt64() != 0;
+}
+
+/// Split clip 7 in half; the right part becomes clip `rightId`.
+clip_edit::PreparedEdit splitInHalf(Store& s, std::int64_t rightId) {
+    return clip_edit::prepareSplit(s, 7, rightId, {0, kHalfTicks}, 48000);
+}
+
+void aPreparedBatchCommitsAsOneStep() {
+    section("A2: a prepared batch whose head still matches commits as ONE step and refreshes once");
+    adi::test::TempDirectory temp("ui_seams", "prepared");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    check(view.generation() == 0, "nothing published before the first write");
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    check(split.options.expectHead.has_value(), "with the head it expects (ADR-0153)");
+    const auto prepared = split.requests.size();
+    check(prepared > 0, "and it is more than nothing");
+
+    const auto r = sub.commitPrepared(std::move(split), &clip_edit::commitPrepared);
+    check(r.ok, "committed");
+    check(!r.stale, "not stale");
+    check(r.txnId != 0, "in a transaction");
+    check(r.seqs.size() == prepared, "every prepared op, and nothing else");
+    check(view.generation() == 1, "the commit refreshed the view once");
+    check(r.generation == 1, "and the result reports the generation it produced");
+    check(clipLength(*store, 7) == kHalfTicks, "the clip was cut at the split");
+    check(clipLength(*store, 17) == kHalfTicks, "and the right part is a clip");
+
+    const auto step = sub.nextUndo();
+    check(step.has_value(), "the history can describe it");
+    check(step && step->txnId == r.txnId, "as the transaction we committed");
+    check(step && static_cast<std::size_t>(step->opCount) == prepared, "ONE undo step covering the batch");
+    check(sub.undo().ok, "undo applied");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "and the clip is whole again");
+    check(view.generation() == 2, "undo refreshed the view");
+}
+
+void aPreparedBatchTakesOneOpOfTheWindows() {
+    section("A2: the window's one op rides on the end of the batch, stamped like the rest");
+    adi::test::TempDirectory temp("ui_seams", "appended");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter agent(*store, view, Actor::Agent, "adi-vst");
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    const auto prepared = split.requests.size();
+
+    // E1's case: 0 over a clip's right edge splits it and deactivates the part
+    // inside, in one undo step. The deactivation is the window's own op.
+    OpRequest mute;
+    mute.opType = "clip.setMute";
+    mute.payload = {{"id", 17}, {"muted", true}};
+    mute.label = "Deactivate Clip";
+    mute.targetKind = "clip";
+    mute.targetId = 17;
+    const auto r = agent.commitPrepared(std::move(split), &clip_edit::commitPrepared, std::move(mute));
+    check(r.ok, "committed");
+    check(r.seqs.size() == prepared + 1, "the split's ops plus the window's, in one transaction");
+    check(clipLength(*store, 17) == kHalfTicks, "the right part is a clip");
+    check(clipMuted(*store, 17), "and it is deactivated");
+    check(!clipMuted(*store, 7), "the left part is not");
+
+    SQLite::Statement st(store->db(),
+                         "SELECT COUNT(*) FROM ops WHERE txn_id = ? AND actor = ? AND actor_detail = 'adi-vst'");
+    st.bind(1, r.txnId);
+    st.bind(2, std::string(toString(Actor::Agent)));
+    const auto stamped = st.executeStep() ? st.getColumn(0).getInt64() : -1;
+    check(static_cast<std::size_t>(stamped) == prepared + 1,
+          "every op of the transaction, the window's included, is stamped as submit stamps");
+
+    const auto step = agent.nextUndo();
+    check(step && static_cast<std::size_t>(step->opCount) == prepared + 1, "ONE undo step");
+    check(agent.undo().ok, "undo applied");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "and takes both back together");
+}
+
+void aStalePreparedBatchIsRefused() {
+    section("A2: with the head moved, a prepared batch is refused as stale; nothing written or refreshed");
+    adi::test::TempDirectory temp("ui_seams", "stale");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+
+    // Another edit lands first, as a second window or an agent would.
+    const auto moved = sub.submit(trackCreate(22, "Bass"));
+    check(moved.ok, "an intervening edit committed");
+    check(view.generation() == 1, "and refreshed the view");
+
+    // The helper-only form, for a batch whose ops the helper keeps.
+    const auto r = sub.commitPrepared([&split](Store& s, Actor a) { return clip_edit::commitPrepared(s, split, a); });
+    check(!r.ok, "refused");
+    check(r.stale, "as stale");
+    check(r.headFound.has_value(), "with the head it found");
+    check(r.headFound && !moved.seqs.empty() && *r.headFound == moved.seqs.back(),
+          "which is the intervening edit's last op");
+    check(r.generation == 0, "a refused write reports no generation");
+    check(view.generation() == 1, "and did NOT refresh the view");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "nothing was written");
+    const auto step = sub.nextUndo();
+    check(step && step->txnId == moved.txnId, "the history's top is still the edit that moved the head");
+}
+
+void aHelpersRefusalLeavesTheView() {
+    section("A2: a helper's refusal (another source file) leaves the view as it was");
+    adi::test::TempDirectory temp("ui_seams", "elsewhere");
+    auto here = clipProject(temp.path() / "here.adi");
+    auto there = clipProject(temp.path() / "there.adi");
+    if (!here || !there) { check(false, "stores created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*here, view);
+    check(sub.submit(trackCreate(22, "Bass")).ok, "a first edit here");
+    check(view.generation() == 1, "published the view");
+
+    // Prepared on the other project, committed against this one: the helper's
+    // own check, not the journal's.
+    auto split = splitInHalf(*there, 17);
+    check(split.ok, "the engine prepared the split there");
+    const auto r = sub.commitPrepared(std::move(split), &clip_edit::commitPrepared);
+    check(!r.ok, "refused");
+    check(!r.error.empty(), "and said why");
+    check(r.generation == 0, "a refused write reports no generation");
+    check(view.generation() == 1, "the view is as it was");
+    check(clipLength(*here, 17) == -1 && clipLength(*there, 17) == -1, "neither project was written");
+
+    // A prepared batch with nothing in it is a no-op, as an empty submit is:
+    // success, no transaction, no refresh.
+    auto empty = splitInHalf(*here, 17);
+    check(empty.ok, "a batch prepared here");
+    empty.requests.clear();
+    const auto none = sub.commitPrepared(std::move(empty), &clip_edit::commitPrepared);
+    check(none.ok, "an empty prepared batch reports success");
+    check(none.seqs.empty() && none.txnId == 0, "opened no transaction");
+    check(none.generation == 0 && view.generation() == 1, "and did not refresh the view");
+    check(clipLength(*here, 7) == kClipTicks, "the clip is untouched");
 }
 
 }  // namespace
@@ -1576,6 +1760,10 @@ int main() {
     aRefusedOpWritesNothing();
     everyWriteRefreshesTheView();
     aFrameKeepsItsSnapshot();
+    aPreparedBatchCommitsAsOneStep();
+    aPreparedBatchTakesOneOpOfTheWindows();
+    aStalePreparedBatchIsRefused();
+    aHelpersRefusalLeavesTheView();
     projectViewTree();
     projectViewRowsFromTheSnapshot();
     metersCountBars();
