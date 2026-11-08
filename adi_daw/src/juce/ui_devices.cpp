@@ -105,9 +105,12 @@ void ParameterControl::resized() {
 void ParameterControl::paint(juce::Graphics &g) {
     if (!record)
         return;
-    // Automation's state, as Live marks it: red when automated, orange when overridden.
+    // The automation LED (Live 12 manual 25.4): lit red while the control follows its lane, and off
+    // when its automation is overridden, so an unlit LED is what says "overridden" until the
+    // side-by-side measurement (parity-7.4 row 11). Dim, not absent, so the control still reads as
+    // an automated one; red and the dim grey are ADI's until measured.
     if (record->overridden || record->automated) {
-        g.setColour(record->overridden ? juce::Colours::orange : juce::Colours::red);
+        g.setColour(record->overridden ? look::textDim : juce::Colours::red);
         g.fillEllipse(static_cast<float>(getWidth() - 7), 4.f, 5.f, 5.f);
     }
     if (record->driven) {

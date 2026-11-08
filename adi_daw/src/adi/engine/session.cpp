@@ -813,18 +813,19 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     return rebuild();
 }
 
-namespace {
-// What a user can move on a strip, per track: what an override compares.
-struct StripValues {
-    double volume = 0.0, pan = 0.0, panLeft = -1.0, panRight = 1.0;
-    bool muted = false;
-};
 std::optional<std::string> automationParamRef(const std::string& format, const std::string& id) {
     if (format != "clap") return id;
     std::uint32_t numeric = 0;
     if (!device::ClapDevice::paramIdFromText(id,numeric)) return {};
     return std::to_string(numeric); // ADR-0165: lane refs stay decimal for every format
 }
+
+namespace {
+// What a user can move on a strip, per track: what an override compares.
+struct StripValues {
+    double volume = 0.0, pan = 0.0, panLeft = -1.0, panRight = 1.0;
+    bool muted = false;
+};
 std::map<std::pair<std::int64_t, std::string>, double> paramValues(const rows::Model& m) {
     std::map<std::pair<std::int64_t, std::string>, double> v;
     std::set<std::int64_t> clapRefs, clapDevices;

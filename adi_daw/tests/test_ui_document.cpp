@@ -540,6 +540,56 @@ int main(int argc, char **argv) {
             check(false, e.what());
         }
     }
+    {
+        // A CLAP plug-in spells its parameter ids in hex where its lanes' refs are decimal
+        // (ADR-0165): the strip's feed finds the lane through the same spelling the session's
+        // override uses, so Re-Enable lighting and the control's LED going off agree (C1 review).
+        using engine::ParamEventKind;
+        auto clap = ui::ProjectDocument::open(temp.path() / "clap-arm.adi", true, test::knobsLoader("0000001f", "clap"),
+                                              error);
+        check(clap != nullptr, "a project for a CLAP-spelled device");
+        if (clap) try {
+            clap->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                    test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            automation::LaneSpec spec;
+            spec.id = 1;
+            spec.ownerKind = "device";
+            spec.ownerId = 3;
+            spec.paramRef = "31"; // 0x1f
+            spec.paramName = "Cutoff";
+            spec.defaultValue = .5;
+            make.push_back(automation::createLane(spec));
+            check(clap->ops().submit(std::move(make)).ok && clap->synchronise(), "the device and a lane on its Cutoff");
+            clap->tick(0);
+            auto cutoffRecord = [&]() -> const panel::Record * {
+                const auto feed = clap->parameterFeed().current();
+                if (feed)
+                    for (const auto &data : *feed)
+                        if (data.id == 3 && !data.records.empty())
+                            return &data.records[0];
+                return nullptr;
+            };
+            check(cutoffRecord() != nullptr && cutoffRecord()->id == "0000001f" && cutoffRecord()->automated &&
+                      !cutoffRecord()->overridden,
+                  "the feed keeps the plug-in's hex id and finds the lane under its decimal ref");
+            check(clap->parameterGesture(3, "0000001f", ParamEventKind::Begin, .5) &&
+                      clap->parameterGesture(3, "0000001f", ParamEventKind::Value, .8) && clap->error().empty() &&
+                      clap->session().overriddenLanes().contains(1) && clap->view().current()->automationOverridden &&
+                      clap->parameterGesture(3, "0000001f", ParamEventKind::End, .8) && cutoffRecord() != nullptr &&
+                      cutoffRecord()->overridden,
+                  "a drag overrides the lane and the feed marks the control overridden: Re-Enable and the LED agree");
+            check(clap->reenableAutomation() && cutoffRecord() != nullptr && cutoffRecord()->automated &&
+                      !cutoffRecord()->overridden && !clap->view().current()->automationOverridden,
+                  "and Re-Enable lights the LED again");
+        } catch (const std::exception &e) {
+            check(false, e.what());
+        }
+    }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

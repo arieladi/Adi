@@ -124,21 +124,25 @@ void ProjectDocument::followOverrides() {
         agree = agree && lane->overridden == lanes.contains(lane->id);
     if (agree)
         return;
+    // The same rows under a new generation: when the session had realised the view, it has
+    // nothing to re-read, and every window takes the new snapshot at its next frame. A view the
+    // session has not caught up with (a commit that skipped `synchronise()`) stays unrealised, so
+    // the next `synchronise()` re-reads it.
+    const bool realised = realisedGeneration_ == view_.generation();
     view_.refresh(*store_, lanes);
-    // The same rows under a new generation: the session has nothing to re-read, and every window
-    // takes the new snapshot at its next frame.
-    realisedGeneration_ = view_.generation();
+    if (realised)
+        realisedGeneration_ = view_.generation();
 }
 bool ProjectDocument::reenableAutomation() {
-    if (!session_.reenableAutomation()) {
-        error_ = session_.error();
-        return false;
-    }
+    const bool ok = session_.reenableAutomation();
+    const std::string refusal = ok ? std::string{} : session_.error();
+    // The session reads nothing overridden now, whether or not its rebuild went through: the
+    // snapshot unlights the switch and the strip's marks go back from overridden to automated in
+    // the same call, so the window never shows a set the session no longer holds.
     followOverrides();
-    // The strip's marks go back from overridden to automated at once.
     feed_.publish(session_);
-    error_.clear();
-    return true;
+    error_ = refusal;
+    return ok;
 }
 void ProjectDocument::setAutomationArmed(bool armed) noexcept {
     session_.setAutomationWriteState(armed, false);
