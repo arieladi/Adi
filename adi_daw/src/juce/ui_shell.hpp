@@ -195,7 +195,8 @@ class AdiRootComponent final : public juce::Component {
     // marker or the time selection.
     juce::String selectionText() const;
     bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
-    // What Live's Edit menu shows: "Undo" and the step's own label.
+    // What Live's Edit menu shows: "Undo" and the step's own label, or "Nothing to Undo" with no
+    // step (Live 12's menu, the director's LK-02 capture; Readings M1-16a); the same for Redo.
     std::string undoTitle(bool redo) const;
     // The application's commands (New, Open, Take Snapshot, Save As, Settings) and
     // the engine refresh after an edit belong to whoever owns the document.

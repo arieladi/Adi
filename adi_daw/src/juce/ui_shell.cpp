@@ -1120,8 +1120,10 @@ juce::String AdiRootComponent::selectionText() const {
 }
 std::string AdiRootComponent::undoTitle(bool redo) const {
     const auto step = redo ? submitter_.nextRedo() : submitter_.nextUndo();
-    return std::string(redo ? "Redo" : "Undo") +
-           (step && !step->label.empty() ? " " + step->label : "");
+    const std::string verb = redo ? "Redo" : "Undo";
+    if (!canUndo(redo))
+        return "Nothing to " + verb;
+    return verb + (step && !step->label.empty() ? " " + step->label : "");
 }
 bool AdiRootComponent::fail(std::string message) {
     error_ = std::move(message);

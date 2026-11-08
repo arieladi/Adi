@@ -3109,7 +3109,8 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
               root.reader().findTrack(2)->name == "1 MIDI" && root.reader().findTrack(5)->name == "4 Audio" &&
               root.reader().findTrack(7)->name == "B Delay",
           "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, then Main (N41)");
-    check(!root.canUndo(false) && root.undoTitle(false) == "Undo", "and has nothing to undo, as Live");
+    check(!root.canUndo(false) && root.undoTitle(false) == "Nothing to Undo" && root.undoTitle(true) == "Nothing to Redo",
+          "and has nothing to undo: the Edit menu's items read Nothing to Undo and Nothing to Redo, as Live 12's (LK-02)");
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {
@@ -4398,6 +4399,38 @@ int main(int argc, char **argv) {
                                                 C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Group and "
               "Ungroup Tracks");
+        // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
+        // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
+        // Redo item reads "Nothing to Redo", as Live's does with nothing to redo. Worklist F1: what
+        // undo brings back is pinned in the seams test; this is the menu that offers it. The picture
+        // is of ADI's default key set, Live's (Redo Ctrl+Y off the Mac, §41.5): the app preset was
+        // switched to Cubase above and is put back before the render.
+        {
+            auto &edits = window.root();
+            std::int64_t victim = 0;
+            for (const auto &t : view.current()->tracks)
+                if (victim == 0 && (t->kind == "audio" || t->kind == "midi") && t->parent == 0)
+                    victim = t->id;
+            const auto countBefore = view.current()->tracks.size();
+            commands.activate(edits); // the Edit menu names the step of the active root
+            edits.arrangement.geometry.selection.track = victim;
+            check(victim != 0 && edits.command(C::DeleteTrack) && view.current()->tracks.size() + 1 == countBefore &&
+                      edits.undoTitle(false) == "Undo Delete Track" && edits.undoTitle(true) == "Nothing to Redo",
+                  "Delete Track from the menu bar's window: the Undo item names the step, Redo has nothing");
+            check(settings.set("shortcuts.preset", "live", {}, why), "the Live key set back for the picture");
+            commands.reload();
+#if !JUCE_MAC
+            check(commands.manager.getKeyMappings()->findCommandForKeyPress(
+                      juce::KeyPress('y', juce::ModifierKeys::commandModifier, 0)) == C::Redo,
+                  "Live's Redo key, Ctrl+Y (§41.5), is back with the preset");
+#endif
+            if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
+                renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Edit"), "Edit"),
+                           juce::File(pictures).getChildFile("adi-edit-menu.png"));
+            check(edits.command(C::Undo) && view.current()->tracks.size() == countBefore &&
+                      view.current()->findTrack(victim) != nullptr,
+                  "and undo brings the track back");
+        }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
                                                   C::InsertTimeSignatureChange},
               "the Create menu inserts tracks, returns too (§18.4), then a time signature change (§6.5)");
@@ -4499,8 +4532,8 @@ int main(int argc, char **argv) {
             ++snapshots;
             return document->takeSnapshot({}, 0, 0).ok;
         };
-        check(!integrated.canUndo(false) && integrated.undoTitle(false) == "Undo",
-              "a new project has nothing to undo, as Live");
+        check(!integrated.canUndo(false) && integrated.undoTitle(false) == "Nothing to Undo",
+              "a new project has nothing to undo, as Live: the item reads Nothing to Undo");
         check(document->ops().submit(track(2)).ok && document->synchronise(),
               "application edit reaches engine");
         check(integrated.undoTitle(false) == "Undo Create track",
