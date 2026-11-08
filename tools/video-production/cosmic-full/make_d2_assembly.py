@@ -44,6 +44,9 @@ def candidates(sid):
                 if t in d2 and gen(t):
                     out.append((RANK[d2[t]], age, t))
                 age += 1
+    acc = R / "anim" / f"{sid}-w3" / "accepted.json"  # weak-scene retakes win only on a better verdict, never on a tie
+    if acc.exists():
+        out += [(RANK[d2[t]], -1, t) for t in json.loads(acc.read_text())["takes"] if t in d2 and gen(t)]
     return out
 
 
