@@ -12,6 +12,20 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-09 — N29 checkpoint timeline gated; taking N17
+
+**PR requested:** head `engine/history-checkpoint-timeline` at **`57fe7aa8bde039b7b261dcc278fd72c8500ffcb2`**, base `engine/log` (**`36fcfdef6a7736a5740181c44c39c7ebe903277c`**). Title: **Expose the History checkpoint base without a false undo step**. Branch pushed; win opens and merges the PR and runs MSVC. This closes N29's remaining engine integration; the window owns striking its needs row. Independent of the pending Link consumer, cut directly from origin/engine/log.
+
+**Window handoff / PR body:** `History::readTimeline()` now returns `Timeline::baseSeq`, zero before compaction and the retained structural root's sequence afterwards. It reads the checkpoint metadata in the same read transaction, validates the retained root, and omits that root from public `steps`. The window can indicate that older steps were compacted without offering an impossible Undo. The base stays in internal ancestry, so branch heads and named/automatic snapshot anchors exactly at the base remain visible with their stored sequences; `headSeq` and a first visible step's parent may equal the base. At that head no visible step is applied and the current redo line remains usable. Broken checkpoint metadata returns an explicit error and no partial timeline. No schema, operation, navigation or retention-policy change; ENGINE-HISTORY-LIST.md and ENGINE-HISTORY-RETENTION.md document the read contract.
+
+**Gate:** full GCC14 Debug/Werror/PD-on/JUCE-off build, zero warnings; `test_all.sh` **15,733 checks / 188 suites**, every row/sum audited, zero failures, all four validators and binary layout clean. This adds **48** assertions to the existing History list suite (**77**); compaction **49**, history **95**, snapshots **65** and policy **38** remain green. Real commits/compaction exercise base advancement, whole transactions, exact-base snapshots and fork navigation, Undo/Redo, held values, read-only reopen, zero SQL changes, opaque checkpoint/payload bytes and eight malformed metadata cases. Strict GCC and Clang19 compile history_list.cpp and all five focused test units with actual flags plus Wshadow/Werror, zero warnings; Clang passes **324 checks**, zero failures, against the validated GCC archive.
+
+**Adversarial evidence and limits:** four isolated compiled production plants trigger **36 ordinary assertion failures**: visible structural root (8), zeroed public base (14), lost exact-base snapshot (2), severed internal base ancestry (12). Each exits normally with test failure; no crash or exception counted. Source/core/baseline object/binary hashes stay unchanged. Evidence: `/workspace/adi-cloud/n29-review/summary.json`, `n29-complete-build.log`, `n29-complete-gate.log`. The environment briefly reported starting during the full run, then returned ready with the same files and original test process; its final log is the completed original run. No whole-project Clang, sanitizer, MSVC/macOS execution or measured Live parity claim. HI-02's capped retention/stored-state changes and HI-03's moveTo remain separate queue items; README remains win-owned.
+
+**Next immediately: N17**, the two-point split of one clip as one captured operation, with caller-known middle identity so the window can append its mute in the same transaction. New branch `engine/clip-two-point-split` from the refreshed origin/engine/log, never main. Then the M2 edit kernel in the director's order; continue in this same turn without waiting for PR creation or CI.
+
+---
+
 ## 2026-11-08 — Native Link playback consumer gated; taking N29
 
 **PR requested:** head `engine/link-playback` at **`228f7b300c8563149e0b102a6d08f6d8fd49dab6`**, base `engine/log` (**`5ab36bcfb5b01693c9ead28331933a21e507c49f`**). Title: **Connect Link timing to native playback**. Branch pushed; win opens and merges the PR and runs MSVC. This completes the dated Link-consumer exception in LANES §3 item 1. No main changes or GitHub API calls; this log is not part of the feature branch.
