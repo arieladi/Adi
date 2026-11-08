@@ -35,6 +35,15 @@ void operator delete(void* p) noexcept {std::free(p);}
 void operator delete[](void* p) noexcept {std::free(p);}
 void operator delete(void* p,std::size_t) noexcept {std::free(p);}
 void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
+// Nothrow allocations use the same counted malloc/free pair under sanitizers.
+void* operator new(std::size_t n,const std::nothrow_t&) noexcept {
+    try {return ::operator new(n);} catch (...) {return nullptr;}
+}
+void* operator new[](std::size_t n,const std::nothrow_t&) noexcept {
+    try {return ::operator new[](n);} catch (...) {return nullptr;}
+}
+void operator delete(void* p,const std::nothrow_t&) noexcept {::operator delete(p);}
+void operator delete[](void* p,const std::nothrow_t&) noexcept {::operator delete[](p);}
 namespace {
 int checks=0, failures=0;
 void check(bool ok,const char* name) { ++checks;if(!ok){++failures;std::printf("FAIL %s\n",name);} }
@@ -193,6 +202,86 @@ void splitInsideFades() {
         OpRequest reset;reset.opType="clip.setFades";reset.payload={{"id",2},{"in",{{"ticks",0}}},{"out",{{"ticks",0}}}};
         check(OpJournal(*f.store).commit(reset).ok && History(*f.store).undo().ok && f.session.refresh(*f.store),"fade handle edit and undo restore retained envelope clocks");
         render(after);check(before==after,"undo of fade handle restores the split envelope exactly");
+    }
+}
+
+void rangeSurvivorPcm(std::uint32_t sourceRate,Precision width,bool loop,bool wholeTime) {
+    Fixture f(sourceRate,2,4000);f.add(1,100,800,11,2000);
+    auto& db=f.store->db();
+    db.exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(24024,60,0);"
+        "UPDATE clips SET content_offset_ticks=24024,fade_in_ticks=96096,fade_out_ticks=24024,fade_in_curve=2,fade_out_curve=5;"
+        "INSERT INTO clip_playback_details(clip_id,in_tension,out_tension) VALUES(1,0.4,-0.3)");
+    if(loop)db.exec("UPDATE clips SET time_base=0,pos_ticks=24024,length_ticks=96096,pos_ns=NULL,length_ns=NULL,"
+        "loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048");
+    SessionSpec spec{2,48000,2048};spec.precision=width;f.session.graph().setFadeFrames(0);
+    const bool loaded=f.session.load(*f.store,{},spec);
+    check(loaded,"load a faded source whose only range survivor will be its tail");if(!loaded)return;
+    auto render=[&](std::int32_t frames) {
+        f.session.transport().locate(0);f.session.transport().play();
+        if(!f.session.clips()->prime(std::chrono::seconds(2)))return std::vector<double>{};
+        const auto count=static_cast<std::size_t>(frames);
+        std::vector<double> result(count*2);std::vector<float> narrow(count*2);
+        float* out[]={narrow.data(),narrow.data()+frames};double* out64[]={result.data(),result.data()+frames};
+        AudioIo io;io.numOut=2;io.frames=frames;if(width==Precision::Float64)io.out64=out64;else io.out=out;
+        {audio::CallbackScope callback;f.session.process(io);}
+        if(width==Precision::Float32)std::copy(narrow.begin(),narrow.end(),result.begin());
+        return result;
+    };
+    const auto original=render(1200);
+    bool audible=original.size()==2400;
+    if(audible)for(std::size_t channel=0;channel<2;++channel) {
+        const auto base=channel*1200;
+        audible=audible && original[base+299]!=0 && original[base+300]!=0 && original[base+750]!=0;
+        for(std::size_t frame=0;frame<1200;++frame)
+            if(frame<100 || frame>=900)audible=audible && original[base+frame]==0;
+    }
+    check(audible && f.session.clips()->underrunSamples()==0,
+          "sole-tail baseline has real audio at the retained edge and original fade-out, with exact placement silence");
+    if(!audible)return;
+    const clip_edit::RangeSelection selection{{1},{1,ns(50)},{1,ns(300)}};
+    clip_edit::PreparedEdit edit;
+    if(wholeTime)edit=clip_edit::prepareDeleteTime(*f.store,12012,48048,48000);
+    else if(loop) {
+        auto cut=clip_edit::prepareCutRange(*f.store,selection,48000);
+        check(cut.copy.ok && cut.copy.images.size()==1,"Cut captures only the removed material before preserving its original-ID tail");
+        if(!cut.copy.ok || cut.copy.images.size()!=1)return;
+        edit=std::move(cut.edit);
+    } else edit=clip_edit::prepareDeleteRange(*f.store,selection,48000);
+    check(edit.ok,"prepare a sole-tail material or whole-Time removal");if(!edit.ok)return;
+    const bool committed=clip_edit::commitPrepared(*f.store,edit).ok && f.session.refresh(*f.store);
+    check(committed,"commit and refresh one sole-tail removal");if(!committed)return;
+    auto sameIdentity=[&] {
+        return db.execAndGet("SELECT count(*) FROM clips").getInt()==1 &&
+            db.execAndGet("SELECT count(*) FROM clips WHERE id=1").getInt()==1 &&
+            db.execAndGet("SELECT count(*) FROM audio_clips WHERE clip_id=1 AND media_id=1 AND src_start_frames=11 AND src_len_frames=2000").getInt()==1;
+    };
+    check(sameIdentity(),"the sole audible tail keeps its original clip and audio-source row identity");
+    const std::int32_t frames=wholeTime?950:1200;
+    std::vector<double> expected(static_cast<std::size_t>(frames)*2);
+    for(std::size_t channel=0;channel<2;++channel)for(std::int32_t frame=0;frame<frames;++frame) {
+        const auto source=wholeTime && frame>=50?frame+250:frame;
+        expected[channel*static_cast<std::size_t>(frames)+static_cast<std::size_t>(frame)]=
+            !wholeTime && frame>=50 && frame<300?0:original[channel*1200+static_cast<std::size_t>(source)];
+    }
+    const auto after=render(frames);
+    check(after.size()==expected.size() && after==expected,wholeTime?
+        "Delete Time shifts the original suffix by exactly the removed duration, preserving source phase, loop and fades":
+        "material Delete/Cut silences only the selected interval and keeps the original suffix at its exact timeline samples");
+    const bool undone=History(*f.store).undo().ok && f.session.refresh(*f.store);
+    check(undone && sameIdentity(),"one sole-tail undo restores the original clip and source identities");if(!undone)return;
+    const auto restored=render(1200);
+    check(restored.size()==original.size() && restored==original,"one sole-tail undo restores every original native PCM sample");
+    const bool redone=History(*f.store).redo().ok && f.session.refresh(*f.store);
+    check(redone && sameIdentity(),"one sole-tail redo retains the captured original identities");if(!redone)return;
+    const auto replayed=render(frames);
+    check(replayed.size()==expected.size() && replayed==expected,"one sole-tail redo restores the exact retained PCM and original envelope");
+}
+void rangeSurvivorSourceClocks() {
+    for(const auto sourceRate:{44100u,48000u})for(const auto width:{Precision::Float32,Precision::Float64}) {
+        // Delete a linear prefix; Cut a musical, looped prefix. Their shared
+        // trim receives both clocks without duplicating the full audio matrix.
+        for(const bool loop:{false,true})rangeSurvivorPcm(sourceRate,width,loop,false);
+        rangeSurvivorPcm(sourceRate,width,true,true); // whole-Time removal also relocates the surviving tail
     }
 }
 
@@ -653,7 +742,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="properties")properties();
         if(only=="all" || only=="fades")editedFades();
-        if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
+        if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
         if(only=="all" || only=="markers")sourceMarkers();

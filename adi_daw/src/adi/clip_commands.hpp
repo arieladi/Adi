@@ -46,6 +46,10 @@ struct RangeCopy {
     std::vector<Payload> images; // clipped material, offsets relative to selection
 };
 struct RangeCut {RangeCopy copy;PreparedEdit edit;};
+/// Ordinary material ranges select only main-lane clips (NULL lane_id).
+/// A sole surviving side keeps its clip and material-child identities.
+/// insertTime shifts the whole Set but pastes the selected main-lane material;
+/// the dedicated Time APIs below capture and shift clips from every lane.
 [[nodiscard]] RangeCut prepareCutRange(Store&,const RangeSelection&,double referenceRate);
 [[nodiscard]] RangeCopy copyRange(Store&,const RangeSelection&,double referenceRate);
 [[nodiscard]] PreparedEdit prepareDeleteRange(Store&,const RangeSelection&,double referenceRate,std::int64_t reserveClipId=0);
