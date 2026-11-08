@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The settings store: ADR-0125 R-01 to R-07 and d1-d3, ADR-0127 d5, ADR-0145,
-// ADR-0149, ADR-0152, and the director's v1.0 rulings on the registry
-// (ADR-0203).
+// ADR-0149, ADR-0152, the director's v1.0 rulings on the registry
+// (ADR-0203), and the M0 records' rows (docs/PLAN.md R-e; ADR-0214, ADR-0232).
 //
 // Every check here runs on every platform, whatever the environment: the
 // check count is compared with the README's, so nothing is platform-only.
@@ -287,6 +287,79 @@ void testRulings() {
               dflt("midi.insertResetAfterRecord") == true && dflt("transport.stopAtProjectEnd") == false &&
               dflt("editing.bounceReplaces") == "ask" && dflt("editing.importOptions") == "ask",
           "the defaults the rulings confirmed are as ruled");
+}
+
+// --- the M0 records: R-e's registry rows (docs/PLAN.md M0 and 6.2) -------------------------
+
+void testM0Records() {
+    section("the M0 records: R-e's registry rows (PLAN 6.2; ADR-0203 d4, d9; ADR-0214; ADR-0232)");
+    std::string why;
+    // ADR-0214 d3: Live's four choices, Auto by default; nothing runs on drop (d1).
+    const auto* shortSamples = find("record.shortSampleMode");
+    check(shortSamples && shortSamples->page == "Record, Warp & Launch" && shortSamples->section == "Warp/Fades" &&
+              shortSamples->choices == std::vector<Value>{"unwarpedOneShot", "warpedOneShot", "warpedLoop", "auto"} &&
+              shortSamples->defaultValue == "auto" && !shortSamples->agentMayChange,
+          "Loop/Warp Short Samples offers Live's four choices, Auto by default (ADR-0214 d3)");
+    check(shortSamples && !validate(*shortSamples, "on", why), "the old on/off values are gone: " + why);
+    // ADR-0203 d4, the plan's MX-04: Live's Delay Compensation switch, on.
+    const auto* pdc = find("audio.delayCompensation");
+    check(pdc && pdc->type == Type::Bool && pdc->page == "Audio" && pdc->defaultValue == true &&
+              pdc->scope == Scope::App && !pdc->agentMayChange,
+          "audio.delayCompensation: an Audio switch, on, never the agent's (ADR-0203 d4)");
+    // ADR-0203 d9: Bitwig's sync-in chooser and its slider are gone.
+    check(!find("sync.clockSource") && !find("sync.tempoResponsiveness"),
+          "no sync-in chooser and no responsiveness slider: Link and MIDI sync run together (ADR-0203 d9)");
+    // The plan's SRF-05: midi.port.* has a home, one App record per port.
+    const auto* ports = find("midi.ports");
+    check(ports && ports->type == Type::Record && ports->scope == Scope::App && ports->page == "Tempo & MIDI" &&
+              ports->section == "MIDI Ports" && ports->defaultValue == Value::object() && !ports->agentMayChange,
+          "midi.ports: an App record on Tempo & MIDI's MIDI Ports section, empty by default (SRF-05)");
+    check(ports && validate(*ports, Value({{"in-1", {{"track", true}, {"syncType", "mtc"}, {"clockSyncDelayMs", -2.5}}}}), why),
+          "a port's record of midi.port.* fields is legal: " + why);
+    check(ports && !validate(*ports, Value({{"in-1", {{"syncType", "smpte"}}}}), why),
+          "each field is validated by its own row: " + why);
+    check(ports && !validate(*ports, Value({{"in-1", {{"nonsense", 1}}}}), why),
+          "a field that is no midi.port.* row is refused: " + why);
+    check(ports && !validate(*ports, Value({{"in-1", true}}), why), "a port must be a record: " + why);
+    {
+        adi::test::TempDirectory temp("settings", "m0");
+        AppSettings s(appdata::App::Daw, temp.path() / "settings.json");
+        check(s.set("midi.ports", Value({{"in-1", {{"remote", true}}}}), kUser, why),
+              "the store writes the home: " + why);
+        check(!s.set("midi.port.remote", true, kUser, why),
+              "and still refuses a per-port row on its own: " + why);
+    }
+    // The plan's WIN-02 and WIN-04: the window's two records.
+    const auto* places = find("window.places");
+    check(places && places->type == Type::Record && places->scope == Scope::App && places->page == "Windows" &&
+              places->defaultValue == Value::object() && !places->agentMayChange,
+          "window.places: an App record on Windows, empty by default (WIN-02)");
+    check(places && validate(*places, Value({{"main", {{"display", "0:0:1920:1080:96"}, {"fullScreen", false}}}}), why) &&
+              !validate(*places, Value({{"main", "somewhere"}}), why),
+          "a window's place is a record, never bare text: " + why);
+    const auto* overrides = find("shortcuts.overrides");
+    check(overrides && overrides->type == Type::Record && overrides->scope == Scope::App &&
+              overrides->page == "Shortcuts" && overrides->defaultValue == Value::object() &&
+              !overrides->agentMayChange,
+          "shortcuts.overrides: an App record on Shortcuts, empty by default (WIN-04)");
+    check(overrides &&
+              validate(*overrides, Value({{"edit.redo", {"Ctrl+Y"}}, {"view.browser", Value::array()}}), why) &&
+              !validate(*overrides, Value({{"edit.redo", "Ctrl+Y"}}), why),
+          "an override is a list of chord texts, empty for none, never bare text: " + why);
+    // ADR-0232 d1, the plan's CTL-09: the listener's three rows, off, port 0, no origins.
+    const auto* enabled = find("control.enabled");
+    const auto* port = find("control.port");
+    const auto* origins = find("control.allowedOrigins");
+    check(enabled && enabled->type == Type::Bool && enabled->defaultValue == false && enabled->page == "Control" &&
+              port && port->type == Type::Int && port->defaultValue == 0 && port->min == 0 && port->max == 65535 &&
+              origins && origins->type == Type::Text && origins->defaultValue == "" && !enabled->agentMayChange &&
+              !port->agentMayChange && !origins->agentMayChange,
+          "control.enabled off, control.port 0 (any free port), control.allowedOrigins empty; none the agent's "
+          "(ADR-0232 d1)");
+    check(port && !validate(*port, 65536, why), "a port above 65535 is refused: " + why);
+    const auto pageList = pages();
+    check(std::find(pageList.begin(), pageList.end(), "Control") != pageList.end() && pageList.back() == "Project",
+          "the Control page is one of ADI's own, after Live's ten, Project still last");
 }
 
 // --- the file -------------------------------------------------------------------------------
@@ -826,9 +899,10 @@ void testCatalogue() {
 }
 
 int runAll() {
-    std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152, ADR-0203\n\n");
+    std::printf("adi_settings_tests -- ADR-0125, ADR-0127 d5, ADR-0145, ADR-0152, ADR-0203, ADR-0214, ADR-0232\n\n");
     testRegistry();
     testRulings();
+    testM0Records();
     testCatalogue();
     testStoreBasics();
     testUnknownKeysSurvive();

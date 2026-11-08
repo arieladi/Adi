@@ -15430,6 +15430,14 @@ its callers:
   display arrangement** (SPEC §8.4, a MUST). Restoring `x=3200` on a machine
   that lost its second monitor puts the window offscreen, and the clamp has to
   live wherever windows are created.
+
+  *Both items above are settled and no longer open (2026-11-08): ADR-0231's
+  amendments table strikes them as open (undocking reparents the same component;
+  a restored rectangle carries monitor identity). Where a restored rectangle
+  lives is WIN-02's: the main window and Settings in the App record
+  `window.places` (`docs/PLAN.md` R-e), floating windows in `ui_view`. This note
+  is the strike `docs/PLAN.md` §8.4 asks for; nothing else in this decision
+  moves.*
 - Each window owns its clock, per decision 1.
 
 **4. `MainSplit` is a panel→slot map, not a `StretchableLayoutManager`.**

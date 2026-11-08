@@ -1,8 +1,12 @@
 # The in-DAW AI agent
 
-**Status:** design sketch. Nothing built. This document exists now, at format
-time, because the agent's safety model is a *format* decision — it depends on the
-op log being in the file — and getting it wrong is not recoverable later.
+**Status:** design sketch; the changeset of §6.1 is built (`src/adi/changeset.*`:
+preview, apply, the agent's op allow-list, the unified diff, `adi_tool propose`),
+the agent itself is not, and its wire is the one control stack of ADR-0232,
+started on a seat of its own (the plan's CTL-01, AGT-01). This document was
+written at format time, because the agent's safety model is a *format* decision
+— it depends on the op log being in the file — and getting it wrong is not
+recoverable later.
 
 ---
 
@@ -197,7 +201,9 @@ commit. It carries the head the agent built on, the queued ops, the model
   same transaction (SPEC §8.7). Apply refuses a changeset whose head has moved
   since it was built. It is reported as **stale** and never rebased silently.
 - **Guardrails are checked at preview and again at apply:**
-  - the per-request op cap (default 256, §6.6);
+  - the per-request op cap (`agent.maxOpsPerRequest`, default 6,000, ADR-0203
+    d20; §6.6). The code's `Limits::maxOps` still says 256 until AGT-01 reads
+    the row;
   - only project edits, so transport and hardware ops are refused;
   - of the media ops, only `media.unlink` and `media.relink`, which change a
     reference and never a file (§6.4).

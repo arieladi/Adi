@@ -83,7 +83,23 @@ Standing prompt: `collab/prompts/2026-11-01-engine-lane.md` (the Codex seat's is
    stack, Link Audio off (XC-31); held notes keyed by the stored note identity (XC-25); the rebases
    of #445, #447 and #441; the reference-pitch guard on #443's branch (TU-01: a source whose
    reference pitch would move a degree off its 12-TET anchor is refused with a verdict naming the
-   line). The Drive's "blocked" entry lifts once the records of 5 November merge.
+   line). The Drive's "blocked" entry lifts once the records of 5 November merge. **The stale
+   texts the engine owns, from the plan's R-e and §8.4, as one docs PR on `engine/*`** (win cannot
+   edit `docs/OPS.md` or `docs/format/**`, §1): OPS §9.2 names `track.setFreeze` and
+   `group.setFreezeScope` as the freeze ops and strikes `track.freeze` / `track.unfreeze`, which
+   `ops_catalog.cpp` does not have (ADR-0223 d4); OPS §6.4's 300 ms merge gives way to the gesture
+   contract, the quiet window only as the end detector for sources that send no release
+   (ADR-0216 d5; the window's N44); OPS §11 item 4 closes with the comp verbs named, `lane.*` as
+   §9.2 plus `clip.setLane`, the auditioned lane as session state and not an op (ADR-0225 d2);
+   the six tuning and key ops of #444 (`tuning.create`, `tuning.delete`, `tuning.replace`,
+   `project.insertKeyEvent`, `project.removeKeyEvent`, `project.setKeyScale`) listed at P1
+   (TU-01; ADR-0203 d7, ADR-0227 d1); OPS §9.7's rack ops marked as capturing their whole subtree
+   (parameters, state, panels, routes, macros and the mappings that target them; DEV-03, P2;
+   ADR-0110, ADR-0203 d10); SPEC §6.2 reworded to Live's model, one main lane plays, take lanes
+   are auditioned, a comp is copies on the main lane, a NULL `lane_id` is the main lane, ADR-0037's
+   comping wording superseded (ADR-0225 d1, d2). SPEC §3.7's rewording rides with the window's
+   N45, SPEC §8.3's with HI-02's PR (ADR-0213), SPEC §6.5's with TM-SV-02's minor and SPEC §12
+   item 6 with CO-01 (both P2).
 4. **M2, the edit kernel and the gesture (P0)**, right after the Link consumer reaches its gate
    (item 1's exception) and once win's gesture and EditScope ADRs are in: N29 and N17's open part;
    ED-03, ED-04 (the anchored left trim; Crop), MI-01, MI-02; HI-01, HI-02 and HI-03 (the history:
@@ -158,7 +174,14 @@ Standing prompt: `collab/prompts/2026-11-01-window-lane.md` (resumed through
    switch is built, and the drawn slot columns stay off (the ruling of 5 November). The other four
    tabs, the CTZ navigator, the Info View switcher and the device strip's pinned analyser are P2;
    [⚡ Kick] waits for his list; OVERVIEW, SCOPE & PHASE and SPECTROGRAM from the existing analyser
-   and Scope (d12). One PR per tab or part.
+   and Scope (d12). One PR per tab or part. **The window's own texts that go with it, in the first
+   Mix View PR** (ADR-0212 d2 and its amendments table; `docs/PLAN.md` §8.4, MX-34; win does not
+   edit `docs/UI-ARCHITECTURE.md` or `collab/window/**`, §1): UI-ARCHITECTURE §12 and the two parity
+   checklists, `collab/window/parity-7.6-mixer.md` row 11 and `collab/window/parity-mix-view.md`
+   row 6, say that the slot drawings (the two slots on every mixer row, STACK's dormant slots, the
+   sidechain-slot and ADI-L drawers, the pinned slot's ADI-Q / RMSC curve, `CascadeTab`'s ADI-L
+   state) stay as drawn and off, unremoved, until his list; that STACK's rows are his Q-B answer
+   above; and that nothing of the unified feature is designed or hosted there.
 3. **The Settings window's pages** in Live's ten tab names and order, then ADI's own (ADR-0203
    d11, Master Reference Part V); then the window parts of phase C (the worklist's E1 to E6: split
    and the range edits that split a crossing clip, Cut, Copy, Paste and Duplicate of clips and
@@ -171,7 +194,10 @@ Standing prompt: `collab/prompts/2026-11-01-window-lane.md` (resumed through
 5. **Parity passes** of every built surface against the Master Reference's Part II and the Live 12
    manual (the worklist's F1 and F2 first); the Clip View (G1 to G3) once the director approves its
    picture; the director's remarks on the window as they arrive, each a row in the log and an item
-   ahead of everything new.
+   ahead of everything new. `collab/window/parity-7.6-mixer.md` row 6 is amended in WIN-01's PR
+   (M1): F1 to F8 lose the activator defaults, the eight commands stay unbound for the palette and
+   the Shortcuts page, F4 is the Mix View, F3 and F7 are held for Session View and offline
+   processing (ADR-0203 d6, d12; ADR-0209 d9; `docs/PLAN.md` §8.4).
 
 ### 3c. The control seat's queue (Track C; a seat of its own since Q-C, 5 November), in order
 
