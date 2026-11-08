@@ -244,6 +244,62 @@ int main(int argc, char **argv) {
                   "a file that can't be read is refused, with a reason");
         }
     }
+    {
+        // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the project carries on in the new
+        // file, its history with it, and the old file keeps what it had. No audio media here:
+        // relocating media is what fails on macOS, and this suite runs there.
+        const auto before = temp.path() / "before.adi";
+        auto saving = ui::ProjectDocument::open(before, true, {}, error);
+        check(saving != nullptr, "a project to save as");
+        if (saving) {
+            OpRequest first;
+            first.opType = "track.create";
+            first.payload = {{"id", 8}, {"kind", "audio"}, {"name", "Before"}};
+            check(saving->ops().submit(first).ok && saving->synchronise(), "an edit before Save As");
+            const auto opsBeforeSave = saving->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            const auto folder = temp.path() / "saved";
+            std::filesystem::create_directories(folder);
+            const auto after = folder / "after.adi";
+            const auto generationBefore = saving->view().generation();
+            check(saving->saveAs(after) && saving->error().empty() && saving->warning().empty() &&
+                      std::filesystem::equivalent(saving->store().path(), after) && saving->name() == "after",
+                  "Save As writes the new file and the document carries on in it, under its name");
+            check(saving->snapshotName(noon, 120) == "after 2025-10-27 14:00",
+                  "the Take Snapshot prompt is pre-filled with the new name");
+            // The re-read the Store header asks for after a Save As: a new generation of the
+            // view, which the session has already caught up with.
+            check(saving->view().generation() > generationBefore && saving->synchronise() &&
+                      saving->view().current()->findTrack(8) != nullptr &&
+                      saving->session().model().tracks.size() == 8,
+                  "the view and the session read the new file");
+            OpRequest second;
+            second.opType = "track.create";
+            second.payload = {{"id", 9}, {"kind", "audio"}, {"name", "After"}};
+            check(saving->ops().submit(second).ok && saving->synchronise() &&
+                      saving->view().current()->tracks.size() == 9,
+                  "the next edit lands in the new file");
+            {
+                StoreError opened{};
+                auto old = Store::open(before, opened, true);
+                check(old && opened == StoreError::Ok &&
+                          old->db().execAndGet("SELECT count(*) FROM tracks").getInt() == 8 &&
+                          old->db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeSave,
+                      "and the old file is unchanged");
+            }
+            check(saving->ops().undo().ok && saving->synchronise() && saving->ops().undo().ok &&
+                      saving->synchronise() && saving->view().current()->tracks.size() == 7 &&
+                      saving->session().model().tracks.size() == 7,
+                  "undo still reaches the edit made before Save As");
+            check(!saving->saveAs(before) && saving->error().find("already exists") != std::string::npos &&
+                      std::filesystem::equivalent(saving->store().path(), after) && saving->name() == "after",
+                  "an existing destination is refused with its reason, and nothing moves");
+            check(!saving->saveAs(temp.path() / "nowhere" / "lost.adi") && !saving->error().empty() &&
+                      std::filesystem::equivalent(saving->store().path(), after),
+                  "a folder that does not exist is refused with the store's reason");
+            check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
+                  "and the history still redoes after a refusal");
+        }
+    }
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

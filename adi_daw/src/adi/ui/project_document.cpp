@@ -56,6 +56,40 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
 std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const {
     return History::defaultSnapshotName(name_, nowUtc, utcOffsetMinutes);
 }
+bool ProjectDocument::saveAs(const std::filesystem::path &path) {
+    warning_.clear();
+    // The store refuses an existing file too, in its own words; the Status Bar gets ours, with
+    // the name, since Live would have asked here and replaced it.
+    std::error_code ignored;
+    if (std::filesystem::exists(path, ignored) ||
+        std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored))) {
+        error_ = "Save As: " + media::pathUtf8(path.filename()) +
+                 " already exists; ADI never replaces a project. Choose another name.";
+        return false;
+    }
+    // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
+    // the members hold the Store itself, which keeps its identity across the switch.
+    const auto result = store_->saveAs(path);
+    if (!result.ok) {
+        error_ = "Save As failed: " + result.error;
+        return false;
+    }
+    warning_ = result.warning;
+    const auto stem = store_->path().stem().u8string();
+    name_.assign(reinterpret_cast<const char *>(stem.data()), stem.size());
+    // The same rows, read again from the new file: the generation moves, the session follows
+    // through synchronise(), and every window follows at its next frame. The store has switched
+    // by now, so false would lie ("nothing moved"): a session that fails to re-read is a warning
+    // on a save that stands, and the next synchronise() tries again.
+    view_.refresh(*store_);
+    if (!synchronise()) {
+        if (!warning_.empty())
+            warning_ += ' ';
+        warning_ += "Saved, but the session did not re-read the file: " + error_;
+    }
+    error_.clear();
+    return true;
+}
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ == view_.generation())
         return true;

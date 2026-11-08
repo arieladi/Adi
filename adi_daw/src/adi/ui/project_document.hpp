@@ -31,6 +31,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     // What the Take Snapshot prompt is pre-filled with: the project's name and the time.
     std::string snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const;
     const std::string &name() const noexcept { return name_; }
+    // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the store copies the project into a
+    // new `.adi` and carries on in it (`Store::saveAs`, #380), called with no live statement held
+    // (SPEC §3.7); the name, the view and the session follow, and the caller retitles the window.
+    // The store never overwrites, so an existing destination is refused and `error()` says why,
+    // where Live asks first and then replaces. False means nothing moved; once the store has
+    // switched the save stands and is true, a warning the store reports, or a session that
+    // failed to re-read the new file, in `warning()`.
+    bool saveAs(const std::filesystem::path &);
+    const std::string &warning() const noexcept { return warning_; }
     bool synchronise();
     void tick(std::int64_t milliseconds);
     void prepare(double rate, std::int32_t frames) override;
@@ -70,6 +79,6 @@ class ProjectDocument final : public engine::BlockProcessor {
     ParameterFeed feed_;
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;
-    std::string error_;
+    std::string error_, warning_;
 };
 } // namespace adi::ui
