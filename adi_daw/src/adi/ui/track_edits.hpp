@@ -3,6 +3,7 @@
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -130,6 +131,19 @@ inline TrackEdit soloTracks(const SnapshotTracks &tracks, std::int64_t clicked, 
         if (acted ? k->soloed != on : on && exclusive && !add && k->soloed)
             edit.ops.push_back(op("track.setSolo", {{"id", k->id}, {"soloed", acted && on}}, label));
     }
+    return edit;
+}
+// Live's Solo in Place (Live 12 manual 18.6; the Solo button's menu and the Options menu's entry):
+// soloing leaves the returns audible. One project field for both entries (`mixer.setSoloInPlace`,
+// #412), on by default (the engine's default; Live's factory default is unmeasured, F-02 NOT RUN,
+// the director's profile reads it ticked, F-07). The manual gives the Options entry a second role,
+// "the default behavior", which ADI has no field for until it is measured (parity-7.6 row 7). The
+// op is outside undo, as the catalogue says (ephemeral, in the transport scope), and saved with
+// the project. No op when the snapshot already holds `on`.
+inline TrackEdit soloInPlaceEdit(const engine::Snapshot &snapshot, bool on) {
+    TrackEdit edit;
+    if (snapshot.cue.soloInPlace != on)
+        edit.ops.push_back(track_edits_detail::op("mixer.setSoloInPlace", {{"on", on}}, "Solo in Place"));
     return edit;
 }
 // Live's colour chooser (Live 12 manual 2.3.2): the colour at `index` of Live's palette (ADR-0211) on
@@ -401,6 +415,39 @@ inline TrackEdit moveTracks(const SnapshotTracks &tracks, const std::vector<std:
         stay.erase(std::remove_if(stay.begin(), stay.end(), moving), stay.end());
         renumber(edit.ops, stay, label);
     }
+    return edit;
+}
+// Live's Track Delay (manual 18.7): a track's output delayed, or pre-delayed by a negative value, in
+// milliseconds. The format keeps samples at the project's rate (`TrackNode::delaySamples`,
+// `Snapshot::sampleRate`; ADR-0172): the window writes ms × rate / 1000, to the nearest sample, and
+// reads back 1000 × samples / rate, so a typed value shows what the sample grid kept.
+inline double trackDelayMs(std::int64_t samples, int sampleRate) noexcept {
+    return sampleRate > 0 ? 1000. * static_cast<double>(samples) / sampleRate : 0.;
+}
+inline std::int64_t trackDelaySamples(double ms, int sampleRate) noexcept {
+    return std::llround(ms * sampleRate / 1000.);
+}
+// One `mixer.setDelay` on track `id`, one undo step; no ops when the sample grid would keep the
+// delay it has. Main's is shown and written as every track's (Master Reference 8.1).
+inline TrackEdit setTrackDelay(const SnapshotTracks &tracks, int sampleRate, std::int64_t id, double ms) {
+    TrackEdit edit;
+    const auto *t = track_edits_detail::find(tracks, id);
+    if (t == nullptr) {
+        edit.refusal = "Select a track to delay.";
+        return edit;
+    }
+    if (!std::isfinite(ms)) {
+        edit.refusal = "Track Delay takes a number of milliseconds.";
+        return edit;
+    }
+    if (sampleRate <= 0) {
+        edit.refusal = "The project has no sample rate to count the delay in.";
+        return edit;
+    }
+    const auto samples = trackDelaySamples(ms, sampleRate);
+    if (samples != t->delaySamples)
+        edit.ops.push_back(
+            track_edits_detail::op("mixer.setDelay", {{"id", id}, {"samples", samples}}, "Change Track Delay"));
     return edit;
 }
 // A group's tracks back where the group stood, in their order, and the group removed; the first

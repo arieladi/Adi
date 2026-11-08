@@ -98,7 +98,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         ActivateTrack8 = ActivateTrack1 + 7,
         ToggleMixerSends,
         InsertTimeSignatureChange,
-        LastId = InsertTimeSignatureChange
+        SoloInPlace,
+        ToggleTrackOptions,
+        ToggleMixerTrackOptions,
+        LastId = ToggleMixerTrackOptions
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -194,7 +197,8 @@ class AdiRootComponent final : public juce::Component {
     // marker or the time selection.
     juce::String selectionText() const;
     bool canUndo(bool redo) const { return redo ? submitter_.canRedo() : submitter_.canUndo(); }
-    // What Live's Edit menu shows: "Undo" and the step's own label.
+    // What Live's Edit menu shows: "Undo" and the step's own label, or "Nothing to Undo" with no
+    // step (Live 12's menu, the director's LK-02 capture; Readings M1-16a); the same for Redo.
     std::string undoTitle(bool redo) const;
     // The application's commands (New, Open, Take Snapshot, Save As, Settings) and
     // the engine refresh after an edit belong to whoever owns the document.
@@ -291,8 +295,9 @@ class AdiRootComponent final : public juce::Component {
     // Drag the Mixer View's top edge: taller strips, never past one track row.
     void resizeMixerView(int height);
     // Live 12's Mixer View Control options (manual 18.1, "show or hide mixer components"): In/Out,
-    // Sends, Volume, Track Options, Crossfader, Performance Impact, then Return Tracks.
-    juce::PopupMenu mixerOptionsMenu();
+    // Sends, Volume, Track Options, Crossfader, Performance Impact, then Return Tracks. The View
+    // menu's Mixer Controls submenu is the same list with Live's separator after Volume (manual 6.1).
+    juce::PopupMenu mixerOptionsMenu(bool viewMenu = false);
     // Live 12's Arrangement Track Controls submenu of the View menu: ADI's Hide/Show Track Controls
     // (the side panel), then the track controls' In/Out and Sends (Ctrl/Cmd+Alt+I, Ctrl/Cmd+Alt+S),
     // Volume and Track Options. The View menu's Mixer Controls submenu is mixerOptionsMenu().
@@ -306,6 +311,13 @@ class AdiRootComponent final : public juce::Component {
     // Live's Solo on track `id` (a switch, or S on the selection), with Exclusive Solo, Ctrl/Cmd for
     // several (`add`), and the selected tracks together; one undo step.
     bool soloTrack(std::int64_t id, bool add);
+    // Live's Solo in Place (manual 18.6): soloing leaves the returns audible. The project's one
+    // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
+    // #412); outside undo, saved with the project; the session re-reads the project after it.
+    bool setSoloInPlace(bool on);
+    // The toggle both entries pick: the field's opposite as the CURRENT cell holds it at pick time,
+    // so a menu left open while the other entry threw the switch still toggles, never a no-op.
+    bool toggleSoloInPlace();
     // Live's Track Activator on track `id`: with `withSelection`, the selected tracks together when
     // `id` is among them (a switch, or 0 on the selection); without, that track alone (F1…F8).
     bool activateTrack(std::int64_t id, bool withSelection = true);

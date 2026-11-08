@@ -39,6 +39,8 @@ int main() {
     state.sends = false;
     state.mixerInOut = true;
     state.mixerSends = false;
+    state.trackOptions = true;
+    state.mixerTrackOptions = true;
     state.largeTracks = false;
     state.viewGroup = 42;
     state.foldedGroups = {7, 13};
@@ -62,6 +64,10 @@ int main() {
           "the Mixer View's own In/Out is kept per window, hidden until shown (Live 12's Mixer Controls)");
     check(!restored.mixerSends && views.load("other").mixerSends,
           "so are the Mixer View's own sends, shown until hidden (Live 12's Mixer Controls)");
+    check(restored.trackOptions && restored.mixerTrackOptions && !views.load("other").trackOptions &&
+              !views.load("other").mixerTrackOptions,
+          "whether the Track Delay shows is kept per window, the track controls' and the Mixer View's apart, hidden "
+          "until shown (Live's Track Options, manual 18.7)");
     check(!restored.largeTracks && views.load("other").largeTracks,
           "Use Large Track Height is kept per window, on until switched off");
     check(restored.viewGroup == 42 && views.load("other").viewGroup == 0,

@@ -1,13 +1,31 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_mixer.hpp"
 #include "ui_shell.hpp"
+#include "adi/engine/mixer.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "adi/ui/track_edits.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <string_view>
 namespace adi::ui {
 namespace {
+// The meter's ballistics, the window's (UI-ARCHITECTURE §9: the engine writes {peak, rms} per
+// callback and holds nothing between reads, so the fall is what keeps a value on screen between
+// frames). The level rises at once and falls kFallDbPerSecond; the peak line rises at once, holds
+// kPeakHoldSeconds and then falls at the same rate. win's placement until Live 12's are read
+// (Readings M1-02 to M1-04).
+constexpr double kFallDbPerSecond = 24, kPeakHoldSeconds = 1;
+// `shown` after `seconds` of falling at the rate, never under `now`, the engine's value; silence
+// once under the meter's floor.
+float fallen(float shown, float now, double seconds) noexcept {
+    if (now >= shown)
+        return now;
+    const double db = 20 * std::log10(static_cast<double>(shown)) - kFallDbPerSecond * seconds;
+    const auto level = static_cast<float>(std::pow(10., db / 20));
+    return level <= 1.e-6f ? now : std::max(now, level);
+}
 // The Solo's half-coloured state (look::LiveLook draws it), named once.
 const juce::Identifier kHalfLit{"live.half"};
 // Live's fader runs from -inf to +6 dB; ADI's bottom stop is -inf. What the bottom stop writes is
@@ -166,6 +184,39 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
             panel_.submit("mixer.setPan", {{"id", track_}, {"pan", pan.getValue()}},
                           "Change Track Panning");
     };
+    // Live's Track Delay (manual 18.7): a value box reading the delay in ms to two places, Live's
+    // "ms" box beside it (paintDelayUnit); a negative value pre-delays. Hidden until Live's Track
+    // Options shows it (resized). Dragged up or down, as Live's value fields are (manual 6.3, the
+    // Arrangement Position fields; 7.1, the scene fields): JUCE's vertical bar, drawn as the number
+    // alone (LiveLook, `live.valueField`), a pixel 0.1 ms, PROVISIONAL until Live's step is
+    // measured (M1-06). Its travel is the engine's playable second either way (ADR-0172,
+    // `StripNode::kMaxDelaySeconds`); Live's own range is to be measured.
+    delay.setSliderStyle(juce::Slider::LinearBarVertical);
+    delay.setTextBoxStyle(juce::Slider::TextBoxLeft, false, 0, 0);
+    delay.setSliderSnapsToMousePosition(false);
+    delay.setColour(juce::Slider::textBoxTextColourId, look::text);
+    delay.getProperties().set("live.valueField", true);
+    delay.setRange(-1000, 1000, .01);
+    delay.setMouseDragSensitivity(kDelayDragPixels);
+    delay.textFromValueFunction = [](double v) { return juce::String(v, 2); };
+    // Typed with or without its unit: "10", "10 ms", "-2.5ms".
+    delay.valueFromTextFunction = [](const juce::String &text) {
+        return text.trim().upToFirstOccurrenceOf("ms", false, true).trim().getDoubleValue();
+    };
+    delay.updateText();
+    delay.setTitle("Track Delay");
+    delay.setTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
+    delay.setScrollWheelEnabled(false);
+    delay.onDragStart = [this] { dragging_ = true; };
+    delay.onDragEnd = [this] {
+        dragging_ = false;
+        commitDelay();
+    };
+    delay.onValueChange = [this] {
+        if (!dragging_)
+            commitDelay();
+    };
+    addChildComponent(delay);
     active.setTitle("Track Activator");
     active.setTooltip("Turns the track's output on or off.");
     solo.setTitle("Solo");
@@ -176,7 +227,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     eq.setTooltip("The channel EQ, built in and off until a band is touched (ADR-0204 d1).");
     limiter.setTitle("ADI-L");
     limiter.setTooltip("The channel limiter, built in and off (ADR-0204 d1).");
-    for (juce::TextButton *b : {&active, &solo, static_cast<juce::TextButton *>(&arm), &eq, &limiter}) {
+    for (juce::TextButton *b :
+         {&active, static_cast<juce::TextButton *>(&solo), static_cast<juce::TextButton *>(&arm), &eq, &limiter}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, look::button);
         // Only the keyboard focuses a mixer switch, so a focused one is ringed (Live 12).
@@ -193,6 +245,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     active.onClick = [this] { panel_.root.activateTrack(track_); };
     // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
     solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
+    // Its right-click menu: Solo in Place (manual 18.6).
+    solo.onMenu = [this] { soloMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&solo)); };
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
     // A return's Pre/Post (ADR-0203 d3), where a track has Arm: the return's own switch
     // (`TrackNode::returnSendTap`, #405), which every send into it follows, now and as each new one
@@ -229,10 +283,11 @@ void ArmButton::paintButton(juce::Graphics &g, bool over, bool down) {
 void MixerStrip::bind(std::int64_t id) {
     track_ = id;
     position_ = 0;
-    tap_ = panel_.tap ? panel_.tap(id) : nullptr;
     peak_ = rms_ = 0;
+    lastFrame_ = -1;
     frame(true);
 }
+void MixerStrip::resolveMeter() { meter_ = panel_.meter && track_ != 0 ? panel_.meter(track_) : nullptr; }
 void MixerStrip::frame(bool changed) noexcept {
     const auto *t = panel_.root.reader().findTrack(track_);
     // A device put on a MIDI track or taken off it may give it an audio mixer or take it away.
@@ -275,6 +330,8 @@ void MixerStrip::frame(bool changed) noexcept {
         volume.setValue(std::max(kFloorDb, static_cast<double>(t->volumeDb)),
                         juce::dontSendNotification);
         pan.setValue(t->pan, juce::dontSendNotification);
+        // The delay as the sample grid keeps it, in ms at the project's rate (manual 18.7).
+        delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
         solo.setToggleState(t->soloed, juce::dontSendNotification);
         // A group holding a soloed track shows its Solo half coloured (Live 12 manual 18.3). The
@@ -312,22 +369,31 @@ void MixerStrip::frame(bool changed) noexcept {
             showPost(*returnSwitches_[i], returns_[i]);
         repaint();
     }
-    // The meter reads the newest frames of the track's tap: wait-free, no allocation.
-    float p = 0, r = 0;
-    std::int64_t stamp = 0;
-    if (tap_ && tap_->read(left_, right_, stamp)) {
-        double energy = 0;
-        for (std::size_t i = 0; i < left_.size(); ++i) {
-            p = std::max(p, std::max(std::abs(left_[i]), std::abs(right_[i])));
-            energy += static_cast<double>(left_[i]) * left_[i] +
-                      static_cast<double>(right_[i]) * right_[i];
-        }
-        r = static_cast<float>(std::sqrt(energy / static_cast<double>(2 * left_.size())));
-    }
-    if (panel_.vertical() && p > peakHold.held) {
-        peakHold.held = p;
+    // The meter: the engine's {peak, rms} for the strip, written per callback by the audio thread
+    // and read with relaxed loads (UI-ARCHITECTURE §9; #381), never a tap, no allocation. A strip
+    // bound before the session had a strip for its track finds the meter on a refresh.
+    if (changed)
+        resolveMeter();
+    const float peakNow = meter_ != nullptr ? meter_->peak.load(std::memory_order_relaxed) : 0.f;
+    const float rmsNow = meter_ != nullptr ? meter_->rms.load(std::memory_order_relaxed) : 0.f;
+    const double now = panel_.clock ? panel_.clock() : juce::Time::getMillisecondCounterHiRes() / 1000.;
+    const double seconds = lastFrame_ < 0 ? 0 : std::max(0., now - lastFrame_);
+    lastFrame_ = now;
+    // Live's peak level holds the highest peak it is shown (manual 18.1); the engine holds nothing
+    // between reads, so a callback no frame read is not in it (the held peak is N9's open half).
+    if (panel_.vertical() && peakNow > peakHold.held) {
+        peakHold.held = peakNow;
         peakHold.repaint();
     }
+    // The window's ballistics: the level falls from where it was drawn; the peak line holds
+    // kPeakHoldSeconds from its last rise, then falls for the part of this frame past the hold.
+    const float r = fallen(rms_, rmsNow, seconds);
+    float p = peak_;
+    if (peakNow >= peak_) {
+        p = peakNow;
+        peakSince_ = now;
+    } else if (const double falling = std::min(seconds, now - peakSince_ - kPeakHoldSeconds); falling > 0)
+        p = fallen(peak_, peakNow, falling);
     if (p != peak_ || r != rms_) {
         peak_ = p;
         rms_ = r;
@@ -347,9 +413,17 @@ void MixerStrip::resized() {
         // Live 12's In/Out section under ADI's slots, when the Mixer Controls show it and the strip
         // has room for it and the mixer; then as many rows of sends as leave the mixer its room.
         io_ = panel_.root.state().mixerInOut && getHeight() - kMixerTop - kInOutHeight >= kMixerRoom ? kInOutHeight : 0;
+        // Live's Track Delay section under the mixer (manual 18.7), when the Mixer Controls' Track
+        // Options shows it and the strip keeps the mixer its room; then the sends.
+        delay_ = panel_.root.state().mixerTrackOptions && getHeight() - kMixerTop - io_ - kDelayHeight >= kMixerRoom
+                     ? kDelayHeight
+                     : 0;
         shown_ = showsSends() ? returnCount_ : 0;
-        while (shown_ > 0 && getHeight() - sendsTop() - sendsHeight(shown_) < kMixerRoom)
+        while (shown_ > 0 && mixerBottom() - sendsTop() - sendsHeight(shown_) < kMixerRoom)
             --shown_;
+        // Live's figure: the box across the strip, the "ms" box at its right edge.
+        delay.setVisible(delay_ > 0);
+        delay.setBounds(4, mixerBottom() + 19, getWidth() - 32, 13);
         for (std::size_t i = 0; i < sends_.size(); ++i) {
             sends_[i]->setVisible(i < shown_);
             sends_[i]->setBounds(sendBounds(i));
@@ -369,7 +443,7 @@ void MixerStrip::resized() {
         volume.setVisible(audio_);
         pan.setVisible(audio_);
         peakHold.setVisible(audio_);
-        const int top = mixerTop(), bottom = getHeight();
+        const int top = mixerTop(), bottom = mixerBottom();
         eq.setBounds(4, 22, 29, 13);
         limiter.setBounds(37, 22, 29, 13);
         peakHold.setBounds(11, top + 5, 35, 12);
@@ -435,6 +509,11 @@ void MixerStrip::resized() {
     const int slots = (audio_ ? 2 : 1) + (sends ? sendRows() : 0);
     place(eq, slots, {x + 4, 3 + 17 * slots, 29, 13});
     place(limiter, slots, {x + 37, 3 + 17 * slots, 29, 13});
+    // Live's Track Delay on the row after the slots, with its "ms" box (paintDelayUnit), while the
+    // track controls' Track Options shows it (the D selector).
+    place(delay, slots + 1, {x + 4, 3 + 17 * (slots + 1), 45, 13});
+    if (!panel_.root.state().trackOptions)
+        delay.setVisible(false);
 }
 juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
     // Live's Mixer View sends: A on the left, B to its right and lower, C under A, each 22 pt under
@@ -445,7 +524,7 @@ juce::Rectangle<int> MixerStrip::sendBounds(std::size_t index) const noexcept {
 juce::Rectangle<int> MixerStrip::meterArea() const noexcept {
     // Under a tall strip's numeric field, the meter stops short of the foot.
     const bool tall = getHeight() >= MixerPanel::kTallHeight;
-    return {53, mixerTop() + 6, 11, std::max(0, getHeight() - mixerTop() - 10 - (tall ? 15 : 0))};
+    return {53, mixerTop() + 6, 11, std::max(0, mixerBottom() - mixerTop() - 10 - (tall ? 15 : 0))};
 }
 bool MixerStrip::showsSends() const noexcept {
     // The Mixer View's own Sends (Live 12's Mixer Controls), apart from the track controls'.
@@ -487,6 +566,21 @@ void MixerStrip::paint(juce::Graphics &g) {
                            b.getBottom() - 9, b.getWidth(), 12, juce::Justification::centred);
             }
         }
+        if (delay_ > 0) {
+            // Live's Track Delay section under the mixer (manual 18.7, its figure): a band darker
+            // than the mixer above it, across every strip, a rule over it; its title, the value box
+            // across the strip with the lit "ms" box at its right. The band's shade is the figure's,
+            // not measured (LK-03).
+            const int top = mixerBottom();
+            g.setColour(look::frame);
+            g.fillRect(0, top, w, delay_);
+            g.setColour(look::separator);
+            g.fillRect(0, top, w, 2);
+            g.setColour(look::text);
+            g.setFont(look::font(11.5f, true));
+            g.drawText("Track Delay", 5, top + 4, w - 10, 13, juce::Justification::centredLeft);
+            paintDelayUnit(g);
+        }
         if (position_ > 0) {
             g.setColour(panel_.root.arrangement.colourFor(position_ - 1));
             g.fillRect(0, 0, w, 17);
@@ -520,10 +614,38 @@ void MixerStrip::paint(juce::Graphics &g) {
         g.fillRect(x - 1, 0, 1, getHeight());
         paintInOut(g, 2);
     }
+    if (delay.isVisible())
+        paintDelayUnit(g);
     if (audio_)
         paintMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
     else
         paintMidiMeter(g, {x + 105, 1, 8, std::max(0, getHeight() - 4)});
+}
+void MixerStrip::paintDelayUnit(juce::Graphics &g) const {
+    // Live's "ms" box right of the Track Delay's value box, lit as its figure shows it (manual 18.7).
+    const auto b = delay.getBounds();
+    const juce::Rectangle<float> r(static_cast<float>(b.getRight() + 2), static_cast<float>(b.getY()), 22.f, 13.f);
+    look::box(g, r, look::accent);
+    g.setColour(look::text);
+    g.setFont(look::font(11.5f));
+    g.drawText("ms", r, juce::Justification::centred);
+}
+void MixerStrip::commitDelay() {
+    // From the CURRENT cell, as every action is (ADR-0201): ms into samples at the project's rate,
+    // one op, one undo step. The box then shows what the sample grid kept; a refusal puts it back
+    // to the track's delay and the Status Bar says why.
+    const auto current = panel_.root.current();
+    if (!current)
+        return;
+    auto edit = setTrackDelay(current->tracks, current->sampleRate, track_, delay.getValue());
+    if (!edit.refusal.empty() || edit.ops.empty()) {
+        if (const auto *t = current->findTrack(track_))
+            delay.setValue(trackDelayMs(t->delaySamples, current->sampleRate), juce::dontSendNotification);
+        if (!edit.refusal.empty())
+            panel_.root.say(edit.refusal);
+        return;
+    }
+    panel_.root.submitEdits(std::move(edit.ops));
 }
 void MixerStrip::paintMidiMeter(juce::Graphics &g, juce::Rectangle<int> area) const {
     // Live's MIDI meter: a column of dots down the meter's place that light while notes play (Live 12
@@ -808,6 +930,14 @@ void MixerStrip::commitSend(std::size_t index) {
     if (!current || index >= sends_.size())
         return;
     auto edit = setSend(*current, track_, returns_[index], sends_[index]->getValue());
+    if (!edit.refusal.empty()) {
+        // A new row with no routing id left (N39): nothing lands, so the knob goes back to its row's
+        // level, fully down without one, and the Status Bar says why.
+        sends_[index]->setValue(std::clamp(sendLevel(findSend(current->sends, track_, returns_[index])), kSendFloorDb, kSendTopDb),
+                                juce::dontSendNotification);
+        panel_.root.say(edit.refusal);
+        return;
+    }
     panel_.root.submitEdits(std::move(edit.ops));
 }
 void MixerStrip::enableSend(std::size_t index, bool on) {
@@ -841,6 +971,31 @@ void MixerStrip::sendMenu(std::size_t index) {
         m.addItem("Enable All Sends", [this] { enableAllSends(); });
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
 }
+juce::PopupMenu MixerStrip::soloMenu() {
+    // Live's Solo button menu (manual 18.6): Solo in Place, ticked from the project's one field, on
+    // by default (the engine's #412 default; Live's factory default is unmeasured, F-02 NOT RUN);
+    // the Options menu's entry reads the same field, so the two agree. The pick is the root's one
+    // toggle, read at pick time from the CURRENT cell: the other menu, or the Mix View's own
+    // window, may have thrown the field while this menu was open, and the pick is never a no-op.
+    juce::PopupMenu m;
+    m.addItem("Solo in Place", true, panel_.root.reader().soloInPlace(), [safe = SafePointer<MixerStrip>(this)] {
+        if (safe)
+            safe->panel_.root.toggleSoloInPlace();
+    });
+    return m;
+}
+void SoloButton::mouseDown(const juce::MouseEvent &e) {
+    // A right-click is the menu's, never a press: the button is not put down, so the release that
+    // follows solos nothing.
+    if (!e.mods.isPopupMenu())
+        juce::TextButton::mouseDown(e);
+    else if (onMenu)
+        onMenu();
+}
+void SoloButton::mouseUp(const juce::MouseEvent &e) {
+    if (!e.mods.isPopupMenu())
+        juce::TextButton::mouseUp(e);
+}
 void MixerStrip::panMenu() {
     juce::PopupMenu m;
     m.addItem(1, "Stereo Pan", true, true);
@@ -854,10 +1009,9 @@ bool MixerPanel::submit(const std::string &op, Payload payload, const char *labe
     return root.submitEdit(op, std::move(payload), label);
 }
 void MixerPanel::resized() { place(); }
-void MixerPanel::retap() {
+void MixerPanel::resolveMeters() {
     for (auto &s : strips_)
-        if (s->track() != 0)
-            s->bind(s->track());
+        s->resolveMeter();
 }
 bool MixerPanel::focusTrack(std::int64_t track) {
     if (const auto rows = root.arrangement.geometry.rows(root.reader()); rows.find(track) < rows.size())
@@ -1167,9 +1321,9 @@ SideStrip::SideStrip() {
     inOut.setToggleState(true, juce::dontSendNotification);
     returns.setToggleState(true, juce::dontSendNotification);
     mixer.setToggleState(true, juce::dontSendNotification);
-    // Mixer and Delay only show their state: neither has a toggle to switch yet.
+    // Mixer only shows its state: the track controls' mixer has no toggle to switch. Delay is off
+    // until Track Options shows the Track Delay (Live's default Set hides it).
     mixer.setInterceptsMouseClicks(false, false);
-    delay.setInterceptsMouseClicks(false, false);
 }
 void SideStrip::resized() {
     // Under the two view switches: the flip arrows, then the track height. At the foot, over the

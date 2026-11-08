@@ -47,6 +47,7 @@
 
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <tuple>
@@ -1065,6 +1066,19 @@ void sendsAsBatches() {
               ui::sendOn(*kick, nullptr) && !ui::sendOn(*reverb, nullptr),
           "without a row: fully down; a track's send on, a return's off until Enable Send");
 
+    // A routing row of another kind, which the snapshot's `sends` leave out: a sidechain from Kick into
+    // the group, with an id above every send's. A new send's id comes from the highest routing id of
+    // any kind, `Snapshot::maxRoutingId` (#403, N39), never from the sends alone.
+    auto sidechain = [&sub](std::int64_t id) {
+        OpRequest r;
+        r.opType = "routing.connect";
+        r.payload = {{"id", id}, {"srcKind", "track"}, {"src", 2}, {"dstKind", "track"}, {"dst", 3}, {"kind", "sidechain"}};
+        r.label = "Connect";
+        return sub.submit(std::move(r)).ok;
+    };
+    check(sidechain(500) && view.current()->maxRoutingId == 500 && view.current()->sends.empty(),
+          "a sidechain row, id 500: the highest routing id, and no send");
+
     // Turning Kick's send A up writes the row, then its level: one undo step.
     auto edit = ui::setSend(*view.current(), 2, 10, -12);
     check(edit.refusal.empty() && edit.ops.size() == 2 && edit.ops[0].opType == "routing.connect" &&
@@ -1072,6 +1086,7 @@ void sendsAsBatches() {
               edit.ops[0].payload["dst"] == 10 && edit.ops[1].opType == "routing.setGain" &&
               edit.ops[1].payload["id"] == edit.ops[0].payload["id"] && edit.ops[1].payload["db"] == -12.0,
           "a new send: the row, then its level");
+    check(edit.ops.size() == 2 && edit.ops[0].payload["id"] == 501, "its id is one past the highest routing id, past the sidechain's");
     check(sub.submit(std::move(edit.ops)).ok && sub.nextUndo() && sub.nextUndo()->opCount == 2 &&
               sub.nextUndo()->label == "Change Send Level",
           "one undo step, named");
@@ -1210,16 +1225,50 @@ void sendsAsBatches() {
           "undo puts A back to Post, its choice gone and its sends after the fader");
 
     // Enable All Sends on B Delay (Live 12 §18.4): a row to A and to itself, each with its own id, fully
-    // down, one step; again, nothing to do.
+    // down, one step; again, nothing to do. A second sidechain row, above every send's id again: the
+    // batch's ids are consecutive from the highest routing id.
+    check(sidechain(700) && view.current()->maxRoutingId == 700, "a second sidechain row, id 700, above every send's");
     const std::vector<std::int64_t> both{10, 11};
     auto all = ui::enableAllSends(*view.current(), 11, both);
     check(all.refusal.empty() && all.ops.size() == 4 && all.ops[0].opType == "routing.connect" &&
-              all.ops[2].opType == "routing.connect" && all.ops[2].payload["id"] != all.ops[0].payload["id"] &&
+              all.ops[2].opType == "routing.connect" && all.ops[0].payload["id"] == 701 && all.ops[2].payload["id"] == 702 &&
               sub.submit(std::move(all.ops)).ok && sub.nextUndo()->label == "Enable All Sends" &&
-              ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr,
-          "Enable All Sends: B to A and B to itself, two new rows, one undo step");
+              ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr &&
+              view.current()->maxRoutingId == 702,
+          "Enable All Sends: B to A and B to itself, two new rows with consecutive ids past the sidechain's, one undo step");
     check(ui::enableAllSends(*view.current(), 11, both).refusal == "Every send of this return is on already.",
           "again: every send is on already");
+
+    // No id left: a routing row at INT64_MAX. A new send, from a knob, Enable Send or Enable All Sends,
+    // is refused with the reason and writes nothing; an existing row's level still moves. The row
+    // undone, the next send takes the id after the highest again.
+    constexpr auto lastId = std::numeric_limits<std::int64_t>::max();
+    check(sidechain(lastId) && view.current()->maxRoutingId == lastId, "a routing row at INT64_MAX: the highest id the file can hold");
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok, "C Return again, which no send of B reaches");
+    }
+    auto noId = ui::setSend(*view.current(), 2, 11, -6);
+    check(noId.ops.empty() && noId.refusal == ui::kSendNoIdLeft, "a new send from a knob is refused: no routing id is left");
+    auto noIdEnable = ui::enableSend(*view.current(), 3, 10, true);
+    check(noIdEnable.ops.empty() && noIdEnable.refusal == ui::kSendNoIdLeft, "Enable Send on a send without a row: refused the same");
+    auto noIdAll = ui::enableAllSends(*view.current(), 11, {10, 11, 12});
+    check(noIdAll.ops.empty() && noIdAll.refusal == ui::kSendNoIdLeft,
+          "Enable All Sends needing one new row: refused whole, nothing switched on");
+    auto level = ui::setSend(*view.current(), 2, 10, -20);
+    check(level.refusal.empty() && level.ops.size() == 1 && sub.submit(std::move(level.ops)).ok &&
+              ui::findSend(view.current()->sends, 2, 10)->gainDb == -20.0,
+          "an existing row's level still moves");
+    check(sub.undo().ok && sub.undo().ok && sub.undo().ok && view.current()->maxRoutingId == 702 &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: the level, C Return and the INT64_MAX row");
+    auto after = ui::setSend(*view.current(), 2, 11, -6);
+    check(after.refusal.empty() && after.ops.size() == 2 && after.ops[0].payload["id"] == 703 && sub.submit(std::move(after.ops)).ok &&
+              ui::findSend(view.current()->sends, 2, 11) != nullptr && ui::findSend(view.current()->sends, 2, 11)->id == 703,
+          "the next send takes 703, one past the highest again, and commits");
 }
 
 void audioDropAsOneStep() {
@@ -1460,6 +1509,131 @@ void rangeEditsAsBatches() {
         check(session.select(chosen, why), "a selection with picked clips is kept");
     }
     check(ui::SessionState(*store).selection().pickedClips == std::vector<std::int64_t>{3}, "and read back with them");
+}
+
+// Undo of Delete Track and of Ungroup Tracks brings the track, or the group, back WHOLE: the
+// engine's `track.delete` captures the subtree and its children (OPS.md §6.3; #401, window log
+// N37). The window's two batches are unchanged by that; this pins what they rely on, through the
+// window's own requests: Delete Track as `AdiRootComponent::deleteTrack` sends it, Ungroup as
+// `ungroupTrack` builds it. Live 12 manual 18.2 ("Tracks are deleted using the Edit menu's Delete
+// command"), 18.3 (Ungroup Tracks), 41.5 (Undo, Ctrl/Cmd+Z). Parity-7.3 row 33.
+void deleteTrackAndUngroupComeBackWhole() {
+    section("Delete Track and Ungroup Tracks undone: the track, or the group, comes back whole (OPS.md 6.3, N37)");
+    adi::test::TempDirectory temp("ui_seams", "whole");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    // A device's plug-in reference is the catalogue's row, not an op (as test_ui_document.cpp seeds it).
+    store->db().exec("INSERT INTO plugin_refs(id,format,uid,name) VALUES(1,'internal','test','Test effect')");
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    auto request = [](const char* type, Payload payload, const char* label) {
+        OpRequest r;
+        r.opType = type;
+        r.payload = std::move(payload);
+        r.label = label;
+        return r;
+    };
+    bool made = true;
+    for (const auto& [id, kind, name, index] : {std::tuple{1, "master", "Main", 0}, std::tuple{2, "return", "A Reverb", 0},
+                                                std::tuple{3, "midi", "Lead", 0}, std::tuple{4, "audio", "Kick", 1}})
+        made = sub.submit(request("track.create", {{"id", id}, {"kind", kind}, {"name", name}, {"index", index}},
+                                  "Create track"))
+                   .ok &&
+               made;
+    check(made, "Main, A Reverb, Lead and Kick");
+    const auto track = [&view](std::int64_t id) { return view.current()->findTrack(id); };
+    // The devices a track holds, read from the file: the snapshot carries no devices.
+    auto devicesOn = [&store](std::int64_t id) {
+        SQLite::Statement st(store->db(), "SELECT COUNT(*), COALESCE(MAX(d.name), '') FROM devices d "
+                                          "JOIN device_chains c ON d.chain_id = c.id WHERE c.track_id = ?");
+        st.bind(1, id);
+        std::pair<std::int64_t, std::string> out{-1, ""};
+        if (st.executeStep()) out = {st.getColumn(0).getInt64(), st.getColumn(1).getString()};
+        return out;
+    };
+    auto order = [&view] {
+        const ui::SnapshotReader reader(view.current());
+        std::vector<ui::TrackRow> rows;
+        ui::rowsFromSnapshot(reader, rows);
+        ui::TrackOrder built;
+        built.build(reader, rows);
+        std::vector<std::pair<std::int64_t, std::uint32_t>> out;
+        for (const auto& p : built.places()) out.emplace_back(p.id, p.depth);
+        return out;
+    };
+    using Order = std::vector<std::pair<std::int64_t, std::uint32_t>>;
+
+    // Lead dressed: a clip, a device, a colour and a send into A Reverb, as one step.
+    constexpr std::int64_t bar = 4 * textproj::kPPQ;
+    std::vector<OpRequest> dress;
+    dress.push_back(request("clip.create", {{"id", 1}, {"track", 3}, {"kind", "midi"}, {"pos", 0}, {"length", bar}},
+                            "Dress Lead"));
+    dress.push_back(request("chain.create", {{"id", 1}, {"track", 3}, {"ord", 0}, {"name", "Devices"}}, "Dress Lead"));
+    dress.push_back(request("device.insert",
+                            {{"id", 1}, {"chain", 1}, {"ord", 0}, {"ref", 1}, {"name", "Test effect"}, {"latency", 0}},
+                            "Dress Lead"));
+    dress.push_back(request("track.setColor", {{"id", 3}, {"color", 26}}, "Dress Lead"));
+    auto send = ui::setSend(*view.current(), 3, 2, -6.0);
+    check(send.refusal.empty() && send.ops.size() == 2, "the send's row and its level");
+    for (auto& r : send.ops) dress.push_back(std::move(r));
+    check(sub.submit(std::move(dress)).ok, "Lead dressed");
+    // Lead as dressed, under `parent` (0 at the top; the group, once it is in one), first in it.
+    auto leadWhole = [&](std::int64_t parent) {
+        const auto* lead = track(3);
+        const auto* toReverb = ui::findSend(view.current()->sends, 3, 2);
+        return lead != nullptr && lead->kind == "midi" && lead->name == "Lead" && lead->parent == parent &&
+               lead->indexInParent == 0 && lead->color && *lead->color == 26 && lead->clips.size() == 1 &&
+               lead->clips[0]->id == 1 && devicesOn(3) == std::pair<std::int64_t, std::string>{1, "Test effect"} &&
+               toReverb != nullptr && toReverb->gainDb == -6.0 && toReverb->enabled;
+    };
+    check(leadWhole(0), "Lead holds its clip, its device, colour 26 and a send into A Reverb at -6 dB");
+    check(order() == Order{{3, 0}, {4, 0}, {2, 0}, {1, 0}}, "Lead, Kick, A Reverb, then Main");
+
+    // Delete Track, the window's one request (ui_shell.cpp, AdiRootComponent::deleteTrack).
+    check(sub.submit(request("track.delete", {{"id", 3}}, "Delete Track")).ok && track(3) == nullptr &&
+              devicesOn(3).first == 0 && ui::findSend(view.current()->sends, 3, 2) == nullptr &&
+              order() == Order{{4, 0}, {2, 0}, {1, 0}} && sub.nextUndo() && sub.nextUndo()->label == "Delete Track" &&
+              sub.nextUndo()->opCount == 1,
+          "Delete Track takes Lead, its device and its send; one step, named as the Edit menu names it");
+    check(sub.undo().ok && leadWhole(0) && order() == Order{{3, 0}, {4, 0}, {2, 0}, {1, 0}} && sub.nextRedo() &&
+              sub.nextRedo()->label == "Delete Track",
+          "undo brings Lead back whole, where it stood: clip, device, colour and send");
+    check(sub.redo().ok && track(3) == nullptr && sub.undo().ok && leadWhole(0), "redone and undone again, still whole");
+    check(track(4) != nullptr && track(4)->indexInParent == 1 && devicesOn(4).first == 0, "Kick untouched throughout");
+
+    // A group with a device, a colour and its strip's settings; Ungroup; undo.
+    auto grouped = ui::groupTrack(view.current()->tracks, 3);
+    check(grouped.refusal.empty() && grouped.select == 5 && sub.submit(std::move(grouped.ops)).ok &&
+              order() == Order{{5, 0}, {3, 1}, {4, 0}, {2, 0}, {1, 0}},
+          "Lead grouped: the group where Lead stood");
+    std::vector<OpRequest> strip;
+    strip.push_back(request("chain.create", {{"id", 2}, {"track", 5}, {"ord", 0}, {"name", "Devices"}}, "Dress Group"));
+    strip.push_back(request("device.insert",
+                            {{"id", 2}, {"chain", 2}, {"ord", 0}, {"ref", 1}, {"name", "Group effect"}, {"latency", 0}},
+                            "Dress Group"));
+    strip.push_back(request("mixer.setVolume", {{"id", 5}, {"db", -3.5}}, "Dress Group"));
+    strip.push_back(request("mixer.setPan", {{"id", 5}, {"pan", 0.25}}, "Dress Group"));
+    strip.push_back(request("track.setColor", {{"id", 5}, {"color", 7}}, "Dress Group"));
+    check(sub.submit(std::move(strip)).ok, "the group dressed");
+    auto groupWhole = [&] {
+        const auto* g = track(5);
+        const auto* lead = track(3);
+        return g != nullptr && g->kind == "group" && g->parent == 0 && g->indexInParent == 0 && g->volumeDb == -3.5f &&
+               g->pan == 0.25f && g->color && *g->color == 7 &&
+               devicesOn(5) == std::pair<std::int64_t, std::string>{1, "Group effect"} && lead != nullptr &&
+               lead->parent == 5;
+    };
+    check(groupWhole(), "the group holds a device, colour 7, its fader at -3.5 dB and its pan at 0.25, Lead inside it");
+
+    auto ungroup = ui::ungroupTrack(view.current()->tracks, 5);
+    check(ungroup.refusal.empty() && sub.submit(std::move(ungroup.ops)).ok && track(5) == nullptr &&
+              devicesOn(5).first == 0 && track(3) != nullptr && track(3)->parent == 0 &&
+              order() == Order{{3, 0}, {4, 0}, {2, 0}, {1, 0}} && sub.nextUndo()->label == "Ungroup Tracks",
+          "Ungroup Tracks puts Lead where the group stood and removes the group, device and strip with it");
+    check(sub.undo().ok && groupWhole() && leadWhole(5) && order() == Order{{5, 0}, {3, 1}, {4, 0}, {2, 0}, {1, 0}},
+          "undo brings the group back whole, Lead inside it, Lead itself untouched");
+    check(sub.redo().ok && track(5) == nullptr && sub.undo().ok && groupWhole(), "redone and undone again, still whole");
 }
 
 void returnsStandBeforeMain() {
@@ -1911,6 +2085,7 @@ int main() {
     projectViewRowsFromTheSnapshot();
     metersCountBars();
     groupAndUngroupAsBatches();
+    deleteTrackAndUngroupComeBackWhole();
     returnsStandBeforeMain();
     sendsAsBatches();
     audioDropAsOneStep();

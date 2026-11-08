@@ -5,6 +5,7 @@
 #include "../src/juce/ui_shell.hpp"
 #include "adi/audio/wav_file.hpp"
 #include "adi/automation_lanes.hpp"
+#include "adi/cue_settings.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
@@ -15,10 +16,12 @@
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <new>
 #include <optional>
 #include <set>
@@ -250,6 +253,55 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
     if (differences)
         std::printf("%s: %d differing pixels\n", name, differences);
 }
+// A menu as the window's look draws one, at twice its size, for a picture beside Live's: a
+// PopupMenu shows only on the desktop, which the tests never touch, so its rows are drawn here
+// through the look's own menu methods, none highlighted.
+void renderMenu(juce::LookAndFeel &look, const juce::PopupMenu &menu, const juce::File &file) {
+    struct Row {
+        juce::String text, shortcut;
+        bool separator = false, enabled = true, ticked = false, subMenu = false;
+        int height = 0;
+    };
+    std::vector<Row> rows;
+    int width = 0, height = 0;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+        const auto &item = it.getItem();
+        Row row{item.text, item.shortcutKeyDescription, item.isSeparator, item.isEnabled, item.isTicked,
+                item.subMenu != nullptr, 0};
+        // A command item's key text is filled only as the menu shows (JUCE's
+        // ItemComponent::updateShortcutKeyDescription), so it is built here the same way.
+        if (row.shortcut.isEmpty() && item.commandManager != nullptr && item.itemID != 0) {
+            juce::StringArray keys;
+            for (const auto &press : item.commandManager->getKeyMappings()->getKeyPressesAssignedToCommand(item.itemID)) {
+                const auto key = press.getTextDescriptionWithIcons();
+                keys.add(key.length() == 1 && key[0] < 128 ? "shortcut: '" + key + "'" : key);
+            }
+            row.shortcut = keys.joinIntoString(", ").trim();
+        }
+        int w = 0;
+        look.getIdealPopupMenuItemSize(row.text, row.separator, 0, w, row.height);
+        if (row.shortcut.isNotEmpty())
+            w += 12 + juce::roundToInt(juce::GlyphArrangement::getStringWidth(look.getPopupMenuFont(), row.shortcut));
+        width = std::max(width, w);
+        height += row.height;
+        rows.push_back(std::move(row));
+    }
+    juce::Image image(juce::Image::ARGB, 2 * width, 2 * height, true, juce::SoftwareImageType{});
+    {
+        juce::Graphics g(image);
+        g.addTransform(juce::AffineTransform::scale(2.f));
+        look.drawPopupMenuBackground(g, width, height);
+        int y = 0;
+        for (const auto &row : rows) {
+            look.drawPopupMenuItem(g, {0, y, width, row.height}, row.separator, row.enabled, false, row.ticked,
+                                   row.subMenu, row.text, row.shortcut, nullptr, nullptr);
+            y += row.height;
+        }
+    }
+    file.deleteFile();
+    if (auto stream = file.createOutputStream())
+        juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+}
 // Live parity (ADR-0203 d5): Live 11's default set as the director's capture shows it
 // (collab/window/look-live11.md): four tracks, the fourth selected with EQ Eight and
 // Auto Filter on it, at 1440 x 900 points. The golden is this scene; ADI_UI_PARITY
@@ -443,6 +495,22 @@ void liveParity(AppCommands &commands, const std::filesystem::path &dir, bool wr
     check(root.state().viewGroup == 0 && lanes.hidden.empty() && !root.arrangement.projectView.getToggleState() &&
               shownRows(root.mixer) == std::vector<std::int64_t>{1, 2, 3, 4},
           "Project shows every track again, the button unlit");
+}
+// A menu on one line: its items in order, a disabled one dashed, a ticked one starred when `ticks`
+// is set, a separator a bar, so a check sees Live's groups too.
+juce::String menuLine(const juce::PopupMenu &menu, bool ticks = true) {
+    juce::String out;
+    for (juce::PopupMenu::MenuItemIterator it(menu); it.next();) {
+        const auto &item = it.getItem();
+        if (item.isSeparator) {
+            out << " | ";
+            continue;
+        }
+        if (out.isNotEmpty() && !out.endsWith(" | "))
+            out << ", ";
+        out << item.text << (ticks && item.isTicked ? " *" : "") << (item.isEnabled ? "" : " -");
+    }
+    return out;
 }
 // A mouse press at a point of a component, for its own mouseDown.
 juce::MouseEvent pressAt(juce::Component &c, juce::Point<float> at, juce::ModifierKeys mods = {}) {
@@ -1665,6 +1733,89 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
           "Pre on B Delay with no send into it: one op, one undo step, the row lit from the return's own switch");
     render("adi-return-pre-empty.png");
 
+    // Live's Solo in Place (manual 18.6; B5, N23): the Solo button's menu shows it ticked from the
+    // project's one field, on by default (#412). Unticked, it writes one `mixer.setSoloInPlace`
+    // outside undo, saved with the project, and the session re-reads the project (afterEdit); the
+    // Options menu's entry reads the same field and puts it back the same way.
+    {
+        auto soloItem = [audio] {
+            const auto menu = audio->soloMenu();
+            juce::PopupMenu::MenuItemIterator it(menu);
+            return it.next() ? it.getItem() : juce::PopupMenu::Item{};
+        };
+        auto optionsTicked = [&commands, &root] {
+            commands.activate(root);
+            juce::ApplicationCommandInfo info(AppCommands::SoloInPlace);
+            commands.getCommandInfo(AppCommands::SoloInPlace, info);
+            return (info.flags & juce::ApplicationCommandInfo::isTicked) != 0;
+        };
+        auto undoStep = [&submitter] { return submitter.nextUndo() ? submitter.nextUndo()->txnId : 0; };
+        const auto item = soloItem();
+        check(item.text == "Solo in Place" && item.isTicked && item.isEnabled && item.action != nullptr &&
+                  root.reader().soloInPlace() && readCueSettings(*store).soloInPlace && optionsTicked(),
+              "the Solo button's menu: Solo in Place, ticked from the project's field, on by default; the Options "
+              "menu's entry with it");
+        if (folder.isNotEmpty())
+            renderMenu(root.getLookAndFeel(), audio->soloMenu(), juce::File(folder).getChildFile("adi-solo-menu.png"));
+        const auto stepBeforeSip = undoStep();
+        const auto generationBefore = view.generation();
+        int synchronised = 0;
+        root.afterEdit = [&synchronised] { ++synchronised; };
+        if (item.action)
+            item.action();
+        root.frame();
+        check(!root.reader().soloInPlace() && !readCueSettings(*store).soloInPlace && root.error().empty() &&
+                  view.generation() != generationBefore && synchronised == 1 && undoStep() == stepBeforeSip &&
+                  submitter.nextUndo()->label == "Change Pre/Post",
+              "unticked: the op is in the project, the session re-read it, the undo stack is as it was");
+        check(!soloItem().isTicked && !optionsTicked(), "the Solo button's menu and the Options menu's entry both read it off");
+        check(root.command(AppCommands::SoloInPlace), "the Options menu's entry, picked");
+        root.frame();
+        check(root.reader().soloInPlace() && readCueSettings(*store).soloInPlace && soloItem().isTicked && optionsTicked() &&
+                  synchronised == 2 && undoStep() == stepBeforeSip,
+              "puts it back: on again in both menus, the session re-read again, still no undo step");
+        check(root.command(AppCommands::SoloInPlace) && root.command(AppCommands::SoloInPlace), "off and on again");
+        root.frame();
+        check(root.reader().soloInPlace() && synchronised == 4 && undoStep() == stepBeforeSip,
+              "each a re-read, none an undo step");
+        root.afterEdit = nullptr;
+    }
+    // The right-click half of it: a press and release with the popup modifier on the Solo switch
+    // opens its menu, never puts the switch down and solos nothing (JUCE's Button takes any
+    // release after a press as a click), where a plain press and release still solos the track.
+    {
+        auto isSoloed = [&root](std::int64_t id) {
+            for (const auto &t : root.reader().tracks())
+                if (t && t->id == id)
+                    return t->soloed;
+            return false;
+        };
+        auto undoHead = [&submitter] { return submitter.nextUndo() ? submitter.nextUndo()->txnId : 0; };
+        int opened = 0;
+        auto menu = std::move(audio->solo.onMenu);
+        audio->solo.onMenu = [&opened] { ++opened; };
+        const auto at = audio->solo.getLocalBounds().getCentre().toFloat();
+        const auto headBeforeClicks = undoHead();
+        const auto right = juce::ModifierKeys::rightButtonModifier;
+        audio->solo.mouseDown(pressAt(audio->solo, at, right));
+        const bool downOnRight = audio->solo.isDown();
+        audio->solo.mouseUp(pressAt(audio->solo, at, right));
+        root.frame();
+        check(opened == 1 && !downOnRight && !audio->solo.isDown() && !isSoloed(3) && undoHead() == headBeforeClicks &&
+                  root.error().empty(),
+              "a right-click on 3 Audio's Solo: the menu once, the switch never down, nothing soloed, no undo step");
+        audio->solo.onMenu = std::move(menu);
+        const auto left = juce::ModifierKeys::leftButtonModifier;
+        audio->solo.mouseDown(pressAt(audio->solo, at, left));
+        audio->solo.mouseUp(pressAt(audio->solo, at, left));
+        root.frame();
+        check(opened == 1 && isSoloed(3) && submitter.nextUndo().has_value() && submitter.nextUndo()->label == "Solo Track",
+              "a left-click still solos it, one undo step, the menu not opened");
+        check(root.command(AppCommands::Undo), "undone");
+        root.frame();
+        check(!isSoloed(3) && undoHead() == headBeforeClicks, "3 Audio unsoloed, the undo stack as it was");
+    }
+
     // Enable Send on A Reverb's send B: on, at full alpha, taking clicks; made after B's Pre, the new
     // send taps before the fader with nothing added to its batch.
     reverb->enableSend(1, true);
@@ -1767,6 +1918,47 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.mark(DirtySet::All);
     root.frame();
     render("adi-sends.png");
+    // No routing id left (N39): a routing row at INT64_MAX, then 3 Audio's send B, which has no row,
+    // turned up in the Mixer View. Nothing lands: the knob goes back fully down, no undo step, and the
+    // Status Bar says why. The row undone, the knob commits a row with the id after the highest.
+    {
+        OpRequest r;
+        r.opType = "routing.connect";
+        r.payload = {{"id", std::numeric_limits<std::int64_t>::max()}, {"srcKind", "track"}, {"src", 3},
+                     {"dstKind", "track"}, {"dst", 4}, {"kind", "sidechain"}};
+        r.label = "Connect";
+        check(submitter.submit(std::move(r)).ok, "a sidechain row at INT64_MAX");
+        root.frame();
+        column = rowOf(root.mixerView, 3);
+        const auto stepAtTop = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+        check(column != nullptr && column->sendKnobs().size() == 2 && findSend(root.reader().sends(), 3, 6) == nullptr &&
+                  root.reader().get() != nullptr && root.reader().get()->maxRoutingId == std::numeric_limits<std::int64_t>::max(),
+              "3 Audio's send B has no row, and the project's highest routing id is the largest it can hold");
+        if (column != nullptr && column->sendKnobs().size() == 2) {
+            column->sendKnobs()[1]->setValue(-6, juce::sendNotificationSync);
+            root.frame();
+            check(root.error() == kSendNoIdLeft && findSend(root.reader().sends(), 3, 6) == nullptr &&
+                      column->sendKnobs()[1]->getValue() <= kSendFloorDb && submitter.nextUndo()->txnId == stepAtTop,
+                  "turned up with no id left: refused, the knob back fully down, no undo step, the Status Bar says why");
+            render("adi-send-no-id.png");
+            check(root.command(AppCommands::Undo), "undo the INT64_MAX row");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            const auto highest = root.reader().get()->maxRoutingId;
+            check(column != nullptr && highest < std::numeric_limits<std::int64_t>::max(), "the highest id is the sends' again");
+            if (column != nullptr) {
+                column->sendKnobs()[1]->setValue(-6, juce::sendNotificationSync);
+                root.frame();
+                const auto *sendB = findSend(root.reader().sends(), 3, 6);
+                check(sendB != nullptr && sendB->id == highest + 1 && submitter.nextUndo()->label == "Change Send Level" &&
+                          submitter.nextUndo()->opCount == 2,
+                      "the row gone, the knob commits 3 Audio's send B with the id after the highest, one step");
+                check(root.command(AppCommands::Undo), "undo");
+                root.frame();
+                column = rowOf(root.mixerView, 3);
+            }
+        }
+    }
     // Hide/Show Sends (§42.1, Ctrl/Cmd+Alt+S; Live 12's Arrangement Track Controls): the sends out of
     // the track controls, ADI-Q and ADI-L moving up under volume and pan. The Mixer View keeps its
     // own (Live 12's Mixer Controls), its strips losing theirs with that toggle alone.
@@ -1795,16 +1987,9 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
           "and the Mixer Controls' Sends the Mixer View's");
     // Live 12's Mixer View Control options (manual 18.1): In/Out, Sends, Volume, Track Options,
     // Crossfader, Performance Impact, then Return Tracks; what ADI has not built is dimmed.
-    auto mixerOptions = [&root] {
-        juce::StringArray out;
-        const auto menu = root.mixerOptionsMenu();
-        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
-            if (!it.getItem().isSeparator)
-                out.add(it.getItem().text + (it.getItem().isTicked ? " *" : "") + (it.getItem().isEnabled ? "" : " -"));
-        return out.joinIntoString(", ");
-    };
-    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options -, Crossfader -, Performance Impact -, Return Tracks *",
-          "the Mixer View's options in Live's order, In/Out off");
+    auto mixerOptions = [&root] { return menuLine(root.mixerOptionsMenu()); };
+    check(mixerOptions() == "In/Out, Sends *, Volume * -, Track Options, Crossfader -, Performance Impact - | Return Tracks *",
+          "the Mixer View's options in Live's order and groups (manual 18.1, its figure), In/Out and Track Options off");
     // Its In/Out: Live 12's section under ADI's slots and over the sends; as many sends as still
     // leave the mixer its room, then the rest when the strip is taller.
     check(root.command(AppCommands::ToggleMixerInOut) && root.state().mixerInOut && mixerOptions().startsWith("In/Out *"),
@@ -1832,7 +2017,145 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.resizeMixerView(320);
     root.mark(DirtySet::All);
     root.frame();
+    // Live's Track Options (manual 18.7): the Mixer Controls' item shows the Track Delay section
+    // under each strip's mixer, Main's too (Master Reference 8.1); the box reads ms to two places,
+    // typed or dragged, a negative value pre-delays, and each change is one undo step written in
+    // samples at the project's rate (N22, `TrackNode::delaySamples`).
+    auto trackControls = [&root] { return menuLine(root.trackControlsMenu()); };
+    // The box holds JUCE's snapped double, `start + interval * floor(...)`: Apple clang on arm64
+    // contracts that to a fused multiply-add, and -1000 + 0.01 * 101000 comes out 10.000000000000021,
+    // still "10.00" and still the 441st sample, so the checks read the box on its hundredth grid,
+    // never bit-exactly.
+    auto boxAt = [](const juce::Slider &box, double ms) { return std::abs(box.getValue() - ms) < 1e-9; };
+    check(trackControls().endsWith("Volume * -, Track Options"), "the Arrangement Track Controls' Track Options, off");
+    // The selection was set on the geometry alone; published, as a click publishes it, so each
+    // delay step's undo puts it back (ADR-0021) rather than the session's older empty one.
+    root.publishSelection();
+    check(root.command(AppCommands::ToggleMixerTrackOptions) && root.state().mixerTrackOptions && !root.state().trackOptions &&
+              mixerOptions() == "In/Out, Sends *, Volume * -, Track Options *, Crossfader -, Performance Impact - | Return Tracks *" &&
+              trackControls().endsWith("Track Options"),
+          "the Mixer Controls' Track Options shows the Mixer View's Track Delay, ticked; the track controls' stays off");
+    column = rowOf(root.mixerView, 3);
+    mainStrip = rowOf(root.mixerView, 7);
+    check(column != nullptr && column->showsTrackDelay() && column->delay.isVisible() && column->sendsShown() == 2 &&
+              column->delay.getY() == column->getHeight() - MixerStrip::kDelayHeight + 19 &&
+              column->arm.getBottom() <= column->getHeight() - MixerStrip::kDelayHeight &&
+              column->delay.getTextFromValue(column->delay.getValue()) == "0.00" && column->delay.getTitle() == "Track Delay" &&
+              mainStrip != nullptr && mainStrip->showsTrackDelay() && mainStrip->delay.isVisible(),
+          "the section under the mixer, which moves up for it: 0.00 on 3 Audio and on Main, both sends kept");
+    if (column != nullptr && column->delay.isVisible()) {
+        const auto stepUndelayed = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+        column->delay.setValue(column->delay.getValueFromText("10 ms"), juce::sendNotificationSync);
+        root.frame();
+        column = rowOf(root.mixerView, 3);
+        const auto *delayed = root.reader().findTrack(3);
+        const auto stepTen = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+        check(column != nullptr && delayed != nullptr && root.reader().sampleRate() == 44100 && delayed->delaySamples == 441 &&
+                  stepTen != stepUndelayed && submitter.nextUndo()->label == "Change Track Delay" &&
+                  submitter.nextUndo()->opCount == 1 && boxAt(column->delay, 10.) &&
+                  column->delay.getTextFromValue(column->delay.getValue()) == "10.00",
+              "10 ms typed at 44.1 kHz writes 441 samples in one undo step and reads back 10.00 ms");
+        if (column != nullptr) {
+            column->delay.setValue(column->delay.getValueFromText("-2.5"), juce::sendNotificationSync);
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            delayed = root.reader().findTrack(3);
+            check(column != nullptr && delayed != nullptr && delayed->delaySamples == -110 &&
+                      column->delay.getTextFromValue(column->delay.getValue()) == "-2.49",
+                  "-2.5 ms pre-delays: -110 samples on the grid, read back as -2.49 ms");
+            render("adi-track-delay.png");
+            check(root.command(AppCommands::Undo), "undo the pre-delay");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            delayed = root.reader().findTrack(3);
+            check(column != nullptr && delayed != nullptr && delayed->delaySamples == 441 &&
+                      column->delay.getTextFromValue(column->delay.getValue()) == "10.00",
+                  "undone, 3 Audio reads 10.00 ms again");
+        }
+        if (column != nullptr) {
+            // The box's own grid is a hundredth: 10.004 snaps to the 10.00 it holds and nothing
+            // is committed.
+            column->delay.setValue(10.004, juce::sendNotificationSync);
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            check(column != nullptr && submitter.nextUndo()->txnId == stepTen && boxAt(column->delay, 10.),
+                  "10.004 ms is the box's 10.00: nothing committed");
+        }
+        if (column != nullptr) {
+            // 10.01 ms the box takes, but at 44.1 kHz it is the 441st sample again (441.44): the
+            // helper writes no op and the box goes back to the grid's 10.00.
+            column->delay.setValue(column->delay.getValueFromText("10.01"), juce::sendNotificationSync);
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            const auto *same = root.reader().findTrack(3);
+            check(column != nullptr && same != nullptr && same->delaySamples == 441 && submitter.nextUndo()->txnId == stepTen &&
+                      column->delay.getTextFromValue(column->delay.getValue()) == "10.00",
+                  "10.01 ms typed is the same sample on the grid: nothing written, the box back at 10.00");
+        }
+        if (column != nullptr) {
+            // Dragged up or down, as Live's value fields are (manual 6.3, 7.1), not sideways: 20 px
+            // up from 10.00 is 12.00 ms at 0.1 ms a pixel (PROVISIONAL, M1-06), 529 samples at
+            // 44.1 kHz, written once at the drag's end.
+            const auto centre = column->delay.getLocalBounds().getCentre().toFloat();
+            const auto up = centre.translated(0.f, -20.f);
+            column->delay.mouseDown(pressAt(column->delay, centre));
+            column->delay.mouseDrag(dragAt(column->delay, centre, up));
+            const bool held = column->dragging() && boxAt(column->delay, 12.) &&
+                              root.reader().findTrack(3) != nullptr && root.reader().findTrack(3)->delaySamples == 441;
+            column->delay.mouseUp(dragAt(column->delay, centre, up));
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            const auto *dragged = root.reader().findTrack(3);
+            check(held && column != nullptr && dragged != nullptr && dragged->delaySamples == 529 &&
+                      submitter.nextUndo()->txnId != stepTen && submitter.nextUndo()->label == "Change Track Delay" &&
+                      submitter.nextUndo()->opCount == 1 &&
+                      column->delay.getTextFromValue(column->delay.getValue()) == "12.00",
+                  "20 px up drags 10.00 to 12.00 ms, nothing written until the drag ends, then 529 samples in one step");
+            check(root.command(AppCommands::Undo), "undo the drag");
+            root.frame();
+            column = rowOf(root.mixerView, 3);
+            check(column != nullptr && submitter.nextUndo()->txnId == stepTen && root.reader().findTrack(3) != nullptr &&
+                      root.reader().findTrack(3)->delaySamples == 441,
+                  "undone, 3 Audio is at its 441 samples again");
+        }
+    }
+    check(root.command(AppCommands::ToggleMixerTrackOptions) && !root.state().mixerTrackOptions, "Track Options off again");
+    column = rowOf(root.mixerView, 3);
+    check(column != nullptr && !column->showsTrackDelay() && !column->delay.isVisible() &&
+              column->arm.getBottom() == column->getHeight() - 4,
+          "the section goes and the mixer is back at the strip's foot");
     check(root.command(AppCommands::ToggleMixerView), "the Mixer View closes");
+    // The track controls' own Track Options (the D selector, Live 11's; View › Arrangement Track
+    // Controls): the box on the row after ADI-Q and ADI-L, reading the same delay. 3 Audio's row is
+    // brought into view first, and the lanes put back where they were after.
+    const int scrollBefore = root.arrangement.geometry.scrollY;
+    root.mixer.reveal(root.arrangement.geometry.rows(root.reader()).find(3));
+    root.frame();
+    auto *audioRow = rowOf(root.mixer, 3);
+    check(audioRow != nullptr && !root.strip.delay.getToggleState() && !audioRow->delay.isVisible() &&
+              root.command(AppCommands::ToggleTrackOptions) && root.state().trackOptions && !root.state().mixerTrackOptions &&
+              root.strip.delay.getToggleState() && trackControls().endsWith("Track Options *"),
+          "Arrangement Track Controls › Track Options shows the rows' Track Delay; D lights, the Mixer View's stays off");
+    root.frame();
+    audioRow = rowOf(root.mixer, 3);
+    if (audioRow != nullptr) {
+        const int rx = audioRow->showsInOut() ? MixerPanel::kInOutWidth : 0;
+        check(audioRow->delay.isVisible() && audioRow->delay.getBounds() == juce::Rectangle<int>(rx + 4, 71, 45, 13) &&
+                  audioRow->delay.getTextFromValue(audioRow->delay.getValue()) == "10.00",
+              "3 Audio's row shows its 10.00 ms on the row after the slots");
+    } else
+        check(false, "3 Audio's row in view");
+    render("adi-track-delay-rows.png");
+    root.strip.delay.onClick();
+    audioRow = rowOf(root.mixer, 3);
+    check(!root.state().trackOptions && !root.strip.delay.getToggleState() && audioRow != nullptr && !audioRow->delay.isVisible(),
+          "D hides it again");
+    root.arrangement.geometry.scrollY = scrollBefore;
+    root.arrangement.changed();
+    root.frame();
+    check(root.command(AppCommands::Undo), "undo the 10 ms");
+    root.frame();
+    check(root.reader().findTrack(3) != nullptr && root.reader().findTrack(3)->delaySamples == 0, "3 Audio plays undelayed");
     // Hide/Show Return Tracks (§18.4, Ctrl/Cmd+Alt+R): the returns out of the lanes and the controls.
     auto shownLanes = [&root] {
         std::vector<std::int64_t> out;
@@ -2934,7 +3257,8 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
               root.reader().findTrack(2)->name == "1 MIDI" && root.reader().findTrack(5)->name == "4 Audio" &&
               root.reader().findTrack(7)->name == "B Delay",
           "New shows Live's default Set: 1 MIDI, 2 MIDI, 3 Audio, 4 Audio, A Reverb, B Delay, then Main (N41)");
-    check(!root.canUndo(false) && root.undoTitle(false) == "Undo", "and has nothing to undo, as Live");
+    check(!root.canUndo(false) && root.undoTitle(false) == "Nothing to Undo" && root.undoTitle(true) == "Nothing to Redo",
+          "and has nothing to undo: the Edit menu's items read Nothing to Undo and Nothing to Redo, as Live 12's (LK-02)");
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
         {
@@ -4190,8 +4514,8 @@ int main(int argc, char **argv) {
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the Mac's menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid},
-              "the Options menu: Follow (§6.2), then the grid (§6.10)");
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
+              "the Options menu: Follow (§6.2), the grid (§6.10), then Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
                                                 C::TakeSnapshot, C::SaveAs},
               "the File menu; Quit is the application menu's on the Mac");
@@ -4202,13 +4526,63 @@ int main(int argc, char **argv) {
                                                 C::TakeSnapshot, C::SaveAs, 0, C::Quit},
               "the File menu ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
-                                                   C::SnapToGrid, C::FixedGrid, 0, C::Settings},
-              "the Options menu: Follow (§6.2), the grid (§6.10), then Settings off the Mac (§2.3)");
+                                                   C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
+              "the Options menu: Follow (§6.2), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
+              "(§2.3)");
 #endif
+        // The new ids' names through getCommandInfo: `names[id - PlayStop]` is a table by position, so
+        // an entry out of order mislabels a menu item with no compile error. B5 (Solo in Place) landed
+        // first and B4 (window/track-delay) extends the same tail: SoloInPlace, then the two Track
+        // Options toggles, ToggleMixerTrackOptions the last id; this check reads the tail as aligned.
+        {
+            juce::ApplicationCommandInfo solo(C::SoloInPlace), rows(C::ToggleTrackOptions), mixer(C::ToggleMixerTrackOptions);
+            commands.getCommandInfo(C::SoloInPlace, solo);
+            commands.getCommandInfo(C::ToggleTrackOptions, rows);
+            commands.getCommandInfo(C::ToggleMixerTrackOptions, mixer);
+            check(solo.shortName == "Solo in Place" && rows.shortName == "Track Options" &&
+                      mixer.shortName == "Mixer Track Options" && C::LastId == C::ToggleMixerTrackOptions,
+                  "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options (the last id), each named");
+        }
+        // The Options menu as drawn, with Solo in Place ticked, for the picture beside Live 12's.
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
+            renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
+                       juce::File(pictures).getChildFile("adi-options-menu.png"));
         check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
                                                 C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks},
               "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Group and "
               "Ungroup Tracks");
+        // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
+        // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
+        // Redo item reads "Nothing to Redo", as Live's does with nothing to redo. Worklist F1: what
+        // undo brings back is pinned in the seams test; this is the menu that offers it. The picture
+        // is of ADI's default key set, Live's (Redo Ctrl+Y off the Mac, §41.5): the app preset was
+        // switched to Cubase above and is put back before the render.
+        {
+            auto &edits = window.root();
+            std::int64_t victim = 0;
+            for (const auto &t : view.current()->tracks)
+                if (victim == 0 && (t->kind == "audio" || t->kind == "midi") && t->parent == 0)
+                    victim = t->id;
+            const auto countBefore = view.current()->tracks.size();
+            commands.activate(edits); // the Edit menu names the step of the active root
+            edits.arrangement.geometry.selection.track = victim;
+            check(victim != 0 && edits.command(C::DeleteTrack) && view.current()->tracks.size() + 1 == countBefore &&
+                      edits.undoTitle(false) == "Undo Delete Track" && edits.undoTitle(true) == "Nothing to Redo",
+                  "Delete Track from the menu bar's window: the Undo item names the step, Redo has nothing");
+            check(settings.set("shortcuts.preset", "live", {}, why), "the Live key set back for the picture");
+            commands.reload();
+#if !JUCE_MAC
+            check(commands.manager.getKeyMappings()->findCommandForKeyPress(
+                      juce::KeyPress('y', juce::ModifierKeys::commandModifier, 0)) == C::Redo,
+                  "Live's Redo key, Ctrl+Y (§41.5), is back with the preset");
+#endif
+            if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
+                renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Edit"), "Edit"),
+                           juce::File(pictures).getChildFile("adi-edit-menu.png"));
+            check(edits.command(C::Undo) && view.current()->tracks.size() == countBefore &&
+                      view.current()->findTrack(victim) != nullptr,
+                  "and undo brings the track back");
+        }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
                                                   C::InsertTimeSignatureChange},
               "the Create menu inserts tracks, returns too (§18.4), then a time signature change (§6.5)");
@@ -4224,13 +4598,8 @@ int main(int argc, char **argv) {
             juce::StringArray submenus;
             std::vector<int> flat;
             juce::String trackControls, mixerControls;
-            auto texts = [](const juce::PopupMenu &menu) {
-                juce::StringArray out;
-                for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
-                    if (!it.getItem().isSeparator)
-                        out.add(it.getItem().text + (it.getItem().isEnabled ? "" : " -"));
-                return out.joinIntoString(", ");
-            };
+            // A ticked item is not marked here: the submenus' groups and dimmed items are the point.
+            auto texts = [](const juce::PopupMenu &menu) { return menuLine(menu, false); };
             for (juce::PopupMenu::MenuItemIterator it(viewMenu); it.next();) {
                 const auto &item = it.getItem();
                 if (item.subMenu != nullptr) {
@@ -4240,13 +4609,15 @@ int main(int argc, char **argv) {
                     flat.push_back(item.itemID);
             }
             auto has = [&flat](int id) { return std::find(flat.begin(), flat.end(), id) != flat.end(); };
+            // Live 12's groups (manual 6.1, the Mixer Controls submenu's figure): In/Out, Sends,
+            // Volume | Track Options, Crossfader, Performance Impact | Return Tracks.
             check(submenus == juce::StringArray{"Arrangement Track Controls", "Mixer Controls"} &&
-                      trackControls == "Hide/Show Track Controls, In/Out, Sends, Volume -, Track Options -" &&
+                      trackControls == "Hide/Show Track Controls | In/Out, Sends, Volume -, Track Options" &&
                       mixerControls ==
-                          "In/Out, Sends, Volume -, Track Options -, Crossfader -, Performance Impact -, Return Tracks" &&
+                          "In/Out, Sends, Volume - | Track Options, Crossfader -, Performance Impact - | Return Tracks" &&
                       !has(C::ToggleInOut) && !has(C::ToggleSends) && !has(C::ToggleReturnTracks) && !has(C::ToggleMixer),
-                  "the View menu holds Live 12's Arrangement Track Controls and Mixer Controls submenus, "
-                  "their toggles no longer loose in it");
+                  "the View menu holds Live 12's Arrangement Track Controls and Mixer Controls submenus in Live's "
+                  "groups, their toggles no longer loose in it");
         }
         // Live on Windows (§42.28): Alt and a menu's first letter opens that menu.
         check(menuForKey(*bar, juce::KeyPress('f', alt, 0)) == names.indexOf("File") &&
@@ -4310,8 +4681,8 @@ int main(int argc, char **argv) {
             ++snapshots;
             return document->takeSnapshot({}, 0, 0).ok;
         };
-        check(!integrated.canUndo(false) && integrated.undoTitle(false) == "Undo",
-              "a new project has nothing to undo, as Live");
+        check(!integrated.canUndo(false) && integrated.undoTitle(false) == "Nothing to Undo",
+              "a new project has nothing to undo, as Live: the item reads Nothing to Undo");
         check(document->ops().submit(track(2)).ok && document->synchronise(),
               "application edit reaches engine");
         check(integrated.undoTitle(false) == "Undo Create track",
@@ -5485,20 +5856,26 @@ int main(int argc, char **argv) {
         arrangement.geometry.selection.track = 2;
         integrated.frame();
         integrated.resizeDevices(169);
-        // Step 7.6 (#205): the mixer, its rows in the arrangement's lanes.
-        auto meterTap = std::make_shared<engine::ScopeTap>(48000, .1);
-        {
-            std::array<float, 1024> half{};
-            for (std::size_t i = 0; i < half.size(); ++i)
-                half[i] = .5f * static_cast<float>(std::sin(2 * 3.141592653589793 * 16 *
-                                                            static_cast<double>(i) / 1024.));
-            meterTap->write(half.data(), half.data(), 1024, 0, true);
-        }
+        // Step 7.6 (#205): the mixer, its rows in the arrangement's lanes. The meters read the
+        // engine's scalar per strip (UI-ARCHITECTURE §9; N9, #381; worklist B3) through the
+        // panel's lookup: fixed values here, track 2 at a half-scale sine's peak and RMS, the
+        // others silent, so nothing plays and no tap is opened. The clock is the test's.
+        const float halfSineRms = std::sqrt(.125f); // .5 / sqrt 2
+        engine::StripMeter fixed, other;
+        fixed.peak.store(.5f);
+        fixed.rms.store(halfSineRms);
+        other.peak.store(.25f);
+        other.rms.store(.1f);
+        const engine::StripMeter *meterOfTwo = &fixed;
+        int lookups = 0;
+        double clock = 0;
         auto &mixer = integrated.mixer;
-        mixer.tap = [&](std::int64_t id) {
-            return id == 2 ? std::shared_ptr<const engine::ScopeTap>(meterTap) : nullptr;
+        mixer.meter = [&](std::int64_t id) {
+            ++lookups;
+            return id == 2 ? meterOfTwo : nullptr;
         };
-        mixer.retap();
+        mixer.clock = [&] { return clock; };
+        mixer.resolveMeters();
         integrated.resized();
         integrated.mark(DirtySet::All);
         integrated.frame();
@@ -5513,8 +5890,47 @@ int main(int argc, char **argv) {
                   row->getHeight() == arrangement.geometry.heightFor(2),
               "a mixer row sits level with its track's lane, as Live's track controls");
         if (row) {
-            check(std::abs(row->peak() - .5f) < .01f && row->rms() > .3f && row->rms() < .4f,
-                  "the meter reads the track's tap: peak and RMS");
+            MixerStrip *unmetered = nullptr;
+            for (const auto &s : mixer.strips())
+                if (s->isVisible() && s->track() != 2 && unmetered == nullptr)
+                    unmetered = s.get();
+            check(row->hasMeter() && row->peak() == .5f && row->rms() == halfSineRms && unmetered != nullptr &&
+                      !unmetered->hasMeter() && unmetered->peak() == 0 && unmetered->rms() == 0,
+                  "the meter draws the engine's peak and RMS for its strip; a track with no strip yet draws silence");
+            // A refresh finds the meter again (a track's strip arrives with the session's next sync,
+            // after the row was bound): what the lookup now gives is drawn, five seconds on so the
+            // ballistics have let the old values go.
+            const int lookupsBefore = lookups;
+            meterOfTwo = &other;
+            clock = 5;
+            integrated.mark(DirtySet::Layout);
+            integrated.frame();
+            check(lookups > lookupsBefore && row->track() == 2 && row->peak() == .25f && row->rms() == .1f,
+                  "after a refresh the meter is resolved again");
+            meterOfTwo = &fixed;
+            integrated.mark(DirtySet::Layout);
+            integrated.frame();
+            check(row->peak() == .5f && row->rms() == halfSineRms, "and again, back to the first");
+            // The ballistics, the window's (win's placement until Readings M1-02 to M1-04): the
+            // engine's value gone, the level falls 24 dB a second; the peak line holds a second first.
+            fixed.peak.store(0);
+            fixed.rms.store(0);
+            clock = 5.5;
+            integrated.frame();
+            const float twelveDown = std::pow(10.f, -12.f / 20);
+            check(std::abs(row->rms() - halfSineRms * twelveDown) < .002f && row->peak() == .5f,
+                  "half a second of silence: the level is 12 dB down, the peak line still held");
+            clock = 6.5;
+            integrated.frame();
+            check(std::abs(row->peak() - .5f * twelveDown) < .002f && row->rms() < .01f,
+                  "a second and a half: the line, let go after its second, is 12 dB down");
+            clock = 15;
+            integrated.frame();
+            check(row->peak() == 0 && row->rms() == 0, "ten seconds on: the meter is at rest");
+            fixed.peak.store(.5f);
+            fixed.rms.store(halfSineRms);
+            integrated.frame();
+            check(row->peak() == .5f && row->rms() == halfSineRms, "a new value is drawn at once: the rise is instant");
             row->volume.onDragStart();
             row->volume.setValue(-6, juce::sendNotificationSync);
             check(std::abs(document->view().current()->findTrack(2)->volumeDb) < .01,
@@ -5640,7 +6056,8 @@ int main(int argc, char **argv) {
             }
         }
         auto &mixerView = integrated.mixerView;
-        mixerView.tap = mixer.tap;
+        mixerView.meter = mixer.meter;
+        mixerView.clock = mixer.clock;
         const int arrangementBefore = integrated.arrangement.getHeight();
         check(!integrated.state().mixerView && !mixerView.isVisible(),
               "the Mixer View starts hidden");
@@ -5690,6 +6107,41 @@ int main(int argc, char **argv) {
             check(std::abs(held.held - .5f) < .01f, "and it holds the next peak it meets");
             check(!silent->peakHold.isVisible() || silent->peakHold.held == 0,
                   "a silent track's peak level stays at -Inf");
+            // Over 0 dBFS the Peak Level turns red (manual 18.1: "resettable peak level indicators";
+            // Live's goes red once the track has clipped): read in the pill's own pixels, away from
+            // its text.
+            fixed.peak.store(1.2f);
+            integrated.frame();
+            juce::Image pill(juce::Image::ARGB, held.getWidth(), held.getHeight(), true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(pill);
+                held.paintEntireComponent(g, true);
+            }
+            const auto edge = pill.getPixelAt(3, held.getHeight() / 2);
+            check(held.held == 1.2f && sounding->peak() == 1.2f && edge.getRed() > 200 && edge.getGreen() < 100 &&
+                      edge.getBlue() < 100,
+                  "a peak over 0 dBFS turns the Peak Level red");
+            // The window at twice its size, for the PR's picture (ADI_UI_PARITY): the strips with
+            // 3 Audio's meter sounding and its Peak Level red.
+            if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty()) {
+                juce::Image shot(juce::Image::ARGB, 2 * integrated.getWidth(), 2 * integrated.getHeight(), true,
+                                 juce::SoftwareImageType{});
+                {
+                    juce::Graphics g(shot);
+                    g.addTransform(juce::AffineTransform::scale(2.f));
+                    integrated.paintEntireComponent(g, true);
+                }
+                const auto file = juce::File(pictures).getChildFile("adi-strip-meters.png");
+                file.deleteFile();
+                if (auto stream = file.createOutputStream())
+                    juce::PNGImageFormat{}.writeImageToStream(shot, *stream);
+            }
+            fixed.peak.store(.5f);
+            held.onClick();
+            clock = 20;
+            integrated.frame();
+            check(held.held == .5f && sounding->peak() == .5f && sounding->rms() == halfSineRms,
+                  "reset and ten seconds on, the strip is back at the engine's value");
         }
         check(std::abs(meterDepth(0) - .06) < 1e-9 && std::abs(meterLevel(meterDepth(-24)) + 24) < 1e-9 &&
                   !columns.empty() &&

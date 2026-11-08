@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -56,15 +57,22 @@ inline double sendLevel(const engine::SendRoute *s) noexcept { return s != nullp
 inline bool sendOn(const engine::TrackNode &source, const engine::SendRoute *s) noexcept {
     return s != nullptr ? s->enabled : source.kind != "return";
 }
+// Why a new send's batch is refused when no routing id is left (window log N39): the op carries its id
+// (ADR-0021), and the snapshot's highest is already the largest the project can hold. "The project" is
+// what every other Status Bar line of the shell calls the open document.
+inline constexpr const char *kSendNoIdLeft =
+    "No routing id is left: the project's highest routing id is already the largest it can hold.";
 namespace send_edits_detail {
-// A new row's id: one past the highest send's. The snapshot holds the send rows only, so a main,
-// sidechain, VCA or cue row with that id refuses the batch (window log, N39).
-inline std::int64_t newId(const SnapshotSends &sends) noexcept {
-    std::int64_t id = 1;
-    for (const auto &s : sends)
-        if (s)
-            id = std::max(id, s->id + 1);
-    return id;
+// A new row's id: one past the highest routing id of any kind, `Snapshot::maxRoutingId` (#403, window
+// log N39), so it cannot collide with a main, sidechain, VCA or cue row, which the snapshot's `sends`
+// leave out; a batch that makes several rows takes the next ids after it. The snapshot's maximum is an
+// observation, not an allocator: the batch commits against the head it read, and another writer's row
+// in between refuses it there. A frame never holds a send above its maximum (the engine's doc).
+// The first of `count` new ids; 0 when `count` ids do not fit at or below INT64_MAX (the last may equal
+// it), which refuses the edit with `kSendNoIdLeft`. 0 is never an id: `maxRoutingId` is at least 0.
+inline std::int64_t newIds(const engine::Snapshot &snapshot, std::int64_t count) noexcept {
+    const auto highest = snapshot.maxRoutingId;
+    return count <= std::numeric_limits<std::int64_t>::max() - highest ? highest + 1 : 0;
 }
 inline OpRequest connect(std::int64_t id, std::int64_t source, std::int64_t destination, const char *label) {
     return track_edits_detail::op("routing.connect",
@@ -110,19 +118,23 @@ inline TrackEdit setReturnPre(std::int64_t ret, bool pre) {
 }
 // The send from `source` to `destination` set to `db`, as one batch: the row's level when the row
 // exists; else the row, then its level (a new row starts at the format's 0 dB, and the batch lands
-// whole or not at all). The batch reads the snapshot an action lands on: its sends for the rows and
-// the new id, its tracks for the return's switch. No ops when the level would not change, so a click that moves nothing
-// leaves no undo step; nor for a send without a row left fully down.
+// whole or not at all). The batch reads the snapshot an action lands on: its sends for the rows, its
+// highest routing id for the new one, its tracks for the return's switch. No ops when the level would
+// not change, so a click that moves nothing leaves no undo step; nor for a send without a row left
+// fully down. A new row with no id left is refused, with the reason.
 inline TrackEdit setSend(const engine::Snapshot &snapshot, std::int64_t source, std::int64_t destination, double db) {
     using namespace send_edits_detail;
     constexpr const char *label = "Change Send Level";
     TrackEdit edit;
-    const auto &sends = snapshot.sends;
-    const auto *s = findSend(sends, source, destination);
+    const auto *s = findSend(snapshot.sends, source, destination);
     if (written(db) == (s != nullptr ? s->gainDb : kSendSilenceDb))
         return edit;
-    const auto id = s != nullptr ? s->id : newId(sends);
+    const auto id = s != nullptr ? s->id : newIds(snapshot, 1);
     if (s == nullptr) {
+        if (id == 0) {
+            edit.refusal = kSendNoIdLeft;
+            return edit;
+        }
         edit.ops.push_back(connect(id, source, destination, label));
         follow(edit, snapshot.findTrack(destination), id, label); // a new send follows its return's switch
     }
@@ -130,13 +142,13 @@ inline TrackEdit setSend(const engine::Snapshot &snapshot, std::int64_t source, 
     return edit;
 }
 // Live's Enable Send, and its undoing: a row switched on or off; a new row, fully down, when there
-// is none to switch on. Nothing to do when the send is already as asked.
+// is none to switch on (refused, with the reason, when no id is left). Nothing to do when the send is
+// already as asked.
 inline TrackEdit enableSend(const engine::Snapshot &snapshot, std::int64_t source, std::int64_t destination, bool on) {
     using namespace send_edits_detail;
     const char *label = on ? "Enable Send" : "Disable Send";
     TrackEdit edit;
-    const auto &sends = snapshot.sends;
-    const auto *s = findSend(sends, source, destination);
+    const auto *s = findSend(snapshot.sends, source, destination);
     if (s != nullptr ? s->enabled == on : !on) {
         edit.refusal = on ? "The send is on already." : "The send is off already.";
         return edit;
@@ -145,7 +157,11 @@ inline TrackEdit enableSend(const engine::Snapshot &snapshot, std::int64_t sourc
         edit.ops.push_back(track_edits_detail::op("routing.setEnabled", {{"id", s->id}, {"enabled", on}}, label));
         return edit;
     }
-    const auto id = newId(sends);
+    const auto id = newIds(snapshot, 1);
+    if (id == 0) {
+        edit.refusal = kSendNoIdLeft;
+        return edit;
+    }
     edit.ops.push_back(connect(id, source, destination, label));
     follow(edit, snapshot.findTrack(destination), id, label);
     edit.ops.push_back(track_edits_detail::op("routing.setGain", {{"id", id}, {"db", kSendSilenceDb}}, label));
@@ -153,13 +169,22 @@ inline TrackEdit enableSend(const engine::Snapshot &snapshot, std::int64_t sourc
 }
 // Live's Enable All Sends (§18.4: "right-click on a Return track's Send knob and select Enable Send or
 // Enable All Sends"): every send of the return `source` switched on, to each return, itself included,
-// as one batch; a new row for each that has none, fully down, each with its own id.
+// as one batch; a new row for each that has none, fully down, the rows' ids consecutive from the
+// snapshot's highest. Refused, with the reason, when the new rows do not all fit below INT64_MAX.
 inline TrackEdit enableAllSends(const engine::Snapshot &snapshot, std::int64_t source, const std::vector<std::int64_t> &returns) {
     using namespace send_edits_detail;
     constexpr const char *label = "Enable All Sends";
     TrackEdit edit;
     const auto &sends = snapshot.sends;
-    auto id = newId(sends);
+    std::int64_t rows = 0;
+    for (const auto destination : returns)
+        if (findSend(sends, source, destination) == nullptr)
+            ++rows;
+    auto id = rows > 0 ? newIds(snapshot, rows) : 0;
+    if (rows > 0 && id == 0) {
+        edit.refusal = kSendNoIdLeft;
+        return edit;
+    }
     for (const auto destination : returns) {
         const auto *s = findSend(sends, source, destination);
         if (s != nullptr) {

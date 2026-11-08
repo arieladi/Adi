@@ -64,6 +64,10 @@ struct WindowState {
     // Live 12's Mixer Controls submenu (and the Mixer View Control's options menu): the Mixer View's
     // own In/Out section, hidden until shown, and its own Sends, apart from the track controls'.
     bool mixerInOut = false, mixerSends = true;
+    // Live's Track Options (manual 18.7): the Track Delay field, hidden until shown; the track
+    // controls' (the D selector, the Arrangement Track Controls submenu) and the Mixer View's own
+    // (the Mixer Controls submenu and the Mixer View Control's menu), apart as In/Out and Sends are.
+    bool trackOptions = false, mixerTrackOptions = false;
     // Bitwig's Use Large Track Height (Master Reference 10): off, every track at half height.
     bool largeTracks = true;
     // Bitwig's project view (Master Reference 10, ADR-0112 d2): the group this window shows,

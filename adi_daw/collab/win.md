@@ -6,6 +6,156 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-08 (Sunday) — the chain of twenty lands; the M0 records and the catalogue resync; eleven window surfaces in one day
+
+**6 and 7 November were the usage-limit pause:** the weekly limit fell on the evening of the 5th, took
+every running workflow with it, and nothing was pushed on either day; Sunday's reset relaunched all of
+it. The engine seat has not logged since 04:02 UTC on the 5th and has requested no PR: idle, not stuck.
+
+**The chain of twenty is on main (#457, e24c7b07).** Its top had failed three CI jobs this machine
+cannot run: GCC's `-Wmisleading-indentation` on a one-line helper win itself had written into
+`test_analysis_cache.cpp` during the merge; the GUI shell on GCC, where `adi_plugin_scanner` compiled
+a JUCE header under `-Werror=conversion` (the scanner no longer applies `adi_warnings` to JUCE
+translation units, as the other JUCE targets do not); and JUCE-on MSVC, where the child-process
+scanner rejected the fixture VST3 until its quarantine ran out, because on Windows JUCE expands a
+bundle path to its DLL and the description no longer matched the path asked for (the child now
+rebinds descriptions to the requested bundle path). The chain was rebuilt on main at 7e411503, tested
+on MSVC, pushed as twenty fast-forwards with 38 intermediate runs cancelled, and #457 retargeted to
+main once more because its CI had taken the chain's old `ci.yml` from its base. On the merge, #438 to
+#456 were closed as landed and `engine/log` (#421, still open) got main merged in. Main at abb1971a
+measures 15,554 checks across 188 suites on MSVC (README count #475); its full run, both heavy macOS
+legs included, is green.
+
+**The M0 records (#464, #466) and the catalogue they exposed (#469).** #464 records ADR-0212 to
+ADR-0232: the director's ruling of the 5th in his words (0212), the seventeen ADRs within win's
+authority from `docs/PLAN.md` §8, the lane texts and the three seat prompts (devices, control API,
+clones pointer). #466 is part two: the registry rows the records call for, with eighteen tests, and
+the other texts of PLAN §8.4 (SETTINGS-CATALOGUE, AI-AGENT, AWAITING, the window's N44 to N46, LANES
+§3 and §3b). Writing those cells showed `docs/SETTINGS-CATALOGUE.md` six weeks behind its source (211
+rows against 236; the v1.0 to v1.2 rulings missing), and `test_settings.cpp` keys `catalogue.cpp`'s
+rows on the Markdown rows, so regenerating the document alone breaks the test. #469 brings the three
+together: 25 rows added, two new pages (Export, Scripts), `catalogue.cpp` at 152 answered and 84
+absent, ordered as the Settings window lays Live's tabs out. A doc refresh would have been the wrong
+fix; code and doc never drift silently.
+
+**The StackModel (#463):** W1, the Mix View's STACK interaction model, 478 checks, the three-lens
+review applied before the merge; its one open item (O4, the engine's per-instance token) becomes a
+needs row with W2.
+
+**Eleven window surfaces, one batch, on this PC.** The window lane's seat has been on ORC-VST since
+the 3rd, so win ran the 5 November work list (#459) as a batch: one agent per surface, each with its
+gate, picture and PR, a poller landing them in stack order. On main tonight: #465 A1 Save As (N3's
+window half), #467 A2 the batch commit, #470 A3 one undo step per strip drag (N7), #472 C1 Automation
+Arm (N26), #473 B1 a return's own Pre/Post (N42), #474 B2 send ids (N39), #476 B5 Solo in Place (N23),
+#477 F1 Delete Track undone whole (N37), #478 F2 New's two returns in the parity notes (N41), #479 B3
+strip meters on the engine's scalar meter (N9; the ballistics are the window's placement until the
+Live 12 readings say, and a held peak per strip becomes N48), #480 B4 Track Delay (N22); #471 is the
+window's log, its N44 renumbered to N47 because the records took N44 to N46. Four lessons for batch 2.
+#465's MSVC leg timed out at 60 minutes with ten suites left and all passing, so the test step's bound
+is 90 minutes (#468; the 3 November argument). A collab-only PR gets no CI since #460, so a waiter
+that lands on green checks waits forever: #478 was merged by hand, and docs-only window PRs are merged
+directly from now on. #480 failed three Track Delay checks on the macOS GUI shell leg only: Apple
+clang's FMA contraction made a typed 10 ms read 10.000000000000021, the test now compares within
+1e-9, proven through mac-probe with JUCE on (#481, #482). Two of the eleven died mid-way (an API
+outage, a stash of uncommitted fixes) and a second workflow finished them: a batch plans its
+finisher from the start.
+
+**The Live 12 readings, first checkpoint.** His seats on SALON-TV ran the brief of the 5th: measured
+the 70-colour palette in both themes, the Pre/Post colours through save and reopen, Insert Return with
+its undo; read the build, the settings census and the export census; the rest not run, the true-peak
+method invalid. Mission 2 is written, `NowWeReverse/Live12-readings/MISSION-2-2026-11-08.md`: 113
+readings, part A for the Claude seat, part B for Codex, on his account with the manual's defaults.
+
+**ADI-View combined, the headless round.** Group 1 of the plan of the 5th ran while the builds ran:
+all four references measured passive, bit-identical, latency 0; the fixture set is in place; the
+handoff to Codex gained the measured section. The instance-list round's dry gate is clean; its live
+steps need the desktop free and the window lane's builds quiet, so they go to a night window.
+
+**Next.** Window batch 2 (B6 to B8, C2 to C6, A4, A5, D1 to D3) is scheduled for the morning of the
+9th after the night window. The devices and control API seats have their prompts (#464) and wait on
+the director. The engine seat is idle since the 5th; `engine/log` (#421) stays open until it moves.
+
+---
+
+## 2026-11-05 — The stacks land through their tops; main's heavy macOS legs red and fixed; the director's ruling on his plug-ins; the plan
+
+**Landing a stack through its top.** GitHub serves this account one macOS job at a time, and forty
+stacked PRs had queued 75 runs. Every intermediate state is a subset of the top and nothing lands at
+an intermediate state, so a stack lands through its top feature PR: #382 merged on its own green CI,
+the runs of #383 to #419 were cancelled, and #420 (all forty) merged at 23:19 UTC on the 4th
+(d87fa8cf); the PRs below were closed as landed, since GitHub cannot retarget a PR with no new commits
+(the #360 precedent). The Codex seat's ten landed the same way through #430 (ca0290c2, 02:02 UTC).
+Never through `engine/log` (#421): the seat pushes there continually and each push restarts its CI.
+Two things the night found. A bare `cmake --build --parallel` hands make a bare `-j`, one compiler per
+source file; with the stack nearly doubling adi_core, GCC ran the Linux runners out of memory ("The
+runner has received a shutdown signal" a minute into the core library, while clang passed); fixed on
+#420's branch, every build step takes one compiler per processor, as the probe step already did. And a
+single-base merge can misplace an insertion silently in a criss-cross link (send-automation's two lines
+landed after the loop and after the next function; MSVC caught it), so the chain's `placement_check.py`
+now flags any branch line whose neighbour changed.
+
+**The chain of twenty, built today, landed on the 8th.** The Codex seat's next ten (#438 to #447) were
+cut from main's base, schema 1.9, not from the stacked trunk, so each needed the whole stack merged in;
+once that pass was green its top went into `engine/log`, so the seat's next cut starts from the trunk.
+MSVC then found what GCC and Clang had not: a signed/unsigned compare in `test_aac_import.cpp` (C4389
+under `/WX`); nine "zero allocation" checks counting the Debug iterator proxy's allocations as the
+code's; an injected allocation failure in analysed-cache landing on SQLite's query copy instead of the
+code under test; two progressive-decode checks whose mid-decode source mutation never happened on
+Windows, because `_wfopen_s` denies other writers (the reader now opens with `_wfsopen(_SH_DENYNO)`,
+like the POSIX readers, and the re-hash catches the change); sample-defaults' refusal moved before it
+built the named result. Each fix is its own commit on its branch. The engine's four further requests
+were opened (#454 transport-generation, #455 external-tempo, #456 link-session with Ableton Link 3.1.5
+pinned, #457 sample-defaults), pre-checked clean on MSVC, and the chain extended to twenty: 14,923
+checks across 187 suites at 6ce651cc, twenty fast-forwards, each base its predecessor, #441 on main,
+#457 the top.
+
+**Main red on its heavy macOS legs, fixed by noon (#461, 5a6ae08b).** Since the stacks landed, the
+universal build and the apple clang strict leg failed on main: `adi_project_files_tests` 9 of 44 (Save
+As and relocated media), `adi_collect_export_tests` 8 of 97, `adi_mp4_aac_tests` and
+`adi_ni_stems_tests` on a CoreAudio priming mismatch. No PR runs the heavy legs since the 3rd; this is
+what LANES §2 is for: win's, at the head of the queue. First a tool, #458: `mac-probe.yml`,
+dispatch-only, builds named targets with the strict leg's hardening and runs the matching suites on a
+Mac in minutes rather than three hours. Then two causes. On macOS `/var` is a symlink to
+`/private/var`; the bundled SQLite's unix VFS resolves symlinks, so `projectFolder()` read the
+`/private/var` spelling while Save a Copy and Collect rebased media onto `fs::absolute(output)`'s
+`/var` spelling; the fix rebases toward `media::projectFolder(destination)` (a `const Database&`
+overload; the Store overload delegates), with symlink checks that skip on Windows only. And CoreAudio
+writes an M4A with no edit list, its priming in `iTunSMPB` and the packet table; `encodeAac` read the
+priming from ADI's `elst`-only parser (0 against 2112) and threw; it now reads
+`kExtAudioFileProperty_PacketTable`. All four suites proven on mac-probe, hardened, `-Werror`; main
+green at 10:37 UTC. Two CI changes beside it: #460, `ci.yml` and `ui.yml` skip `adi_daw/collab/**`
+(`ci.yml` keeps `collab/README.md`, read by validate_schema check 8), so a log push no longer takes the
+macOS runner; and #459, the window's needs table brought up to the landed stacks (25 rows struck, N16
+among them by the ruling below; seven partly open) with `collab/window/worklist-2026-11-05.md`, 36
+unblocked surfaces in seven groups.
+
+**The director's rulings.** In the morning, three messages: no reserved slots; no separate built-in
+ADI-Q or ADI-L devices; when all his plug-ins are finished their source is reworked into one unified
+built-in feature with a device-like window, openable from the track and from the Mix View; that
+feature never hosts the VST3; his VST3 and CLAP builds stay ordinary plug-ins; "don't waste time on
+this now", he will post the list of plug-ins to rework. The integration redesign stopped where it
+stood. Recorded in his words as ADR-0212 (#464) and placed in `docs/PLAN.md` §6.2 P-6. At 11:00: the
+window screens and the instance list pause until the plan (both resumed in the afternoon). And the
+drone is retired: no standing drone work; a GPU only for a concrete GPU-shaped job he approves. The
+251 jobs queued that morning were dropped.
+
+**The plan (#462, 3b0a83ef).** `docs/PLAN.md` and `docs/RESEARCH-INTAKE.md`, opened as a proposal and
+merged at 14:24 UTC once he had answered: Q-A (a), the undo cap and Live's Backup folder; Q-B (a), in
+his words, STACK as each track's own devices until his list; Q-C (a), the control API now on a seat of
+its own (ADR-0232). M0 started at once: the records (landed on the 8th as #464 and #466) and W1, the
+StackModel, whose PR #463 opened in the evening.
+
+**The Live 12 readings and ADI-View.** The readings brief is written,
+`NowWeReverse/Live12-readings/BRIEF-2026-11-05.md`: 122 readings by milestone, on a fresh Live profile
+on SALON-TV; G-1 answered, he runs it with his own seats, from Sunday. He called the three plug-ins'
+current builds good enough and handed a new brief, the ADI-View combined retest against five analyser
+references, with a standalone test app to be built by Codex; the plan is in
+`NowWeReverse/UI-Testing/20261105T1420-adi-view-combined-reference` (plan, handoff to Codex, report,
+evidence index, three mock-ups, decisions D1 to D13): group 1 headless tonight while Codex builds,
+group 2's CPU cells once the machine is quiet.
+
+---
+
 ## 2026-11-04 — The engine's forty PRs become one stack; the Codex work seat; five compilers' worth of fixes
 
 **Why the forty could not merge as they stood.** The engine's #382 to #421 (3 November, below) were
