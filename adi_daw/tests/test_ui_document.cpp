@@ -1,12 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/wav_file.hpp"
 #include "adi/ui/project_document.hpp"
+#include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <optional>
+#include <thread>
 using namespace adi;
 namespace {
 int checks = 0, failures = 0;
@@ -298,6 +302,127 @@ int main(int argc, char **argv) {
                   "a folder that does not exist is refused with the store's reason");
             check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
                   "and the history still redoes after a refusal");
+        }
+    }
+    {
+        // A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4,
+        // ADR-0181 d5; MR 9.1, audit row 110). The plug-in is the loader's headless Knobs; the
+        // gesture is what ParameterControl sends (ui_devices.cpp): Begin, Values, End.
+        using engine::ParamEventKind;
+        auto strip = ui::ProjectDocument::open(temp.path() / "strip.adi", true, test::knobsLoader(), error);
+        check(strip != nullptr, "a project whose plug-ins the loader makes");
+        // An exception here is a failed check with its text, not a CRT dialog on a desktop.
+        if (strip) try {
+            // A chain on 1 MIDI and a device in it, after New's two returns (refs, chains and
+            // devices 1 and 2: Reverb and Delay); the plug-in reference is the catalogue's row,
+            // not an op.
+            strip->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                     test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(2);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            check(strip->ops().submit(std::move(make)).ok && strip->synchronise(), "a device on track 2");
+            strip->tick(0); // the timer's frame: the feed publishes the new device
+            auto *knobs = dynamic_cast<test::Knobs *>(strip->session().instanceFor(3));
+            const auto *entry = strip->session().entryFor(3);
+            check(knobs != nullptr && entry != nullptr && !entry->placeholder && entry->name == "UI knobs",
+                  "the loader made it and the session holds it under its name");
+            // The feed's panel for it, among the returns' two.
+            auto panelOf = [&](std::int64_t device) -> const ui::DevicePanelData * {
+                const auto feed = strip->parameterFeed().current();
+                if (feed)
+                    for (const auto &data : *feed)
+                        if (data.id == device)
+                            return &data;
+                return nullptr;
+            };
+            const auto *panel = panelOf(3);
+            check(panel != nullptr && panel->track == 2 && panel->records.size() == 2 &&
+                      panel->records[0].id == "cutoff" && std::abs(panel->records[0].playing - .5) < 1e-9,
+                  "the strip's feed lists the device on its track, its parameters by the plug-in's ids");
+            const auto opsBeforeDrag = strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            auto headTxn = [&] {
+                const auto head = strip->ops().nextUndo();
+                return head ? head->txnId : std::int64_t{0};
+            };
+            const auto txnBefore = headTxn();
+            bool moving = knobs != nullptr && strip->parameterGesture(3,"cutoff", ParamEventKind::Begin, .5);
+            for (const double v : {.6, .7, .8})
+                moving = moving && strip->parameterGesture(3,"cutoff", ParamEventKind::Value, v);
+            check(moving && knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .8) < 1e-9 &&
+                      strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeDrag &&
+                      headTxn() == txnBefore && strip->error().empty(),
+                  "every value of the drag reaches the plug-in at once, and nothing is written before End");
+            check(strip->parameterGesture(3,"cutoff", ParamEventKind::End, .8) && strip->error().empty(),
+                  "End commits the gesture");
+            const auto step = strip->ops().nextUndo();
+            check(step && step->opCount == 2 && step->label == "UI knobs: Cutoff" && step->txnId != 0 &&
+                      step->txnId != txnBefore,
+                  "Begin, three Values and End are ONE undo step, named for the device and its control");
+            if (step) {
+                SQLite::Statement first(strip->store().db(),
+                                        "SELECT op_type, payload FROM ops WHERE txn_id = ? ORDER BY seq LIMIT 1");
+                first.bind(1, step->txnId);
+                const bool found = first.executeStep();
+                Payload opener;
+                if (found) {
+                    const auto column = first.getColumn(1); // the journal stores payloads as CBOR
+                    const auto *bytes = static_cast<const std::uint8_t *>(column.getBlob());
+                    opener = Payload::from_cbor(
+                        std::vector<std::uint8_t>(bytes, bytes + static_cast<std::size_t>(column.getBytes())));
+                }
+                check(found && first.getColumn(0).getString() == "device.setParam" && opener.contains("norm") &&
+                          std::abs(opener.at("norm").get<double>() - .5) < 1e-9 && opener.value("dev", 0) == 3,
+                      "whose first op is the opener: the value the parameter had before the drag (ADR-0124 d4)");
+            }
+            // The project's own row for a parameter, as the session re-reads it on synchronise();
+            // the snapshot carries lanes, not plug-in rows.
+            auto rowOf = [&](const char *param) -> std::optional<double> {
+                for (const auto &p : strip->session().model().pluginParams)
+                    if (p.deviceId == 3 && p.paramId == param)
+                        return p.normalized;
+                return std::nullopt;
+            };
+            check(rowOf("cutoff") && std::abs(*rowOf("cutoff") - .8) < 1e-9 && panelOf(3) != nullptr &&
+                      std::abs(panelOf(3)->records[0].stored - .8) < 1e-9,
+                  "the project holds the final value and the strip's feed shows it stored");
+            check(strip->ops().undo().ok && strip->synchronise() && !rowOf("cutoff") && headTxn() == txnBefore,
+                  "one undo restores the value: the parameter is never touched again, as before the drag");
+            check(strip->ops().redo().ok && strip->synchronise() && rowOf("cutoff") &&
+                      std::abs(*rowOf("cutoff") - .8) < 1e-9,
+                  "and one redo brings the whole drag back");
+            // A value nothing brackets (a typed value, a key) closes on the drain's quiet timer.
+            // An event the plug-in refuses after that still commits the older gesture: the
+            // producer drains before it judges (docs/ENGINE-UI-PARAM-CAPTURE.md).
+            check(strip->parameterGesture(3,"gain", ParamEventKind::Value, .9) && knobs != nullptr &&
+                      std::abs(knobs->getParam("gain").normalized - .9) < 1e-9 && !rowOf("gain"),
+                  "an unbracketed value sounds at once and waits for the quiet timer");
+            std::this_thread::sleep_for(std::chrono::milliseconds(400));
+            if (knobs)
+                knobs->refuse = true;
+            const auto refusedCount = strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            check(!strip->parameterGesture(3,"cutoff", ParamEventKind::Value, .3) &&
+                      strip->error() == "The plug-in did not take the value." && rowOf("gain") &&
+                      std::abs(*rowOf("gain") - .9) < 1e-9 && strip->ops().nextUndo() &&
+                      strip->ops().nextUndo()->label == "UI knobs: Gain" && strip->ops().nextUndo()->opCount == 2 &&
+                      strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == refusedCount + 2,
+                  "an event the plug-in refuses is refused with its reason, and the older gesture it drained commits");
+            if (knobs)
+                knobs->refuse = false;
+            check(!strip->parameterGesture(99, "cutoff", ParamEventKind::Begin, .5) &&
+                      strip->error() == "That device is not loaded, so its values cannot be edited." &&
+                      !strip->parameterGesture(3,"nothing", ParamEventKind::Begin, .5) &&
+                      strip->error() == "The plug-in did not take the value.",
+                  "a device that is not loaded and a parameter the plug-in has not are refused, each with its reason");
+            check(strip->parameterGesture(3,"cutoff", ParamEventKind::Begin, .8) &&
+                      strip->parameterGesture(3,"cutoff", ParamEventKind::Value, .4) &&
+                      strip->parameterGesture(3,"cutoff", ParamEventKind::End, .4) && strip->ops().nextUndo() &&
+                      strip->ops().nextUndo()->opCount == 1 && strip->ops().nextUndo()->label == "UI knobs: Cutoff",
+                  "a later gesture on the same parameter needs no opener: one op, one step");
+        } catch (const std::exception &e) {
+            check(false, e.what());
         }
     }
     std::printf("%d checks, %d failures\n", checks, failures);

@@ -9,6 +9,7 @@
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -2911,6 +2912,84 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
     }
+    document->release();
+}
+// A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
+// d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
+// producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
+void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "strip-undo.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "a project whose plug-ins the loader makes");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "strip");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    // As ui_main.cpp wires it: a refusal's reason goes to the Status Bar.
+    root.devices.gesture = [&](std::int64_t id, const std::string &param, engine::ParamEventKind kind,
+                               double value) {
+        const bool ok = document->parameterGesture(id, param, kind, value);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    document->tick(0); // the timer's frame publishes the feed
+    root.frame();
+    root.frame();
+    const bool shown = root.devices.panels.size() == 1 && root.devices.panels[0]->controls.size() == 2 &&
+                       root.devices.panels[0]->controls[0]->slider.isVisible();
+    check(shown, "the strip shows the device's two controls, from the document's feed");
+    if (!shown) {
+        document->release();
+        return;
+    }
+    auto &cutoff = root.devices.panels[0]->controls[0]->slider;
+    auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(3));
+    const auto titleBefore = root.undoTitle(false);
+    cutoff.onDragStart();
+    cutoff.setValue(.65, juce::sendNotificationSync);
+    cutoff.setValue(.8, juce::sendNotificationSync);
+    check(knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .8) < 1e-9 &&
+              root.undoTitle(false) == titleBefore && root.error().empty(),
+          "while the mouse is down the knob moves the plug-in at once and nothing is written");
+    cutoff.onDragEnd();
+    document->tick(0);
+    root.frame();
+    check(root.undoTitle(false) == "Undo UI knobs: Cutoff" && root.error().empty() &&
+              std::abs(root.devices.panels[0]->controls[0]->slider.getValue() - .8) < 1e-9,
+          "mouse up: ONE undo step, named for the device and its control, and the knob stays where it was left");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-strip-param-undo.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    std::size_t rows = 0;
+    for (const auto &p : document->session().model().pluginParams)
+        rows += p.deviceId == 3 ? 1 : 0;
+    check(rows == 1 && root.command(AppCommands::Undo) && root.undoTitle(false) == titleBefore, "and one Undo takes the whole drag back");
+    rows = 0;
+    for (const auto &p : document->session().model().pluginParams)
+        rows += p.deviceId == 3 ? 1 : 0;
+    check(rows == 0, "the parameter is never touched again, as before the drag (ADR-0124 d4)");
     document->release();
 }
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
@@ -5925,6 +6004,7 @@ int main(int argc, char **argv) {
     groupTracks(commands, temp.path());
     footRows(commands, temp.path());
     newProject(commands, temp.path());
+    stripParamUndo(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     rangeSelection(commands, temp.path());

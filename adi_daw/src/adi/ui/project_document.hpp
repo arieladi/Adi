@@ -55,7 +55,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     const std::string &error() const noexcept { return error_; }
     // The parameter feed every window and the control API drain (ADR-0180 d5).
     ParameterFeed &parameterFeed() noexcept { return feed_; }
-    bool parameterGesture(std::int64_t, const std::string &, engine::ParamEventKind, double);
+    // A control in the device strip: Begin, Values and End on one parameter, in the plug-in's
+    // normalised unit (N7; ADR-0124 d4, ADR-0181 d5; MR 9.1). Every value reaches the plug-in at
+    // once; End commits the gesture as ONE undo step, its first-touch opener in front, through
+    // the engine's own window producer (`ParamOps::uiEvent`). A value nothing brackets closes on
+    // the drain's quiet timer, in `tick()`. False when THIS event was refused (a device that is
+    // not loaded, a missing or non-automatable parameter, a value the plug-in did not take), with
+    // `error()` saying so; an older gesture that completed in the same call is committed anyway.
+    bool parameterGesture(std::int64_t id, const std::string &param, engine::ParamEventKind,
+                          double normalized);
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
@@ -68,6 +76,13 @@ class ProjectDocument final : public engine::BlockProcessor {
 
   private:
     ProjectDocument(std::unique_ptr<Store>, std::string name);
+    // The clock the capture's timers run on: steady milliseconds, the same for the timer's drain
+    // and for a gesture, so a gesture's quiet timer and its End agree.
+    static std::int64_t captureNowMs() noexcept;
+    // What the drain and a gesture both do with the requests the capture appended: the state
+    // blobs first (ADR-0142), then ONE transaction, then the session follows. Nothing appended
+    // is nothing done. False with `error()` set when the store refused.
+    bool commitCaptured(std::vector<OpRequest> &requests);
     std::unique_ptr<Store> store_;
     std::string name_;
     engine::ProjectView view_;
