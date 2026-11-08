@@ -358,11 +358,22 @@ silent truncation in JSON, a non-issue in CBOR.
 | `project.setTempoCurve` | e | S | sym | P2 |
 | `project.insertTimeSignature` | e | S | pair `removeTimeSignature` | P0 |
 | `project.removeTimeSignature` | e | S | cap | P0 |
-| `project.insertKeyEvent` | e | N | pair `removeKeyEvent` | P2 |
-| `project.removeKeyEvent` | e | N | cap | P2 |
+| `project.insertKeyEvent` | e | S | pair `removeKeyEvent` | P2 |
+| `project.removeKeyEvent` | e | S | cap | P2 |
+| `project.setKeyScale` | e | S | sym | P2 |
+| `tuning.create` | e | S | pair `tuning.delete` | P2 |
+| `tuning.delete` | e | S | cap | P2 |
+| `tuning.replace` | e | S | sym | P2 |
 | `project.setSampleRate` | e | **P** | sym | P0 |
 | `project.setTimecodeOrigin` | e | N | sym | P3 |
 | `project.setFrameRate` | e | N | sym | P3 |
+
+Native key changes and ADR-0178 tuning definitions use the explicit-ID
+payloads in `ENGINE-TUNING-EDITS.md`. Inserts never upsert. Replacing a tuning
+validates all existing selected degrees; deleting a referenced tuning refuses.
+All six handlers capture complete inverses, use the journal transaction, and
+request a snapshot update without retuning notes. The text projection covers
+the five existing relational scale tables. No schema/binary-layout change.
 
 ### 9.2 Tracks and lanes
 
@@ -566,6 +577,7 @@ Warp setters remain separate from this captured producer.
 | Op | S | E | Inv | P |
 |---|---|---|---|---|
 | `note.insert` | e | S | pair `note.delete` | P0 |
+| `capture.createMidi` | e | G | pair `clip.delete` | P1 |
 | `note.delete` | e | S | cap | P0 |
 | `note.move` | e | S | sym | P0 |
 | `note.resize` | e | S | sym | P0 |
@@ -793,6 +805,348 @@ prefixes before preparing edits. Existing ANOT velocity bytes and AEXP floats
 cannot preserve every arbitrary captured double; persistence must name/refuse
 that limitation rather than silently narrow it. No schema/new opcode or measured
 Live parity claim is introduced by the RAM memory.
+
+Optional graph workers are runtime scheduling, not project editing.
+Graph/GraphHost/Session::setParallelRendering takes explicit measured frame and
+eligible-width thresholds, with optional owner-created driver initialization.
+Only independently safe nodes opt in; callback-affine providers stay serial.
+Private render scratch/counters, fixed consumer sums and completion barriers
+preserve existing audio/event contracts in both widths. See
+`ENGINE-GRAPH-WORKERS.md` for lifecycle, FP environment, failure and benchmark
+contracts. No project opcode/schema/blob-layout change.
+
+Scale highlighting, ruler and Fold projections are runtime read concerns.
+`engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
+tuning degrees coherently without reading notes or writing history. Held
+contexts offer bounded pitch/membership queries with an explicit absolute
+tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
+non-octave periods and native pitch precision. No new opcode or schema.
+
+Scale highlighting, ruler and Fold projections are runtime read concerns.
+`engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
+tuning degrees coherently without reading notes or writing history. Held
+contexts offer bounded pitch/membership queries with an explicit absolute
+tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
+non-octave periods and native pitch precision. No new opcode or schema.
+
+`engine::readScaleTimeline` resolves the global per-key tuning map in one
+owner snapshot. Held contexts apply at exact inclusive int64 tick boundaries;
+nextChangeAfterTicks returns the next strictly later boundary without overflow.
+Reads/compilation are owner work; bounded callback lookups allocate nothing.
+The global map preserves separate clip-local overrides and never retunes stored
+notes. See `ENGINE-SCALE-TIMELINE.md` for lifetime, budgets and errors. This is
+a runtime read API, with no new opcode or schema.
+
+Scala file parsing is owner preparation, not a log operation.
+`engine::parseScala(bytes,id,name)` captures an explicit owned definition,
+including the final repeat period and double cent offsets. See
+`ENGINE-SCALA-IMPORT.md` for its bounded accepted grammar and errors. Native
+writer integration logs resolved values; replay never reads the original file
+or recomputes ratios. No opcode/schema/binary-layout change in the parser.
+
+Scale highlighting, ruler and Fold projections are runtime read concerns.
+`engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
+tuning degrees coherently without reading notes or writing history. Held
+contexts offer bounded pitch/membership queries with an explicit absolute
+tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
+non-octave periods and native pitch precision. No new opcode or schema.
+
+Scale highlighting, ruler and Fold projections are runtime read concerns.
+`engine::readClipScaleContext` resolves clip-local/inherited scale and explicit
+tuning degrees coherently without reading notes or writing history. Held
+contexts offer bounded pitch/membership queries with an explicit absolute
+tonic; they do not retune notes. See `ENGINE-SCALE-CONTEXT.md` for limits,
+non-octave periods and native pitch precision. This read concern adds no opcode or schema; native scale writes are in §9.1.
+
+Implemented controller-lane editing uses existing addressed `event_streams`
+rows (`stream_kind='cc'`, ACTL), with channel 0..15 and controller 0..127:
+
+- `cc.write {id,clip,channel,controller,points[]}` upserts explicit point IDs in
+  that stream. `id` is its explicit SQL row ID, required even on creation.
+  A point is `{id,time,value,tension?,curve?,flags?}`: positive uint64 ID,
+  signed relative musical ticks, finite normalized double value 0..1, tension
+  -1..1 (default 0), curve 0..5 (default Hold), byte flags (default 0).
+  Duplicate incoming IDs, unsupported layouts, invalid values and slot/ID
+  collisions refuse the whole op. Unmentioned points retain their raw bytes.
+- `cc.delete {id,clip,channel,controller,point_ids[]}` removes only listed
+  points. Empty/duplicate/missing selections refuse. Deleting the last point
+  retains an empty addressed lane.
+- `cc.restoreStream {id,clip,channel,controller,state:{data}}` is the captured
+  inverse. Data is NULL for previous absence, or `{bytes}` containing compact
+  CBOR binary (JSON callers may supply byte integers). Undo of first creation
+  removes its row. Existing streams restore exact bytes, including future
+  record tails/header flags/trailer. The same ID/address collision checks apply.
+
+Streams are sorted stably by time. Updating an existing future record preserves
+its full tail, while insertion of a new record into an unknown wider layout
+refuses. Values retain full normalized precision; MIDI byte quantization belongs
+at the host boundary. `controllers::readLanes` returns typed points, raw bytes and
+per-lane errors; an unbound NULL address is distinct from channel/controller zero.
+ClipNode.controllers publishes the same data immutably, and every field/raw
+change participates in structural sharing. SnapshotBuilder reads all project
+fields in one SQLite read transaction, including when another connection edits
+between the controller and clip queries. The row model carries these lanes too.
+`controllers::prepareWrite` finds the addressed slot, allocates explicit stream
+and point IDs (zero input point IDs request new IDs), and validates the request
+under one owner-side read transaction. It reserves/writes nothing. The returned
+request contains all actual IDs. `commitPrepared` refuses a changed history head
+or another file/open Store client; retain the document generation across async
+work, as with the other prepared editing APIs. The window needs no SQL access.
+These are editing/read APIs; ordinary controller-event playback/host routing is
+the next increment. No schema or audio-callback change accompanies this one.
+
+Playback prepares immutable per-track controller timelines off the callback.
+Musical/linear placement, source offsets, clip loops and step tempo changes use
+musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
+at the same channel/CC use the latest clip start, then greatest clip ID. Empty
+lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
+ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+at one million spans and placed points. Controllers are sampled on a global
+64-sample cadence and at exact point/placement/note boundaries, independent of
+callback size, with exact state chased on start/seek.
+
+Controller values remain doubles through graph compensation and VST3 mapped
+parameters. CLAP uses MIDI bytes on a port advertising MIDI/MIDI-MPE, alongside
+native CLAP notes when that is the chosen note dialect; quantization occurs only
+at that boundary. Unsupported CLAP ports and unmapped VST3 controllers are counted
+by each host's `unsupportedControllers()`. VST3 mapping discovery retains the
+existing limitation to a reachable edit controller; no mapping is invented for a
+two-component plug-in whose controller JUCE does not expose.
+
+Owned sustain/sostenuto/hold-2 (CC64/66/69) are released before note-offs on stop,
+seek, transport/clip wrap, mute or generation replacement. A source keeps pending
+release ownership through graph delay and retries rejected/full-list releases,
+including after the lane disappears. Ordinary CC values hold after a clip ends.
+Controller pressure reserves note-event space and rotates addresses;
+`MidiClips::droppedControllers()` counts deferred/refused updates. Callbacks use
+fixed state and prepared arrays, with no Store access, allocation or locks.
+
+**Retrospective MIDI input memory (ADR-0132 d9).** `engine/midi_memory.hpp`
+provides a bounded `MidiMemory(inputId,trackId,sampleRate,noteChannelBase,capacity)`
+for each explicitly eligible input/track. Allocate it before callbacks; default
+capacity is 65,536 events, bounded 2..1,048,576. One producer serializes controls,
+`push(Event,absoluteDriverSample)` and `advance(exclusiveBlockEnd)`, including
+silent blocks. Armed OR monitored input listens independently of transport
+play/record; neither gate retains input. Queue gate changes to that producer.
+Input on/off, explicit discontinuity, backwards clocks, malformed musical input
+and a pinned-slot drop begin a new epoch. Forward rests preserve the history.
+
+Snapshots retain typed note-on/off, expression and controller events, double
+values, uint64 identities, integer timestamps above 2^53, original packet frames
+and coincident serial order. Input channels are declared rather than guessed:
+MpeParser notes use 1..16, while clip notes use 0..15; controllers always address
+0..15 and controller 0..127. The memory preserves the declared note convention
+and never reconstructs MPE allocation. Note keys/velocities, controller addresses/
+values, finite expression values and times are checked. Unassigned release IDs
+remain unassigned for owner resolution. Addressed ParamValue/ParamMod events are
+ignored without clearing musical history. Feed live input only, never playback
+or controller-delivery feedback. No MIDI byte encoding or float narrowing occurs.
+
+The single owner calls `snapshot(output,error)` off callback and receives an
+immutable bounded history with input/track/format/convention/epoch, current
+exclusive end sample and a `prefixDropped` notice when capacity evicted older
+events. This is not a promise that a retained suffix contains complete notes or
+a complete phrase. A concurrent overwrite/in-flight slot refuses the entire
+snapshot with empty output; callers may retry. Slot ownership avoids data races;
+the producer never waits for a reader, instead dropping/counting that event and
+starting fresh history. Stats distinguish copied/dropped/ignored/invalid input.
+Producer controls/parser/copy calls allocate, lock, log and perform file I/O
+nowhere. Constructor/destructor and snapshot work belong off callback.
+
+This increment supplies exact rolling input and the actual MPE-parser handoff,
+not automatic host/UI wiring, phrase detection, Live tempo/loop inference or a
+native committed clip. Owner-side Capture must resolve complete notes and missing
+prefixes before preparing edits. Existing ANOT velocity bytes and AEXP floats
+cannot preserve every arbitrary captured double; persistence must name/refuse
+that limitation rather than silently narrow it. No schema/new opcode or measured
+Live parity claim is introduced by the RAM memory.
+
+The live `MpeParser` now tracks a plain channel's note identity per key, so
+distinct-key chords can release out of order through the router and Capture.
+An MPE member retains its existing single-note expression ownership. Unmatched
+releases keep identity zero; reset clears the per-key map without recycling IDs.
+Same-key retrigger retains the existing newest-identity release policy; this
+increment does not invent FIFO ownership for ambiguous repeated MIDI-1 keys.
+
+Ordinary CCs now emit typed Controller events on zero-based channels with their
+original 0..127 address and normalized double value. This includes zone-master
+controls and ordinary pedals on member channels. Member-channel CC74/106 retains
+the original MPE per-note timbre path and exact 14-bit combination. Outside a
+member, CC74/106 stays ordinary addressed CC. Other high-resolution CC pairs keep
+both original addressed components, without pretending a missing LSB arrived.
+The native controller route can recover their original MIDI-1 wire values.
+Consumed data bytes with their status bit set are refused before state changes,
+array indexing or normalization; a malformed timbre MSB cannot seed a later pair.
+Sink refusal remains counted/nonblocking. Parsing/reset/delivery allocates and
+performs callback I/O nowhere. Program change, SysEx, poly aftertouch and full
+native Capture composition are outside this input correction; no schema/opcode
+or measured Live parity claim is introduced.
+
+Implemented controller-lane editing uses existing addressed `event_streams`
+rows (`stream_kind='cc'`, ACTL), with channel 0..15 and controller 0..127:
+
+- `cc.write {id,clip,channel,controller,points[]}` upserts explicit point IDs in
+  that stream. `id` is its explicit SQL row ID, required even on creation.
+  A point is `{id,time,value,tension?,curve?,flags?}`: positive uint64 ID,
+  signed relative musical ticks, finite normalized double value 0..1, tension
+  -1..1 (default 0), curve 0..5 (default Hold), byte flags (default 0).
+  Duplicate incoming IDs, unsupported layouts, invalid values and slot/ID
+  collisions refuse the whole op. Unmentioned points retain their raw bytes.
+- `cc.delete {id,clip,channel,controller,point_ids[]}` removes only listed
+  points. Empty/duplicate/missing selections refuse. Deleting the last point
+  retains an empty addressed lane.
+- `cc.restoreStream {id,clip,channel,controller,state:{data}}` is the captured
+  inverse. Data is NULL for previous absence, or `{bytes}` containing compact
+  CBOR binary (JSON callers may supply byte integers). Undo of first creation
+  removes its row. Existing streams restore exact bytes, including future
+  record tails/header flags/trailer. The same ID/address collision checks apply.
+
+Streams are sorted stably by time. Updating an existing future record preserves
+its full tail, while insertion of a new record into an unknown wider layout
+refuses. Values retain full normalized precision; MIDI byte quantization belongs
+at the host boundary. `controllers::readLanes` returns typed points, raw bytes and
+per-lane errors; an unbound NULL address is distinct from channel/controller zero.
+ClipNode.controllers publishes the same data immutably, and every field/raw
+change participates in structural sharing. SnapshotBuilder reads all project
+fields in one SQLite read transaction, including when another connection edits
+between the controller and clip queries. The row model carries these lanes too.
+`controllers::prepareWrite` finds the addressed slot, allocates explicit stream
+and point IDs (zero input point IDs request new IDs), and validates the request
+under one owner-side read transaction. It reserves/writes nothing. The returned
+request contains all actual IDs. `commitPrepared` refuses a changed history head
+or another file/open Store client; retain the document generation across async
+work, as with the other prepared editing APIs. The window needs no SQL access.
+These are editing/read APIs; ordinary controller-event playback/host routing is
+the next increment. No schema or audio-callback change accompanies this one.
+
+Playback prepares immutable per-track controller timelines off the callback.
+Musical/linear placement, source offsets, clip loops and step tempo changes use
+musical curve phase; curves use the shared six-shape evaluator. Overlapping lanes
+at the same channel/CC use the latest clip start, then greatest clip ID. Empty
+lanes send nothing; invalid lanes and aliases report preparation errors. Tempo
+ramps retain the MIDI player's existing step-tempo warning. Preparation is capped
+at one million spans and placed points. Controllers are sampled on a global
+64-sample cadence and at exact point/placement/note boundaries, independent of
+callback size, with exact state chased on start/seek.
+
+Controller values remain doubles through graph compensation and VST3 mapped
+parameters. CLAP uses MIDI bytes on a port advertising MIDI/MIDI-MPE, alongside
+native CLAP notes when that is the chosen note dialect; quantization occurs only
+at that boundary. Unsupported CLAP ports and unmapped VST3 controllers are counted
+by each host's `unsupportedControllers()`. VST3 mapping discovery retains the
+existing limitation to a reachable edit controller; no mapping is invented for a
+two-component plug-in whose controller JUCE does not expose.
+
+Owned sustain/sostenuto/hold-2 (CC64/66/69) are released before note-offs on stop,
+seek, transport/clip wrap, mute or generation replacement. A source keeps pending
+release ownership through graph delay and retries rejected/full-list releases,
+including after the lane disappears. Ordinary CC values hold after a clip ends.
+Controller pressure reserves note-event space and rotates addresses;
+`MidiClips::droppedControllers()` counts deferred/refused updates. Callbacks use
+fixed state and prepared arrays, with no Store access, allocation or locks.
+
+**Retrospective MIDI input memory (ADR-0132 d9).** `engine/midi_memory.hpp`
+provides a bounded `MidiMemory(inputId,trackId,sampleRate,noteChannelBase,capacity)`
+for each explicitly eligible input/track. Allocate it before callbacks; default
+capacity is 65,536 events, bounded 2..1,048,576. One producer serializes controls,
+`push(Event,absoluteDriverSample)` and `advance(exclusiveBlockEnd)`, including
+silent blocks. Armed OR monitored input listens independently of transport
+play/record; neither gate retains input. Queue gate changes to that producer.
+Input on/off, explicit discontinuity, backwards clocks, malformed musical input
+and a pinned-slot drop begin a new epoch. Forward rests preserve the history.
+
+Snapshots retain typed note-on/off, expression and controller events, double
+values, uint64 identities, integer timestamps above 2^53, original packet frames
+and coincident serial order. Input channels are declared rather than guessed:
+MpeParser notes use 1..16, while clip notes use 0..15; controllers always address
+0..15 and controller 0..127. The memory preserves the declared note convention
+and never reconstructs MPE allocation. Note keys/velocities, controller addresses/
+values, finite expression values and times are checked. Unassigned release IDs
+remain unassigned for owner resolution. Addressed ParamValue/ParamMod events are
+ignored without clearing musical history. Feed live input only, never playback
+or controller-delivery feedback. No MIDI byte encoding or float narrowing occurs.
+
+The single owner calls `snapshot(output,error)` off callback and receives an
+immutable bounded history with input/track/format/convention/epoch, current
+exclusive end sample and a `prefixDropped` notice when capacity evicted older
+events. This is not a promise that a retained suffix contains complete notes or
+a complete phrase. A concurrent overwrite/in-flight slot refuses the entire
+snapshot with empty output; callers may retry. Slot ownership avoids data races;
+the producer never waits for a reader, instead dropping/counting that event and
+starting fresh history. Stats distinguish copied/dropped/ignored/invalid input.
+Producer controls/parser/copy calls allocate, lock, log and perform file I/O
+nowhere. Constructor/destructor and snapshot work belong off callback.
+
+This increment supplies exact rolling input and the actual MPE-parser handoff,
+not automatic host/UI wiring, phrase detection, Live tempo/loop inference or a
+native committed clip. Owner-side Capture must resolve complete notes and missing
+prefixes before preparing edits. Existing ANOT velocity bytes and AEXP floats
+cannot preserve every arbitrary captured double; persistence must name/refuse
+that limitation rather than silently narrow it. No schema/new opcode or measured
+Live parity claim is introduced by the RAM memory.
+
+The live `MpeParser` now tracks a plain channel's note identity per key, so
+distinct-key chords can release out of order through the router and Capture.
+An MPE member retains its existing single-note expression ownership. Unmatched
+releases keep identity zero; reset clears the per-key map without recycling IDs.
+Same-key retrigger retains the existing newest-identity release policy; this
+increment does not invent FIFO ownership for ambiguous repeated MIDI-1 keys.
+
+Ordinary CCs now emit typed Controller events on zero-based channels with their
+original 0..127 address and normalized double value. This includes zone-master
+controls and ordinary pedals on member channels. Member-channel CC74/106 retains
+the original MPE per-note timbre path and exact 14-bit combination. Outside a
+member, CC74/106 stays ordinary addressed CC. Other high-resolution CC pairs keep
+both original addressed components, without pretending a missing LSB arrived.
+The native controller route can recover their original MIDI-1 wire values.
+Consumed data bytes with their status bit set are refused before state changes,
+array indexing or normalization; a malformed timbre MSB cannot seed a later pair.
+Sink refusal remains counted/nonblocking. Parsing/reset/delivery allocates and
+performs callback I/O nowhere. Program change, SysEx, poly aftertouch and full
+native Capture composition are outside this input correction; no schema/opcode
+or measured Live parity claim is introduced.
+
+`midi_capture.hpp` adds owner-side `capture::prepareMidi(store,snapshot,spec,error)`
+and `commitMidi`. The spec supplies a fresh positive clip ID, project tick
+position, explicit integer source range containing the complete retained input,
+name and held-note closing policy. Source driver timestamps are independent of
+project placement. A coherent read checks the regular unlocked/unfrozen target,
+new identities and current step-tempo clock. Every note/CC boundary must roundtrip
+its exact sample at the captured rate. Prefix-truncated histories, serial/time
+gaps, unknown/duplicate ownership, mismatched releases, zero-duration notes,
+tempo ramps and unsupported expressions refuse without writes. Existing ANOT
+velocity bytes accept only source values that roundtrip exactly through the
+MIDI-1 word; arbitrary doubles are refused, never silently quantized. CC values
+remain full double. Held notes optionally close at the explicit Capture end with
+release velocity zero. The caller retains document generation across async work.
+
+Preparation returns one `capture.createMidi` request with fully resolved clip/
+stream IDs and native binary images. Commit requires the same still-open Store
+pointer/client and captured head, including NULL; a supplied transaction veto
+cannot replace the head guard. Callback misuse returns `callback` before SQL or
+allocation. The operation writes each stream once, so large captures avoid
+per-note stream rewrites. One undo removes the new clip and cascaded streams;
+Redo/replay uses only captured values, independent of input devices or UI state.
+
+The closed opcode payload contains `clip` (the existing explicit MIDI clip.create
+row packet), `controllers` (array of `{id,channel,controller,bytes}`), and optional
+`notes` (`{id,bytes}`). Bytes are CBOR binary known-v1 sorted ACTL/ANOT images,
+with exact record stride/count and no opaque trailer. At most 2,048 controller
+addresses and 1,048,576 total points/notes are accepted. All stream IDs are
+explicit positive int64; record IDs remain uint64. Fresh records are checked for
+unique identities, times within the clip, valid domains/curves/velocity/channel/
+probability/tuning and zero reserved/flag fields. Invalid/future images,
+duplicate/occupied IDs/addresses, locked/frozen targets and late SQL failure
+roll back clip, streams and journal together. Existing rows are never overwritten.
+This adds an opcode, not a schema or binary-layout change.
+
+Native playback retains its existing CC first-value chase, ordinary-control
+hold, pedal-release ownership and cross-stream ordering. The exact raw input
+transcript remains in memory; this is not a promise to persist its cross-stream
+serial ordering or unknown controller state before a first point. Automatic Live
+phrase/tempo/loop inference, full-double note/expression persistence and host/UI
+Capture command wiring remain explicit subsequent work. No measured Live parity
+claim is introduced by this native MIDI-1/CC Capture path.
 
 ### 9.6 Automation
 
@@ -1467,13 +1821,37 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**205 ops** — 70 P0, 83 P1, 49 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**210 ops** — 70 P0, 84 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
 ---
 
 ## 10. Ops that are not undoable, and why that is fine
+
+Plug-in scan child management is an owner-side application service, not a
+project operation. `scan::runProcess` provides explicit executable/argument
+launch, bounded stdout, deadline/cancellation and child-tree cleanup; it refuses
+audio callbacks before allocation or OS access. See ENGINE-SCAN-PROCESS.md.
+This process boundary alone does not change the CLAP/VST3 discovery methods or
+implement their durable quarantine; those integration items remain separate.
+
+Plug-in scan quarantine is shared application data in PluginRegistry version 2,
+not a project op. Owner beginScan commits a pending marker before child launch;
+opaque connection/attempt tickets constrain completion, failures retain a named
+block, and explicit blockScan/unblockScan provide disable/re-enable. scanBlocks
+exposes bounded sorted owned rows for the window. Callback entry points refuse
+before SQL/allocation. See ENGINE-SCAN-QUARANTINE.md. Discovery/helper integration
+is separate; this persistence API alone does not move existing scans out of
+process or change project/runtime instantiation policy.
+
+The integration in ENGINE-PLUGIN-SCANNER.md now connects both foundations:
+ClapHost/Vst3Host directory discovery and the VST3 loader's direct path hint
+always use the dedicated bounded helper, with whole path-bound metadata/format
+validation before successful quarantine completion. Reports expose failures,
+cancelled/unavailable service retains the old catalogue, and CMake places the
+mandatory helper beside its consumers. Runtime instantiation remains in process;
+no project op, project schema or blob layout changes.
 
 The `transport.*` ops are **performance**, not editing. They write no project
 state, and appending them to undo history would bury the last real edit under
@@ -1508,6 +1886,22 @@ Compaction (SPEC §8.3) may drop ephemeral ops first.
 4. **Comping ops.** `lane.*` gives the structure; the comp *edit* gestures
    (swipe-to-comp, promote take) need their own verbs and are not yet named.
 
+
+Ordinary AAC-LC import (`docs/ENGINE-AAC-IMPORT.md`) uses the existing
+`media.import`/`media.relink` and complete native clip producer. Content-sniffed
+M4A/MP4 and ADTS record their original compressed-source hash and exact decoded
+audio dimensions; cache PCM is regenerable, copy-in preserves original bytes.
+Media+clip remain one undo action, with Warp off by default. This adds no opcode
+or project schema; general mono/stereo import does not relax NI Stems' aligned
+stereo export/group-import contract.
+
+The completed model/service result gateway (`media/separated_stems.hpp`,
+`docs/ENGINE-SEPARATED-STEMS.md`) captures N phase-aligned named WAVs and creates
+their owned media, group, tracks and Warp-off clips in one native journal action.
+Exact request/model/source provenance is inserted into the existing
+`agent_requests` audit table in that same transaction; it is not a new opcode or
+schema and is not removed by music undo. Failed SQL may retain unreferenced
+content-addressed pool audio for safe GC/retry. This gateway runs no inference.
 
 The NI Stems worker producer (`media/stem_import.hpp`,
 [ENGINE-NI-STEMS.md](ENGINE-NI-STEMS.md)) captures the original container and

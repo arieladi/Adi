@@ -1,9 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_devices.hpp"
 #include "ui_shell.hpp"
+#include <algorithm>
+#include <cmath>
 namespace adi::ui {
-ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const panel::Record &r)
+ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const panel::Record &r,
+                                   double defaultNormalized)
     : device(d), parameter(r.id), strip(s) {
+    // A click on the knob lands the focus here (the slider declines it and JUCE walks to the
+    // parent), so Live's value keys reach the control that was clicked (manual 41.6).
+    setWantsKeyboardFocus(true);
     addAndMakeVisible(name);
     addAndMakeVisible(value);
     name.setFont(look::font(12.5f));
@@ -20,6 +26,11 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     slider.onDragEnd = [this] { gesture(engine::ParamEventKind::End, slider.getValue()); };
     // The wheel only scrolls, as Live (lookfeel.wheelChangesParameters, ADR-0203 d11).
     slider.setScrollWheelEnabled(false);
+    // Shift while dragging is Live's finer resolution (manual 41.6). JUCE's way is its
+    // velocity mode under the swap key: slow movement under Shift moves the value by a
+    // fraction of the plain drag's pixel, speeding up as the mouse does; the plain drag stays
+    // absolute. JUCE's own swap key is Ctrl/Alt/Cmd; Live's is Shift.
+    slider.setVelocityModeParameters(1.0, 1, 0.0, true, juce::ModifierKeys::shiftModifier);
     toggle.onClick = [this] {
         gesture(engine::ParamEventKind::Begin, toggle.getToggleState() ? 0 : 1);
         gesture(engine::ParamEventKind::Value, toggle.getToggleState() ? 1 : 0);
@@ -39,13 +50,30 @@ ParameterControl::ParameterControl(DeviceChainStrip &s, std::int64_t d, const pa
     addChildComponent(slider);
     addChildComponent(toggle);
     addChildComponent(menu);
-    present(r);
+    present(r, defaultNormalized);
 }
 void ParameterControl::gesture(engine::ParamEventKind kind, double v) {
     strip.edit(device, parameter, kind, v);
 }
-void ParameterControl::present(const panel::Record &r) {
+bool ParameterControl::keyPressed(const juce::KeyPress &k) {
+    // Live 12 manual 41.6: Return to Default is Delete. Backspace with it, as the device's own
+    // Delete takes both. Handled here, a Delete on a clicked knob never removes the device.
+    if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)
+        return returnToDefault();
+    return false;
+}
+bool ParameterControl::returnToDefault() {
+    if (!record || record->missing)
+        return false;
+    // One bounded gesture from the value playing to the plug-in's default: one undo step, its
+    // opener in front when the parameter was never touched (ADR-0124 d4).
+    gesture(engine::ParamEventKind::Begin, record->playing);
+    gesture(engine::ParamEventKind::Value, defaultValue);
+    return strip.edit(device, parameter, engine::ParamEventKind::End, defaultValue);
+}
+void ParameterControl::present(const panel::Record &r, double defaultNormalized) {
     record = &r;
+    defaultValue = std::isfinite(defaultNormalized) ? std::clamp(defaultNormalized, 0.0, 1.0) : 0.0;
     setEnabled(!r.missing);
     const juce::String label = r.name + (r.missing ? " (missing)" : "");
     if (name.getText() != label) {
@@ -77,9 +105,12 @@ void ParameterControl::resized() {
 void ParameterControl::paint(juce::Graphics &g) {
     if (!record)
         return;
-    // Automation's state, as Live marks it: red when automated, orange when overridden.
+    // The automation LED (Live 12 manual 25.4): lit red while the control follows its lane, and off
+    // when its automation is overridden, so an unlit LED is what says "overridden" until the
+    // side-by-side measurement (parity-7.4 row 11). Dim, not absent, so the control still reads as
+    // an automated one; red and the dim grey are ADI's until measured.
     if (record->overridden || record->automated) {
-        g.setColour(record->overridden ? juce::Colours::orange : juce::Colours::red);
+        g.setColour(record->overridden ? look::textDim : juce::Colours::red);
         g.fillEllipse(static_cast<float>(getWidth() - 7), 4.f, 5.f, 5.f);
     }
     if (record->driven) {
@@ -140,12 +171,18 @@ void DevicePanelView::present(const DevicePanelData &d) {
                 same = false;
                 break;
             }
+    // The plug-in's default for a parameter, where Delete returns it (manual 41.6); 0 when the
+    // feed knows none.
+    auto defaultOf = [&d](const std::string &param) {
+        const auto found = d.defaults.find(param);
+        return found == d.defaults.end() ? 0.0 : found->second;
+    };
     if (!same) {
         controls.clear();
         for (const auto &e : d.resolved.entries)
             for (const auto &r : d.records)
                 if (r.id == e.id) {
-                    auto c = std::make_unique<ParameterControl>(strip, id, r);
+                    auto c = std::make_unique<ParameterControl>(strip, id, r, defaultOf(r.id));
                     addAndMakeVisible(*c);
                     controls.push_back(std::move(c));
                     break;
@@ -155,7 +192,7 @@ void DevicePanelView::present(const DevicePanelData &d) {
     for (auto &c : controls)
         for (const auto &r : d.records)
             if (c->parameter == r.id) {
-                c->present(r);
+                c->present(r, defaultOf(r.id));
                 break;
             }
 }

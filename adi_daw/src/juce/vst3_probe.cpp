@@ -626,6 +626,15 @@ int vst3Dimensions(adi::device::Vst3Host& host, const juce::String& want) {
 }
 
 #ifdef ADI_TEST_VST3
+// Diagnostic fixtures use the same mandatory child boundary as the app.
+juce::Array<juce::PluginDescription> scanFixture(adi::device::Vst3Host& host) {
+    juce::KnownPluginList found;
+    const auto report=host.scanFile(juce::String::fromUTF8(ADI_TEST_VST3),found);
+    for(const auto& failure:report.failures)
+        std::printf("  fixture scan: %s: %s\n",failure.path.c_str(),failure.error.c_str());
+    return found.getTypes();
+}
+
 /// ADR-0100: the fixture synth (tests/fixtures/vst3_expression_synth.cpp),
 /// whose edit controller IS reachable. Everything ADR-0097 built for such a
 /// plugin -- reading its capabilities, Auto's choice, MpeMidi's IMidiMapping
@@ -641,10 +650,9 @@ int vst3Dimensions(adi::device::Vst3Host& host, const juce::String& want) {
 /// without its echo guard.
 void fixtureGesture(adi::device::Vst3Host& host) {
     std::printf("\n[ADR-0110 d3] a knob moved inside the plugin's window is one op; undo reaches the plugin without an echo\n");
-    juce::OwnedArray<juce::PluginDescription> types;
-    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    const auto types=scanFixture(host);
     const juce::PluginDescription* plain = nullptr;
-    for (auto* t : types) if (t->name == "ADI Test Plain") plain = t;
+    for (const auto& t : types) if (t.name == "ADI Test Plain") plain = &t;
     check(plain != nullptr, "the Plain fixture is in the bundle");
     if (plain == nullptr) return;
 
@@ -732,10 +740,9 @@ void fixtureGesture(adi::device::Vst3Host& host) {
 /// reload on top of the chunk.
 void fixtureState(adi::device::Vst3Host& host) {
     std::printf("\n[ADR-0142] a preset picked in the plugin's browser is one op; the project reloads it; undo reaches the plugin\n");
-    juce::OwnedArray<juce::PluginDescription> types;
-    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    const auto types=scanFixture(host);
     const juce::PluginDescription* plain = nullptr;
-    for (auto* t : types) if (t->name == "ADI Test Plain") plain = t;
+    for (const auto& t : types) if (t.name == "ADI Test Plain") plain = &t;
     check(plain != nullptr, "the Plain fixture is in the bundle");
     if (plain == nullptr) return;
     const adi::device::DeviceIdentity ident = adi::device::identityOf(*plain);
@@ -908,10 +915,9 @@ void fixtureReactivation(adi::device::Vst3Host& host) {
     using adi::device::Vst3Device;
 
     std::printf("\n[ADR-0089 d4] the fixture through a reactivation\n");
-    juce::OwnedArray<juce::PluginDescription> types;
-    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    const auto types=scanFixture(host);
     const juce::PluginDescription* d = nullptr;
-    for (auto* t : types) if (t->name == "ADI Test NoteExpr") d = t;
+    for (const auto& t : types) if (t.name == "ADI Test NoteExpr") d = &t;
     check(d != nullptr, "ADI Test NoteExpr: found");
     if (d == nullptr) return;
 
@@ -1035,10 +1041,9 @@ void fixturePrecision(adi::device::Vst3Host& host) {
     using adi::device::Vst3Device;
 
     std::printf("\n[ADR-0207] the fixture at 64: kSample64 from setupProcessing to the graph's buffers\n");
-    juce::OwnedArray<juce::PluginDescription> types;
-    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    const auto types=scanFixture(host);
     auto find = [&](const char* name) -> const juce::PluginDescription* {
-        for (auto* t : types) if (t->name == name) return t;
+        for (const auto& t : types) if (t.name == name) return &t;
         return nullptr;
     };
 
@@ -1293,8 +1298,7 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
     namespace pr = adi::probe;
 
     std::printf("\n[ADR-0100] the fixture synth: a VST3 whose edit controller is reachable\n");
-    juce::OwnedArray<juce::PluginDescription> types;
-    host.formats().getFormat(0)->findAllTypesForFile(types, ADI_TEST_VST3);
+    const auto types=scanFixture(host);
     check(types.size() == 3, "the fixture bundle declares three instruments, saw " +
                                  std::to_string(types.size()));
 
@@ -1330,7 +1334,7 @@ void fixtureAcceptance(adi::device::Vst3Host& host) {
         e.dim = static_cast<std::uint16_t>(adi::ExpressionDim::Pitch); e.value = semis; return e;
     };
     auto find = [&](const char* name) -> const juce::PluginDescription* {
-        for (auto* t : types) if (t->name == name) return t;
+        for (const auto& t : types) if (t.name == name) return &t;
         return nullptr;
     };
     auto render = [&](const juce::PluginDescription& d, RouteChoice choice, const std::vector<Event>& ev) {

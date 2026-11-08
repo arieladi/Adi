@@ -2,16 +2,25 @@
 
 #include "adi/engine/graph.hpp"
 #include "adi/engine/scope.hpp"
+#include "adi/engine/render_workers.hpp"
 
 #include <algorithm>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <random>
 #include <type_traits>
 
 namespace adi::engine {
 
-Graph::~Graph() = default;
+Graph::Graph() = default;
+Graph::~Graph() {workers_.reset();}
+bool Graph::setParallelRendering(std::uint32_t count,std::int32_t minimumFrames,std::uint32_t minimumNodes,RenderWorkers::Initializer initialize,void* context) noexcept {
+    if(count>RenderWorkers::maximum || minimumFrames<1 || minimumNodes<2)return false;
+    requestedWorkers_=count;parallelMinimumFrames_=minimumFrames;parallelMinimumNodes_=minimumNodes;
+    workerInitializer_=initialize;workerInitializationContext_=context;prepared_=false;return true;
+}
+std::uint32_t Graph::renderWorkerCount() const noexcept{return static_cast<std::uint32_t>(workerRenders_.size());}
 
 // ---------------------------------------------------------------------------
 // Construction
@@ -900,6 +909,7 @@ std::int32_t Graph::compensationFor(NodeId from, NodeId to, Bus bus) const noexc
 // ---------------------------------------------------------------------------
 
 void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
+    workers_.reset();workerRenders_.clear();levelWork_.clear();
     ok_ = false;
     prepared_ = false;
     renderedFrames_ = 0;
@@ -946,6 +956,29 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     const auto fr = static_cast<std::size_t>(maxFrames);
 
     const bool wide = precision_ == Precision::Float64;
+    // Establish worker resources before any borrowed device is prepared, so
+    // driver initialization failure cannot reset the running graph's nodes.
+    prepareRenderState(render_);
+    if(requestedWorkers_>0 && maxFrames_>=parallelMinimumFrames_) {
+        std::map<Node*,std::size_t,std::less<Node*>> occurrences;
+        for(const auto& slot:slots_)if(slot.node)++occurrences[slot.node];
+        std::size_t widestParallel=0;levelWork_.resize(levels_.size());
+        for(std::size_t index=0;index<levels_.size();++index) {
+            auto& work=levelWork_[index];
+            for(const auto id:levels_[index]) {
+                auto* node=slots_[static_cast<std::size_t>(id)].node;
+                if(node && occurrences[node]==1 && node->canProcessOnWorker())work.parallel.push_back(id);
+                else work.serial.push_back(id);
+            }
+            widestParallel=(std::max)(widestParallel,work.parallel.size());
+        }
+        if(widestParallel>=parallelMinimumNodes_) {
+            const auto count=(std::min)(static_cast<std::size_t>(requestedWorkers_),widestParallel-1);
+            workerRenders_.resize(count);for(auto& state:workerRenders_)prepareRenderState(state);
+            try{workers_=std::make_unique<RenderWorkers>(count,workerInitializer_,workerInitializationContext_);}
+            catch(const std::exception& exception){workerRenders_.clear();error_=std::string("render worker setup: ")+exception.what();return;}
+        }
+    }
     bypassNodes_.clear();
     for (auto& s : slots_) {
         s.hasBypass = s.node != nullptr && s.node->hasBypass();
@@ -995,42 +1028,57 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         return std::less<Node*>{}(a.first, b.first);
     });
 
-    mixBuf_.assign(ch * fr, 0.0f);
-    mixPtrs_.resize(ch);
-    for (std::size_t c = 0; c < ch; ++c) mixPtrs_[c] = mixBuf_.data() + c * fr;
-    sideBuf_.assign(ch * fr, 0.0f);
-    sidePtrs_.resize(ch);
-    for (std::size_t c = 0; c < ch; ++c) sidePtrs_[c] = sideBuf_.data() + c * fr;
-    mixWide_.assign(ch * fr, 0.0);
-    mixWidePtrs_.resize(ch);
-    for (std::size_t c = 0; c < ch; ++c) mixWidePtrs_[c] = mixWide_.data() + c * fr;
-    sideWide_.assign(ch * fr, 0.0);
-    sideWidePtrs_.resize(ch);
-    for (std::size_t c = 0; c < ch; ++c) sideWidePtrs_[c] = sideWide_.data() + c * fr;
-    mixEventStore_.assign(static_cast<std::size_t>(eventCapacity_), Event{});
-    mixEvents_ = EventList(mixEventStore_.data(), eventCapacity_);
-
-    // One more than the worst case: every distinct frame a split, plus the end.
+    // One extra split beyond the maximum distinct frame count.
     splits_.assign(fr + 2, 0);
     frameMark_.assign(fr, 0);
     now_ = 0;
-    delayScratch_.assign(fr, 0.0f);
-    if (wide) delayScratch64_.assign(fr, 0.0);
-    else std::vector<double>().swap(delayScratch64_);
-    std::size_t widest = 0;
-    for (const Slot& s : slots_)
-        widest = (std::max)(widest, (std::max)(s.inputs.size(), s.sidechains.size()));
-    asleep_.assign(widest, 0);
 
     // ADR-0058 decisions 2-5, after the buffers exist: a delay line is a
     // buffer too, and `process` may not allocate.
     computeCompensation();
 
+
     ok_ = true;
     prepared_ = true;
 }
 
+void Graph::prepareRenderState(RenderState& r) {
+    const auto ch=static_cast<std::size_t>(channels_);
+    const auto fr=static_cast<std::size_t>(maxFrames_);
+    const bool wide=precision_==Precision::Float64;
+    r.mixBuf_.assign(ch * fr, 0.0f);
+    r.mixPtrs_.resize(ch);
+    for (std::size_t c = 0; c < ch; ++c) r.mixPtrs_[c] = r.mixBuf_.data() + c * fr;
+    r.sideBuf_.assign(ch * fr, 0.0f);
+    r.sidePtrs_.resize(ch);
+    for (std::size_t c = 0; c < ch; ++c) r.sidePtrs_[c] = r.sideBuf_.data() + c * fr;
+    r.mixWide_.assign(ch * fr, 0.0);
+    r.mixWidePtrs_.resize(ch);
+    for (std::size_t c = 0; c < ch; ++c) r.mixWidePtrs_[c] = r.mixWide_.data() + c * fr;
+    r.sideWide_.assign(ch * fr, 0.0);
+    r.sideWidePtrs_.resize(ch);
+    for (std::size_t c = 0; c < ch; ++c) r.sideWidePtrs_[c] = r.sideWide_.data() + c * fr;
+
+    r.delayScratch_.assign(fr, 0.0f);
+    if (wide) r.delayScratch64_.assign(fr, 0.0);
+    else std::vector<double>().swap(r.delayScratch64_);
+    std::size_t widest = 0;
+    for (const Slot& s : slots_)
+        widest = (std::max)(widest, (std::max)(s.inputs.size(), s.sidechains.size()));
+    r.asleep_.assign(widest, 0);
+    r.stats=GraphStats{};
+}
+void Graph::collectRenderStats(const RenderState& r) noexcept {
+    stats_.nodeCalls+=r.stats.nodeCalls;
+    stats_.nodesSuspended+=r.stats.nodesSuspended;
+    stats_.suspendClears+=r.stats.suspendClears;
+    stats_.inputsSkipped+=r.stats.inputsSkipped;
+    stats_.wideMixes+=r.stats.wideMixes;
+    stats_.workerNodeBlocks+=r.stats.workerNodeBlocks;
+}
+
 void Graph::release() {
+    workers_.reset();workerRenders_.clear();levelWork_.clear();
     for (auto& s : slots_)
         if (s.node != nullptr) s.node->release();
     prepared_ = false;
@@ -1072,13 +1120,13 @@ T* const* Graph::outputOf(const Slot& s) noexcept {
 }
 
 template <typename T>
-T* Graph::scratch() noexcept {
-    if constexpr (std::is_same_v<T, float>) return delayScratch_.data();
-    else return delayScratch64_.data();
+T* Graph::scratch(RenderState& r) noexcept {
+    if constexpr (std::is_same_v<T, float>) return r.delayScratch_.data();
+    else return r.delayScratch64_.data();
 }
 
 template <typename Src, typename Acc>
-void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
+void Graph::accumulate(RenderState& r, std::vector<Acc*>& dst, const Slot& src, DelayLine& delay,
                        std::int32_t begin, std::int32_t frames, bool first,
                        bool asleep) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
@@ -1109,7 +1157,7 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
             for (std::size_t c = 0; c < ch; ++c)
                 std::memset(dst[c] + begin, 0, n * sizeof(Acc));
         delay.forget();   // its ring went unwritten
-        ++stats_.inputsSkipped;
+        ++r.stats.inputsSkipped;
         return;
     }
 
@@ -1170,7 +1218,7 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
         // add to it, and the first input would vanish silently. The delay
         // line holds the sources' width, which is exact: it moves samples,
         // it does not add them.
-        Src* tmp = scratch<Src>();
+        Src* tmp = scratch<Src>(r);
         std::memcpy(tmp, s, n * sizeof(Src));
         delay.process(edge, static_cast<std::int32_t>(c), tmp, tmp, frames);
         if (first) {
@@ -1186,7 +1234,7 @@ void Graph::accumulate(std::vector<Acc*>& dst, const Slot& src, DelayLine& delay
     delay.endEdge(edge, src.silent);
 }
 
-bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+bool Graph::mix(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
                 std::vector<float*>& dst, std::vector<double*>& wide,
                 std::int32_t begin, std::int32_t frames) noexcept {
     if (inputs.empty()) return false;
@@ -1212,14 +1260,14 @@ bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delay
     std::size_t live = 0;
     for (std::size_t k = 0; k < inputs.size(); ++k) {
         const bool a = idle(slots_[static_cast<std::size_t>(inputs[k])], delays[k]);
-        asleep_[k] = a ? 1 : 0;
+        r.asleep_[k] = a ? 1 : 0;
         if (!a) ++live;
     }
 
     if (live < 2) {
         for (std::size_t k = 0; k < inputs.size(); ++k)
-            accumulate<float, float>(dst, slots_[static_cast<std::size_t>(inputs[k])], delays[k],
-                                     begin, frames, k == 0, asleep_[k] != 0);
+            accumulate<float, float>(r, dst, slots_[static_cast<std::size_t>(inputs[k])], delays[k],
+                                     begin, frames, k == 0, r.asleep_[k] != 0);
         return true;
     }
 
@@ -1233,18 +1281,18 @@ bool Graph::mix(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delay
     // Two live inputs mean it is never the first. Idle inputs after it add
     // nothing and are only counted as skipped.
     std::size_t last = inputs.size() - 1;
-    while (asleep_[last] != 0) --last;   // two are live: it stops at one of them
+    while (r.asleep_[last] != 0) --last;   // two are live: it stops at one of them
     for (std::size_t k = 0; k < inputs.size(); ++k) {
         const Slot& src = slots_[static_cast<std::size_t>(inputs[k])];
-        if (k == last) accumulateLast(dst, wide, src, delays[k], begin, frames);
-        else accumulate<float, double>(wide, src, delays[k], begin, frames, k == 0,
-                                       asleep_[k] != 0);
+        if (k == last) accumulateLast(r, dst, wide, src, delays[k], begin, frames);
+        else accumulate<float, double>(r, wide, src, delays[k], begin, frames, k == 0,
+                                       r.asleep_[k] != 0);
     }
-    ++stats_.wideMixes;
+    ++r.stats.wideMixes;
     return true;
 }
 
-void Graph::accumulateLast(std::vector<float*>& dst, const std::vector<double*>& wide,
+void Graph::accumulateLast(RenderState& r, std::vector<float*>& dst, const std::vector<double*>& wide,
                            const Slot& src, DelayLine& delay, std::int32_t begin,
                            std::int32_t frames) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
@@ -1262,7 +1310,7 @@ void Graph::accumulateLast(std::vector<float*>& dst, const std::vector<double*>&
     // Compensated: the same one snapshot per edge as `accumulate`.
     const DelayLine::Edge edge = delay.beginEdge();
     for (std::size_t c = 0; c < ch; ++c) {
-        float* tmp = delayScratch_.data();
+        float* tmp = r.delayScratch_.data();
         std::memcpy(tmp, src.chanPtrs[c] + begin, n * sizeof(float));
         delay.process(edge, static_cast<std::int32_t>(c), tmp, tmp, frames);
         const double* w = wide[c] + begin;
@@ -1272,7 +1320,7 @@ void Graph::accumulateLast(std::vector<float*>& dst, const std::vector<double*>&
     delay.endEdge(edge, src.silent);
 }
 
-bool Graph::mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
+bool Graph::mixWide(RenderState& r, const std::vector<NodeId>& inputs, std::vector<DelayLine>& delays,
                     std::vector<double*>& wide, std::int32_t begin, std::int32_t frames) noexcept {
     if (inputs.empty()) return false;
     // At 64 the sources are double already, so even one input is a copy
@@ -1283,9 +1331,9 @@ bool Graph::mixWide(const std::vector<NodeId>& inputs, std::vector<DelayLine>& d
         const Slot& src = slots_[static_cast<std::size_t>(inputs[k])];
         const bool asleep = idle(src, delays[k]);
         if (!asleep) ++live;
-        accumulate<double, double>(wide, src, delays[k], begin, frames, k == 0, asleep);
+        accumulate<double, double>(r, wide, src, delays[k], begin, frames, k == 0, asleep);
     }
-    if (live >= 2) ++stats_.wideMixes;
+    if (live >= 2) ++r.stats.wideMixes;
     return true;
 }
 
@@ -1435,7 +1483,7 @@ void Graph::narrow(const std::vector<double*>& from, std::vector<float*>& to,
     }
 }
 
-void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
+void Graph::runNode(RenderState& r, Slot& s, std::int32_t frames, std::int32_t nsplit,
                     const TransportInfo* transport) noexcept {
     const auto ch = static_cast<std::size_t>(channels_);
     const bool wide = precision_ == Precision::Float64;
@@ -1553,7 +1601,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         silence.channels = channels_;
         silence.transport = transport;
         s.node->silenceTaps(silence);
-        ++stats_.nodesSuspended;
+        ++r.stats.nodesSuspended;
         s.silent = true;
         // ONCE, TO CAPACITY, not every block to `frames`. Consumers read this
         // buffer as zeros for as long as the node sleeps, so it has to BE zeros
@@ -1573,7 +1621,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
                 if (!s.doubles) std::memset(s.chanPtrs[c], 0, cap * sizeof(float));
             }
             s.zeroed = true;
-            ++stats_.suspendClears;
+            ++r.stats.suspendClears;
             // Its input lines are not run while it sleeps, so their rings
             // stop holding their edges' history -- all but the silence they
             // drained, which is still their newest past, because every input
@@ -1604,26 +1652,26 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         NodeIo nio;
         bool anyMain = false;
         if (!wide) {
-            anyMain = mix(s.inputs, s.inDelays, mixPtrs_, mixWidePtrs_, begin, n);
-            const bool anySide = mix(s.sidechains, s.sideDelays, sidePtrs_, sideWidePtrs_, begin, n);
-            nio.in = anyMain ? mixPtrs_.data() : nullptr;
-            nio.sidechain = anySide ? sidePtrs_.data() : nullptr;
+            anyMain = mix(r, s.inputs, s.inDelays, r.mixPtrs_, r.mixWidePtrs_, begin, n);
+            const bool anySide = mix(r, s.sidechains, s.sideDelays, r.sidePtrs_, r.sideWidePtrs_, begin, n);
+            nio.in = anyMain ? r.mixPtrs_.data() : nullptr;
+            nio.sidechain = anySide ? r.sidePtrs_.data() : nullptr;
             nio.out = s.chanPtrs.data();
         } else {
             // ADR-0207 d2 at 64: the sums stay double. A node that processes
             // double reads them there; any other is handed them narrowed,
             // once, and its float output is widened after it runs.
-            anyMain = mixWide(s.inputs, s.inDelays, mixWidePtrs_, begin, n);
-            const bool anySide = mixWide(s.sidechains, s.sideDelays, sideWidePtrs_, begin, n);
+            anyMain = mixWide(r, s.inputs, s.inDelays, r.mixWidePtrs_, begin, n);
+            const bool anySide = mixWide(r, s.sidechains, s.sideDelays, r.sideWidePtrs_, begin, n);
             if (s.doubles) {
-                nio.in64 = anyMain ? mixWidePtrs_.data() : nullptr;
-                nio.sidechain64 = anySide ? sideWidePtrs_.data() : nullptr;
+                nio.in64 = anyMain ? r.mixWidePtrs_.data() : nullptr;
+                nio.sidechain64 = anySide ? r.sideWidePtrs_.data() : nullptr;
                 nio.out64 = s.widePtrs.data();
             } else {
-                if (anyMain) narrow(mixWidePtrs_, mixPtrs_, begin, n);
-                if (anySide) narrow(sideWidePtrs_, sidePtrs_, begin, n);
-                nio.in = anyMain ? mixPtrs_.data() : nullptr;
-                nio.sidechain = anySide ? sidePtrs_.data() : nullptr;
+                if (anyMain) narrow(r.mixWidePtrs_, r.mixPtrs_, begin, n);
+                if (anySide) narrow(r.sideWidePtrs_, r.sidePtrs_, begin, n);
+                nio.in = anyMain ? r.mixPtrs_.data() : nullptr;
+                nio.sidechain = anySide ? r.sidePtrs_.data() : nullptr;
                 nio.out = s.chanPtrs.data();
             }
         }
@@ -1640,12 +1688,12 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         if (inputTap && channels_ > 0) {
             const std::int64_t stamp = firstSample + (advancing ? begin : 0) - arrival;
             if (wide)
-                inputTap->write(anyMain ? mixWidePtrs_[0] + begin : nullptr,
-                                anyMain && channels_ > 1 ? mixWidePtrs_[1] + begin : nullptr,
+                inputTap->write(anyMain ? r.mixWidePtrs_[0] + begin : nullptr,
+                                anyMain && channels_ > 1 ? r.mixWidePtrs_[1] + begin : nullptr,
                                 n, stamp, advancing);
             else
-                inputTap->write(anyMain ? mixPtrs_[0] + begin : nullptr,
-                                anyMain && channels_ > 1 ? mixPtrs_[1] + begin : nullptr,
+                inputTap->write(anyMain ? r.mixPtrs_[0] + begin : nullptr,
+                                anyMain && channels_ > 1 ? r.mixPtrs_[1] + begin : nullptr,
                                 n, stamp, advancing);
         }
 
@@ -1671,12 +1719,12 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
                 const auto edge = s.dryDelay.beginEdge();
                 bool drySilent = true;
                 if (!anyMain) {
-                    if (wide) std::fill_n(delayScratch64_.data(), n, 0.0);
-                    else std::fill_n(delayScratch_.data(), n, 0.0f);
+                    if (wide) std::fill_n(r.delayScratch64_.data(), n, 0.0);
+                    else std::fill_n(r.delayScratch_.data(), n, 0.0f);
                 }
                 for (std::size_t c = 0; c < ch; ++c) {
                     if (wide) {
-                        const double* src = anyMain ? mixWidePtrs_[c] + begin : delayScratch64_.data();
+                        const double* src = anyMain ? r.mixWidePtrs_[c] + begin : r.delayScratch64_.data();
                         if (immediate) std::copy_n(src, n, s.widePtrs[c] + begin);
                         else {
                             for (std::int32_t k = 0; k < n; ++k)
@@ -1685,7 +1733,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
                                                s.widePtrs[c] + begin, n);
                         }
                     } else {
-                        const float* src = anyMain ? mixPtrs_[c] + begin : delayScratch_.data();
+                        const float* src = anyMain ? r.mixPtrs_[c] + begin : r.delayScratch_.data();
                         if (immediate) std::copy_n(src, n, s.chanPtrs[c] + begin);
                         else {
                             for (std::int32_t k = 0; k < n; ++k)
@@ -1703,7 +1751,7 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         if (!bypass) {
             if (s.hasBypass) s.node->processActive(nio);
             else s.node->process(nio);
-            ++stats_.nodeCalls;
+            ++r.stats.nodeCalls;
         }
         // A float node in a graph at 64: its segment, widened (exact).
         if (wide && !s.doubles && !bypass) {
@@ -1729,6 +1777,45 @@ void Graph::runNode(Slot& s, std::int32_t frames, std::int32_t nsplit,
         }
     }
     s.silent = allZero;
+}
+
+void Graph::runPartition(const Dispatch& job,std::size_t partition,RenderState& state) noexcept {
+    const auto& ids=job.work->parallel;
+    for(std::size_t position=partition;position<ids.size();position+=job.stride) {
+        const auto id=ids[job.reverse?ids.size()-1-position:position];
+        runNode(state,slots_[static_cast<std::size_t>(id)],job.frames,job.nsplit,job.transport);
+        if(&state!=&render_)++state.stats.workerNodeBlocks;
+    }
+}
+void Graph::executeWorker(void* raw,std::size_t index) noexcept {
+    const auto& job=*static_cast<const Dispatch*>(raw);job.graph->runPartition(job,index+1,job.graph->workerRenders_[index]);
+}
+void Graph::runLevel(std::size_t index,std::int32_t frames,std::int32_t nsplit,const TransportInfo* transport) noexcept {
+    const auto serial=[&]{const auto& level=levels_[index];
+        if(reverseWithinLevel_)for(auto it=level.rbegin();it!=level.rend();++it)runNode(render_,slots_[static_cast<std::size_t>(*it)],frames,nsplit,transport);
+        else for(const auto id:level)runNode(render_,slots_[static_cast<std::size_t>(id)],frames,nsplit,transport);
+    };
+    if(!workers_ || frames<parallelMinimumFrames_ || levelWork_[index].parallel.size()<parallelMinimumNodes_){serial();return;}
+    const auto& work=levelWork_[index];std::size_t likelyActive=0;
+    for(const auto id:work.parallel) {
+        const auto& slot=slots_[static_cast<std::size_t>(id)];bool active=!slot.zeroed || !slot.events.empty() || slot.tailRemaining>0;
+        for(std::size_t edge=0;!active && edge<slot.inputs.size();++edge)active=!slots_[static_cast<std::size_t>(slot.inputs[edge])].silent || slot.inDelays[edge].due() || slot.inDelays[edge].busy();
+        for(std::size_t edge=0;!active && edge<slot.sidechains.size();++edge)active=!slots_[static_cast<std::size_t>(slot.sidechains[edge])].silent || slot.sideDelays[edge].due() || slot.sideDelays[edge].busy();
+        if(active && ++likelyActive>=2)break;
+    }
+    // This only selects serial scheduling. Every node still runs its ordinary
+    // suspension/tail/tap logic; no new wake/silence decision is invented.
+    if(likelyActive<2){serial();return;}
+    const auto count=(std::min)(workers_->size(),work.parallel.size()-1);
+    Dispatch job{this,&work,frames,nsplit,transport,count+1,reverseWithinLevel_};
+    ++stats_.parallelLevels;const auto posted=workers_->start(count,executeWorker,&job);
+    runPartition(job,0,render_);
+    if(reverseWithinLevel_)for(auto it=work.serial.rbegin();it!=work.serial.rend();++it)runNode(render_,slots_[static_cast<std::size_t>(*it)],frames,nsplit,transport);
+    else for(const auto id:work.serial)runNode(render_,slots_[static_cast<std::size_t>(id)],frames,nsplit,transport);
+    const auto completed=workers_->finish(posted);
+    for(std::size_t worker=0;worker<count;++worker)if((completed&(std::uint32_t{1}<<worker))==0) {
+        ++stats_.workerFallbacks;runPartition(job,worker+1,render_);
+    }
 }
 
 void Graph::writeNodeOutput(NodeId id, const AudioIo& io) const noexcept {
@@ -1800,6 +1887,8 @@ void Graph::process(const AudioIo& io) noexcept {
     if (io.frames <= 0 || io.frames > maxFrames_) return;
 
     ++stats_.blocks;
+    render_.stats=GraphStats{};
+    for(auto& state:workerRenders_)state.stats=GraphStats{};
     const std::int32_t frames = io.frames;
 
     // --- ADR-0091: events travel along edges, BEFORE the splits ------------
@@ -1835,18 +1924,10 @@ void Graph::process(const AudioIo& io) noexcept {
     // cost is that a node wakes at a block boundary rather than at the exact
     // sample its input returns, which is inaudible and much easier to reason
     // about.
-    for (const auto& level : levels_) {
-        // Any order within a level gives the same bytes -- that is the property
-        // a thread pool would rely on, and it is exercised here rather than
-        // asserted. See ADR-0056 and setReverseWithinLevel.
-        if (reverseWithinLevel_) {
-            for (auto it = level.rbegin(); it != level.rend(); ++it)
-                runNode(slots_[static_cast<std::size_t>(*it)], frames, nsplit, io.transport);
-        } else {
-            for (NodeId id : level)
-                runNode(slots_[static_cast<std::size_t>(id)], frames, nsplit, io.transport);
-        }
-    }
+    for(std::size_t level=0;level<levels_.size();++level)runLevel(level,frames,nsplit,io.transport);
+
+    collectRenderStats(render_);
+    for(const auto& state:workerRenders_)collectRenderStats(state);
 
     // --- out ---------------------------------------------------------------
     writeNodeOutput(output_, io);

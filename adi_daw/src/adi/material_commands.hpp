@@ -4,6 +4,7 @@
 #include "adi/audio/auto_warp.hpp"
 #include "adi/audio/warp.hpp"
 #include "adi/render/queue.hpp"
+namespace adi::library {class Index;}
 namespace adi::clip_edit {
 struct MaterialFiles;
 struct MaterialEdit {
@@ -22,6 +23,10 @@ struct ImportOptions {
 /// Off-callback, on this connection's owner. Does not change project rows.
 /// Keep the document generation with the job. Hosts keep their thread contract.
 [[nodiscard]] MaterialEdit prepareImportAudio(Store&,const ImportOptions&,double referenceRate);
+// Explicit app-owned library: authored defaults override automatic Warp. Missing
+// defaults use normal import; unsupported/mismatched authored data refuse. The
+// captured native request owns all values; no library survives into commit/play.
+[[nodiscard]] MaterialEdit prepareImportAudio(Store&,const ImportOptions&,double referenceRate,library::Index*);
 struct BounceOptions {
     render::Job job; // source/range/rate/encoding; project/directory assigned by capture
     ImportOptions destination;

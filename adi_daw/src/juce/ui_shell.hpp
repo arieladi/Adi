@@ -203,6 +203,15 @@ class AdiRootComponent final : public juce::Component {
     // Reads a dropped file and captures its media row, writing nothing (the document's
     // `prepareImport`, #308); false with `why` when it can't. Unset, a drop says it needs one.
     std::function<bool(const std::string &utf8Path, AudioImport &, std::string &why)> importAudio;
+    // Live's Automation Arm and Re-Enable Automation (manual 25.1, 25.4; MR 6.1; N26): the
+    // session's state, which the document owns, so the application sets these three. Re-Enable's
+    // lit state is the snapshot's (`SnapshotReader::automationOverridden`); a click runs
+    // `reenableAutomation`, which says why in the Status Bar when it refuses. Automation Arm reads
+    // `automationArmed` each frame (unset: on, as Live's new Set) and a click sets `armAutomation`.
+    // Unset, a click says the switch has no session.
+    std::function<bool()> reenableAutomation;
+    std::function<bool()> automationArmed;
+    std::function<void(bool)> armAutomation;
     // Live's file drop (manual 6.1): an audio file onto the audio track `track` at `pos`, or onto
     // the drop area below the tracks (`track` 0), which makes a new audio track. One undo step;
     // the new clip and its track are selected. A refusal goes to the Status Bar.

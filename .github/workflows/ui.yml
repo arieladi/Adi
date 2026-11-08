@@ -2,10 +2,10 @@
 name: Step 7 UI
 on:
   pull_request:
-    paths: ['adi_daw/**', '.github/workflows/ui.yml']
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml']
   push:
     branches: [main]
-    paths: ['adi_daw/**', '.github/workflows/ui.yml']
+    paths: ['adi_daw/**', '!adi_daw/collab/**', '.github/workflows/ui.yml']
   workflow_dispatch:
 permissions:
   contents: read

@@ -18,10 +18,18 @@ class DeviceChainStrip;
 // shaped as the plug-in declares it, and the plug-in's own text for the value.
 class ParameterControl final : public juce::Component, public juce::SettableTooltipClient {
   public:
-    ParameterControl(DeviceChainStrip &, std::int64_t, const panel::Record &);
-    void present(const panel::Record &);
+    // `defaultNormalized` is the plug-in's default for the parameter, where Delete returns it
+    // (Live 12 manual 41.6, Return to Default).
+    ParameterControl(DeviceChainStrip &, std::int64_t, const panel::Record &,
+                     double defaultNormalized);
+    void present(const panel::Record &, double defaultNormalized);
     void resized() override;
     void paint(juce::Graphics &) override;
+    // A clicked control takes the focus, so Live's value keys reach it (manual 41.6): Delete
+    // or Backspace is Return to Default, one gesture to the plug-in's default, one undo step.
+    // Other keys go on to the device, so the left and right arrows still move between devices.
+    bool keyPressed(const juce::KeyPress &) override;
+    bool returnToDefault();
     // Live's device column at 100 %: the name, a knob, the value under it.
     static constexpr int kWidth = 58, kHeight = 54;
     std::int64_t device;
@@ -34,6 +42,7 @@ class ParameterControl final : public juce::Component, public juce::SettableTool
     void gesture(engine::ParamEventKind, double);
     DeviceChainStrip &strip;
     const panel::Record *record = nullptr;
+    double defaultValue = 0;
     juce::Label name, value;
 };
 // The Device Activator: Live's round switch at the left of a device's title bar,

@@ -59,7 +59,7 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Volume, pan, Track Activator, solo, arm; In/Out with monitoring In / Auto / Off | 8.1 | Built |
 | One send knob per return on every track and group; return strips after the tracks; Insert Return Track; show and hide returns and sends from the mixer's view menu | 3.2, 8.2, 10 (ADR-0203 d3) | Built: the knobs (#325), the returns at the foot (#315), Insert Return Track and Hide/Show Return Tracks (`window/return-commands`), Hide/Show Sends and the strip's I-O and R selectors (`window/view-selectors`) |
-| Pre/Post as one switch on each return; a return's own sends off until Enable Send / Enable All Sends | 8.2 | Built: Pre/Post (#333; held while no send reaches the return waits on N42), Enable Send (#325), Enable All Sends (`window/return-commands`) |
+| Pre/Post as one switch on each return; a return's own sends off until Enable Send / Enable All Sends | 8.2 | Built: Pre/Post (#333; the return's own switch, held while no send reaches it, `window/return-pre-post` on #405), Enable Send (#325), Enable All Sends (`window/return-commands`) |
 | A send into any track, and a pan on a send, made from the send slot | 1.3, 8.2 | Waits (N11) |
 | Sends Only in the output menu | 8.2 | Waits (N11) |
 | ADI-Q and ADI-L on every strip, present but off, one click each | 0.3, 1.3, 3.2, 8.1 | Built as Live-sized switches, off; engaging them waits (N16) |
@@ -94,7 +94,7 @@ MR § is the Master Reference's section.
 | A gain handle on every audio clip | 4.3 | Waits: `clip.setGain` exists, but the snapshot does not carry the gain (N6) |
 | Markers and locators, a marker holding a note and a prompt | 3.3 | Waits: no marker ops (new Need) |
 | The loop brace, punch in and out | 3.6 | Waits (N19) |
-| Automation lanes over the clips or in sub-lanes; Re-Enable Automation lit while a lane is overridden; Automation Arm; Alt-drag bends a segment | 6.1 | Partial: the two buttons are drawn; the lanes wait for the automation data in the snapshot (new Need) |
+| Automation lanes over the clips or in sub-lanes; Re-Enable Automation lit while a lane is overridden; Automation Arm; Alt-drag bends a segment | 6.1 | Partial: Re-Enable Automation is lit from the snapshot while any lane is overridden and a click follows every envelope again, and Automation Arm is the session's switch (`window/automation-arm`, parity-7.2 row 32); the lanes and their editing wait for C7 (the data is in the snapshot since #386) |
 | MIDI Learn on every lane header | 6.1 | Later (P2) |
 | Clip names; the Main track last | 3.3 | Waits (N6) |
 | Take lanes and comping | 4.6 | Later (P1, engine first) |
@@ -106,8 +106,8 @@ MR § is the Master Reference's section.
 |---|---|---|
 | The device chain: DAW-drawn panels, fold, delete, rename, Configure | 3.4, 9.2 | Built |
 | ADI's searchable Parameter List button beside Configure | 3.4, 9.2 (ADR-0150 d3) | Missing |
-| The parameter context menu: Edit MIDI Map, Show Automation, Return to Default | 3.7 | Missing: the menu is the window's; Return to Default waits for N7 |
-| A drag on a control is one undo step | 9.1 | Waits (N7) |
+| The parameter context menu: Edit MIDI Map, Show Automation, Return to Default | 3.7 | Partial: Return to Default is built as Live's key, Delete on a clicked control (`window/strip-param-undo`, parity-7.4 row 16), a gesture to the plug-in's declared default; the menu itself is missing, and its Edit MIDI Map and Show Automation wait for MIDI mapping and the automation lanes in the window |
+| A drag on a control is one undo step | 9.1 | Built (`window/strip-param-undo`, N7): Begin, Values and End through `ParamOps::uiEvent`, one step with its opener; the undone value reaches the plug-in at the next load only (N44) |
 | A plug-in's own window, floating, from the wrench | 3.4 | Waits (N8) |
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
 | Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Waits: the sample slot has no op the window can call (new Need) |
@@ -130,7 +130,7 @@ MR § is the Master Reference's section.
 
 | Item | MR § | Window today |
 |---|---|---|
-| Link and Tap, BPM, nudge, time signature, metronome, quantization, Follow, position, transport, Automation Arm, Re-Enable, loop and punch, Draw Mode, computer MIDI keyboard, Key and MIDI map modes, CPU meter, MIDI indicators | 3.6 | Built as Live's controls; the metronome and the loop wait (N19); Link waits for the engine (P1) |
+| Link and Tap, BPM, nudge, time signature, metronome, quantization, Follow, position, transport, Automation Arm, Re-Enable, loop and punch, Draw Mode, computer MIDI keyboard, Key and MIDI map modes, CPU meter, MIDI indicators | 3.6 | Built as Live's controls; Automation Arm and Re-Enable Automation are live (`window/automation-arm`); the metronome and the loop wait (N19); Link waits for the engine (P1) |
 | Count-In in the metronome's menu | V.2 §9 | Missing (the menu); counting in waits with the metronome (N19) |
 | **ADI's additions:** project tabs for several open projects | 3.6, 11.1 | Missing (the window's, large: one store per open tab, inactive tabs offline) |
 | **ADI's additions:** the current view state | 3.6, 3.7 | Missing, with the view states (section 1) |
@@ -140,7 +140,7 @@ MR § is the Master Reference's section.
 
 | Item | MR § | Window today |
 |---|---|---|
-| File: New, Open, Take Snapshot (Ctrl+S, the name pre-filled), Save As (Ctrl+Shift+S) | 3.6, 12 | Built; Save As says it waits (N3) |
+| File: New, Open, Take Snapshot (Ctrl+S, the name pre-filled), Save As (Ctrl+Shift+S) | 3.6, 12 | Built; Save As through `Store::saveAs` (`window/save-as`, N3), never replacing an existing file |
 | File: Save a Copy, Collect All and Save, the ZIP export beside it (no key) | 1.6, 11.3 | Missing as commands; each waits on the store (new Need) |
 | File: Back up project to cloud; Link ArtCraft app… | 11.4, 9.5 | Later (P2) |
 | Edit: Undo, Redo, Delete, Rename | 3.6 | Built |

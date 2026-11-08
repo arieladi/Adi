@@ -194,8 +194,9 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
     solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
-    // A return's Pre/Post (ADR-0203 d3), where a track has Arm: every send into it taps before or
-    // after the fader. Shown on a return's row only.
+    // A return's Pre/Post (ADR-0203 d3), where a track has Arm: the return's own switch
+    // (`TrackNode::returnSendTap`, #405), which every send into it follows, now and as each new one
+    // connects. Shown on a return's row only.
     prePost.setTitle("Pre/Post");
     prePost.setTooltip("Whether this return's sends tap before or after their tracks' faders.");
     prePost.setClickingTogglesState(false);
@@ -294,10 +295,12 @@ void MixerStrip::frame(bool changed) noexcept {
             sends_[i]->setAlpha(on ? 1.f : .45f);
             sends_[i]->setInterceptsMouseClicks(on, false);
         }
-        // Pre/Post, lit while the sends tap after the fader: a return's own, and Main's for each
-        // return in the Mixer View.
-        auto showPost = [&rows](juce::TextButton &b, std::int64_t ret) {
-            const bool post = !returnPre(rows, ret);
+        // Pre/Post, lit while the return's sends tap after the fader: the return's own switch
+        // (`TrackNode::returnSendTap`, #405), on its row and on Main's strip for each return in the
+        // Mixer View.
+        const auto &reader = panel_.root.reader();
+        auto showPost = [&reader](juce::TextButton &b, std::int64_t ret) {
+            const bool post = !returnPre(reader.findTrack(ret));
             if (post != b.getToggleState() || post != (b.getButtonText() == "Post")) {
                 b.setButtonText(post ? "Post" : "Pre");
                 b.setToggleState(post, juce::dontSendNotification);
@@ -750,15 +753,13 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
     repaint();
 }
 void MixerStrip::throwPrePost(std::int64_t ret) {
-    // From the CURRENT cell (ADR-0201): every send into the return moved, one undo step.
+    // From the CURRENT cell (ADR-0201): the return's own switch thrown, one op and one undo step,
+    // which the engine spreads over every send into the return; it holds with no send (#405), so
+    // setReturnPre never refuses and there is nothing to say.
     const auto current = panel_.root.current();
     if (!current)
         return;
-    auto edit = setReturnPre(current->sends, ret, !returnPre(current->sends, ret));
-    if (!edit.refusal.empty())
-        panel_.root.say(edit.refusal);
-    else
-        panel_.root.submitEdits(std::move(edit.ops));
+    panel_.root.submitEdits(std::move(setReturnPre(ret, !returnPre(current->findTrack(ret))).ops));
 }
 std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
     auto knob = std::make_unique<juce::Slider>();
@@ -806,14 +807,14 @@ void MixerStrip::commitSend(std::size_t index) {
     const auto current = panel_.root.current();
     if (!current || index >= sends_.size())
         return;
-    auto edit = setSend(current->sends, track_, returns_[index], sends_[index]->getValue());
+    auto edit = setSend(*current, track_, returns_[index], sends_[index]->getValue());
     panel_.root.submitEdits(std::move(edit.ops));
 }
 void MixerStrip::enableSend(std::size_t index, bool on) {
     const auto current = panel_.root.current();
     if (!current || index >= sends_.size())
         return;
-    auto edit = adi::ui::enableSend(current->sends, track_, returns_[index], on);
+    auto edit = adi::ui::enableSend(*current, track_, returns_[index], on);
     if (!edit.refusal.empty())
         panel_.root.say(edit.refusal);
     else
@@ -823,7 +824,7 @@ void MixerStrip::enableAllSends() {
     const auto current = panel_.root.current();
     if (!current)
         return;
-    auto edit = adi::ui::enableAllSends(current->sends, track_, returns_);
+    auto edit = adi::ui::enableAllSends(*current, track_, returns_);
     if (!edit.refusal.empty())
         panel_.root.say(edit.refusal);
     else

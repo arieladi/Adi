@@ -2,7 +2,9 @@
 #pragma once
 #include "adi/engine/session.hpp"
 #include "adi/panel.hpp"
+#include <map>
 #include <memory>
+#include <string>
 namespace adi::ui {
 struct DevicePanelData {
     std::int64_t id = 0, track = 0;
@@ -14,6 +16,9 @@ struct DevicePanelData {
     panel::Resolved resolved;
     std::vector<panel::Declared> declared;
     std::vector<panel::Record> records;
+    // Each parameter's default, normalised, as the plug-in declares it (`ParamDescriptor::
+    // defaultValue`): where Live's Return to Default (manual 41.6) takes a control.
+    std::map<std::string, double> defaults;
 };
 using ParameterPublication = std::vector<DevicePanelData>;
 // One document-owned message-thread publication, shared by every window/surface.

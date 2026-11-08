@@ -150,6 +150,19 @@ Model readModel(const Store& store) {
               m.signatures.push_back(s);
           });
 
+    query(m,db,"tuning_systems","SELECT id,name,source,period_cents,description FROM tuning_systems",
+          [&](const SQLite::Statement& row){TuningSystem value;value.id=row.getColumn(0).getInt64();value.name=row.getColumn(1).getString();
+              value.source=row.getColumn(2).getString();value.periodCents=row.getColumn(3).getDouble();value.description=row.getColumn(4).getString();m.tunings.push_back(std::move(value));});
+    query(m,db,"tuning_degrees","SELECT tuning_id,degree,cents,name FROM tuning_degrees ORDER BY tuning_id,degree",
+          [&](const SQLite::Statement& row){m.tuningDegrees.push_back({row.getColumn(0).getInt64(),row.getColumn(1).getInt64(),row.getColumn(2).getDouble(),row.getColumn(3).getString()});});
+    query(m,db,"key_map","SELECT id,pos_ticks,root,scale_id,scale_mask FROM key_map ORDER BY pos_ticks",
+          [&](const SQLite::Statement& row){KeyEvent value;value.id=row.getColumn(0).getInt64();value.posTicks=row.getColumn(1).getInt64();value.root=row.getColumn(2).getInt64();
+              value.scaleId=row.getColumn(3).getString();value.mask=row.getColumn(4).getInt64();m.keyEvents.push_back(std::move(value));});
+    query(m,db,"key_map_tunings","SELECT key_map_id,tuning_id FROM key_map_tunings",
+          [&](const SQLite::Statement& row){m.keyTunings.push_back({row.getColumn(0).getInt64(),row.getColumn(1).getInt64()});});
+    query(m,db,"key_map_degrees","SELECT key_map_id,degree FROM key_map_degrees ORDER BY key_map_id,degree",
+          [&](const SQLite::Statement& row){m.keyDegrees.push_back({row.getColumn(0).getInt64(),row.getColumn(1).getInt64()});});
+
     query(m, db, "tracks",
           "SELECT id, parent_id, index_in_parent, kind, name, color, time_base, "
           "       frozen, locked, muted, soloed, solo_defeat, record_armed, "

@@ -133,7 +133,7 @@ void cancellation() {
     std::string error;f.index.reset();f.index=library::Index::open(f.dir.path()/"index.sqlite",error);f.index->waitIdle();
     check(f.index->stats().hashed==1,"reopen resumes pending hashes");
     std::stop_source stop;stop.request_stop();check(media::blake3File(f.root/"big",stop.get_token()).error==media::HashError::cancelled,"chunk hasher honors stop token");
-    Fixture changed(true,[](const fs::path& path,std::stop_token stop){auto hash=media::blake3File(path,stop);write(path,"changed size after read");return hash;});
+    Fixture changed(true,[](const fs::path& path,std::stop_token token){auto hash=media::blake3File(path,token);write(path,"changed size after read");return hash;});
     write(changed.root/"file","x");changed.scan();changed.index->waitIdle();
     check(changed.index->entries()[0].hash.empty()&&!changed.index->entries()[0].error.empty(),"concurrent modification never publishes stale hash");
 }

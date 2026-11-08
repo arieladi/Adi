@@ -16,6 +16,8 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/automation_lanes.hpp"
+#include "adi/clip_commands.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
@@ -395,6 +397,52 @@ void everyWriteRefreshesTheView() {
     check(ui::SnapshotReader{view.current()}.trackCount() == 1, "and the track is back");
 }
 
+void aSubmitterFollowsTheSessionsOverrides() {
+    section("N26: every refresh the submitter makes carries the session's overridden lanes");
+    adi::test::TempDirectory temp("ui_seams", "overrides");
+    auto store = freshProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    check(sub.submit(trackCreate(1, "Drums")).ok, "a track to own a lane");
+    automation::LaneSpec spec;
+    spec.id = 7;
+    spec.ownerKind = "track";
+    spec.ownerId = 1;
+    spec.paramRef = "volume";
+    spec.paramName = "Volume";
+    spec.valueDomain = "real";
+    spec.unit = "dB";
+    check(sub.submit(automation::createLane(spec)).ok, "and a lane on its volume");
+    auto overriddenInView = [&] {
+        const auto current = view.current();
+        const auto* lane = current ? current->findAutomationLane(7) : nullptr;
+        return current && current->automationOverridden && lane && lane->overridden;
+    };
+    check(view.current() && view.current()->findAutomationLane(7) != nullptr && !overriddenInView(),
+          "without a session's set, the offline view: nothing overridden");
+
+    // The set stands for the session's own (Session::overriddenLanes), read at each refresh.
+    std::set<std::int64_t> overridden{7};
+    sub.followOverrides(overridden);
+    check(!overriddenInView(), "following the set rebuilds nothing by itself (the document reconciles)");
+    check(sub.submit(trackCreate(2, "Bass")).ok && overriddenInView(),
+          "the next commit's refresh marks the snapshot and the lane overridden");
+    check(sub.undo().ok && overriddenInView(), "so does an undo's refresh");
+    check(sub.redo().ok && overriddenInView(), "and a redo's");
+    overridden.clear();
+    check(sub.submit(trackCreate(3, "Keys")).ok && !overriddenInView() && view.current()->findAutomationLane(7) != nullptr,
+          "the set cleared (Re-Enable Automation): the next refresh reads nothing overridden, the lane still there");
+    OpRequest bad;
+    bad.opType = "track.create";
+    bad.payload = {{"id", 4}};
+    overridden.insert(7);
+    const auto generation = view.generation();
+    check(!sub.submit(bad).ok && view.generation() == generation && !overriddenInView(),
+          "a refused write refreshes nothing, so the set is not read either");
+}
+
 void aFrameKeepsItsSnapshot() {
     section("ADR-0201: a snapshot a frame holds never changes under it");
     adi::test::TempDirectory temp("ui_seams", "frame");
@@ -420,6 +468,221 @@ void aFrameKeepsItsSnapshot() {
     const ui::SnapshotReader nextFrame{view.current()};
     check(nextFrame.trackCount() == 2, "the next frame sees both");
     check(!frame.sameAs(nextFrame), "and is a different publication");
+}
+
+
+// --- A2: a prepared batch through the submitter (ADR-0153) -------------------
+//
+// The engine prepares an edit as ops plus the head it expects, and its own
+// helper commits it. The submitter's part is what `submit` does around a
+// commit: the stamp, the refresh, `stale` and `headFound`. These checks pin
+// that, and the one op of the window's own that may ride on the end.
+
+// A project with one audio clip, as test_clip_edit.cpp builds it. Store::create
+// seeds the project row and the tempo map a clip edit reads.
+constexpr std::int64_t kClipTicks = 5765760;
+constexpr std::int64_t kHalfTicks = kClipTicks / 2;
+
+std::unique_ptr<Store> clipProject(const fs::path& p) {
+    StoreError err = StoreError::Ok;
+    auto st = Store::create(p, err);
+    if (!st) return st;
+    st->db().exec("INSERT INTO tracks(id,kind,name) VALUES(21,'audio','Guitar')");
+    st->db().exec("INSERT INTO clips(id,track_id,kind,pos_ticks,length_ticks) VALUES(7,21,'audio',0,5765760)");
+    return st;
+}
+
+/// The clip's length in ticks, or -1 when there is no such clip.
+std::int64_t clipLength(Store& s, std::int64_t id) {
+    SQLite::Statement st(s.db(), "SELECT length_ticks FROM clips WHERE id = ?");
+    st.bind(1, id);
+    return st.executeStep() ? st.getColumn(0).getInt64() : -1;
+}
+
+bool clipMuted(Store& s, std::int64_t id) {
+    SQLite::Statement st(s.db(), "SELECT muted FROM clips WHERE id = ?");
+    st.bind(1, id);
+    return st.executeStep() && st.getColumn(0).getInt64() != 0;
+}
+
+/// Split clip 7 in half; the right part becomes clip `rightId`.
+clip_edit::PreparedEdit splitInHalf(Store& s, std::int64_t rightId) {
+    return clip_edit::prepareSplit(s, 7, rightId, {0, kHalfTicks}, 48000);
+}
+
+/// How many ops of transaction `txnId` are stamped agent/adi-vst, as the
+/// agent submitter above stamps them.
+std::size_t stampedRows(Store& s, std::int64_t txnId) {
+    SQLite::Statement st(s.db(),
+                         "SELECT COUNT(*) FROM ops WHERE txn_id = ? AND actor = ? AND actor_detail = 'adi-vst'");
+    st.bind(1, txnId);
+    st.bind(2, std::string(toString(Actor::Agent)));
+    return st.executeStep() ? static_cast<std::size_t>(st.getColumn(0).getInt64()) : 0;
+}
+
+void aPreparedBatchCommitsAsOneStep() {
+    section("A2: a prepared batch whose head still matches commits as ONE step and refreshes once");
+    adi::test::TempDirectory temp("ui_seams", "prepared");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+    check(view.generation() == 0, "nothing published before the first write");
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    check(split.options.expectHead.has_value(), "with the head it expects (ADR-0153)");
+    const auto prepared = split.requests.size();
+    check(prepared > 0, "and it is more than nothing");
+
+    const auto r = sub.commitPrepared(std::move(split), &clip_edit::commitPrepared);
+    check(r.ok, "committed");
+    check(!r.stale, "not stale");
+    check(r.txnId != 0, "in a transaction");
+    check(r.seqs.size() == prepared, "every prepared op, and nothing else");
+    check(view.generation() == 1, "the commit refreshed the view once");
+    check(r.generation == 1, "and the result reports the generation it produced");
+    check(clipLength(*store, 7) == kHalfTicks, "the clip was cut at the split");
+    check(clipLength(*store, 17) == kHalfTicks, "and the right part is a clip");
+
+    const auto step = sub.nextUndo();
+    check(step.has_value(), "the history can describe it");
+    check(step && step->txnId == r.txnId, "as the transaction we committed");
+    check(step && static_cast<std::size_t>(step->opCount) == prepared, "ONE undo step covering the batch");
+    check(sub.undo().ok, "undo applied");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "and the clip is whole again");
+    check(view.generation() == 2, "undo refreshed the view");
+}
+
+void aPreparedBatchTakesOneOpOfTheWindows() {
+    section("A2: the window's one op rides on the end of the batch, stamped like the rest");
+    adi::test::TempDirectory temp("ui_seams", "appended");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter agent(*store, view, Actor::Agent, "adi-vst");
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    const auto prepared = split.requests.size();
+
+    // E1's case: 0 over a clip's right edge splits it and deactivates the part
+    // inside, in one undo step. The deactivation is the window's own op.
+    OpRequest mute;
+    mute.opType = "clip.setMute";
+    mute.payload = {{"id", 17}, {"muted", true}};
+    mute.label = "Deactivate Clip";
+    mute.targetKind = "clip";
+    mute.targetId = 17;
+    const auto r = agent.commitPrepared(std::move(split), &clip_edit::commitPrepared, std::move(mute));
+    check(r.ok, "committed");
+    check(r.seqs.size() == prepared + 1, "the split's ops plus the window's, in one transaction");
+    check(clipLength(*store, 17) == kHalfTicks, "the right part is a clip");
+    check(clipMuted(*store, 17), "and it is deactivated");
+    check(!clipMuted(*store, 7), "the left part is not");
+    check(stampedRows(*store, r.txnId) == prepared + 1,
+          "every op of the transaction, the window's included, is stamped as submit stamps");
+
+    const auto step = agent.nextUndo();
+    check(step && static_cast<std::size_t>(step->opCount) == prepared + 1, "ONE undo step");
+    check(agent.undo().ok, "undo applied");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "and takes both back together");
+}
+
+void aHelperOwnedBatchIsStampedThroughItsRequests() {
+    section("A2: a batch the helper owns is stamped through its requests, detail included (E5's form)");
+    adi::test::TempDirectory temp("ui_seams", "owned");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter agent(*store, view, Actor::Agent, "adi-vst");
+
+    // commitMaterial's shape: the helper takes the edit it was given, not a
+    // batch the submitter hands it. The requests are in reach, so they are
+    // stamped before the helper runs, as `MaterialEdit::edit.requests` will be.
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+    const auto prepared = split.requests.size();
+    const auto r = agent.commitPrepared(split.requests, [&split](Store& s, Actor a) {
+        return clip_edit::commitPrepared(s, split, a);
+    });
+    check(r.ok, "committed");
+    check(r.seqs.size() == prepared, "every prepared op, and nothing else");
+    check(stampedRows(*store, r.txnId) == prepared,
+          "every row of the transaction carries the agent and its detail");
+    check(r.generation == 1 && view.generation() == 1, "the commit refreshed the view once");
+    check(clipLength(*store, 17) == kHalfTicks, "and the right part is a clip");
+}
+
+void aStalePreparedBatchIsRefused() {
+    section("A2: with the head moved, a prepared batch is refused as stale; nothing written or refreshed");
+    adi::test::TempDirectory temp("ui_seams", "stale");
+    auto store = clipProject(temp.path() / "p.adi");
+    if (!store) { check(false, "store created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*store, view);
+
+    auto split = splitInHalf(*store, 17);
+    check(split.ok, "the engine prepared the split");
+
+    // Another edit lands first, as a second window or an agent would.
+    const auto moved = sub.submit(trackCreate(22, "Bass"));
+    check(moved.ok, "an intervening edit committed");
+    check(view.generation() == 1, "and refreshed the view");
+
+    // The helper-only form, for a batch whose ops the helper keeps.
+    const auto r = sub.commitPrepared([&split](Store& s, Actor a) { return clip_edit::commitPrepared(s, split, a); });
+    check(!r.ok, "refused");
+    check(r.stale, "as stale");
+    check(r.headFound.has_value(), "with the head it found");
+    check(r.headFound && !moved.seqs.empty() && *r.headFound == moved.seqs.back(),
+          "which is the intervening edit's last op");
+    check(r.generation == 0, "a refused write reports no generation");
+    check(view.generation() == 1, "and did NOT refresh the view");
+    check(clipLength(*store, 7) == kClipTicks && clipLength(*store, 17) == -1, "nothing was written");
+    const auto step = sub.nextUndo();
+    check(step && step->txnId == moved.txnId, "the history's top is still the edit that moved the head");
+}
+
+void aHelpersRefusalLeavesTheView() {
+    section("A2: a helper's refusal (another source file) leaves the view as it was");
+    adi::test::TempDirectory temp("ui_seams", "elsewhere");
+    auto here = clipProject(temp.path() / "here.adi");
+    auto there = clipProject(temp.path() / "there.adi");
+    if (!here || !there) { check(false, "stores created"); return; }
+
+    engine::ProjectView view;
+    ui::OpSubmitter sub(*here, view);
+    check(sub.submit(trackCreate(22, "Bass")).ok, "a first edit here");
+    check(view.generation() == 1, "published the view");
+
+    // Prepared on the other project, committed against this one: the helper's
+    // own check, not the journal's.
+    auto split = splitInHalf(*there, 17);
+    check(split.ok, "the engine prepared the split there");
+    const auto r = sub.commitPrepared(std::move(split), &clip_edit::commitPrepared);
+    check(!r.ok, "refused");
+    check(!r.error.empty(), "and said why");
+    check(r.stale && !r.headFound,
+          "stale with no head found: the file, not the head, so E1 can word the two apart");
+    check(r.generation == 0, "a refused write reports no generation");
+    check(view.generation() == 1, "the view is as it was");
+    check(clipLength(*here, 17) == -1 && clipLength(*there, 17) == -1, "neither project was written");
+
+    // A prepared batch with nothing in it is a no-op, as an empty submit is:
+    // success, no transaction, no refresh.
+    auto empty = splitInHalf(*here, 17);
+    check(empty.ok, "a batch prepared here");
+    empty.requests.clear();
+    const auto none = sub.commitPrepared(std::move(empty), &clip_edit::commitPrepared);
+    check(none.ok, "an empty prepared batch reports success");
+    check(none.seqs.empty() && none.txnId == 0, "opened no transaction");
+    check(none.generation == 0 && view.generation() == 1, "and did not refresh the view");
+    check(clipLength(*here, 7) == kClipTicks, "the clip is untouched");
 }
 
 }  // namespace
@@ -803,7 +1066,7 @@ void sendsAsBatches() {
           "without a row: fully down; a track's send on, a return's off until Enable Send");
 
     // Turning Kick's send A up writes the row, then its level: one undo step.
-    auto edit = ui::setSend(view.current()->sends, 2, 10, -12);
+    auto edit = ui::setSend(*view.current(), 2, 10, -12);
     check(edit.refusal.empty() && edit.ops.size() == 2 && edit.ops[0].opType == "routing.connect" &&
               edit.ops[0].payload["kind"] == "send" && edit.ops[0].payload["src"] == 2 &&
               edit.ops[0].payload["dst"] == 10 && edit.ops[1].opType == "routing.setGain" &&
@@ -819,23 +1082,23 @@ void sendsAsBatches() {
     const auto first = send != nullptr ? send->id : 0;
 
     // A row that exists: its level only. The bottom stop writes silence; the top stays at 0 dB.
-    auto again = ui::setSend(view.current()->sends, 2, 10, ui::kSendFloorDb);
+    auto again = ui::setSend(*view.current(), 2, 10, ui::kSendFloorDb);
     check(again.ops.size() == 1 && again.ops[0].opType == "routing.setGain" && again.ops[0].payload["id"] == first &&
               again.ops[0].payload["db"] == ui::kSendSilenceDb,
           "fully down writes silence (-150 dB), on the same row");
     check(sub.submit(std::move(again.ops)).ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == ui::kSendSilenceDb,
           "and lands");
-    check(ui::setSend(view.current()->sends, 2, 10, -90).ops.empty() &&
-              ui::setSend(view.current()->sends, 3, 10, ui::kSendFloorDb).ops.empty(),
+    check(ui::setSend(*view.current(), 2, 10, -90).ops.empty() &&
+              ui::setSend(*view.current(), 3, 10, ui::kSendFloorDb).ops.empty(),
           "a level that would not change writes nothing: no empty undo step, no row left fully down");
-    auto top = ui::setSend(view.current()->sends, 2, 10, 6);
+    auto top = ui::setSend(*view.current(), 2, 10, 6);
     check(top.ops.size() == 1 && top.ops[0].payload["db"] == ui::kSendTopDb, "past the top stays at 0 dB");
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10)->gainDb == -12.0, "undo brings -12 dB back");
     check(sub.undo().ok && ui::findSend(view.current()->sends, 2, 10) == nullptr, "and then removes the row");
     check(sub.redo().ok && ui::findSend(view.current()->sends, 2, 10) != nullptr, "redo");
 
     // A second send gets the next id.
-    auto second = ui::setSend(view.current()->sends, 3, 11, -6);
+    auto second = ui::setSend(*view.current(), 3, 11, -6);
     check(second.ops.size() == 2 && second.ops[0].payload["id"] == first + 1 && sub.submit(std::move(second.ops)).ok &&
               ui::findSend(view.current()->sends, 3, 11) != nullptr &&
               ui::findSend(view.current()->sends, 3, 11)->gainDb == -6.0,
@@ -843,57 +1106,119 @@ void sendsAsBatches() {
 
     // A return's send: off until Enable Send, which makes the row fully down; Enable Send again
     // (unticked) switches it off; a return may send to itself.
-    auto enable = ui::enableSend(view.current()->sends, 10, 11, true);
+    auto enable = ui::enableSend(*view.current(), 10, 11, true);
     check(enable.refusal.empty() && enable.ops.size() == 2 && enable.ops[0].opType == "routing.connect" &&
               enable.ops[1].payload["db"] == ui::kSendSilenceDb && sub.submit(std::move(enable.ops)).ok &&
               sub.nextUndo()->label == "Enable Send",
           "Enable Send on A's send B: the row, fully down, one step");
     const auto* ab = ui::findSend(view.current()->sends, 10, 11);
     check(ab != nullptr && ab->enabled && ui::sendOn(*view.current()->findTrack(10), ab), "A's send B is on");
-    check(ui::enableSend(view.current()->sends, 10, 11, true).refusal == "The send is on already." &&
-              ui::enableSend(view.current()->sends, 10, 10, false).refusal == "The send is off already.",
+    check(ui::enableSend(*view.current(), 10, 11, true).refusal == "The send is on already." &&
+              ui::enableSend(*view.current(), 10, 10, false).refusal == "The send is off already.",
           "nothing to do is said, not written");
-    auto off = ui::enableSend(view.current()->sends, 10, 11, false);
+    auto off = ui::enableSend(*view.current(), 10, 11, false);
     check(off.ops.size() == 1 && off.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(off.ops)).ok &&
               !ui::findSend(view.current()->sends, 10, 11)->enabled &&
               !ui::sendOn(*view.current()->findTrack(10), ui::findSend(view.current()->sends, 10, 11)),
           "unticked: the row switched off, kept");
-    auto on = ui::enableSend(view.current()->sends, 10, 11, true);
+    auto on = ui::enableSend(*view.current(), 10, 11, true);
     check(on.ops.size() == 1 && on.ops[0].opType == "routing.setEnabled" && sub.submit(std::move(on.ops)).ok &&
               ui::findSend(view.current()->sends, 10, 11)->enabled,
           "ticked again: the same row back on");
-    auto loop = ui::enableSend(view.current()->sends, 10, 10, true);
+    auto loop = ui::enableSend(*view.current(), 10, 10, true);
     check(sub.submit(std::move(loop.ops)).ok && ui::findSend(view.current()->sends, 10, 10) != nullptr,
           "A may send to itself (Live's feedback loop)");
 
-    // A return's Pre/Post (ADR-0203 d3): one switch on the return, every send into it moved.
-    check(!ui::returnPre(view.current()->sends, 10) && !ui::returnPre(view.current()->sends, 12),
-          "a return reads Post; one no send reaches reads Post too");
-    auto pre = ui::setReturnPre(view.current()->sends, 10, true);
-    check(pre.refusal.empty() && pre.ops.size() == 2 && pre.ops[0].opType == "routing.setPreFader" &&
-              pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
-              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 2 &&
-              ui::returnPre(view.current()->sends, 10) && ui::findSend(view.current()->sends, 2, 10)->preFader,
-          "Pre moves both sends into A before the fader, one undo step");
-    auto newPre = ui::setSend(view.current()->sends, 3, 10, -9);
-    check(newPre.ops.size() == 3 && newPre.ops[1].opType == "routing.setPreFader" && sub.submit(std::move(newPre.ops)).ok &&
-              ui::findSend(view.current()->sends, 3, 10)->preFader && ui::returnPre(view.current()->sends, 10),
-          "a new send into a Pre return taps before the fader too");
-    check(ui::setReturnPre(view.current()->sends, 12, true).refusal ==
-              "No track sends to this return yet, so there is nothing to switch.",
-          "a return no send reaches has nothing to switch, and says so");
-    check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->sends, 10), "undo puts A back to Post");
+    // A return's Pre/Post (ADR-0203 d3) is the return's own (#405, N42): one switch on the return, read
+    // from `TrackNode::returnSendTap`, written as one `return.setSendTap` that the engine spreads over
+    // every send into the return; it holds with no send, and a send made afterwards follows it.
+    const auto *reverbTap = view.current()->findTrack(10)->returnSendTap ? &*view.current()->findTrack(10)->returnSendTap : nullptr;
+    check(reverbTap != nullptr && !reverbTap->explicitChoice && !ui::returnPre(view.current()->tracks, 10) &&
+              !ui::returnPre(view.current()->tracks, 11) && !ui::returnPre(view.current()->tracks, 2) &&
+              !ui::returnPre(view.current()->tracks, 12),
+          "a return with no choice yet reads Post from its sends; a track, or no track, reads Post");
+    // An older file: every send into A written Pre by the per-send op with no choice on the return
+    // (what `allowSendEdgeTapEdit` allows while none is held). The return reads Pre without holding
+    // it, and a new send into it still carries `routing.setPreFader`, as the engine's own
+    // `prepareSendToReturn` adds it. Undone again before the return's own switch is thrown.
+    {
+        std::vector<OpRequest> older;
+        for (const auto id : {first, ui::findSend(view.current()->sends, 10, 10)->id}) {
+            OpRequest r;
+            r.opType = "routing.setPreFader";
+            r.payload = {{"id", id}, {"pre", true}};
+            r.label = "Older file";
+            older.push_back(std::move(r));
+        }
+        check(sub.submit(std::move(older)).ok && ui::returnPre(view.current()->tracks, 10) &&
+                  !view.current()->findTrack(10)->returnSendTap->explicitChoice &&
+                  ui::findSend(view.current()->sends, 2, 10)->preFader && ui::findSend(view.current()->sends, 10, 10)->preFader,
+              "an older file's sends into A all Pre with no choice written: the return reads Pre without holding it");
+        auto inherited = ui::setSend(*view.current(), 3, 10, -9);
+        check(inherited.ops.size() == 3 && inherited.ops[0].opType == "routing.connect" &&
+                  inherited.ops[1].opType == "routing.setPreFader" &&
+                  inherited.ops[1].payload["id"] == inherited.ops[0].payload["id"] && inherited.ops[1].payload["pre"] == true &&
+                  inherited.ops[2].opType == "routing.setGain",
+              "a new send into it carries routing.setPreFader, as the engine's prepareSendToReturn does");
+        check(sub.submit(std::move(inherited.ops)).ok && sub.nextUndo()->opCount == 3 &&
+                  ui::findSend(view.current()->sends, 3, 10)->preFader && sub.undo().ok &&
+                  ui::findSend(view.current()->sends, 3, 10) == nullptr && sub.undo().ok &&
+                  !ui::returnPre(view.current()->tracks, 10) && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+              "it lands before the fader as one step; undone, and the older file's Pre with it");
+    }
+    auto pre = ui::setReturnPre(10, true);
+    check(pre.refusal.empty() && pre.ops.size() == 1 && pre.ops[0].opType == "return.setSendTap" &&
+              pre.ops[0].payload["id"] == 10 && pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
+              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 1 &&
+              ui::returnPre(view.current()->tracks, 10) && view.current()->findTrack(10)->returnSendTap->explicitChoice &&
+              ui::findSend(view.current()->sends, 2, 10)->preFader && ui::findSend(view.current()->sends, 10, 10)->preFader,
+          "Pre on A: one op, one undo step; the return holds the choice and both sends into it tap before the fader");
+    auto newPre = ui::setSend(*view.current(), 3, 10, -9);
+    check(newPre.ops.size() == 2 && newPre.ops[0].opType == "routing.connect" && newPre.ops[1].opType == "routing.setGain" &&
+              sub.submit(std::move(newPre.ops)).ok && ui::findSend(view.current()->sends, 3, 10)->preFader &&
+              ui::returnPre(view.current()->tracks, 10),
+          "a new send into a Pre return taps before the fader, with nothing added to its batch: the row reads the return's choice");
+    // A third return, C, that no send reaches: Pre is one op and holds; a send made afterwards follows it.
+    {
+        OpRequest r;
+        r.opType = "track.create";
+        r.payload = {{"id", 12}, {"kind", "return"}, {"name", "C Return"}, {"index", 2}};
+        r.label = "Create track";
+        check(sub.submit(std::move(r)).ok && view.current()->findTrack(12)->returnSendTap &&
+                  !view.current()->findTrack(12)->returnSendTap->explicitChoice && !ui::returnPre(view.current()->tracks, 12),
+              "C Return, no send into it: Post, no choice held");
+    }
+    auto emptyPre = ui::setReturnPre(12, true);
+    check(emptyPre.refusal.empty() && emptyPre.ops.size() == 1 && sub.submit(std::move(emptyPre.ops)).ok &&
+              sub.nextUndo()->label == "Change Pre/Post" && sub.nextUndo()->opCount == 1 &&
+              ui::returnPre(view.current()->tracks, 12) && view.current()->findTrack(12)->returnSendTap->explicitChoice,
+          "Pre on a return no send reaches: one op, one undo step, and the return holds it");
+    auto later = ui::setSend(*view.current(), 2, 12, -3);
+    check(later.ops.size() == 2 && sub.submit(std::move(later.ops)).ok && ui::findSend(view.current()->sends, 2, 12) != nullptr &&
+              ui::findSend(view.current()->sends, 2, 12)->preFader && ui::returnPre(view.current()->tracks, 12),
+          "a send made afterwards taps before the fader");
+    auto post = ui::setReturnPre(12, false);
+    check(post.ops.size() == 1 && sub.submit(std::move(post.ops)).ok && !ui::returnPre(view.current()->tracks, 12) &&
+              view.current()->findTrack(12)->returnSendTap->explicitChoice && !ui::findSend(view.current()->sends, 2, 12)->preFader,
+          "Post again moves the send after the fader; the choice stays the return's");
+    check(sub.undo().ok && ui::returnPre(view.current()->tracks, 12) && ui::findSend(view.current()->sends, 2, 12)->preFader &&
+              sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->tracks, 12) && sub.undo().ok &&
+              view.current()->findTrack(12) == nullptr,
+          "undo: Pre again, the send gone, C back to Post, then C gone");
+    check(sub.undo().ok && sub.undo().ok && !ui::returnPre(view.current()->tracks, 10) &&
+              !view.current()->findTrack(10)->returnSendTap->explicitChoice && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+          "undo puts A back to Post, its choice gone and its sends after the fader");
 
     // Enable All Sends on B Delay (Live 12 §18.4): a row to A and to itself, each with its own id, fully
     // down, one step; again, nothing to do.
     const std::vector<std::int64_t> both{10, 11};
-    auto all = ui::enableAllSends(view.current()->sends, 11, both);
+    auto all = ui::enableAllSends(*view.current(), 11, both);
     check(all.refusal.empty() && all.ops.size() == 4 && all.ops[0].opType == "routing.connect" &&
               all.ops[2].opType == "routing.connect" && all.ops[2].payload["id"] != all.ops[0].payload["id"] &&
               sub.submit(std::move(all.ops)).ok && sub.nextUndo()->label == "Enable All Sends" &&
               ui::findSend(view.current()->sends, 11, 10) != nullptr && ui::findSend(view.current()->sends, 11, 11) != nullptr,
           "Enable All Sends: B to A and B to itself, two new rows, one undo step");
-    check(ui::enableAllSends(view.current()->sends, 11, both).refusal == "Every send of this return is on already.",
+    check(ui::enableAllSends(*view.current(), 11, both).refusal == "Every send of this return is on already.",
           "again: every send is on already");
 }
 
@@ -1575,7 +1900,13 @@ int main() {
     stampsTheActor();
     aRefusedOpWritesNothing();
     everyWriteRefreshesTheView();
+    aSubmitterFollowsTheSessionsOverrides();
     aFrameKeepsItsSnapshot();
+    aPreparedBatchCommitsAsOneStep();
+    aPreparedBatchTakesOneOpOfTheWindows();
+    aHelperOwnedBatchIsStampedThroughItsRequests();
+    aStalePreparedBatchIsRefused();
+    aHelpersRefusalLeavesTheView();
     projectViewTree();
     projectViewRowsFromTheSnapshot();
     metersCountBars();

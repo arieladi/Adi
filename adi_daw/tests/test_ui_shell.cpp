@@ -4,11 +4,13 @@
 #include "../src/juce/ui_settings.hpp"
 #include "../src/juce/ui_shell.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/automation_lanes.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/send_edits.hpp"
+#include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -1644,19 +1646,47 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(a.getTextFromValue(a.getValue()) == "-12", "and back at -12 dB");
 
-    // Enable Send on A Reverb's send B: on, at full alpha, taking clicks.
+    // A return's Pre/Post is the return's own (#405, N42): B Delay, which no send reaches yet, takes
+    // Pre as one op and one undo step, and its row lights from `TrackNode::returnSendTap`.
+    auto *delay = rowOf(root.mixer, 6);
+    check(delay != nullptr && delay->prePost.isVisible() && delay->prePost.getButtonText() == "Post" &&
+              delay->prePost.getToggleState() && root.reader().findTrack(6) != nullptr &&
+              root.reader().findTrack(6)->returnSendTap && !root.reader().findTrack(6)->returnSendTap->explicitChoice,
+          "B Delay's row reads Post, no choice held, no send into it");
+    if (delay == nullptr)
+        return;
+    const auto stepBefore = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+    delay->prePost.onClick();
+    root.frame();
+    check(delay->prePost.getButtonText() == "Pre" && !delay->prePost.getToggleState() && root.error().empty() &&
+              root.reader().findTrack(6)->returnSendTap->explicitChoice && root.reader().findTrack(6)->returnSendTap->preFader &&
+              submitter.nextUndo() && submitter.nextUndo()->txnId != stepBefore &&
+              submitter.nextUndo()->label == "Change Pre/Post" && submitter.nextUndo()->opCount == 1,
+          "Pre on B Delay with no send into it: one op, one undo step, the row lit from the return's own switch");
+    render("adi-return-pre-empty.png");
+
+    // Enable Send on A Reverb's send B: on, at full alpha, taking clicks; made after B's Pre, the new
+    // send taps before the fader with nothing added to its batch.
     reverb->enableSend(1, true);
     root.frame();
     check(reverb->sendOn(1) && !reverb->sendOn(0) && takesClicks(*reverb->sendKnobs()[1]) &&
-              findSend(root.reader().sends(), 5, 6) != nullptr && findSend(root.reader().sends(), 5, 6)->enabled,
-          "Enable Send: A Reverb feeds B Delay, fully down until turned up");
+              findSend(root.reader().sends(), 5, 6) != nullptr && findSend(root.reader().sends(), 5, 6)->enabled &&
+              findSend(root.reader().sends(), 5, 6)->preFader && submitter.nextUndo()->label == "Enable Send" &&
+              submitter.nextUndo()->opCount == 2,
+          "Enable Send: A Reverb feeds B Delay, fully down until turned up, before the fader as B's switch says");
     reverb->enableSend(1, true);
     check(root.error() == "The send is on already.", "enabling it again only says so");
+    // B back to Post: the send it now has moves after the fader, one step.
+    delay->prePost.onClick();
+    root.frame();
+    check(delay->prePost.getButtonText() == "Post" && delay->prePost.getToggleState() &&
+              !findSend(root.reader().sends(), 5, 6)->preFader && root.reader().findTrack(6)->returnSendTap->explicitChoice &&
+              submitter.nextUndo()->opCount == 1,
+          "Post again on B Delay moves its send after the fader; the choice stays the return's");
 
     // Enable All Sends on B Delay (§18.4): both of its sends on, A and itself, fully down, one step.
-    auto *delay = rowOf(root.mixer, 6);
-    check(delay != nullptr && !delay->sendOn(0) && !delay->sendOn(1), "B Delay's sends start off");
-    if (delay != nullptr) {
+    check(!delay->sendOn(0) && !delay->sendOn(1), "B Delay's sends start off");
+    {
         delay->enableAllSends();
         root.frame();
         check(delay->sendOn(0) && delay->sendOn(1) && findSend(root.reader().sends(), 6, 5) != nullptr &&
@@ -1676,12 +1706,15 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     check(main->kind() == "master" && !main->active.isVisible() && !main->solo.isVisible() && !main->arm.isVisible() &&
               !main->prePost.isVisible() && main->volume.getY() == 3,
           "Main's row: no activator, Solo or Arm; its volume on the first row");
-    // Pre moves every send into A before the fader (3 Audio's), one undo step.
+    // Pre on A: one op the engine spreads over every send into A (3 Audio's), one undo step; the row
+    // lights from the return's own switch.
     reverb->prePost.onClick();
     root.frame();
     check(reverb->prePost.getButtonText() == "Pre" && !reverb->prePost.getToggleState() &&
-              findSend(root.reader().sends(), 3, 5)->preFader && submitter.nextUndo()->label == "Change Pre/Post",
-          "Pre/Post thrown: 3 Audio's send A taps before the fader");
+              findSend(root.reader().sends(), 3, 5)->preFader && root.reader().findTrack(5)->returnSendTap->explicitChoice &&
+              root.reader().findTrack(5)->returnSendTap->preFader && submitter.nextUndo()->label == "Change Pre/Post" &&
+              submitter.nextUndo()->opCount == 1,
+          "Pre/Post thrown: 3 Audio's send A taps before the fader, one op, the row lit from the return's switch");
 
     render("adi-sends-rows.png");
     // The Mixer View: Live's knobs under "Sends", A on the left and B lower on the right; the mixer
@@ -1709,13 +1742,16 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         // Live's Mixer: Main's Sends section holds each return's Pre/Post; Main has no activator.
         if (mainColumn != nullptr && mainColumn->returnSwitches().size() == 2) {
             auto &aSwitch = *mainColumn->returnSwitches()[0];
-            check(aSwitch.getButtonText() == "Pre" && mainColumn->returnSwitches()[1]->getButtonText() == "Post" &&
-                      !mainColumn->active.isVisible(),
-                  "Main's strip shows A's Pre and B's Post where a track has its knobs");
+            auto &bSwitch = *mainColumn->returnSwitches()[1];
+            check(aSwitch.getButtonText() == "Pre" && !aSwitch.getToggleState() && bSwitch.getButtonText() == "Post" &&
+                      bSwitch.getToggleState() && !mainColumn->active.isVisible() &&
+                      root.reader().findTrack(5)->returnSendTap->preFader && !root.reader().findTrack(6)->returnSendTap->preFader,
+                  "Main's strip shows A's Pre and B's Post where a track has its knobs, each from its return's own switch");
             aSwitch.onClick();
             root.frame();
-            check(aSwitch.getButtonText() == "Post" && !findSend(root.reader().sends(), 3, 5)->preFader,
-                  "and A's switch, thrown there, moves the send back after the fader");
+            check(aSwitch.getButtonText() == "Post" && aSwitch.getToggleState() && !findSend(root.reader().sends(), 3, 5)->preFader &&
+                      !root.reader().findTrack(5)->returnSendTap->preFader && submitter.nextUndo()->opCount == 1,
+                  "and A's switch, thrown there, is one op that moves the send back after the fader");
         } else
             check(false, "Main's strip has a Pre/Post switch per return");
     }
@@ -2913,6 +2949,245 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
+// d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
+// producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
+void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "strip-undo.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "a project whose plug-ins the loader makes");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "strip");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    // As ui_main.cpp wires it: a refusal's reason goes to the Status Bar.
+    root.devices.gesture = [&](std::int64_t id, const std::string &param, engine::ParamEventKind kind,
+                               double value) {
+        const bool ok = document->parameterGesture(id, param, kind, value);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    document->tick(0); // the timer's frame publishes the feed
+    root.frame();
+    root.frame();
+    const bool shown = root.devices.panels.size() == 1 && root.devices.panels[0]->controls.size() == 2 &&
+                       root.devices.panels[0]->controls[0]->slider.isVisible();
+    check(shown, "the strip shows the device's two controls, from the document's feed");
+    if (!shown) {
+        document->release();
+        return;
+    }
+    auto &cutoff = root.devices.panels[0]->controls[0]->slider;
+    auto *knobs = dynamic_cast<test::Knobs *>(document->session().instanceFor(3));
+    const auto titleBefore = root.undoTitle(false);
+    cutoff.onDragStart();
+    cutoff.setValue(.65, juce::sendNotificationSync);
+    cutoff.setValue(.8, juce::sendNotificationSync);
+    check(knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .8) < 1e-9 &&
+              root.undoTitle(false) == titleBefore && root.error().empty(),
+          "while the mouse is down the knob moves the plug-in at once and nothing is written");
+    cutoff.onDragEnd();
+    document->tick(0);
+    root.frame();
+    check(root.undoTitle(false) == "Undo UI knobs: Cutoff" && root.error().empty() &&
+              std::abs(root.devices.panels[0]->controls[0]->slider.getValue() - .8) < 1e-9,
+          "mouse up: ONE undo step, named for the device and its control, and the knob stays where it was left");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-strip-param-undo.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    auto rowsOf = [&] {
+        std::size_t rows = 0;
+        for (const auto &p : document->session().model().pluginParams)
+            rows += p.deviceId == 3 ? 1 : 0;
+        return rows;
+    };
+    auto rowValue = [&] {
+        for (const auto &p : document->session().model().pluginParams)
+            if (p.deviceId == 3 && p.paramId == "cutoff")
+                return p.normalized;
+        return -1.0;
+    };
+    check(root.devices.panels[0]->controls[0]->getWantsKeyboardFocus() && !cutoff.getWantsKeyboardFocus() &&
+              root.devices.panels[0]->controls[0]->getNumChildComponents() > 0,
+          "a click on the knob lands the focus on its control: the slider declines it (manual 41.6's keys need it)");
+    // Live 12 manual 41.6: Delete on a control is Return to Default, where the device's Delete is
+    // Delete (row 6). Through the peer, as the key arrives: the focused control takes it.
+    {
+        UiPeerRoot host;
+        host.setSize(root.getWidth(), root.getHeight());
+        host.addAndMakeVisible(root);
+        host.setVisible(true);
+        host.addToDesktop(0);
+        std::vector<std::string> submitted;
+        root.devices.submit = [&](const std::string &op, Payload) {
+            submitted.push_back(op);
+            return true;
+        };
+        auto &control = *root.devices.panels[0]->controls[0];
+        control.grabKeyboardFocus();
+        auto *peer = host.getPeer();
+        const juce::KeyPress del(juce::KeyPress::deleteKey);
+        check(peer != nullptr && control.hasKeyboardFocus(false) && peer->handleKeyPress(del) && submitted.empty() &&
+                  knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
+                  root.devices.panels.size() == 1 && root.error().empty(),
+              "Delete on the focused knob returns the parameter to the plug-in's default and removes no device");
+        document->tick(0);
+        root.frame();
+        check(root.undoTitle(false) == "Undo UI knobs: Cutoff" && rowsOf() == 1 && std::abs(rowValue() - .5) < 1e-9 &&
+                  std::abs(cutoff.getValue() - .5) < 1e-9,
+              "Return to Default is one undo step of its own, and the knob shows the default");
+        root.devices.panels[0]->grabKeyboardFocus();
+        check(root.devices.panels[0]->hasKeyboardFocus(false) && peer->handleKeyPress(del) &&
+                  submitted == std::vector<std::string>{"device.remove"},
+              "Delete on the focused device is still Delete");
+        root.devices.submit = nullptr;
+        host.removeChildComponent(&root);
+        host.removeFromDesktop();
+    }
+    check(root.command(AppCommands::Undo) && root.undoTitle(false) == "Undo UI knobs: Cutoff" && rowsOf() == 1 &&
+              std::abs(rowValue() - .8) < 1e-9,
+          "one Undo takes Return to Default back to where the drag left the parameter");
+    check(root.command(AppCommands::Undo) && root.undoTitle(false) == titleBefore && rowsOf() == 0,
+          "and one more takes the whole drag back: the parameter is never touched again, as before it (ADR-0124 d4)");
+    document->release();
+}
+// Re-Enable Automation lit, and Automation Arm (N26, worklist C1; Live 12 manual 25.1 and 25.4;
+// MR 6.1, audit rows 97 and 133): the control bar's two switches over the document's session,
+// wired as ui_main.cpp wires them. A3's device with a lane on its Cutoff, under the numeric id a
+// lane's param_ref must parse as; a drag on the knob overrides the lane (ADR-0162).
+void automationArm(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "automation-arm.adi", true, test::knobsLoader("7"), error);
+    check(document != nullptr, "a project whose plug-ins the loader makes");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'vst3','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    automation::LaneSpec spec;
+    spec.id = 1;
+    spec.ownerKind = "device";
+    spec.ownerId = 3;
+    spec.paramRef = "7";
+    spec.paramName = "Cutoff";
+    spec.defaultValue = .5;
+    make.push_back(automation::createLane(spec));
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI with a lane on its Cutoff");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "arm");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.gesture = [&](std::int64_t id, const std::string &param, engine::ParamEventKind kind,
+                               double value) {
+        const bool ok = document->parameterGesture(id, param, kind, value);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.reenableAutomation = [&] {
+        const bool ok = document->reenableAutomation();
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.automationArmed = [&] { return document->automationArmed(); };
+    root.armAutomation = [&](bool armed) { document->setAutomationArmed(armed); };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    document->tick(0); // the timer's frame publishes the feed
+    root.frame();
+    root.frame();
+    auto &reEnable = root.transport.reEnable;
+    auto &arm = root.transport.automationArm;
+    check(!reEnable.getToggleState() && arm.getToggleState() && reEnable.getTitle() == "Re-Enable Automation" &&
+              arm.getTitle() == "Automation Arm",
+          "nothing overridden: Re-Enable Automation is unlit, and Automation Arm is on as Live's new Set");
+    const bool shown = root.devices.panels.size() == 1 && root.devices.panels[0]->controls.size() == 2 &&
+                       root.devices.panels[0]->controls[0]->slider.isVisible();
+    check(shown, "the strip shows the automated device's two controls");
+    if (!shown) {
+        document->release();
+        return;
+    }
+    auto &cutoff = root.devices.panels[0]->controls[0]->slider;
+    const auto titleBefore = root.undoTitle(false);
+    cutoff.onDragStart();
+    cutoff.setValue(.8, juce::sendNotificationSync);
+    root.frame();
+    check(reEnable.getToggleState() && root.undoTitle(false) == titleBefore && root.error().empty(),
+          "with the mouse still down, the moved knob's override lights Re-Enable Automation (manual 25.4), nothing written");
+    cutoff.onDragEnd();
+    document->tick(0);
+    root.frame();
+    check(reEnable.getToggleState() && root.undoTitle(false) == "Undo UI knobs: Cutoff",
+          "lit after the gesture commits its one undo step");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-automation-arm.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    const auto titleOverridden = root.undoTitle(false);
+    reEnable.onClick();
+    root.frame();
+    check(!reEnable.getToggleState() && root.undoTitle(false) == titleOverridden && root.error().empty() &&
+              !document->session().automationOverridden(),
+          "a click follows every envelope again: unlit, no undo step, nothing said");
+    reEnable.onClick();
+    root.frame();
+    check(!reEnable.getToggleState() && root.error().empty(), "with nothing overridden a click changes nothing");
+    arm.onClick();
+    root.frame();
+    check(!arm.getToggleState() && !document->automationArmed() && root.error().empty(),
+          "Automation Arm clicked: off on the switch and in the session (manual 25.1)");
+    arm.onClick();
+    root.frame();
+    check(arm.getToggleState() && document->automationArmed(), "and on again");
+    // A root with no session (the hooks unset) says so instead of toggling.
+    root.reenableAutomation = nullptr;
+    root.armAutomation = nullptr;
+    root.automationArmed = nullptr;
+    reEnable.onClick();
+    check(root.error() == "Re-Enable Automation: no session holds automation to re-enable.",
+          "without a session, Re-Enable Automation says so");
+    arm.onClick();
+    root.frame();
+    check(root.error() == "Automation Arm: no session to arm." && arm.getToggleState(),
+          "and Automation Arm says so, showing Live's default, on");
+    document->release();
+}
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place
 // of the arrangement; its tabs in the draft's order, STACK first; kept per window.
 void mixViewShell(AppCommands &commands, const std::filesystem::path &dir) {
@@ -4022,9 +4297,13 @@ int main(int argc, char **argv) {
                 return true;
             }
             if (id == AppCommands::SaveAs) {
+                // As the application does once its chooser has a file (Live 41.3; N3): the
+                // document carries on in the new file; the Status Bar says nothing on success,
+                // as after New and Open (only a warning), and why on a refusal.
                 ++saveAs;
-                integrated.say("Save As waits for the engine's (ADR-0203 d6)");
-                return false;
+                const bool saved = document->saveAs(temp.path() / "integrated-as.adi");
+                integrated.say(saved ? document->warning() : document->error());
+                return saved;
             }
             if (id != AppCommands::TakeSnapshot)
                 return false;
@@ -4092,11 +4371,43 @@ int main(int argc, char **argv) {
         check(document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() ==
                   opsBeforeSnapshot,
               "and writes no op");
-        check(integrated.keyPressed(juce::KeyPress('s', juce::ModifierKeys::commandModifier |
-                                                            juce::ModifierKeys::shiftModifier,
-                                                   0)) &&
-                  saveAs == 1 && !integrated.error().empty(),
-              "Save As reaches the application, which says why it cannot yet");
+        // Save As (Live 12 manual 5.4.1, 41.3): the window at 1440 x 900 points for the PR's
+        // picture, the Status Bar along its foot (ADI_UI_PARITY).
+        integrated.setSize(1440, 900);
+        auto shotIntegrated = [&integrated](const char *name) {
+            const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {});
+            if (pictures.isEmpty())
+                return;
+            juce::Image image(juce::Image::ARGB, 2 * integrated.getWidth(), 2 * integrated.getHeight(),
+                              true, juce::SoftwareImageType{});
+            {
+                juce::Graphics g(image);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                integrated.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(pictures).getChildFile(name);
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(image, *stream);
+        };
+        const auto saveAsKey = juce::KeyPress(
+            's', juce::ModifierKeys::commandModifier | juce::ModifierKeys::shiftModifier, 0);
+        integrated.say("a message a success clears");
+        check(integrated.keyPressed(saveAsKey) && saveAs == 1 && integrated.error().empty() &&
+                  document->name() == "integrated-as" &&
+                  std::filesystem::equivalent(document->store().path(), temp.path() / "integrated-as.adi") &&
+                  document->session().model().tracks.size() == 2,
+              "Ctrl/Cmd+Shift+S saves as: the document carries on in the new file, the Status Bar "
+              "cleared (Live 41.3)");
+        integrated.frame();
+        shotIntegrated("adi-save-as.png");
+        check(integrated.keyPressed(saveAsKey) && saveAs == 2 &&
+                  integrated.error().find("already exists") != std::string::npos &&
+                  document->name() == "integrated-as",
+              "the same file again is refused, the Status Bar saying why; nothing moves");
+        integrated.frame();
+        shotIntegrated("adi-save-as-refused.png");
+        integrated.say({});
         OpRequest tempoChange;
         tempoChange.opType = "project.insertTempoEvent";
         tempoChange.payload = {{"pos", 2 * textproj::kPPQ}, {"bpm", 60.0}, {"curve", 0}};
@@ -5889,6 +6200,8 @@ int main(int argc, char **argv) {
     groupTracks(commands, temp.path());
     footRows(commands, temp.path());
     newProject(commands, temp.path());
+    stripParamUndo(commands, temp.path());
+    automationArm(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     rangeSelection(commands, temp.path());

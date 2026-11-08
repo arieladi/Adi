@@ -6,7 +6,11 @@
 namespace adi::ui {
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_),
-      sessionState_(*store_) {}
+      sessionState_(*store_) {
+    // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
+    // the session's own member, alive as long as this document.
+    ops_.followOverrides(session_.overriddenLanes());
+}
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
                                                        std::string &error) {
@@ -56,38 +60,116 @@ History::SnapshotResult ProjectDocument::takeSnapshot(const std::string &name,
 std::string ProjectDocument::snapshotName(std::int64_t nowUtc, int utcOffsetMinutes) const {
     return History::defaultSnapshotName(name_, nowUtc, utcOffsetMinutes);
 }
-bool ProjectDocument::synchronise() {
-    if (realisedGeneration_ == view_.generation())
-        return true;
-    if (!session_.refresh(*store_)) {
-        error_ = session_.error();
+bool ProjectDocument::saveAs(const std::filesystem::path &path) {
+    warning_.clear();
+    // The store refuses an existing file too, in its own words; the Status Bar gets ours, with
+    // the name, since Live would have asked here and replaced it.
+    std::error_code ignored;
+    if (std::filesystem::exists(path, ignored) ||
+        std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored))) {
+        error_ = "Save As: " + media::pathUtf8(path.filename()) +
+                 " already exists; ADI never replaces a project. Choose another name.";
         return false;
     }
-    realisedGeneration_ = view_.generation();
-    for (std::size_t i = 0; i < session_.entryCount(); ++i) {
-        const auto &entry = session_.entryAt(i);
-        if (entry.retired)
-            parameterOps_.detach(entry.deviceId);
+    // No History, OpJournal or Statement of ours is alive here: every one is made per call, and
+    // the members hold the Store itself, which keeps its identity across the switch.
+    const auto result = store_->saveAs(path);
+    if (!result.ok) {
+        error_ = "Save As failed: " + result.error;
+        return false;
     }
-    parameterOps_.attachSession(session_);
+    warning_ = result.warning;
+    const auto stem = store_->path().stem().u8string();
+    name_.assign(reinterpret_cast<const char *>(stem.data()), stem.size());
+    // The same rows, read again from the new file: the generation moves, the session follows
+    // through synchronise(), and every window follows at its next frame. The store has switched
+    // by now, so false would lie ("nothing moved"): a session that fails to re-read is a warning
+    // on a save that stands, and the next synchronise() tries again.
+    view_.refresh(*store_);
+    if (!synchronise()) {
+        if (!warning_.empty())
+            warning_ += ' ';
+        warning_ += "Saved, but the session did not re-read the file: " + error_;
+    }
     error_.clear();
     return true;
+}
+bool ProjectDocument::synchronise() {
+    if (realisedGeneration_ != view_.generation()) {
+        if (!session_.refresh(*store_)) {
+            error_ = session_.error();
+            return false;
+        }
+        realisedGeneration_ = view_.generation();
+        for (std::size_t i = 0; i < session_.entryCount(); ++i) {
+            const auto &entry = session_.entryAt(i);
+            if (entry.retired)
+                parameterOps_.detach(entry.deviceId);
+        }
+        parameterOps_.attachSession(session_);
+        error_.clear();
+    }
+    // The session re-read the rows after the submitter's refresh, so an override it found there,
+    // or one a gesture set since the last frame, reaches the snapshot now.
+    followOverrides();
+    return true;
+}
+void ProjectDocument::followOverrides() {
+    const auto snapshot = view_.current();
+    if (!snapshot)
+        return;
+    const auto &lanes = session_.overriddenLanes();
+    bool agree = snapshot->automationOverridden == !lanes.empty();
+    for (const auto &lane : snapshot->automationLanes)
+        agree = agree && lane->overridden == lanes.contains(lane->id);
+    if (agree)
+        return;
+    // The same rows under a new generation: when the session had realised the view, it has
+    // nothing to re-read, and every window takes the new snapshot at its next frame. A view the
+    // session has not caught up with (a commit that skipped `synchronise()`) stays unrealised, so
+    // the next `synchronise()` re-reads it.
+    const bool realised = realisedGeneration_ == view_.generation();
+    view_.refresh(*store_, lanes);
+    if (realised)
+        realisedGeneration_ = view_.generation();
+}
+bool ProjectDocument::reenableAutomation() {
+    const bool ok = session_.reenableAutomation();
+    const std::string refusal = ok ? std::string{} : session_.error();
+    // The session reads nothing overridden now, whether or not its rebuild went through: the
+    // snapshot unlights the switch and the strip's marks go back from overridden to automated in
+    // the same call, so the window never shows a set the session no longer holds.
+    followOverrides();
+    feed_.publish(session_);
+    error_ = refusal;
+    return ok;
+}
+void ProjectDocument::setAutomationArmed(bool armed) noexcept {
+    session_.setAutomationWriteState(armed, false);
+}
+std::int64_t ProjectDocument::captureNowMs() noexcept {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+bool ProjectDocument::commitCaptured(std::vector<OpRequest> &requests) {
+    if (requests.empty())
+        return true;
+    if (!parameterOps_.writeBlobs(*store_, error_))
+        return false;
+    const auto result = ops_.submit(requests);
+    if (!result.ok) {
+        error_ = result.error;
+        return false;
+    }
+    return synchronise();
 }
 void ProjectDocument::tick(std::int64_t milliseconds) {
     synchronise();
     session_.tick(milliseconds);
     std::vector<OpRequest> requests;
-    const auto captureNow = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::steady_clock::now().time_since_epoch())
-                                .count();
-    parameterOps_.drain(captureNow, requests);
-    if (!requests.empty() && parameterOps_.writeBlobs(*store_, error_)) {
-        const auto result = ops_.submit(requests);
-        if (!result.ok)
-            error_ = result.error;
-        else
-            synchronise();
-    }
+    parameterOps_.drain(captureNowMs(), requests);
+    commitCaptured(requests);
     feed_.publish(session_);
 }
 bool ProjectDocument::autoGainStage(bool lufs) {
@@ -135,17 +217,52 @@ bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t no
     error_.clear();
     return true;
 }
-bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &,
-                                       engine::ParamEventKind, double) {
+bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param,
+                                       engine::ParamEventKind kind, double normalized) {
+    // A drag in the strip is an edit and goes through the capture, so a first touch emits its
+    // opener and undo lands on a value (ADR-0124 d4, ADR-0181 d5). The engine's window producer
+    // (`ParamOps::uiEvent`, N7, #390) sets the plug-in now and appends the gesture on End. Before
+    // it judges a value it drains what completed before it, so an older gesture it completed is
+    // committed whether or not this event was taken; a device, parameter or value it refuses
+    // outright drains nothing and leaves the older gesture to the timer's frame
+    // (docs/ENGINE-UI-PARAM-CAPTURE.md). The first accepted value overrides the parameter's
+    // automation lane for this run, which is what lights Re-Enable Automation.
+    std::vector<OpRequest> requests;
+    const bool taken = parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
+    const bool appended = !requests.empty();
+    const bool committed = commitCaptured(requests); // error_ says why when the store refused
+    // A value taken overrode its lane with no op (ADR-0162): the snapshot says so before any
+    // frame, so Re-Enable Automation lights with the knob's move.
+    followOverrides();
+    if (appended && committed)
+        feed_.publish(session_);
+    if (!committed)
+        return false;
+    if (!taken) {
+        error_ = refusalReason(id, param);
+        return false;
+    }
+    error_.clear();
+    return true;
+}
+std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &param) {
+    // The producer says only no; the Status Bar says what was wrong, in the producer's order:
+    // the device, then the parameter, then the value.
     const auto *entry = session_.entryFor(id);
-    if (!entry || entry->retired)
-        return false; // re-read on landing
-    // A drag in the strip is an edit and goes through the capture, so a first touch
-    // emits its opener and undo lands on a value (ADR-0124, ADR-0181 d5). ParamOps
-    // has a producer per plug-in and none yet for the UI: that is the engine lane's
-    // (collab/window.md, N7). Until then the strip shows values and edits nothing.
-    error_ = "Editing a parameter from the strip waits for the engine's UI producer.";
-    return false;
+    auto *instance = session_.instanceFor(id);
+    if (!entry || entry->retired || entry->placeholder || !instance)
+        return "That device is not loaded, so its values cannot be edited.";
+    const device::ParamDescriptor *descriptor = nullptr;
+    for (std::int32_t i = 0; i < instance->paramCount() && !descriptor; ++i)
+        if (const auto *d = instance->paramAt(i); d && d->id == param)
+            descriptor = d;
+    if (!descriptor)
+        return "The plug-in has no parameter \"" + param + "\".";
+    if (descriptor->missing)
+        return "The plug-in no longer has the parameter \"" + descriptor->name + "\".";
+    if (!descriptor->automatable)
+        return "The plug-in does not let \"" + descriptor->name + "\" be edited from here.";
+    return "The plug-in did not take the value.";
 }
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
     session_.prepare(rate, frames);
