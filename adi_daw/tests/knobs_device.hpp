@@ -9,6 +9,7 @@
 #include "juce/device_model.hpp"
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <memory>
 #include <string>
 namespace adi::test {
@@ -22,8 +23,31 @@ class Knobs final : public device::DeviceInstance {
         params_[0].hasRealRange = true;
         params_[0].minReal = 20;
         params_[0].maxReal = 20000;
+        // The defaults are where the knobs start, so Return to Default (manual 41.6) is a move
+        // back to where a test found them.
+        params_[0].defaultValue = device::ParamValue::withReal(0.5, hertz(0.5));
         params_[1].id = "gain";
         params_[1].name = "Gain";
+        params_[1].defaultValue = device::ParamValue::fromNormalized(0.25);
+    }
+    // Cutoff's Hz over its range, linear, as a test needs no curve.
+    static double hertz(double normalized) noexcept { return 20 + normalized * 19980; }
+    // The plug-in's own words for a value (ADR-0181 d3), as a real plug-in gives them, so the strip
+    // reads as Live's Device View does: Cutoff in Hz or kHz, Gain in dB over -36 to +12.
+    std::string paramText(const std::string &id, double normalized) const override {
+        char text[32];
+        if (id == "cutoff") {
+            const double hz = hertz(normalized);
+            if (hz < 1000)
+                std::snprintf(text, sizeof text, "%.0f Hz", hz);
+            else
+                std::snprintf(text, sizeof text, "%.1f kHz", hz / 1000);
+        } else if (id == "gain") {
+            std::snprintf(text, sizeof text, "%.1f dB", -36 + normalized * 48);
+        } else {
+            return {};
+        }
+        return text;
     }
     const device::DeviceIdentity &identity() const noexcept override { return identity_; }
     bool loaded() const noexcept override { return true; }
@@ -36,7 +60,7 @@ class Knobs final : public device::DeviceInstance {
         for (std::size_t i = 0; i < 2; ++i)
             if (params_[i].id == id) {
                 const auto value = values_[i].load(std::memory_order_relaxed);
-                return i == 0 ? device::ParamValue::withReal(value, 20 + value * 19980)
+                return i == 0 ? device::ParamValue::withReal(value, hertz(value))
                               : device::ParamValue::fromNormalized(value);
             }
         return {};

@@ -2982,14 +2982,60 @@ void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
     }
-    std::size_t rows = 0;
-    for (const auto &p : document->session().model().pluginParams)
-        rows += p.deviceId == 3 ? 1 : 0;
-    check(rows == 1 && root.command(AppCommands::Undo) && root.undoTitle(false) == titleBefore, "and one Undo takes the whole drag back");
-    rows = 0;
-    for (const auto &p : document->session().model().pluginParams)
-        rows += p.deviceId == 3 ? 1 : 0;
-    check(rows == 0, "the parameter is never touched again, as before the drag (ADR-0124 d4)");
+    auto rowsOf = [&] {
+        std::size_t rows = 0;
+        for (const auto &p : document->session().model().pluginParams)
+            rows += p.deviceId == 3 ? 1 : 0;
+        return rows;
+    };
+    auto rowValue = [&] {
+        for (const auto &p : document->session().model().pluginParams)
+            if (p.deviceId == 3 && p.paramId == "cutoff")
+                return p.normalized;
+        return -1.0;
+    };
+    check(root.devices.panels[0]->controls[0]->getWantsKeyboardFocus() && !cutoff.getWantsKeyboardFocus() &&
+              root.devices.panels[0]->controls[0]->getNumChildComponents() > 0,
+          "a click on the knob lands the focus on its control: the slider declines it (manual 41.6's keys need it)");
+    // Live 12 manual 41.6: Delete on a control is Return to Default, where the device's Delete is
+    // Delete (row 6). Through the peer, as the key arrives: the focused control takes it.
+    {
+        UiPeerRoot host;
+        host.setSize(root.getWidth(), root.getHeight());
+        host.addAndMakeVisible(root);
+        host.setVisible(true);
+        host.addToDesktop(0);
+        std::vector<std::string> submitted;
+        root.devices.submit = [&](const std::string &op, Payload) {
+            submitted.push_back(op);
+            return true;
+        };
+        auto &control = *root.devices.panels[0]->controls[0];
+        control.grabKeyboardFocus();
+        auto *peer = host.getPeer();
+        const juce::KeyPress del(juce::KeyPress::deleteKey);
+        check(peer != nullptr && control.hasKeyboardFocus(false) && peer->handleKeyPress(del) && submitted.empty() &&
+                  knobs != nullptr && std::abs(knobs->getParam("cutoff").normalized - .5) < 1e-9 &&
+                  root.devices.panels.size() == 1 && root.error().empty(),
+              "Delete on the focused knob returns the parameter to the plug-in's default and removes no device");
+        document->tick(0);
+        root.frame();
+        check(root.undoTitle(false) == "Undo UI knobs: Cutoff" && rowsOf() == 1 && std::abs(rowValue() - .5) < 1e-9 &&
+                  std::abs(cutoff.getValue() - .5) < 1e-9,
+              "Return to Default is one undo step of its own, and the knob shows the default");
+        root.devices.panels[0]->grabKeyboardFocus();
+        check(root.devices.panels[0]->hasKeyboardFocus(false) && peer->handleKeyPress(del) &&
+                  submitted == std::vector<std::string>{"device.remove"},
+              "Delete on the focused device is still Delete");
+        root.devices.submit = nullptr;
+        host.removeChildComponent(&root);
+        host.removeFromDesktop();
+    }
+    check(root.command(AppCommands::Undo) && root.undoTitle(false) == "Undo UI knobs: Cutoff" && rowsOf() == 1 &&
+              std::abs(rowValue() - .8) < 1e-9,
+          "one Undo takes Return to Default back to where the drag left the parameter");
+    check(root.command(AppCommands::Undo) && root.undoTitle(false) == titleBefore && rowsOf() == 0,
+          "and one more takes the whole drag back: the parameter is never touched again, as before it (ADR-0124 d4)");
     document->release();
 }
 // The Mix View (ADR-0209, ruled 1 November): F4 and the control bar's Mix button open it in place

@@ -340,8 +340,12 @@ int main(int argc, char **argv) {
             };
             const auto *panel = panelOf(3);
             check(panel != nullptr && panel->track == 2 && panel->records.size() == 2 &&
-                      panel->records[0].id == "cutoff" && std::abs(panel->records[0].playing - .5) < 1e-9,
-                  "the strip's feed lists the device on its track, its parameters by the plug-in's ids");
+                      panel->records[0].id == "cutoff" && std::abs(panel->records[0].playing - .5) < 1e-9 &&
+                      panel->records[0].text == "10.0 kHz" && panel->records[1].text == "-24.0 dB" &&
+                      panel->defaults.size() == 2 && std::abs(panel->defaults.at("cutoff") - .5) < 1e-9 &&
+                      std::abs(panel->defaults.at("gain") - .25) < 1e-9,
+                  "the strip's feed lists the device on its track, its parameters by the plug-in's ids, in the "
+                  "plug-in's own words, with their defaults (manual 41.6's Return to Default)");
             const auto opsBeforeDrag = strip->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
             auto headTxn = [&] {
                 const auto head = strip->ops().nextUndo();
@@ -414,7 +418,7 @@ int main(int argc, char **argv) {
             check(!strip->parameterGesture(99, "cutoff", ParamEventKind::Begin, .5) &&
                       strip->error() == "That device is not loaded, so its values cannot be edited." &&
                       !strip->parameterGesture(3,"nothing", ParamEventKind::Begin, .5) &&
-                      strip->error() == "The plug-in did not take the value.",
+                      strip->error() == "The plug-in has no parameter \"nothing\".",
                   "a device that is not loaded and a parameter the plug-in has not are refused, each with its reason");
             check(strip->parameterGesture(3,"cutoff", ParamEventKind::Begin, .8) &&
                       strip->parameterGesture(3,"cutoff", ParamEventKind::Value, .4) &&

@@ -61,7 +61,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // the engine's own window producer (`ParamOps::uiEvent`). A value nothing brackets closes on
     // the drain's quiet timer, in `tick()`. False when THIS event was refused (a device that is
     // not loaded, a missing or non-automatable parameter, a value the plug-in did not take), with
-    // `error()` saying so; an older gesture that completed in the same call is committed anyway.
+    // `error()` saying which. An older gesture the producer's own drain completed on the way to
+    // judging the value is committed by this call; a device, parameter or value the producer
+    // refuses outright drains nothing, and the older gesture commits on the timer's next frame.
     bool parameterGesture(std::int64_t id, const std::string &param, engine::ParamEventKind,
                           double normalized);
     // Auto Gain Stage (ADR-0195 d4): one offline command, one undo step.
@@ -83,6 +85,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // blobs first (ADR-0142), then ONE transaction, then the session follows. Nothing appended
     // is nothing done. False with `error()` set when the store refused.
     bool commitCaptured(std::vector<OpRequest> &requests);
+    // Why the producer refused a gesture, for the Status Bar: the device, the parameter or the
+    // value, in that order.
+    std::string refusalReason(std::int64_t id, const std::string &param);
     std::unique_ptr<Store> store_;
     std::string name_;
     engine::ProjectView view_;

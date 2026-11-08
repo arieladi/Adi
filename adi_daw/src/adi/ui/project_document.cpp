@@ -181,10 +181,12 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
                                        engine::ParamEventKind kind, double normalized) {
     // A drag in the strip is an edit and goes through the capture, so a first touch emits its
     // opener and undo lands on a value (ADR-0124 d4, ADR-0181 d5). The engine's window producer
-    // (`ParamOps::uiEvent`, N7, #390) sets the plug-in now and appends the gesture on End; it
-    // drains what completed before it too, so what it appended is committed whether or not this
-    // event was taken (docs/ENGINE-UI-PARAM-CAPTURE.md). The first accepted value overrides the
-    // parameter's automation lane for this run, which is what lights Re-Enable Automation.
+    // (`ParamOps::uiEvent`, N7, #390) sets the plug-in now and appends the gesture on End. Before
+    // it judges a value it drains what completed before it, so an older gesture it completed is
+    // committed whether or not this event was taken; a device, parameter or value it refuses
+    // outright drains nothing and leaves the older gesture to the timer's frame
+    // (docs/ENGINE-UI-PARAM-CAPTURE.md). The first accepted value overrides the parameter's
+    // automation lane for this run, which is what lights Re-Enable Automation.
     std::vector<OpRequest> requests;
     const bool taken = parameterOps_.uiEvent(id, param, kind, normalized, captureNowMs(), requests);
     const bool appended = !requests.empty();
@@ -194,14 +196,30 @@ bool ProjectDocument::parameterGesture(std::int64_t id, const std::string &param
     if (!committed)
         return false;
     if (!taken) {
-        const auto *entry = session_.entryFor(id);
-        error_ = !entry || entry->retired || entry->placeholder
-                     ? "That device is not loaded, so its values cannot be edited."
-                     : "The plug-in did not take the value.";
+        error_ = refusalReason(id, param);
         return false;
     }
     error_.clear();
     return true;
+}
+std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &param) {
+    // The producer says only no; the Status Bar says what was wrong, in the producer's order:
+    // the device, then the parameter, then the value.
+    const auto *entry = session_.entryFor(id);
+    auto *instance = session_.instanceFor(id);
+    if (!entry || entry->retired || entry->placeholder || !instance)
+        return "That device is not loaded, so its values cannot be edited.";
+    const device::ParamDescriptor *descriptor = nullptr;
+    for (std::int32_t i = 0; i < instance->paramCount() && !descriptor; ++i)
+        if (const auto *d = instance->paramAt(i); d && d->id == param)
+            descriptor = d;
+    if (!descriptor)
+        return "The plug-in has no parameter \"" + param + "\".";
+    if (descriptor->missing)
+        return "The plug-in no longer has the parameter \"" + descriptor->name + "\".";
+    if (!descriptor->automatable)
+        return "The plug-in does not let \"" + descriptor->name + "\" be edited from here.";
+    return "The plug-in did not take the value.";
 }
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
     session_.prepare(rate, frames);
