@@ -59,6 +59,57 @@ Setting device(std::string key, Type type, std::string page, std::string label, 
     return s;
 }
 
+// The Record rows of the plan's R-e (`docs/PLAN.md` M0, §6.2), each with its shape check as
+// audio.channelConfig has (N20): the registry refuses a row of the wrong shape and nothing more;
+// the fields themselves belong to the window that writes them.
+
+// WIN-02 (ADR-0063 d2; ADR-0180 d3, d7): one record per window, where it reopens.
+bool checkWindowPlaces(const Value& table, std::string& why) {
+    for (const auto& [window, place] : table.items()) {
+        if (!place.is_object()) {
+            why = "window.places[" + window + "] takes a record";
+            return false;
+        }
+    }
+    return true;
+}
+
+// WIN-04 (ADR-0180 d6): a command's stable id mapped to its canonical chord texts, [] for none.
+bool checkShortcutOverrides(const Value& table, std::string& why) {
+    for (const auto& [command, chords] : table.items()) {
+        if (!chords.is_array() ||
+            !std::all_of(chords.begin(), chords.end(), [](const Value& c) { return c.is_string(); })) {
+            why = "shortcuts.overrides[" + command + "] takes a list of chord texts";
+            return false;
+        }
+    }
+    return true;
+}
+
+// SRF-05: the home of the per-port rows `midi.port.*`. One record per port under its identifier;
+// every field is a midi.port.* row and is validated by it.
+bool checkMidiPorts(const Value& table, std::string& why) {
+    for (const auto& [port, fields] : table.items()) {
+        if (!fields.is_object()) {
+            why = "midi.ports[" + port + "] takes a record";
+            return false;
+        }
+        for (const auto& [field, v] : fields.items()) {
+            const Setting* row = adi::settings::find("midi.port." + field);
+            if (!row) {
+                why = "midi.ports[" + port + "] has no field named '" + field + "'";
+                return false;
+            }
+            std::string inner;
+            if (!adi::settings::validate(*row, v, inner)) {
+                why = "midi.ports[" + port + "]: " + inner;
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 // Live's sections within its tabs (Live 12 manual 2.3; the Audio sections as Live 11 shows them,
 // collab/window/parity-settings.md row 4). A setting Live has sits in Live's section; ADI's own
 // settings on a Live tab have none and follow Live's sections there, in the tab's own group
@@ -122,6 +173,7 @@ void liveSections(std::vector<Setting>& r) {
         {"midi.controlSurfaceScripts", "Control Surface"},
         {"midi.autoAddControllers", "Control Surface"},
         {"midi.takeoverMode", "Control Surface"},
+        {"midi.ports", "MIDI Ports"},
         // File & Folder
         {"files.sampleEditor", "Sample Editor"},
         {"files.sampleEditorOpens", "Sample Editor"},
@@ -442,7 +494,13 @@ void catalogueSettings(std::vector<Setting>& r) {
     r.push_back(make("record.startPlaybackWithRecord", Type::Bool, "Record, Warp & Launch", "Start Playback with Record",
                      "Pressing Record also starts playback.", true));
     r.push_back(choice("record.shortSampleMode", "Record, Warp & Launch", "Loop/Warp Short Samples",
-                       "Whether a short sample imports looped and warped.", {"auto", "on", "off"}, "auto"));
+                       "Live's four choices for a short sample: Unwarped One Shot, Warped One Shot, "
+                       "Warped Loop, or Auto (Live's classifier). Nothing runs on drop: every drop "
+                       "arrives clean, whatever its length (ADR-0203 d12; ADR-0214 d1). The choice "
+                       "governs what Warp, pressed on the clip, and the import prompt's Warp choice "
+                       "do (ADR-0214 d2, d3); the short/long threshold is provisional at 60 s until "
+                       "it is read on Live 12.4.",
+                       {"unwarpedOneShot", "warpedOneShot", "warpedLoop", "auto"}, "auto"));
     r.push_back(choice("record.defaultWarpMode", "Record, Warp & Launch", "Default Warp Mode",
                        "The warp mode new clips get. ADI's stretch is its own (ADR-0061); the "
                        "names follow Live.",
@@ -499,6 +557,20 @@ void catalogueSettings(std::vector<Setting>& r) {
                        "Stored per port.", "25", {"24", "25", "29.97df", "30"}));
     r.push_back(device("midi.port.mtcStartOffset", Type::Text, "Tempo & MIDI", "MTC Start Offset",
                        "Timecode at the song start, hh:mm:ss:ff. Stored per port.", "00:00:00:00"));
+    {
+        // SRF-05 (`docs/PLAN.md`; R-e): the per-port rows above had no home, Device scope being
+        // what AppSettings::write refuses. Their home is one App record, a port's fields under
+        // its identifier (healed by name when the identifier changes), kept with the application
+        // as audio.channelConfig keeps Live's channel configuration (N20).
+        Setting s = make("midi.ports", Type::Record, "Tempo & MIDI", "MIDI Ports",
+                         "Live's MIDI Ports table: for each port, under its identifier, Track, Sync, "
+                         "Remote and MPE, the MIDI Clock Sync Delay, the Sync Type and the MTC frame "
+                         "rate and start offset, each a midi.port.* row. A port with no record uses "
+                         "their defaults (the plan's SRF-05).",
+                         Value::object());
+        s.check = checkMidiPorts;
+        r.push_back(std::move(s));
+    }
     r.push_back(make("midi.resetOnStop", Type::Bool, "Tempo & MIDI", "Reset on stop",
                      "Send reset events when the transport stops (Cubase).", true));
     r.push_back(make("midi.insertResetAfterRecord", Type::Bool, "Tempo & MIDI", "Insert reset events after record",
@@ -588,10 +660,9 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "Show the Link switch in the control bar, as Live does (ADR-0203 d11).", true));
     r.push_back(make("sync.linkStartStopSync", Type::Bool, "Link", "Start Stop Sync",
                      "Share start and stop with Link peers.", false));
-    r.push_back(choice("sync.clockSource", "Sync", "Sync in", "Where tempo and position come from (Bitwig).",
-                       {"internal", "midiClock", "link"}, "internal"));
-    r.push_back(ranged("sync.tempoResponsiveness", Type::Int, "Sync", "Incoming tempo responsiveness",
-                       "How quickly the tempo follows incoming MIDI clock (Bitwig).", 50, 0, 100));
+    // No "sync in" chooser and no incoming-tempo responsiveness slider: Live lets Link and MIDI
+    // sync run together, so Bitwig's chooser goes (ADR-0203 d9; the plan's TM-LS-03 and R-e). MIDI
+    // sync is the per-port midi.port.* rows, their home midi.ports.
     r.push_back(ranged("sync.lanJitterBufferMs", Type::Int, "Link", "LAN audio: jitter buffer",
                        "Default for new LAN audio nodes (ADR-0126); each node keeps its own.", 40, 5, 500));
     r.push_back(choice("sync.lanCodec", "Link", "LAN audio: codec", "Default for new LAN audio nodes (ADR-0126).",
@@ -654,6 +725,18 @@ void catalogueSettings(std::vector<Setting>& r) {
                      "Floating panels reopen where they were, per display (ADR-0063).", true));
     r.push_back(make("windows.snapshotName", Type::Text, "Windows", "Snapshot name",
                      "The default name File > Take Snapshot offers (ADR-0128).", "[Project] [YYYY-MM-DD HH:MM]"));
+    {
+        // WIN-02 (`docs/PLAN.md`; R-e): the one placement rule's record.
+        Setting s = make("window.places", Type::Record, "Windows", "Window places",
+                         "Where the main window and Settings reopen: one record per window holding "
+                         "its display, the area shown, its rectangle and whether it was full screen; "
+                         "saved on move and checked again when the displays change (the plan's "
+                         "WIN-02; ADR-0063 d2; ADR-0180 d3, d7). Floating windows keep theirs in "
+                         "the project's ui_view.",
+                         Value::object());
+        s.check = checkWindowPlaces;
+        r.push_back(std::move(s));
+    }
     r.push_back(make("devices.pdAnalyserOpen", Type::Bool, "Devices", "Pd analyser view open",
                      "A Pd device's analyser view opens with it (ADR-0116).", false));
 
@@ -685,6 +768,33 @@ void catalogueSettings(std::vector<Setting>& r) {
                        {"live", "cubase", "bitwig"}, "live"));
     r.push_back(make("shortcuts.computerMidiKeyboard", Type::Bool, "Shortcuts", "Computer MIDI keyboard",
                      "The computer keyboard plays notes (Bitwig, Live).", false));
+    {
+        // WIN-04 (`docs/PLAN.md`; R-e): the user's keys on top of the key map.
+        Setting s = make("shortcuts.overrides", Type::Record, "Shortcuts", "Shortcut overrides",
+                         "Your own keys on top of the key map: a command's stable id mapped to its "
+                         "canonical chord texts, an empty list for none; re-applied after every "
+                         "reload and compared before it is written, so a preset switch keeps them "
+                         "(the plan's WIN-04; ADR-0180 d6).",
+                         Value::object());
+        s.check = checkShortcutOverrides;
+        r.push_back(std::move(s));
+    }
+
+    // --- Control (catalogue IV §8): win's rows for the one control listener (ADR-0232 d1, d7;
+    // the plan's CTL-05 and CTL-09). Off by default, loopback only; the page that shows the token,
+    // the pairing code and the clients is the window's. Never the agent's.
+    r.push_back(make("control.enabled", Type::Bool, "Control", "Control API",
+                     "Start the one control listener: JSON-RPC 2.0 over one loopback WebSocket, "
+                     "shared by agents, surfaces, scripts and the test surface (ADR-0232 d1). Off "
+                     "by default; nothing past loopback (ADR-0039 d4).",
+                     false));
+    r.push_back(ranged("control.port", Type::Int, "Control", "Port",
+                       "The listener's port on 127.0.0.1; 0 means any free port (ADR-0232 d1).",
+                       0, 0, 65535));
+    r.push_back(make("control.allowedOrigins", Type::Text, "Control", "Allowed origins",
+                     "Browser origins the listener accepts, comma-separated; a request whose Origin "
+                     "is not listed is refused (the plan's CTL-05). Empty: none.",
+                     ""));
 }
 
 std::vector<Setting> build() {
@@ -758,6 +868,12 @@ std::vector<Setting> build() {
                      "latency and may be out of sync with compensated tracks (Live 12 manual, "
                      "Options menu; ADR-0203). Nothing is bypassed.",
                      false));
+    r.push_back(make("audio.delayCompensation", Type::Bool, "Audio", "Delay Compensation",
+                     "Live's Options > Delay Compensation: on, every track is delayed to line up "
+                     "with the slowest chain (ADR-0172); off, nothing is compensated and Track "
+                     "Delay is unavailable until it is on again (ADR-0203 d4; the plan's MX-04). "
+                     "Drives Session::setDelayCompensation.",
+                     true));
     r.push_back(choice("audio.linuxBackend", "Audio", "Linux backend",
                        "ALSA directly, or PipeWire through its JACK interface (ADR-0145 d4).",
                        {"ALSA", "PipeWire/JACK"}, "PipeWire/JACK"));
