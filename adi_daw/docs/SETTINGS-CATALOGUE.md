@@ -98,8 +98,8 @@ this file by hand.
 
 | Setting | ADI | Status |
 |---|---|---|
-| Show Tempo Follower Toggle | Tempo Follower is a real-time tempo estimator on an audio input. WISH — a P2 feature, the setting arrives with it. | WISH |
-| Tempo Follower: Input Channel (Ext. In) | With the feature | WISH |
+| Show Tempo Follower Toggle | Tempo Follower is a real-time tempo estimator on an audio input. Not needed (ADR-0203 d9): no FEATURES row, no mention in the document, so no setting. | REJECTED ADR-0203 d9 |
+| Tempo Follower: Input Channel (Ext. In) | Goes with the Tempo Follower (ADR-0203 d9) | REJECTED ADR-0203 d9 |
 | Resync External Hardware: Show Resync Button | With external sync | BACKLOG P2 |
 | Control Surface 1-6: Control Surface / Input / Output / Dump | Same table; the script model is Bitwig's (controller extensions, §0.2.2.3) with auto-add when a known device appears. Push support is Ableton's and not assumed. | DECIDED ADR-0125 R-14 |
 | Takeover Mode | Same three, global, overridable per controller | DECIDED parity |
@@ -111,7 +111,7 @@ this file by hand.
 | Per port: MIDI Clock Sync Delay | Same; Bitwig offers an offset per output path too (§0.2.2.4) — both directions | DECIDED parity |
 | Per port: Sync Type | Same | DECIDED parity |
 | Per port: MTC Frame Rate, MTC Start Offset | Same | DECIDED parity |
-| MIDI-CI support | Cubase p.1609: automatic detection and setup of MIDI-CI devices. MIDI 2.0 property exchange: a controller reads the parameter feed and labels itself (ADR-0185 d3). Planned; it waits on the OS MIDI stacks exposing MIDI-CI. | BACKLOG P3, ADR-0185 |
+| MIDI-CI support | Cubase p.1609: automatic detection and setup of MIDI-CI devices. MIDI 2.0 property exchange: a controller reads the parameter feed and labels itself (ADR-0185 d3). JUCE runs MIDI-CI over MIDI 1.0 SysEx on plain ports, so it waits only on its priority (SRF-11). | BACKLOG P3, ADR-0185 |
 | Chase events | Cubase p.1610: when locating, replay the controllers, program changes and pitch bend that would have been in effect. Not optional for correct playback; a chooser of which event types, default all. | DECIDED ADR-0125 R-15 |
 | MIDI Thru, Reset on Stop, Insert Reset Events after Record | Cubase p.1610. Reset on stop and the recorded reset event are adopted as defaults; MIDI Thru is a track monitor setting, not global (Live §17.1). | DIRECTION |
 | MIDI Filter (record / thru / channels / controllers) | Cubase p.1613. Adopted as a small page: message types and channels never recorded or never echoed. | DIRECTION |
@@ -178,7 +178,7 @@ this file by hand.
 | Clip Update Rate | Same | DECIDED parity |
 | Record Session automation in | Session View returns last (ADR-0101); the switch arrives with it. | BACKLOG ADR-0101 |
 | Start Playback with Record | Same, Shift included | DECIDED parity |
-| Loop/Warp Short Samples | Same | DECIDED parity |
+| Loop/Warp Short Samples | Live's four choices (Unwarped One Shot, Warped One Shot, Warped Loop, Auto) in `record.shortSampleMode`, but nothing runs on drop: every drop arrives clean, whatever its length (the director's deviation, ADR-0203 d12, confirmed for short samples by his answer Q-E). Live's short-sample result comes one press later, when Warp is pressed on the clip, and from the import prompt's Warp choice; the short/long threshold is provisional at 60 s until read on Live 12.4. | DECIDED ADR-0214 |
 | Auto-Warp Long Samples | **Off by default**, a director-approved deviation: a dropped file plays raw. Pressing Warp runs Live's Auto-Warp on demand (tempo detected, 1.1.1 on the first downbeat, fitted to the grid), then Bitwig's choices (detect tempo changes or fixed; first beat or sample start); with no clear beat, an inline BPM field. | DECIDED ADR-0132 d6-d7 |
 | Default Warp Mode | Same set and names. Behind them: Beats a native slice player, Tones Rubber Band R3, Texture a native granular player, Re-Pitch resampling on libsamplerate, Complex and Complex Pro R3 (ADR-0188 d2) | DECIDED ADR-0061 |
 | Create Fades on Clip Edges | **Off by default**, a director-approved deviation. Stated beside the switch: a clip that starts or ends away from a zero crossing clicks, which the 4 ms edge fade prevents. | DECIDED ADR-0132 d6 |
@@ -193,7 +193,7 @@ this file by hand.
 | Retrospective capture | MIDI: always listening, one Capture command, tempo and loop length guessed when stopped (Live). Audio: a RAM ring per armed or monitored input, **30 s by default** (Cubase *Audio Pre-Record Seconds*), 11.5 MB per stereo input at 48 kHz. | DECIDED ADR-0132 d9 |
 | Keep Monitoring Latency in Recorded Audio | Per track, same default; the global default lives here | DECIDED parity |
 | Auto monitoring mode | Cubase p.1623: manual / while record-enabled / while record running / tapemachine. Live's per-track model is kept; *tapemachine* is added as a fourth track option because it is what a tracking engineer expects. | DIRECTION |
-| Loop recording: takes, discard incomplete | REAPER §22.6.7: discard incomplete first/last takes; threshold for a complete take. Adopted with take lanes (comping is P0, FEATURES §3). | DIRECTION |
+| Loop recording: takes, discard incomplete | REAPER §22.6.7: discard incomplete first/last takes; threshold for a complete take. Adopted with take lanes (comping is P1, FEATURES §3, Live's model: the main lane plays, take lanes are auditioned, ADR-0225). | DIRECTION |
 
 ## Part II — Live 12's ten tabs, setting by setting / 10. Licenses & Updates
 
@@ -234,7 +234,7 @@ this file by hand.
 | Behavior (§0.2.2.1): audio import (original speed / stretch; detect tempo changes / assume fixed; insert from first beat / sample start); open on start; template; early access | Part II §9 and §6. The three import choices are the wording ADI uses for Live's Auto-Warp switch. | DIRECTION |
 | Audio (§0.2.2.2): audio system; input and output device; sample rate; block size; named busses; Role per output (speakers / headphones / output) | Part II §3 (R-11). Named busses with roles are adopted; they are what the cue output and the virtual device endpoint names attach to. | DECIDED ADR-0125 R-11 |
 | Controllers (§0.2.2.3): takeover; auto-add; controller extensions per device; generic keyboard and 8-knob presets; enable/disable; port assignment | Part II §5 (R-14). The extension model over Live's fixed surface list. | DECIDED ADR-0125 R-14 |
-| Synchronization (§0.2.2.4): sync in: internal / MIDI clock (with input offset and a responsiveness slider) / Link; sync out per port: clock, start/stop, always send, SPP, MTC, per-port offset, MTC rate | A *Sync* page (Part IV) that merges Live's per-port table with Bitwig's per-port outputs and adds PTP (ADR-0107). The responsiveness slider for incoming tempo is adopted. | DIRECTION |
+| Synchronization (§0.2.2.4): sync in: internal / MIDI clock (with input offset and a responsiveness slider) / Link; sync out per port: clock, start/stop, always send, SPP, MTC, per-port offset, MTC rate | A *Sync* page (Part IV) that merges Live's per-port table with Bitwig's per-port outputs and adds PTP (ADR-0107). Bitwig's sync-in chooser and its responsiveness slider are not taken: Link and MIDI sync run together, as Live (ADR-0203 d9). | DIRECTION |
 | Shortcuts (§0.2.2.5): every command mappable to keys and to MIDI; named mapping sets; computer keyboard as MIDI keyboard | A *Shortcuts* page. Live has none (its map is fixed, §41). Cubase (§65) and REAPER (§15) have editors with presets, macros and import/export. Adopted with presets named after the three references, so a Cubase user gets Cubase's keys on day one — the parity gate's counterpart for the keyboard. | DECIDED ADR-0125 R-25 |
 | User Interface (§0.2.2.6): language; display profile (tablet, §18); scaling per display; contrast; playhead follow; perceptual waveforms | Part II §1 and §2. Display profiles: not adopted (no tablet UI planned). | DIRECTION |
 | Recording (§0.2.2.6): auto-arm track types; pre-roll and metronome during it; record quantization | Part II §9. | DIRECTION |
@@ -275,7 +275,7 @@ this file by hand.
 | Setting | ADI | Status |
 |---|---|---|
 | Link | Part II §4 | DECIDED parity |
-| MIDI clock and MTC, in and out, per port, with offsets | Live's per-port table (Part II §5) plus Bitwig's per-port outputs and the tempo responsiveness slider (Part III §2) | DIRECTION |
+| MIDI clock and MTC, in and out, per port, with offsets | Live's per-port table (Part II §5), kept per port in `midi.ports`, plus Bitwig's per-port outputs (Part III §2); no sync-in chooser and no responsiveness slider (ADR-0203 d9) | DIRECTION |
 | LAN audio node | ADR-0126: defaults for new LAN nodes (jitter buffer, codec, bitrate) and the peer list; each node's own settings live in the device. | DECIDED ADR-0126 |
 | PTP | ADR-0107: a shared timebase with AudioGridder servers, with each server's offset and jitter shown. A whitelist of network adapters, PTP domains and **grandmasters by IP and MAC address**; announcements from anything else, a smart TV on the same LAN, are ignored. On Windows an in-process user-space client ships natively. | DECIDED ADR-0145 d7 |
 | AudioGridder servers | ADR-0053: the list of remote hosts, found by mDNS/Bonjour, with status and measured round trip. Each server's plugin list is cached **per application**, so the browser works offline; a project keeps only the plugins it uses. Without the server a device loads locally, and failing that as a placeholder keeping its state; **Remap Remote Host** moves every device on one server to another. AudioGridder is MIT. | DECIDED ADR-0145 d6 |
