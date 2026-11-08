@@ -142,7 +142,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     bool midi_ = false, audio_ = true, inGroup_ = false;
     const void *devices_ = nullptr; // the device publication the strip last read
     int label_ = 0; // what the activator shows: a track's number, or -1 - a return's place
-    // Throws a return's Pre/Post switch: every send into it moved, one undo step.
+    // Throws a return's own Pre/Post switch (`TrackNode::returnSendTap`): one `return.setSendTap`,
+    // one undo step, which the engine spreads over every send into the return.
     void throwPrePost(std::int64_t ret);
     // The return each send goes to; the snapshot's returns, refilled on each change; whether each
     // send is on.

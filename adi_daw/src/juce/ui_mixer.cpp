@@ -194,8 +194,9 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
     solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
-    // A return's Pre/Post (ADR-0203 d3), where a track has Arm: every send into it taps before or
-    // after the fader. Shown on a return's row only.
+    // A return's Pre/Post (ADR-0203 d3), where a track has Arm: the return's own switch
+    // (`TrackNode::returnSendTap`, #405), which every send into it follows, now and as each new one
+    // connects. Shown on a return's row only.
     prePost.setTitle("Pre/Post");
     prePost.setTooltip("Whether this return's sends tap before or after their tracks' faders.");
     prePost.setClickingTogglesState(false);
@@ -753,15 +754,12 @@ void MixerStrip::syncSends(const std::vector<DevicePanelData> *devices) {
 }
 void MixerStrip::throwPrePost(std::int64_t ret) {
     // From the CURRENT cell (ADR-0201): the return's own switch thrown, one op and one undo step,
-    // which the engine spreads over every send into the return; it holds with no send (#405).
+    // which the engine spreads over every send into the return; it holds with no send (#405), so
+    // setReturnPre never refuses and there is nothing to say.
     const auto current = panel_.root.current();
     if (!current)
         return;
-    auto edit = setReturnPre(ret, !returnPre(current->findTrack(ret)));
-    if (!edit.refusal.empty())
-        panel_.root.say(edit.refusal);
-    else
-        panel_.root.submitEdits(std::move(edit.ops));
+    panel_.root.submitEdits(std::move(setReturnPre(ret, !returnPre(current->findTrack(ret))).ops));
 }
 std::unique_ptr<juce::Slider> MixerStrip::makeSend(std::size_t index) {
     auto knob = std::make_unique<juce::Slider>();

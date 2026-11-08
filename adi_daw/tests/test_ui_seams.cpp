@@ -1137,6 +1137,35 @@ void sendsAsBatches() {
               !ui::returnPre(view.current()->tracks, 11) && !ui::returnPre(view.current()->tracks, 2) &&
               !ui::returnPre(view.current()->tracks, 12),
           "a return with no choice yet reads Post from its sends; a track, or no track, reads Post");
+    // An older file: every send into A written Pre by the per-send op with no choice on the return
+    // (what `allowSendEdgeTapEdit` allows while none is held). The return reads Pre without holding
+    // it, and a new send into it still carries `routing.setPreFader`, as the engine's own
+    // `prepareSendToReturn` adds it. Undone again before the return's own switch is thrown.
+    {
+        std::vector<OpRequest> older;
+        for (const auto id : {first, ui::findSend(view.current()->sends, 10, 10)->id}) {
+            OpRequest r;
+            r.opType = "routing.setPreFader";
+            r.payload = {{"id", id}, {"pre", true}};
+            r.label = "Older file";
+            older.push_back(std::move(r));
+        }
+        check(sub.submit(std::move(older)).ok && ui::returnPre(view.current()->tracks, 10) &&
+                  !view.current()->findTrack(10)->returnSendTap->explicitChoice &&
+                  ui::findSend(view.current()->sends, 2, 10)->preFader && ui::findSend(view.current()->sends, 10, 10)->preFader,
+              "an older file's sends into A all Pre with no choice written: the return reads Pre without holding it");
+        auto inherited = ui::setSend(*view.current(), 3, 10, -9);
+        check(inherited.ops.size() == 3 && inherited.ops[0].opType == "routing.connect" &&
+                  inherited.ops[1].opType == "routing.setPreFader" &&
+                  inherited.ops[1].payload["id"] == inherited.ops[0].payload["id"] && inherited.ops[1].payload["pre"] == true &&
+                  inherited.ops[2].opType == "routing.setGain",
+              "a new send into it carries routing.setPreFader, as the engine's prepareSendToReturn does");
+        check(sub.submit(std::move(inherited.ops)).ok && sub.nextUndo()->opCount == 3 &&
+                  ui::findSend(view.current()->sends, 3, 10)->preFader && sub.undo().ok &&
+                  ui::findSend(view.current()->sends, 3, 10) == nullptr && sub.undo().ok &&
+                  !ui::returnPre(view.current()->tracks, 10) && !ui::findSend(view.current()->sends, 2, 10)->preFader,
+              "it lands before the fader as one step; undone, and the older file's Pre with it");
+    }
     auto pre = ui::setReturnPre(10, true);
     check(pre.refusal.empty() && pre.ops.size() == 1 && pre.ops[0].opType == "return.setSendTap" &&
               pre.ops[0].payload["id"] == 10 && pre.ops[0].payload["pre"] == true && sub.submit(std::move(pre.ops)).ok &&
