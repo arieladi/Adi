@@ -207,6 +207,8 @@ struct Note {
     std::int64_t probability = 10000;
     double tuningCents = 0.0;
     std::uint16_t flags = 0;
+    // Persisted ANOT identity, independent of vector order or prepared clock.
+    std::uint64_t noteId = 0;
 };
 
 // --- Layer 1: the rest ------------------------------------------------------
