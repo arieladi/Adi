@@ -1646,19 +1646,47 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(a.getTextFromValue(a.getValue()) == "-12", "and back at -12 dB");
 
-    // Enable Send on A Reverb's send B: on, at full alpha, taking clicks.
+    // A return's Pre/Post is the return's own (#405, N42): B Delay, which no send reaches yet, takes
+    // Pre as one op and one undo step, and its row lights from `TrackNode::returnSendTap`.
+    auto *delay = rowOf(root.mixer, 6);
+    check(delay != nullptr && delay->prePost.isVisible() && delay->prePost.getButtonText() == "Post" &&
+              delay->prePost.getToggleState() && root.reader().findTrack(6) != nullptr &&
+              root.reader().findTrack(6)->returnSendTap && !root.reader().findTrack(6)->returnSendTap->explicitChoice,
+          "B Delay's row reads Post, no choice held, no send into it");
+    if (delay == nullptr)
+        return;
+    const auto stepBefore = submitter.nextUndo() ? submitter.nextUndo()->txnId : 0;
+    delay->prePost.onClick();
+    root.frame();
+    check(delay->prePost.getButtonText() == "Pre" && !delay->prePost.getToggleState() && root.error().empty() &&
+              root.reader().findTrack(6)->returnSendTap->explicitChoice && root.reader().findTrack(6)->returnSendTap->preFader &&
+              submitter.nextUndo() && submitter.nextUndo()->txnId != stepBefore &&
+              submitter.nextUndo()->label == "Change Pre/Post" && submitter.nextUndo()->opCount == 1,
+          "Pre on B Delay with no send into it: one op, one undo step, the row lit from the return's own switch");
+    render("adi-return-pre-empty.png");
+
+    // Enable Send on A Reverb's send B: on, at full alpha, taking clicks; made after B's Pre, the new
+    // send taps before the fader with nothing added to its batch.
     reverb->enableSend(1, true);
     root.frame();
     check(reverb->sendOn(1) && !reverb->sendOn(0) && takesClicks(*reverb->sendKnobs()[1]) &&
-              findSend(root.reader().sends(), 5, 6) != nullptr && findSend(root.reader().sends(), 5, 6)->enabled,
-          "Enable Send: A Reverb feeds B Delay, fully down until turned up");
+              findSend(root.reader().sends(), 5, 6) != nullptr && findSend(root.reader().sends(), 5, 6)->enabled &&
+              findSend(root.reader().sends(), 5, 6)->preFader && submitter.nextUndo()->label == "Enable Send" &&
+              submitter.nextUndo()->opCount == 2,
+          "Enable Send: A Reverb feeds B Delay, fully down until turned up, before the fader as B's switch says");
     reverb->enableSend(1, true);
     check(root.error() == "The send is on already.", "enabling it again only says so");
+    // B back to Post: the send it now has moves after the fader, one step.
+    delay->prePost.onClick();
+    root.frame();
+    check(delay->prePost.getButtonText() == "Post" && delay->prePost.getToggleState() &&
+              !findSend(root.reader().sends(), 5, 6)->preFader && root.reader().findTrack(6)->returnSendTap->explicitChoice &&
+              submitter.nextUndo()->opCount == 1,
+          "Post again on B Delay moves its send after the fader; the choice stays the return's");
 
     // Enable All Sends on B Delay (§18.4): both of its sends on, A and itself, fully down, one step.
-    auto *delay = rowOf(root.mixer, 6);
-    check(delay != nullptr && !delay->sendOn(0) && !delay->sendOn(1), "B Delay's sends start off");
-    if (delay != nullptr) {
+    check(!delay->sendOn(0) && !delay->sendOn(1), "B Delay's sends start off");
+    {
         delay->enableAllSends();
         root.frame();
         check(delay->sendOn(0) && delay->sendOn(1) && findSend(root.reader().sends(), 6, 5) != nullptr &&
@@ -1678,12 +1706,15 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
     check(main->kind() == "master" && !main->active.isVisible() && !main->solo.isVisible() && !main->arm.isVisible() &&
               !main->prePost.isVisible() && main->volume.getY() == 3,
           "Main's row: no activator, Solo or Arm; its volume on the first row");
-    // Pre moves every send into A before the fader (3 Audio's), one undo step.
+    // Pre on A: one op the engine spreads over every send into A (3 Audio's), one undo step; the row
+    // lights from the return's own switch.
     reverb->prePost.onClick();
     root.frame();
     check(reverb->prePost.getButtonText() == "Pre" && !reverb->prePost.getToggleState() &&
-              findSend(root.reader().sends(), 3, 5)->preFader && submitter.nextUndo()->label == "Change Pre/Post",
-          "Pre/Post thrown: 3 Audio's send A taps before the fader");
+              findSend(root.reader().sends(), 3, 5)->preFader && root.reader().findTrack(5)->returnSendTap->explicitChoice &&
+              root.reader().findTrack(5)->returnSendTap->preFader && submitter.nextUndo()->label == "Change Pre/Post" &&
+              submitter.nextUndo()->opCount == 1,
+          "Pre/Post thrown: 3 Audio's send A taps before the fader, one op, the row lit from the return's switch");
 
     render("adi-sends-rows.png");
     // The Mixer View: Live's knobs under "Sends", A on the left and B lower on the right; the mixer
@@ -1711,13 +1742,16 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
         // Live's Mixer: Main's Sends section holds each return's Pre/Post; Main has no activator.
         if (mainColumn != nullptr && mainColumn->returnSwitches().size() == 2) {
             auto &aSwitch = *mainColumn->returnSwitches()[0];
-            check(aSwitch.getButtonText() == "Pre" && mainColumn->returnSwitches()[1]->getButtonText() == "Post" &&
-                      !mainColumn->active.isVisible(),
-                  "Main's strip shows A's Pre and B's Post where a track has its knobs");
+            auto &bSwitch = *mainColumn->returnSwitches()[1];
+            check(aSwitch.getButtonText() == "Pre" && !aSwitch.getToggleState() && bSwitch.getButtonText() == "Post" &&
+                      bSwitch.getToggleState() && !mainColumn->active.isVisible() &&
+                      root.reader().findTrack(5)->returnSendTap->preFader && !root.reader().findTrack(6)->returnSendTap->preFader,
+                  "Main's strip shows A's Pre and B's Post where a track has its knobs, each from its return's own switch");
             aSwitch.onClick();
             root.frame();
-            check(aSwitch.getButtonText() == "Post" && !findSend(root.reader().sends(), 3, 5)->preFader,
-                  "and A's switch, thrown there, moves the send back after the fader");
+            check(aSwitch.getButtonText() == "Post" && aSwitch.getToggleState() && !findSend(root.reader().sends(), 3, 5)->preFader &&
+                      !root.reader().findTrack(5)->returnSendTap->preFader && submitter.nextUndo()->opCount == 1,
+                  "and A's switch, thrown there, is one op that moves the send back after the fader");
         } else
             check(false, "Main's strip has a Pre/Post switch per return");
     }
