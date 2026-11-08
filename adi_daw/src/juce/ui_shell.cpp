@@ -125,7 +125,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Activate/Deactivate Track 4", "Activate/Deactivate Track 5",
                                   "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
                                   "Activate/Deactivate Track 8", "Mixer Sends",
-                                  "Insert Time Signature Change"};
+                                  "Insert Time Signature Change", "Solo in Place"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -306,6 +306,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case SoloSelected: // §42.19: Solo Selected Tracks, S
         info.addDefaultKeypress('s', 0);
+        info.setActive(active_ != nullptr);
+        break;
+    case SoloInPlace: // manual 18.6: the Options menu's entry, ticked from the project's field (#412)
+        info.setTicked(active_ != nullptr && active_->reader().soloInPlace());
         info.setActive(active_ != nullptr);
         break;
     case DeactivateSelected: // §42.19: Deactivate Selected Track, 0 (the Arrangement takes 0 for clips first)
@@ -1307,6 +1311,33 @@ bool AdiRootComponent::soloTrack(std::int64_t id, bool add) {
         return fail(std::move(edit.refusal));
     return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
+bool AdiRootComponent::setSoloInPlace(bool on) {
+    // Live's Solo in Place (manual 18.6): one project field for the Solo button's menu and the
+    // Options menu's entry (#412, N23), from the CURRENT cell (ADR-0201). The op is outside undo, as
+    // the catalogue says, and saved with the project, so no undo step is made and nothing is said;
+    // the session re-reads the project after it (afterEdit), so the next solo sounds as the field
+    // says. Follow is not paused: nothing in the arrangement moved.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Solo in Place needs an open project.");
+    auto edit = soloInPlaceEdit(*current, on);
+    if (edit.ops.empty())
+        return true;
+    if (const auto result = submitter_.submit(std::move(edit.ops)); !result)
+        return fail(result.error);
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    dirty_.mark(DirtySet::All);
+    return true;
+}
+bool AdiRootComponent::toggleSoloInPlace() {
+    // From the CURRENT cell (ADR-0201), not the presented frame's, read at pick time: the Options
+    // menu and the Solo button's menu (the Mix View's own window too) share the field, and one
+    // left open while another threw it still toggles what the project holds now.
+    const auto current = view_.current();
+    return setSoloInPlace(!(current && current->cue.soloInPlace));
+}
 bool AdiRootComponent::activateTrack(std::int64_t id, bool withSelection) {
     // From the CURRENT cell (ADR-0201); the batch is one undo step.
     const auto current = view_.current();
@@ -1756,6 +1787,10 @@ bool AdiRootComponent::command(int id) {
         if (!soloTrack(arrangement.geometry.selection.track, false))
             return false;
         break;
+    case AppCommands::SoloInPlace:
+        // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
+        // and the marks are setSoloInPlace's, so the tail below is not run a second time.
+        return toggleSoloInPlace();
     case AppCommands::DeactivateSelected:
         if (!activateTrack(arrangement.geometry.selection.track))
             return false;
@@ -1853,14 +1888,18 @@ const std::vector<MenuEntries> &menuBar() {
           C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},
-        // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Settings
-        // on Windows (§2.3).
+        // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Solo in Place
+        // (§18.6), in its own group after the grid's, as Live 12's menu places it (read on Live 12,
+        // 5 November: Solo Switches, Cue Switches, Solo in Place, before Settings), and Settings on
+        // Windows (§2.3). Solo Switches and Cue Switches come with the cue path (B6).
 #if JUCE_MAC
-        {"Options", {C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid}},
+        {"Options",
+         {C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
+          C::SoloInPlace}},
 #else
         {"Options",
          {C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid, C::SnapToGrid, C::FixedGrid, 0,
-          C::Settings}},
+          C::SoloInPlace, 0, C::Settings}},
 #endif
         // The views ADI has, in Live's order (§41.4.1): Session View, Clip View, the Groove
         // Pool and the Learn View come with those views; the Mixer with its keyboard.

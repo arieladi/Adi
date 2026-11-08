@@ -176,7 +176,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     eq.setTooltip("The channel EQ, built in and off until a band is touched (ADR-0204 d1).");
     limiter.setTitle("ADI-L");
     limiter.setTooltip("The channel limiter, built in and off (ADR-0204 d1).");
-    for (juce::TextButton *b : {&active, &solo, static_cast<juce::TextButton *>(&arm), &eq, &limiter}) {
+    for (juce::TextButton *b :
+         {&active, static_cast<juce::TextButton *>(&solo), static_cast<juce::TextButton *>(&arm), &eq, &limiter}) {
         addAndMakeVisible(*b);
         b->setColour(juce::TextButton::buttonColourId, look::button);
         // Only the keyboard focuses a mixer switch, so a focused one is ringed (Live 12).
@@ -193,6 +194,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     active.onClick = [this] { panel_.root.activateTrack(track_); };
     // Live's Solo (manual 18.1): exclusive unless Ctrl/Cmd is held; the selected tracks together.
     solo.onClick = [this] { panel_.root.soloTrack(track_, juce::ModifierKeys::currentModifiers.isCommandDown()); };
+    // Its right-click menu: Solo in Place (manual 18.6).
+    solo.onMenu = [this] { soloMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(&solo)); };
     arm.onClick = [this] { panel_.root.say("Arm Recording is not built yet."); };
     // A return's Pre/Post (ADR-0203 d3), where a track has Arm: the return's own switch
     // (`TrackNode::returnSendTap`, #405), which every send into it follows, now and as each new one
@@ -848,6 +851,31 @@ void MixerStrip::sendMenu(std::size_t index) {
     if (kind_ == "return")
         m.addItem("Enable All Sends", [this] { enableAllSends(); });
     m.showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(sends_[index].get()));
+}
+juce::PopupMenu MixerStrip::soloMenu() {
+    // Live's Solo button menu (manual 18.6): Solo in Place, ticked from the project's one field, on
+    // by default (the engine's #412 default; Live's factory default is unmeasured, F-02 NOT RUN);
+    // the Options menu's entry reads the same field, so the two agree. The pick is the root's one
+    // toggle, read at pick time from the CURRENT cell: the other menu, or the Mix View's own
+    // window, may have thrown the field while this menu was open, and the pick is never a no-op.
+    juce::PopupMenu m;
+    m.addItem("Solo in Place", true, panel_.root.reader().soloInPlace(), [safe = SafePointer<MixerStrip>(this)] {
+        if (safe)
+            safe->panel_.root.toggleSoloInPlace();
+    });
+    return m;
+}
+void SoloButton::mouseDown(const juce::MouseEvent &e) {
+    // A right-click is the menu's, never a press: the button is not put down, so the release that
+    // follows solos nothing.
+    if (!e.mods.isPopupMenu())
+        juce::TextButton::mouseDown(e);
+    else if (onMenu)
+        onMenu();
+}
+void SoloButton::mouseUp(const juce::MouseEvent &e) {
+    if (!e.mods.isPopupMenu())
+        juce::TextButton::mouseUp(e);
 }
 void MixerStrip::panMenu() {
     juce::PopupMenu m;

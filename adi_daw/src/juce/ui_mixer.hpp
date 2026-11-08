@@ -17,6 +17,14 @@ class ArmButton final : public juce::TextButton {
   public:
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+// Live's Solo switch: a right-click opens its menu (Solo in Place, manual 18.6) and solos nothing.
+class SoloButton final : public juce::TextButton {
+  public:
+    using juce::TextButton::TextButton;
+    std::function<void()> onMenu;
+    void mouseDown(const juce::MouseEvent &) override;
+    void mouseUp(const juce::MouseEvent &) override;
+};
 // Live's peak level (manual 18.1): the highest peak since the last click, in dB, red once
 // it has clipped. A click resets it.
 class PeakHold final : public juce::Button {
@@ -57,7 +65,8 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     float peak() const noexcept { return peak_; }
     float rms() const noexcept { return rms_; }
     juce::Slider volume, pan;
-    juce::TextButton active, solo{"S"}, eq{"Q"}, limiter{"L"};
+    juce::TextButton active, eq{"Q"}, limiter{"L"};
+    SoloButton solo{"S"};
     ArmButton arm;
     // A return's Pre/Post switch, where a track has Arm (ADR-0203 d3: one switch on each return);
     // lit while its sends tap after the fader, as Live's.
@@ -104,6 +113,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     void enableSend(std::size_t index, bool on);
     // Live's Enable All Sends, on a return's strip: every one of its sends on, one undo step.
     void enableAllSends();
+    // The Solo button's menu (Live 12 manual 18.6): Solo in Place, ticked from the project's one
+    // field, which the Options menu's entry shares (#412); picked, the root's toggle writes
+    // `mixer.setSoloInPlace` outside undo. What a right-click on Solo shows.
+    juce::PopupMenu soloMenu();
 
   private:
     void paintInOut(juce::Graphics &, int x) const;
