@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <initializer_list>
 #include <new>
 #include <thread>
 using namespace adi;
@@ -232,6 +233,191 @@ void sourceMarkers() {
     check(firstOff==36000,"MIDI Loop ignores End and releases at its own repeat boundary");
 }
 
+// MI-01: signed ANOT origins must survive rows -> Session -> native events.
+// Keep this recorder independent of the older float-only test instrument so
+// both graph widths are observed at the actual consuming device boundary.
+struct SignedOriginRecorder final : device::DeviceInstance {
+    device::DeviceIdentity id;
+    std::array<Heard, 64> heard{};
+    std::size_t count = 0;
+    std::int64_t clock = 0;
+    Precision expected = Precision::Float32;
+    bool overflow = false, wrongWidth = false, wrongFrame = false;
+    unsigned calls = 0;
+    const device::DeviceIdentity& identity() const noexcept override { return id; }
+    bool loaded() const noexcept override { return true; }
+    bool processesDouble() const noexcept override { return true; }
+    EventFlow eventFlow() const noexcept override { return EventFlow::Consume; }
+    std::int64_t tailSamples() const noexcept override { return kInfiniteTail; }
+    void process(const NodeIo& io) noexcept override {
+        ++calls;
+        wrongWidth = wrongWidth || io.wide() != (expected == Precision::Float64);
+        for (const auto& event : io.events) {
+            wrongFrame = wrongFrame || event.frame < io.blockOffset ||
+                         event.frame >= io.blockOffset + io.frames;
+            if (count < heard.size()) heard[count++] = {event, clock + event.frame};
+            else overflow = true;
+        }
+        for (int channel = 0; channel < io.channels; ++channel) {
+            if (io.wide()) std::fill_n(io.out64[channel] + io.blockOffset, io.frames, 0.0);
+            else std::fill_n(io.out[channel] + io.blockOffset, io.frames, 0.0f);
+        }
+    }
+};
+
+struct ExpectedSignedVoice {
+    std::int64_t on, off;
+    std::uint16_t key;
+};
+
+void signedOriginCase(Precision precision, bool irregular, const char* label,
+                      const char* properties, std::initializer_list<ExpectedSignedVoice> expected,
+                      int invalidBound = 0) {
+    constexpr std::int64_t hundredFrames = 24024; // 120 BPM, PPQ 5765760, 48 kHz
+    constexpr std::int64_t tickLimit = std::int64_t{1} << 50;
+    Fixture f(48000, 256);
+    f.clip(1, 0, hundredFrames, 10 * hundredFrames);
+    f.store->db().exec("UPDATE clips SET pos_ticks=24024"); // clip starts at frame 100
+    f.store->db().exec(properties);
+    auto note = [](std::uint64_t id, std::int64_t start, std::int64_t duration,
+                   std::uint8_t key) {
+        NoteRecord n{};
+        n.note_id = id; n.start_ticks = start; n.dur_ticks = duration;
+        n.key = key; n.channel = 3; n.vel_on = 93; n.vel_off = 37;
+        n.probability = 10000;
+        return n;
+    };
+    // The two inclusive arithmetic-domain endpoints are valid but inaudible.
+    // Finished negative notes and one ending exactly at zero must not cause
+    // the crossing note or the later positive note to be discarded.
+    const std::array<NoteRecord, 7> notes{{
+        note(1, -tickLimit - (invalidBound < 0 ? 1 : 0), hundredFrames, 46),
+        note(2, -3 * hundredFrames, hundredFrames, 48),
+        note(3, -hundredFrames, hundredFrames, 49),
+        note(4, -hundredFrames, 4 * hundredFrames, 60),
+        note(5, 0, hundredFrames, 62),
+        note(6, 3 * hundredFrames, hundredFrames, 64),
+        note(7, tickLimit + (invalidBound > 0 ? 1 : 0), hundredFrames, 66)
+    }};
+    const auto bytes = writeStream<NoteRecord>(FourCC::Notes, notes);
+    if (!f.store->putEventStream(1, "notes", bytes))
+        throw std::runtime_error("signed-origin ANOT write");
+    SignedOriginRecorder* recorder = nullptr;
+    f.session.graph().setFadeFrames(0);
+    SessionSpec spec;
+    spec.channels = 2; spec.sampleRate = 48000; spec.maxFrames = 256;
+    spec.precision = precision;
+    if (!f.session.load(*f.store, [&](const DeviceRequest&, std::string&)
+                        -> std::unique_ptr<device::DeviceInstance> {
+            auto p = std::make_unique<SignedOriginRecorder>();
+            p->expected = precision; recorder = p.get(); return p;
+        }, spec)) throw std::runtime_error(f.session.error());
+    if (!recorder || !f.session.midiClips())
+        throw std::runtime_error("signed-origin native recorder/source missing");
+    const auto beforeFailures = failures;
+    check(invalidBound ? !f.session.midiClips()->problems().empty()
+                       : f.session.midiClips()->problems().empty(),
+          "signed note time bounds admit endpoints and refuse beyond the retained cap");
+    f.session.transport().play();
+    std::array<float, 512> floats{};
+    std::array<double, 512> doubles{};
+    float* out[] = {floats.data(), floats.data() + 256};
+    double* out64[] = {doubles.data(), doubles.data() + 256};
+    constexpr std::array<int, 7> partitions{{1, 73, 26, 211, 5, 128, 13}};
+    std::size_t partition = 0;
+    const auto beforeAllocations = allocations.load();
+    const auto beforeIo = audio::callbackFileIo.load();
+    while (f.clock < 1400) {
+        const auto frames = irregular ? partitions[partition++ % partitions.size()] : 256;
+        recorder->clock = f.clock;
+        AudioIo io;
+        io.out = out; io.numOut = 2; io.frames = frames; io.streamTimeSamples = f.clock;
+        if (precision == Precision::Float64) io.out64 = out64;
+        f.session.process(io);
+        f.clock += frames;
+    }
+    check(allocations.load() == beforeAllocations && audio::callbackFileIo.load() == beforeIo,
+          "signed-origin callbacks allocate nothing and perform no file I/O");
+    check(recorder->calls > 0 && !recorder->wrongWidth && !recorder->wrongFrame && !recorder->overflow,
+          "signed-origin events reach the requested native width inside their callback segment");
+    check(recorder->count == 2 * expected.size(),
+          "signed-origin playback emits exactly the expected on/off pairs and no earlier notes");
+    std::array<bool, 64> matched{};
+    bool voicesMatch = true;
+    for (const auto& voice : expected) {
+        const Heard* on = nullptr;
+        const Heard* off = nullptr;
+        for (std::size_t i = 0; i < recorder->count; ++i) {
+            const auto& h = recorder->heard[i];
+            if (matched[i] || h.e.dim != voice.key) continue;
+            if (!on && h.e.type == EventType::NoteOn && h.clock == voice.on) {
+                on = &h; matched[i] = true;
+            } else if (!off && h.e.type == EventType::NoteOff && h.clock == voice.off) {
+                off = &h; matched[i] = true;
+            }
+        }
+        voicesMatch = voicesMatch && on && off;
+        if (on && off) {
+            voicesMatch = voicesMatch && on->e.noteId != 0 && on->e.noteId == off->e.noteId &&
+                          on->e.channel == 3 && off->e.channel == 3 &&
+                          on->e.value == 93.0 / 127 && off->e.value == 37.0 / 127;
+        }
+    }
+    for (std::size_t i = 0; i < recorder->count; ++i) voicesMatch = voicesMatch && matched[i];
+    check(voicesMatch, "signed-origin onsets, original ends, identity and velocities match the source oracle");
+    check(f.session.midiClips()->droppedNotes() == 0,
+          "signed-origin chase and loop repeats leave no refused notes");
+    if (failures != beforeFailures) {
+        std::printf("signed-origin case %s, %s, %s partition\n", label,
+                    precision == Precision::Float64 ? "Float64" : "Float32",
+                    irregular ? "irregular" : "regular");
+        for (std::size_t i = 0; i < recorder->count; ++i) {
+            const auto& h = recorder->heard[i];
+            std::printf("  %s key %u at %lld\n", h.e.type == EventType::NoteOn ? "on" : "off",
+                        static_cast<unsigned>(h.e.dim), static_cast<long long>(h.clock));
+        }
+    }
+}
+
+void signedOrigins() {
+    for (auto precision : {Precision::Float32, Precision::Float64}) {
+        for (bool irregular : {false, true}) {
+            signedOriginCase(precision, irregular, "nonloop source zero",
+                             "UPDATE clips SET content_offset_ticks=0",
+                             {{100, 400, 60}, {100, 200, 62}, {400, 500, 64}});
+            signedOriginCase(precision, irregular, "nonloop source offset equals early note end",
+                             "UPDATE clips SET content_offset_ticks=24024",
+                             {{100, 300, 60}, {300, 400, 64}});
+            signedOriginCase(precision, irregular, "nonloop source offset equals crossing end and later onset",
+                             "UPDATE clips SET content_offset_ticks=72072", {{100, 200, 64}});
+            signedOriginCase(precision, irregular, "nonloop End clips negative-origin note",
+                             "UPDATE clips SET content_offset_ticks=24024;"
+                             "INSERT INTO clip_properties(clip_id,end_marker_ticks) VALUES(1,48048)",
+                             {{100, 200, 60}});
+            signedOriginCase(precision, irregular, "loop prefix once then repeats",
+                             "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=72072",
+                             {{100, 400, 60}, {100, 200, 62}, {400, 500, 64},
+                              {500, 700, 60}, {700, 800, 64}, {800, 1000, 60}, {1000, 1100, 64}});
+            signedOriginCase(precision, irregular, "loop starts exactly at repeat origin",
+                             "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=72072,content_offset_ticks=24024",
+                             {{100, 300, 60}, {300, 400, 64}, {400, 600, 60}, {600, 700, 64},
+                              {700, 900, 60}, {900, 1000, 64}, {1000, 1100, 60}});
+            signedOriginCase(precision, irregular, "loop starts inside repeat",
+                             "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=72072,content_offset_ticks=48048",
+                             {{100, 200, 60}, {200, 300, 64}, {300, 500, 60}, {500, 600, 64},
+                              {600, 800, 60}, {800, 900, 64}, {900, 1100, 60}});
+            signedOriginCase(precision, irregular, "loop source End wraps exactly to origin",
+                             "UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=72072,content_offset_ticks=96096",
+                             {{100, 300, 60}, {300, 400, 64}, {400, 600, 60}, {600, 700, 64},
+                              {700, 900, 60}, {900, 1000, 64}, {1000, 1100, 60}});
+            signedOriginCase(precision, irregular, "below signed arithmetic cap",
+                             "UPDATE clips SET content_offset_ticks=0", {}, -1);
+            signedOriginCase(precision, irregular, "above original arithmetic cap",
+                             "UPDATE clips SET content_offset_ticks=0", {}, 1);
+        }
+    }
+}
+
 }
 namespace {
 void sessionControllers() {
@@ -271,6 +457,8 @@ void sessionControllers() {
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
+    try { if (only == "all" || only == "signed") signedOrigins(); }
+    catch (const std::exception& e) { check(false, e.what()); }
     try{if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -75,6 +76,17 @@ struct Field {
 // The descriptor — OPS.md §3
 // ---------------------------------------------------------------------------
 
+/// Recorded provenance, never ambient project or application state.
+struct OpReplayMetadata {
+    /// Borrowed only for this handler call, from the recorded operation. This
+    /// permits a versioned handler to distinguish historical inverse formats
+    /// without reading the current history head or changing descriptor pairs.
+    std::string_view opType;
+    std::span<const std::byte> inverse;
+    bool hasInverse = false;
+    bool asInverse = false;
+};
+
 /// What a handler is allowed to touch: the store, and the open database inside
 /// the caller's transaction. Defined here rather than in a .cpp because both
 /// ops.cpp and history.cpp apply ops through the same descriptors, and two
@@ -83,6 +95,9 @@ struct Field {
 struct OpContext {
     Store& store;
     SQLite::Database& db;
+    /// Absent for new submissions and previews. History supplies original log
+    /// bytes for Undo/Redo, including moves between branches and stored states.
+    std::optional<OpReplayMetadata> replay = std::nullopt;
 };
 
 struct OpDescriptor {
