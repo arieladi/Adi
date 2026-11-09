@@ -10,6 +10,15 @@ void Transport::loop(std::int64_t begin, std::int64_t end, bool enabled) noexcep
     begin_ = std::max<std::int64_t>(0, begin); end_ = end;
     looping_ = enabled && end_ > begin_;
 }
+void Transport::retimeLoop(std::int64_t begin, std::int64_t end, bool enabled) noexcept {
+    begin_ = std::max<std::int64_t>(0, begin);
+    end_ = end;
+    looping_ = enabled && end_ > begin_;
+    if (looping_ && position_ >= end_) {
+        position_ = begin_ + (position_ - begin_) % (end_ - begin_);
+        wrapped_ = true;
+    }
+}
 std::int64_t Transport::delayedSample(std::int32_t offset,std::int32_t delay) const noexcept {
     const auto behind=static_cast<std::int64_t>(std::max(0,delay))-std::max(0,offset);
     if(behind<=0)return sampleAt(-behind);
