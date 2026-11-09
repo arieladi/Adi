@@ -195,6 +195,14 @@ public:
     /// Set by the same notification. A change of parameters, programs or
     /// anything else the plugin declares dirty (SPEC 7.3's boundary list).
     /// Not moved by our own `loadState` or `setParam` (ADR-0142).
+    /// Exact owner-side channel-shape stamp. Equality preserves prepare's
+    /// existing total-channel guard without disturbing an already live node.
+    [[nodiscard]] std::uint64_t preparationShapeEpoch() const noexcept override {
+        if(!inst_)return 0;
+        const auto input=static_cast<std::uint32_t>(inst_->getTotalNumInputChannels());
+        const auto output=static_cast<std::uint32_t>(inst_->getTotalNumOutputChannels());
+        return (static_cast<std::uint64_t>(input)<<32)|output;
+    }
     [[nodiscard]] std::uint64_t stateEpoch() const noexcept override {
         return stateEpoch_.load(std::memory_order_acquire);
     }
@@ -287,7 +295,9 @@ private:
     /// True while `setParam` runs. JUCE tells its listeners about the value
     /// we just set, synchronously, on this thread; that is not an edit
     /// (ADR-0124). A plugin that re-broadcasts later is the echo guard's.
-    bool settingFromHost_ = false;
+    struct HostMutationScope;
+    [[nodiscard]] bool hostMutationOnCurrentThread() const noexcept;
+    std::atomic<std::uint32_t> hostMutations_{0};
     /// JUCE's parameter index -> ours. `readParameters` skips null entries,
     /// so the two are not the same list.
     std::vector<std::int32_t> juceToOurs_;

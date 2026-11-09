@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/store.hpp"
+#include "adi/gesture_navigation_detail.hpp"
+#include "adi/applied_batches_detail.hpp"
 #include "adi/ops.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
@@ -155,7 +157,10 @@ StoreFileResult Store::saveCopy(const std::filesystem::path& output) const {
     }catch(const std::exception& e){return {false,e.what(),{}};}
 }
 StoreFileResult Store::saveAs(const std::filesystem::path& output) {
+    if(detail::appliedDispatchActive(*this))return {false,"reentrant Save As during applied-batch delivery",{}};
     if(closed_ || !db_)return {false,"project is closed",{}};
+    auto change=gesture::detail::beginSourceChange(*this);
+    if(!change.status.ok())return {false,change.status.message,{}};
     if(major_!=kSchemaMajor)return {false,"use Save a Copy for an unsupported schema major",{}};
     if(sqlite3_next_stmt(db_->getHandle(),nullptr))return {false,"finish database statements before Save As",{}};
     const auto copied=saveCopy(output);
@@ -164,16 +169,29 @@ StoreFileResult Store::saveAs(const std::filesystem::path& output) {
     auto replacement=Store::open(fs::absolute(output),error);
     if(!replacement || error!=StoreError::Ok || replacement->readOnly())
         return {false,"copy saved but could not switch projects: "+std::string(toString(error)),{}};
+    try {
+        detail::prepareAppliedReplacement(*replacement,*this);
+    } catch(const std::exception& exception) {
+        return {false,"copy saved but could not switch projects: "+std::string(exception.what()),{}};
+    }
+    const auto finished=gesture::detail::finishSourceChange(change.permit);
+    if(!finished.ok())return {false,finished.message,"copy saved; original project remains active"};
+    gesture::detail::invalidateSource(*this);
+    detail::invalidateAppliedDomain(*this,AppliedSourceInvalidation::Replaced);
     db_.swap(replacement->db_);path_.swap(replacement->path_);
+    appliedDomain_.swap(replacement->appliedDomain_);
+    gestureDomain_.swap(replacement->gestureDomain_);
+    detail::rebindAppliedDomain(*this);
     std::swap(readOnly_,replacement->readOnly_);std::swap(major_,replacement->major_);std::swap(minor_,replacement->minor_);
     upgradedFrom_.swap(replacement->upgradedFrom_);lastError_.clear();
-    const bool folded=replacement->close();
+    const bool folded=replacement->closeFinalized();
     return {true,{},folded?std::string{}:std::string("old project is still in use; its WAL could not be folded")};
 }
 }
 
 namespace adi {
 StoreFileResult Store::collectAllAndSave() {
+    if(detail::appliedDispatchActive(*this))return {false,"reentrant collection during applied-batch delivery",{}};
     try {
         if(closed_ || !db_)return {false,"project is closed",{}};
         if(readOnly_ || major_!=kSchemaMajor)return {false,"project is read-only or unsupported",{}};

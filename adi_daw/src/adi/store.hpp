@@ -33,6 +33,8 @@ class Database;
 namespace adi {
 class Store;
 namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
+namespace detail {struct AppliedDomain; struct AppliedSourceAccess;}
+namespace gesture::detail {struct Domain; struct DomainAccess;}
 
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
@@ -189,6 +191,10 @@ public:
     [[nodiscard]] const std::string& clientLabel() const noexcept { return clientLabel_; }
 
 private:
+    friend struct gesture::detail::DomainAccess;
+    std::shared_ptr<gesture::detail::Domain> gestureDomain_;
+    friend struct detail::AppliedSourceAccess;
+    std::shared_ptr<detail::AppliedDomain> appliedDomain_;
     friend bool freeze::validated(Store&) noexcept;
     friend void freeze::remember(Store&) noexcept;
     std::int64_t frozenValidationChanges_=-1,frozenValidationDataVersion_=-1;
@@ -196,6 +202,8 @@ private:
 
     Store(std::unique_ptr<SQLite::Database>, std::filesystem::path, bool readOnly);
     bool applySessionPragmas();
+    // Source invalidation has already completed; fold WAL and release SQLite.
+    bool closeFinalized();
 
     std::unique_ptr<SQLite::Database> db_;
     std::filesystem::path path_;

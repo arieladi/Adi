@@ -10,6 +10,13 @@ public:
     void play(bool enabled = true) noexcept { if (playing_ != enabled) { playing_ = enabled; if(enabled)streamed_=0; ++revision_; } }
     void locate(std::int64_t sample) noexcept;
     void loop(std::int64_t begin, std::int64_t end, bool enabled = true) noexcept;
+    /// Driver-only clock projection of the same authored loop. Preserve play
+    /// revision and elapsed stream history; shortened bounds can cause a real
+    /// wrap, exactly as advancing through the loop end would.
+    void retimeLoop(std::int64_t begin, std::int64_t end, bool enabled = true) noexcept;
+    [[nodiscard]] bool looping() const noexcept { return looping_; }
+    [[nodiscard]] std::int64_t loopBegin() const noexcept { return begin_; }
+    [[nodiscard]] std::int64_t loopEnd() const noexcept { return end_; }
     [[nodiscard]] bool playing() const noexcept { return playing_; }
     [[nodiscard]] std::int64_t position() const noexcept { return position_; }
     [[nodiscard]] std::int64_t sampleAt(std::int64_t offset) const noexcept;

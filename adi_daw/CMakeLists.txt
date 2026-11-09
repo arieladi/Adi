@@ -160,7 +160,8 @@ endif()
 # diagnostics from its headers when WE include them, not diagnostics raised
 # while compiling its own .c and .cpp files.)
 #
-# Every target we own links this PRIVATE; nothing in third_party/ links it.
+# Owned targets link this PRIVATE. Targets that also compile JUCE modules use
+# the same policy on their own source files only; third-party sources omit it.
 # ---------------------------------------------------------------------------
 # CI's strict job turns this on. It lives on adi_warnings rather than in
 # CMAKE_CXX_FLAGS deliberately: a global -Werror would also apply to
@@ -209,6 +210,7 @@ add_custom_command(
     VERBATIM)
 
 add_library(adi_core STATIC
+    src/adi/applied_batches.cpp
     src/adi/appdata.cpp
     src/adi/panel.cpp
     src/adi/plugin_registry.cpp
@@ -274,6 +276,10 @@ add_library(adi_core STATIC
     src/adi/row_capture.cpp
     src/adi/return_send_tap.cpp
     src/adi/note_transforms.cpp
+    src/adi/note_stream_detail.cpp
+    src/adi/note_diff_plan.cpp
+    src/adi/note_diff.cpp
+    src/adi/note_overlap_plan.cpp
     src/adi/controller_lanes.cpp
     src/juce/builtin_samples.cpp
     src/adi/sample_slots.cpp
@@ -287,6 +293,9 @@ add_library(adi_core STATIC
     src/adi/automation_shapes.cpp
     src/adi/engine/automation_recording.cpp
     src/adi/controller_maps.cpp
+    src/adi/gesture_session.cpp
+    src/adi/gesture_producers.cpp
+    src/adi/op_transaction_resources.cpp
     src/adi/history.cpp
     src/adi/history_list.cpp
     src/adi/history_policy.cpp
@@ -331,6 +340,8 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/session_runtime.cpp
+    src/adi/engine/gesture_preview.cpp
     src/adi/engine/main_loudness.cpp
     src/adi/engine/audio_recording.cpp
     src/adi/recording_commands.cpp
@@ -357,6 +368,7 @@ target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cp
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
   src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
+  src/adi/edit_placement.cpp src/adi/edit_plan.cpp
   src/adi/material_commands.cpp src/adi/sample_defaults.cpp src/adi/warp_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(adi_core PUBLIC
@@ -717,6 +729,7 @@ add_test(NAME adi_history_list_tests COMMAND adi_history_list_tests)
 add_library(adi_settings STATIC
     src/adi/settings/registry.cpp
     src/adi/settings/store.cpp
+    src/adi/edit_policy.cpp
     src/adi/settings/channel_config.cpp
     src/adi/settings/bundle.cpp
     src/adi/settings/catalogue.cpp)
@@ -1011,6 +1024,26 @@ add_executable(adi_param_ops_tests tests/test_param_ops.cpp)
 target_link_libraries(adi_param_ops_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
 
+add_executable(adi_applied_batches_tests tests/test_applied_batches.cpp)
+target_link_libraries(adi_applied_batches_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_applied_batches_tests COMMAND adi_applied_batches_tests)
+
+add_executable(adi_param_live_replay_tests tests/test_param_live_replay.cpp)
+target_link_libraries(adi_param_live_replay_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_param_live_replay_tests COMMAND adi_param_live_replay_tests)
+
+add_executable(adi_gesture_tests tests/test_gesture.cpp)
+target_link_libraries(adi_gesture_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_gesture_tests COMMAND adi_gesture_tests)
+
+add_executable(adi_gesture_graph_tests tests/test_gesture_graph.cpp)
+target_link_libraries(adi_gesture_graph_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_gesture_graph_tests COMMAND adi_gesture_graph_tests)
+
+add_executable(adi_gesture_playback_tests tests/test_gesture_playback.cpp)
+target_link_libraries(adi_gesture_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_gesture_playback_tests COMMAND adi_gesture_playback_tests)
+
 add_executable(adi_ui_param_capture_tests tests/test_ui_param_capture.cpp)
 target_link_libraries(adi_ui_param_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_param_capture_tests COMMAND adi_ui_param_capture_tests)
@@ -1109,10 +1142,12 @@ add_test(NAME adi_textproj_store_tests COMMAND adi_textproj_store_tests)
 
 # ADR-0102: headless synthetic callback timings; opt in for Release measurements.
 # The proposal and measurement limits are recorded in collab/linux.md.
-option(ADI_BUILD_BENCHMARKS "Build the headless block benchmark" OFF)
+option(ADI_BUILD_BENCHMARKS "Build headless diagnostic benchmarks" OFF)
 if(ADI_BUILD_BENCHMARKS)
     add_executable(adi_block_benchmark tools/benchmark_blocks.cpp)
     target_link_libraries(adi_block_benchmark PRIVATE adi_core adi_warnings)
+    add_executable(adi_edit_placement_measure tools/measure_edit_placement.cpp)
+    target_link_libraries(adi_edit_placement_measure PRIVATE adi_core adi_warnings Threads::Threads)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -1311,8 +1346,7 @@ if(ADI_WITH_JUCE)
     target_link_libraries(adi_vst3_probe PRIVATE
         adi_core
         juce::juce_audio_processors
-        juce::juce_audio_utils
-        adi_warnings)
+        juce::juce_audio_utils)
     get_target_property(_adi_proc_incs juce::juce_audio_processors
                         INTERFACE_INCLUDE_DIRECTORIES)
     if(_adi_proc_incs)
@@ -1442,7 +1476,7 @@ if(ADI_WITH_JUCE)
         target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")
 
         add_executable(adi_vst3_scanner_tests tests/test_vst3_scanner.cpp)
-        target_link_libraries(adi_vst3_scanner_tests PRIVATE adi_core juce::juce_audio_processors_headless adi_warnings)
+        target_link_libraries(adi_vst3_scanner_tests PRIVATE adi_core juce::juce_audio_processors_headless)
         target_compile_definitions(adi_vst3_scanner_tests PRIVATE
             ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>" ADI_TEST_VST3="${_adi_fixture}"
             JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
@@ -1484,8 +1518,7 @@ if(ADI_WITH_JUCE)
         adi_core
         juce::juce_audio_processors
         juce::juce_audio_utils
-        juce::juce_audio_devices
-        adi_warnings)
+        juce::juce_audio_devices)
     if(_adi_proc_incs)
         target_include_directories(adi_play SYSTEM PRIVATE ${_adi_proc_incs})
     endif()
@@ -1498,7 +1531,7 @@ if(ADI_WITH_JUCE)
     target_compile_features(adi_play_render_tests PRIVATE cxx_std_20)
     get_target_property(_adi_play_defs adi_play COMPILE_DEFINITIONS)
     target_compile_definitions(adi_play_render_tests PRIVATE ${_adi_play_defs})
-    target_link_libraries(adi_play_render_tests PRIVATE adi_core adi_warnings
+    target_link_libraries(adi_play_render_tests PRIVATE adi_core
         juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
     if(_adi_proc_incs)
         target_include_directories(adi_play_render_tests SYSTEM PRIVATE ${_adi_proc_incs})
@@ -1512,8 +1545,7 @@ if(ADI_WITH_JUCE)
     target_link_libraries(adi_audio_probe PRIVATE
         adi_core
         juce::juce_audio_devices
-        juce::juce_audio_utils
-        adi_warnings)
+        juce::juce_audio_utils)
 
     # JUCE's own headers do not survive this tree's warning wall, and they are
     # not ours to fix. SYSTEM on add_subdirectory covers its sources; this
@@ -1533,6 +1565,25 @@ if(ADI_WITH_JUCE)
         target_compile_definitions(adi_audio_probe PRIVATE JUCE_ASIO=1)
         target_compile_definitions(adi_play PRIVATE JUCE_ASIO=1)
     endif()
+
+    # JUCE supplies module translation units through its link interfaces. Keep
+    # our strict warning policy on our sources, as the scanner already does,
+    # rather than applying it to those third-party module implementations.
+    set(_adi_juce_owned_sources)
+    foreach(_adi_juce_target IN ITEMS adi_vst3_probe adi_vst3_scanner_tests
+                                    adi_play adi_play_render_tests adi_audio_probe)
+        if(TARGET ${_adi_juce_target})
+            get_target_property(_adi_juce_sources ${_adi_juce_target} SOURCES)
+            foreach(_adi_juce_source IN LISTS _adi_juce_sources)
+                if(_adi_juce_source MATCHES "^(src|tests)/")
+                    list(APPEND _adi_juce_owned_sources "${_adi_juce_source}")
+                endif()
+            endforeach()
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _adi_juce_owned_sources)
+    set_source_files_properties(${_adi_juce_owned_sources} PROPERTIES
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
 
     message(STATUS "adi: JUCE enabled (${ADI_JUCE_DIR})")
 endif()
@@ -1660,6 +1711,19 @@ add_executable(adi_clip_edit_tests tests/test_clip_edit.cpp)
 target_link_libraries(adi_clip_edit_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clip_edit_tests COMMAND adi_clip_edit_tests)
 
+add_executable(adi_edit_placement_tests tests/test_edit_placement.cpp)
+target_link_libraries(adi_edit_placement_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_edit_placement_tests COMMAND adi_edit_placement_tests)
+
+add_executable(adi_edit_plan_tests tests/test_edit_plan.cpp)
+target_link_libraries(adi_edit_plan_tests PRIVATE adi_settings adi_core adi_warnings)
+add_test(NAME adi_edit_plan_tests COMMAND adi_edit_plan_tests)
+
+add_executable(adi_edit_plan_playback_tests tests/test_edit_plan_playback.cpp)
+target_link_libraries(adi_edit_plan_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_edit_plan_playback_tests COMMAND adi_edit_plan_playback_tests)
+set_tests_properties(adi_edit_plan_playback_tests PROPERTIES TIMEOUT 600)
+
 add_executable(adi_material_commands_tests tests/test_material_commands.cpp)
 target_link_libraries(adi_material_commands_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_material_commands_tests COMMAND adi_material_commands_tests)
@@ -1730,6 +1794,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(adi_link_session_tests PRIVATE -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
 endif()
 add_test(NAME adi_link_session_tests COMMAND adi_link_session_tests)
+
+target_sources(adi_core PRIVATE src/adi/engine/link_playback.cpp)
+foreach(suite render_slices midi_clock_continuity clip_candidate_ready link_playback strip_lane_bindings)
+    add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
+    target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings Threads::Threads)
+    add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)
+endforeach()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(adi_link_playback_tests PRIVATE ADI_TEST_LINK_WRAP_LOCKS=1)
+    target_link_options(adi_link_playback_tests PRIVATE -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
+endif()
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
@@ -1815,6 +1890,26 @@ add_test(NAME adi_separated_stems_tests COMMAND adi_separated_stems_tests)
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
 target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_note_transforms_tests COMMAND adi_note_transforms_tests)
+
+add_executable(adi_note_diff_tests tests/test_note_diff.cpp)
+target_link_libraries(adi_note_diff_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_diff_tests COMMAND adi_note_diff_tests)
+
+add_executable(adi_note_diff_compat_tests tests/test_note_diff_compat.cpp)
+target_link_libraries(adi_note_diff_compat_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_diff_compat_tests COMMAND adi_note_diff_compat_tests)
+
+add_executable(adi_note_overlap_tests tests/test_note_overlap.cpp)
+target_link_libraries(adi_note_overlap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_tests COMMAND adi_note_overlap_tests)
+
+add_executable(adi_note_overlap_ops_tests tests/test_note_overlap_ops.cpp)
+target_link_libraries(adi_note_overlap_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_ops_tests COMMAND adi_note_overlap_ops_tests)
+
+add_executable(adi_note_overlap_playback_tests tests/test_note_overlap_playback.cpp)
+target_link_libraries(adi_note_overlap_playback_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_playback_tests COMMAND adi_note_overlap_playback_tests)
 
 add_executable(adi_controller_lanes_tests tests/test_controller_lanes.cpp)
 target_link_libraries(adi_controller_lanes_tests PRIVATE adi_core adi_warnings)

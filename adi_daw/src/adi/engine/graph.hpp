@@ -49,6 +49,17 @@
 namespace adi::engine {
 
 class ScopeTap;
+class StripLaneBindings;
+class EventSource;
+
+/// Fixed-format staging preserves compatible nodes already prepared by a
+/// graph. A mismatch refuses staging; it never re-prepares a live plug-in.
+enum class NodePreparePolicy { PrepareAll, PreservePrepared };
+
+struct EventSourceBinding {
+    EventSource* source = nullptr;
+    std::shared_ptr<void> owner;
+};
 
 /// Never skip this node, however quiet it is. `IAudioProcessor::getTailSamples`
 /// uses the same convention and this is deliberately the same value.
@@ -74,6 +85,9 @@ struct TransportInfo {
     std::int64_t bar = 1;             ///< one-based, as in the text projection
     std::int64_t beat = 1;            ///< one-based, in the signature's beat unit
     std::int64_t ticksInQuarter = 0;  ///< absolute musical ticks modulo ADI_PPQ
+    /// Immutable scalar automation bindings retained by this graph publication;
+    /// null keeps the legacy owner-configured strip bindings.
+    const StripLaneBindings* stripLanes = nullptr;
 };
 
 /// What a node is handed for one SEGMENT of one block.
@@ -142,8 +156,8 @@ enum class EventFlow : std::uint8_t {
 };
 
 /// Addressed events generated FOR a node, once per block (ADR-0165): the
-/// automation of a plug-in's parameters. Set on the node by the session, called
-/// by the graph on the audio thread before forwarding and splitting, so each
+/// automation of a plug-in's parameters. Bound to a graph slot by the owner,
+/// called on the audio thread before forwarding and splitting, so each
 /// event lands on its own segment boundary like any pushed event (ADR-0042).
 class EventSource {
 public:
@@ -167,6 +181,9 @@ public:
 
     virtual void prepare(double /*sampleRate*/, std::int32_t /*maxFrames*/) {}
     virtual void release() {}
+    /// Owner-side shape admission for staged graphs. DeviceNode forwards its
+    /// instance's shape epoch. Native fixed-shape nodes retain zero.
+    [[nodiscard]] virtual std::uint64_t preparationShapeEpoch() const noexcept { return 0; }
 
     /// Optional source ownership token, queried ONLY by the realiser off the
     /// callback. A graph keeps streamed pages/workers alive until reclamation;
@@ -211,9 +228,23 @@ public:
     virtual void sourceEvents(EventList&, std::int32_t) noexcept {}
     /// After processing, a note-off reached a consuming node or graph output.
     /// Sources retain ownership until this acknowledgement, across PDC queues.
+    /// Sources retaining queued events are acknowledged after every accepted
+    /// copy on a consumer/output path has left the graph's delay queues.
     virtual void noteOffDelivered(const Event&) noexcept {}
     /// Forwarding refused an off; its source must retain and retry ownership.
     virtual void noteOffRejected(const Event&) noexcept {}
+    /// An on reached a consumer/output, or was refused by a forwarding queue.
+    /// Kept separate from off ownership so a new source generation can tell a
+    /// sounding voice from an on still waiting in a retired graph's PDC queue.
+    virtual void noteOnDelivered(const Event&) noexcept {}
+    virtual void noteOnRejected(const Event&) noexcept {}
+    // Explicit opt-in to retaining queued source events across graph swaps.
+    // Graph prepares reachable source lists on the owner; these audio hooks
+    // validate immutable authorship/shared ownership without allocating.
+    virtual bool retainsQueuedSourceEvents() const noexcept { return false; }
+    virtual bool canRetainPendingEvent(const Event&) const noexcept { return false; }
+    virtual void pendingEventRetained(const Event&) noexcept {}
+    virtual bool retainedEventsStillValid(const Event&) const noexcept { return false; }
     // Immutable owner-assigned prefix; zero means no controller acknowledgements.
     virtual std::uint32_t controllerSourcePrefix() const noexcept {
         return 0;
@@ -343,20 +374,18 @@ public:
     [[nodiscard]] HeldNotes& heldNotes() noexcept { return held_; }
     [[nodiscard]] const HeldNotes& heldNotes() const noexcept { return held_; }
 
-    /// ADR-0165: what generates this node's addressed events each block, and
-    /// what keeps it alive. Message thread, before the graph that plays it is
-    /// published. ON THE NODE, like the held notes: a device outlives every
-    /// graph, and no device class has to know automation exists.
+    /// Standalone addressed-source setup, before Graph::prepare. Each prepared
+    /// graph captures its own binding and owner. Changing this does not mutate
+    /// already prepared graphs; a realizer may supply an explicit binding.
     void setEventSource(EventSource* source, std::shared_ptr<void> keepAlive) noexcept {
         eventSourceOwner_ = std::move(keepAlive);
         eventSource_.store(source, std::memory_order_release);
     }
-    /// Audio thread.
+    /// Standalone setup inspection. Graph processing uses its captured slot.
     [[nodiscard]] EventSource* eventSource() const noexcept {
         return eventSource_.load(std::memory_order_acquire);
     }
-    /// Message thread: the realiser keeps it with the graph, so a source a
-    /// retired graph may still call is never freed under it.
+    /// Owner: Graph::prepare captures it with the pointer for its own slot.
     [[nodiscard]] const std::shared_ptr<void>& eventSourceLifetime() const noexcept {
         return eventSourceOwner_;
     }
@@ -365,6 +394,14 @@ protected:
     Node() = default;
 
 private:
+    friend class Graph;
+    struct Preparation {
+        double sampleRate = 0.0;
+        std::int32_t maxFrames = 0, channels = 0;
+        Precision precision = Precision::Float32, handed = Precision::Float32;
+        std::uint64_t shape = 0, revision = 0;
+        bool known = false, ready = false;
+    } preparation_;
     HeldNotes held_;
     std::atomic<ScopeTap*> inputTap_{nullptr};
     std::atomic<EventSource*> eventSource_{nullptr};
@@ -791,6 +828,15 @@ public:
     /// the graph, because ADR-0042's decision 5 says a device change must not
     /// disturb the project and the project is where nodes come from.
     NodeId addNode(Node& node);
+    /// Construction only. An explicit null binding suppresses a node's legacy
+    /// source. Owners are retired with the graph, never on the callback.
+    bool setEventSource(NodeId, EventSourceBinding);
+    void setNodePreparePolicy(NodePreparePolicy policy) noexcept {
+        nodePreparePolicy_ = policy;
+        prepared_ = false;
+    }
+    /// Owner-only admission immediately before publishing a ready graph.
+    [[nodiscard]] bool preparationCurrent() const noexcept;
 
     /// `from` feeds `to`. Multiple edges into one node are SUMMED, which is
     /// what makes a group a node with no device rather than a special case
@@ -1045,6 +1091,9 @@ public:
     /// retain their identity across rebuilds; the matching table is sorted
     /// during prepare, so this walk allocates nothing.
     std::int32_t adoptBypassHistory(const Graph& old) noexcept;
+    /// Transfer accepted queued events to the same retained target/arrival,
+    /// preserving their remaining delay before the old publication is retired.
+    std::int32_t adoptEventHistory(const Graph& old) noexcept;
 
 private:
     void writeNodeOutput(NodeId, const AudioIo&) const noexcept;
@@ -1089,6 +1138,9 @@ private:
     void* workerInitializationContext_=nullptr;
     struct Slot {
         Node* node = nullptr;
+        EventSourceBinding eventSource;
+        bool explicitEventSource = false;
+        std::uint64_t preparationRevision = 0;
         bool hasBypass = false;
         DelayLine dryDelay;
         std::vector<NodeId> inputs;
@@ -1109,6 +1161,9 @@ private:
         bool doubles = false;
         std::vector<Event> eventStore;
         EventList events;
+        // Forwarding precedes event sorting, so these parallel origins can be
+        // carried through further delayed hops without changing Event's ABI.
+        std::vector<Node*> eventOrigins;
 
         /// ADR-0091: note events delayed past the end of this block, by a
         /// node's latency or an edge's compensation, keyed by the absolute
@@ -1117,9 +1172,12 @@ private:
         struct Pending {
             std::int64_t due = 0;
             Event e;
+            Node* retainedSource = nullptr; // provider in THIS graph only
         };
         std::vector<Pending> pending;
         std::int32_t pendingCount = 0;
+        std::vector<Node*> pendingSources; // owner-prepared reachable providers
+        bool deliversNoteStream = false; // a consumer/output is reachable through Through nodes
 
         std::int64_t tailRemaining = 0;
         bool silent = true;
@@ -1212,8 +1270,10 @@ private:
     std::int32_t computeSplits(std::int32_t frames) noexcept;
 
     std::vector<Slot> slots_;
+    std::vector<std::pair<Node*,NodeId>> eventNodes_;
     std::vector<std::pair<std::uint32_t, Node *>> controllerSources_;
     void acknowledgeController(const Event &, bool delivered) noexcept;
+    [[nodiscard]] bool hasPendingNoteOff(std::uint64_t noteId) const noexcept;
 
     /// Each slot's `latencySamples()` as last asked on the message thread
     /// (prepare, retap), for the audio thread to read when it forwards events
@@ -1254,6 +1314,7 @@ private:
     std::int32_t latencyHeadroom_ = 8192;
     bool ok_ = false;
     bool prepared_ = false;
+    NodePreparePolicy nodePreparePolicy_ = NodePreparePolicy::PrepareAll;
     std::int32_t renderedFrames_ = 0;
     bool reverseWithinLevel_ = false;
     std::string error_;

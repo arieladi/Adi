@@ -27,6 +27,15 @@ void operator delete(void* p)noexcept{if(p && adi::audio::onAudioThread)++frees;
 void operator delete[](void* p)noexcept{operator delete(p);}
 void operator delete(void* p,std::size_t)noexcept{operator delete(p);}
 void operator delete[](void* p,std::size_t)noexcept{operator delete(p);}
+// Nothrow allocations use the same counted malloc/free pair under sanitizers.
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+    try { return ::operator new(n); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
+    try { return ::operator new[](n); } catch (...) { return nullptr; }
+}
+void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete[](p); }
 namespace {
 using namespace adi;using namespace adi::engine;constexpr auto q=textproj::kPPQ;
 int checks=0,failures=0;void check(bool good,const char* label){++checks;if(!good){++failures;std::printf("FAIL: %s\n",label);}}

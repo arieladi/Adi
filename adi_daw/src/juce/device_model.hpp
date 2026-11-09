@@ -32,9 +32,12 @@
 #include <atomic>
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
+
+namespace adi::gesture::detail { class ProducerFence; class StateProducerFence; }
 
 namespace adi::device {
 
@@ -166,6 +169,16 @@ struct DeviceIdentity {
 /// the difference. The set of virtuals is deliberately small: anything a
 /// particular format cannot do is answered conservatively here rather than
 /// leaking a capability query upward.
+/// Owner-allocated immutable callback identity. The callback borrows one raw
+/// binding while its DeviceInstance announcement is held. Owners are reclaimed
+/// only by the message thread after a zero-announcement observation.
+struct DeviceCaptureBinding {
+    std::int64_t deviceId = 0;
+    std::shared_ptr<engine::ParamEditCapture> parameters;
+    std::shared_ptr<gesture::detail::ProducerFence> parameterFence;
+    std::shared_ptr<gesture::detail::StateProducerFence> stateFence;
+};
+
 class DeviceInstance {
 public:
     virtual ~DeviceInstance() = default;
@@ -269,6 +282,10 @@ public:
     /// (ADR-0123 item 6). A per-device epoch is the signal that guard should
     /// always have used.
     [[nodiscard]] virtual std::uint64_t shapeEpoch() const noexcept { return 0; }
+    /// Owner-side equality stamp for reusing an already prepared instance.
+    /// Backends may expose an exact shape fingerprint without changing their
+    /// public monotonic notification counter.
+    [[nodiscard]] virtual std::uint64_t preparationShapeEpoch() const noexcept { return shapeEpoch(); }
 
     /// A counter that increases every time this device asks to be restarted
     /// without saying why. ADR-0179.
@@ -392,8 +409,31 @@ public:
     /// unhooking, because a push may be in flight.
     void setParamSink(engine::ParamEditCapture* capture, std::int64_t deviceId) noexcept;
     [[nodiscard]] bool hasParamSink() const noexcept {
-        return sink_.load(std::memory_order_acquire) != nullptr;
+        return captureBinding_.load(std::memory_order_acquire) != nullptr || sink_.load(std::memory_order_acquire) != nullptr;
     }
+    /// Session-bound capture owns the complete binding. Allocation occurs before
+    /// publication; detach itself never allocates. A zero reader observation is
+    /// required before retired callback owners may be destroyed.
+    void installCaptureBinding(std::shared_ptr<const DeviceCaptureBinding>);
+    void detachCaptureBinding() noexcept;
+    bool collectCaptureBindings() noexcept;
+    void reportCaptureFault() noexcept;
+    [[nodiscard]] bool captureCallbacksQuiescent() const noexcept;
+    class StateSignal {
+    public:
+        ~StateSignal();
+        StateSignal(const StateSignal&) = delete;
+        StateSignal& operator=(const StateSignal&) = delete;
+    private:
+        explicit StateSignal(DeviceInstance&) noexcept;
+        DeviceInstance* owner_ = nullptr;
+        const DeviceCaptureBinding* binding_ = nullptr;
+        bool reserved_ = false;
+        friend class DeviceInstance;
+    };
+    /// SDK adapter holds this stack token across its unmuted state epoch
+    /// publication. It performs no allocation or shared-owner transition.
+    [[nodiscard]] StateSignal beginStateSignal() noexcept { return StateSignal(*this); }
 
 protected:
     DeviceInstance() = default;
@@ -417,6 +457,12 @@ protected:
 private:
     std::atomic<engine::ParamEditCapture*> sink_{nullptr};
     std::atomic<std::int64_t> sinkDevice_{0};
+    const DeviceCaptureBinding* acquireCaptureBinding(bool& admitted) noexcept;
+    void releaseCaptureBinding() noexcept;
+    std::atomic<const DeviceCaptureBinding*> captureBinding_{nullptr};
+    std::atomic<std::uint64_t> captureReaders_{0};
+    std::vector<std::shared_ptr<const DeviceCaptureBinding>> captureOwners_;
+    std::array<std::atomic<std::uint64_t>, kAutomatedWords> gesturing_{};
 };
 
 // ---------------------------------------------------------------------------
@@ -521,6 +567,9 @@ public:
     /// node is handed, so it does not change the answer.
     [[nodiscard]] bool processesDouble() const noexcept override {
         return inst_ != nullptr && inst_->processesDouble();
+    }
+    [[nodiscard]] std::uint64_t preparationShapeEpoch() const noexcept override {
+        return inst_ != nullptr ? inst_->preparationShapeEpoch() : 0;
     }
     void willBeHanded(engine::Precision width) override {
         handed_ = width;
