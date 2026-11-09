@@ -10,6 +10,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
+#include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
@@ -2585,6 +2586,92 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
           "the Snare dropped twice below the tracks: a new track, one after the other, pooled once");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+
+    // The browser's Samples and Places (D1; Live 12 manual 4.1, 4.6, 4.7; N15's index part): a folder
+    // registered and scanned into the library index (#102) lists its audio files, and not its others;
+    // right goes from the sidebar into the list, left back; the search narrows it; a row dragged onto a
+    // lane is the audio drop.
+    {
+        const auto library = dir / "Library";
+        std::filesystem::create_directories(library / "Drums");
+        for (const auto &[name, value] : {std::pair{"Drums/Clap.wav", .2f}, std::pair{"Bass Hit.wav", .4f}}) {
+            std::vector<float> samples(4800, value);
+            audio::WavWriter writer(library / name, 48000, 1, audio::WavFormat::Pcm16);
+            writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        }
+        std::ofstream(library / "notes.txt") << "not audio";
+        std::string why;
+        auto index = library::Index::open(dir / "library.sqlite", why, false);
+        check(index != nullptr, "a library index");
+        if (!index)
+            return;
+        library::MarkerVolumeProvider volumes;
+        auto listing = scanLibrary(*index, {{"User Library", library}}, volumes);
+        check(listing.error.empty() && listing.places.size() == 1 && listing.samples.size() == 2 &&
+                  listing.samples[0].name == "Bass Hit.wav" && listing.samples[1].name == "Clap.wav" &&
+                  listing.samples[1].place == "User Library",
+              "the scan lists the folder's two audio files by name, and not its text file");
+        auto &browser = root.browser;
+        browser.setListing(listing);
+        int samples = -1, user = -1;
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+            if (browser.sidebar()[i].name == "Samples")
+                samples = static_cast<int>(i);
+            if (browser.sidebar()[i].name == "User Library")
+                user = static_cast<int>(i);
+        }
+        root.say({});
+        browser.choose(samples);
+        check(browser.shown().size() == 2 && browser.shown()[0]->name == "Bass Hit.wav" && root.error().empty() &&
+                  browser.list.getNumRowsOnScreen() > 0,
+              "Samples lists them, and says nothing");
+        browser.choose(user);
+        check(browser.shown().size() == 2, "the User Library place lists them too");
+        check(browser.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && browser.list.getSelectedRow() == 0,
+              "right goes into the list, its first row selected");
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && browser.list.getSelectedRow() == 1,
+              "down moves to the next row");
+        // JUCE posts a typed change; the test runs the editor's callback as the message loop would.
+        browser.search.setText("clap", false);
+        browser.search.onTextChange();
+        check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav", "the search narrows the list");
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        // Dragged onto Drums at bar 5: the audio drop, one clip, one step.
+        const auto drag = BrowserPanel::dragDescription({browser.shown()[1]});
+        const auto bar5 = 4 * textproj::kWhole;
+        const juce::Point<int> at{static_cast<int>(geometry.x(bar5)) + 3, laneTop(root, 1) + 10};
+        juce::DragAndDropTarget::SourceDetails details(drag, nullptr, at);
+        check(canvas.isInterestedInDragSource(details) &&
+                  !canvas.isInterestedInDragSource(juce::DragAndDropTarget::SourceDetails("something else", nullptr, at)),
+              "the lanes take a browser sample, and nothing else dragged");
+        const auto before = clipsOn(1).size();
+        canvas.itemDropped(details);
+        root.frame();
+        const auto after = clipsOn(1);
+        check(after.size() == before + 1 && after.back().first == "Clap" && after.back().second == bar5 &&
+                  submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip",
+              "Clap.wav dropped from the browser on Drums at bar 5: one clip there, one step, as a file from the desktop");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+            browser.choose(samples);
+            browser.list.selectRow(1);
+            root.frame();
+            juce::Image picture(juce::Image::ARGB, 2 * browser.getWidth(), 2 * browser.getHeight(), true,
+                                juce::SoftwareImageType{});
+            {
+                juce::Graphics g(picture);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                browser.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-browser-samples.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+        }
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        browser.setListing({});
+    }
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on

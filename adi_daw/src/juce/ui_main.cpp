@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/appdata.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
 #include "juce/juce_device_loader.hpp"
@@ -7,6 +8,7 @@
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <thread>
 namespace adi::ui {
 namespace {
 // A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
@@ -88,9 +90,60 @@ class AdiApplication final : public juce::JUCEApplication,
             quit();
             return;
         }
+        startLibrary();
         startTimer(20);
     }
+    // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
+    // background owner. It registers and scans the User Library and the added content folders the
+    // settings name, then hands the browser what it lists; the index keeps hashing in the background
+    // while `library.backgroundIndexing` is on. A smoke run or a machine with no app-data folder
+    // indexes nothing.
+    void startLibrary() {
+        const auto file = appdata::libraryIndexFile();
+        if (file.empty() || smokeOutput_ != juce::File{})
+            return;
+        std::vector<std::pair<std::string, std::filesystem::path>> folders;
+        if (const auto user = settings_->get("library.userLibrary"); user.is_string() && !user.get<std::string>().empty())
+            folders.emplace_back("User Library", pathFromUtf8(user.get<std::string>()));
+        if (const auto added = settings_->get("library.contentFolders"); added.is_array())
+            for (const auto &folder : added)
+                if (folder.is_string() && !folder.get<std::string>().empty()) {
+                    const auto path = pathFromUtf8(folder.get<std::string>());
+                    folders.emplace_back(media::pathUtf8(path.filename().empty() ? path.parent_path().filename()
+                                                                                 : path.filename()),
+                                         path);
+                }
+        if (folders.empty())
+            return;
+        const auto background = settings_->get("library.backgroundIndexing");
+        const bool hashing = !background.is_boolean() || background.get<bool>();
+        libraryThread_ = std::thread([this, file, folders, hashing] {
+            std::string error;
+            auto index = library::Index::open(file, error, hashing);
+            LibraryListing listing;
+            if (index) {
+                library::MarkerVolumeProvider volumes;
+                listing = scanLibrary(*index, folders, volumes);
+            } else {
+                listing.error = "The library index could not be opened: " + error;
+            }
+            index_ = std::move(index); // read again only after the join, at shutdown
+            juce::MessageManager::callAsync([this, listing = std::move(listing)] {
+                if (juce::JUCEApplicationBase::getInstance() != this)
+                    return;
+                library_ = listing;
+                if (root_) {
+                    root_->browser.setListing(library_);
+                    if (!library_.error.empty())
+                        root_->say(library_.error);
+                }
+            });
+        });
+    }
     void shutdown() override {
+        if (libraryThread_.joinable())
+            libraryThread_.join();
+        index_.reset(); // stops its hashing worker
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -158,6 +211,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
+        root->browser.setListing(library_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
@@ -486,6 +540,10 @@ class AdiApplication final : public juce::JUCEApplication,
     AdiRootComponent *root_ = nullptr;
     std::unique_ptr<FloatingHost> floating_;
     std::unique_ptr<juce::FileChooser> chooser_;
+    // The library index's owner and what it last listed (D1).
+    std::thread libraryThread_;
+    std::unique_ptr<library::Index> index_;
+    LibraryListing library_;
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
     std::unique_ptr<UndoHistoryWindow> historyWindow_; // shows the main root's list; goes before it

@@ -126,6 +126,88 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     search.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
     search.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
     addAndMakeVisible(search);
+    baseEntries_ = sidebar_.size();
+    // The search narrows the list as it is typed; Enter or the down arrow goes into it (§41.4.1.6).
+    search.onTextChange = [this] { refill(); };
+    search.onReturnKey = [this] {
+        if (getNumRows() > 0) {
+            list.selectRow(0);
+            list.grabKeyboardFocus();
+        }
+    };
+    list.setTitle("Browser content");
+    list.setModel(this);
+    list.setRowHeight(kRowHeight);
+    list.setColour(juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
+    list.setMultipleSelectionEnabled(true);
+    list.onLeft = [this] { grabKeyboardFocus(); };
+    addAndMakeVisible(list);
+}
+juce::String BrowserPanel::dragDescription(const std::vector<const LibraryFile *> &files) {
+    juce::StringArray paths;
+    for (const auto *f : files)
+        paths.add(juce::String::fromUTF8(media::pathUtf8(f->path).c_str()));
+    return "adi-sample:" + paths.joinIntoString("\n");
+}
+juce::StringArray BrowserPanel::droppedFiles(const juce::var &description) {
+    const auto text = description.toString();
+    if (!text.startsWith("adi-sample:"))
+        return {};
+    return juce::StringArray::fromLines(text.fromFirstOccurrenceOf("adi-sample:", false, false));
+}
+void BrowserPanel::setListing(LibraryListing listing) {
+    listing_ = std::move(listing);
+    // Live's added folders stand among the Places, after Current Project and before Add Folder.
+    sidebar_.resize(baseEntries_);
+    auto addFolder = sidebar_.back();
+    sidebar_.pop_back();
+    for (const auto &place : listing_.places)
+        if (place.name != "User Library")
+            sidebar_.push_back({juce::String::fromUTF8(place.name.c_str()), User});
+    sidebar_.push_back(addFolder);
+    if (selected_ >= static_cast<int>(sidebar_.size()))
+        selected_ = -1;
+    refill();
+    repaint();
+}
+void BrowserPanel::refill() {
+    shown_.clear();
+    const auto chosen = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)].name : juce::String();
+    // Samples, or a Place the listing holds; the search alone looks through Samples (Live 4.3).
+    const bool samples = chosen == "Samples" || (chosen.isEmpty() && search.getText().isNotEmpty());
+    std::string place;
+    if (!samples)
+        for (const auto &p : listing_.places)
+            if (chosen == juce::String::fromUTF8(p.name.c_str()))
+                place = p.name;
+    const auto query = search.getText().trim().toLowerCase();
+    if (samples || !place.empty())
+        for (const auto &f : listing_.samples)
+            if ((samples || f.place == place) &&
+                (query.isEmpty() || juce::String::fromUTF8(f.name.c_str()).toLowerCase().contains(query)))
+                shown_.push_back(&f);
+    list.updateContent();
+    list.deselectAllRows();
+    list.repaint();
+}
+int BrowserPanel::getNumRows() { return static_cast<int>(shown_.size()); }
+void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) {
+    if (row < 0 || row >= static_cast<int>(shown_.size()))
+        return;
+    if (selected)
+        g.fillAll(look::selection);
+    icon(g, Samples, juce::Rectangle<float>(6.f, (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
+    g.setColour(look::text);
+    g.setFont(look::font(12.5f));
+    g.drawText(juce::String::fromUTF8(shown_[static_cast<std::size_t>(row)]->name.c_str()), 24, 0, width - 28, height,
+               juce::Justification::centredLeft, true);
+}
+juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &rows) {
+    std::vector<const LibraryFile *> files;
+    for (int i = 0; i < rows.size(); ++i)
+        if (const int r = rows[i]; r >= 0 && r < static_cast<int>(shown_.size()))
+            files.push_back(shown_[static_cast<std::size_t>(r)]);
+    return files.empty() ? juce::var() : juce::var(dragDescription(files));
 }
 void BrowserPanel::resized() {
     // Live's shape: the search row and the preview row start right of the round
@@ -137,6 +219,7 @@ void BrowserPanel::resized() {
     sidebarArea_ = {edge, top, kSidebarWidth, std::max(0, bottom - top)};
     contentArea_ = {sidebarArea_.getRight() + 2, top,
                     std::max(0, r.getWidth() - sidebarArea_.getRight() - 2 - edge), sidebarArea_.getHeight()};
+    list.setBounds(contentArea_.withTrimmedTop(19)); // under the list's header
 }
 void BrowserPanel::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -216,11 +299,30 @@ void BrowserPanel::choose(int i) {
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
         repaint();
-        // The content pane is the browser's next piece (LANES §3b item 2).
-        root_.say((sidebar_[static_cast<std::size_t>(i)].name + " is not listed yet.").toStdString());
+        refill();
+        const auto &name = sidebar_[static_cast<std::size_t>(i)].name;
+        bool listed = name == "Samples";
+        for (const auto &p : listing_.places)
+            listed = listed || name == juce::String::fromUTF8(p.name.c_str());
+        if (!listed)
+            // Collections, the catalogue's categories and Packs wait for their pieces (D4; N15).
+            root_.say((name + " is not listed yet.").toStdString());
+        else if (shown_.empty())
+            root_.say(listing_.places.empty()
+                          ? "Set the User Library or add a folder in the Settings' Library page to list samples."
+                          : (name + " holds no audio files.").toStdString());
     }
 }
 bool BrowserPanel::keyPressed(const juce::KeyPress &k) {
+    // Right goes from the sidebar into the list (§41.22), its first row selected.
+    if (k == juce::KeyPress::rightKey) {
+        if (getNumRows() > 0) {
+            if (list.getSelectedRows().isEmpty())
+                list.selectRow(0);
+            list.grabKeyboardFocus();
+        }
+        return true;
+    }
     if (k != juce::KeyPress::upKey && k != juce::KeyPress::downKey)
         return false;
     // The next label up or down, past the headings; at either end the selection stays.
