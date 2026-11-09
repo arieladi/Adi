@@ -108,7 +108,7 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
                 {"Categories", None, true},  {"Sounds", Sounds},       {"Drums", Drums},
                 {"Instruments", Instruments}, {"Audio Effects", AudioFx}, {"MIDI Effects", MidiFx},
                 {"Pd Devices", Pd},          {"Plug-Ins", PlugIns},    {"Clips", Clips},
-                {"Samples", Samples},        {"Grooves", Grooves},     {"Templates", Templates},
+                {"Samples", Samples, false, true},        {"Grooves", Grooves},     {"Templates", Templates},
                 {{}, None, true},            {"Places", None, true},   {"Packs", Packs},
                 {"User Library", User},      {"Current Project", Project},
                 {"Add Folder...", AddFolder}};
@@ -129,12 +129,8 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     baseEntries_ = sidebar_.size();
     // The search narrows the list as it is typed; Enter or the down arrow goes into it (§41.4.1.6).
     search.onTextChange = [this] { refill(); };
-    search.onReturnKey = [this] {
-        if (getNumRows() > 0) {
-            list.selectRow(0);
-            list.grabKeyboardFocus();
-        }
-    };
+    search.onReturnKey = [this] { enterList(); };
+    search.addKeyListener(&searchKeys_);
     list.setTitle("Browser content");
     list.setModel(this);
     list.setRowHeight(kRowHeight);
@@ -142,6 +138,23 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     list.setMultipleSelectionEnabled(true);
     list.onLeft = [this] { grabKeyboardFocus(); };
     addAndMakeVisible(list);
+}
+void BrowserPanel::enterList() {
+    if (getNumRows() > 0) {
+        if (list.getSelectedRows().isEmpty())
+            list.selectRow(0);
+        list.grabKeyboardFocus();
+    }
+}
+bool BrowserPanel::SearchKeys::keyPressed(const juce::KeyPress &k, juce::Component *) {
+    if (k != juce::KeyPress::downKey)
+        return false;
+    panel.enterList();
+    return true;
+}
+void BrowserPanel::setFootLimit(int y) {
+    footLimit_ = y;
+    resized();
 }
 juce::String BrowserPanel::dragDescription(const std::vector<const LibraryFile *> &files) {
     juce::StringArray paths;
@@ -155,35 +168,57 @@ juce::StringArray BrowserPanel::droppedFiles(const juce::var &description) {
         return {};
     return juce::StringArray::fromLines(text.fromFirstOccurrenceOf("adi-sample:", false, false));
 }
-void BrowserPanel::setListing(LibraryListing listing) {
+void BrowserPanel::setListing(LibraryListing listing, bool ready) {
+    // The label chosen stays chosen across a new listing, found again by its name and place.
+    const auto keep = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : Entry{};
     listing_ = std::move(listing);
-    // Live's added folders stand among the Places, after Current Project and before Add Folder.
+    ready_ = ready;
+    // Live's added folders stand among the Places, after Current Project and before Add Folder; the
+    // User Library's own label is Live's.
     sidebar_.resize(baseEntries_);
     auto addFolder = sidebar_.back();
     sidebar_.pop_back();
-    for (const auto &place : listing_.places)
-        if (place.name != "User Library")
-            sidebar_.push_back({juce::String::fromUTF8(place.name.c_str()), User});
+    for (auto &e : sidebar_)
+        if (e.name == "User Library" && !e.heading)
+            e.place.clear();
+    for (const auto &place : listing_.places) {
+        if (place.userLibrary) {
+            for (auto &e : sidebar_)
+                if (e.name == "User Library" && !e.heading)
+                    e.place = place.volumeId;
+            continue;
+        }
+        sidebar_.push_back({juce::String::fromUTF8(place.name.c_str()), User, false, false, place.volumeId});
+    }
     sidebar_.push_back(addFolder);
-    if (selected_ >= static_cast<int>(sidebar_.size()))
-        selected_ = -1;
+    selected_ = -1;
+    // The User Library's label is Live's own, whatever folder it names now; any other by its place.
+    for (std::size_t i = 0; i < sidebar_.size() && keep.name.isNotEmpty() && selected_ < 0; ++i)
+        if (sidebar_[i].name == keep.name && sidebar_[i].heading == keep.heading &&
+            (sidebar_[i].place == keep.place || (keep.name == "User Library" && i < baseEntries_)))
+            selected_ = static_cast<int>(i);
     refill();
     repaint();
 }
 void BrowserPanel::refill() {
     shown_.clear();
-    const auto chosen = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)].name : juce::String();
-    // Samples, or a Place the listing holds; the search alone looks through Samples (Live 4.3).
-    const bool samples = chosen == "Samples" || (chosen.isEmpty() && search.getText().isNotEmpty());
-    std::string place;
-    if (!samples)
-        for (const auto &p : listing_.places)
-            if (chosen == juce::String::fromUTF8(p.name.c_str()))
-                place = p.name;
+    const Entry none{};
+    const auto &chosen = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
+    // Samples, or a Place the listing holds, by its volume; the search alone looks through Samples.
+    const bool samples = chosen.samples || (selected_ < 0 && search.getText().isNotEmpty());
+    std::filesystem::path root;
+    for (const auto &p : listing_.places)
+        if (!chosen.place.empty() && p.volumeId == chosen.place)
+            root = p.root;
     const auto query = search.getText().trim().toLowerCase();
-    if (samples || !place.empty())
+    // A Place lists every sample under its folder, a folder inside it included.
+    const auto under = [&root](const std::filesystem::path &path) {
+        const auto rel = path.lexically_relative(root);
+        return !rel.empty() && *rel.begin() != "..";
+    };
+    if (samples || !root.empty())
         for (const auto &f : listing_.samples)
-            if ((samples || f.place == place) &&
+            if ((samples || under(f.path)) &&
                 (query.isEmpty() || juce::String::fromUTF8(f.name.c_str()).toLowerCase().contains(query)))
                 shown_.push_back(&f);
     list.updateContent();
@@ -219,7 +254,9 @@ void BrowserPanel::resized() {
     sidebarArea_ = {edge, top, kSidebarWidth, std::max(0, bottom - top)};
     contentArea_ = {sidebarArea_.getRight() + 2, top,
                     std::max(0, r.getWidth() - sidebarArea_.getRight() - 2 - edge), sidebarArea_.getHeight()};
-    list.setBounds(contentArea_.withTrimmedTop(19)); // under the list's header
+    // Under the list's header, and above the AI tab at the panes' foot.
+    auto rows = contentArea_.withTrimmedTop(19);
+    list.setBounds(rows.withBottom(std::max(rows.getY(), std::min(rows.getBottom(), footLimit_))));
 }
 void BrowserPanel::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -300,17 +337,17 @@ void BrowserPanel::choose(int i) {
         selected_ = i;
         repaint();
         refill();
-        const auto &name = sidebar_[static_cast<std::size_t>(i)].name;
-        bool listed = name == "Samples";
-        for (const auto &p : listing_.places)
-            listed = listed || name == juce::String::fromUTF8(p.name.c_str());
-        if (!listed)
+        const auto &entry = sidebar_[static_cast<std::size_t>(i)];
+        const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
+        if (!library)
             // Collections, the catalogue's categories and Packs wait for their pieces (D4; N15).
-            root_.say((name + " is not listed yet.").toStdString());
+            root_.say((entry.name + " is not listed yet.").toStdString());
+        else if (!ready_)
+            root_.say("The library is still being indexed; its samples list when it is done.");
         else if (shown_.empty())
-            root_.say(listing_.places.empty()
+            root_.say(listing_.places.empty() || (!entry.samples && entry.place.empty())
                           ? "Set the User Library or add a folder in the Settings' Library page to list samples."
-                          : (name + " holds no audio files.").toStdString());
+                          : (entry.name + " holds no audio files.").toStdString());
     }
 }
 bool BrowserPanel::keyPressed(const juce::KeyPress &k) {

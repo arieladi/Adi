@@ -8,6 +8,10 @@
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
 #include <thread>
 namespace adi::ui {
 namespace {
@@ -95,55 +99,92 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
     // background owner. It registers and scans the User Library and the added content folders the
-    // settings name, then hands the browser what it lists; the index keeps hashing in the background
-    // while `library.backgroundIndexing` is on. A smoke run or a machine with no app-data folder
-    // indexes nothing.
+    // settings name, then hands the browser what it lists, and keeps the index open so it goes on
+    // hashing while `library.backgroundIndexing` is on, until Quit. A smoke run or a machine with no
+    // app-data folder, or no folder named, indexes nothing.
+    //
+    // Quit never waits on a folder still being walked: `Index::scan` cannot be stopped part way (N50),
+    // so the owner checks its stop flag between folders, and Quit leaves an owner still scanning to
+    // end on its own. Everything it touches is its own or held in the shared state.
+    struct LibraryOwner {
+        std::mutex mutex;
+        std::condition_variable wake;
+        std::atomic<bool> stop{false}, scanned{false};
+    };
     void startLibrary() {
         const auto file = appdata::libraryIndexFile();
-        if (file.empty() || smokeOutput_ != juce::File{})
-            return;
-        std::vector<std::pair<std::string, std::filesystem::path>> folders;
+        std::vector<LibraryFolder> folders;
         if (const auto user = settings_->get("library.userLibrary"); user.is_string() && !user.get<std::string>().empty())
-            folders.emplace_back("User Library", pathFromUtf8(user.get<std::string>()));
+            folders.push_back({"User Library", pathFromUtf8(user.get<std::string>()), true});
         if (const auto added = settings_->get("library.contentFolders"); added.is_array())
             for (const auto &folder : added)
                 if (folder.is_string() && !folder.get<std::string>().empty()) {
                     const auto path = pathFromUtf8(folder.get<std::string>());
-                    folders.emplace_back(media::pathUtf8(path.filename().empty() ? path.parent_path().filename()
-                                                                                 : path.filename()),
-                                         path);
+                    folders.push_back({media::pathUtf8(path.filename().empty() ? path.parent_path().filename()
+                                                                               : path.filename()),
+                                       path});
                 }
-        if (folders.empty())
+        if (file.empty() || smokeOutput_ != juce::File{} || folders.empty()) {
+            libraryReady_ = true;
+            if (root_)
+                root_->browser.setListing(library_, true);
             return;
+        }
         const auto background = settings_->get("library.backgroundIndexing");
         const bool hashing = !background.is_boolean() || background.get<bool>();
-        libraryThread_ = std::thread([this, file, folders, hashing] {
-            std::string error;
-            auto index = library::Index::open(file, error, hashing);
+        auto owner = libraryOwner_ = std::make_shared<LibraryOwner>();
+        libraryThread_ = std::thread([this, owner, file, folders, hashing] {
             LibraryListing listing;
-            if (index) {
-                library::MarkerVolumeProvider volumes;
-                listing = scanLibrary(*index, folders, volumes);
-            } else {
-                listing.error = "The library index could not be opened: " + error;
-            }
-            index_ = std::move(index); // read again only after the join, at shutdown
-            juce::MessageManager::callAsync([this, listing = std::move(listing)] {
-                if (juce::JUCEApplicationBase::getInstance() != this)
-                    return;
-                library_ = listing;
-                if (root_) {
-                    root_->browser.setListing(library_);
-                    if (!library_.error.empty())
-                        root_->say(library_.error);
+            std::unique_ptr<library::Index> index;
+            try {
+                std::string error;
+                index = library::Index::open(file, error, hashing);
+                if (index) {
+                    library::MarkerVolumeProvider volumes;
+                    listing = scanLibrary(*index, folders, volumes, &owner->stop);
+                } else {
+                    listing.error = "The library index could not be opened: " + error;
                 }
-            });
+            } catch (const std::exception &e) {
+                listing.error = std::string("The library could not be indexed: ") + e.what();
+            }
+            owner->scanned = true;
+            if (!owner->stop.load())
+                juce::MessageManager::callAsync([this, owner, listing = std::move(listing)] {
+                    if (owner->stop.load() || juce::JUCEApplicationBase::getInstance() != this)
+                        return;
+                    library_ = listing;
+                    libraryReady_ = true;
+                    if (root_) {
+                        root_->browser.setListing(library_, true);
+                        if (!library_.error.empty())
+                            root_->say(library_.error);
+                    }
+                });
+            // The index stays open, hashing in the background, until Quit.
+            std::unique_lock lock(owner->mutex);
+            owner->wake.wait(lock, [&owner] { return owner->stop.load(); });
+            lock.unlock();
+            index.reset();
         });
     }
-    void shutdown() override {
-        if (libraryThread_.joinable())
+    void stopLibrary() {
+        if (!libraryThread_.joinable())
+            return;
+        {
+            std::lock_guard lock(libraryOwner_->mutex);
+            libraryOwner_->stop = true;
+        }
+        libraryOwner_->wake.notify_all();
+        // An owner still walking a folder is left to finish on its own; one waiting only stops its
+        // hashing and ends.
+        if (libraryOwner_->scanned.load())
             libraryThread_.join();
-        index_.reset(); // stops its hashing worker
+        else
+            libraryThread_.detach();
+    }
+    void shutdown() override {
+        stopLibrary();
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -211,7 +252,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
-        root->browser.setListing(library_); // the library listed so far, if anything
+        root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
@@ -542,8 +583,9 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<juce::FileChooser> chooser_;
     // The library index's owner and what it last listed (D1).
     std::thread libraryThread_;
-    std::unique_ptr<library::Index> index_;
+    std::shared_ptr<LibraryOwner> libraryOwner_;
     LibraryListing library_;
+    bool libraryReady_ = false;
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
     std::unique_ptr<UndoHistoryWindow> historyWindow_; // shows the main root's list; goes before it

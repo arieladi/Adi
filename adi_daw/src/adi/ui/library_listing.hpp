@@ -4,9 +4,11 @@
 #include "adi/library/volume.hpp"
 #include "adi/media/media_ops.hpp"
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -20,12 +22,20 @@ namespace adi::ui {
 struct LibraryPlace {
     std::string name;
     std::filesystem::path root;
-    std::string volumeId;
+    std::string volumeId;      // what tells two places apart: their names may match
+    bool userLibrary = false;  // the User Library's, which Live's own Places label shows
 };
 struct LibraryFile {
     std::string name;            // the file's name, as Live's list shows it
     std::filesystem::path path;  // absolute
-    std::string place;           // the place it is under
+    std::string volumeId;        // the place it is under
+};
+// One folder the settings name: what the browser calls it, where it is, and whether it is the User
+// Library.
+struct LibraryFolder {
+    std::string name;
+    std::filesystem::path root;
+    bool userLibrary = false;
 };
 struct LibraryListing {
     std::vector<LibraryPlace> places;
@@ -41,41 +51,51 @@ inline bool isAudioFile(const std::filesystem::path &path) {
             return true;
     return false;
 }
-// Registers and scans each folder (name, root), then lists the index's present files under them.
-// A folder that cannot be registered or scanned is left out and named in `error`; the others list.
-inline LibraryListing scanLibrary(library::Index &index, const std::vector<std::pair<std::string, std::filesystem::path>> &folders,
-                                  library::VolumeIdentityProvider &volumes) {
+// Registers and scans each folder, then lists the index's present files under them, each file once
+// (a folder inside another lists through the outer one). A folder that cannot be registered or
+// scanned is left out and named in `error`; the others list. `stop`, when it reads true between two
+// folders, ends the scan early: what was scanned so far is listed. An index that throws is an error,
+// never an exception out of here.
+inline LibraryListing scanLibrary(library::Index &index, const std::vector<LibraryFolder> &folders,
+                                  library::VolumeIdentityProvider &volumes, const std::atomic<bool> *stop = nullptr) {
     LibraryListing out;
-    std::map<std::string, std::size_t> byVolume;
-    for (const auto &[name, root] : folders) {
-        if (root.empty())
-            continue;
-        library::Volume volume;
-        std::string why;
-        if (!volumes.identify(root, volume, why)) {
-            if (out.error.empty())
-                out.error = name + " could not be read: " + why;
-            continue;
+    try {
+        std::map<std::string, std::size_t> byVolume;
+        for (const auto &folder : folders) {
+            if (stop != nullptr && stop->load())
+                break;
+            if (folder.root.empty())
+                continue;
+            library::Volume volume;
+            std::string why;
+            if (!volumes.identify(folder.root, volume, why)) {
+                if (out.error.empty())
+                    out.error = folder.name + " could not be read: " + why;
+                continue;
+            }
+            if (byVolume.contains(volume.id))
+                continue; // the same folder named twice
+            if (const auto scanned = index.scan(volume); !scanned.ok) {
+                if (out.error.empty())
+                    out.error = folder.name + " could not be scanned: " + scanned.error;
+                continue;
+            }
+            byVolume[volume.id] = out.places.size();
+            out.places.push_back({folder.name, volume.root, volume.id, folder.userLibrary});
         }
-        if (const auto scanned = index.scan(volume); !scanned.ok) {
-            if (out.error.empty())
-                out.error = name + " could not be scanned: " + scanned.error;
-            continue;
+        std::set<std::filesystem::path> seen;
+        for (const auto &entry : index.entries()) {
+            const auto place = byVolume.find(entry.volumeId);
+            if (!entry.present || place == byVolume.end())
+                continue;
+            const auto &where = out.places[place->second];
+            auto path = (where.root / media::pathFromUtf8(entry.relativePath)).lexically_normal();
+            if (!isAudioFile(path) || !seen.insert(path).second)
+                continue;
+            out.samples.push_back({media::pathUtf8(path.filename()), std::move(path), where.volumeId});
         }
-        if (byVolume.contains(volume.id))
-            continue; // the same folder named twice
-        byVolume[volume.id] = out.places.size();
-        out.places.push_back({name, volume.root, volume.id});
-    }
-    for (const auto &entry : index.entries()) {
-        const auto place = byVolume.find(entry.volumeId);
-        if (!entry.present || place == byVolume.end())
-            continue;
-        const auto &where = out.places[place->second];
-        auto path = where.root / media::pathFromUtf8(entry.relativePath);
-        if (!isAudioFile(path))
-            continue;
-        out.samples.push_back({media::pathUtf8(path.filename()), std::move(path), where.name});
+    } catch (const std::exception &e) {
+        out.error = std::string("The library index could not be read: ") + e.what();
     }
     std::stable_sort(out.samples.begin(), out.samples.end(), [](const LibraryFile &a, const LibraryFile &b) {
         return std::lexicographical_compare(a.name.begin(), a.name.end(), b.name.begin(), b.name.end(),

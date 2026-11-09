@@ -2605,36 +2605,80 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         check(index != nullptr, "a library index");
         if (!index)
             return;
+        // An added folder whose name is a sidebar label's: told apart by its volume, not its name.
+        const auto added = dir / "Samples";
+        std::filesystem::create_directories(added);
+        {
+            std::vector<float> samples(4800, .3f);
+            audio::WavWriter writer(added / "Rim.wav", 48000, 1, audio::WavFormat::Pcm16);
+            writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        }
         library::MarkerVolumeProvider volumes;
-        auto listing = scanLibrary(*index, {{"User Library", library}}, volumes);
-        check(listing.error.empty() && listing.places.size() == 1 && listing.samples.size() == 2 &&
+        const std::vector<LibraryFolder> folders{{"User Library", library, true}, {"Samples", added, false},
+                                                 {"Drums", library / "Drums", false}};
+        auto listing = scanLibrary(*index, folders, volumes);
+        check(listing.error.empty() && listing.places.size() == 3 && listing.samples.size() == 3 &&
                   listing.samples[0].name == "Bass Hit.wav" && listing.samples[1].name == "Clap.wav" &&
-                  listing.samples[1].place == "User Library",
-              "the scan lists the folder's two audio files by name, and not its text file");
+                  listing.samples[2].name == "Rim.wav" && listing.places[0].userLibrary,
+              "the scan lists the three audio files once each by name (Clap.wav under two folders), and no text file");
+        std::atomic<bool> stopNow{true};
+        check(scanLibrary(*index, folders, volumes, &stopNow).places.empty(), "a stop before the first folder scans none");
         auto &browser = root.browser;
         browser.setListing(listing);
         int samples = -1, user = -1;
         for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
-            if (browser.sidebar()[i].name == "Samples")
+            if (browser.sidebar()[i].samples)
                 samples = static_cast<int>(i);
             if (browser.sidebar()[i].name == "User Library")
                 user = static_cast<int>(i);
         }
+        int addedSamples = -1, addedDrums = -1, drums = -1;
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+            const auto &e = browser.sidebar()[i];
+            if (e.name == "Samples" && !e.samples)
+                addedSamples = static_cast<int>(i);
+            if (e.name == "Drums" && !e.place.empty())
+                addedDrums = static_cast<int>(i);
+            if (e.name == "Drums" && e.place.empty() && !e.heading)
+                drums = static_cast<int>(i);
+        }
         root.say({});
         browser.choose(samples);
-        check(browser.shown().size() == 2 && browser.shown()[0]->name == "Bass Hit.wav" && root.error().empty() &&
+        check(browser.shown().size() == 3 && browser.shown()[0]->name == "Bass Hit.wav" && root.error().empty() &&
                   browser.list.getNumRowsOnScreen() > 0,
-              "Samples lists them, and says nothing");
+              "Samples lists all three, and says nothing");
         browser.choose(user);
-        check(browser.shown().size() == 2, "the User Library place lists them too");
+        check(browser.shown().size() == 2, "the User Library place lists its two, its Drums folder's included");
+        browser.choose(addedSamples);
+        check(addedSamples > user && browser.shown().size() == 1 && browser.shown()[0]->name == "Rim.wav",
+              "an added folder named Samples is a Place of its own, listing its one file");
+        browser.choose(addedDrums);
+        check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav",
+              "an added Drums folder inside the User Library lists the file under it");
+        browser.choose(drums);
+        check(browser.shown().empty() && root.error().find("not listed yet") != std::string::npos,
+              "the Drums category stays the catalogue's, whatever a folder is called");
+        browser.setListing(listing, true);
+        check(browser.selected() == drums, "a new listing keeps the label chosen");
+        browser.setListing(listing, false);
+        browser.choose(samples);
+        check(root.error().find("still being indexed") != std::string::npos,
+              "while the first scan runs, the Status Bar says so");
+        browser.setListing(listing, true);
+        browser.choose(user);
         check(browser.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && browser.list.getSelectedRow() == 0,
               "right goes into the list, its first row selected");
         check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && browser.list.getSelectedRow() == 1,
               "down moves to the next row");
+        browser.choose(user);
         // JUCE posts a typed change; the test runs the editor's callback as the message loop would.
         browser.search.setText("clap", false);
         browser.search.onTextChange();
         check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav", "the search narrows the list");
+        browser.list.deselectAllRows();
+        check(browser.searchKeys().keyPressed(juce::KeyPress(juce::KeyPress::downKey), &browser.search) &&
+                  browser.list.getSelectedRow() == 0,
+              "the down arrow in the search goes to its results, the first selected");
         browser.search.setText({}, false);
         browser.search.onTextChange();
         // Dragged onto Drums at bar 5: the audio drop, one clip, one step.

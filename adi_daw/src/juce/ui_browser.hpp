@@ -3,6 +3,8 @@
 #include "adi/ui/library_listing.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
+#include <string>
+#include <utility>
 #include <vector>
 namespace adi::ui {
 class AdiRootComponent;
@@ -27,7 +29,10 @@ class BrowserList final : public juce::ListBox {
 class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient, private juce::ListBoxModel {
   public:
     explicit BrowserPanel(AdiRootComponent &);
-    ~BrowserPanel() override { list.setModel(nullptr); }
+    ~BrowserPanel() override {
+        search.removeKeyListener(&searchKeys_);
+        list.setModel(nullptr);
+    }
     void paint(juce::Graphics &) override;
     void resized() override;
     void mouseDown(const juce::MouseEvent &) override;
@@ -38,9 +43,14 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // Live 12's focus ring round the sidebar, where the keyboard put the focus.
     bool focusRing() const noexcept { return ring_; }
     struct Entry {
+        Entry() = default;
+        Entry(juce::String n, int g, bool h = false, bool s = false, std::string p = {})
+            : name(std::move(n)), glyph(g), heading(h), samples(s), place(std::move(p)) {}
         juce::String name;
-        int glyph; // which small icon
+        int glyph = 0; // which small icon
         bool heading = false;
+        bool samples = false; // the Samples label
+        std::string place;    // a Place's volume id, matched by identity: two folders may share a name
     };
     const std::vector<Entry> &sidebar() const noexcept { return sidebar_; }
     int selected() const noexcept { return selected_; }
@@ -53,7 +63,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     BrowserList list;
     // What the library index holds, from the app's indexing worker: the Places join the sidebar
     // after Current Project, before Add Folder (Live's added folders), and the list shows again.
-    void setListing(LibraryListing);
+    // `ready` is false while the first scan still runs: the Status Bar says so, not "set a folder".
+    void setListing(LibraryListing, bool ready = true);
+    // Where the list must stop, in this panel's coordinates: above the AI tab at the panes' foot.
+    void setFootLimit(int y);
     const LibraryListing &listing() const noexcept { return listing_; }
     // Selects a label, as a click on it does.
     void choose(int);
@@ -62,6 +75,8 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     // The drag's description of these files: what the lanes accept as a drop (`dropDescription`).
     static juce::String dragDescription(const std::vector<const LibraryFile *> &);
     static juce::StringArray droppedFiles(const juce::var &description);
+    // The search field's own keys: the down arrow goes into the list.
+    juce::KeyListener &searchKeys() noexcept { return searchKeys_; }
 
   private:
     // The list's rows for the label chosen and the search typed.
@@ -70,6 +85,15 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
     LibraryListing listing_;
+    bool ready_ = false;
+    int footLimit_ = 1 << 20;
+    // The search's down arrow goes into the list (§41.4.1.6).
+    struct SearchKeys final : juce::KeyListener {
+        BrowserPanel &panel;
+        explicit SearchKeys(BrowserPanel &p) : panel(p) {}
+        bool keyPressed(const juce::KeyPress &k, juce::Component *) override;
+    } searchKeys_{*this};
+    void enterList();
     std::vector<const LibraryFile *> shown_;
     std::size_t baseEntries_ = 0;
     AdiRootComponent &root_;
