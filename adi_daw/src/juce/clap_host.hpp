@@ -297,9 +297,7 @@ public:
     /// ADR-0142. The host this plugin was created against, for its
     /// state-signal count. `ClapHost::makeDevice` sets it; a device built
     /// by hand without one reports 0 and never signals.
-    void adoptGlue(std::unique_ptr<ClapHostGlue> glue) noexcept {
-        glue_ = std::move(glue);
-    }
+    void adoptGlue(std::unique_ptr<ClapHostGlue> glue) noexcept;
     /// This device's own host glue, or null for a device built without one.
     /// Every counter on it belongs to THIS plugin (ADR-0179); before that,
     /// they were shared by every plugin on the host and no signal could be
@@ -596,6 +594,8 @@ private:
 class ClapHostGlue {
 public:
     ClapHostGlue();
+    /// Main-thread lifecycle; owned glue cannot outlive its actual device.
+    void setStateDevice(DeviceInstance* device) noexcept { stateDevice_=device; }
 
     [[nodiscard]] const clap_host_t* host() noexcept { return &host_; }
 
@@ -741,6 +741,7 @@ private:
     /// MAIN THREAD only: params.h annotates `clear` `[main-thread]`, so this
     /// needs no lock and no atomic.
     std::vector<ClearRequest> clears_;
+    DeviceInstance* stateDevice_ = nullptr;
     int muteDepth_ = 0;                          ///< main thread only
     clap_host_latency_t     latencyExt_{};
     clap_host_audio_ports_t portsExt_{};

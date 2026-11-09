@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/history_policy.hpp"
+#include "adi/applied_batches_detail.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -55,6 +56,11 @@ DailyHistorySnapshots::DailyHistorySnapshots(Store &store, HistorySnapshotPolicy
     : store_(store), policy_(policy), observedHead_(OpJournal(store).headSeq()) {}
 DailyHistorySnapshots::Result DailyHistorySnapshots::poll(std::int64_t utc, int offset) {
     Result result;
+    if (detail::appliedDispatchActive(store_) || !appliedSource(store_).alive()) {
+        result.status = Status::Failed;
+        result.error = "history snapshot source is closed or delivering applied batches";
+        return result;
+    }
     if (store_.readOnly()) {
         result.status = Status::Failed;
         result.error = "project is open read-only";

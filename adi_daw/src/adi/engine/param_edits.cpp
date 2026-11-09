@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/param_edits.hpp"
+#include "adi/gesture_navigation_detail.hpp"
 
 #include <cmath>
 #include <algorithm>
@@ -22,16 +23,38 @@ std::uint64_t elapsed(std::int64_t now, std::int64_t then) noexcept {
 
 ParamEditCapture::ParamEditCapture(std::int32_t capacity) : ring_(slots(capacity)) {}
 
-bool ParamEditCapture::push(const ParamEvent& event) noexcept {
+bool ParamEditCapture::push(const ParamEvent& event) noexcept { return push(event,nullptr); }
+void ParamEditCapture::retainFence(std::shared_ptr<gesture::detail::ProducerFence> fence) {
+    if(fence)fenceOwners_.push_back(std::move(fence));
+}
+bool ParamEditCapture::push(const ParamEvent& event,gesture::detail::ProducerFence* fence) noexcept {
+    if(producerActive_.test_and_set(std::memory_order_acquire)) {
+        if(fence)fence->captureFault();
+        dropped_.fetch_add(1,std::memory_order_relaxed);
+        return false;
+    }
+    struct ReleaseProducer {
+        std::atomic_flag& flag;
+        ~ReleaseProducer(){flag.clear(std::memory_order_release);}
+    } release{producerActive_};
+    auto reservation=gesture::detail::ProducerFence::Reservation::BeforeNavigation;
+    if(fence) {
+        reservation=fence->reserve();
+        if(reservation==gesture::detail::ProducerFence::Reservation::RejectedClosed) {
+            dropped_.fetch_add(1,std::memory_order_relaxed);
+            return false;
+        }
+    }
     const auto w = write_.load(std::memory_order_relaxed);
     const auto next = w + 1 == ring_.size() ? 0 : w + 1;
     if (next == read_.load(std::memory_order_acquire)) {
-        dropped_.store(dropped_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+        if(fence)fence->publicationFailed();
+        dropped_.fetch_add(1,std::memory_order_relaxed);
         return false;
     }
-    ring_[w] = event;
+    ring_[w] = {event,fence,reservation==gesture::detail::ProducerFence::Reservation::AfterNavigation};
     write_.store(next, std::memory_order_release);
-    pushed_.store(pushed_.load(std::memory_order_relaxed) + 1, std::memory_order_relaxed);
+    pushed_.fetch_add(1,std::memory_order_relaxed);
     return true;
 }
 
@@ -106,8 +129,12 @@ std::size_t ParamEditCapture::drainAbsorbing(std::int64_t nowMs, std::vector<Par
     return drainImpl(nowMs, out, true);
 }
 
+std::size_t ParamEditCapture::drainLifecycle(std::int64_t nowMs,std::vector<ParamEdit>& out,
+                                             std::vector<ParamActivity>& activity,bool absorb) {
+    return drainImpl(nowMs,out,absorb,&activity);
+}
 std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdit>& out,
-                                        bool absorb) {
+                                        bool absorb,std::vector<ParamActivity>* activity) {
     const auto start = out.size();
     // Expire before processing queued values, even when the queue is empty.
     for (auto& [key, p] : parameters_) {
@@ -131,12 +158,30 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
     auto r = read_.load(std::memory_order_relaxed);
     // Snapshot the producer boundary: a busy producer cannot prolong this drain.
     const auto end = write_.load(std::memory_order_acquire);
+    const auto pending=end>=r?end-r:ring_.size()-r+end;
+    // The published prefix cannot be overwritten while read_ stays fixed.
+    // Allocate every newly discovered parameter (including Debug iterator
+    // proxies) before consuming even a known-key prefix.
+    for(auto cursor=r;cursor!=end;cursor=cursor+1==ring_.size()?0:cursor+1) {
+        const auto& event=ring_[cursor].event;
+        parameters_.try_emplace({event.deviceId,event.paramIndex});
+    }
+    // Reserve before advancing any consumer state. Once processing begins,
+    // publishing the corresponding owned observations cannot allocate.
+    if(activity)activity->reserve(activity->size()+pending*2+parameters_.size());
+    out.reserve(out.size()+pending+parameters_.size());
     while (r != end) {
-        const auto event = ring_[r];
+        const auto slot=ring_[r];
+        const auto event=slot.event;
         const Key key{event.deviceId, event.paramIndex};
-        auto& p = parameters_[key];
+        auto& p = parameters_.at(key);
+        ParamActivity observed;
+        observed.event=event;observed.fence=slot.fence;observed.afterNavigation=slot.afterNavigation;
+        observed.before=p.known?p.last:event.value;observed.after=event.value;
+        observed.implicit=p.implicit;
         switch (event.kind) {
         case ParamEventKind::Begin:
+            observed.kind=ParamActivityKind::Begin;
             touched = event.paramIndex;
             touchedExplicit = true;
             if (p.open) {
@@ -148,10 +193,14 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             }
             break;
         case ParamEventKind::End:
+            observed.kind=p.open?ParamActivityKind::End:ParamActivityKind::Ignored;
+            observed.before=p.hasValue?p.before:observed.before;
+            observed.after=p.hasValue?p.after:observed.before;
             if (p.open) close(key, p, out);
             else ++stats_.strayEnds;
             break;
         case ParamEventKind::Value:
+            observed.kind=ParamActivityKind::Value;
             if (p.guarded && !p.open) {
                 auto expected = std::find_if(p.echoes.begin(),p.echoes.end(),[&](const Parameter::Echo& echo) {
                     return std::abs(event.value-echo.value) <= echoTolerance_;
@@ -164,6 +213,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
                     if (!p.echoes.empty()) p.echoes.erase(expected);
                     p.guarded = !p.echoes.empty();
                     ++stats_.echoesSwallowed;
+                    observed.kind=ParamActivityKind::Echo;
                     break;
                 }
             }
@@ -181,8 +231,10 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             p.after = event.value;
             p.hasValue = true;
             p.lastValueMs = nowMs;
+            observed.before=p.before;observed.after=p.after;observed.implicit=p.implicit;
             break;
         }
+        if(activity)activity->push_back(std::move(observed));
         r = r + 1 == ring_.size() ? 0 : r + 1;
         read_.store(r, std::memory_order_release);
     }
@@ -192,6 +244,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
     for (auto& [key, p] : parameters_) {
         if (!p.open || !p.implicit) continue;
         if (absorb) {
+            if(activity)activity->push_back({ParamActivityKind::Absorbed,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
             // Folded into the snapshot: the value is where the plugin put it,
             // and no edit says so.
             if (p.hasValue) {
@@ -202,6 +255,7 @@ std::size_t ParamEditCapture::drainImpl(std::int64_t nowMs, std::vector<ParamEdi
             p.open = false;
             p.hasValue = false;
         } else if (elapsed(nowMs, p.lastValueMs) >= static_cast<std::uint64_t>(quietMs_)) {
+            if(activity)activity->push_back({ParamActivityKind::QuietEnd,{key.first,key.second,ParamEventKind::End,0},p.before,p.after,true,false,nullptr});
             close(key, p, out);
         }
     }

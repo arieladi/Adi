@@ -88,6 +88,7 @@ void readNotesFor(Model& m, const Store& store, std::int64_t clipId) {
         n.probability = rec->probability;
         n.tuningCents = static_cast<double>(rec->tuning_cents);
         n.flags = rec->flags;
+        n.noteId = rec->note_id;
         m.notes.push_back(n);
     }
 }

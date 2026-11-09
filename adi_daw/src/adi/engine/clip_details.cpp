@@ -56,7 +56,7 @@ void readNotes(ClipDetails& clip, SQLite::Database& db) {
     clip.notes.reserve(reader.count());
     for (std::uint32_t index = 0; index < reader.count(); ++index) {
         const auto note = reader.at(index);
-        if (!note || note->dur_ticks <= 0 || note->start_ticks < 0 || !add(note->start_ticks, note->dur_ticks) ||
+        if (!note || note->dur_ticks <= 0 || !add(note->start_ticks, note->dur_ticks) ||
             note->key > 127 || note->vel_on == 0 || note->vel_on > 127 || note->vel_off > 127 ||
             note->channel > 15 || note->probability > 10000 || !std::isfinite(note->tuning_cents) || note->reserved != 0) {
             clip.notes.clear(); clip.notesProblem = "invalid note " + std::to_string(index); return;

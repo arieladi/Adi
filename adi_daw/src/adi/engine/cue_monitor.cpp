@@ -13,29 +13,44 @@ struct Ramp {
     double next() noexcept {if(remaining>0){current+=step;if(--remaining==0)current=target;}return current;}
 };
 class CueGain final:public Node {
-    struct Parameters final:Sequenced {StripLanes lanes;bool bound=false;std::shared_ptr<void> owner;};
+    struct Parameters {StripLanes lanes;bool bound=false;std::shared_ptr<void> owner;};
+    struct Publication final:Sequenced {std::shared_ptr<Parameters> parameters;};
     StripNode gain_;
-    SnapshotPublisher<Parameters> parameters_;
+    SnapshotPublisher<Publication> parameters_;
+    std::shared_ptr<Parameters> configured_; // owner only; generations retain their own value
+    std::atomic<const StripControlImage*> published_{nullptr};
 public:
     explicit CueGain(const Transport* transport){gain_.setTransport(transport);}
     void configure(const StripConfig& config) {
+        published_.store(nullptr,std::memory_order_release);
         gain_.setStatic(config.volumeDb,config.pan,config.law,config.unmuted);
         gain_.setDelay(config.delaySamples,config.delayRate);
-        auto parameters=std::make_unique<Parameters>();
+        auto parameters=std::make_shared<Parameters>();
         if(config.lanes){parameters->lanes=*config.lanes;parameters->lanes.mute=nullptr;parameters->bound=true;parameters->owner=config.keepAlive;}
-        parameters_.publish(std::move(parameters));
+        configured_=parameters;
+        auto publication=std::make_unique<Publication>();publication->parameters=std::move(parameters);
+        parameters_.publish(std::move(publication));
     }
+    void captureLanes(StripLaneBindings& captured) const {
+        captured.add(gain_,configured_ && configured_->bound?&configured_->lanes:nullptr,configured_);
+    }
+    void published(const StripControlImage& value) noexcept { published_.store(&value,std::memory_order_release); }
+    const StripNode& node() const noexcept { return gain_; }
     void collect(){parameters_.collect();}
     void prepare(double rate,std::int32_t frames) override{gain_.prepare(rate,frames);}
     void release() override{gain_.release();}
     void process(const NodeIo& io) noexcept override {
-        SnapshotPublisher<Parameters>::AudioRead parameters(parameters_);
-        gain_.usePublishedLanes(parameters.valid() && parameters->bound?&parameters->lanes:nullptr);
+        SnapshotPublisher<Publication>::AudioRead publication(parameters_);
+        const auto* parameters=publication.valid()?publication->parameters.get():nullptr;
+        if(const auto* value=published_.load(std::memory_order_acquire))gain_.applyPublishedControls(*value);
+        else gain_.usePublishedLanes(parameters && parameters->bound?&parameters->lanes:nullptr);
         gain_.process(io);
     }
     void silenceTaps(const NodeIo& io) noexcept override {
-        SnapshotPublisher<Parameters>::AudioRead parameters(parameters_);
-        gain_.usePublishedLanes(parameters.valid() && parameters->bound?&parameters->lanes:nullptr);
+        SnapshotPublisher<Publication>::AudioRead publication(parameters_);
+        const auto* parameters=publication.valid()?publication->parameters.get():nullptr;
+        if(const auto* value=published_.load(std::memory_order_acquire))gain_.applyPublishedControls(*value);
+        else gain_.usePublishedLanes(parameters && parameters->bound?&parameters->lanes:nullptr);
         gain_.silenceTaps(io);
     }
     bool processesDouble() const noexcept override{return true;}
@@ -125,7 +140,11 @@ std::vector<MonitorPoint> CueMonitor::points(const TapFn& source) const {
     }
     return out;
 }
-void CueMonitor::publish(const CueSettings& settings,double rate,int maxFrames,int channels,bool enabled,const Graph* prepared) {
+void CueMonitor::captureLanes(StripLaneBindings& captured) const {
+    for(const auto& [id,feed]:impl_->feeds){(void)id;feed->gain.captureLanes(captured);}
+}
+bool CueMonitor::publish(const CueSettings& settings,double rate,int maxFrames,int channels,bool enabled,const Graph* prepared) noexcept {
+    try {
     auto scene=std::make_unique<Scene>();scene->settings=settings;scene->enabled=enabled;
     scene->ramp=std::max(1,static_cast<int>(std::lround(rate*0.005)));scene->gain=faderGain(settings.volumeDb);
     if(!impl_->buffers || impl_->buffers->frames!=maxFrames || impl_->buffers->channels!=channels)
@@ -138,7 +157,39 @@ void CueMonitor::publish(const CueSettings& settings,double rate,int maxFrames,i
             if(prepared)if(const auto* line=prepared->edgeLine(prepared->find(feed.gain),prepared->find(feed.aligned),Bus::Main))scene->referenceWarmup=line->delay();
         }
     }
-    impl_->scenes.publish(std::move(scene));collect();
+    impl_->scenes.publish(std::move(scene));collect();return true;
+    } catch(...) {return false;}
+}
+void CueControlBatch::captureLanes(StripLaneBindings& captured) const {
+    for(const auto& entry:entries_)captured.add(*entry.node,entry.image.config.lanes,entry.image.config.keepAlive);
+}
+void CueControlBatch::apply() const noexcept {
+    for(const auto& entry:entries_)entry.apply(entry.target,entry.image);
+}
+std::shared_ptr<const CueControlBatch> CueMonitor::prepareControls(const rows::Model& model,const CueSettings& settings,
+    const std::shared_ptr<StripAutomation>& automation,bool enabled) const {
+    auto result=std::make_shared<CueControlBatch>();
+    if(!enabled)return result;
+    for(const auto id:impl_->present) {
+        const auto found=impl_->feeds.find(id);if(found==impl_->feeds.end())continue;
+        StripControlImage value;value.config.delayRate=model.project.sampleRate;
+        const bool reference=id==settings.referenceTrack;
+        for(const auto& strip:model.strips)if(strip.trackId==id) {
+            value.config.delaySamples=strip.delaySamples;
+            if(reference) {
+                value.config.volumeDb=strip.volumeDb;value.config.pan=strip.pan;
+                value.config.law=static_cast<PanLaw>(std::clamp<std::int64_t>(strip.panLaw,0,3));
+            }
+        }
+        if(reference && automation)if(const auto lane=automation->byTrack.find(id);lane!=automation->byTrack.end()) {
+            struct Held {StripLanes lanes;std::shared_ptr<StripAutomation> owner;};
+            auto held=std::make_shared<Held>();held->lanes=lane->second;held->lanes.mute=nullptr;held->owner=automation;
+            value.config.lanes=&held->lanes;value.config.keepAlive=std::move(held);
+        }
+        result->entries_.push_back({&found->second->gain,
+            [](void* target,const StripControlImage& image) noexcept {static_cast<CueGain*>(target)->published(image);},std::move(value),&found->second->gain.node()});
+    }
+    return result;
 }
 void CueMonitor::collect(){impl_->scenes.collect();for(auto& [id,feed]:impl_->feeds){(void)id;feed->gain.collect();}}
 void CueMonitor::process(const GraphHost& graph,const AudioIo& io,Click click) noexcept {
