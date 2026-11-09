@@ -6,6 +6,8 @@
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
+#include <atomic>
+#include <filesystem>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -247,6 +249,68 @@ int main(int argc, char **argv) {
             ui::AudioImport none;
             check(!dropped->prepareImport((temp.path() / "missing.wav").string(), 1, none) && !dropped->error().empty(),
                   "a file that can't be read is refused, with a reason");
+        }
+    }
+    {
+        // Save a Copy (Live 12 manual 5.4.1), Collect All and Save (5.7) and Collect and Export (ADI's,
+        // MR 11.3) from the document (A4, N30). The copy opens and the open project stays where it is;
+        // collecting brings an outside file into `audio/` beside the project and the view re-reads it;
+        // the export runs on its own worker and leaves the project as it was. No ZIP is opened here.
+        const auto home = temp.path() / "collect";
+        std::filesystem::create_directories(home / "outside");
+        auto doc = ui::ProjectDocument::open(home / "song.adi", true, {}, error);
+        check(doc != nullptr, "a project to copy and collect");
+        if (doc) {
+            const auto wav = home / "outside" / "snare.wav";
+            {
+                std::array<float, 4800> samples{};
+                for (std::size_t i = 0; i < samples.size(); ++i)
+                    samples[i] = static_cast<float>(std::sin(static_cast<double>(i) * .1) * .4);
+                audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+                writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+            }
+            ui::AudioImport import;
+            auto ok = doc->prepareImport(wav.string(), 1'700'000'000'000'000, import);
+            auto edit = ui::dropAudio(*doc->view().current(), 4, 0, "snare", import);
+            check(ok && edit.refusal.empty() && doc->ops().submit(std::move(edit.ops)).ok && doc->synchronise(),
+                  "an outside file dropped on 3 Audio");
+            const auto copy = home / "copy.adi";
+            check(doc->saveCopy(copy) && doc->error().empty() && std::filesystem::exists(copy) &&
+                      std::filesystem::equivalent(doc->store().path(), home / "song.adi") && doc->name() == "song",
+                  "Save a Copy writes a second project, and the open one stays where it is");
+            {
+                StoreError opened{};
+                auto copied = Store::open(copy, opened, true);
+                check(copied && opened == StoreError::Ok &&
+                          copied->db().execAndGet("SELECT count(*) FROM tracks").getInt() ==
+                              doc->store().db().execAndGet("SELECT count(*) FROM tracks").getInt(),
+                      "the copy opens, with the same tracks");
+            }
+            check(!doc->saveCopy(copy) && doc->error().find("already exists") != std::string::npos,
+                  "a copy over an existing file is refused, with the name");
+            const auto generation = doc->view().generation();
+            check(doc->collectAllAndSave() && doc->error().empty() && doc->view().generation() > generation,
+                  "Collect All and Save succeeds, and the view reads the project again");
+            std::size_t collected = 0;
+            if (std::filesystem::is_directory(home / "audio"))
+                for ([[maybe_unused]] const auto &entry : std::filesystem::directory_iterator(home / "audio"))
+                    ++collected;
+            check(collected == 1, "the outside file is in audio/ beside the project");
+            std::atomic<bool> finished{false};
+            StoreFileResult exported;
+            const auto zip = home / "song.zip";
+            const auto opsBefore = doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            check(doc->collectAndExport(zip, [&](StoreFileResult r) { exported = std::move(r); finished = true; }),
+                  "Collect and Export starts on its worker");
+            doc->waitForExport();
+            check(finished && !doc->exporting() && exported.ok && std::filesystem::exists(zip) &&
+                      doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,
+                  "and finishes: the ZIP is written, the project unchanged");
+            if (!exported.ok)
+                std::printf("export: %s\n", exported.error.c_str());
+            check(!doc->collectAndExport(zip, {}) && doc->error().find("already exists") != std::string::npos,
+                  "an export over an existing file is refused before it starts");
+            doc->release();
         }
     }
     {

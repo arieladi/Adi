@@ -10,6 +10,9 @@
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
 #include "adi/ui/window_state.hpp"
+#include <atomic>
+#include <functional>
+#include <thread>
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -22,6 +25,8 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // a named snapshot instead, a point in the history that copies nothing.
 class ProjectDocument final : public engine::BlockProcessor {
   public:
+    // A running Collect and Export finishes before the document goes.
+    ~ProjectDocument() override;
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
                                                  engine::DeviceLoader, std::string &error);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
@@ -40,6 +45,23 @@ class ProjectDocument final : public engine::BlockProcessor {
     // failed to re-read the new file, in `warning()`.
     bool saveAs(const std::filesystem::path &);
     const std::string &warning() const noexcept { return warning_; }
+    // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
+    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
+    bool saveCopy(const std::filesystem::path &);
+    // Live's Collect All and Save (manual 5.7): every outside media file the project and its
+    // history use is copied into `audio/` beside it and the project points at the copies
+    // (`Store::collectAllAndSave`, #411). Live's dialog chooses which locations to collect; the
+    // store collects them all. Not an undo step; the view and the session read the project again.
+    bool collectAllAndSave();
+    // ADI's Collect and Export (MR 1.6, 11.3): a portable `.zip` of the project and every file it
+    // uses (`Store::collectAndExport`, #411), made off the message thread on a read-only store of
+    // its own (SPEC §3.8), so the window keeps working. `done` is called on that worker with the
+    // result; the caller hands it to its own thread. False, with `error()`, when it cannot start: a
+    // destination that exists, or an export already running.
+    bool collectAndExport(const std::filesystem::path &zip, std::function<void(StoreFileResult)> done);
+    bool exporting() const noexcept { return exporting_.load(std::memory_order_acquire); }
+    // Waits for a running export to finish (the tests, and the document's end).
+    void waitForExport();
     bool synchronise();
     void tick(std::int64_t milliseconds);
     void prepare(double rate, std::int32_t frames) override;
@@ -117,5 +139,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;
     std::string error_, warning_;
+    std::atomic<bool> exporting_{false};
+    std::thread exportWorker_; // joined before the document goes
 };
 } // namespace adi::ui

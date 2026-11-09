@@ -105,7 +105,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Metronome,
         LoopSelection,
         SelectLoop,
-        LastId = SelectLoop
+        SaveCopy,
+        CollectAllAndSave,
+        CollectAndExport,
+        LastId = CollectAndExport
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
