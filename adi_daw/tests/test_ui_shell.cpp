@@ -9,6 +9,7 @@
 #include "adi/media/media_ops.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
+#include "adi/transport_settings.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "knobs_device.hpp"
@@ -3273,6 +3274,197 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// Live's metronome and Arrangement Loop (C2, N19; Live 12 manual 6.6, 19.4.1, §42.8, §42.16,
+// §42.20): O and the control bar's switches, Loop Selection, the brace dragged and moved by its keys,
+// the Loop Start and Loop Length fields, and editing.linkLoopToSelection. Each writes the transport's
+// saved state (#383) outside undo, and the session re-reads the project after it.
+void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "loop.adi", true, {}, error);
+    check(document != nullptr, "a new project for the loop");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "loop");
+    int synchronised = 0;
+    root.afterEdit = [&] {
+        ++synchronised;
+        document->synchronise();
+    };
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    auto &bar = root.transport;
+    auto &lanes = root.arrangement.geometry;
+    auto &sel = lanes.selection;
+    const auto q = textproj::kPPQ, barTicks = 4 * q;
+    const auto stored = [&] { return readTransportSettings(document->store()); };
+    const auto undoTitle = root.undoTitle(false);
+    check(!bar.metronome.getToggleState() && !bar.loop.getToggleState() && bar.loopStart.text == "1.  1.  1" &&
+              bar.loopLength.text == "4.  0.  0" && root.reader().transport().loopEndTicks == 4 * barTicks,
+          "a new Set: the metronome and the loop off, the brace over the first four bars (#383's default)");
+
+    // O (§42.20): the metronome on, outside undo; the switch lights from the snapshot.
+    check(root.keyPressed(juce::KeyPress('o')), "O reaches the command layer");
+    root.frame();
+    check(root.reader().transport().metronome && stored().metronome && bar.metronome.getToggleState() &&
+              root.undoTitle(false) == undoTitle && synchronised == 1 && root.error().empty(),
+          "O writes transport.setMetronome: on in the project and lit, the undo stack as it was, the session re-read");
+    bar.metronome.onClick();
+    root.frame();
+    check(!stored().metronome && !bar.metronome.getToggleState() && root.undoTitle(false) == undoTitle,
+          "the switch clicked: off again, no undo step");
+
+    // Loop Selection (Ctrl/Cmd+L, manual 6.6) over a time selection from bar 3 to bar 5.
+    sel.track = 2;
+    sel.toTrack = 3;
+    sel.start = 2 * barTicks;
+    sel.end = 4 * barTicks;
+    sel.clip = 0;
+    check(root.keyPressed(juce::KeyPress('l', juce::ModifierKeys::commandModifier, 0)), "Ctrl/Cmd+L");
+    root.frame();
+    check(stored().loopEnabled && stored().loopStartTicks == 2 * barTicks && stored().loopEndTicks == 4 * barTicks &&
+              bar.loop.getToggleState() && bar.loopStart.text == "3.  1.  1" && bar.loopLength.text == "2.  0.  0" &&
+              root.undoTitle(false) == undoTitle,
+          "Ctrl/Cmd+L over bars 3 to 5 writes transport.setLoop with the selection's start and end, the loop on and "
+          "its fields reading them; no undo step");
+    check(root.command(AppCommands::LoopSelection), "again, the brace already there");
+    root.frame();
+    check(!stored().loopEnabled && !bar.loop.getToggleState() && stored().loopStartTicks == 2 * barTicks,
+          "toggles the loop off, the brace kept");
+    bar.loop.onClick();
+    root.frame();
+    check(stored().loopEnabled && bar.loop.getToggleState(), "the Loop switch clicked: on again");
+
+    // The brace dragged by its right edge (manual 6.6) to the nearest grid line.
+    lanes.scale = 30;
+    lanes.left = 0;
+    root.mark(DirtySet::All);
+    root.frame();
+    auto &scrub = root.arrangement.scrub;
+    const float endX = static_cast<float>(lanes.x(4 * barTicks));
+    const juce::Point<float> grab{endX - 2.f, 3.f}, onto{endX + static_cast<float>(lanes.x(q + q / 2) - lanes.x(0)) + 3.f, 3.f};
+    check(scrub.bracePart(grab) == ScrubArea::BracePart::End &&
+              scrub.bracePart({static_cast<float>(lanes.x(3 * barTicks)), 3.f}) == ScrubArea::BracePart::Bar &&
+              scrub.bracePart({static_cast<float>(lanes.x(2 * barTicks)) + 2.f, 3.f}) == ScrubArea::BracePart::Start &&
+              scrub.bracePart({endX - 2.f, 14.f}) == ScrubArea::BracePart::None,
+          "the brace's edges and bar are under the mouse along the band's top, and not below it");
+    scrub.mouseDown(pressAt(scrub, grab));
+    check(root.arrangement.loopSelected && sel.start == 2 * barTicks && sel.end == 4 * barTicks && sel.clip == 0 &&
+              !document->mailbox().desiredPlaying(),
+          "a press on the brace selects it and the material in the loop (Select Loop), and plays nothing");
+    scrub.mouseDrag(dragAt(scrub, grab, onto));
+    const auto raw = 4 * barTicks + lanes.tick(onto.x) - lanes.tick(grab.x);
+    const auto down = lanes.snap(raw, false), up = lanes.snap(raw, true);
+    const auto expected = raw - down <= up - raw ? down : up;
+    check(scrub.braceMoving() && scrub.braceMoving()->end == expected && expected != 4 * barTicks &&
+              stored().loopEndTicks == 4 * barTicks,
+          "dragged a quarter and a half on: the end would land on the nearest grid line, nothing written yet");
+    root.frame();
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-loop-dragging.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    scrub.mouseUp(dragAt(scrub, grab, onto));
+    root.frame();
+    check(stored().loopEndTicks == expected && stored().loopStartTicks == 2 * barTicks && stored().loopEnabled &&
+              !scrub.braceMoving() && sel.end == expected && root.undoTitle(false) == undoTitle,
+          "let go: the loop ends on that grid line, its start kept, the selection with it, no undo step");
+
+    // Its keys while it is selected (manual 6.6, §42.8).
+    const auto length = expected - 2 * barTicks;
+    auto &canvas = root.arrangement.canvas;
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "right");
+    root.frame();
+    const auto nudged = lanes.nextGridLine(2 * barTicks, true);
+    check(stored().loopStartTicks == nudged && stored().loopEndTicks == nudged + length && sel.start == nudged,
+          "right nudges the brace a grid line on, its length kept");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::upKey)), "up");
+    root.frame();
+    check(stored().loopStartTicks == nudged + length && stored().loopEndTicks == nudged + 2 * length,
+          "up moves it on by its length");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::upKey, juce::ModifierKeys::commandModifier, 0)), "Ctrl/Cmd+up");
+    root.frame();
+    check(stored().loopStartTicks == nudged + length && stored().loopEndTicks == nudged + 3 * length,
+          "Ctrl/Cmd+up doubles it");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey, juce::ModifierKeys::commandModifier, 0)), "Ctrl/Cmd+down");
+    root.frame();
+    check(stored().loopEndTicks == nudged + 2 * length, "Ctrl/Cmd+down halves it");
+    const auto endBefore = stored().loopEndTicks;
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey, juce::ModifierKeys::commandModifier, 0)), "Ctrl/Cmd+left");
+    root.frame();
+    check(stored().loopEndTicks == lanes.nextGridLine(endBefore, false) && stored().loopStartTicks == nudged + length,
+          "Ctrl/Cmd+left shortens it by the grid, its start kept");
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)),
+          "down, then left");
+    root.frame();
+    check(stored().loopStartTicks == lanes.nextGridLine(nudged, false) && root.undoTitle(false) == undoTitle,
+          "down moves it back by its length and left nudges it back; none an undo step");
+
+    // The Loop Start and Loop Length fields typed (manual 6.6).
+    bar.loopLength.onClick();
+    check(bar.editing() == &bar.loopLength && bar.fieldEditor.isVisible(), "a click on Loop Length opens its field");
+    bar.fieldEditor.setText("2.0.0", false);
+    bar.fieldEditor.onReturnKey();
+    root.frame();
+    const auto start = stored().loopStartTicks;
+    check(!bar.fieldEditor.isVisible() && stored().loopEndTicks == start + 2 * barTicks && bar.loopLength.text == "2.  0.  0",
+          "a typed Loop Length of 2.0.0: the end is the start plus two bars");
+    bar.loopStart.onClick();
+    check(bar.editing() == &bar.loopStart && bar.fieldEditor.getText() == bar.loopStart.text.removeCharacters(" "),
+          "a click on Loop Start opens its field, holding the start");
+    bar.fieldEditor.setText("9.1.1", false);
+    bar.fieldEditor.onReturnKey();
+    root.frame();
+    check(stored().loopStartTicks == 8 * barTicks && stored().loopEndTicks == 10 * barTicks && bar.loopStart.text == "9.  1.  1",
+          "a typed Loop Start of 9.1.1: the brace starts at bar 9, its two bars kept");
+    bar.loopLength.onClick();
+    bar.fieldEditor.setText("0.0.0", false);
+    bar.fieldEditor.onReturnKey();
+    check(bar.fieldEditor.isVisible() && root.error().find("length") != std::string::npos &&
+              stored().loopEndTicks == 10 * barTicks,
+          "no length: refused, the field stays open and the Status Bar says why");
+    bar.fieldEditor.onEscapeKey();
+
+    // A click in the lanes lets the brace go: the arrows move the insert marker again.
+    const juce::Point<float> inLanes{40.f, static_cast<float>(laneTop(root, 2) + 10)};
+    canvas.mouseDown(pressAt(canvas, inLanes));
+    canvas.mouseUp(pressAt(canvas, inLanes));
+    check(!root.arrangement.loopSelected, "a click in the lanes lets the brace go");
+
+    // editing.linkLoopToSelection (REAPER's), off by default: on, a time selection made with Shift and
+    // the arrows moves the brace to it, the loop's switch as it was.
+    std::string refusal;
+    const bool linked = settings.set("editing.linkLoopToSelection", true, {}, refusal);
+    commands.reload();
+    sel.track = 2;
+    sel.toTrack = 0;
+    sel.clip = 0;
+    sel.insert = sel.start = sel.end = 12 * barTicks;
+    check(linked && commands.linkLoopToSelection() &&
+              canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier, 0)),
+          "Shift+right with the setting on");
+    root.frame();
+    check(stored().loopStartTicks == 12 * barTicks && stored().loopEndTicks == sel.end && sel.end > 12 * barTicks &&
+              stored().loopEnabled,
+          "the brace follows the time selection made, the loop still on");
+    settings.set("editing.linkLoopToSelection", false, {}, refusal);
+    commands.reload();
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, juce::ModifierKeys::shiftModifier, 0)), "again, off");
+    root.frame();
+    check(stored().loopEndTicks != sel.end, "off: the brace stays where it was");
+    check(root.undoTitle(false) == undoTitle, "after all of it, the undo stack is as it was");
+    root.afterEdit = nullptr;
+    document->release();
+}
 // A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
 // d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
 // producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
@@ -4547,10 +4739,10 @@ int main(int argc, char **argv) {
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0,
-                                                C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks},
-              "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Group and "
-              "Ungroup Tracks");
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0,
+                                                C::LoopSelection, C::SelectLoop, 0, C::GroupTracks, C::UngroupTracks},
+              "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Loop Selection "
+              "and Select Loop (§6.6), then Group and Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
         // Redo item reads "Nothing to Redo", as Live's does with nothing to redo. Worklist F1: what
@@ -6659,6 +6851,7 @@ int main(int argc, char **argv) {
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
+    loopMetronome(commands, settings, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }
