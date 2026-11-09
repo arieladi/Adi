@@ -90,6 +90,11 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     PeakHold peakHold; // the Mixer View's only
     // Whether the row shows its In/Out column: when the panel is wide enough.
     bool showsInOut() const noexcept;
+    // Live 12 manual 18.8: a right-click on the In or Auto monitor button switches Keep Monitoring
+    // Latency in Recorded Audio (#397, N31). Whether a point is on those two buttons in the track
+    // controls' column, and the menu they open.
+    bool onMonitorInOrAuto(juce::Point<int>) const noexcept;
+    juce::PopupMenu monitorMenu();
     // Whether the sends show, in the row and in the Mixer View: the View menu's Sends (§42.1).
     bool showsSends() const noexcept;
     // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm,
@@ -143,6 +148,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
 
   private:
     void paintInOut(juce::Graphics &, int x) const;
+
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
     void paintMixerInOut(juce::Graphics &) const;
     // Live's "ms" unit box beside the Track Delay's value box, lit as Live's.

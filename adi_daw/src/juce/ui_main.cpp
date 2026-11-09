@@ -141,8 +141,8 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
-        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()),
-                                          create, loader_.fn(), error);
+        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
+                                          &commands_->recordingDefaults());
         if (!next) {
             report(error);
             return false;

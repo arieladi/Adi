@@ -166,6 +166,11 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     // Where a row's colour and name begin, past its groups' bands; and its fold switch.
     int nameLeft(std::uint32_t depth) const noexcept;
     juce::Rectangle<float> foldSwitch(std::uint32_t depth, int top) const noexcept;
+    // A MIDI track's Rec-Q and Play-Q boxes under its name (MR V.2 §9; N31), in a row tall enough for
+    // them; empty where the row is not.
+    juce::Rectangle<int> quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept;
+    // The box's menu: Free (Rec-Q) or Off (Play-Q), then the four grids, the track's ticked.
+    juce::PopupMenu quantizeMenu(std::int64_t track, bool record);
     // The bands drawn at most: deeper groups share the last one's place.
     static constexpr std::uint32_t kMaxBands = 16;
 

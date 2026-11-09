@@ -9,6 +9,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
+#include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
 namespace adi::ui {
@@ -23,8 +24,11 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // a named snapshot instead, a point in the history that copies nothing.
 class ProjectDocument final : public engine::BlockProcessor {
   public:
+    // New (`create`) captures the registry's recording defaults for its four tracks in the history's
+    // root (`Store::createNewProject`'s four-argument form, #397, N31) when `defaults` is given.
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
-                                                 engine::DeviceLoader, std::string &error);
+                                                 engine::DeviceLoader, std::string &error,
+                                                 const RecordingDefaults *defaults = nullptr);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,

@@ -11,6 +11,7 @@
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "knobs_device.hpp"
@@ -3918,6 +3919,83 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     root.afterEdit = nullptr;
     document->release();
 }
+// A track's recording options (C6, N31; MR V.2 §9; Live 12 manual 18.8): a MIDI track's Rec-Q and
+// Play-Q on its header, Keep Monitoring Latency from a right-click on In or Auto, each one undo step,
+// read back from `TrackNode::recording`; Insert MIDI Track carries the registry's defaults.
+void recordingOptions(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "recording.adi", true, {}, error);
+    check(document != nullptr, "a new project for the recording options");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "recording");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    auto &headers = root.arrangement.headers;
+    const auto *midi = root.reader().findTrack(2);
+    check(midi != nullptr && recordQuantizeText(midi->recording) == "1/16" && playQuantizeText(midi->recording) == "Off" &&
+              !headers.quantizeBox(0, 0, root.arrangement.geometry.heightFor(2), true).isEmpty(),
+          "1 MIDI's header shows Rec-Q 1/16 and Play-Q Off");
+    auto pick = [](const juce::PopupMenu &menu, const juce::String &text) {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == text && it.getItem().action) {
+                it.getItem().action();
+                return true;
+            }
+        return false;
+    };
+    const auto step = [&] { return document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0; };
+    const auto before = step();
+    check(pick(headers.quantizeMenu(2, true), "1/8"), "Rec-Q's menu, 1/8");
+    root.frame();
+    midi = root.reader().findTrack(2);
+    check(midi->recording.recordEnabled && midi->recording.recordGrid == "1/8" && step() != before &&
+              document->ops().nextUndo()->label == "Change Record Quantization" && document->ops().nextUndo()->opCount == 1,
+          "Rec-Q writes track.setRecordQuantize, one undo step, read back from the snapshot");
+    check(pick(headers.quantizeMenu(2, true), "Free"), "Rec-Q Free");
+    root.frame();
+    check(!root.reader().findTrack(2)->recording.recordEnabled && recordQuantizeText(root.reader().findTrack(2)->recording) == "Free",
+          "and Free turns it off");
+    check(pick(headers.quantizeMenu(2, false), "1/4"), "Play-Q 1/4");
+    root.frame();
+    check(root.reader().findTrack(2)->recording.playEnabled && root.reader().findTrack(2)->recording.playGrid == "1/4" &&
+              document->ops().nextUndo()->label == "Change Live Quantization",
+          "Play-Q writes track.setPlayQuantize, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(!root.reader().findTrack(2)->recording.playEnabled, "undo puts Play-Q back off");
+    // Keep Monitoring Latency from 3 Audio's In or Auto button.
+    MixerStrip *audio = nullptr;
+    for (const auto &strip : root.mixer.strips())
+        if (strip->track() == 4)
+            audio = strip.get();
+    check(audio != nullptr, "3 Audio's row");
+    if (audio != nullptr) {
+        check(!audio->showsInOut() || audio->onMonitorInOrAuto({30, 40}), "a right-click on Auto is the monitor's");
+        check(pick(audio->monitorMenu(), "Keep Monitoring Latency in Recorded Audio"), "its menu's one item");
+        root.frame();
+        check(!root.reader().findTrack(4)->recording.keepMonitoringLatency &&
+                  document->ops().nextUndo()->label == "Keep Monitoring Latency",
+              "Keep Monitoring Latency off, one step, read back");
+    }
+    // Insert MIDI Track takes the registry's defaults.
+    std::string why;
+    check(settings.set("record.quantize", "1/32", {}, why), "record.quantize 1/32");
+    commands.reload();
+    root.arrangement.geometry.selection.track = 2;
+    check(root.command(AppCommands::InsertMidiTrack), "Insert MIDI Track");
+    root.frame();
+    const auto *added = root.reader().findTrack(root.arrangement.geometry.selection.track);
+    check(added != nullptr && added->kind == "midi" && added->recording.recordGrid == "1/32",
+          "the new MIDI track records quantized to 1/32, the registry's default");
+    settings.set("record.quantize", "1/16", {}, why);
+    commands.reload();
+    root.afterEdit = nullptr;
+    document->release();
+}
 // A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
 // d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
 // producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
@@ -7313,6 +7391,7 @@ int main(int argc, char **argv) {
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
+    recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());
     clipWaveforms(commands, temp.path());
     loopMetronome(commands, settings, temp.path());

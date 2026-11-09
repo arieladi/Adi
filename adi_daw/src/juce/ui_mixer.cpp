@@ -681,6 +681,22 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(3, outputLabel(), true);
     chooser(4, "", false);
 }
+bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
+    // Where paintInOut draws them: In and Auto at x 5 and 27, y 37, in a track that records.
+    if (!showsInOut() || kind_ == "master" || kind_ == "return" || kind_ == "group" || (getHeight() - 1) / 17 <= 2)
+        return false;
+    return juce::Rectangle<int>(5, 37, 16 + 6 + 23, 13).contains(at);
+}
+juce::PopupMenu MixerStrip::monitorMenu() {
+    juce::PopupMenu menu;
+    const auto *t = panel_.root.reader().findTrack(track_);
+    if (t == nullptr)
+        return menu;
+    const bool on = t->recording.keepMonitoringLatency;
+    menu.addItem("Keep Monitoring Latency in Recorded Audio", true, on,
+                 [this, id = track_, on] { panel_.root.setKeepMonitoringLatency(id, !on); });
+    return menu;
+}
 const char *MixerStrip::outputLabel() const noexcept {
     // Main plays to the outputs; a MIDI track with no instrument to nothing (No Output); a track in a
     // group to its group, as Live assigns a grouped track's Audio To (manual 18.3), shown as Live's
@@ -822,6 +838,10 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     }
     if (!e.mods.isPopupMenu())
         return;
+    if (e.eventComponent == this && onMonitorInOrAuto(e.getPosition())) {
+        monitorMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+        return;
+    }
     if (e.eventComponent == &pan)
         panMenu();
     else

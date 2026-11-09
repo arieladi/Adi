@@ -33,13 +33,16 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
 }
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
-                                                       std::string &error) {
+                                                       std::string &error, const RecordingDefaults *defaults) {
     try {
         StoreError result{};
         // New is the store's: the project row, Main and Live's default Set (two MIDI and two audio
         // tracks), their strips and the 120 BPM, 4/4 maps, written as the history's root, not an
         // undo step (#307, N2; Live 12 manual 5.4.2; ADR-0209 §10 d10).
-        auto store = create ? Store::createNewProject(path, result) : Store::open(path, result);
+        auto store = !create          ? Store::open(path, result)
+                     : defaults != nullptr ? Store::createNewProject(path, result, defaults->quantize,
+                                                                     defaults->keepMonitoringLatency)
+                                           : Store::createNewProject(path, result);
         if (!store) {
             error = "Cannot open project: " + std::string(toString(result));
             return {};
