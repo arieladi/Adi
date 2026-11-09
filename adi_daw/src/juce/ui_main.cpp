@@ -150,10 +150,10 @@ class AdiApplication final : public juce::JUCEApplication,
             }
             owner->scanned = true;
             if (!owner->stop.load())
-                juce::MessageManager::callAsync([this, owner, listing = std::move(listing)] {
+                juce::MessageManager::callAsync([this, owner, found = std::move(listing)] {
                     if (owner->stop.load() || juce::JUCEApplicationBase::getInstance() != this)
                         return;
-                    library_ = listing;
+                    library_ = found;
                     libraryReady_ = true;
                     if (root_) {
                         root_->browser.setListing(library_, true);

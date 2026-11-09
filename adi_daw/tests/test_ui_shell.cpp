@@ -2606,15 +2606,15 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         if (!index)
             return;
         // An added folder whose name is a sidebar label's: told apart by its volume, not its name.
-        const auto added = dir / "Samples";
-        std::filesystem::create_directories(added);
+        const auto addedFolder = dir / "Samples";
+        std::filesystem::create_directories(addedFolder);
         {
             std::vector<float> samples(4800, .3f);
-            audio::WavWriter writer(added / "Rim.wav", 48000, 1, audio::WavFormat::Pcm16);
+            audio::WavWriter writer(addedFolder / "Rim.wav", 48000, 1, audio::WavFormat::Pcm16);
             writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
         }
         library::MarkerVolumeProvider volumes;
-        const std::vector<LibraryFolder> folders{{"User Library", library, true}, {"Samples", added, false},
+        const std::vector<LibraryFolder> folders{{"User Library", library, true}, {"Samples", addedFolder, false},
                                                  {"Drums", library / "Drums", false}};
         auto listing = scanLibrary(*index, folders, volumes);
         check(listing.error.empty() && listing.places.size() == 3 && listing.samples.size() == 3 &&
@@ -2632,7 +2632,7 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
             if (browser.sidebar()[i].name == "User Library")
                 user = static_cast<int>(i);
         }
-        int addedSamples = -1, addedDrums = -1, drums = -1;
+        int addedSamples = -1, addedDrums = -1, drumsLabel = -1;
         for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
             const auto &e = browser.sidebar()[i];
             if (e.name == "Samples" && !e.samples)
@@ -2640,7 +2640,7 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
             if (e.name == "Drums" && !e.place.empty())
                 addedDrums = static_cast<int>(i);
             if (e.name == "Drums" && e.place.empty() && !e.heading)
-                drums = static_cast<int>(i);
+                drumsLabel = static_cast<int>(i);
         }
         root.say({});
         browser.choose(samples);
@@ -2651,15 +2651,15 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         check(browser.shown().size() == 2, "the User Library place lists its two, its Drums folder's included");
         browser.choose(addedSamples);
         check(addedSamples > user && browser.shown().size() == 1 && browser.shown()[0]->name == "Rim.wav",
-              "an added folder named Samples is a Place of its own, listing its one file");
+              "an addedFolder folder named Samples is a Place of its own, listing its one file");
         browser.choose(addedDrums);
         check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav",
-              "an added Drums folder inside the User Library lists the file under it");
-        browser.choose(drums);
+              "an addedFolder Drums folder inside the User Library lists the file under it");
+        browser.choose(drumsLabel);
         check(browser.shown().empty() && root.error().find("not listed yet") != std::string::npos,
               "the Drums category stays the catalogue's, whatever a folder is called");
         browser.setListing(listing, true);
-        check(browser.selected() == drums, "a new listing keeps the label chosen");
+        check(browser.selected() == drumsLabel, "a new listing keeps the label chosen");
         browser.setListing(listing, false);
         browser.choose(samples);
         check(root.error().find("still being indexed") != std::string::npos,
