@@ -47,6 +47,7 @@ void AppCommands::reload() {
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
+    linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
     manager.registerAllCommandsForTarget(this);
@@ -126,7 +127,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
                                   "Activate/Deactivate Track 8", "Mixer Sends",
                                   "Insert Time Signature Change", "Solo in Place",
-                                  "Track Options", "Mixer Track Options"};
+                                  "Track Options", "Mixer Track Options", "Metronome", "Loop Selection",
+                                  "Select Loop"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -310,6 +312,19 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleMixerTrackOptions: // Live 12's Mixer Controls Track Options: the Mixer View's own Track Delay
         info.setTicked(active_ != nullptr && active_->state().mixerTrackOptions);
+        break;
+    case Metronome: // §42.20: Toggle Metronome, O; lit from the snapshot (#383)
+        info.addDefaultKeypress('o', 0);
+        info.setTicked(active_ != nullptr && active_->reader().transport().metronome);
+        info.setActive(active_ != nullptr);
+        break;
+    case LoopSelection: // manual 6.6, §42.16: Ctrl/Cmd+L, the Edit menu's
+        info.addDefaultKeypress('l', cmd);
+        info.setActive(active_ != nullptr);
+        break;
+    case SelectLoop: // §42.8: Select Material in Loop, Ctrl/Cmd+Shift+L; a click on the brace too
+        info.addDefaultKeypress('l', cmd | shift);
+        info.setActive(active_ != nullptr);
         break;
     case SoloSelected: // §42.19: Solo Selected Tracks, S
         info.addDefaultKeypress('s', 0);
@@ -1347,6 +1362,97 @@ bool AdiRootComponent::setSoloInPlace(bool on) {
     dirty_.mark(DirtySet::All);
     return true;
 }
+bool AdiRootComponent::submitTransport(LoopEdit edit) {
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (edit.ops.empty())
+        return true;
+    if (const auto result = submitter_.submit(std::move(edit.ops)); !result)
+        return fail(result.error);
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    dirty_.mark(DirtySet::All);
+    return true;
+}
+bool AdiRootComponent::setMetronome(bool on) {
+    // From the CURRENT cell (ADR-0201), so a switch clicked in one window and O in another agree.
+    const auto current = view_.current();
+    if (!current)
+        return fail("The metronome needs an open project.");
+    return submitTransport(::adi::ui::setMetronome(current->transport, on));
+}
+bool AdiRootComponent::toggleMetronome() {
+    const auto current = view_.current();
+    return setMetronome(!(current && current->transport.metronome));
+}
+bool AdiRootComponent::toggleLoop() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The loop needs an open project.");
+    const auto &t = current->transport;
+    return submitTransport(setLoop(t, !t.loopEnabled, loopOf(t)));
+}
+bool AdiRootComponent::setLoopRange(LoopRange range) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The loop needs an open project.");
+    return submitTransport(setLoop(current->transport, current->transport.loopEnabled, range));
+}
+bool AdiRootComponent::loopSelection() {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The loop needs an open project.");
+    // The time selection, else the selected clips' span; neither, the loop toggles where it is.
+    const auto &sel = arrangement.geometry.selection;
+    std::optional<LoopRange> selected;
+    if (sel.end != sel.start) {
+        selected = LoopRange{std::min(sel.start, sel.end), std::max(sel.start, sel.end)};
+    } else if (sel.clip != 0) {
+        std::int64_t from = 0, to = 0;
+        bool any = false;
+        for (const auto &t : current->tracks)
+            for (const auto &c : t->clips)
+                if (c->id == sel.clip || std::find(sel.pickedClips.begin(), sel.pickedClips.end(), c->id) != sel.pickedClips.end()) {
+                    from = any ? std::min(from, c->posTicks) : c->posTicks;
+                    to = any ? std::max(to, c->posTicks + c->lengthTicks) : c->posTicks + c->lengthTicks;
+                    any = true;
+                }
+        if (any)
+            selected = LoopRange{from, to};
+    }
+    if (!submitTransport(::adi::ui::loopSelection(current->transport, selected)))
+        return false;
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::braceKey(BraceKey key, bool command) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The loop needs an open project.");
+    const auto &geometry = arrangement.geometry;
+    const auto to = ::adi::ui::braceKey(loopOf(current->transport), key, command,
+                                        [&geometry](std::int64_t tick, bool forward) { return geometry.nextGridLine(tick, forward); });
+    return !to || setLoopRange(*to);
+}
+bool AdiRootComponent::setLoopStartAt(const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The loop needs an open project.");
+    return submitTransport(typeLoopStart(current->transport, text, current->meters));
+}
+bool AdiRootComponent::setLoopLengthAt(const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("The loop needs an open project.");
+    return submitTransport(typeLoopLength(current->transport, text, current->meters));
+}
+bool AdiRootComponent::linkLoopToSelection() {
+    const auto &sel = arrangement.geometry.selection;
+    if (!commands_.linkLoopToSelection() || sel.end == sel.start || sel.clip != 0 || !sel.pickedClips.empty())
+        return true;
+    return setLoopRange({std::min(sel.start, sel.end), std::max(sel.start, sel.end)});
+}
 bool AdiRootComponent::toggleSoloInPlace() {
     // From the CURRENT cell (ADR-0201), not the presented frame's, read at pick time: the Options
     // menu and the Solo button's menu (the Mix View's own window too) share the field, and one
@@ -1812,6 +1918,13 @@ bool AdiRootComponent::command(int id) {
         // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
         // and the marks are setSoloInPlace's, so the tail below is not run a second time.
         return toggleSoloInPlace();
+    // The metronome and the loop are complete on their own too (submitTransport).
+    case AppCommands::Metronome:
+        return toggleMetronome();
+    case AppCommands::LoopSelection:
+        return loopSelection();
+    case AppCommands::SelectLoop:
+        return arrangement.selectLoop();
     case AppCommands::DeactivateSelected:
         if (!activateTrack(arrangement.geometry.selection.track))
             return false;
@@ -1899,7 +2012,10 @@ const std::vector<MenuEntries> &menuBar() {
 #endif
         // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
         // Paste and Duplicate; those wait for their ops.
-        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0, C::GroupTracks, C::UngroupTracks}},
+        // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
+        // Edit menu is to be read on Live.
+        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0,
+                  C::GroupTracks, C::UngroupTracks}},
         {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertTimeSignatureChange}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
