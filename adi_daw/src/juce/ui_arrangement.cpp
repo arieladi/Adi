@@ -144,7 +144,7 @@ juce::Rectangle<float> ScrubArea::markerBox(const textproj::Meter &m) const {
 }
 juce::Rectangle<float> ScrubArea::locatorBox(const Locator &l) const {
     const float x = static_cast<float>(view.geometry.x(l.pos));
-    const float w = 14.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), juce::String::fromUTF8(l.name.c_str()));
+    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), juce::String::fromUTF8(l.name.c_str()));
     return {x, kBraceHeight, w, 15.f};
 }
 std::int64_t ScrubArea::locatorAt(float x) const {
@@ -275,8 +275,9 @@ void ScrubArea::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.drawText(juce::String(meterText(m)), box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
     }
-    // Live's locators (manual 6.4, its figures): a triangle pointing right at each, its name after it;
-    // the selected one lit. Its colours are ADI's until measured on Live 11.
+    // Live's locators (manual 6.4, its figures): a light box with a dark edge from each, a triangle
+    // pointing right at its start, its name after it; the selected one lit. Its colours are ADI's
+    // until measured on Live 11.
     if (const auto *snapshot = view.reader().get())
         for (auto l : locatorsOf(*snapshot)) {
             if (l.id == locatorDragged_ && locatorTo_ >= 0)
@@ -285,10 +286,14 @@ void ScrubArea::paint(juce::Graphics &g) {
             if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
                 continue;
             const bool lit = l.id == view.selectedLocator;
+            g.setColour(lit ? look::selection : juce::Colour(0xffb4b4b4));
+            g.fillRect(box);
+            g.setColour(look::separator);
+            g.drawRect(box, 1.5f);
             juce::Path mark;
-            mark.addTriangle(box.getX(), box.getY() + 1.f, box.getX(), box.getBottom() - 1.f, box.getX() + 10.f,
-                             box.getCentreY());
-            g.setColour(lit ? look::selection : juce::Colour(0xffe8e8e8));
+            mark.addTriangle(box.getX() + 2.f, box.getY() + 2.f, box.getX() + 2.f, box.getBottom() - 2.f,
+                             box.getX() + 10.f, box.getCentreY());
+            g.setColour(juce::Colour(0xffe8e8e8));
             g.fillPath(mark);
             g.setColour(look::separator);
             g.strokePath(mark, juce::PathStrokeType(1.f));
