@@ -4712,14 +4712,14 @@ int main(int argc, char **argv) {
               "the Options menu: Follow (§6.2), the grid (§6.10), then Solo in Place (§18.6)");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport},
-              "the File menu: Save As, Save a Copy and Collect All and Save in Live's order (5.4.1, 5.7), ADI's "
+              "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them; Quit is the application menu's on the Mac");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the menu bar: File, Edit, Create, View, Options, Navigate");
         check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
                                                 C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::Quit},
-              "the File menu: Save As, Save a Copy and Collect All and Save in Live's order (5.4.1, 5.7), ADI's "
+              "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
               "Collect and Export after them; it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},

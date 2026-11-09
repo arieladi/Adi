@@ -257,9 +257,9 @@ int main(int argc, char **argv) {
         // the export runs on its own worker and leaves the project as it was. No ZIP is opened here.
         const auto home = temp.path() / "collect";
         std::filesystem::create_directories(home / "outside");
-        auto doc = ui::ProjectDocument::open(home / "song.adi", true, {}, error);
-        check(doc != nullptr, "a project to copy and collect");
-        if (doc) {
+        auto copying = ui::ProjectDocument::open(home / "song.adi", true, {}, error);
+        check(copying != nullptr, "a project to copy and collect");
+        if (copying) {
             const auto wav = home / "outside" / "snare.wav";
             {
                 std::array<float, 4800> samples{};
@@ -269,37 +269,39 @@ int main(int argc, char **argv) {
                 writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
             }
             ui::AudioImport import;
-            auto ok = doc->prepareImport(wav.string(), 1'700'000'000'000'000, import);
-            auto edit = ui::dropAudio(*doc->view().current(), 4, 0, "snare", import);
-            check(ok && edit.refusal.empty() && doc->ops().submit(std::move(edit.ops)).ok && doc->synchronise(),
+            auto ok = copying->prepareImport(wav.string(), 1'700'000'000'000'000, import);
+            auto edit = ui::dropAudio(*copying->view().current(), 4, 0, "snare", import);
+            check(ok && edit.refusal.empty() && copying->ops().submit(std::move(edit.ops)).ok && copying->synchronise(),
                   "an outside file dropped on 3 Audio");
             const auto copy = home / "copy.adi";
-            check(doc->saveCopy(copy) && doc->error().empty() && std::filesystem::exists(copy) &&
-                      std::filesystem::equivalent(doc->store().path(), home / "song.adi") && doc->name() == "song",
+            check(copying->saveCopy(copy) && copying->error().empty() && std::filesystem::exists(copy) &&
+                      std::filesystem::equivalent(copying->store().path(), home / "song.adi") && copying->name() == "song",
                   "Save a Copy writes a second project, and the open one stays where it is");
             {
                 StoreError opened{};
                 auto copied = Store::open(copy, opened, true);
                 check(copied && opened == StoreError::Ok &&
                           copied->db().execAndGet("SELECT count(*) FROM tracks").getInt() ==
-                              doc->store().db().execAndGet("SELECT count(*) FROM tracks").getInt(),
+                              copying->store().db().execAndGet("SELECT count(*) FROM tracks").getInt(),
                       "the copy opens, with the same tracks");
             }
-            check(!doc->saveCopy(copy) && doc->error().find("already exists") != std::string::npos,
+            check(!copying->saveCopy(copy) && copying->error().find("already exists") != std::string::npos,
                   "a copy over an existing file is refused, with the name");
-            const auto generation = doc->view().generation();
-            check(doc->collectAllAndSave() && doc->error().empty() && doc->view().generation() > generation,
+            const auto collectGeneration = copying->view().generation();
+            check(copying->collectAllAndSave() && copying->error().empty() && copying->view().generation() > collectGeneration,
                   "Collect All and Save succeeds, and the view reads the project again");
             std::size_t collected = 0;
             if (std::filesystem::is_directory(home / "audio"))
                 for ([[maybe_unused]] const auto &entry : std::filesystem::directory_iterator(home / "audio"))
                     ++collected;
-            check(collected == 1, "the outside file is in audio/ beside the project");
-            const auto zip = home / "song.zip";
-            const auto opsBefore = doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            check(collected == 1 &&
+                      copying->store().db().execAndGet("SELECT rel_path FROM media_files").getString().rfind("audio/", 0) == 0,
+                  "the outside file is in audio/ beside the project, and the pool points at it there");
+            const auto archive = home / "song.zip";
+            const auto opsBeforeExport = copying->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
             ui::ProjectDocument::ExportJob job;
-            check(doc->prepareCollectAndExport(zip, job) && doc->error().empty() && job.zip == zip &&
-                      std::filesystem::equivalent(job.project, doc->store().path()),
+            check(copying->prepareCollectAndExport(archive, job) && copying->error().empty() && job.zip == archive &&
+                      std::filesystem::equivalent(job.project, copying->store().path()),
                   "Collect and Export is prepared on the message thread: the project's file and the ZIP");
             // The app runs it on a worker of its own while the project stays open and writable.
             StoreFileResult exported;
@@ -307,13 +309,13 @@ int main(int argc, char **argv) {
             worker.join();
             if (!exported.ok)
                 std::printf("export: %s\n", exported.error.c_str());
-            check(exported.ok && std::filesystem::exists(zip) &&
-                      doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,
+            check(exported.ok && std::filesystem::exists(archive) &&
+                      copying->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeExport,
                   "run on a worker, it writes the ZIP and leaves the project unchanged");
             ui::ProjectDocument::ExportJob again;
-            check(!doc->prepareCollectAndExport(zip, again) && doc->error().find("already exists") != std::string::npos,
+            check(!copying->prepareCollectAndExport(archive, again) && copying->error().find("already exists") != std::string::npos,
                   "an export over an existing file is refused before it starts");
-            doc->release();
+            copying->release();
         }
     }
     {
