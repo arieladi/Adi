@@ -172,7 +172,7 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
         {&nudgeUp, "Nudge Up", "Speeds playback up for as long as it is held."},
         {&signature, "Time Signature", "The time signature at the play location. Click to type another, "
                                        "such as 3/4."},
-        {&metronome, "Metronome", "Switches the metronome on and off; it plays to Cue Out."},
+        {&metronome, "Metronome", "Switches the metronome on and off; it plays to Cue Out. O."},
         {&quantize, "Quantization Menu", "The global launch quantization (with Session View)."},
         {&follow, "Follow", "The arrangement follows the playhead while it plays. An edit, a "
                             "sideways scroll or a click on the ruler pauses it. Ctrl+Shift+F "
@@ -189,11 +189,12 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
                                             "Click to follow every envelope again."},
         {&capture, "Capture MIDI", "Turns what you just played into a clip."},
         {&sessionRecord, "Session Record", "Records into Session View (P2)."},
-        {&loopStart, "Loop Start", "Where the arrangement loop starts."},
+        {&loopStart, "Loop Start", "Where the arrangement loop starts. Click to type another, such as 5.1.1."},
         {&punchIn, "Punch-In", "Records only after the loop's start."},
-        {&loop, "Loop Switch", "Loops the arrangement."},
+        {&loop, "Loop Switch", "Loops the arrangement between the loop brace's ends. Ctrl/Cmd+L loops the selection."},
         {&punchOut, "Punch-Out", "Records only before the loop's end."},
-        {&loopLength, "Loop Length", "How long the arrangement loop is."},
+        {&loopLength, "Loop Length", "How long the arrangement loop is, in bars, beats and sixteenths. Click to "
+                                     "type another, such as 8.0.0."},
         {&draw, "Draw Mode", "Draws notes and automation with the mouse."},
         {&keyboard, "Computer MIDI Keyboard", "Plays notes from the computer keyboard."},
         {&key, "Key Map Mode", "Assigns computer keys to controls."},
@@ -217,6 +218,12 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     tap.setTriggeredOnMouseDown(true);
     tap.onClick = [this] { root_.tapTempo(static_cast<std::int64_t>(juce::Time::getMillisecondCounter())); };
     signature.onClick = [this] { beginSignatureEdit(); };
+    // The metronome and the Arrangement Loop (manual 19.4.1, 6.6; #383, N19): outside undo, saved
+    // with the project, lit from the snapshot.
+    metronome.onClick = [this] { root_.command(AppCommands::Metronome); };
+    loop.onClick = [this] { root_.toggleLoop(); };
+    loopStart.onClick = [this] { beginLoopStartEdit(); };
+    loopLength.onClick = [this] { beginLoopLengthEdit(); };
     position.onClick = [this] { beginPositionEdit(); };
     position.onKey = [this](const juce::KeyPress &k) {
         if (k.getModifiers().isAnyModifierKeyDown())
@@ -259,7 +266,8 @@ TransportBar::TransportBar(AdiRootComponent &root) : root_(root) {
     };
     for (auto *item : items())
         if (item != &play && item != &stop && item != &follow && item != &mix && item != &signature && item != &tempo &&
-            item != &tap && item != &position && item != &automationArm && item != &reEnable)
+            item != &tap && item != &position && item != &automationArm && item != &reEnable && item != &metronome &&
+            item != &loop && item != &loopStart && item != &loopLength)
             item->onClick = [this, item] {
                 root_.say(item->getTitle().toStdString() + " is not built yet.");
             };
@@ -339,6 +347,20 @@ void TransportBar::refresh() {
         signature.automationLed = changes;
         signature.repaint();
     }
+    // The loop's fields (manual 6.6): its start, a position, and its length in bars, beats and
+    // sixteenths of the meter at its start; the switches from the transport's saved state.
+    const auto &transport = root_.reader().transport();
+    if (const auto start = barPosition(transport.loopStartTicks, meters); start != shownLoopStart_) {
+        shownLoopStart_ = start;
+        loopStart.setText(juce::String(start.bar) + ".  " + juce::String(start.beat) + ".  " + juce::String(start.sixteenth));
+    }
+    if (const auto length = barSpan(transport.loopStartTicks, transport.loopEndTicks - transport.loopStartTicks, meters);
+        length != shownLoopLength_) {
+        shownLoopLength_ = length;
+        loopLength.setText(juce::String(length.bar) + ".  " + juce::String(length.beat) + ".  " + juce::String(length.sixteenth));
+    }
+    metronome.setToggleState(transport.metronome, juce::dontSendNotification);
+    loop.setToggleState(transport.loopEnabled, juce::dontSendNotification);
     play.setToggleState(root_.playing(), juce::dontSendNotification);
     follow.setToggleState(root_.state().follow, juce::dontSendNotification);
     // Re-Enable Automation lights from the frame's snapshot (manual 25.4); Automation Arm from the
@@ -367,6 +389,17 @@ void TransportBar::beginPositionEdit() {
     const auto at = barPosition(root_.timelineTick(), root_.reader().meters());
     beginFieldEdit(position, juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth),
                    [this](const std::string &t) { return root_.setPositionAt(t); });
+}
+void TransportBar::beginLoopStartEdit() {
+    const auto at = barPosition(root_.reader().transport().loopStartTicks, root_.reader().meters());
+    beginFieldEdit(loopStart, juce::String(at.bar) + "." + juce::String(at.beat) + "." + juce::String(at.sixteenth),
+                   [this](const std::string &t) { return root_.setLoopStartAt(t); });
+}
+void TransportBar::beginLoopLengthEdit() {
+    const auto &t = root_.reader().transport();
+    const auto length = barSpan(t.loopStartTicks, t.loopEndTicks - t.loopStartTicks, root_.reader().meters());
+    beginFieldEdit(loopLength, juce::String(length.bar) + "." + juce::String(length.beat) + "." + juce::String(length.sixteenth),
+                   [this](const std::string &text) { return root_.setLoopLengthAt(text); });
 }
 void TransportBar::beginSignatureEdit() {
     const auto &meter = meterAt(root_.timelineTick(), root_.reader().meters());

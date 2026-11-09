@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/loop_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_tree.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
@@ -51,6 +52,18 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
     void mouseUp(const juce::MouseEvent &) override;
     // While a marker is dragged: where it would land; else -1.
     std::int64_t movingTo() const noexcept { return dragged_ >= 0 ? movingTo_ : -1; }
+    // Live's loop brace (manual 6.6) along the band's top, over the loop region, dark while the loop
+    // is on: a press on it selects it, and the material in the loop with it (Select Loop); dragged by
+    // an edge it moves that end, by its bar it moves whole, its length kept, each to the nearest grid
+    // line while snapping; let go, the loop is set there, outside undo.
+    enum class BracePart { None, Start, End, Bar };
+    static constexpr float kBraceHeight = 8.f, kBraceEdge = 5.f;
+    BracePart bracePart(juce::Point<float>) const;
+    juce::Rectangle<float> braceBox(LoopRange) const;
+    // While the brace is dragged: where it would be; else none.
+    std::optional<LoopRange> braceMoving() const noexcept {
+        return brace_ != BracePart::None ? std::optional<LoopRange>(braceTo_) : std::nullopt;
+    }
     // The position of the time signature marker drawn under `x`, or -1.
     std::int64_t markerAt(float x) const;
     // Insert Time Signature Change at `pos` (inserting), or Edit Time Signature on the marker there:
@@ -70,6 +83,10 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
     bool inserting_ = false;
     // The marker pressed, the ticks from its start to the press, and where a drag would put it.
     std::int64_t dragged_ = -1, grabbed_ = 0, movingTo_ = -1;
+    // The brace's part pressed, the tick pressed, the brace then, and where a drag would put it.
+    BracePart brace_ = BracePart::None;
+    std::int64_t braceGrab_ = 0;
+    LoopRange braceFrom_, braceTo_;
 };
 // The beat-time ruler (Live 12 manual 6.1): bars-beats-sixteenths; drag sideways
 // scrolls, vertically zooms; a double-click zooms to the selection, or out to the
@@ -324,6 +341,12 @@ class ArrangementView final : public juce::Component {
     // The selected time signature marker's position (Live 12 manual 6.5), or -1. A click in the
     // lanes or on a track's title lets it go; Delete and Ctrl/Cmd+R act on it while it is selected.
     std::int64_t selectedMeter = -1;
+    // The loop brace, selected by a press on it (Live 12 manual 6.6): the arrows act on it while it
+    // is (§42.8), and a click in the lanes, on a title or on a marker lets it go.
+    bool loopSelected = false;
+    // Live's Select Loop (manual 6.6, §42.8; a click on the brace): a time selection over the loop
+    // across every track shown.
+    bool selectLoop();
     const SnapshotReader &reader() const;
     // Live 11's measures at 100 % (2026-10-27): the Overview with its margin, the beat
     // ruler with its numbers along its foot, the locator band, a dark gap, then the
