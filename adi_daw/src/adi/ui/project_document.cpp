@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
+#include "adi/media/collect_export.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <chrono>
@@ -138,33 +139,21 @@ bool ProjectDocument::collectAllAndSave() {
     error_.clear();
     return true;
 }
-bool ProjectDocument::collectAndExport(const std::filesystem::path &zip, std::function<void(StoreFileResult)> done) {
-    if (exporting()) {
-        error_ = "Collect and Export is already running.";
-        return false;
-    }
+bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
     if (refuseExisting(zip, "Collect and Export", error_))
         return false;
-    waitForExport(); // a finished worker is joined before the next
-    exporting_.store(true, std::memory_order_release);
-    exportWorker_ = std::thread([this, source = store_->path(), zip, done = std::move(done)] {
-        StoreFileResult result;
-        StoreError opened{};
-        if (const auto reader = Store::open(source, opened, true))
-            result = reader->collectAndExport(zip);
-        else
-            result.error = std::string("the project could not be read: ") + toString(opened);
-        exporting_.store(false, std::memory_order_release);
-        if (done)
-            done(std::move(result));
-    });
+    out.project = media::projectFolder(*store_) / store_->path().filename();
+    out.zip = zip;
     error_.clear();
     return true;
 }
-ProjectDocument::~ProjectDocument() { waitForExport(); }
-void ProjectDocument::waitForExport() {
-    if (exportWorker_.joinable())
-        exportWorker_.join();
+StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
+    try {
+        const auto result = media::collectExport(job.project, job.zip);
+        return {result.ok, result.error, {}};
+    } catch (const std::exception &e) {
+        return {false, e.what(), {}};
+    }
 }
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {

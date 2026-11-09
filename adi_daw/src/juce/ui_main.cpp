@@ -7,6 +7,9 @@
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <atomic>
+#include <memory>
+#include <thread>
 namespace adi::ui {
 namespace {
 // A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
@@ -79,6 +82,9 @@ class AdiApplication final : public juce::JUCEApplication,
         startTimer(20);
     }
     void shutdown() override {
+        // A Collect and Export still running finishes first: its ZIP is not left half written.
+        if (export_.joinable())
+            export_.join();
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -318,24 +324,35 @@ class AdiApplication final : public juce::JUCEApplication,
         root_->say(document_->warning().empty() ? ("Saved a copy as " + file.getFileName()).toStdString()
                                                 : document_->warning());
     }
-    // Collect and Export, once the chooser has a file: off this thread on a read-only store; the
-    // Status Bar says it is running, then how it ended. A result that lands after the project
-    // changed is dropped.
+    // Collect and Export, once the chooser has a file: on a worker the application owns, so the
+    // window keeps working and a project opened meanwhile does not wait for it; the Status Bar says it
+    // runs, then how it ended. One at a time. Quitting waits for it, the window still up.
     void collectAndExport(const juce::File &file) {
         if (!document_ || !root_)
             return;
-        auto *document = document_.get();
+        if (exportRunning_->load()) {
+            root_->say("Collect and Export is already running.");
+            return;
+        }
+        ProjectDocument::ExportJob job;
+        if (!document_->prepareCollectAndExport(pathFromUtf8(file.getFullPathName().toStdString()), job)) {
+            root_->say(document_->error());
+            return;
+        }
+        if (export_.joinable())
+            export_.join(); // the last one has finished
         const auto name = file.getFileName().toStdString();
-        const bool started = document_->collectAndExport(
-            pathFromUtf8(file.getFullPathName().toStdString()), [this, document, name](StoreFileResult result) {
-                juce::MessageManager::callAsync([this, document, name, result = std::move(result)] {
-                    if (juce::JUCEApplicationBase::getInstance() != this || document_.get() != document || !root_)
-                        return;
-                    root_->say(result.ok ? (result.warning.empty() ? "Exported " + name : result.warning)
-                                         : "Collect and Export failed: " + result.error);
-                });
+        exportRunning_->store(true);
+        export_ = std::thread([this, job, name, running = exportRunning_] {
+            const auto result = ProjectDocument::runCollectAndExport(job);
+            running->store(false);
+            juce::MessageManager::callAsync([this, name, result] {
+                if (juce::JUCEApplicationBase::getInstance() != this || !root_ || !window_)
+                    return;
+                root_->say(result.ok ? "Exported " + name : "Collect and Export failed: " + result.error);
             });
-        root_->say(started ? "Collecting and exporting to " + name + "..." : document_->error());
+        });
+        root_->say("Collecting and exporting to " + name + "...");
     }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {
@@ -526,6 +543,9 @@ class AdiApplication final : public juce::JUCEApplication,
     AdiRootComponent *root_ = nullptr;
     std::unique_ptr<FloatingHost> floating_;
     std::unique_ptr<juce::FileChooser> chooser_;
+    // Collect and Export's worker and whether it runs (A4); the flag is shared with the worker.
+    std::thread export_;
+    std::shared_ptr<std::atomic<bool>> exportRunning_ = std::make_shared<std::atomic<bool>>(false);
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
 };

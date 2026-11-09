@@ -6,7 +6,6 @@
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
-#include <atomic>
 #include <filesystem>
 #include <chrono>
 #include <cmath>
@@ -296,19 +295,23 @@ int main(int argc, char **argv) {
                 for ([[maybe_unused]] const auto &entry : std::filesystem::directory_iterator(home / "audio"))
                     ++collected;
             check(collected == 1, "the outside file is in audio/ beside the project");
-            std::atomic<bool> finished{false};
-            StoreFileResult exported;
             const auto zip = home / "song.zip";
             const auto opsBefore = doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
-            check(doc->collectAndExport(zip, [&](StoreFileResult r) { exported = std::move(r); finished = true; }),
-                  "Collect and Export starts on its worker");
-            doc->waitForExport();
-            check(finished && !doc->exporting() && exported.ok && std::filesystem::exists(zip) &&
-                      doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,
-                  "and finishes: the ZIP is written, the project unchanged");
+            ui::ProjectDocument::ExportJob job;
+            check(doc->prepareCollectAndExport(zip, job) && doc->error().empty() && job.zip == zip &&
+                      std::filesystem::equivalent(job.project, doc->store().path()),
+                  "Collect and Export is prepared on the message thread: the project's file and the ZIP");
+            // The app runs it on a worker of its own while the project stays open and writable.
+            StoreFileResult exported;
+            std::thread worker([&] { exported = ui::ProjectDocument::runCollectAndExport(job); });
+            worker.join();
             if (!exported.ok)
                 std::printf("export: %s\n", exported.error.c_str());
-            check(!doc->collectAndExport(zip, {}) && doc->error().find("already exists") != std::string::npos,
+            check(exported.ok && std::filesystem::exists(zip) &&
+                      doc->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,
+                  "run on a worker, it writes the ZIP and leaves the project unchanged");
+            ui::ProjectDocument::ExportJob again;
+            check(!doc->prepareCollectAndExport(zip, again) && doc->error().find("already exists") != std::string::npos,
                   "an export over an existing file is refused before it starts");
             doc->release();
         }
