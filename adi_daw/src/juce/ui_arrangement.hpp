@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include "adi/ui/track_tree.hpp"
@@ -64,6 +65,18 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
     std::optional<LoopRange> braceMoving() const noexcept {
         return brace_ != BracePart::None ? std::optional<LoopRange>(braceTo_) : std::nullopt;
     }
+    // Live's locators (manual 6.4) in the band under the brace, beside the time signature markers: a
+    // triangle at each, its name after it. A click selects one and jumps there; a double-click while
+    // stopped selects it and plays from it; a drag moves it, to the nearest grid line while snapping,
+    // one step when let go. The locator drawn under `x`, by id, or 0.
+    std::int64_t locatorAt(float x) const;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
+    // While a locator is dragged: where it would land; else -1.
+    std::int64_t locatorMovingTo() const noexcept { return locatorDragged_ != 0 ? locatorTo_ : -1; }
+    // Rename (Ctrl/Cmd+R) or Edit Info Text on a locator: a field over it, holding its name or its
+    // info text, selected; Enter commits, one step; Esc cancels.
+    bool beginLocatorEdit(std::int64_t id, bool info);
+    std::int64_t locatorEditing() const noexcept { return locatorEditing_; }
     // The position of the time signature marker drawn under `x`, or -1.
     std::int64_t markerAt(float x) const;
     // Insert Time Signature Change at `pos` (inserting), or Edit Time Signature on the marker there:
@@ -77,7 +90,14 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
 
   private:
     juce::Rectangle<float> markerBox(const textproj::Meter &) const;
+    juce::Rectangle<float> locatorBox(const Locator &) const;
     void endMeterEdit();
+    // The locator being renamed or given info text, and which; the locator pressed, the ticks from
+    // it to the press, where a drag would put it, and whether the mouse moved.
+    std::int64_t locatorEditing_ = 0;
+    bool editingInfo_ = false;
+    std::int64_t locatorDragged_ = 0, locatorGrab_ = 0, locatorTo_ = -1;
+    bool locatorMoved_ = false;
     ArrangementView &view;
     std::int64_t editing_ = -1;
     bool inserting_ = false;
@@ -344,6 +364,10 @@ class ArrangementView final : public juce::Component {
     // The loop brace, selected by a press on it (Live 12 manual 6.6): the arrows act on it while it
     // is (§42.8), and a click in the lanes, on a title or on a marker lets it go.
     bool loopSelected = false;
+    // The selected locator's marker id (Live 12 manual 6.4), or 0: Set reads Del, Delete and Ctrl/Cmd+R
+    // act on it and the arrows move it while it is selected; a click in the lanes or on a title lets
+    // it go.
+    std::int64_t selectedLocator = 0;
     // Live's Select Loop (manual 6.6, §42.8; a click on the brace): a time selection over the loop
     // across every track shown.
     bool selectLoop();
