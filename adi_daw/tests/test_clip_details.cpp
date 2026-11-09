@@ -68,18 +68,25 @@ void propertiesAndIdentity() {
               value.scale.root == 2 && value.scale.id == "minor" && value.scale.mask == 1453 &&
               !value.scale.local && !value.scale.tuningId, "signature and scale inherited at clip start");
     check(value.notes.size() == 2 && value.notes[0].id == 777 && value.notes[1].id == std::numeric_limits<std::uint64_t>::max(), "exact note ids include full uint64");
-    check(value.notes[0].startTicks == 0 && value.notes[0].durationTicks == quarter && value.notes[0].key == 64 &&
+    check(value.notes.size() == 2 && value.notes[0].startTicks == 0 && value.notes[0].durationTicks == quarter && value.notes[0].key == 64 &&
               value.notes[0].velocity == 99 && value.notes[0].releaseVelocity == 77 && value.notes[0].channel == 3 &&
               value.notes[0].flags == (NoteFlags::Muted | NoteFlags::Selected) && value.notes[0].probability == 8100 &&
               value.notes[0].tuningCents == -23.5f && !value.notes[0].active && value.notes[1].active &&
               value.notesProblem.empty() && value.notesRecordSize == 40 && !value.encodedNotes.empty(), "all notes, including inactive, with original properties");
     OpRequest op; op.opType = "note.move";
-    op.payload = {{"clip",10},{"note",std::numeric_limits<std::uint64_t>::max()},{"start",0},{"key",60}};
+    // A genuinely earlier start tests display reordering. Equal-time records
+    // retain their order; pitch is not a secondary sorting contract (MI-01).
+    op.payload = {{"clip",10},{"note",std::numeric_limits<std::uint64_t>::max()},{"start",-1},{"key",60}};
     check(OpJournal(*f.store).commit(op).ok, "move addresses id from read model");
     const auto moved = f.read();
-    check(moved.notes[0].id == std::numeric_limits<std::uint64_t>::max() && moved.notes[0].key == 60 &&
+    check(moved.notesProblem.empty() && moved.notes.size() == 2 && moved.notes[0].startTicks == -1,
+          "negative note origins remain valid signed relative ticks in the Clip View read model");
+    check(moved.notes.size() == 2 && value.notes.size() == 2 &&
+              moved.notes[0].id == std::numeric_limits<std::uint64_t>::max() && moved.notes[0].key == 60 && moved.notes[0].startTicks == -1 &&
               value.notes[0].id == 777 && value.notes[1].startTicks == quarter, "sorting after edit changes display order without changing identity or retained values");
-    check(History(*f.store).undo().ok && f.read().notes[1].startTicks == quarter, "refresh after undo reads original note");
+    const bool undone = History(*f.store).undo().ok;
+    const auto restored = f.read();
+    check(undone && restored.notes.size() == 2 && restored.notes[1].startTicks == quarter, "refresh after undo reads original note");
     f.store->db().exec("UPDATE clips SET color=NULL,loop_enabled=0,loop_len_ticks=NULL WHERE id=10");
     value = f.read();
     check(!value.color && !value.loopEnabled && !value.loopLengthTicks, "NULLs are distinct from explicit zero/defaults");
@@ -149,7 +156,12 @@ void corruptAndIndependentStreams() {
               value.encodedNotes == encoded, "future record prefix and original bytes exposed");
     const auto path = f.store->path(); f.store.reset();
     StoreError error = StoreError::Ok; f.store = Store::open(path,error,true);
-    check(f.store && f.read().notes[0].id == 123, "read-only reopened clip view");
+    if (f.store) {
+        const auto reopened = f.read();
+        check(reopened.notes.size() == 1 && reopened.notes[0].id == 123, "read-only reopened clip view");
+    } else {
+        check(false, "read-only reopened clip view");
+    }
 }
 } // namespace
 int main() {

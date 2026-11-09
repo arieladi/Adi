@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 namespace adi::engine {
 enum class LinkTransport {Keep,Play,Stop};
@@ -16,6 +17,10 @@ struct LinkBuffer {
     // Link's own monotonic clock domain, never wall time or project samples.
     std::int64_t callbackMicros=0,outputLatencyMicros=0;
     double quantum=4;
+    // Query a transport launch on a copy of this callback's captured state.
+    // Unlike LinkCommand::requestBeat, this never changes the shared timeline.
+    bool queryLaunch=false;
+    double launchBeat=0;
 };
 struct LinkFrame {
     bool valid=false,enabled=false,startStopSync=false,requestedPlaying=false;
@@ -23,6 +28,7 @@ struct LinkFrame {
     std::size_t peers=0;
     double tempo=0,beat=0,phase=0;
     std::int64_t audibleMicros=0,transportChangeMicros=0,launchMicros=0;
+    std::optional<std::int64_t> capturedMicros;
 };
 // App-owned SDK participant. Create/configure/retire off callback; never destroy
 // while its single audio driver is using it. No SDK types escape this boundary.

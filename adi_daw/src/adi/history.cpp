@@ -113,7 +113,10 @@ bool applyOne(OpContext& ctx, const ChainOp& recorded, bool asInverse, std::stri
 
     auto payload = decodeFromLog(cbor, err);
     if (!payload) { err = "cannot decode payload for " + opType + ": " + err; return false; }
-    if (!target->apply(ctx, *payload, err)) return false;
+    OpContext replayContext{ctx.store, ctx.db};
+    replayContext.replay = OpReplayMetadata{recorded.opType, recorded.inverse,
+                                           recorded.hasInverse, asInverse};
+    if (!target->apply(replayContext, *payload, err)) return false;
     return applied == nullptr || applied->append(ctx.store, opType, targetName, *payload,
         recorded.seq, recorded.txnId, asInverse, err);
 }

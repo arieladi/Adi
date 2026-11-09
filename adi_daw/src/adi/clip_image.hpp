@@ -6,6 +6,9 @@ namespace adi::clip_edit {
 struct ChildTable {const char* table;const char* key;};
 [[nodiscard]] std::span<const ChildTable> childTables();
 [[nodiscard]] bool tablePresent(SQLite::Database&,const std::string&);
+/// Capture complete known material without assuming the root will be deleted.
+/// Actual row changes must still pass validateRows before publication.
+[[nodiscard]] Payload captureImage(OpContext&,std::int64_t);
 [[nodiscard]] Payload captureDeleted(OpContext&,std::int64_t);
 void restoreDeleted(OpContext&,const Payload&);
 void createImage(edit::RowEdits&,const Payload&);

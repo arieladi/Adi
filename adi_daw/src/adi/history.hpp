@@ -125,16 +125,19 @@ public:
         std::vector<std::int64_t> snapshotIds;
     };
     struct Timeline {
-        std::vector<TimelineStep> steps; // newest lastSeq first, every branch
+        std::vector<TimelineStep> steps; // newest lastSeq first, every branch; excludes the checkpoint root
         std::vector<Branch> branches; // id order; current head moves with undo
         std::vector<Snapshot> snapshots; // newest createdUtc/id first, including root
         std::optional<std::int64_t> headSeq, currentBranchId;
+        std::int64_t baseSeq = 0; // retained structural root; zero when history has not compacted
         std::string error; // no partial data on failure
     };
 
     /// Message-thread metadata read, outside journal mutations. One consistent
     /// read transaction; no op/state blobs are loaded or decoded. Ephemeral
-    /// performance/session ops are excluded. Root snapshots remain in snapshots.
+    /// performance/session ops and the checkpoint root are excluded from steps.
+    /// Root snapshots remain in snapshots, including anchors exactly at baseSeq;
+    /// branch heads and step parents retain their stored sequence values.
     /// branchIds names stored-head ancestry; the current branch also includes
     /// its redo line. No branch/snapshot metadata or undo head is changed.
     [[nodiscard]] Timeline readTimeline() const;

@@ -12,6 +12,7 @@ bool valid(const LinkBuffer& buffer,const LinkCommand& command)noexcept {
     constexpr std::int64_t limit=std::int64_t{1}<<50;
     if(buffer.callbackMicros < -limit || buffer.callbackMicros>limit || buffer.outputLatencyMicros<0 || buffer.outputLatencyMicros>10000000 ||
        !std::isfinite(buffer.quantum) || buffer.quantum<1.0/1024 || buffer.quantum>256 ||
+       (buffer.queryLaunch && (!std::isfinite(buffer.launchBeat) || std::abs(buffer.launchBeat)>1e9)) ||
        (command.tempo!=0 && !validTempo(command.tempo)) ||
        (command.requestBeat && (!std::isfinite(command.beat) || std::abs(command.beat)>1e9)))return false;
     switch(command.transport){case LinkTransport::Keep:case LinkTransport::Play:case LinkTransport::Stop:return true;}
@@ -49,9 +50,15 @@ LinkFrame LinkSession::process(const LinkBuffer& buffer,const LinkCommand& comma
     if(command.tempo!=0)state.setTempo(command.tempo,audible);
     if(command.transport!=LinkTransport::Keep)state.setIsPlaying(command.transport==LinkTransport::Play,audible);
     if(command.requestBeat)state.requestBeatAtTime(command.beat,audible,buffer.quantum);
-    LinkFrame frame;frame.valid=true;frame.enabled=impl_->sdk.isEnabled();frame.startStopSync=impl_->startStopSync.load(std::memory_order_acquire);frame.peers=impl_->sdk.numPeers();
+    LinkFrame frame;frame.valid=true;frame.capturedMicros=buffer.callbackMicros;frame.enabled=impl_->sdk.isEnabled();frame.startStopSync=impl_->startStopSync.load(std::memory_order_acquire);frame.peers=impl_->sdk.numPeers();
     frame.tempo=state.tempo();frame.beat=state.beatAtTime(audible,buffer.quantum);frame.phase=state.phaseAtTime(audible,buffer.quantum);frame.requestedPlaying=state.isPlaying();frame.audibleMicros=audible.count();frame.transportChangeMicros=state.timeForIsPlaying().count();
     if(command.requestBeat){frame.hasLaunchTime=true;frame.launchMicros=state.timeAtBeat(command.beat,buffer.quantum).count();}
+    else if(buffer.queryLaunch && frame.requestedPlaying) {
+        auto launch=state;
+        launch.requestBeatAtStartPlayingTime(buffer.launchBeat,buffer.quantum);
+        frame.hasLaunchTime=true;
+        frame.launchMicros=launch.timeAtBeat(buffer.launchBeat,buffer.quantum).count();
+    }
     if(command.tempo!=0 || command.transport!=LinkTransport::Keep || command.requestBeat)impl_->sdk.commitAudioSessionState(state);
     return frame;
 }

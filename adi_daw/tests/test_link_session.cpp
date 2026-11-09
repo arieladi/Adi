@@ -43,6 +43,12 @@ void local() {
     LinkBuffer buffer{now,20000,4};LinkCommand begin;begin.transport=LinkTransport::Play;begin.requestBeat=true;begin.beat=0;
     auto start=callback(*session,buffer,begin);check(start.valid && !start.enabled && start.peers==0 && start.requestedPlaying && !start.startStopSync && near(start.tempo,120) && near(start.beat,0) && near(start.phase,0),"audio capture and local quantized launch use actual SDK state while networking is off");
     check(start.audibleMicros==now+20000 && start.transportChangeMicros==start.audibleMicros && start.hasLaunchTime && start.launchMicros==start.audibleMicros,"commands, beat observation and launch time share the first audible buffer timestamp");
+    auto query=buffer;query.queryLaunch=true;query.launchBeat=4;
+    const auto queried=callback(*session,query);
+    check(queried.valid && queried.hasLaunchTime && queried.launchMicros==start.launchMicros && near(queried.beat,start.beat),"launch query uses a copy of the captured timeline without remapping its observed beat");
+    check(queried.capturedMicros && *queried.capturedMicros==now,"preparation age uses callback capture time independently of future audible time");
+    query.launchBeat=nan;
+    check(!callback(*session,query).valid,"nonfinite launch query refuses before submitting an SDK command");
     buffer.callbackMicros+=500000;const auto next=callback(*session,buffer);check(next.valid && near(next.beat,1) && near(next.phase,1) && !next.hasLaunchTime,"SDK beat/phase advance at 120 BPM with output latency included once");
     LinkCommand slow;slow.tempo=60;const auto change=callback(*session,buffer,slow);check(change.valid && near(change.beat,next.beat) && near(change.tempo,60),"a local tempo command changes rate while retaining the audible beat boundary");
     buffer.callbackMicros+=1000000;auto later=callback(*session,buffer);check(near(later.beat,2) && near(later.tempo,60),"committed SDK tempo affects the next captured audio state");
