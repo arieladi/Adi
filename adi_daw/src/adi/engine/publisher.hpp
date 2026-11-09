@@ -116,7 +116,9 @@ public:
         // did before publishing this value happens-before what we do after.
         const std::uint64_t inUse = inUse_.load(std::memory_order_acquire);
 
-        std::vector<T*> freeable;
+        // Counted construction: MSVC Debug allocates the iterator proxy here, and the
+        // default constructor is noexcept, so a failure there would terminate.
+        std::vector<T*> freeable(std::size_t{0});
         {
             std::lock_guard lock(retiredMutex_);
             // No erased raw pointer may be stranded if a later push allocates.

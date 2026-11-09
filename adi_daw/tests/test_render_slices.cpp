@@ -297,21 +297,20 @@ void automationPublication() {
         actual.transport().play(); reference.transport().play();
         Buffer heard, expected;
         std::atomic<bool> publish{false}, done{false}; bool prepared = false;
-        std::thread owner([&] {
-            while (!publish.load()) std::this_thread::yield();
-            prepared = actual.setExternalTempo(*project.store, 200);
-            done = true;
-        });
         bool rendered = true;
-        {
+        // Refresh belongs to the thread that owns the Store (HI-01); the callback is the other one.
+        std::thread callback([&] {
             auto block = actual.beginRender();
             AudioIoSlice left(heard.io, 0, 17), right(heard.io, 17, 47);
             rendered = block.process(left.io());
             publish = true;
             while (!done.load()) std::this_thread::yield();
             rendered = block.process(right.io()) && rendered;
-        }
-        owner.join();
+        });
+        while (!publish.load()) std::this_thread::yield();
+        prepared = actual.setExternalTempo(*project.store, 200);
+        done = true;
+        callback.join();
         {
             auto block = reference.beginRender();
             AudioIoSlice left(expected.io, 0, 17), right(expected.io, 17, 47);
@@ -356,29 +355,30 @@ void deviceAutomationPublication() {
         std::weak_ptr<void> firstOwner = actual.nodeFor(1)->eventSourceLifetime(), unheardOwner;
         actual.transport().play(); reference.transport().play();
         std::atomic<bool> publish{false}, done{false}; bool prepared = false;
-        std::thread owner([&] {
-            while (!publish.load()) std::this_thread::yield();
-            prepared = actual.setExternalTempo(*project.store, 200);
-            unheardOwner = actual.nodeFor(1)->eventSourceLifetime();
-            prepared = actual.setExternalTempo(*project.store, 300) && prepared;
-            (void)actual.graph().collect();
-            done = true;
-        });
         Buffer heard, expected;
-        bool rendered = false, lifetime = false;
+        bool rendered = false, lifetime = false, clean = false;
         const auto a = allocations.load(), f = frees.load(), files = audio::callbackFileIo.load();
-        {
-            auto block = actual.beginRender();
-            AudioIoSlice left(heard.io, 0, 17), right(heard.io, 17, 47);
-            rendered = block.process(left.io());
-            publish = true;
-            while (!done.load()) std::this_thread::yield();
-            lifetime = !firstOwner.expired();
-            played->probe.clock = 17;
-            rendered = block.process(right.io()) && rendered;
-        }
-        const bool clean = allocations == a && frees == f && audio::callbackFileIo == files;
-        owner.join();
+        // Refresh belongs to the thread that owns the Store (HI-01); the callback is the other one.
+        std::thread callback([&] {
+            {
+                auto block = actual.beginRender();
+                AudioIoSlice left(heard.io, 0, 17), right(heard.io, 17, 47);
+                rendered = block.process(left.io());
+                publish = true;
+                while (!done.load()) std::this_thread::yield();
+                lifetime = !firstOwner.expired();
+                played->probe.clock = 17;
+                rendered = block.process(right.io()) && rendered;
+            }
+            clean = allocations == a && frees == f && audio::callbackFileIo == files;
+        });
+        while (!publish.load()) std::this_thread::yield();
+        prepared = actual.setExternalTempo(*project.store, 200);
+        unheardOwner = actual.nodeFor(1)->eventSourceLifetime();
+        prepared = actual.setExternalTempo(*project.store, 300) && prepared;
+        (void)actual.graph().collect();
+        done = true;
+        callback.join();
         {
             auto block = reference.beginRender();
             AudioIoSlice left(expected.io, 0, 17), right(expected.io, 17, 47);
