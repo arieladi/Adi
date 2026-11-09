@@ -3549,6 +3549,63 @@ void locators(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(located().size() == 1 && arrangement.selectedLocator == 0 && document->ops().nextUndo()->label == "Delete Locator",
           "Delete removes the selected locator, one step");
+
+    // One thing selected at a time: the brace pressed lets a locator go, so Delete cannot reach it.
+    const auto pressBrace = [&] {
+        lanes.scale = 30; // the jumps above scrolled the lanes
+        lanes.left = 0;
+        root.mark(DirtySet::All);
+        root.frame();
+        const auto &loop = root.reader().transport(); // Loop to Next Locator above moved it
+        const juce::Point<float> onBrace{static_cast<float>(lanes.x((loop.loopStartTicks + loop.loopEndTicks) / 2)), 3.f};
+        check(scrub.bracePart(onBrace) == ScrubArea::BracePart::Bar, "the brace's bar is under the press");
+        scrub.mouseDown(pressAt(scrub, onBrace));
+        scrub.mouseUp(pressAt(scrub, onBrace));
+    };
+    arrangement.selectedLocator = first.id;
+    pressBrace();
+    check(arrangement.loopSelected && arrangement.selectedLocator == 0, "the brace pressed lets the selected locator go");
+    const auto beforeDelete = step();
+    arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    check(located().size() == 1 && located()[0].id == first.id, "locator, brace, Delete: the locator stays");
+    if (step() != beforeDelete)
+        root.command(AppCommands::Undo); // Delete took the material the brace selected; put it back
+    root.frame();
+
+    // And the other way: Set with the brace selected leaves the new locator the selection; the arrows move it.
+    pressBrace();
+    sel.insert = sel.start = sel.end = first.pos + bar; // the brace starts on the first locator, and two cannot share a place
+    click(ArrangementView::TopButton::Set);
+    const auto loopBefore = root.reader().transport();
+    check(located().size() == 2 && !arrangement.loopSelected && arrangement.selectedLocator != 0 &&
+              arrangement.selectedLocator != first.id,
+          "brace, Set: the new locator is selected and the brace let go");
+    const auto added = arrangement.selectedLocator;
+    const auto posOf = [&](std::int64_t id) {
+        const auto all = located();
+        const auto *l = locatorById(all, id);
+        return l != nullptr ? l->pos : std::int64_t{-1};
+    };
+    const auto addedAt = posOf(added);
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "right");
+    root.frame();
+    check(posOf(added) > addedAt &&
+              root.reader().transport().loopStartTicks == loopBefore.loopStartTicks &&
+              root.reader().transport().loopEndTicks == loopBefore.loopEndTicks,
+          "brace, Set, right: the locator moves, not the brace");
+
+    // Undo takes the locator away, and its selection with it: Set reads Set again and adds.
+    arrangement.selectedLocator = 0;
+    sel.insert = sel.start = sel.end = 7 * bar;
+    const auto count = located().size();
+    click(ArrangementView::TopButton::Set);
+    check(located().size() == count + 1 && arrangement.selectedLocator != 0, "Set adds one, selected");
+    check(root.command(AppCommands::Undo), "undo the Set");
+    root.frame();
+    check(located().size() == count && arrangement.selectedLocator == 0, "Undo: the locator and its selection are gone");
+    click(ArrangementView::TopButton::Set);
+    check(located().size() == count + 1 && arrangement.selectedLocator != 0, "Set adds again after the Undo");
     root.afterEdit = nullptr;
     document->release();
 }
