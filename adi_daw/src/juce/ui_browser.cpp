@@ -158,8 +158,12 @@ void BrowserPanel::setFootLimit(int y) {
 }
 juce::String BrowserPanel::dragDescription(const std::vector<const LibraryFile *> &files) {
     juce::StringArray paths;
-    for (const auto *f : files)
-        paths.add(juce::String::fromUTF8(media::pathUtf8(f->path).c_str()));
+    // The native spelling, as a file dragged from the desktop arrives: JUCE names a file by its last
+    // native separator, so a generic path on Windows would name the clip after the whole path.
+    for (const auto *f : files) {
+        const auto native = std::filesystem::path(f->path).make_preferred().u8string();
+        paths.add(juce::String::fromUTF8(reinterpret_cast<const char *>(native.data()), static_cast<int>(native.size())));
+    }
     return "adi-sample:" + paths.joinIntoString("\n");
 }
 juce::StringArray BrowserPanel::droppedFiles(const juce::var &description) {

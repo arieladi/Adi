@@ -2685,6 +2685,9 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         const auto drag = BrowserPanel::dragDescription({browser.shown()[1]});
         const auto bar5 = 4 * textproj::kWhole;
         const juce::Point<int> at{static_cast<int>(geometry.x(bar5)) + 3, laneTop(root, 1) + 10};
+        const auto carried = BrowserPanel::droppedFiles(drag);
+        check(carried.size() == 1 && juce::File::createFileWithoutCheckingPath(carried[0]).getFileName() == "Clap.wav",
+              "the drag carries the sample's native path, its file name Clap.wav on every system");
         juce::DragAndDropTarget::SourceDetails details(drag, nullptr, at);
         check(canvas.isInterestedInDragSource(details) &&
                   !canvas.isInterestedInDragSource(juce::DragAndDropTarget::SourceDetails("something else", nullptr, at)),
