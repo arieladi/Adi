@@ -10,7 +10,10 @@ namespace adi::detail {
 
 /// Store owns this opaque domain; implementation is private to applied_batches.cpp.
 /// Journal/History use the functions below, never observer callback internals.
-[[nodiscard]] std::shared_ptr<AppliedDomain> makeAppliedDomain(const Store&);
+[[nodiscard]] std::shared_ptr<AppliedDomain> makeAppliedDomain(Store&);
+/// Checked owner-thread borrowing; the returned pointer never extends Store life.
+[[nodiscard]] Store* appliedSourceStore(const AppliedSource&) noexcept;
+void rebindAppliedDomain(Store&) noexcept;
 /// Store::saveAs only: attach direct predecessor provenance to the unexposed
 /// replacement domain, before old-source invalidation and the connection swap.
 /// May allocate; failure leaves the old source untouched. No chain is retained.

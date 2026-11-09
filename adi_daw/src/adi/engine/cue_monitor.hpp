@@ -5,6 +5,14 @@
 #include "adi/engine/mixer.hpp"
 #include <memory>
 namespace adi::engine {
+class CueControlBatch {
+public:
+    void apply() const noexcept;
+private:
+    struct Entry { void* target; void (*apply)(void*,const StripControlImage&) noexcept; StripControlImage image; };
+    std::vector<Entry> entries_;
+    friend class CueMonitor;
+};
 class CueMonitor {
 public:
     CueMonitor();
@@ -16,7 +24,9 @@ public:
     void configure(const rows::Model&,const CueSettings&,const Transport*,const std::shared_ptr<StripAutomation>&,bool enabled);
     std::vector<MonitorPoint> points(const TapFn&) const;
     /// Publish only after the matching graph was prepared successfully.
-    void publish(const CueSettings&,double rate,int maxFrames,int channels,bool enabled,const Graph* prepared=nullptr);
+    bool publish(const CueSettings&,double rate,int maxFrames,int channels,bool enabled,const Graph* prepared=nullptr) noexcept;
+    [[nodiscard]] std::shared_ptr<const CueControlBatch> prepareControls(const rows::Model&,const CueSettings&,
+        const std::shared_ptr<StripAutomation>&,bool enabled) const;
     void collect();
     struct Click {
         void* context=nullptr;

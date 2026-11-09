@@ -128,6 +128,11 @@ struct StripMeter {
 };
 static_assert(std::atomic<float>::is_always_lock_free);
 
+struct StripControlImage {
+    StripConfig config;
+    bool audible = true;
+};
+
 class StripNode final : public Node {
 public:
     /// Message thread: the model's values. `audible` is mute and solo together.
@@ -159,6 +164,11 @@ public:
         setDelay(config.delaySamples, config.delayRate);
         setLanes(config.lanes, config.lanes != nullptr ? config.keepAlive : std::shared_ptr<void>{});
     }
+
+    /// Owner capture, followed by allocation-free audio-owner adoption. The
+    /// publishing generation retains config.keepAlive through every read.
+    [[nodiscard]] StripControlImage captureControls() const;
+    void applyPublishedControls(const StripControlImage&) noexcept;
 
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return keepAlive_; }
 
@@ -340,6 +350,12 @@ public:
         retainAutomation();
     }
 
+    struct Controls { StripControlImage source, gain; };
+    [[nodiscard]] Controls captureControls() const { return {source_.captureControls(), gain_.captureControls()}; }
+    void applyPublishedControls(const Controls& value) noexcept {
+        source_.applyPublishedControls(value.source);
+        gain_.applyPublishedControls(value.gain);
+    }
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return automationLife_; }
     /// The source's track delay, as its strip reports it: so the edge after
     /// this node waits as the edge after the strip does.
@@ -589,8 +605,24 @@ struct StripAutomation {
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& overridden);
 
 /// One strip per track id, kept for the life of the session. Message thread.
+class MixerControlBatch {
+public:
+    void apply() const noexcept;
+private:
+    struct Strip { StripNode* node; StripControlImage image; };
+    struct Send { SendNode* node; SendNode::Controls image; };
+    std::vector<Strip> strips_;
+    std::vector<Send> sends_;
+    friend class MixerStrips;
+};
+
 class MixerStrips {
 public:
+    /// Derive the existing hearing/Pre/Post-send rules using isolated control
+    /// nodes, then bind the result to existing runtime nodes. No live mutation.
+    [[nodiscard]] std::shared_ptr<const MixerControlBatch> prepareControls(
+        const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&,
+        bool delayCompensation, const HearingFlags&) const;
     /// Recompute every strip from the model -- fader, pan, law, mute and solo --
     /// and bind its lanes. Creates strips for new tracks; a departed track's
     /// strip is kept, silent, until the session ends, as a departed device is

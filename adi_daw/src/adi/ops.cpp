@@ -3,6 +3,8 @@
 #include "adi/freeze_state.hpp"
 
 #include "adi/ops.hpp"
+#include "adi/op_transaction_resources_detail.hpp"
+#include "adi/gesture_navigation_detail.hpp"
 #include "adi/applied_batches_detail.hpp"
 
 #include "adi/history_compaction.hpp"
@@ -254,10 +256,39 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs) {
 }
 
 CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOptions& options) {
+    std::shared_ptr<const OpCapturedTransaction> captured;
+    for (const auto& request : reqs) {
+        if (request.capturedTransaction) { captured = request.capturedTransaction; break; }
+    }
+    if (!captured) return commitImpl(reqs, options, nullptr, nullptr);
+    CommitResult result;
+    if (!CapturedTransactionAccess::begin(captured, reqs, store_, options, result.error)) return result;
+    auto guarded = options;
+    guarded.expectHead.emplace(captured->expectedHead());
+    result = commitImpl(reqs, guarded, &captured->source(), &captured->inputs());
+    if (!result.ok) CapturedTransactionAccess::refuse(captured, result.error);
+    return result;
+}
+
+CommitResult OpJournal::commitCaptured(std::span<const OpRequest> reqs, const AppliedSource& source,
+    const CommitOptions& options, const OpTransactionInputs& inputs) {
+    CommitResult result;
+    if (!options.expectHead) { result.error = "captured commit requires expected head"; return result; }
+    for (const auto& request : reqs) {
+        if (request.capturedTransaction) {
+            result.error = "sealed captured packets must use their own transaction admission"; return result;
+        }
+    }
+    return commitImpl(reqs, options, &source, &inputs);
+}
+
+CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const CommitOptions& options,
+    const AppliedSource* expectedSource, const OpTransactionInputs* inputs) {
     CommitResult r;
     if (detail::appliedDispatchActive(store_)) { r.error = "reentrant journal commit during applied-batch delivery"; return r; }
+    if (!gesture::detail::mutationAllowed(store_, r.error)) return r;
     if (!appliedSource(store_).alive()) { r.error = "project is closed"; return r; }
-    if (reqs.empty()) { r.ok = true; return r; }
+    if (reqs.empty() && !expectedSource) { r.ok = true; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     const bool frozenWasValid = freeze::validated(store_);
@@ -289,13 +320,32 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
         // partially-applied batch cannot survive describing itself as complete.
         SQLite::Transaction txn(db);
 
+        std::optional<std::int64_t> head = headSeq();
+        if (expectedSource && (!expectedSource->alive() || !expectedSource->sameConnection(appliedSource(store_)))) {
+            r.error = "captured commit source changed"; return r;
+        }
+        if (options.expectHead && head != *options.expectHead) {
+            r.stale = true; r.headFound = head; r.error = "stale: the undo head moved"; return r;
+        }
+        if (inputs) {
+            if (!detail::validateOpPresentationImage(store_, inputs->presentationImage, r.error) ||
+                !detail::validateOpRowGuards(store_, inputs->rowGuards, r.error) ||
+                !detail::validateOpRowSetGuards(store_, inputs->rowSetGuards, r.error)) {
+                r.stale = true; r.headFound = head; return r;
+            }
+            if (reqs.empty() && !inputs->stateBlobs.empty()) {
+                r.error = "empty captured commit has state resources"; return r;
+            }
+            if (!detail::installOpResources(store_, reqs, *inputs, r.error)) return r;
+        }
+        if (reqs.empty()) { r.ok = true; return r; }
+
         const std::int64_t txnId =
             db.execAndGet("SELECT IFNULL(MAX(txn_id), 0) + 1 FROM ops").getInt64();
         r.txnId = txnId;
         const std::int64_t ts = nowUtcMicros();
 
         // Where we are in the tree. New ops hang off this.
-        std::optional<std::int64_t> head = headSeq();
         detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::Commit, head);
 
         // ADR-0161: this Store's client, and the clock its ops continue from.
@@ -315,12 +365,6 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
 
         // ADR-0153: the caller's expected head, checked HERE, inside the
         // transaction, so nothing can move it between the check and COMMIT.
-        if (options.expectHead && head != *options.expectHead) {
-            r.stale = true;
-            r.headFound = head;
-            r.error = "stale: the undo head moved";
-            return r;   // Transaction dtor rolls back
-        }
 
         // SPEC §8.2: "Undoing and then doing something new does not destroy the
         // branch you left; it forks."
@@ -441,7 +485,7 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
         // The head move is in the SAME transaction as the mutations it
         // describes. Otherwise a crash between them leaves the project changed
         // and the head saying otherwise, which undo would then get wrong.
-        if (!setHeadSeq(head)) {
+        if (!writeHeadSeq(head)) {
             r.error = "could not advance the undo head";
             return r;
         }
@@ -483,6 +527,7 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
         txn.commit();
         freeze::remember(store_);
         r.ok = true;
+        if (!reqs.empty()) CapturedTransactionAccess::durable(reqs.front().capturedTransaction, r.txnId);
         delivery->publish(); // noexcept; observer failure cannot falsify SQL success
         return r;
     } catch (const std::exception& e) {
@@ -564,6 +609,12 @@ std::optional<std::int64_t> OpJournal::headSeq() const {
 }
 
 bool OpJournal::setHeadSeq(std::optional<std::int64_t> seq) {
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) return false;
+    return writeHeadSeq(seq);
+}
+
+bool OpJournal::writeHeadSeq(std::optional<std::int64_t> seq) {
     if (detail::appliedDispatchActive(store_) || !appliedSource(store_).alive()) return false;
     try {
         SQLite::Statement base(store_.db(), "SELECT base_seq FROM history_checkpoint WHERE id=1");

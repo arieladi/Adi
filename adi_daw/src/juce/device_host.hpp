@@ -87,6 +87,8 @@ public:
         engine::FeedbackFn feedbackFor;
         std::function<void(engine::GraphPlan &)> transformPlan{};
         std::shared_ptr<const engine::GraphTransportState> transportState{};
+        engine::EventSourceFn eventSourceFor;
+        engine::NodePreparePolicy nodePreparation = engine::NodePreparePolicy::PrepareAll;
     };
 
     /// Attach to the HOST that owns the live graph, and take responsibility

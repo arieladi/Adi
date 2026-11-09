@@ -33,6 +33,27 @@ NodeId Graph::addNode(Node& node) {
     return static_cast<NodeId>(slots_.size() - 1);
 }
 
+bool Graph::setEventSource(NodeId id, EventSourceBinding binding) {
+    if (prepared_ || id < 0 || id >= static_cast<NodeId>(slots_.size())) return false;
+    auto& slot = slots_[static_cast<std::size_t>(id)];
+    slot.eventSource = std::move(binding);
+    slot.explicitEventSource = true;
+    return true;
+}
+
+bool Graph::preparationCurrent() const noexcept {
+    if (!ok_ || !prepared_) return false;
+    for (const auto& slot : slots_) {
+        if (slot.node == nullptr) continue;
+        const auto& prepared = slot.node->preparation_;
+        const auto handed = precision_ == Precision::Float64 && slot.node->processesDouble()
+            ? Precision::Float64 : Precision::Float32;
+        if (!prepared.ready || prepared.revision != slot.preparationRevision ||
+            prepared.shape != slot.node->preparationShapeEpoch() || prepared.handed != handed) return false;
+    }
+    return true;
+}
+
 bool Graph::connect(NodeId from, NodeId to, Bus bus) {
     const auto n = static_cast<NodeId>(slots_.size());
     if (from < 0 || from >= n || to < 0 || to >= n || from == to) return false;
@@ -924,6 +945,25 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     }
     if (!topoSort()) return;
 
+    // Validate EVERY reused node before touching any node. In particular a
+    // later incompatible device must not cause an earlier one to re-prepare.
+    if (nodePreparePolicy_ == NodePreparePolicy::PreservePrepared) {
+        for (const auto& slot : slots_) {
+            if (slot.node == nullptr) continue;
+            const auto& prepared = slot.node->preparation_;
+            if (!prepared.known) continue;
+            const auto handed = precision_ == Precision::Float64 && slot.node->processesDouble()
+                ? Precision::Float64 : Precision::Float32;
+            if (!prepared.ready || prepared.sampleRate != sampleRate ||
+                prepared.maxFrames != maxFrames || prepared.channels != channels_ ||
+                prepared.precision != precision_ || prepared.handed != handed ||
+                prepared.shape != slot.node->preparationShapeEpoch()) {
+                error_ = "a reused node is not prepared at the candidate format and shape";
+                return;
+            }
+        }
+    }
+
     sampleRate_ = sampleRate;
     maxFrames_ = maxFrames;
     controllerSources_.clear();
@@ -981,6 +1021,8 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     }
     bypassNodes_.clear();
     for (auto& s : slots_) {
+        if (!s.explicitEventSource && s.node != nullptr)
+            s.eventSource = {s.node->eventSource(), s.node->eventSourceLifetime()};
         s.hasBypass = s.node != nullptr && s.node->hasBypass();
         if (s.hasBypass)
             bypassNodes_.emplace_back(s.node, static_cast<NodeId>(&s - slots_.data()));
@@ -1019,10 +1061,26 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         s.zeroed = true;                 // `assign` above filled it with zeros
         s.dozeGlides = kLinesUnchecked;
         if (s.node != nullptr) {
-            s.node->willBeHanded(s.doubles ? Precision::Float64 : Precision::Float32);
-            s.node->prepare(sampleRate, maxFrames);
+            auto& prepared = s.node->preparation_;
+            if (nodePreparePolicy_ != NodePreparePolicy::PreservePrepared || !prepared.known) {
+                ++prepared.revision;
+                prepared.known = true;
+                prepared.ready = false;
+                const auto handed = s.doubles ? Precision::Float64 : Precision::Float32;
+                s.node->willBeHanded(handed);
+                s.node->prepare(sampleRate, maxFrames);
+                prepared.sampleRate = sampleRate;
+                prepared.maxFrames = maxFrames;
+                prepared.channels = channels_;
+                prepared.precision = precision_;
+                prepared.handed = handed;
+                prepared.shape = s.node->preparationShapeEpoch();
+                prepared.ready = true;
+            }
         }
     }
+    for (auto& slot : slots_)
+        if (slot.node != nullptr) slot.preparationRevision = slot.node->preparation_.revision;
 
     std::sort(bypassNodes_.begin(), bypassNodes_.end(), [](const auto& a, const auto& b) {
         return std::less<Node*>{}(a.first, b.first);
@@ -1080,7 +1138,11 @@ void Graph::collectRenderStats(const RenderState& r) noexcept {
 void Graph::release() {
     workers_.reset();workerRenders_.clear();levelWork_.clear();
     for (auto& s : slots_)
-        if (s.node != nullptr) s.node->release();
+        if (s.node != nullptr) {
+            ++s.node->preparation_.revision;
+            s.node->preparation_.ready = false;
+            s.node->release();
+        }
     prepared_ = false;
     ok_ = false;
 }
@@ -1903,7 +1965,7 @@ void Graph::process(const AudioIo& io) noexcept {
         if (s.node == nullptr) continue;
         s.node->sourceEvents(s.events, frames);
         // ADR-0165: automation addressed to this node, beside what it sources.
-        if (EventSource* source = s.node->eventSource()) source->emit(s.events, frames);
+        if (EventSource* source = s.eventSource.source) source->emit(s.events, frames);
     }
     forwardEvents(frames);
 

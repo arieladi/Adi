@@ -19,13 +19,13 @@
 //      and `drain` walks them all. A ring is never freed while its device may
 //      still push; `detach` only unhooks the sink.
 //
-//      LIFETIME, one-sided: **an attached device outlives the glue, or is
-//      detached first.** The destructor unhooks every sink it installed, and it
-//      writes through the device to do so; a device that is already gone is a
-//      write into freed memory (linux found it with ASan in the first test
-//      suite, #75). The natural owners obey this without trying: the session
-//      owns the devices and outlives the UI's glue. The other order -- glue
-//      alive, device gone -- is what `detach` exists for.
+//      Session-bound lifetime: immutable callback bindings retain capture and
+//      fence owners. Detach unpublishes the binding; owner reclamation waits
+//      for announced readers to be quiescent without blocking callbacks.
+//      Session retains pending runtime restoration after frontend destruction
+//      and revokes its endpoint before devices die. Standalone attach keeps
+//      the borrowed contract: device outlives ParamOps or caller detaches and
+//      establishes callback quiescence first.
 //   2. **Normalized is the wire unit.** Both formats can produce 0..1 (VST3
 //      natively; CLAP from the declared range), and `device.setParam` carries
 //      `norm` always and `real` when the descriptor has a range (ADR-0057).
@@ -62,13 +62,17 @@
 //      the plugin last reported writes nothing: a latency restart, or a
 //      plugin echoing the state our undo just loaded into it.
 //
-// A snapshot's bytes travel beside the requests, not in them: `takeBlobs` or
-// `writeBlobs` puts them in `state_blobs` BEFORE the caller commits, and the
-// foreign key refuses a commit that forgot.
+// With attachSession, one completed common gesture is offered per output
+// vector. Requests carry a sealed capturedTransaction owning guards/resources;
+// ordinary OpJournal::commit installs its state blobs atomically. Refusal and
+// cancellation remain owned and inspectable. writeBlobs stages without SQL;
+// takeBlobs returns a copy and cannot release the retained resources.
+// Standalone attach preserves the earlier unsealed packet/blob interface.
 #pragma once
 
 #include "adi/engine/param_edits.hpp"
 #include "adi/ops.hpp"
+#include "adi/gesture_presentation.hpp"
 #include "juce/device_model.hpp"
 
 #include <cstddef>
@@ -90,8 +94,9 @@ namespace adi::engine {
 
 class Session;
 
-/// ADR-0142: the bytes a `device.loadState` request names. Written to
-/// `state_blobs` before the requests are committed.
+/// ADR-0142: owned bytes named by a device.loadState request. Session-bound
+/// copies are diagnostic/staging values; the sealed journal packet owns the
+/// resources inserted in its transaction. Standalone callers install them.
 struct StateBlob {
     std::string hash;                 ///< BLAKE3, 64 lowercase hex digits
     std::vector<std::uint8_t> bytes;
@@ -109,6 +114,18 @@ struct AppliedDeliveryStatus {
     std::string error;
 };
 
+/// Immutable value observation of an internally retained common gesture.
+/// The owner token is core-issued; retaining this snapshot never retains SQL.
+struct PendingParameterGesture {
+    std::shared_ptr<const gesture::OwnerToken> owner;
+    std::int64_t deviceId = 0;
+    std::string parameterId; // empty for a whole-device state gesture
+    gesture::State state = gesture::State::Open;
+    CapturedSubmissionPhase submission = CapturedSubmissionPhase::Offered;
+    gesture::Status status;
+    std::vector<OpRequest> requests;
+};
+
 class ParamOps {
 public:
     explicit ParamOps(std::int32_t ringCapacity = 1024);
@@ -117,6 +134,15 @@ public:
     ParamOps& operator=(const ParamOps&) = delete;
 
     // --- message thread -----------------------------------------------------
+    /// Session-bound capture retains ownership after offering legacy packets.
+    /// Failed submit/cancel stays discoverable; retry never resubmits Durable.
+    [[nodiscard]] std::vector<PendingParameterGesture> pendingGestures() const;
+    gesture::CommitOutcome commitPending(const gesture::OwnerToken&, std::int64_t nowMs);
+    gesture::CommitOutcome retryPendingCommit(const gesture::OwnerToken&, std::int64_t nowMs);
+    gesture::CancelOutcome cancelPending(const gesture::OwnerToken&, std::int64_t nowMs);
+    gesture::CancelOutcome retryPendingCancel(const gesture::OwnerToken&, std::int64_t nowMs);
+    gesture::DrainOutcome pumpGestures(std::int64_t nowMs);
+
 
     /// N7, engine lift of 537c56d: synchronous window producer, separate from
     /// every plug-in callback ring. Values reach the plug-in immediately;
@@ -128,12 +154,15 @@ public:
     bool uiEvent(std::int64_t deviceId, const std::string& paramId, ParamEventKind,
                  double value, std::int64_t nowMs, std::vector<OpRequest>& out);
 
-    /// Give a device a ring, seed the ring with every parameter's current
-    /// value, and install the sink. False when the device is already attached.
+    /// Standalone compatibility: seed one borrowed sink/ring. Device must
+    /// outlive this frontend or be detached with caller-proven quiescence.
+    /// False when the device is already attached. Prefer attachSession for
+    /// owned callback bindings and the common gesture lifecycle.
     bool attach(std::int64_t deviceId, device::DeviceInstance& inst);
 
-    /// Unhook the sink. The ring stays allocated: the device's producer thread
-    /// may be inside `push` right now.
+    /// Unpublish input without waiting. Session-bound rings/fences/instances
+    /// remain retained for in-flight capture and restoration. Reattachment
+    /// defers while a prior callback is announced; it preserves queued input.
     void detach(std::int64_t deviceId);
 
     /// Attach every loaded, non-retired entry of a session that is not yet
@@ -141,21 +170,20 @@ public:
     /// live automation override. Returns new attachments; call after refresh.
     std::size_t attachSession(Session& s);
 
-    /// N47: source notifications only enqueue owned committed batches. Drain
-    /// retries before capturing new producer events, using the same owner
-    /// clock as echo guards. A refused suffix and all later batches stay FIFO.
+    /// N47: source notifications only enqueue owned committed batches. Before
+    /// destructive delivery, transfer pending parameter/state input into owned
+    /// common gestures. A refused suffix and later batches remain FIFO.
     /// SQL success is never changed by a runtime refusal. Repeated attachSession
     /// on the same source preserves this queue and its acknowledged cursor.
     [[nodiscard]] AppliedDeliveryStatus retryApplied(std::int64_t nowMs);
     [[nodiscard]] const AppliedDeliveryStatus& appliedDeliveryStatus() const noexcept;
 
-    /// Drain every ring into `device.setParam` requests, appended to `out`.
-    /// Returns how many requests were appended. The caller commits them; the
-    /// devices already hold the values, so nothing is sent back.
-    ///
-    /// A device whose `stateEpoch` moved since the last drain is snapshotted
-    /// (decisions 5 to 8): `device.loadState` requests whose bytes wait in
-    /// `takeBlobs`. Commit everything one drain appended as ONE transaction.
+    /// Session-bound: retain all observed input, then offer at most one
+    /// completed gesture into an empty vector. Later gestures remain FIFO;
+    /// Refused requires explicit retry, Durable is never offered again.
+    /// Ordinary OpJournal::commit consumes the complete typed group. The
+    /// return is the number of appended requests. Standalone compatibility
+    /// drains legacy edits/state packets together and uses takeBlobs/writeBlobs.
     std::size_t drain(std::int64_t nowMs, std::vector<OpRequest>& out);
 
     /// Snapshot one device now, signalled or not: a preset our own browser
@@ -167,13 +195,14 @@ public:
     std::size_t snapshot(std::int64_t deviceId, std::int64_t nowMs,
                          std::vector<OpRequest>& out);
 
-    /// The bytes behind every `device.loadState` request appended since the
-    /// last call, moved out. The caller writes them to `state_blobs` first.
+    /// Session-bound: copy the first offered group's retained resources.
+    /// Taking/dropping this copy cannot release common ownership. Standalone:
+    /// move out the legacy blob staging vector for caller installation.
     [[nodiscard]] std::vector<StateBlob> takeBlobs();
 
-    /// `takeBlobs`, written: INSERT OR IGNORE into `state_blobs` (the hash is
-    /// the key, so a blob already there is the same bytes). False with
-    /// `error` set when the store refused; the blobs are then dropped.
+    /// Session-bound: validate the source and stage only, with zero SQL
+    /// writes; ordinary typed commit installs resources atomically. Standalone:
+    /// INSERT OR IGNORE legacy blobs, returning false/error on write failure.
     bool writeBlobs(Store& store, std::string& error);
 
     /// A `device.setParam` payload that something else wrote -- an undo, the
@@ -217,7 +246,7 @@ public:
         std::int64_t statesCleared = 0;      ///< skipped: the payload clears the row
         std::int64_t statesRefused = 0;      ///< the blob was missing, or the plugin refused it
     };
-    [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
+    [[nodiscard]] const Stats& stats() const noexcept;
     [[nodiscard]] const ParamEditCapture::Stats* captureStats(std::int64_t deviceId) const noexcept;
     [[nodiscard]] const ParamEditCapture::Stats* uiCaptureStats(std::int64_t deviceId) const noexcept;
     [[nodiscard]] bool isAttached(std::int64_t deviceId) const noexcept;
@@ -229,68 +258,11 @@ public:
 
     /// How close is "the same value" for `applied` (decision 3). Default 1e-6,
     /// the capture's own echo tolerance.
-    void setTolerance(double t) noexcept { tolerance_ = t > 0.0 ? t : 0.0; }
+    void setTolerance(double t) noexcept;
 
 private:
-    /// One state stream of a device, as the glue last saw it.
-    struct Role {
-        std::string hash;                    ///< of the chunk the plugin last reported
-        bool recorded = false;               ///< a `plugin_state` row exists for it
-        std::vector<std::uint8_t> baseline;  ///< decision 6: kept while `!recorded`
-    };
-    struct Attached {
-        struct StateAcknowledgement {
-            std::uint64_t epoch = 0;
-            std::vector<double> parameters;
-        };
-        device::DeviceInstance* inst = nullptr;
-        Session* session = nullptr; // dereference only while sessionLife is live
-        std::weak_ptr<const void> sessionLife;
-        std::unique_ptr<ParamEditCapture> capture;   ///< stable address: the device holds it
-        std::unique_ptr<ParamEditCapture> uiCapture; ///< message thread, never handed to the device
-        std::set<std::int32_t> uiExplicit, uiPending;
-        std::string name;
-        bool active = false;
-        std::uint64_t seenEpoch = 0;
-        std::map<std::string, Role> roles;
-        std::vector<double> mirror;   ///< per index: where rows and plugin last agreed
-        std::optional<StateAcknowledgement> stateAcknowledgement;
-    };
-    /// What the project already holds for a device, when a session knows it.
-    struct Recorded {
-        std::set<std::string> stateRoles;
-        std::set<std::string> paramIds;
-    };
-    bool attachImpl(std::int64_t deviceId, device::DeviceInstance& inst, const Recorded* rec,
-                    Session* session = nullptr);
-    std::size_t emitEdits(std::int64_t id, Attached& a, std::vector<OpRequest>& out, bool fromUi = false);
-    std::size_t drainUi(std::int64_t id, Attached&, std::int64_t nowMs, std::vector<OpRequest>& out);
-    std::size_t flushUi(std::int64_t id, Attached&, std::int64_t nowMs, std::vector<OpRequest>& out);
-    void cancelUi(std::int64_t id, Attached&, std::int32_t index);
-    bool appliedImpl(const Payload&, std::int64_t nowMs, bool fromUi,bool fromReceipt=false);
-    bool appliedStateBytes(const Payload&, std::span<const std::byte>, bool hasBytes, std::int64_t nowMs);
-    void discardExpiredSessions();
-    void followApplied(Session&);
-    void stampOwnGroup(std::int64_t,Attached&,std::vector<OpRequest>&,std::size_t first,bool state);
-    void acknowledgeState(Attached&, std::uint64_t epoch);
-    void settleStateAcknowledgement(Attached&);
-    std::size_t snapshotOne(std::int64_t id, Attached& a, std::vector<OpRequest>& out, bool save);
-    void rereadParams(std::int64_t id, Attached& a);
-    [[nodiscard]] static std::string hashOf(const std::vector<std::uint8_t>& bytes);
-    [[nodiscard]] static std::int32_t indexOf(const device::DeviceInstance& inst,
-                                              const std::string& paramId) noexcept;
-    static void fillRequest(OpRequest& r, std::int64_t deviceId, const std::string& name,
-                            const device::ParamDescriptor& d, double norm);
-
-    std::map<std::int64_t, Attached> devices_;
-    std::set<std::pair<std::int64_t, std::int32_t>> touched_;   ///< decision 4
-    std::vector<ParamEdit> scratch_;
-    std::vector<StateBlob> blobs_;
-    std::int32_t capacity_;
-    double tolerance_ = 1e-6;
-    Stats stats_;
-    struct Replay;
-    std::unique_ptr<Replay> replay_;
+    struct Runtime;
+    std::shared_ptr<Runtime> runtime_;
 };
 
 }  // namespace adi::engine

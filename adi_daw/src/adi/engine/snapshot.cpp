@@ -146,14 +146,14 @@ const AutomationLaneNode* Snapshot::findAutomationLane(std::int64_t id) const no
 // --- building --------------------------------------------------------------------
 
 std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
-                                                    const std::set<std::int64_t>& overridden) {
+                                                    const std::set<std::int64_t>& overridden, bool probeMediaFiles) {
     Snapshot empty;
-    return fromStore(store, empty, overridden);
+    return fromStore(store, empty, overridden, probeMediaFiles);
 }
 
 std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                                                      const Snapshot& previous,
-                                                     const std::set<std::int64_t>& overridden) {
+                                                     const std::set<std::int64_t>& overridden, bool probeMediaFiles) {
     auto snap = std::make_unique<Snapshot>();
     snap->transport=readTransportSettings(store);
     snap->cue=readCueSettings(store);
@@ -531,7 +531,8 @@ std::unique_ptr<Snapshot> SnapshotBuilder::fromStore(const Store& store,
                 node.missing=true;
                 if(media.executeStep()) {
                     node.mediaId=media.getColumn(0).getInt64();
-                    if(media.getColumn(3).getInt()==0) {
+                    if(media.getColumn(3).getInt()==0 && !probeMediaFiles)node.missing=false;
+                    else if(media.getColumn(3).getInt()==0) {
                         std::error_code ec;bool present=false;
                         if(!media.getColumn(1).isNull()) {
                             const auto relative=media::pathFromUtf8(media.getColumn(1).getString());

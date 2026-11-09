@@ -800,11 +800,18 @@ bool noteSetVelocityInverse(OpContext& c, const Payload& p, Payload& inv, std::s
 
 bool tempoInsertApply(OpContext& c, const Payload& p, std::string& err) {
     try {
-        SQLite::Statement st(c.db,
-            "INSERT INTO tempo_map(pos_ticks, bpm, curve) VALUES (?,?,?)");
+        const bool explicitId = p.contains("id");
+        const bool explicitTension = p.contains("tension");
+        std::string columns = "pos_ticks,bpm,curve", slots = "?,?,?";
+        if (explicitId) { columns += ",id"; slots += ",?"; }
+        if (explicitTension) { columns += ",tension"; slots += ",?"; }
+        SQLite::Statement st(c.db, "INSERT INTO tempo_map(" + columns + ") VALUES(" + slots + ")");
         st.bind(1, p.at("pos").get<std::int64_t>());
         st.bind(2, p.at("bpm").get<double>());
         st.bind(3, p.value("curve", std::int64_t{0}));
+        int parameter = 3;
+        if (explicitId) st.bind(++parameter, p.at("id").get<std::int64_t>());
+        if (explicitTension) st.bind(++parameter, p.at("tension").get<double>());
         st.exec();
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
@@ -825,13 +832,15 @@ bool tempoRemoveApply(OpContext& c, const Payload& p, std::string& err) {
 }
 bool tempoRemoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
     try {
-        SQLite::Statement st(c.db, "SELECT bpm, curve FROM tempo_map WHERE pos_ticks = ?");
+        SQLite::Statement st(c.db, "SELECT bpm, curve, id, tension FROM tempo_map WHERE pos_ticks = ?");
         st.bind(1, p.at("pos").get<std::int64_t>());
         if (!st.executeStep()) { err = "no tempo event to capture"; return false; }
         inv = Payload::object();
         inv["pos"] = p.at("pos");
         inv["bpm"] = st.getColumn(0).getDouble();
         inv["curve"] = st.getColumn(1).getInt64();
+        inv["id"] = st.getColumn(2).getInt64();
+        inv["tension"] = st.getColumn(3).getDouble();
         return true;
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
@@ -1125,7 +1134,9 @@ constexpr Field kFNoteMute[] = {{"clip",FieldType::Int,true},{"note",FieldType::
                                 {"muted",FieldType::Bool,true}};
 constexpr Field kFTempoIns[] = {{"pos", FieldType::Int, true},
                                 {"bpm", FieldType::Real, true},
-                                {"curve", FieldType::Int, false}};
+                                {"curve", FieldType::Int, false},
+                                {"id", FieldType::Int, false},
+                                {"tension", FieldType::Real, false}};
 constexpr Field kFPos[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFSigIns[] = {{"pos", FieldType::Int, true},
                               {"num", FieldType::Int, true},

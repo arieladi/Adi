@@ -47,7 +47,10 @@ namespace adi::engine {
 class GraphTransportState {
 public:
     virtual ~GraphTransportState()=default;
-    // Called once, after adopting this graph and before running any node.
+    // Called once per actually adopted generation, before beginBlock. Apply
+    // prevalidated raw control bindings only; no allocation/lock/destruction.
+    virtual void adopted() const noexcept {}
+    // Called once per block, after adopting this graph and before any node.
     // Returned metadata lives through this block. No allocation/lock/I/O.
     [[nodiscard]] virtual const TransportInfo* beginBlock()const noexcept=0;
 };
@@ -75,6 +78,31 @@ private:
 /// current.
 class GraphHost final {
 public:
+    class PreparedGraph final {
+    public:
+        PreparedGraph(PreparedGraph&&) noexcept = default;
+        PreparedGraph& operator=(PreparedGraph&&) noexcept = default;
+        PreparedGraph(const PreparedGraph&) = delete;
+        PreparedGraph& operator=(const PreparedGraph&) = delete;
+        [[nodiscard]] bool valid() const noexcept { return value_ != nullptr && !host_.expired(); }
+        [[nodiscard]] const RealizedGraph* graph() const noexcept {
+            return value_ != nullptr ? &value_->graph() : nullptr;
+        }
+    private:
+        PreparedGraph() = default;
+        friend class GraphHost;
+        std::unique_ptr<PublishedGraph> value_;
+        std::weak_ptr<const void> host_;
+        std::uint64_t configuration_ = 0, formatEpoch_ = 0;
+        double sampleRate_ = 0.0;
+        std::int32_t maxFrames_ = 0, channels_ = 0;
+    };
+    struct PrepareResult {
+        std::unique_ptr<PreparedGraph> graph;
+        std::string error;
+        std::vector<std::string> problems;
+        [[nodiscard]] bool ok() const noexcept { return graph != nullptr; }
+    };
     struct Stats {
         std::int64_t published = 0;   ///< rebuilds that took effect
         std::int64_t refused = 0;     ///< rebuilds that never reached the audio thread
@@ -90,17 +118,28 @@ public:
 
     // --- message thread -----------------------------------------------------
 
+    /// Build a sealed ready generation without publishing. PreservePrepared
+    /// refuses incompatible reused nodes before any node is prepared.
+    [[nodiscard]] PrepareResult prepare(const rows::Model&, const RealizeOptions&,
+        double sampleRate, std::int32_t maxFrames,
+        const std::function<void(GraphPlan&)>& transformPlan = {},
+        std::shared_ptr<const GraphTransportState> transportState = {},
+        NodePreparePolicy policy = NodePreparePolicy::PrepareAll);
+    /// Consumes only on success. A stale/foreign handle or failed publication
+    /// preflight leaves the ready value owned and the running graph unchanged.
+    bool publish(PreparedGraph&);
+
     /// Plan, realise, prepare and publish. Returns false with `error()` set
     /// when the model cannot be realised.
     ///
-    /// **A FAILED REBUILD DOES NOT DISTURB THE RUNNING GRAPH.** Nothing is
-    /// published until the new graph has been prepared successfully, so a
-    /// model with a cycle or no master leaves the session playing exactly what
-    /// it was playing. The alternative — swap first, discover second — turns a
-    /// bad edit into silence.
+    /// Nothing is published until preparation succeeds. A bad plan leaves the
+    /// current graph playing. PreservePrepared additionally protects its shared
+    /// nodes from preparation side effects; PrepareAll is the explicit initial
+    /// or format/shape-change path, with device reactivation owned by the caller.
     bool rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
                  std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan = {},
-                 std::shared_ptr<const GraphTransportState> transportState = {});
+                 std::shared_ptr<const GraphTransportState> transportState = {},
+                 NodePreparePolicy policy = NodePreparePolicy::PrepareAll);
 
     /// Free retired graphs the audio thread has demonstrably moved past. Call
     /// it on the same timer that polls the coalescer; it never blocks audio.
@@ -139,7 +178,11 @@ public:
     /// scales with it: `channels * (delay + headroom) * 4` bytes per edge (`* 8`
     /// in a graph at 64, ADR-0207 d2), so
     /// 512 KiB of headroom per stereo edge at 384 kHz.
-    void setLatencyHeadroom(std::int32_t n) noexcept { headroom_ = n > 0 ? n : 0; }
+    void setLatencyHeadroom(std::int32_t n) noexcept {
+        const auto value = n > 0 ? n : 0;
+        if (headroom_ != value) ++configuration_;
+        headroom_ = value;
+    }
     [[nodiscard]] std::int32_t latencyHeadroom() const noexcept { return headroom_; }
 
     /// The Processing Precision every graph is built at (ADR-0207 d2), kept on
@@ -149,10 +192,16 @@ public:
     bool setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,
                               std::uint32_t minimumNodes,RenderWorkers::Initializer initialize=nullptr,
                               void* context=nullptr) noexcept;
-    void setPrecision(Precision p) noexcept { precision_ = p; }
+    void setPrecision(Precision p) noexcept {
+        if (precision_ != p) ++configuration_;
+        precision_ = p;
+    }
     [[nodiscard]] Precision precision() const noexcept { return precision_; }
     /// Message-thread policy for the next graph, like Processing Precision.
-    void setDelayCompensation(bool on) noexcept { delayCompensation_=on; }
+    void setDelayCompensation(bool on) noexcept {
+        if (delayCompensation_ != on) ++configuration_;
+        delayCompensation_=on;
+    }
     [[nodiscard]] bool delayCompensation() const noexcept { return delayCompensation_; }
     /// What a graph built at `sampleRate` gets (ADR-0157 d3).
     [[nodiscard]] std::int32_t latencyHeadroomAt(double sampleRate) const noexcept;
@@ -206,7 +255,11 @@ private:
     /// one merge walk over two sorted edge lists. Returns edges carried.
     std::int32_t handover(const PublishedGraph& from, const PublishedGraph& to) noexcept;
 
+    std::shared_ptr<const void> identity_ = std::make_shared<const int>(0);
     Pub pub_;
+    std::uint64_t configuration_ = 0, formatEpoch_ = 0;
+    double publishedSampleRate_ = 0.0;
+    std::int32_t publishedMaxFrames_ = 0, publishedChannels_ = 0;
     Stats stats_;
     std::string error_;
     std::vector<std::string> problems_;

@@ -34,9 +34,10 @@ SQLite BLOB or decoder buffer.
 
 The Session retains the Store's revocable connection identity.
 `ParamOps::attachSession` subscribes once. Its callback queues the immutable
-notice; it calls no plug-in. The ordinary `drain(nowMs)` first retries pending
-delivery on the owner thread, using that clock for the existing echo guards,
-then captures new producer events. `uiEvent` uses the same drain path. A direct
+notice; it calls no plug-in. The ordinary `drain(nowMs)` first secures newly
+accepted capture input, then retries pending delivery on the owner thread,
+using that clock for the existing echo guards. HI-01's retained gesture owner
+keeps newer input audible across older receipts. `uiEvent` uses the same path. A direct
 owner may also call `retryApplied(nowMs)` and inspect `appliedDeliveryStatus()`.
 A Session without ParamOps has no parameter delivery sink.
 
@@ -59,9 +60,10 @@ does not establish that a parameter row exists in a Store.
 
 An own successful submission needs acknowledgement without replaying an
 opener or reloading an already heard preset. ParamOps stamps an opaque transient
-producer proof on its complete emitted interval for one device. Multiple
-completed gestures and a preset captured in one drain share the final runtime
-witness. The journal carries that proof
+producer proof on its complete emitted interval for one device. Session-bound
+capture offers one owned gesture per transaction; later accepted input has its
+own ordering identity and cannot be overwritten by an older acknowledgment.
+Standalone legacy capture may still group multiple completed edits. The journal carries that proof
 only on the corresponding normal-commit receipt; it is never part of the
 payload or saved history. The parameter owner recognises its private witness
 and checks the complete unchanged group, source and attachment before skipping
@@ -92,7 +94,8 @@ the same. Failed Save As preserves the existing source. The replacement token
 proves its immediate predecessor through `isReplacementOf`; reopening a file,
 equal filenames and an unrelated Store do not supply that proof.
 
-A healthy consumer with an empty receipt queue may follow that exact Save As
+A healthy consumer with an empty receipt queue and no open gesture, callback
+reservation or capture fault may follow that exact Save As
 replacement before any new-domain commit. It keeps the same instances, rings
 and capture state while rotating its subscription. If pending work was discarded,
 a notification was missed, or an observer failed, refreshing the same Session
@@ -137,7 +140,9 @@ contains no previous audible value. Replay cannot reconstruct that value.
 Producers that need first-touch Undo must capture the opener and final edit
 together, as ParamOps already does, or edit an existing recorded row.
 
-This feed does not repair a caller that discards a captured request vector after
-a failed SQL commit. Owned pending gesture batches, commit-failure retry/cancel,
-the common GestureSession, navigation leases and preview adapters are HI-01's
-next item. Measured Live interaction parity remains a separate reading.
+HI-01's [common gesture owner](ENGINE-GESTURES.md) retains session-bound input
+when a caller drops an offer or SQL refuses it. Its transient typed capability
+binds the exact offered vector and atomic state resources; explicit retry or
+cancel remains available after failure. Raw unrelated packets and standalone
+legacy capture do not acquire that ownership merely by carrying an N47 proof.
+Measured Live interaction parity remains a separate reading.

@@ -29,6 +29,7 @@
 #include "../../tests/temp_directory.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
 
 #include <pluginterfaces/vst/ivstcomponent.h>
 #include <pluginterfaces/vst/ivsteditcontroller.h>
@@ -831,8 +832,14 @@ void fixtureState(adi::device::Vst3Host& host) {
     check(patchOf(*v3) == 7 && std::fabs(driveOf(*v3) - 0.45) < 1e-6,
           "JUCE re-read the parameters: patch 7, Drive 0.45 -- got " + std::to_string(patchOf(*v3)) + ", " +
               std::to_string(driveOf(*v3)));
+    const auto callbackHead = j.headSeq();
+    check(!adi::History(*store).undo().ok && !store->saveAs(scratch.path() / "inflight.adi").ok &&
+              j.headSeq() == callbackHead,
+          "HI-01 real unmuted VST3 restart fences navigation before the owner drains it");
     std::vector<adi::OpRequest> out;
     ops.drain(1000, out);
+    check(!out.empty() && out.front().capturedTransaction && !adi::History(*store).undo().ok,
+          "HI-01 actual VST3 preset transfers its callback reservation to a typed retained gesture");
     long long loads = 0, sets = 0;
     for (const auto& r : out) (r.opType == "device.loadState" ? loads : sets) += 1;
     check(loads == 2 && sets == 0,
@@ -842,9 +849,16 @@ void fixtureState(adi::device::Vst3Host& host) {
     check(cs != nullptr && cs->absorbed >= 1,
           "the preset's value broadcasts were absorbed into it: " + std::to_string(cs ? cs->absorbed : -1));
     std::string err;
-    check(ops.writeBlobs(*store, err), "the chunks are written to state_blobs: " + err);
+    const auto changesBeforeStaging = sqlite3_total_changes64(store->db().getHandle());
+    const auto blobsBeforeStaging = store->db().execAndGet("SELECT count(*) FROM state_blobs").getInt64();
+    check(ops.writeBlobs(*store, err), "the complete VST3 chunks are staged for their transaction: " + err);
+    check(sqlite3_total_changes64(store->db().getHandle()) == changesBeforeStaging &&
+              store->db().execAndGet("SELECT count(*) FROM state_blobs").getInt64() == blobsBeforeStaging,
+          "HI-01 unchanged writeBlobs bridge performs zero SQL before ordinary journal admission");
     const adi::CommitResult res = j.commit(out);
     check(res.ok, "and the pair commits as one transaction: " + res.error);
+    check(ops.retryApplied(1100).state == adi::engine::AppliedDeliveryState::Idle,
+          "HI-01 actual VST3 own preset receipt acknowledges without another state capture");
     const std::string presetHash = out.size() == 2 ? out[1].payload.value("hash", std::string()) : "";
     check(!presetHash.empty() && rowHash() == presetHash, "plugin_state holds the preset's chunk");
 
@@ -863,11 +877,11 @@ void fixtureState(adi::device::Vst3Host& host) {
     const adi::History::Result u = h.undo();
     check(u.ok, "undone: " + u.error);
     const std::uint64_t muted0 = v3->mutedStateSignals();
-    int loadedBack = 0;
-    for (const auto& op : j.recent(2))
-        if (op.opType == "device.loadState" && op.inverse && ops.appliedState(*store, *op.inverse, 2000))
-            ++loadedBack;
-    check(loadedBack == 1, "one inverse loaded a chunk back, the other cleared the row: " + std::to_string(loadedBack));
+    const auto loadsBeforeUndo = ops.stats().statesApplied;
+    check(ops.retryApplied(2000).state == adi::engine::AppliedDeliveryState::Idle,
+          "HI-01 actual journal Undo reaches VST3 automatically through the ordered receipt");
+    check(ops.stats().statesApplied == loadsBeforeUndo + 1,
+          "one actual inverse loads a chunk while its paired clear preserves row absence");
     check(patchOf(*v3) == 0 && std::fabs(driveOf(*v3) - 0.2) < 1e-6,
           "the undo reached the plugin: patch 0, Drive 0.2 -- got " + std::to_string(patchOf(*v3)) + ", " +
               std::to_string(driveOf(*v3)));
@@ -883,9 +897,8 @@ void fixtureState(adi::device::Vst3Host& host) {
     // --- redo, then a drag on top of the preset ----------------------------------
     const adi::History::Result rd = h.redo();
     check(rd.ok, "redone: " + rd.error);
-    const std::vector<adi::OpJournal::LoggedOp> fwd = j.recent(2);
-    for (auto it = fwd.rbegin(); it != fwd.rend(); ++it)
-        if (it->opType == "device.loadState") ops.appliedState(*store, it->payload, 2300);
+    check(ops.retryApplied(2300).state == adi::engine::AppliedDeliveryState::Idle,
+          "HI-01 actual journal Redo reaches the VST3 through its forward receipt");
     check(patchOf(*v3) == 7, "redo: patch 7 again");
     ec->setParamNormalized(4001 /* kGestureTrigger */, 1.0);    // drags Drive from 0.45 to 0.7
     std::vector<adi::OpRequest> drag;
@@ -893,6 +906,8 @@ void fixtureState(adi::device::Vst3Host& host) {
     check(drag.size() == 2 && std::fabs(drag[0].payload.value("norm", -1.0) - 0.45) < 1e-6,
           "the drag starts where the preset put Drive: the opener is 0.45");
     check(j.commit(drag).ok, "and commits");
+    check(ops.retryApplied(2500).state == adi::engine::AppliedDeliveryState::Idle,
+          "HI-01 controller gesture receipt releases its completed common owner");
     {
         adi::engine::Session s3;
         check(s3.load(*store, loader, adi::engine::SessionSpec{}), "a third session loads: " + s3.error());
@@ -901,6 +916,31 @@ void fixtureState(adi::device::Vst3Host& host) {
               "the chunk loaded, and the one row it disagrees with went on top");
         check(d3 != nullptr && patchOf(*d3) == 7 && std::fabs(driveOf(*d3) - 0.7) < 1e-6,
               "patch 7 from the chunk, Drive 0.7 from the drag -- not the chunk's 0.45");
+    }
+    std::vector<adi::OpRequest> echoes;
+    ops.drain(2600, echoes);
+    check(echoes.empty() && adi::History(*store).switchToBranch(j.currentBranchId()).ok,
+          "HI-01 muted host set/load leaves no false gesture or pending navigation reservation");
+    {
+        const auto inFlightStateSignal = v3->beginStateSignal();
+        check(!v3->captureCallbacksQuiescent() && !adi::History(*store).undo().ok,
+              "HI-01 VST3 capture binding is announced and reserves navigation before epoch publication");
+        ops.detach(100);
+        check(!v3->captureCallbacksQuiescent() && !v3->collectCaptureBindings(),
+              "HI-01 detach cannot reclaim an in-flight VST3 state callback binding");
+    }
+    check(v3->captureCallbacksQuiescent() && v3->collectCaptureBindings(),
+          "HI-01 owner reclaims the detached VST3 callback binding only after its announcement ends");
+    ops.pumpGestures(2700);
+    check(ops.attachSession(s) == 1, "HI-01 actual VST3 reattaches after quiescent binding retirement");
+    ec->setParamNormalized(4003 /* kPresetTrigger */, 1.0);
+    std::vector<adi::OpRequest> reattached;
+    ops.drain(2800, reattached);
+    check(!reattached.empty() && reattached.front().capturedTransaction,
+          "HI-01 real VST3 restart after reattach reaches the new retained binding");
+    for (const auto& pending : ops.pendingGestures()) {
+        if (pending.owner && pending.state != adi::gesture::State::Committed && pending.state != adi::gesture::State::Cancelled)
+            check(ops.cancelPending(*pending.owner, 2900).status.ok(), "HI-01 explicit final real-host capture cancellation");
     }
     ec->release();
 }

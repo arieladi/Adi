@@ -5,12 +5,16 @@
 
 #include <cmath>
 #include <cstring>
+#include <exception>
 #include <utility>
 
 namespace adi::engine {
 
 bool GraphHost::setParallelRendering(std::uint32_t workers,std::int32_t minimumFrames,std::uint32_t minimumNodes,RenderWorkers::Initializer initialize,void* context) noexcept {
     if(workers>RenderWorkers::maximum || minimumFrames<1 || minimumNodes<2)return false;
+    if (renderWorkers_ != workers || parallelMinimumFrames_ != minimumFrames ||
+        parallelMinimumNodes_ != minimumNodes || workerInitializer_ != initialize ||
+        workerInitializationContext_ != context) ++configuration_;
     renderWorkers_=workers;parallelMinimumFrames_=minimumFrames;parallelMinimumNodes_=minimumNodes;
     workerInitializer_=initialize;workerInitializationContext_=context;return true;
 }
@@ -24,41 +28,92 @@ std::int32_t GraphHost::latencyHeadroomAt(double sampleRate) const noexcept {
     return static_cast<std::int32_t>(scaled < kMax ? scaled : kMax);
 }
 
-bool GraphHost::rebuild(const rows::Model &model, const RealizeOptions &opts, double sampleRate,
-                        std::int32_t maxFrames, const std::function<void(GraphPlan &)> &transformPlan,
-                        std::shared_ptr<const GraphTransportState> transportState) {
+GraphHost::PrepareResult GraphHost::prepare(const rows::Model& model, const RealizeOptions& opts,
+        double sampleRate, std::int32_t maxFrames,
+        const std::function<void(GraphPlan&)>& transformPlan,
+        std::shared_ptr<const GraphTransportState> transportState, NodePreparePolicy policy) {
+    PrepareResult result;
     error_.clear();
-
-    GraphPlan plan = planGraph(model);
-    if (transformPlan)
-        transformPlan(plan);
-    std::unique_ptr<RealizedGraph> rg = realize(plan, opts);
-    problems_ = rg->problems();
-
-    if (!rg->ok()) {
-        error_ = rg->error();
-        ++stats_.refused;
-        return false;
+    try {
+        if (!std::isfinite(sampleRate) || sampleRate <= 0.0 || maxFrames <= 0 || opts.channels <= 0) {
+            result.error = "invalid graph preparation format";
+        } else {
+            GraphPlan plan = planGraph(model);
+            if (transformPlan) transformPlan(plan);
+            auto realized = realize(plan, opts);
+            result.problems = realized->problems();
+            if (!realized->ok()) {
+                result.error = realized->error();
+            } else {
+                auto& graph = realized->graph();
+                graph.setLatencyHeadroom(latencyHeadroomAt(sampleRate));
+                graph.setPrecision(precision_);
+                graph.setDelayCompensation(delayCompensation_);
+                graph.setNodePreparePolicy(policy);
+                (void)graph.setParallelRendering(renderWorkers_, parallelMinimumFrames_, parallelMinimumNodes_,
+                                                workerInitializer_, workerInitializationContext_);
+                graph.prepare(sampleRate, maxFrames);
+                if (!graph.ok()) {
+                    result.error = graph.error();
+                } else {
+                    auto ready = std::unique_ptr<PreparedGraph>(new PreparedGraph);
+                    ready->host_ = identity_;
+                    ready->configuration_ = configuration_;
+                    ready->formatEpoch_ = formatEpoch_;
+                    ready->sampleRate_ = sampleRate;
+                    ready->maxFrames_ = maxFrames;
+                    ready->channels_ = opts.channels;
+                    ready->value_ = std::make_unique<PublishedGraph>(std::move(realized), std::move(transportState));
+                    result.graph = std::move(ready);
+                }
+            }
+        }
+    } catch (const std::exception& exception) {
+        result.error = exception.what();
+        result.graph.reset();
     }
+    problems_ = result.problems;
+    error_ = result.error;
+    if (!result.graph) ++stats_.refused;
+    return result;
+}
 
-    rg->graph().setLatencyHeadroom(latencyHeadroomAt(sampleRate));
-    rg->graph().setPrecision(precision_);
-    rg->graph().setDelayCompensation(delayCompensation_);
-    rg->graph().setParallelRendering(renderWorkers_,parallelMinimumFrames_,parallelMinimumNodes_,workerInitializer_,workerInitializationContext_);
-    rg->graph().prepare(sampleRate, maxFrames);
-    if (!rg->graph().ok()) {
-        error_ = rg->graph().error();
-        ++stats_.refused;
-        return false;
+bool GraphHost::publish(PreparedGraph& ready) {
+    error_.clear();
+    if (!ready.value_ || ready.host_.lock() != identity_) {
+        error_ = "the ready graph is empty, expired or belongs to another host";
+    } else if (ready.configuration_ != configuration_ || ready.formatEpoch_ != formatEpoch_) {
+        error_ = "the ready graph belongs to an older host configuration";
+    } else if (!ready.value_->graph().graph().preparationCurrent()) {
+        error_ = "a ready graph node changed preparation or shape";
+    } else {
+        try {
+            // Every throwing allocation precedes exchange. The preserving
+            // publisher leaves ready.value_ owned if retirement preflight fails.
+            problems_ = ready.value_->graph().problems();
+            auto* realized = &ready.value_->graph();
+            pub_.publishPrepared(ready.value_);
+            live_ = realized;
+            if (publishedSampleRate_ != ready.sampleRate_ || publishedMaxFrames_ != ready.maxFrames_ ||
+                publishedChannels_ != ready.channels_) ++formatEpoch_;
+            publishedSampleRate_ = ready.sampleRate_;
+            publishedMaxFrames_ = ready.maxFrames_;
+            publishedChannels_ = ready.channels_;
+            ++stats_.published;
+            return true;
+        } catch (const std::exception& exception) {
+            error_ = exception.what();
+        }
     }
+    ++stats_.refused;
+    return false;
+}
 
-    // PUBLISHED LAST, and only once everything above has succeeded. Up to this
-    // line the running graph has not been touched, so a model with a cycle or
-    // no master costs a wasted build and nothing else.
-    live_ = rg.get();
-    pub_.publish(std::make_unique<PublishedGraph>(std::move(rg),std::move(transportState)));
-    ++stats_.published;
-    return true;
+bool GraphHost::rebuild(const rows::Model& model, const RealizeOptions& opts, double sampleRate,
+        std::int32_t maxFrames, const std::function<void(GraphPlan&)>& transformPlan,
+        std::shared_ptr<const GraphTransportState> transportState, NodePreparePolicy policy) {
+    auto result = prepare(model, opts, sampleRate, maxFrames, transformPlan, std::move(transportState), policy);
+    return result.graph != nullptr && publish(*result.graph);
 }
 
 std::size_t GraphHost::collect() {
@@ -167,7 +222,8 @@ void GraphHost::process(const AudioIo& io) noexcept {
         return;
     }
 
-    if (snap->seq != lastSeq_) {
+    const bool adopting = snap->seq != lastSeq_;
+    if (adopting) {
         if (lastSnap_ != nullptr && keepHistory_)
             stats_.historyCarried += handover(*lastSnap_, *snap);
 
@@ -201,7 +257,10 @@ void GraphHost::process(const AudioIo& io) noexcept {
     lastSnap_ = snap;
 
     AudioIo block=io;
-    if(const auto* state=snap->transportState())block.transport=state->beginBlock();
+    if (const auto* state = snap->transportState()) {
+        if (adopting) state->adopted();
+        block.transport = state->beginBlock();
+    }
     snap->graph().graph().process(block);
     fadeIn(io);
 }

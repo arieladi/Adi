@@ -27,6 +27,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 #if defined(_MSC_VER)
@@ -208,7 +209,7 @@ public:
     std::uint64_t stateEpoch() const noexcept override {
         if (epochReadsUntilGesture_ != 0 && --epochReadsUntilGesture_ == 0) {
             // Deterministic owner-side interleaving: publish a completed input
-            // inside the witness's epoch read, before it samples pushed count.
+            // inside an owner capture pass's epoch read, before its ring drain.
             auto* self = const_cast<RuntimeDevice*>(this);
             self->broadcastParam(0, ParamEventKind::Begin, 0);
             self->values_[0].store(injectedGain_);
@@ -251,13 +252,19 @@ public:
         broadcastParam(index, ParamEventKind::End, 0);
     }
     void preset(Patch value, bool broadcasts = true) {
+        const auto signal = beginStateSignal();
+        publishPresetInsideSignal(value, broadcasts);
+    }
+    // The test owns a real public StateSignal across an explicit thread
+    // barrier. This supplies only fake SDK data, never a production hook.
+    void publishPresetInsideSignal(Patch value, bool broadcasts = true) {
         setPatch(value); pendingValid_.fill(false); ++epoch_;
         if (broadcasts) {
             broadcastParam(0, ParamEventKind::Value, value.gain);
             broadcastParam(1, ParamEventKind::Value, value.bias);
         }
     }
-    void stateEcho() noexcept { ++epoch_; }
+    void stateEcho() noexcept { const auto signal = beginStateSignal(); ++epoch_; }
     void silentPatch(Patch value) noexcept { setPatch(value); pendingValid_.fill(false); }
     bool answerOneEcho() {
         if (echoRead_ == echoCount_) return false;
@@ -428,6 +435,18 @@ struct Fixture {
         require(capture.uiEvent(7, "gain", ParamEventKind::Value, value, time + 1, requests), "move fixture gesture");
         require(capture.uiEvent(7, "gain", ParamEventKind::End, value, time + 2, requests), "end fixture gesture");
         return requests;
+    }
+    void cancelCaptured(const std::string& label) {
+        const auto pending = capture.pendingGestures();
+        check(!pending.empty(), label + ": common captured owner remains discoverable");
+        for (const auto& item : pending) {
+            if (item.state == adi::gesture::State::Committed || item.state == adi::gesture::State::Cancelled) continue;
+            require(static_cast<bool>(item.owner), label + ": retained owner token");
+            const auto cancelled = capture.cancelPending(*item.owner, ownerTime());
+            check(cancelled.status.ok() && cancelled.presentation.state == adi::gesture::PresentationState::Current,
+                  label + ": explicit cancel restores and releases ownership");
+        }
+        capture.pumpGestures(ownerTime());
     }
     bool commitPreset(Patch patch, const std::string& name) {
         device->preset(patch);
@@ -680,22 +699,49 @@ void ownReceiptAcknowledgement() {
     }
     {
         Fixture f;
-        auto requests = f.gesture(0.75);
-        require(requests.size() == 2, "tampered receipt fixture has complete opener group");
-        requests.back().payload["norm"] = 0.625;
+        const auto authentic = f.gesture(0.75);
+        require(authentic.size() == 2 && authentic.front().capturedTransaction,
+                "session-bound complete gesture carries a typed immutable offer");
+        auto changed = authentic;
+        changed.back().payload["norm"] = 0.625;
         const auto before = f.probe->sets;
-        if (!f.commit(requests, "tampered copied receipt")) return;
-        check(f.probe->sets >= before + 2, "copied proof cannot acknowledge changed payloads; literal opener and edit execute");
-        f.sound(0.3125, "tampered group's actual committed payload controls sound");
+        const auto head = OpJournal(*f.store).headSeq();
+        const auto count = OpJournal(*f.store).count();
+        const auto altered = OpJournal(*f.store).commit(changed);
+        const auto partial = OpJournal(*f.store).commit(authentic.front());
+        check(!altered.ok && !partial.ok && OpJournal(*f.store).headSeq() == head &&
+                  OpJournal(*f.store).count() == count && parameterRows(*f.store) == 0 && f.probe->sets == before,
+              "typed copied payload and partial group both refuse before SQL or runtime mutation");
+        check(authentic.front().capturedTransaction->phase() == CapturedSubmissionPhase::Offered,
+              "tampered copies cannot poison the authentic offer");
+        if (!f.commit(authentic, "authentic offer after tampered attempts")) return;
+        check(f.probe->sets == before, "authentic complete offer still acknowledges the already-heard gesture");
+        f.sound(0.375, "authentic typed offer controls final sound");
     }
     {
         Fixture f;
-        const auto requests = f.gesture(0.75);
-        require(requests.size() == 2, "partial receipt fixture has opener group");
+        auto raw = f.gesture(0.75);
+        require(raw.size() == 2, "raw fallback fixture has complete opener group");
+        f.cancelCaptured("release owner before independent raw packet");
+        for (auto& request : raw) request.capturedTransaction.reset();
+        raw.back().payload["norm"] = 0.625;
+        f.device->silentPatch({0.25, 0, 0});
         const auto before = f.probe->sets;
-        if (!f.commit(requests.front(), "only opener from copied group")) return;
-        check(f.probe->sets > before, "missing group member prevents self-acknowledgement");
-        f.sound(0.25, "incomplete group executes the sole committed opener literally");
+        if (!f.commit(raw, "raw changed packet without typed authority")) return;
+        check(f.probe->sets >= before + 2, "raw packet without typed authority applies its literal opener and changed final value");
+        f.sound(0.3125, "raw changed packet executes literal final value");
+    }
+    {
+        Fixture f;
+        auto raw = f.gesture(0.75);
+        require(raw.size() == 2, "raw partial fixture has opener group");
+        f.cancelCaptured("release owner before independent partial packet");
+        for (auto& request : raw) request.capturedTransaction.reset();
+        f.device->silentPatch({0.25, 0, 0});
+        const auto before = f.probe->sets;
+        if (!f.commit(raw.front(), "raw opener only")) return;
+        check(f.probe->sets > before, "raw partial group has no self-acknowledgement authority");
+        f.sound(0.25, "raw partial packet executes sole opener literally");
     }
     {
         Fixture f;
@@ -710,8 +756,11 @@ void ownReceiptAcknowledgement() {
         Fixture f;
         if (!f.commit(parameter(0.5), "stale receipt baseline") ||
             !f.commit(parameter(0.25), "stale receipt older agent edit")) return;
-        const auto stale = f.gesture(0.75);
-        if (!f.undo("intervening history before own commit")) return;
+        auto stale = f.gesture(0.75);
+        check(!History(*f.store).undo().ok, "completed uncommitted capture fences History before source/head changes");
+        f.cancelCaptured("cancel before independent stale raw receipt");
+        for (auto& request : stale) request.capturedTransaction.reset();
+        if (!f.undo("intervening history after explicit cancel")) return;
         f.sound(0.25, "intervening Undo changes the actual runtime");
         const auto before = f.probe->sets;
         if (!f.commit(stale, "stale prepared receipt after History")) return;
@@ -722,8 +771,12 @@ void ownReceiptAcknowledgement() {
         Fixture f;
         OpRequest rename; rename.opType = "track.rename"; rename.payload = {{"id", 1}, {"name", "Renamed probe"}};
         if (!f.commit(rename, "history-only proof baseline")) return;
-        const auto stale = f.gesture(0.75);
-        require(stale.size() == 2, "sequence-only stale proof retains its complete first-touch group");
+        auto stale = f.gesture(0.75);
+        require(stale.size() == 2, "raw historical proof retains its complete first-touch group");
+        check(!History(*f.store).undo().ok, "even unrelated History is fenced by an outstanding captured lease");
+        f.cancelCaptured("release common owner before raw historical fallback");
+        for (auto& request : stale) request.capturedTransaction.reset();
+        f.device->silentPatch({0.75, 0, 0});
         const auto image = f.device->patch();
         const auto calls = f.probe->count;
         const auto sequence = f.session.appliedNotifications().sequence();
@@ -745,7 +798,7 @@ void ownReceiptAcknowledgement() {
             if (call.accepted && call.kind == CallKind::Parameter && call.parameter == 0) values.push_back(call.value.gain);
         }
         check(values == std::vector<double>{0.5, 0.75},
-              "publication sequence alone rejects stale self-acknowledgement and executes the literal opener plus final value");
+              "raw historical packet cannot reuse revoked authority and executes literal opener plus final value");
         f.sound(0.375, "literal stale-proof delivery still converges to the unchanged final sound");
     }
     {
@@ -818,31 +871,33 @@ void pendingCaptureBoundary() {
     {
         Fixture f;
         f.device->ownGesture(0, 0.75);
-        // No state acknowledgement is pending. The first epoch read chooses
-        // ordinary draining; the second is the complete interval's witness.
-        // The hook publishes after the consumer boundary but before the
-        // witness samples pushed count, so a later counter comparison alone
-        // cannot distinguish the newer still-queued input.
+        // No state acknowledgement is pending. The first owner capture pass
+        // consumes the older gesture; retryApplied starts another capture
+        // pass before it may deliver receipts. Inject new public callbacks at
+        // that second epoch read, after the first consumer boundary. Both
+        // accepted intents must stay owned while only the older is offered.
         f.device->injectGestureOnEpochRead(2, 0.875);
         std::vector<OpRequest> older; f.capture.drain(f.ownerTime(), older);
         const auto* captured = f.capture.captureStats(7);
         check(f.device->epochGestureInjections() == 1 && captured && captured->pushed == 6 &&
                   older.size() == 2 && older.front().payload.at("norm") == 0.5 &&
                   older.back().payload.at("norm") == 0.75,
-              "witness-boundary hook queues newer input while only the older gesture is emitted");
+              "capture-pass boundary hook accepts newer input while only the older gesture is emitted");
+        check(f.capture.pendingGestures().size() == 2,
+              "input injected between capture passes becomes separately retained ownership before receipt delivery");
         const auto committed = OpJournal(*f.store).commit(older);
-        check(committed.ok, "older witness-boundary interval commits normally");
+        check(committed.ok, "older capture-pass interval commits normally");
         if (!committed.ok) return;
         const auto calls = f.probe->count;
         const auto delivered = f.capture.retryApplied(f.ownerTime());
         const auto* after = f.capture.captureStats(7);
         check(delivered.state == AppliedDeliveryState::Idle && after && after->pushed == 6 && f.probe->count == calls,
-              "queued newer input survives own acknowledgement even when its push is already in the witness counter");
+              "newer accepted input survives older typed acknowledgement after its callback pushes are already observed");
         f.sound(0.4375, "queued newer gesture stays audible across older self acknowledgement");
         std::vector<OpRequest> newer; f.capture.drain(f.ownerTime(), newer);
         check(newer.size() == 1 && newer.front().payload.at("norm") == 0.875,
               "later drain emits the still-pending newer gesture exactly once");
-        if (!f.commit(newer, "later witness-boundary gesture")) return;
+        if (!f.commit(newer, "later capture-pass gesture")) return;
         check(f.probe->count == calls, "later queued gesture acknowledges without redundant runtime delivery");
         f.sound(0.4375, "later queued gesture commit retains its actual value");
     }
@@ -857,12 +912,29 @@ void completeCaptureAcknowledgement() {
                 "begin newer UI gesture before older own commit");
         require(f.capture.uiEvent(7, "gain", ParamEventKind::Value, 0.875, f.ownerTime(), newer),
                 "accept newer UI value before older own commit");
-        check(newer.empty(), "newer explicit UI gesture remains open before its End");
+        bool sameOlderOffer = newer.empty() || newer.size() == older.size();
+        for (std::size_t index = 0; index < std::min(newer.size(), older.size()); ++index) {
+            const auto& actual = newer[index];
+            const auto& expected = older[index];
+            sameOlderOffer = sameOlderOffer && actual.capturedTransaction == expected.capturedTransaction &&
+                actual.opType == expected.opType && encodePayload(actual.payload) == encodePayload(expected.payload) &&
+                actual.targetKind == expected.targetKind && actual.targetId == expected.targetId &&
+                actual.label == expected.label && actual.selBefore == expected.selBefore &&
+                actual.runtimeProof == expected.runtimeProof && actual.actor == expected.actor &&
+                actual.actorDetail == expected.actorDetail;
+        }
+        const auto openPending = f.capture.pendingGestures();
+        check(sameOlderOffer && openPending.size() == 2 && openPending.back().requests.empty(),
+              "newer explicit UI input stays owned and unoffered while any repeated output is exactly the older capability");
         const auto before = f.probe->count;
         if (!f.commit(older, "older UI receipt with a newer open UI gesture")) return;
         check(f.probe->count == before,
               "older own acknowledgement observes newer accepted UI input without replaying the old opener");
         f.sound(0.4375, "newer open UI value stays audible through older commit acknowledgement");
+        newer.clear(); // The repeated older capability has just committed once.
+        const auto stillOpen = f.capture.pendingGestures();
+        check(stillOpen.size() == 1 && stillOpen.front().requests.empty() && !History(*f.store).undo().ok,
+              "older durable acknowledgement retains the newer unfinished UI owner and its History fence");
         require(f.capture.uiEvent(7, "gain", ParamEventKind::End, 0.875, f.ownerTime(), newer),
                 "finish newer UI gesture after older acknowledgement");
         check(newer.size() == 1 && newer.front().payload.at("norm") == 0.875,
@@ -878,56 +950,333 @@ void completeCaptureAcknowledgement() {
         Fixture f;
         f.device->ownGesture(0, 0.75);
         f.device->ownGesture(0, 0.625);
-        std::vector<OpRequest> requests; f.capture.drain(f.ownerTime(), requests);
-        std::vector<double> values;
-        for (const auto& request : requests) {
-            if (request.opType == "device.setParam") values.push_back(request.payload.at("norm").get<double>());
-        }
-        check(values == std::vector<double>{0.5, 0.75, 0.625},
-              "one drain preserves two completed gestures and their single first-touch opener");
+        std::vector<OpRequest> first; f.capture.drain(f.ownerTime(), first);
+        check(first.size() == 2 && first.front().payload.at("norm") == 0.5 && first.back().payload.at("norm") == 0.75,
+              "one legacy vector offers only the first completed gesture and its opener");
+        check(!History(*f.store).undo().ok, "owned FIFO fences History before either captured gesture commits");
         const auto before = f.probe->count;
-        if (!f.commit(requests, "two editor gestures in one capture interval")) return;
-        check(f.probe->count == before,
-              "complete capture acknowledgement does not replay earlier intermediate gesture values");
-        f.sound(0.3125, "one captured interval retains its final actual editor value");
-        if (!f.undo("combined gestures Undo")) return;
-        check(f.probe->count > before && parameterRows(*f.store) == 0,
-              "combined gesture Undo executes literal inverses and clears the opener");
-        f.sound(0.25, "combined gesture Undo restores the actual interval origin");
-        const auto undoCalls = f.probe->count;
-        if (!f.redo("combined gestures Redo")) return;
-        check(f.probe->count > undoCalls, "combined gesture Redo executes the stored values again");
-        f.sound(0.3125, "combined gesture Redo restores the final editor value");
+        const auto committed = OpJournal(*f.store).commit(first);
+        check(committed.ok, "first completed editor gesture commits separately");
+        if (!committed.ok) return;
+        check(f.capture.retryApplied(f.ownerTime()).state == AppliedDeliveryState::Idle && f.probe->count == before,
+              "older complete offer acknowledges without replaying over newer accepted input");
+        f.sound(0.3125, "newer editor value survives older gesture commit");
+        std::vector<OpRequest> second; f.capture.drain(f.ownerTime(), second);
+        check(second.size() == 1 && second.front().payload.at("norm") == 0.625,
+              "second completed gesture stays owned and is offered FIFO on the later drain");
+        if (!f.commit(second, "second editor gesture")) return;
+        check(f.probe->count == before, "separate FIFO receipts avoid redundant intermediate setters");
+        if (!f.undo("second gesture Undo")) return;
+        f.sound(0.375, "second gesture Undo restores its own preceding value");
+        if (!f.undo("first gesture Undo")) return;
+        check(parameterRows(*f.store) == 0, "first gesture Undo alone clears the first-touch row");
+        f.sound(0.25, "first gesture Undo restores original sound");
+        if (!f.redo("first gesture Redo") || !f.redo("second gesture Redo")) return;
+        check(f.probe->count > before, "History replays both stored gestures with no private acknowledgement authority");
+        f.sound(0.3125, "separate FIFO Redo reaches final editor value");
     }
     {
         Fixture f(Precision::Float64, true);
         f.device->ownGesture(0, 0.75);
         f.device->preset({0.625, 0.125, 4});
-        std::vector<OpRequest> requests; f.capture.drain(f.ownerTime(), requests);
-        std::vector<double> values;
-        std::size_t states = 0;
-        for (const auto& request : requests) {
-            if (request.opType == "device.setParam") values.push_back(request.payload.at("norm").get<double>());
-            if (request.opType == "device.loadState") ++states;
-        }
-        check(values == std::vector<double>{0.5, 0.75, 0.625} && states == 2,
-              "one drain preserves explicit gesture, state opener, preset and its parameter row-follow");
-        std::string error;
-        require(f.capture.writeBlobs(*f.store, error), "write combined gesture and preset resources");
+        std::vector<OpRequest> first; f.capture.drain(f.ownerTime(), first);
+        check(first.size() == 2 && first.front().payload.at("norm") == 0.5 && first.back().payload.at("norm") == 0.75,
+              "explicit gesture before preset is offered as its own complete vector");
         const auto before = f.probe->count;
-        if (!f.commit(requests, "explicit editor gesture then preset in one interval")) return;
-        check(f.probe->count == before,
-              "complete mixed capture acknowledgement adds no parameter setter or state reload");
-        f.sound(0.4375, "mixed interval's final preset remains audible");
-        if (!f.undo("combined gesture and preset Undo")) return;
-        check(f.probe->count > before && parameterRows(*f.store) == 0 && stateRows(*f.store) == 0,
-              "mixed interval Undo executes literal inverses and clears both first-touch rows");
-        f.sound(0.25, "mixed interval Undo restores the attach-time sound");
-        const auto undoSets = f.probe->sets, undoLoads = f.probe->loads;
-        if (!f.redo("combined gesture and preset Redo")) return;
-        check(f.probe->sets > undoSets && f.probe->loads > undoLoads,
-              "mixed interval Redo performs actual parameter and state delivery");
-        f.sound(0.4375, "mixed interval Redo restores the final preset");
+        const auto firstCommit = OpJournal(*f.store).commit(first);
+        check(firstCommit.ok, "older scalar before preset commits");
+        if (!firstCommit.ok) return;
+        check(f.capture.retryApplied(f.ownerTime()).state == AppliedDeliveryState::Idle && f.probe->count == before,
+              "older scalar receipt cannot overwrite the later captured preset");
+        f.sound(0.4375, "later preset remains audible through older scalar receipt");
+        std::vector<OpRequest> preset; f.capture.drain(f.ownerTime(), preset);
+        std::size_t states = 0;
+        for (const auto& request : preset) if (request.opType == "device.loadState") ++states;
+        check(states == 2 && !preset.empty(), "next vector retains state opener and complete preset packet");
+        const auto blobs = f.store->db().execAndGet("SELECT count(*) FROM state_blobs").getInt64();
+        const auto changes = sqlite3_total_changes64(f.store->db().getHandle());
+        std::string error;
+        require(f.capture.writeBlobs(*f.store, error), "stage native preset resources");
+        check(f.store->db().execAndGet("SELECT count(*) FROM state_blobs").getInt64() == blobs &&
+                  sqlite3_total_changes64(f.store->db().getHandle()) == changes,
+              "session-bound writeBlobs stages complete resources with zero SQL writes");
+        if (!f.commit(preset, "separate preset gesture")) return;
+        check(f.probe->count == before, "preset own receipt adds no state reload or parameter setter");
+        if (!f.undo("preset gesture Undo")) return;
+        check(stateRows(*f.store) == 0 && parameterRows(*f.store) == 1,
+              "preset Undo clears its state opener while preserving preceding scalar transaction");
+        f.sound(0.375, "preset Undo restores the preceding committed scalar sound");
+        if (!f.undo("preceding scalar Undo")) return;
+        check(parameterRows(*f.store) == 0, "earlier scalar Undo clears its own opener");
+        f.sound(0.25, "separate mixed gestures restore original sound");
+        if (!f.redo("preceding scalar Redo") || !f.redo("preset gesture Redo")) return;
+        check(f.probe->count > before, "mixed History performs actual state and parameter delivery");
+        f.sound(0.4375, "mixed FIFO Redo restores final preset");
+    }
+}
+
+void capturedOwnershipAndResources() {
+    {
+        Fixture f;
+        const auto allocations = callbackAllocations.load();
+        const auto fileIo = audio::callbackFileIo.load();
+        const auto sqlChanges = sqlite3_total_changes64(f.store->db().getHandle());
+        {
+            audio::CallbackScope callback;
+            f.device->preset({0.75, 0.0625, 12});
+        }
+        check(callbackAllocations.load() == allocations && audio::callbackFileIo.load() == fileIo &&
+                  sqlite3_total_changes64(f.store->db().getHandle()) == sqlChanges && !audio::onAudioThread,
+              "state and parameter callback reservations allocate nothing, write no SQL and perform no file I/O");
+        check(!History(*f.store).undo().ok, "unmuted callback state signal fences History before any owner snapshot");
+        std::vector<OpRequest> offered; f.capture.drain(f.ownerTime(), offered);
+        check(!offered.empty() && offered.front().capturedTransaction,
+              "callback state and parameter watermarks transfer into a complete owned preset");
+        f.cancelCaptured("release callback state capture");
+        f.sound(0.25, "callback preset cancel restores origin");
+    }
+    {
+        Fixture f;
+        if (!f.commit(parameter(0.5), "queued input navigation baseline")) return;
+        f.device->ownGesture(0, 0.75);
+        const auto head = OpJournal(*f.store).headSeq();
+        const auto sequence = appliedSource(*f.store).sequence();
+        const auto branch = OpJournal(*f.store).currentBranchId();
+        check(!History(*f.store).undo().ok && !History(*f.store).switchToBranch(branch).ok &&
+                  !f.store->saveAs(f.directory.path() / "queued.adi").ok &&
+                  OpJournal(*f.store).headSeq() == head && appliedSource(*f.store).sequence() == sequence,
+              "undrained callback reservation fences navigation including same-head paths and Save As");
+        std::vector<OpRequest> offered; f.capture.drain(f.ownerTime(), offered);
+        check(!offered.empty() && !History(*f.store).undo().ok,
+              "draining transfers callback reservation to a retained source lease without a navigation gap");
+        f.cancelCaptured("explicitly cancel drained callback input");
+        f.sound(0.25, "cancel restores pre-gesture audible value");
+        check(History(*f.store).undo().ok, "completed cancellation releases navigation fence");
+        f.ownerDrain("cancelled input followed by real Undo");
+    }
+    {
+        Fixture f(Precision::Float64, true);
+        const auto blobs = f.store->db().execAndGet("SELECT count(*) FROM state_blobs").getInt64();
+        const auto head = OpJournal(*f.store).headSeq();
+        const auto count = OpJournal(*f.store).count();
+        f.device->preset({0.75, 0.0625, 9});
+        std::vector<OpRequest> offered; f.capture.drain(f.ownerTime(), offered);
+        require(!offered.empty() && offered.front().capturedTransaction, "preset exports typed atomic resources");
+        const auto changes = sqlite3_total_changes64(f.store->db().getHandle());
+        std::string error;
+        require(f.capture.writeBlobs(*f.store, error), "legacy bridge stages captured state blobs");
+        auto moved = f.capture.takeBlobs(); moved.clear();
+        check(sqlite3_total_changes64(f.store->db().getHandle()) == changes &&
+                  f.store->db().execAndGet("SELECT count(*) FROM state_blobs").getInt64() == blobs,
+              "writeBlobs and takeBlobs leave SQL untouched and cannot drop core-owned resources");
+        f.store->db().exec("CREATE TRIGGER reject_captured_state BEFORE INSERT ON plugin_state BEGIN SELECT RAISE(ABORT,'owned preset refusal'); END");
+        const auto rejected = OpJournal(*f.store).commit(offered);
+        check(!rejected.ok && offered.front().capturedTransaction->phase() == CapturedSubmissionPhase::Refused &&
+                  OpJournal(*f.store).headSeq() == head && OpJournal(*f.store).count() == count &&
+                  stateRows(*f.store) == 0 && f.store->db().execAndGet("SELECT count(*) FROM state_blobs").getInt64() == blobs,
+              "late captured commit refusal rolls resources, material, head and journal back atomically");
+        check(!OpJournal(*f.store).commit(offered).ok && !History(*f.store).undo().ok,
+              "refused offer remains fenced and cannot be implicitly resubmitted");
+        f.sound(0.4375, "refused preset remains heard and owned");
+        const auto pending = f.capture.pendingGestures();
+        require(pending.size() == 1 && pending.front().owner, "refused preset remains discoverable after caller drops resources");
+        f.store->db().exec("DROP TRIGGER reject_captured_state");
+        const auto retried = f.capture.retryPendingCommit(*pending.front().owner, f.ownerTime());
+        check(retried.status.ok() && retried.durable && retried.durable->ok,
+              "explicit retry uses retained complete preset resources");
+        const auto after = OpJournal(*f.store).count();
+        check(after > count && stateRows(*f.store) == 1 &&
+                  f.store->db().execAndGet("SELECT count(*) FROM state_blobs").getInt64() > blobs,
+              "resources become durable only with their state transaction");
+        check(!f.capture.retryPendingCommit(*pending.front().owner, f.ownerTime()).status.ok() &&
+                  OpJournal(*f.store).count() == after, "durable retained owner cannot submit twice");
+        f.ownerDrain("explicit preset retry acknowledgement");
+        if (!f.undo("retried preset Undo")) return;
+        f.sound(0.25, "retried preset has one correct Undo boundary");
+    }
+    {
+        Fixture f;
+        f.device->preset({0.75, 0.0625, 10});
+        std::vector<OpRequest> offered; f.capture.drain(f.ownerTime(), offered);
+        const auto pending = f.capture.pendingGestures();
+        require(pending.size() == 1 && pending.front().owner, "state cancel fixture owns one gesture");
+        f.device->refuseStates = true;
+        const auto cancelled = f.capture.cancelPending(*pending.front().owner, f.ownerTime());
+        check(cancelled.presentation.state != adi::gesture::PresentationState::Current &&
+                  !History(*f.store).undo().ok && !f.capture.pendingGestures().empty(),
+              "SDK-refused restoration retains cancelled intent, owner and navigation lease");
+        check(!f.capture.commitPending(*pending.front().owner, f.ownerTime()).status.ok(),
+              "sticky Cancelling cannot turn into a commit");
+        f.sound(0.4375, "refused restoration leaves actual current sound observable");
+        f.device->refuseStates = false;
+        const auto restored = f.capture.retryPendingCancel(*pending.front().owner, f.ownerTime());
+        check(restored.status.ok() && restored.presentation.state == adi::gesture::PresentationState::Current &&
+                  parameterRows(*f.store) == 0 && stateRows(*f.store) == 0,
+              "explicit cancel retry restores full origin without a journal transaction");
+        f.sound(0.25, "cancel retry restores actual origin sound");
+    }
+}
+
+void concurrentCaptureBindings() {
+    {
+        Fixture f;
+        std::atomic<bool> entered{false}, release{false};
+        std::jthread producer([&](std::stop_token stop) {
+            const auto inFlight = f.device->beginStateSignal();
+            f.device->publishPresetInsideSignal({0.75, 0.0625, 13});
+            entered.store(true, std::memory_order_release);
+            // Scheduling barrier is deliberately outside allocation auditing;
+            // no production callback waits on the owner or invokes a lock.
+            while (!release.load(std::memory_order_acquire) && !stop.stop_requested()) std::this_thread::yield();
+        });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (!entered.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+        const bool arrived = entered.load(std::memory_order_acquire);
+        check(arrived, "threaded state callback reaches deterministic in-flight publication barrier");
+        if (!arrived) return; // jthread requests stop before joining.
+        check(!f.device->captureCallbacksQuiescent() && !History(*f.store).undo().ok,
+              "announced callback retains its binding and reserves source navigation before finish");
+        f.capture.detach(7);
+        const auto reboundEarly = f.capture.attachSession(f.session);
+        check(reboundEarly == 0 && !f.capture.isAttached(7) && !f.device->collectCaptureBindings(),
+              "owner detach unpublishes input and rebind defers without waiting while old callback is announced");
+        std::vector<OpRequest> premature; f.capture.drain(f.ownerTime(), premature);
+        check(premature.empty() && !History(*f.store).switchToBranch(OpJournal(*f.store).currentBranchId()).ok,
+              "unfinished state watermark cannot be snapshotted or lose its navigation reservation during detach");
+        release.store(true, std::memory_order_release); producer.join();
+        check(f.device->captureCallbacksQuiescent() && f.capture.attachSession(f.session) == 1,
+              "owner can rebind after the actual producer announcement finishes");
+        std::vector<OpRequest> retained; f.capture.drain(f.ownerTime(), retained);
+        check(!retained.empty() && retained.front().capturedTransaction && !f.capture.pendingGestures().empty() &&
+                  parameterRows(*f.store) == 0 && stateRows(*f.store) == 0,
+              "quiescent rebind preserves old callback input and its original owned cancellation baseline");
+        f.sound(0.4375, "retained concurrent preset remains audible before explicit recovery");
+        f.cancelCaptured("cancel callback retained through detach/rebind");
+        f.sound(0.25, "explicit callback recovery restores original .5 gain and zero bias");
+        check(History(*f.store).switchToBranch(OpJournal(*f.store).currentBranchId()).ok,
+              "completed recovery releases every old binding reservation and owner lease");
+        f.ownerDrain("same-head navigation after callback recovery");
+        if (!f.commit(f.gesture(0.625), "new capture after concurrent recovery")) return;
+        if (!f.undo("new capture after recovery Undo")) return;
+        f.sound(0.25, "new binding has correct origin after old cancellation");
+    }
+    {
+        // Two immutable public bindings may retain one ring through an owner
+        // exchange. Writer exclusion belongs to the ring, not either binding.
+        constexpr int eventsPerProducer = 6000;
+        auto ring = std::make_shared<ParamEditCapture>(eventsPerProducer * 2 + 1);
+        for (int index = 0; index < eventsPerProducer * 2; ++index) ring->seed(7, index, 0.0);
+        auto oldBinding = std::make_shared<device::DeviceCaptureBinding>();
+        auto newBinding = std::make_shared<device::DeviceCaptureBinding>();
+        oldBinding->deviceId = 7; oldBinding->parameters = ring;
+        newBinding->deviceId = 7; newBinding->parameters = ring;
+        auto probe = std::make_shared<Probe>(); RuntimeDevice instance(probe);
+        instance.installCaptureBinding(oldBinding);
+        std::atomic<unsigned> ready{0}; std::atomic<bool> start{false};
+        std::array<unsigned, 2> accepted{};
+        std::array<std::vector<std::uint8_t>, 2> acceptedEvents{
+            std::vector<std::uint8_t>(eventsPerProducer), std::vector<std::uint8_t>(eventsPerProducer)};
+        auto write = [&](unsigned index, const std::shared_ptr<device::DeviceCaptureBinding>& binding, std::stop_token stop) {
+            const auto announced = instance.beginStateSignal();
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire) && !stop.stop_requested()) std::this_thread::yield();
+            if (stop.stop_requested()) return;
+            for (int event = 1; event <= eventsPerProducer; ++event) {
+                const auto value = static_cast<double>(event) / eventsPerProducer;
+                const auto parameter = static_cast<std::int32_t>(index) * eventsPerProducer + event - 1;
+                if (binding->parameters->push({7, parameter, ParamEventKind::Value, value})) {
+                    ++accepted[index]; acceptedEvents[index][static_cast<std::size_t>(event - 1)] = 1;
+                }
+                if ((event % 127) == 0) std::this_thread::yield();
+            }
+        };
+        std::jthread first([&](std::stop_token stop) { write(0, oldBinding, stop); });
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (ready.load(std::memory_order_acquire) == 0 && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+        instance.detachCaptureBinding(); instance.installCaptureBinding(newBinding);
+        std::jthread second([&](std::stop_token stop) { write(1, newBinding, stop); });
+        while (ready.load(std::memory_order_acquire) != 2 && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+        const bool arrived = ready.load(std::memory_order_acquire) == 2;
+        check(arrived && !instance.captureCallbacksQuiescent() && !instance.collectCaptureBindings(),
+              "old and new binding owners survive an exchange with two actual producer announcements");
+        start.store(true, std::memory_order_release); first.join(); second.join();
+        const auto stats = ring->stats();
+        check(stats.pushed == static_cast<std::int64_t>(accepted[0] + accepted[1]) &&
+                  stats.pushed + stats.dropped == eventsPerProducer * 2 && accepted[0] != 0 && accepted[1] != 0,
+              "shared ring writer exclusion accounts for every accepted or explicitly refused concurrent publication");
+        std::vector<ParamEdit> edits; ring->drain(1000, edits); ring->drain(1200, edits);
+        std::vector<bool> seen(static_cast<std::size_t>(eventsPerProducer * 2), false);
+        bool exact = edits.size() == accepted[0] + accepted[1];
+        for (const auto& edit : edits) {
+            if (edit.paramIndex >= 0 && edit.paramIndex < eventsPerProducer * 2) {
+                const auto at = static_cast<std::size_t>(edit.paramIndex);
+                const auto producerIndex = at / static_cast<std::size_t>(eventsPerProducer);
+                const auto eventIndex = at % static_cast<std::size_t>(eventsPerProducer);
+                exact = exact && !seen[at] && acceptedEvents[producerIndex][eventIndex] != 0 && edit.before == 0 &&
+                    edit.after == static_cast<double>(eventIndex + 1) / eventsPerProducer;
+                seen[at] = true;
+            } else exact = false;
+        }
+        check(exact, "binding overlap preserves every accepted unique edit without collided slots, loss or duplication");
+        instance.detachCaptureBinding();
+        check(instance.captureCallbacksQuiescent() && instance.collectCaptureBindings(),
+              "old and new binding owners are reclaimable only after both producer threads finish");
+    }
+}
+
+void refusedCapturedFifo() {
+    for (const bool cancelOlder : {false, true}) {
+        Fixture f;
+        f.device->ownGesture(0, 0.75);
+        f.device->ownGesture(0, 0.625);
+        std::vector<OpRequest> first; f.capture.drain(f.ownerTime(), first);
+        require(first.size() == 2 && first.front().capturedTransaction, "FIFO refusal has first complete typed offer");
+        auto pending = f.capture.pendingGestures();
+        require(pending.size() == 2 && pending.front().owner, "both completed same-endpoint gestures are owned");
+        const auto firstOwner = pending.front().owner;
+        const auto calls = f.probe->count;
+        f.store->db().exec("CREATE TRIGGER reject_first_capture BEFORE INSERT ON plugin_params BEGIN SELECT RAISE(ABORT,'first FIFO refusal'); END");
+        const auto refused = OpJournal(*f.store).commit(first);
+        check(!refused.ok && first.front().capturedTransaction->phase() == CapturedSubmissionPhase::Refused &&
+                  parameterRows(*f.store) == 0 && f.capture.pendingGestures().size() == 2,
+              "first commit refusal retains both owned gestures and absent committed row");
+        check(!History(*f.store).undo().ok && !History(*f.store).switchToBranch(OpJournal(*f.store).currentBranchId()).ok,
+              "refused first plus newer owned FIFO blocks all History paths");
+        f.sound(0.3125, "newer input remains audible after older refusal");
+        std::vector<OpRequest> notReady; f.capture.drain(f.ownerTime(), notReady);
+        check(notReady.empty() && f.probe->count == calls, "ordinary tick neither retries refusal nor drops FIFO order");
+        f.store->db().exec("DROP TRIGGER reject_first_capture");
+        if (cancelOlder) {
+            const auto cancelled = f.capture.cancelPending(*firstOwner, f.ownerTime());
+            check(cancelled.status.ok() && parameterRows(*f.store) == 0,
+                  "explicit older cancel leaves actual committed endpoint absent");
+        } else {
+            const auto retried = f.capture.retryPendingCommit(*firstOwner, f.ownerTime());
+            check(retried.status.ok() && retried.durable && retried.durable->ok && storedGain(*f.store) == 0.75,
+                  "explicit older retry commits only its retained value");
+            check(f.capture.retryApplied(f.ownerTime()).state == AppliedDeliveryState::Idle,
+                  "older retried receipt is acknowledged while newer input remains owned");
+        }
+        check(f.probe->count == calls && !History(*f.store).undo().ok,
+              "older terminal action never restores over newer accepted ordinal and later owner keeps History fenced");
+        f.sound(0.3125, "newer input survives older cancel or retry");
+        std::vector<OpRequest> second; f.capture.drain(f.ownerTime(), second);
+        check(second.size() == (cancelOlder ? 2u : 1u) && !second.empty() &&
+                  second.back().payload.at("norm") == 0.625 &&
+                  (!cancelOlder || second.front().payload.at("norm") == 0.5),
+              "later FIFO reprepare derives opener from actual committed base, never cancelled intermediate input");
+        if (!f.commit(second, "later gesture after retained first refusal")) continue;
+        check(f.probe->count == calls, "later own acknowledgement adds no redundant SDK setter");
+        if (!f.undo("later FIFO Undo")) continue;
+        f.sound(cancelOlder ? 0.25 : 0.375, "later Undo restores actual prior committed sound");
+        if (cancelOlder) {
+            check(parameterRows(*f.store) == 0 && !History(*f.store).canUndo(),
+                  "cancel-first creates one undoable gesture and restores row absence");
+        } else {
+            if (!f.undo("earlier retried FIFO Undo")) continue;
+            check(parameterRows(*f.store) == 0, "second Undo separately clears first gesture opener");
+            f.sound(0.25, "retry-first preserves two exact Undo boundaries");
+        }
     }
 }
 
@@ -1142,7 +1491,9 @@ void attachmentAndRetirement() {
         require(f.session.refresh(*f.store), "refresh target removed behind refusal"); f.capture.attachSession(f.session);
         const auto retired = f.capture.retryApplied(f.ownerTime());
         check(retired.state == AppliedDeliveryState::Idle && retired.pendingBatchCount == 0 && f.probe->count == calls,
-              "known retired target acknowledges old work without retrying its obsolete instance");
+              "known retired target acknowledges old work without retrying its obsolete instance: state=" +
+                  std::to_string(static_cast<int>(retired.state)) + ", pending=" +
+                  std::to_string(retired.pendingBatchCount) + ", error=" + retired.error);
         f.sound(0.5, "retired old receipt cannot alter the current graph");
     }
     {
@@ -1271,39 +1622,43 @@ void sourceBoundaries() {
         if (!f.commit(parameter(0.5), "clean Save As recorded baseline")) return;
         auto* original = f.device;
         std::vector<OpRequest> open;
-        require(f.capture.uiEvent(7, "gain", ParamEventKind::Begin, 0.5, f.ownerTime(), open), "begin UI capture across clean Save As");
-        require(f.capture.uiEvent(7, "gain", ParamEventKind::Value, 0.75, f.ownerTime(), open), "move UI capture across clean Save As");
+        require(f.capture.uiEvent(7, "gain", ParamEventKind::Begin, 0.5, f.ownerTime(), open), "begin capture before Save As fence");
+        require(f.capture.uiEvent(7, "gain", ParamEventKind::Value, 0.75, f.ownerTime(), open), "move capture before Save As fence");
         f.device->ownGesture(1, 0.125);
-        check(open.empty(), "clean Save As begins with an open UI gesture and a separate queued editor gesture");
+        const auto source = appliedSource(*f.store);
+        const auto head = OpJournal(*f.store).headSeq();
         const auto calls = f.probe->count;
-        f.sound(0.5, "accepted open UI and queued editor values are audible before clean Save As");
-        const auto saved = f.store->saveAs(f.directory.path() / "clean.adi");
-        check(saved.ok, "clean Save As succeeds without pending committed delivery");
-        if (!saved.ok) return;
-        require(f.session.refresh(*f.store), "refresh clean direct Save As successor");
-        f.capture.attachSession(f.session);
-        f.capture.attachSession(f.session);
-        check(f.capture.appliedDeliveryStatus().state == AppliedDeliveryState::Idle && f.session.instanceFor(7) == original &&
-                  f.loaderCalls == 1 && f.probe->count == calls && storedGain(*f.store) == 0.5,
-              "proven clean Save As keeps the same instance and live capture without reload or SDK calls");
-        f.sound(0.5, "clean continuation preserves live producer values before their later commits");
+        check(open.empty(), "open UI gesture and queued editor gesture retain ownership before Save As");
+        f.sound(0.5, "open UI and queued editor values remain audible");
+        const auto refused = f.store->saveAs(f.directory.path() / "blocked.adi");
+        check(!refused.ok && !f.store->close() && appliedSource(*f.store).sameConnection(source) &&
+                  OpJournal(*f.store).headSeq() == head && storedGain(*f.store) == 0.5 && f.probe->count == calls,
+              "open and queued capture refuses Save As and explicit Close without replacing source or runtime");
         std::vector<OpRequest> queued; f.capture.drain(f.ownerTime(), queued);
         check(queued.size() == 2 && queued.front().payload.at("param") == "bias" &&
                   queued.front().payload.at("norm") == 0 && queued.back().payload.at("norm") == 0.125,
-              "clean source rotation retains the queued editor ring and its exact first-touch origin");
-        if (!f.commit(queued, "queued editor gesture after clean Save As")) return;
-        require(f.capture.uiEvent(7, "gain", ParamEventKind::End, 0.75, f.ownerTime(), open), "finish retained UI capture after Save As");
+              "refused Save As preserves queued editor gesture and first-touch origin");
+        if (!f.commit(queued, "queued editor after refused Save As")) return;
+        require(f.capture.uiEvent(7, "gain", ParamEventKind::End, 0.75, f.ownerTime(), open), "finish retained UI capture");
         check(open.size() == 1 && open.front().payload.at("norm") == 0.75,
-              "clean source rotation retains the open UI gesture until its original End");
-        if (!f.commit(open, "retained UI gesture after clean Save As")) return;
-        check(f.probe->count == calls, "own captured values acknowledge across clean Save As without redundant setters");
+              "refused Save As retains open UI gesture until its original End");
+        if (!f.commit(open, "retained UI after refused Save As")) return;
+        const auto saved = f.store->saveAs(f.directory.path() / "clean.adi");
+        check(saved.ok, "quiescent completed capture permits clean Save As");
+        if (!saved.ok) return;
+        require(f.session.refresh(*f.store), "refresh clean Save As successor");
+        f.capture.attachSession(f.session); f.capture.attachSession(f.session);
+        check(f.capture.appliedDeliveryStatus().state == AppliedDeliveryState::Idle && f.session.instanceFor(7) == original &&
+                  f.loaderCalls == 1 && f.probe->count == calls && storedGain(*f.store) == 0.75,
+              "quiescent proven successor keeps live instance and fully committed capture state");
+        f.sound(0.5, "clean continuation preserves committed parameter image");
         if (!f.undo("retained UI gesture Undo")) return;
-        f.sound(0.375, "retained UI gesture Undo restores its pre-Save As origin");
+        f.sound(0.375, "retained UI Undo restores pre-gesture gain");
         if (!f.redo("retained UI gesture Redo")) return;
-        f.sound(0.5, "retained UI gesture Redo restores its accepted final value");
-        if (!f.commit(parameter(0.625), "future parameter edit after clean Save As")) return;
-        f.sound(0.4375, "ordinary future delivery continues on the same saved instance");
-        f.sameInstance(original, "clean Save As capture continuation");
+        f.sound(0.5, "retained UI Redo restores accepted gain");
+        if (!f.commit(parameter(0.625), "future edit after clean Save As")) return;
+        f.sound(0.4375, "future delivery continues on same saved instance");
+        f.sameInstance(original, "quiescent clean Save As continuation");
     }
     {
         Fixture f;
@@ -1421,10 +1776,21 @@ void sessionAndCaptureLifetimes() {
               device->getParam("gain").normalized == 0.625,
           "explicit attachment establishes a fresh delivery connection for the replacement Session");
 
-    // The ordinary ownership order is independent: detach the subscription and
-    // callback sink while the Session-owned instance is still alive.
-    const auto before = probe->count;
+    // A public frontend can go away while its cancellation is refused. The
+    // Session keeps the runtime restoration task; its tick is the retry owner.
+    device->ownGesture(0, 0.875);
+    std::vector<OpRequest> abandoned; capture->drain(nowMs(), abandoned);
+    check(!abandoned.empty() && !capture->pendingGestures().empty(), "frontend lifetime fixture owns an uncommitted live gesture");
+    device->refuseParameters = true;
     capture.reset();
+    session->tick(nowMs());
+    check(device->getParam("gain").normalized == 0.875 && !History(*store).undo().ok,
+          "destroyed frontend transfers refused restoration and source lease to its native Session");
+    device->refuseParameters = false;
+    session->tick(nowMs()); session->tick(nowMs());
+    check(device->getParam("gain").normalized == 0.625 && storedGain(*store) == 0.625,
+          "Session owner tick finishes abandoned restoration without a live ParamOps frontend");
+    const auto before = probe->count;
     const auto later = OpJournal(*store).commit(parameter(0.25));
     check(later.ok && probe->count == before && device->getParam("gain").normalized == 0.625, "destroyed ParamOps leaves no live observer calling its former instance");
     device->ownGesture(0, 0.875);
@@ -1485,13 +1851,55 @@ void documentPath() {
     check(OpJournal(document->store()).count() == count + 2 && loaded == 1 && device == original &&
               !probe->ownerCallOnAudio && !probe->overflow,
           "unchanged document wiring emits a fresh opener and retains the actual instance");
+    const auto fifoCount = OpJournal(document->store()).count();
+    device->ownGesture(0, 0.75); device->ownGesture(0, 0.875);
+    const auto calls = probe->count;
+    document->tick(nowMs());
+    check(OpJournal(document->store()).count() == fifoCount + 1 && storedGain(document->store()) == 0.75 &&
+              probe->count == calls, "unchanged Document tick commits exactly the first completed FIFO gesture");
+    render(*document, Precision::Float32, true, 0.4375, clock, "Document older receipt preserves newer accepted input");
+    check(!document->ops().undo().ok, "Document History remains fenced while later completed input is owned");
+    document->tick(nowMs());
+    check(OpJournal(document->store()).count() == fifoCount + 2 && storedGain(document->store()) == 0.875 &&
+              probe->count == calls, "next unchanged Document tick commits only the second FIFO gesture");
+    check(document->ops().undo().ok && document->synchronise(), "Document later FIFO Undo"); document->tick(nowMs());
+    render(*document, Precision::Float32, true, 0.375, clock, "Document later FIFO Undo preserves first boundary");
+    check(document->ops().undo().ok && document->synchronise(), "Document earlier FIFO Undo"); document->tick(nowMs());
+    render(*document, Precision::Float32, true, 0.3125, clock, "Document earlier FIFO Undo restores committed origin");
+    device->preset({0.5, 0.125, 6});
+    document->tick(nowMs());
+    check(stateRows(document->store()) == 1 && document->store().db().execAndGet("SELECT count(*) FROM state_blobs").getInt64() >= 2,
+              "unchanged writeBlobs then ordinary journal bridge atomically commits preset resources");
+    render(*document, Precision::Float32, true, 0.375, clock, "Document captured preset sound");
+    check(document->ops().undo().ok && document->synchronise(), "Document captured preset Undo"); document->tick(nowMs());
+    render(*document, Precision::Float32, true, 0.3125, clock, "Document preset Undo restores exact pre-state value");
+    const auto failedCount = OpJournal(document->store()).count();
+    const auto failedHead = OpJournal(document->store()).headSeq();
+    const auto failedBlobs = document->store().db().execAndGet("SELECT count(*) FROM state_blobs").getInt64();
+    check(stateRows(document->store()) == 0 && storedGain(document->store()) == 0.625,
+          "Document preset Undo leaves absent state and the exact earlier committed parameter before refusal");
+    // Scratch applies real state handlers but never appends journal rows. Fail
+    // the actual commit after resources and material were written so this is
+    // transaction rollback, not an earlier retained preparation refusal.
+    document->store().db().exec("CREATE TRIGGER reject_document_preset BEFORE INSERT ON ops WHEN NEW.op_type='device.loadState' BEGIN SELECT RAISE(ABORT,'document preset refusal'); END");
+    device->preset({0.75, 0.0625, 11});
+    document->tick(nowMs());
+    check(document->error().find("document preset refusal") != std::string::npos && OpJournal(document->store()).count() == failedCount &&
+              OpJournal(document->store()).headSeq() == failedHead && stateRows(document->store()) == 0 &&
+              document->store().db().execAndGet("SELECT count(*) FROM state_blobs").getInt64() == failedBlobs,
+              "unchanged Document bridge rolls staged blobs back with a refused state transaction: " + document->error());
+    document->store().db().exec("DROP TRIGGER reject_document_preset");
+    document->tick(nowMs());
+    check(OpJournal(document->store()).count() == failedCount && !document->ops().undo().ok,
+              "Document tick retains refusal and lease instead of silently retrying or dropping the captured preset");
+    render(*document, Precision::Float32, true, 0.4375, clock, "Document refused preset remains audible and retained");
 }
 } // namespace
 
 int main() {
     try {
         openerAndPresence(); agentAndPluginEditor(); stateAndParameterProjection(); deferredAndEchoes();
-        rollbackDoesNotDeliver(); branchesAndSnapshot(); ownReceiptAcknowledgement(); pendingCaptureBoundary(); completeCaptureAcknowledgement(); refusedParameterAndFifo(); refusedOpeners();
+        rollbackDoesNotDeliver(); branchesAndSnapshot(); ownReceiptAcknowledgement(); pendingCaptureBoundary(); completeCaptureAcknowledgement(); capturedOwnershipAndResources(); concurrentCaptureBindings(); refusedCapturedFifo(); refusedParameterAndFifo(); refusedOpeners();
         refusedFinalProjection(); clearOnlyInverseBoundary(); attachmentAndRetirement();
         pinnedStateBytes(); sourceBoundaries(); sessionAndCaptureLifetimes(); documentPath();
     } catch (const std::exception& exception) {

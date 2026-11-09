@@ -404,6 +404,12 @@ ClapDevice::ClapDevice(const clap_plugin_t* plugin, DeviceIdentity id)
     rescanParams();
 }
 
+void ClapDevice::adoptGlue(std::unique_ptr<ClapHostGlue> glue) noexcept {
+    if(glue_)glue_->setStateDevice(nullptr);
+    glue_=std::move(glue);
+    if(glue_)glue_->setStateDevice(this);
+}
+
 ClapDevice::~ClapDevice() {
     if(auto editor=editor_.lock())editor->close();
     // Guard each CALL, never the whole body: an early return here would
@@ -431,6 +437,7 @@ ClapDevice::~ClapDevice() {
     // else would need it and would not think to add it back.
     if (glue_ != nullptr) glue_->unregisterPlugin(plugin_);
     if (plugin_->destroy != nullptr) plugin_->destroy(plugin_);
+    if(glue_)glue_->setStateDevice(nullptr);
     // `glue_` is a member and is destroyed after this body runs, which is the
     // order that matters: the plugin it describes is already gone and it has
     // already forgotten it.
@@ -607,7 +614,9 @@ bool ClapDevice::setParam(const std::string& paramId, const ParamValue& v) {
             e.paramId = paramIds_[i];
             e.value = plain;
             one.add(e);
+            if(glue_)glue_->muteStateSignals();
             paramsExt_->flush(plugin_, one.inputEvents(), &outEvents_);
+            if(glue_)glue_->unmuteStateSignals();
             return true;
         }
         if (pending_.empty()) return false;
@@ -1707,7 +1716,10 @@ void ClapHostGlue::noteRescan(const clap_host_t* h, std::uint32_t flags) {
 
 void ClapHostGlue::stateSignal() noexcept {
     if (muteDepth_ > 0) mutedStateSignals_.fetch_add(1, std::memory_order_release);
-    else stateSignals_.fetch_add(1, std::memory_order_release);
+    else if(stateDevice_) {
+        auto signal=stateDevice_->beginStateSignal();
+        stateSignals_.fetch_add(1, std::memory_order_release);
+    } else stateSignals_.fetch_add(1, std::memory_order_release);
 }
 
 void ClapHostGlue::paramsRescan(const clap_host_t* h, clap_param_rescan_flags flags) {

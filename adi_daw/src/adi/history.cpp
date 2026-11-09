@@ -3,6 +3,7 @@
 
 #include "adi/history.hpp"
 #include "adi/applied_batches_detail.hpp"
+#include "adi/gesture_navigation_detail.hpp"
 
 #include "adi/store.hpp"
 
@@ -25,7 +26,7 @@ bool mutationAllowed(const Store& store, std::string& error) {
         error = "project is closed";
         return false;
     }
-    return true;
+    return gesture::detail::mutationAllowed(store, error);
 }
 
 detail::PreparedAppliedDelivery finishApplied(detail::AppliedBatchBuilder& builder,
@@ -296,6 +297,8 @@ std::optional<History::Step> History::nextRedo() const {
 History::Result History::undo() {
     Result r;
     if (!mutationAllowed(store_, r.error)) return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) { r.error = navigation.status.message; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     const auto step = nextUndo();
@@ -338,7 +341,7 @@ History::Result History::undo() {
             r.selBefore = decodeFromLog(blobOf(sel.getColumn(0)), err);
         }
 
-        if (!journal_.setHeadSeq(ops.front().parentSeq)) {
+        if (!journal_.writeHeadSeq(ops.front().parentSeq)) {
             r.error = "could not move the undo head";
             return r;
         }
@@ -361,6 +364,8 @@ History::Result History::undo() {
 History::Result History::redo() {
     Result r;
     if (!mutationAllowed(store_, r.error)) return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) { r.error = navigation.status.message; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     const auto step = nextRedo();
@@ -384,7 +389,7 @@ History::Result History::redo() {
             ++r.opsApplied;
         }
 
-        if (!journal_.setHeadSeq(ops.back().seq)) {
+        if (!journal_.writeHeadSeq(ops.back().seq)) {
             r.error = "could not move the undo head";
             return r;
         }
@@ -427,6 +432,8 @@ std::vector<History::Branch> History::branches() const {
 History::Result History::switchToBranch(std::int64_t branchId) {
     Result r;
     if (!mutationAllowed(store_, r.error)) return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) { r.error = navigation.status.message; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     auto& db = store_.db();
@@ -610,6 +617,8 @@ std::vector<History::Snapshot> History::listSnapshots() const {
 History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc) {
     Result r;
     if (!mutationAllowed(store_, r.error)) return r;
+    auto navigation = gesture::detail::beginNavigation(store_);
+    if (!navigation.status.ok()) { r.error = navigation.status.message; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     auto& db = store_.db();
@@ -656,7 +665,7 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
             r.opsApplied = 0;
             return r;   // rolls back, the preserved branch row included
         }
-        if (!journal_.setHeadSeq(target)) {
+        if (!journal_.writeHeadSeq(target)) {
             r.error = "could not move the undo head";
             r.opsApplied = 0;
             return r;
@@ -739,6 +748,8 @@ UndoCompactionResult History::compactUndo() {
 History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store &target) {
     ReplayBaseResult result;
     if (!mutationAllowed(target, result.error)) return result;
+    auto navigation = gesture::detail::beginNavigation(target);
+    if (!navigation.status.ok()) { result.error = navigation.status.message; return result; }
     if (!appliedSource(source).alive()) { result.error = "source project is closed"; return result; }
     if (target.readOnly()) {
         result.error = "target is open read-only";

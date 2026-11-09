@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/mixer.hpp"
+#include <stdexcept>
 
 #include <algorithm>
 #include <cmath>
@@ -552,6 +553,53 @@ std::shared_ptr<StripAutomation> bindStripAutomation(std::shared_ptr<const Autom
         else if (param == StripParam::Mute) bound.mute = &lane;
         else if (param == StripParam::PanLeft) bound.panLeft = &lane;
         else bound.panRight = &lane;
+    }
+    return out;
+}
+
+StripControlImage StripNode::captureControls() const {
+    StripControlImage out;
+    out.config.volumeDb=volumeDb_.load(std::memory_order_relaxed);
+    out.config.pan=pan_.load(std::memory_order_relaxed);
+    out.config.law=static_cast<PanLaw>(law_.load(std::memory_order_relaxed));
+    out.config.panMode=static_cast<PanMode>(panMode_.load(std::memory_order_relaxed));
+    out.config.panLeft=panLeft_.load(std::memory_order_relaxed);
+    out.config.panRight=panRight_.load(std::memory_order_relaxed);
+    out.config.lanes=lanes_.load(std::memory_order_acquire);
+    out.config.keepAlive=keepAlive_;
+    out.config.delaySamples=delayProject_.load(std::memory_order_relaxed);
+    out.config.delayRate=delayRate_.load(std::memory_order_relaxed);
+    out.audible=audible_.load(std::memory_order_relaxed);
+    return out;
+}
+void StripNode::applyPublishedControls(const StripControlImage& value) noexcept {
+    setStatic(value.config.volumeDb,value.config.pan,value.config.law,value.audible);
+    setPanMode(value.config.panMode,value.config.panLeft,value.config.panRight);
+    usePublishedLanes(value.config.lanes);
+}
+void MixerControlBatch::apply() const noexcept {
+    for(const auto& value:strips_)value.node->applyPublishedControls(value.image);
+    for(const auto& value:sends_)value.node->applyPublishedControls(value.image);
+}
+std::shared_ptr<const MixerControlBatch> MixerStrips::prepareControls(
+    const rows::Model& model,const Transport* transport,const std::shared_ptr<StripAutomation>& automation,
+    bool delayCompensation,const HearingFlags& flags) const {
+    // Reuse the single control calculation, including global solo reachability,
+    // reference exclusions, split pan and Pre/Post source automation. The
+    // isolated nodes are never prepared or placed in an audio graph.
+    MixerStrips staged;
+    staged.setFormat(channels_,maxFrames_);
+    staged.sync(model,transport,automation,delayCompensation,flags);
+    auto out=std::make_shared<MixerControlBatch>();
+    for(const auto& [id,node]:staged.strips_) {
+        const auto target=strips_.find(id);
+        if(target==strips_.end())throw std::runtime_error("preview needs a new mixer strip");
+        out->strips_.push_back({target->second.get(),node->captureControls()});
+    }
+    for(const auto& [id,node]:staged.sends_) {
+        const auto target=sends_.find(id);
+        if(target==sends_.end())throw std::runtime_error("preview needs a new send");
+        out->sends_.push_back({target->second.get(),node->captureControls()});
     }
     return out;
 }

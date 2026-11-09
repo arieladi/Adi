@@ -160,7 +160,8 @@ endif()
 # diagnostics from its headers when WE include them, not diagnostics raised
 # while compiling its own .c and .cpp files.)
 #
-# Every target we own links this PRIVATE; nothing in third_party/ links it.
+# Owned targets link this PRIVATE. Targets that also compile JUCE modules use
+# the same policy on their own source files only; third-party sources omit it.
 # ---------------------------------------------------------------------------
 # CI's strict job turns this on. It lives on adi_warnings rather than in
 # CMAKE_CXX_FLAGS deliberately: a global -Werror would also apply to
@@ -288,6 +289,9 @@ add_library(adi_core STATIC
     src/adi/automation_shapes.cpp
     src/adi/engine/automation_recording.cpp
     src/adi/controller_maps.cpp
+    src/adi/gesture_session.cpp
+    src/adi/gesture_producers.cpp
+    src/adi/op_transaction_resources.cpp
     src/adi/history.cpp
     src/adi/history_list.cpp
     src/adi/history_policy.cpp
@@ -332,6 +336,8 @@ add_library(adi_core STATIC
     src/adi/engine/host.cpp
     src/adi/engine/realize.cpp
     src/adi/engine/session.cpp
+    src/adi/engine/session_runtime.cpp
+    src/adi/engine/gesture_preview.cpp
     src/adi/engine/main_loudness.cpp
     src/adi/engine/audio_recording.cpp
     src/adi/recording_commands.cpp
@@ -1020,6 +1026,18 @@ add_executable(adi_param_live_replay_tests tests/test_param_live_replay.cpp)
 target_link_libraries(adi_param_live_replay_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_live_replay_tests COMMAND adi_param_live_replay_tests)
 
+add_executable(adi_gesture_tests tests/test_gesture.cpp)
+target_link_libraries(adi_gesture_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_gesture_tests COMMAND adi_gesture_tests)
+
+add_executable(adi_gesture_graph_tests tests/test_gesture_graph.cpp)
+target_link_libraries(adi_gesture_graph_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_gesture_graph_tests COMMAND adi_gesture_graph_tests)
+
+add_executable(adi_gesture_playback_tests tests/test_gesture_playback.cpp)
+target_link_libraries(adi_gesture_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_gesture_playback_tests COMMAND adi_gesture_playback_tests)
+
 add_executable(adi_ui_param_capture_tests tests/test_ui_param_capture.cpp)
 target_link_libraries(adi_ui_param_capture_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_ui_param_capture_tests COMMAND adi_ui_param_capture_tests)
@@ -1320,8 +1338,7 @@ if(ADI_WITH_JUCE)
     target_link_libraries(adi_vst3_probe PRIVATE
         adi_core
         juce::juce_audio_processors
-        juce::juce_audio_utils
-        adi_warnings)
+        juce::juce_audio_utils)
     get_target_property(_adi_proc_incs juce::juce_audio_processors
                         INTERFACE_INCLUDE_DIRECTORIES)
     if(_adi_proc_incs)
@@ -1451,7 +1468,7 @@ if(ADI_WITH_JUCE)
         target_compile_definitions(adi_vst3_probe PRIVATE ADI_TEST_VST3="${_adi_fixture}")
 
         add_executable(adi_vst3_scanner_tests tests/test_vst3_scanner.cpp)
-        target_link_libraries(adi_vst3_scanner_tests PRIVATE adi_core juce::juce_audio_processors_headless adi_warnings)
+        target_link_libraries(adi_vst3_scanner_tests PRIVATE adi_core juce::juce_audio_processors_headless)
         target_compile_definitions(adi_vst3_scanner_tests PRIVATE
             ADI_SCAN_HELPER="$<TARGET_FILE:adi_plugin_scanner>" ADI_TEST_VST3="${_adi_fixture}"
             JUCE_STANDALONE_APPLICATION=1 JUCE_USE_CURL=0 JUCE_WEB_BROWSER=0
@@ -1493,8 +1510,7 @@ if(ADI_WITH_JUCE)
         adi_core
         juce::juce_audio_processors
         juce::juce_audio_utils
-        juce::juce_audio_devices
-        adi_warnings)
+        juce::juce_audio_devices)
     if(_adi_proc_incs)
         target_include_directories(adi_play SYSTEM PRIVATE ${_adi_proc_incs})
     endif()
@@ -1507,7 +1523,7 @@ if(ADI_WITH_JUCE)
     target_compile_features(adi_play_render_tests PRIVATE cxx_std_20)
     get_target_property(_adi_play_defs adi_play COMPILE_DEFINITIONS)
     target_compile_definitions(adi_play_render_tests PRIVATE ${_adi_play_defs})
-    target_link_libraries(adi_play_render_tests PRIVATE adi_core adi_warnings
+    target_link_libraries(adi_play_render_tests PRIVATE adi_core
         juce::juce_audio_processors juce::juce_audio_utils juce::juce_audio_devices)
     if(_adi_proc_incs)
         target_include_directories(adi_play_render_tests SYSTEM PRIVATE ${_adi_proc_incs})
@@ -1521,8 +1537,7 @@ if(ADI_WITH_JUCE)
     target_link_libraries(adi_audio_probe PRIVATE
         adi_core
         juce::juce_audio_devices
-        juce::juce_audio_utils
-        adi_warnings)
+        juce::juce_audio_utils)
 
     # JUCE's own headers do not survive this tree's warning wall, and they are
     # not ours to fix. SYSTEM on add_subdirectory covers its sources; this
@@ -1542,6 +1557,25 @@ if(ADI_WITH_JUCE)
         target_compile_definitions(adi_audio_probe PRIVATE JUCE_ASIO=1)
         target_compile_definitions(adi_play PRIVATE JUCE_ASIO=1)
     endif()
+
+    # JUCE supplies module translation units through its link interfaces. Keep
+    # our strict warning policy on our sources, as the scanner already does,
+    # rather than applying it to those third-party module implementations.
+    set(_adi_juce_owned_sources)
+    foreach(_adi_juce_target IN ITEMS adi_vst3_probe adi_vst3_scanner_tests
+                                    adi_play adi_play_render_tests adi_audio_probe)
+        if(TARGET ${_adi_juce_target})
+            get_target_property(_adi_juce_sources ${_adi_juce_target} SOURCES)
+            foreach(_adi_juce_source IN LISTS _adi_juce_sources)
+                if(_adi_juce_source MATCHES "^(src|tests)/")
+                    list(APPEND _adi_juce_owned_sources "${_adi_juce_source}")
+                endif()
+            endforeach()
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _adi_juce_owned_sources)
+    set_source_files_properties(${_adi_juce_owned_sources} PROPERTIES
+        COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
 
     message(STATUS "adi: JUCE enabled (${ADI_JUCE_DIR})")
 endif()

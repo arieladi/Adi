@@ -34,6 +34,9 @@ class Database;
 namespace adi {
 
 class Store;
+class AppliedSource;
+class OpCapturedTransaction;
+struct OpTransactionInputs;
 
 /// A decoded op payload. CBOR on the wire (ADR-0025), this in memory.
 using Payload = nlohmann::json;
@@ -209,6 +212,8 @@ struct OpRequest {
     /// in payload/CBOR or persisted in the op log. Unknown tokens are untrusted;
     /// only the issuing runtime may recognise its exact complete request group.
     std::shared_ptr<const void> runtimeProof{};
+    /// Transient sealed gesture submission; never encoded in the operation log.
+    std::shared_ptr<const OpCapturedTransaction> capturedTransaction{};
 };
 
 struct CommitResult {
@@ -249,6 +254,8 @@ public:
 
     CommitResult commit(std::span<const OpRequest>);
     CommitResult commit(std::span<const OpRequest>, const CommitOptions& options);
+    CommitResult commitCaptured(std::span<const OpRequest>, const AppliedSource&,
+                               const CommitOptions&, const OpTransactionInputs&);
     CommitResult commit(const OpRequest& one) { return commit({&one, 1}); }
 
     /// Ops in the log, newest first. For audit and for tests.
@@ -279,6 +286,10 @@ public:
     [[nodiscard]] std::int64_t currentBranchId() const;
 
 private:
+    CommitResult commitImpl(std::span<const OpRequest>, const CommitOptions&,
+                            const AppliedSource*, const OpTransactionInputs*);
+    bool writeHeadSeq(std::optional<std::int64_t>);
+    friend class History;
     Store& store_;
 };
 

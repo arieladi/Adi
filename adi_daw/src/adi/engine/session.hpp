@@ -42,6 +42,8 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/engine/session_runtime.hpp"
+#include "adi/engine/gesture_preview.hpp"
 #include "adi/applied_batches.hpp"
 #include "adi/engine/gain_stage.hpp"
 #include "adi/engine/main_loudness.hpp"
@@ -158,6 +160,7 @@ public:
         /// reusing the same device ID. Runtime receipts must match this too.
         std::optional<std::int64_t> resolvedPluginRef;
         std::string resolvedFormat, resolvedUid;
+        std::shared_ptr<const void> runtimeIdentity;
         std::uint8_t route = 0;        ///< the RouteChoice last asked of the instance (ADR-0149)
     };
 
@@ -194,6 +197,12 @@ public:
 
     /// Plan, realise, prepare and publish a new graph from the current model.
     bool rebuild();
+
+    [[nodiscard]] std::shared_ptr<const SessionEndpoint> endpoint() const noexcept { return endpoint_; }
+    [[nodiscard]] DeviceRuntimeToken deviceRuntimeToken(std::int64_t deviceId) const;
+    [[nodiscard]] device::DeviceInstance* resolveDevice(const DeviceRuntimeToken&) noexcept;
+    void retainRuntimeClient(std::shared_ptr<SessionRuntimeClient>);
+    [[nodiscard]] bool presentationReady(const AppliedSource&,std::uint64_t sequence) const noexcept;
 
     // --- automation override (ADR-0162) -------------------------------------
     // Live 12 25.4: changing an automated control while not recording turns
@@ -341,8 +350,8 @@ public:
     bool startRecording(const AudioRecordingSpec&,std::string& error);
     [[nodiscard]] AudioInputRecorder& recording() noexcept;
     // Message/offline driver inspection. Pointer valid until the next rebuild.
-    [[nodiscard]] ClipPlayback* clips() noexcept { return clips_.get(); }
-    [[nodiscard]] MidiClips* midiClips() noexcept { return midi_.get(); }
+    [[nodiscard]] ClipPlayback* clips() noexcept { if(auto* value=gestureClips(gestureRuntime_))return value;return clips_.get(); }
+    [[nodiscard]] MidiClips* midiClips() noexcept { if(auto* value=gestureMidi(gestureRuntime_))return value;return midi_.get(); }
 
     [[nodiscard]] device::DeviceHost& devices() noexcept { return devices_; }
     [[nodiscard]] GraphHost& graph() noexcept { return graph_; }
@@ -369,6 +378,9 @@ public:
     [[nodiscard]] Node* tapFor(std::int64_t trackId, Tap tap);
 
 private:
+    friend struct GestureRuntime;
+    friend std::shared_ptr<const GestureControls> nativeGestureControls(Session&);
+    friend class gesture::EnginePresentation;
     void attach(std::shared_ptr<const GraphTransportState>);
     bool readPlayback(const Store &);
     bool parkedDevice(const rows::Device &) const;
@@ -393,6 +405,9 @@ private:
     // Message-thread construction/publication; audio reads one immutable view
     // per block. No model_ or spec_ access from process while refresh rebuilds.
     struct TimingView final : GraphTransportState {
+        std::shared_ptr<const GestureControls> generationControls;
+        std::shared_ptr<GestureAudio> gestureAudio;
+        std::uint64_t gestureGeneration=0;
         Session* session=nullptr; // retained Session owns every published graph
         mutable TransportInfo blockInfo{}; // the single audio driver's scratch
         TransportSettings settings;
@@ -440,12 +455,17 @@ private:
     std::set<std::int64_t> overridden_;   ///< ADR-0162: lane ids
     std::set<std::int64_t> writingAutomation_;
     bool automationArmed_ = true, automationRecording_ = false;
+    std::shared_ptr<GestureAudio> gestureAudio_;
+    std::shared_ptr<GestureRuntime> gestureRuntime_;
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
     AppliedSource appliedSource_;
     std::uint64_t appliedSequence_ = 0;
     std::shared_ptr<const void> lifetime_ = std::make_shared<const int>(0);
+    std::shared_ptr<SessionEndpoint> endpoint_;
+    std::vector<std::shared_ptr<SessionRuntimeClient>> runtimeClients_;
+    std::uint64_t runtimeEpoch_ = 0;
     rows::Model playbackModel_;
     std::set<std::int64_t> frozenGroupChildren_;
     struct FrozenMediaFile {
@@ -467,6 +487,7 @@ private:
     std::string error_;
     std::atomic<bool> playbackRunning_{false}; // driver sample; owner never reads Transport
     bool loaded_ = false;
+    bool presentationPending_=false; ///< graph already published; owner tick retries auxiliary Cue scene
     bool live_ = false;      ///< a graph is prepared and published for a device
 };
 

@@ -368,6 +368,15 @@ silent truncation in JSON, a non-issue in CBOR.
 | `project.setTimecodeOrigin` | e | N | sym | P3 |
 | `project.setFrameRate` | e | N | sym | P3 |
 
+`project.insertTempoEvent` accepts `{pos,bpm,curve?,id?,tension?}`. The
+optional literal `id` and `tension` preserve an existing canonical tempo event
+through HI-01's remove/insert preview and commit (ADR-0216). Omitted fields
+retain the historical allocation/default behavior. `project.removeTempoEvent`
+captures `pos`, `bpm`, `curve`, `id` and `tension` in its insert inverse. No
+opcode, schema or ramp algorithm changes. The existing-row gesture producer
+requires an exactly round-trippable canonical typed row and preserves every
+field except BPM; see `ENGINE-GESTURES.md`.
+
 Native key changes and ADR-0178 tuning definitions use the explicit-ID
 payloads in `ENGINE-TUNING-EDITS.md`. Inserts never upsert. Replacing a tuning
 validates all existing selected degrees; deleting a referenced tuning refuses.

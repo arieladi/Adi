@@ -15,6 +15,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "juce/clap_host.hpp"
 #include "adi/engine/audio_recording.hpp"
+#include "adi/gesture_capture_detail.hpp"
 
 #include <algorithm>
 #include <numbers>
@@ -46,8 +47,53 @@ device::ParamValue valueOf(const rows::PluginParam& p) noexcept {
 
 }  // namespace
 
-Session::Session():recording_(std::make_unique<AudioInputRecorder>()) {}
-Session::~Session() { lifetime_.reset(); }
+Session::Session():recording_(std::make_unique<AudioInputRecorder>()),gestureAudio_(makeGestureAudio()),endpoint_(std::make_shared<SessionEndpoint>()) {
+    endpoint_->owner_=this;
+}
+Session::~Session() {
+    endpoint_->owner_=nullptr;
+    lifetime_.reset();
+    for(const auto& client:runtimeClients_)client->sessionEnded();
+    runtimeClients_.clear();
+}
+
+DeviceRuntimeToken Session::deviceRuntimeToken(std::int64_t deviceId) const {
+    DeviceRuntimeToken result;
+    const auto* entry=entryFor(deviceId);
+    if(!entry || entry->retired || !entry->runtimeIdentity)return result;
+    auto* instance=const_cast<Session*>(this)->instanceFor(deviceId);
+    if(!instance)return result;
+    auto data=std::make_shared<DeviceRuntimeToken::Data>();
+    data->session=endpoint_;data->identity=entry->runtimeIdentity;data->instance=instance;
+    data->deviceId=deviceId;data->runtimeEpoch=runtimeEpoch_;data->shapeEpoch=instance->preparationShapeEpoch();
+    data->pluginRef=entry->resolvedPluginRef;data->format=entry->resolvedFormat;data->uid=entry->resolvedUid;
+    result.data_=std::move(data);return result;
+}
+
+device::DeviceInstance* Session::resolveDevice(const DeviceRuntimeToken& token) noexcept {
+    if(!token.data_ || token.data_->runtimeEpoch!=runtimeEpoch_)return nullptr;
+    const auto owner=token.data_->session.lock();
+    if(!owner || owner->get()!=this || token.data_->identity.expired())return nullptr;
+    const auto* entry=entryFor(token.data_->deviceId);
+    if(!entry || entry->retired || !entry->runtimeIdentity ||
+       token.data_->identity.owner_before(entry->runtimeIdentity) ||
+       entry->runtimeIdentity.owner_before(token.data_->identity) ||
+       entry->resolvedPluginRef!=token.data_->pluginRef || entry->resolvedFormat!=token.data_->format ||
+       entry->resolvedUid!=token.data_->uid)return nullptr;
+    auto* instance=instanceFor(token.data_->deviceId);
+    return instance==token.data_->instance && instance->preparationShapeEpoch()==token.data_->shapeEpoch?instance:nullptr;
+}
+
+bool Session::presentationReady(const AppliedSource& source,std::uint64_t sequence) const noexcept {
+    if(presentationPending_)return false;
+    for(const auto& client:runtimeClients_)if(!client->presentationReady(source,sequence))return false;
+    return true;
+}
+void Session::retainRuntimeClient(std::shared_ptr<SessionRuntimeClient> client) {
+    if(!client)return;
+    if(std::find(runtimeClients_.begin(),runtimeClients_.end(),client)==runtimeClients_.end())
+        runtimeClients_.push_back(std::move(client));
+}
 
 AudioInputRecorder& Session::recording() noexcept{return *recording_;}
 bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
@@ -255,6 +301,7 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
     const rows::PluginRef* ref = refFor(row);
     Entry e;
     e.deviceId = row.id;
+    e.runtimeIdentity=std::make_shared<const int>(0);
     e.resolvedPluginRef = row.pluginRefId;
     if(ref!=nullptr) {e.resolvedFormat=ref->format;e.resolvedUid=ref->uid;}
     e.trackId = chain->trackId.value_or(0);
@@ -564,6 +611,7 @@ std::optional<OfflineSourceInfo> Session::offlineSourceInfo(std::int64_t trackId
 }
 
 bool Session::rebuild() {
+    if(const auto preview=rebuildGestureRuntime(gestureRuntime_))return *preview;
     error_.clear();
     if (!loaded_) {
         error_ = "no project loaded";
@@ -572,6 +620,9 @@ bool Session::rebuild() {
     (void)mainLoudness_.prepare(spec_.sampleRate,spec_.channels);
     auto timing = std::make_shared<TimingView>();
     timing->session=this;
+    timing->gestureAudio=gestureAudio_;
+    timing->gestureGeneration=gestureAudio_->reserveGeneration();
+    const auto gestureGeneration=timing->gestureGeneration;
     timing->sampleRate = spec_.sampleRate;
     timing->settings=spec_.performanceState ? transportSettings_ : TransportSettings{};
     // Same construction as MidiClips: TempoMap integrates STEP tempos, even
@@ -634,14 +685,18 @@ bool Session::rebuild() {
     summing_.sync(model_);                                 // ADR-0174: likewise
     bindDeviceSources();                                   // ADR-0165: likewise
     cueMonitor_.configure(model_,cueSettings_,&transport_,stripAutomation_,spec_.performanceState);
+    timing->generationControls=nativeGestureControls(*this);
     attach(std::move(timing)); // publish the matching clock with this graph
+    gestureAudio_->stageReset(gestureGeneration); // tagged, inert until this graph is adopted
     ++stats_.rebuilds;
     const bool ok = devices_.rebuildNow();
     if (!ok) error_ = devices_.lastRebuildError();
     else {
-        cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
-        live_ = true;
+        live_ = true; // durable audio publication; later auxiliary work cannot undo it
+        gestureAudio_->publishedGeneration(gestureGeneration);
+        presentationPending_=!cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph());
     }
+    try {
     attachTaps();   // ADR-0175: the new graph's latencies
 
     problems_ = model_.problems;
@@ -662,6 +717,12 @@ bool Session::rebuild() {
     problems_.insert(problems_.end(), deviceSourceProblems_.begin(), deviceSourceProblems_.end());
     const std::vector<std::string>& fromGraph = graph_.problems();
     problems_.insert(problems_.end(), fromGraph.begin(), fromGraph.end());
+    } catch(const std::exception&) {
+        // The graph may already be audible. Preserve that fact and let the
+        // presentation owner retry; never report an untouched failed preview.
+        if(!ok)return false;
+        presentationPending_=true;
+    }
     return ok;
 }
 
@@ -811,6 +872,12 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
     }
     loader_ = std::move(loader);
     appliedSource_ = adi::appliedSource(store);
+    // Offline rendering loads a coherent read-only project. It retains its
+    // source identity without entering the editable gesture domain.
+    if(!store.readOnly()) {
+        const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
+        if(!registered.ok()) {error_=registered.message;return false;}
+    }
     spec_ = spec;
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
     graph_.setDelayCompensation(spec_.delayCompensation);
@@ -869,6 +936,7 @@ std::map<std::int64_t, StripValues> stripValues(const rows::Model& m) {
 }  // namespace
 
 bool Session::refresh(const Store& store) {
+    if(const auto handled=refreshGestureRuntime(gestureRuntime_,store))return *handled;
     error_.clear();
     if (!loaded_) {
         error_ = "no project loaded";
@@ -877,6 +945,10 @@ bool Session::refresh(const Store& store) {
     const auto source = adi::appliedSource(store);
     if (!appliedSource_.sameConnection(source)) appliedSequence_ = 0;
     appliedSource_ = source;
+    if(!store.readOnly() && !isGestureCommittedRefresh(gestureRuntime_)) {
+        const auto registered=gesture::detail::registerSessionEndpoint(appliedSource_,endpoint_);
+        if(!registered.ok()) {error_=registered.message;return false;}
+    }
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     std::map<std::int64_t, double> sendsBefore;
@@ -1099,8 +1171,16 @@ bool Session::overrideDeviceAutomation(std::int64_t deviceId, const std::string&
 }
 
 bool Session::tick(std::int64_t nowMs) {
+    if(presentationPending_ && cueMonitor_.publish(cueSettings_,spec_.sampleRate,spec_.maxFrames,spec_.channels,spec_.performanceState,graph_.currentGraph())) {
+        presentationPending_=false;error_.clear();
+    }
+    if(gestureAudio_)gestureAudio_->collect();
     mainLoudness_.collect();
     cueMonitor_.collect();
+    const auto clients=runtimeClients_;
+    for(const auto& client:clients)client->pump(nowMs);
+    std::erase_if(runtimeClients_,[](const auto& client){return client->releasable();});
+    pumpGestureCoordinator(*this,nowMs);
     return devices_.tick(nowMs);
 }
 
@@ -1119,6 +1199,7 @@ void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     if (!changed && live_) return;
 
     if (changed) {
+        ++runtimeEpoch_;
         ++stats_.formatChanges;
         spec_.sampleRate = sampleRate;
         spec_.maxFrames = maxFrames;
@@ -1138,6 +1219,7 @@ bool Session::setPrecision(Precision p) {
     // A format change of its own: every buffer, sum and ring changes width,
     // so it is a new graph, never a change to the playing one (ADR-0207 d2).
     ++stats_.formatChanges;
+    ++runtimeEpoch_;
     spec_.precision = p;
     graph_.setPrecision(p);
     if (!loaded_) return true;
@@ -1182,6 +1264,8 @@ TransportInfo Session::TimingView::at(const Transport& transport) const noexcept
 }
 
 const TransportInfo* Session::TimingView::beginBlock()const noexcept {
+    if(generationControls)generationControls->apply();
+    if(gestureAudio)gestureAudio->apply(gestureGeneration);
     if(settings.hasLoop && (!session->loopApplied_ || session->loopOn_!=settings.loopEnabled || session->loopBegin_!=loopBegin || session->loopEnd_!=loopEnd)) {
         session->loopApplied_=true;session->loopOn_=settings.loopEnabled;session->loopBegin_=loopBegin;session->loopEnd_=loopEnd;
         session->transport_.loop(loopBegin,loopEnd,settings.loopEnabled);
@@ -1249,6 +1333,7 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
 }
 
 void Session::release() {
+    ++runtimeEpoch_;
     recording_->stop();
     // The device has stopped; nothing is rendering. Release the plugins so a
     // later `prepare` -- at the same format or not -- prepares them again

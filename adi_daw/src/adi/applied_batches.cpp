@@ -9,6 +9,7 @@
 #include <set>
 #include <stdexcept>
 #include <utility>
+#include <thread>
 
 namespace adi::detail {
 
@@ -26,6 +27,8 @@ struct AppliedObserverSlot {
 };
 
 struct AppliedDomain {
+    Store* store = nullptr;
+    std::thread::id ownerThread;
     std::shared_ptr<const AppliedIdentity> identity;
     std::vector<std::weak_ptr<AppliedObserverSlot>> slots;
     std::uint64_t sequence = 0;
@@ -45,6 +48,9 @@ struct AppliedBatchData {
 };
 
 struct AppliedSourceAccess {
+    static std::shared_ptr<AppliedDomain> domain(const AppliedSource& source) noexcept {
+        return source.domain_.lock();
+    }
     static const std::shared_ptr<AppliedDomain>& domain(const Store& store) noexcept {
         return store.appliedDomain_;
     }
@@ -99,13 +105,24 @@ std::int64_t deviceId(const Payload& payload) {
 
 } // namespace
 
-std::shared_ptr<AppliedDomain> makeAppliedDomain(const Store& store) {
+std::shared_ptr<AppliedDomain> makeAppliedDomain(Store& store) {
     auto identity = std::make_shared<AppliedIdentity>();
     const auto file = store.path().u8string();
     identity->file.assign(reinterpret_cast<const char*>(file.data()), file.size());
     auto result = std::make_shared<AppliedDomain>();
     result->identity = std::move(identity);
+    result->store = &store;
+    result->ownerThread = std::this_thread::get_id();
     return result;
+}
+
+Store* appliedSourceStore(const AppliedSource& source) noexcept {
+    const auto domain = AppliedSourceAccess::domain(source);
+    return domain && domain->live && domain->ownerThread == std::this_thread::get_id() ? domain->store : nullptr;
+}
+void rebindAppliedDomain(Store& store) noexcept {
+    const auto& domain = AppliedSourceAccess::domain(store);
+    if (domain) domain->store = &store;
 }
 
 void prepareAppliedReplacement(Store& replacement, const Store& previous) {
@@ -129,6 +146,7 @@ void invalidateAppliedDomain(Store& store, AppliedSourceInvalidation reason) noe
         return;
     }
     domain->live = false;
+    domain->store = nullptr;
     domain->dispatching = true;
     const auto source = AppliedSourceAccess::source(domain);
     // Observe is refused once live is false. reset only marks/removes the

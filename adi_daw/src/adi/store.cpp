@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/gesture_navigation_detail.hpp"
 #include "adi/applied_batches_detail.hpp"
 #include "adi/track_recording.hpp"
 
@@ -241,7 +242,9 @@ Store::~Store() {
     // Best effort. close() is where the result can actually be reported, which
     // is why it is public and why callers who care should call it.
     try {
-        close();
+        gesture::detail::invalidateSource(*this);
+        detail::invalidateAppliedDomain(*this, AppliedSourceInvalidation::Closed);
+        closeFinalized();
     } catch (...) {
     }
 }
@@ -485,7 +488,17 @@ bool Store::close() {
         return false;
     }
     if (closed_ || !db_) return true;
+    auto change = gesture::detail::beginSourceChange(*this);
+    if (!change.status.ok()) { lastError_ = change.status.message; return false; }
+    const auto finished = gesture::detail::finishSourceChange(change.permit);
+    if (!finished.ok()) { lastError_ = finished.message; return false; }
+    gesture::detail::invalidateSource(*this);
     detail::invalidateAppliedDomain(*this, AppliedSourceInvalidation::Closed);
+    return closeFinalized();
+}
+
+bool Store::closeFinalized() {
+    if (closed_ || !db_) return true;
     closed_ = true;
 
     if (readOnly_) {
