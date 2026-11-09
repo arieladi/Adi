@@ -312,6 +312,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         braceGrab_ = view.geometry.tick(e.position.x);
         braceFrom_ = braceTo_ = loopOf(view.reader().transport());
         view.selectedMeter = -1;
+        view.selectedLocator = 0; // one thing selected: Delete and the arrows must not reach a locator
         view.selectLoop();
         view.loopSelected = true;
         view.canvas.grabKeyboardFocus(); // the arrows go to the lanes, which act on the brace

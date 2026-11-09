@@ -644,6 +644,14 @@ void AdiRootComponent::frame() noexcept {
         generation_ = generation;
         // The project view's tree follows the project: tracks come and go, groups with them.
         arrangement.applyView();
+        // A selected locator goes with its locator, however it left: Undo, Redo, a restored step, another window.
+        if (arrangement.selectedLocator != 0) {
+            const auto *snapshot = reader_->get();
+            if (snapshot == nullptr || locatorById(locatorsOf(*snapshot), arrangement.selectedLocator) == nullptr) {
+                arrangement.selectedLocator = 0;
+                arrangement.repaint();
+            }
+        }
         dirty_.mark(DirtySet::All);
     }
     const bool playing = mailbox_.playing();
@@ -1511,6 +1519,7 @@ bool AdiRootComponent::addLocatorAt(std::int64_t pos) {
         return false;
     arrangement.selectedLocator = edit.id;
     arrangement.selectedMeter = -1;
+    arrangement.loopSelected = false; // the new locator is the selection; the arrows go to it
     arrangement.scrub.repaint();
     return true;
 }
