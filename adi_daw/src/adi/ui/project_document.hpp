@@ -9,6 +9,7 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
+#include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
 namespace adi::ui {
 using media::pathFromUtf8;
@@ -86,6 +87,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    // The audio clips' waveforms (N40, #404): peaks built on a worker of their own, which reads the
+    // project through its own read-only store (`Store::open(path, error, true)`), never this one.
+    WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
     ProjectDocument(std::unique_ptr<Store>, std::string name);
@@ -117,5 +121,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;
     std::string error_, warning_;
+    // Last, so its worker stops before anything else goes; it touches nothing of the above.
+    WaveformCache waveforms_;
 };
 } // namespace adi::ui

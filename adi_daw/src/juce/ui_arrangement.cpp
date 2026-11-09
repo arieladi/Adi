@@ -875,6 +875,16 @@ void ArrangementView::frame(bool modelChanged) noexcept {
     playhead.setVisible(root.playing() && x >= 0 && x < canvas.getWidth());
     playhead.setBounds(canvas.getX() + x, canvas.getY(), 1, canvas.getHeight());
     playhead.toFront(false);
+    // The waveforms follow the document; peaks that have landed since the last frame are drawn.
+    if (waveforms != nullptr) {
+        if (modelChanged)
+            if (const auto *snapshot = reader().get())
+                waveforms->follow(*snapshot, root.generation());
+        if (const auto landed = waveforms->delivered(); landed != waveformsSeen) {
+            waveformsSeen = landed;
+            canvas.repaint();
+        }
+    }
     if (modelChanged) {
         canvas.realiseAccessible();
         overview.repaint();
@@ -1761,6 +1771,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
+            paintWaveform(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
+                          static_cast<float>(y + h - 3));
             // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
             // arrangement).
             if (!c->name.empty() && right - left > 6.f) {
@@ -1818,6 +1830,41 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
                 g.fillRect(static_cast<int>(geo.x(geo.selection.insert)), top, 1, std::max(0, bottom - top));
             }
             top += geo.heightFor(id);
+        }
+    }
+}
+void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
+                                      float right, float top, float bottom) const {
+    // Live's audio clip (manual 6.1, chapter 9): its waveform across the body, each channel in a
+    // band of its own, inside the clip's source window only. The colour is ADI's until measured.
+    if (view.waveforms == nullptr || !clip.audio || bottom - top < 4.f)
+        return;
+    const auto peaks = view.waveforms->peaks(*clip.audio);
+    if (!peaks || peaks->channels == 0 || peaks->sampleRate == 0)
+        return;
+    const auto *snapshot = view.reader().get();
+    const auto &geo = view.geometry;
+    auto moved = clip;
+    moved.posTicks = pos; // drawn where a drag would put it
+    const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
+                               static_cast<double>(peaks->sampleRate));
+    const float band = (bottom - top) / static_cast<float>(peaks->channels);
+    g.setColour(juce::Colours::black.withAlpha(clip.muted ? 0.35f : 0.6f));
+    const int from = std::max(0, static_cast<int>(std::floor(left))),
+              to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
+    for (int x = from; x < to; ++x) {
+        const auto f0 = source.frameAt(geo.tick(x)), f1 = source.frameAt(geo.tick(x + 1));
+        if (!f0)
+            continue;
+        const double end = f1 ? *f1 : *f0 + 1.;
+        for (std::uint32_t ch = 0; ch < peaks->channels; ++ch) {
+            const auto span = peakSpan(*peaks, std::min(*f0, end), std::max(*f0 + 1., end), ch);
+            if (!span)
+                continue;
+            const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
+            const float y0 = mid - std::clamp(span->maximum, -1.f, 1.f) * half,
+                        y1 = mid - std::clamp(span->minimum, -1.f, 1.f) * half;
+            g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
         }
     }
 }
