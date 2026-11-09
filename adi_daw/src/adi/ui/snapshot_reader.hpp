@@ -159,6 +159,13 @@ public:
         return snapshot_ && snapshot_->automationOverridden;
     }
 
+    /// The transport's saved state (#383, N19): the metronome, the Arrangement
+    /// Loop's switch and its brace, in ticks. Outside undo; saved with the
+    /// project. The defaults (off, the first four bars) when invalid.
+    [[nodiscard]] const TransportSettings& transport() const noexcept {
+        return snapshot_ ? snapshot_->transport : noTransport();
+    }
+
     /// The whole model, for a component that needs more than the accessors.
     /// Null when invalid. Borrowed: it is valid for this reader's lifetime and
     /// storing it defeats the point of the deleted copy constructor.
@@ -181,6 +188,10 @@ private:
     }
     static const std::vector<std::shared_ptr<const engine::SendRoute>>& noSends() noexcept {
         static const std::vector<std::shared_ptr<const engine::SendRoute>> none;
+        return none;
+    }
+    static const TransportSettings& noTransport() noexcept {
+        static const TransportSettings none;
         return none;
     }
     static const std::vector<textproj::Meter>& noMeters() noexcept {

@@ -131,7 +131,7 @@ juce::Rectangle<float> ScrubArea::markerBox(const textproj::Meter &m) const {
     const auto text = juce::String(m.numerator) + "/" + juce::String(m.denominator);
     const float x = static_cast<float>(view.geometry.x(m.start_ticks));
     const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
-    return {x, 3.f, w, 15.f};
+    return {x, kBraceHeight, w, 15.f}; // under the loop brace
 }
 std::int64_t ScrubArea::markerAt(float x) const {
     const auto &meters = view.reader().meters();
@@ -140,6 +140,20 @@ std::int64_t ScrubArea::markerAt(float x) const {
         if (const auto box = markerBox(meters[i]); x >= box.getX() && x < box.getRight())
             return meters[i].start_ticks;
     return -1;
+}
+juce::Rectangle<float> ScrubArea::braceBox(LoopRange r) const {
+    const float x0 = static_cast<float>(view.geometry.x(r.start)), x1 = static_cast<float>(view.geometry.x(r.end));
+    return {x0, 0.f, std::max(2.f, x1 - x0), kBraceHeight};
+}
+ScrubArea::BracePart ScrubArea::bracePart(juce::Point<float> at) const {
+    if (at.y < 0 || at.y >= kBraceHeight)
+        return BracePart::None;
+    const auto box = braceBox(loopOf(view.reader().transport()));
+    // An edge within kBraceEdge of the mouse, the nearer one where a short brace puts both there.
+    const float toStart = std::abs(at.x - box.getX()), toEnd = std::abs(at.x - box.getRight());
+    if (std::min(toStart, toEnd) <= kBraceEdge)
+        return toStart < toEnd ? BracePart::Start : BracePart::End;
+    return at.x > box.getX() && at.x < box.getRight() ? BracePart::Bar : BracePart::None;
 }
 void ScrubArea::paint(juce::Graphics &g) {
     // Live's locator band: the lanes' grey and grid, where the loop brace and the
@@ -155,7 +169,7 @@ void ScrubArea::paint(juce::Graphics &g) {
         const float x0 = static_cast<float>(view.geometry.x(start)), x1 = static_cast<float>(view.geometry.x(end));
         if (x1 < 0 || x0 > static_cast<float>(getWidth()))
             return;
-        const juce::Rectangle<float> band(x0, 3.f, x1 - x0, 15.f);
+        const juce::Rectangle<float> band(x0, kBraceHeight, x1 - x0, 15.f);
         g.setColour(juce::Colour(0xffb4b4b4));
         g.fillRect(band);
         {
@@ -168,6 +182,29 @@ void ScrubArea::paint(juce::Graphics &g) {
         g.setColour(look::separator);
         g.drawRect(band, 1.5f);
     });
+    // Live's loop brace (manual 6.6, its figure): a bar along the band's top over the loop, with a
+    // light triangle at each end pointing in; dark while the loop is on, light while it is off. Its
+    // colours and the selected brace's outline are ADI's until they are measured on Live 11.
+    {
+        const auto &t = view.reader().transport();
+        const auto range = braceMoving().value_or(loopOf(t));
+        if (const auto box = braceBox(range); box.getRight() >= 0 && box.getX() <= static_cast<float>(getWidth())) {
+            g.setColour(t.loopEnabled ? juce::Colour(0xff3c3c3c) : juce::Colour(0xff9a9a9a));
+            g.fillRect(box);
+            juce::Path ends;
+            const float h = box.getHeight(), mid = box.getCentreY();
+            ends.addTriangle(box.getX() + 1.f, box.getY() + 1.f, box.getX() + 1.f, box.getBottom() - 1.f,
+                             box.getX() + h - 1.f, mid);
+            ends.addTriangle(box.getRight() - 1.f, box.getY() + 1.f, box.getRight() - 1.f, box.getBottom() - 1.f,
+                             box.getRight() - h + 1.f, mid);
+            g.setColour(juce::Colour(0xffe8e8e8));
+            g.fillPath(ends);
+            if (view.loopSelected) {
+                g.setColour(look::selection);
+                g.drawRect(box, 1.5f);
+            }
+        }
+    }
     g.setFont(look::font(11.5f));
     for (std::size_t i = 1; i < meters.size(); ++i) {
         auto m = meters[i];
@@ -182,7 +219,7 @@ void ScrubArea::paint(juce::Graphics &g) {
         g.setColour(look::separator);
         g.drawRect(box, 1.5f);
         juce::Path notch;
-        notch.addTriangle(x + 2.f, box.getBottom() - 3.f, x + 2.f, 5.f, x + 10.f, 5.f);
+        notch.addTriangle(x + 2.f, box.getBottom() - 3.f, x + 2.f, box.getY() + 2.f, x + 10.f, box.getY() + 2.f);
         g.setColour(juce::Colour(0xffe8e8e8));
         g.fillPath(notch);
         g.setColour(look::text);
@@ -190,8 +227,27 @@ void ScrubArea::paint(juce::Graphics &g) {
     }
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
+    // The loop brace pressed is selected, and the material in the loop with it (manual 6.6: "Clicking
+    // on the loop brace is a shortcut for executing the Edit menu's Select Loop command"); it plays
+    // nothing, and a drag moves an edge or the whole brace.
+    brace_ = BracePart::None;
+    if (const auto part = bracePart(e.position); part != BracePart::None && !e.mods.isPopupMenu()) {
+        brace_ = part;
+        braceGrab_ = view.geometry.tick(e.position.x);
+        braceFrom_ = braceTo_ = loopOf(view.reader().transport());
+        view.selectedMeter = -1;
+        view.selectLoop();
+        view.loopSelected = true;
+        view.canvas.grabKeyboardFocus(); // the arrows go to the lanes, which act on the brace
+        repaint();
+        return;
+    }
+    if (view.loopSelected) {
+        view.loopSelected = false; // anything else pressed here lets the brace go
+        repaint();
+    }
     // A marker clicked is selected, and plays nothing; its menu acts on it; a drag moves it.
-    const auto marker = markerAt(e.position.x);
+    const auto marker = e.position.y >= kBraceHeight ? markerAt(e.position.x) : -1;
     dragged_ = e.mods.isPopupMenu() ? -1 : marker;
     movingTo_ = marker;
     grabbed_ = marker >= 0 ? view.geometry.tick(e.position.x) - marker : 0;
@@ -219,6 +275,39 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     view.root.playFrom(view.geometry.tick(e.position.x));
 }
 void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
+    if (brace_ != BracePart::None) {
+        // To the nearest grid line while snapping (manual 6.6: "dragging from the left or right edge
+        // adjusts the loop start/end points, while dragging the brace bar horizontally moves the loop
+        // without changing its length"); never before the start, never shorter than a grid step.
+        const auto nearest = [this, &e](std::int64_t raw) {
+            if (!view.snaps(e.mods))
+                return raw;
+            const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+            return raw - down <= up - raw ? down : up;
+        };
+        const auto delta = view.geometry.tick(e.position.x) - braceGrab_;
+        auto to = braceFrom_;
+        switch (brace_) {
+        case BracePart::Start:
+            to.start = std::clamp<std::int64_t>(nearest(braceFrom_.start + delta), 0,
+                                                view.geometry.nextGridLine(braceFrom_.end, false));
+            break;
+        case BracePart::End:
+            to.end = std::max(nearest(braceFrom_.end + delta), view.geometry.nextGridLine(braceFrom_.start, true));
+            break;
+        case BracePart::Bar:
+            to.start = std::max<std::int64_t>(0, nearest(braceFrom_.start + delta));
+            to.end = to.start + braceFrom_.length();
+            break;
+        case BracePart::None:
+            break;
+        }
+        if (to.end <= to.start)
+            return;
+        braceTo_ = to;
+        repaint();
+        return;
+    }
     if (dragged_ < 0)
         return;
     const auto raw = view.geometry.tick(e.position.x) - grabbed_;
@@ -229,6 +318,13 @@ void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
     repaint();
 }
 void ScrubArea::mouseUp(const juce::MouseEvent &) {
+    if (brace_ != BracePart::None) {
+        brace_ = BracePart::None;
+        if (braceTo_ != braceFrom_ && view.root.setLoopRange(braceTo_))
+            view.selectLoop(); // the selection follows the brace it selected
+        repaint();
+        return;
+    }
     const auto from = dragged_, to = movingTo_;
     dragged_ = -1;
     movingTo_ = -1;
@@ -1096,6 +1192,31 @@ bool ArrangementView::selectAll() {
     changed();
     return true;
 }
+bool ArrangementView::selectLoop() {
+    std::int64_t first = 0, last = 0;
+    for (const auto row : geometry.rows(reader())) {
+        if (!geometry.shown(row.track->id))
+            continue;
+        if (first == 0)
+            first = row.track->id;
+        last = row.track->id;
+    }
+    // From the CURRENT cell (ADR-0201): a brace just moved is there before the next frame presents it.
+    const auto current = root.current();
+    const auto loop = loopOf(current ? current->transport : reader().transport());
+    auto &sel = geometry.selection;
+    sel.track = first;
+    sel.toTrack = last == first ? 0 : last;
+    sel.clip = 0;
+    sel.pickedClips.clear();
+    sel.start = loop.start;
+    sel.end = loop.end;
+    sel.insert = loop.start;
+    sel.marked = true;
+    locate();
+    changed();
+    return true;
+}
 juce::PopupMenu ArrangementView::headerMenu() {
     auto &commands = root.commands();
     commands.activate(root);
@@ -1467,6 +1588,10 @@ void TrackHeaderList::endRename() {
     repaint();
 }
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
+    if (view.loopSelected) {
+        view.loopSelected = false;
+        view.scrub.repaint();
+    }
     if (view.selectedMeter >= 0) {
         view.selectedMeter = -1; // a click on a title lets a selected marker go
         view.scrub.repaint();
@@ -1902,6 +2027,10 @@ void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y,
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
+    if (view.loopSelected) {
+        view.loopSelected = false; // a click in the lanes lets the brace go
+        view.scrub.repaint();
+    }
     if (view.selectedMeter >= 0) {
         view.selectedMeter = -1; // a click in the lanes lets a selected marker go
         view.scrub.repaint();
@@ -2169,6 +2298,7 @@ void ArrangementCanvas::mouseUp(const juce::MouseEvent &) {
         repaint();
     }
     view.changed();
+    view.root.linkLoopToSelection(); // with the setting on, the brace follows a time selection made
 }
 bool ArrangementCanvas::clipEdit(const char *op, Payload payload, const char *label) {
     return view.root.submitEdit(op, std::move(payload), label);
@@ -2270,6 +2400,20 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
     }
     if (k == juce::KeyPress('u', juce::ModifierKeys::altModifier, 0)) {
         view.unfoldAll();
+        return true;
+    }
+    // The selected loop brace's keys (manual 6.6, §42.8): left and right nudge it by the grid, up and
+    // down move it by its length; with Ctrl/Cmd, left and right shorten or lengthen it by the grid,
+    // up and down double or halve it.
+    if (view.loopSelected && !mods.isShiftDown() && !mods.isAltDown() &&
+        (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey || code == juce::KeyPress::upKey ||
+         code == juce::KeyPress::downKey)) {
+        const auto key = code == juce::KeyPress::leftKey    ? BraceKey::Left
+                         : code == juce::KeyPress::rightKey ? BraceKey::Right
+                         : code == juce::KeyPress::upKey    ? BraceKey::Up
+                                                            : BraceKey::Down;
+        if (view.root.braceKey(key, mods.isCommandDown()))
+            view.selectLoop();
         return true;
     }
     // Left and right move a selected time signature marker by the grid (Live 12 manual 6.5).
@@ -2416,6 +2560,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
                 if (c->posTicks == lo && c->posTicks + c->lengthTicks == hi)
                     sel.clip = c->id;
         view.changed();
+        view.root.linkLoopToSelection();
         announce(sel.clip != 0 ? describe(sel.track, sel.clip) : view.root.selectionText());
         return true;
     }
