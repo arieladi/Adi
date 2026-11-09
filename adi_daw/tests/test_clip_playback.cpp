@@ -387,6 +387,8 @@ void rangeSurvivorSourceClocks() {
         // trim receives both clocks without duplicating the full audio matrix.
         for(const bool loop:{false,true})rangeSurvivorPcm(sourceRate,width,loop,false);
         rangeSurvivorPcm(sourceRate,width,true,true); // whole-Time removal also relocates the surviving tail
+    }
+}
 void silenceSourceClocks() {
     for(const auto sourceRate:{44100u,48000u}) {
         Fixture f(sourceRate,2,4000);f.add(1,0,800,0,1000);

@@ -683,6 +683,9 @@ void ordinaryRangeLaneScope() {
         check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
               History(*p.store).redo().ok && rangeRows(*p.store)==after,
               "ordinary main-lane range commands retain exact one-step captured undo/redo");
+    }
+}
+
 void rangeSurvivorExhaustedIds() {
     constexpr std::int64_t q=5765760,maximum=std::numeric_limits<std::int64_t>::max();
     for(const int mode:{0,1,2,3}) {
@@ -731,6 +734,9 @@ void rangeSurvivorExhaustedIds() {
         check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
               History(*p.store).redo().ok && rangeRows(*p.store)==after,
               "exhausted-ID sole survivors retain exact captured undo/redo");
+    }
+}
+
 void rangeTimeLaneScope() {
     constexpr std::int64_t q=5765760;
     for(int mode=0;mode<4;++mode) {
@@ -790,6 +796,9 @@ void rangeTimeLaneScope() {
         check(History(*p.store).undo().ok && rangeRows(*p.store)==before &&
               History(*p.store).redo().ok && rangeRows(*p.store)==after,
               "Time lane edits undo and redo exact captured rows, original identities, lane links and global placement");
+    }
+}
+
 } // namespace
 namespace {
 void twoPointSplitPayloadBounds() {
