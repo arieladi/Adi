@@ -389,6 +389,29 @@ PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t rightI
     } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
     return result;
 }
+PreparedEdit prepareSplit(Store& store,std::int64_t sourceId,std::int64_t middleId,std::int64_t rightId,
+                          TimePoint begin,TimePoint end,double referenceRate) {
+    PreparedEdit result;
+    try {
+        validRate(referenceRate);
+        if(sourceId==middleId || sourceId==rightId || middleId==rightId)
+            throw std::runtime_error("split needs three distinct clip identities");
+        if(begin.base!=end.base || (begin.base!=0 && begin.base!=1) || begin.value<0 || end.value<=begin.value)
+            throw std::runtime_error("split needs ordered endpoints in one clock");
+        Read read(store.db());expectedHead(store,result);OpContext context{store,store.db()};
+        auto image=captureDeleted(context,sourceId);edit::TimeMap time(store.db());
+        const int base=static_cast<int>(detail::signedInteger(image.at("row").at("time_base")));
+        const auto first=coordinate(begin,base,time),last=coordinate(end,base,time);
+        if(last<=first)throw std::runtime_error("split endpoints coincide in the clip's clock");
+        CopyIds ids(store.db());
+        auto middle=splitImage(store,image,middleId,{base,first},time,referenceRate,ids);
+        auto right=splitImage(store,middle,rightId,{base,last},time,referenceRate,ids);
+        edit::RowEdits plan(store.db());plan.set("clips",sourceId,image.at("row"));
+        retainDetails(plan,image);createImage(plan,middle);createImage(plan,right);
+        packet(store,result,"clip.split","Split Clip",sourceId,plan);
+    } catch(const std::exception& exception){result.ok=false;result.error=exception.what();}
+    return result;
+}
 namespace {
 PreparedEdit prepareInsertion(Store& store,std::int64_t atTicks,std::int64_t ticks,double referenceRate,std::optional<std::int64_t> exactNanos) {
     PreparedEdit result;

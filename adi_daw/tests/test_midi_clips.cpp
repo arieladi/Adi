@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/audio/io_audit.hpp"
 #include "adi/controller_lanes.hpp"
+#include "adi/clip_commands.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
@@ -15,6 +16,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+#include <limits>
+#include <span>
 #include <thread>
 using namespace adi;
 using namespace adi::engine;
@@ -39,12 +42,16 @@ struct Instrument final:device::DeviceInstance {
     std::int64_t tail=kInfiniteTail;int calls=0; // ADR-0158: most plugins report no tail
     const device::DeviceIdentity& identity()const noexcept override{return id;}
     bool loaded()const noexcept override{return true;}
+    bool processesDouble()const noexcept override{return true;}
     EventFlow eventFlow()const noexcept override{return EventFlow::Consume;}
     std::int64_t tailSamples()const noexcept override{return tail;}
     void process(const NodeIo& io)noexcept override{
         ++calls;
         for(const auto& e:io.events)if(count<heard.size())heard[count++]={e,clock+e.frame};
-        for(int c=0;c<io.channels;++c)std::fill_n(io.out[c]+io.blockOffset,io.frames,0.0f);
+        for(int c=0;c<io.channels;++c) {
+            if(io.wide())std::fill_n(io.out64[c]+io.blockOffset,io.frames,0.0);
+            else std::fill_n(io.out[c]+io.blockOffset,io.frames,0.0f);
+        }
     }
     int balance()const{int n=0;for(std::size_t i=0;i<count;++i){if(heard[i].e.type==EventType::NoteOn)++n;if(heard[i].e.type==EventType::NoteOff)--n;}return n;}
 };
@@ -58,8 +65,8 @@ struct LatencyEffect final:device::DeviceInstance {
 struct Fixture {
     test::TempDirectory dir{"midi_clips","session"};
     std::unique_ptr<Store> store;Session session;Instrument* instrument=nullptr;
-    double rate;int block;std::int64_t clock=0;
-    explicit Fixture(double r=48000,int b=512):rate(r),block(b){
+    double rate;int block;Precision width;std::int64_t clock=0;
+    explicit Fixture(double r=48000,int b=512,Precision w=Precision::Float32):rate(r),block(b),width(w){
         StoreError e{};store=Store::createEmpty(dir.path()/"session.adi",e);if(!store)throw std::runtime_error("create");
         store->db().exec("INSERT INTO tracks(id,kind,name,index_in_parent) VALUES(1,'midi','Keys',0),(9,'master','Master',1); INSERT INTO plugin_refs(id,format,uid,name,subtype) VALUES(1,'vst3','test.midi','Recorder','instrument'); INSERT INTO device_chains(id,track_id) VALUES(1,1); INSERT INTO devices(id,chain_id,ord,plugin_ref_id,name) VALUES(1,1,0,1,'Recorder')");
     }
@@ -69,8 +76,15 @@ struct Fixture {
         auto bytes=writeStream<NoteRecord>(FourCC::Notes,std::vector<NoteRecord>{note});
         if(!store->putEventStream(id,"notes",bytes))throw std::runtime_error("ANOT write");
     }
-    void load(){session.graph().setFadeFrames(0);if(!session.load(*store,[this](const DeviceRequest& request,std::string&) -> std::unique_ptr<device::DeviceInstance> {if(request.device->id==2)return std::make_unique<LatencyEffect>();auto p=std::make_unique<Instrument>();instrument=p.get();return p;},{2,rate,block}))throw std::runtime_error(session.error());session.transport().play();}
-    void render(int n=0){if(!n)n=block;std::array<float,8192> out{};float* channels[]={out.data(),out.data()+4096};instrument->clock=clock;session.process({channels,nullptr,2,0,n,0});clock+=n;}
+    void load(){session.graph().setFadeFrames(0);if(!session.load(*store,[this](const DeviceRequest& request,std::string&) -> std::unique_ptr<device::DeviceInstance> {if(request.device->id==2)return std::make_unique<LatencyEffect>();auto p=std::make_unique<Instrument>();instrument=p.get();return p;},{2,rate,block,width}))throw std::runtime_error(session.error());session.transport().play();}
+    void render(int n=0){
+        if(!n)n=block;
+        std::array<float,8192> out{};std::array<double,8192> out64{};
+        float* channels[]={out.data(),out.data()+4096};double* wide[]={out64.data(),out64.data()+4096};
+        AudioIo io;io.frames=n;io.numOut=2;
+        if(width==Precision::Float64)io.out64=wide;else io.out=channels;
+        instrument->clock=clock;session.process(io);clock+=n;
+    }
     void refresh(){if(!session.refresh(*store))throw std::runtime_error(session.error());}
 };
 void placement(){
@@ -208,6 +222,146 @@ void activeFlag() {
           "deactivating a held note releases it on the next callback without a stuck voice");
 }
 
+// The source records stay whole. Each independent clip clips/chases them at
+// its visible boundaries; stored IDs need not equal runtime voice IDs.
+struct SplitVoice {
+    std::int64_t on=0,off=0;
+    std::uint16_t key=0;
+    std::uint8_t velocity=0,release=0;
+    bool tuned=false;
+};
+bool splitSchedule(const Instrument& instrument,std::span<const SplitVoice> expected) {
+    std::array<std::uint64_t,10> ids{};
+    if(expected.size()>ids.size() || instrument.count>=instrument.heard.size())return false;
+    std::size_t expressions=0;
+    for(std::size_t voice=0;voice<expected.size();++voice) {
+        const auto& wanted=expected[voice];
+        std::size_t ons=0,offs=0,tuning=0;
+        for(std::size_t i=0;i<instrument.count;++i) {
+            const auto& heard=instrument.heard[i];const auto& event=heard.e;
+            if(event.type==EventType::NoteOn && heard.clock==wanted.on && event.channel==3 &&
+               event.dim==wanted.key && event.value==static_cast<double>(wanted.velocity)/127) {
+                ++ons;ids[voice]=event.noteId;
+            }
+        }
+        if(ons!=1 || ids[voice]==0)return false;
+        for(std::size_t earlier=0;earlier<voice;++earlier)
+            if(ids[earlier]==ids[voice])return false;
+        for(std::size_t i=0;i<instrument.count;++i) {
+            const auto& heard=instrument.heard[i];const auto& event=heard.e;
+            if(event.noteId!=ids[voice])continue;
+            if(event.type==EventType::NoteOff && heard.clock==wanted.off && event.channel==3 &&
+               event.dim==wanted.key && event.value==static_cast<double>(wanted.release)/127)++offs;
+            if(event.type==EventType::NoteExpression && heard.clock==wanted.on &&
+               event.dim==static_cast<std::uint16_t>(ExpressionDim::Pitch) && event.value==0.3125)++tuning;
+        }
+        if(offs!=1 || tuning!=(wanted.tuned?1u:0u))return false;
+        expressions+=tuning;
+    }
+    if(instrument.count!=2*expected.size()+expressions || instrument.balance()!=0)return false;
+    for(const std::int64_t boundary:{4000,6000}) {
+        bool started=false;
+        for(std::size_t i=0;i<instrument.count;++i) {
+            const auto& heard=instrument.heard[i];
+            if(heard.clock!=boundary)continue;
+            if(heard.e.type==EventType::NoteOn)started=true;
+            if(heard.e.type==EventType::NoteOff && started)return false;
+        }
+    }
+    return true;
+}
+bool renderSplitSchedule(Fixture& fixture,bool irregular,std::span<const SplitVoice> expected) {
+    fixture.session.transport().play(false);fixture.render(1);
+    fixture.session.transport().locate(0);fixture.clock=0;fixture.instrument->count=0;
+    fixture.session.transport().play();
+    constexpr std::array<int,6> parts{17,61,5,101,73,29};
+    std::size_t part=0;
+    while(fixture.clock<9000) {
+        const auto next=irregular?parts[part++%parts.size()]:128;
+        const auto frames=static_cast<int>(std::min<std::int64_t>(next,9000-fixture.clock));
+        fixture.render(frames);
+    }
+    const bool good=splitSchedule(*fixture.instrument,expected);
+    fixture.session.transport().play(false);fixture.render(1);
+    return good;
+}
+bool splitNoteBytes(Store& store,std::span<const std::int64_t> clips,const std::vector<std::byte>& original) {
+    for(const auto clip:clips) {
+        const auto copied=store.getEventStream(clip,"notes");
+        if(!copied || *copied!=original)return false;
+        StreamReader<NoteRecord> reader(*copied,FourCC::Notes);
+        bool maximum=false,highBit=false;
+        for(std::uint32_t i=0;i<reader.count();++i) {
+            const auto note=reader.at(i);
+            if(!note)return false;
+            maximum=maximum || note->note_id==std::numeric_limits<std::uint64_t>::max();
+            highBit=highBit || note->note_id==(std::uint64_t{1}<<63)+7;
+        }
+        if(!reader.ok() || !maximum || !highBit)return false;
+    }
+    return true;
+}
+void twoPointSplits() {
+    constexpr std::int64_t k=240240; // 1000 samples at 120 BPM / 48 kHz
+    constexpr std::array<SplitVoice,7> originalVoices{{
+        {2000,4000,60,91,31,false},{4000,5000,61,92,32,false},
+        {3000,7000,62,93,33,true}, {6000,8000,63,94,34,false},
+        {5000,6000,64,95,35,false},{4000,7000,62,96,36,false},
+        {2000,3000,66,98,38,false}}};
+    constexpr std::array<SplitVoice,10> splitVoices{{
+        {2000,4000,60,91,31,false},{4000,5000,61,92,32,false},
+        {3000,4000,62,93,33,true}, {4000,6000,62,93,33,true},
+        {6000,7000,62,93,33,true}, {6000,8000,63,94,34,false},
+        {5000,6000,64,95,35,false},{4000,6000,62,96,36,false},
+        {6000,7000,62,96,36,false},{2000,3000,66,98,38,false}}};
+    constexpr std::array<std::int64_t,3> pieces{1,2,3};
+    for(const auto width:{Precision::Float32,Precision::Float64})for(const bool irregular:{false,true}) {
+        Fixture fixture(48000,128,width);
+        fixture.store->db().exec("INSERT INTO clips(id,track_id,kind,time_base,pos_ticks,length_ticks,content_offset_ticks) VALUES(1,1,'midi',0,480480,1441440,240240); DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0)");
+        auto make=[](std::uint64_t id,std::int64_t start,std::int64_t end,std::uint8_t key,
+                     std::uint8_t velocity,std::uint8_t release,float tuning=0) {
+            NoteRecord note{};note.note_id=id;note.start_ticks=start*k;note.dur_ticks=(end-start)*k;
+            note.key=key;note.channel=3;note.vel_on=velocity;note.vel_off=release;
+            note.probability=10000;note.tuning_cents=tuning;return note;
+        };
+        std::array<NoteRecord,8> records{{
+            make(std::numeric_limits<std::uint64_t>::max(),1,3,60,91,31),
+            make((std::uint64_t{1}<<63)+7,3,4,61,92,32),make(3,2,6,62,93,33,31.25f),
+            make(4,5,7,63,94,34),make(5,4,5,64,95,35),make(6,3,6,62,96,36),
+            make(7,7,8,65,97,37),make(8,0,2,66,98,38)}};
+        std::stable_sort(records.begin(),records.end(),[](const auto& a,const auto& b){return a.start_ticks<b.start_ticks;});
+        const auto original=writeStream<NoteRecord>(FourCC::Notes,records);
+        if(!fixture.store->putEventStream(1,"notes",original))throw std::runtime_error("split ANOT write");
+        fixture.load();
+        check(renderSplitSchedule(fixture,irregular,originalVoices),"native unsplit reference honors source offset, overlap and exclusive end in both widths and callback partitions");
+        const auto head=OpJournal(*fixture.store).headSeq();
+        const auto prepared=clip_edit::prepareSplit(*fixture.store,1,2,3,{0,4*k},{0,6*k},48000);
+        check(prepared.ok && prepared.requests.size()==1 && prepared.requests[0].opType=="clip.split",
+              "two-point MIDI split is prepared as one captured native operation");
+        if(!prepared.ok)continue;
+        const auto committed=clip_edit::commitPrepared(*fixture.store,prepared);
+        check(committed.ok && committed.seqs.size()==1,"both MIDI cuts commit as one journal operation");
+        if(!committed.ok || committed.seqs.size()!=1)continue;
+        check(splitNoteBytes(*fixture.store,pieces,original),"both cuts retain complete ANOT bytes and full-width stored note identities on all pieces");
+        fixture.refresh();
+        check(renderSplitSchedule(fixture,irregular,splitVoices),"native two-cut boundaries release before chase, retain tuning and keep overlapping same-key voices independent");
+        const auto undone=History(*fixture.store).undo();
+        check(undone.ok && undone.opsApplied==1 && undone.txnId==committed.txnId &&
+              OpJournal(*fixture.store).headSeq()==head,"one undo rejoins both cuts through the original single operation");
+        if(!undone.ok)continue;
+        fixture.refresh();
+        check(renderSplitSchedule(fixture,irregular,originalVoices),"one undo restores the original native MIDI schedule");
+        const auto redone=History(*fixture.store).redo();
+        check(redone.ok && redone.opsApplied==1 && redone.txnId==committed.txnId &&
+              OpJournal(*fixture.store).headSeq()==committed.seqs[0],"one redo replays both captured cuts in the same transaction");
+        if(!redone.ok)continue;
+        fixture.refresh();
+        const bool restoredBytes=splitNoteBytes(*fixture.store,pieces,original);
+        const bool restoredPlayback=renderSplitSchedule(fixture,irregular,splitVoices);
+        check(restoredBytes && restoredPlayback,"redo restores full-width stored identities and the exact native two-cut schedule");
+    }
+}
+
 void sourceMarkers() {
     constexpr std::int64_t quarter=5765760;
     auto set = [](Store& store,const char* name,Payload payload) {
@@ -271,7 +425,7 @@ void sessionControllers() {
 
 int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
-    try{if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
+    try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

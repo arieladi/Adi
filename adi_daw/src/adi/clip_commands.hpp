@@ -39,6 +39,13 @@ struct ClipCut {ClipCopy copy;PreparedEdit edit;};
     std::int64_t track,TimePoint,const edit_plan::Options&);
 [[nodiscard]] PreparedEdit prepareSplit(Store&,std::int64_t sourceId,std::int64_t rightId,
                                         TimePoint,double referenceRate);
+/// Two ordered cuts strictly inside one clip, in one explicit input clock.
+/// The left piece keeps sourceId; middleId and rightId must be distinct unused
+/// clip identities. Both cuts are one captured operation/undo step. The caller
+/// may append clip.setMute for middleId before the single commitPrepared call.
+[[nodiscard]] PreparedEdit prepareSplit(Store&,std::int64_t sourceId,
+                                        std::int64_t middleId,std::int64_t rightId,
+                                        TimePoint begin,TimePoint end,double referenceRate);
 /// Shift the Set and its global envelopes, splitting material at the boundary.
 /// Musical length; linear objects move by the held tempo immediately before it.
 [[nodiscard]] PreparedEdit prepareInsertSilence(Store&,std::int64_t atTicks,

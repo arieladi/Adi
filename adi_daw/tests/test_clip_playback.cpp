@@ -7,11 +7,14 @@
 #include "adi/audio/decode.hpp"
 #include "adi/audio/progressive_decode.hpp"
 #include "adi/audio/wav_file.hpp"
+#include "adi/audio/warp_map.hpp"
 #include "adi/audio/io_audit.hpp"
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
+#include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -205,6 +208,108 @@ void splitInsideFades() {
     }
 }
 
+std::vector<double> renderSplitPcm(Fixture& f,Precision width,std::int32_t frames) {
+    if(frames<=0)return {};
+    f.session.transport().locate(0);f.session.transport().play();
+    const auto total=static_cast<std::size_t>(frames);
+    std::vector<double> result(total*2);
+    std::array<float,2048> narrow{};std::array<double,2048> wide{};
+    float* out[]={narrow.data(),narrow.data()+1024};double* out64[]={wide.data(),wide.data()+1024};
+    for(std::int32_t first=0;first<frames;) {
+        const auto count=std::min<std::int32_t>(1024,frames-first);
+        if(!f.session.clips() || !f.session.clips()->prime(std::chrono::seconds(5)))return {};
+        AudioIo io;io.numOut=2;io.frames=count;
+        if(width==Precision::Float64)io.out64=out64;else io.out=out;
+        {audio::CallbackScope callback;f.session.process(io);}
+        for(std::size_t c=0;c<2;++c)for(std::int32_t i=0;i<count;++i) {
+            const auto offset=static_cast<std::size_t>(i);
+            result[c*total+static_cast<std::size_t>(first)+offset]=width==Precision::Float64?
+                wide[c*1024+offset]:static_cast<double>(narrow[c*1024+offset]);
+        }
+        first+=count;
+    }
+    return result;
+}
+bool twoSplitAudioRoundTrip(Fixture& f,Precision width,std::int32_t frames,
+                           std::int32_t clipBegin,std::int32_t clipEnd,
+                           std::int32_t firstCut,std::int32_t lastCut,
+                           clip_edit::TimePoint begin,clip_edit::TimePoint end) {
+    SessionSpec spec{2,48000,1024};spec.precision=width;f.session.graph().setFadeFrames(0);
+    const bool loaded=f.session.load(*f.store,{},spec);
+    check(loaded,"load native audio for one two-point split");if(!loaded)return false;
+    const auto original=renderSplitPcm(f,width,frames);
+    const auto total=static_cast<std::size_t>(frames);
+    bool baseline=original.size()==total*2;
+    if(baseline)for(std::size_t c=0;c<2;++c) {
+        for(const auto cut:{firstCut,lastCut})for(const auto offset:{-16,0}) {
+            const auto at=static_cast<std::size_t>(cut+offset);
+            baseline=baseline && std::any_of(original.begin()+static_cast<std::ptrdiff_t>(c*total+at),
+                original.begin()+static_cast<std::ptrdiff_t>(c*total+at+16),[](double value){return std::abs(value)>1e-9;});
+        }
+        for(std::int32_t i=0;i<frames;++i)
+            if(i<clipBegin || i>=clipEnd)baseline=baseline && original[c*total+static_cast<std::size_t>(i)]==0;
+    }
+    check(baseline && f.session.clips()->underrunSamples()==0,
+          "two-point baseline is audible on both sides of both cuts and silent outside its placement");
+    if(!baseline)return false;
+    const auto prepared=clip_edit::prepareSplit(*f.store,1,2,3,begin,end,48000);
+    check(prepared.ok,"prepare both audio cuts from one original image");if(!prepared.ok)return false;
+    const bool committed=clip_edit::commitPrepared(*f.store,prepared).ok && f.session.refresh(*f.store);
+    check(committed,"commit and refresh both audio cuts as one edit");if(!committed)return false;
+    check(f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id IN (1,2,3)").getInt()==3,
+          "two-point audio split creates both caller-identified pieces");
+    const auto split=renderSplitPcm(f,width,frames);
+    check(split.size()==original.size() && split==original,
+          "two cuts preserve every native PCM sample, source phase and original fade envelope");
+    const bool undone=History(*f.store).undo().ok && f.session.refresh(*f.store);
+    check(undone && f.store->db().execAndGet("SELECT count(*) FROM clips").getInt()==1,
+          "one audio undo removes both created pieces");if(!undone)return false;
+    const auto restored=renderSplitPcm(f,width,frames);
+    check(restored.size()==original.size() && restored==original,"one audio undo restores all original PCM exactly");
+    const bool redone=History(*f.store).redo().ok && f.session.refresh(*f.store);
+    check(redone && f.store->db().execAndGet("SELECT count(*) FROM clips WHERE id IN (1,2,3)").getInt()==3,
+          "one audio redo restores both captured pieces");if(!redone)return false;
+    const auto replayed=renderSplitPcm(f,width,frames);
+    check(replayed.size()==original.size() && replayed==original,"one audio redo restores all split PCM exactly");
+    return true;
+}
+void twoPointSplitSourceClocks() {
+    for(const auto sourceRate:{44100u,48000u})for(const auto width:{Precision::Float32,Precision::Float64})for(const bool loop:{false,true}) {
+        Fixture f(sourceRate,2,4000);f.add(1,73,800,11,2000);
+        f.store->db().exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0),(72072,60,0);"
+            "UPDATE clips SET content_offset_ticks=12012,fade_in_ticks=96096,fade_out_ticks=24024,fade_in_curve=2,fade_out_curve=5;"
+            "INSERT INTO clip_playback_details(clip_id,in_tension,out_tension) VALUES(1,0.4,-0.3)");
+        if(loop)f.store->db().exec("UPDATE clips SET loop_enabled=1,loop_start_ticks=24024,loop_len_ticks=48048");
+        (void)twoSplitAudioRoundTrip(f,width,1024,73,873,130,816,{1,ns(130)},{1,ns(816)});
+    }
+}
+void twoPointSplitWarpFades() {
+    constexpr auto quarter=textproj::kPPQ;
+    for(const auto width:{Precision::Float32,Precision::Float64}) {
+        Fixture f(48000,2,12000,440);f.add(1,0,48000,0,12000);
+        auto& db=f.store->db();
+        db.exec("DELETE FROM tempo_map; INSERT INTO tempo_map(pos_ticks,bpm,curve) VALUES(0,120,0);"
+            "UPDATE clips SET time_base=0,pos_ticks=0,length_ticks=11531520,pos_ns=NULL,length_ns=NULL,"
+            "loop_enabled=1,loop_start_ticks=0,loop_len_ticks=5765760,fade_in_ticks=8648640,fade_out_ticks=8648640,fade_in_curve=2,fade_out_curve=4;"
+            "UPDATE audio_clips SET warp_enabled=1,warp_mode='complex';"
+            "INSERT INTO clip_playback_details(clip_id,in_tension,out_tension) VALUES(1,0.35,-0.4)");
+        const std::array<WarpMarker,2> markers{{{0,0},{12000,quarter}}};
+        const auto map=audio::writeWarpMap(markers,12000);
+        check(static_cast<bool>(map),"prepare the original two-point Warp marker map");if(!map)continue;
+        SQLite::Statement setMap(db,"UPDATE audio_clips SET warp_markers=? WHERE clip_id=1");
+        setMap.bind(1,map.bytes.data(),static_cast<int>(map.bytes.size()));setMap.exec();
+        const auto originalMap=db.execAndGet("SELECT hex(warp_markers) FROM audio_clips WHERE clip_id=1").getString();
+        if(!twoSplitAudioRoundTrip(f,width,50000,0,48000,12000,18000,{0,quarter/2},{0,3*quarter/4}))continue;
+        check(db.execAndGet("SELECT count(*) FROM clip_warp_fade_domains WHERE clip_id IN (1,2,3) AND "
+            "in_begin_ticks=0 AND in_end_ticks=8648640 AND out_begin_ticks=2882880 AND out_end_ticks=11531520").getInt()==3,
+            "both Warp cuts retain the first image's complete original fade domains");
+        bool sameMap=true;
+        SQLite::Statement maps(db,"SELECT hex(warp_markers) FROM audio_clips ORDER BY clip_id");
+        while(maps.executeStep())sameMap=sameMap && maps.getColumn(0).getString()==originalMap;
+        check(sameMap,"two-point Warp split and one redo retain the original marker bytes");
+    }
+}
+
 void rangeSurvivorPcm(std::uint32_t sourceRate,Precision width,bool loop,bool wholeTime) {
     Fixture f(sourceRate,2,4000);f.add(1,100,800,11,2000);
     auto& db=f.store->db();
@@ -284,7 +389,6 @@ void rangeSurvivorSourceClocks() {
         rangeSurvivorPcm(sourceRate,width,true,true); // whole-Time removal also relocates the surviving tail
     }
 }
-
 void silenceSourceClocks() {
     for(const auto sourceRate:{44100u,48000u}) {
         Fixture f(sourceRate,2,4000);f.add(1,0,800,0,1000);
@@ -742,7 +846,7 @@ int main(int argc,char** argv) {
         if(only=="all" || only=="placement")placement();
         if(only=="all" || only=="properties")properties();
         if(only=="all" || only=="fades")editedFades();
-        if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
+        if(only=="all" || only=="split"){splitSourceClocks();splitInsideFades();twoPointSplitSourceClocks();twoPointSplitWarpFades();rangeSurvivorSourceClocks();silenceSourceClocks();deleteTimeSourceClocks();timeClipboardSourceClocks();}
         if(only=="all" || only=="seeks")seeksAndStalls();
         if(only=="all" || only=="conversion")conversion();
         if(only=="all" || only=="markers")sourceMarkers();
