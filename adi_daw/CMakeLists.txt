@@ -209,6 +209,7 @@ add_custom_command(
     VERBATIM)
 
 add_library(adi_core STATIC
+    src/adi/applied_batches.cpp
     src/adi/appdata.cpp
     src/adi/panel.cpp
     src/adi/plugin_registry.cpp
@@ -1010,6 +1011,14 @@ add_test(NAME adi_graph_tests COMMAND adi_graph_tests)
 add_executable(adi_param_ops_tests tests/test_param_ops.cpp)
 target_link_libraries(adi_param_ops_tests PRIVATE adi_core adi_warnings Threads::Threads)
 add_test(NAME adi_param_ops_tests COMMAND adi_param_ops_tests)
+
+add_executable(adi_applied_batches_tests tests/test_applied_batches.cpp)
+target_link_libraries(adi_applied_batches_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_applied_batches_tests COMMAND adi_applied_batches_tests)
+
+add_executable(adi_param_live_replay_tests tests/test_param_live_replay.cpp)
+target_link_libraries(adi_param_live_replay_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_param_live_replay_tests COMMAND adi_param_live_replay_tests)
 
 add_executable(adi_ui_param_capture_tests tests/test_ui_param_capture.cpp)
 target_link_libraries(adi_ui_param_capture_tests PRIVATE adi_core adi_warnings)

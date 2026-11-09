@@ -2,6 +2,7 @@
 #include "adi/freeze_state.hpp"
 
 #include "adi/history.hpp"
+#include "adi/applied_batches_detail.hpp"
 
 #include "adi/store.hpp"
 
@@ -15,9 +16,30 @@ namespace adi {
 
 namespace {
 
+bool mutationAllowed(const Store& store, std::string& error) {
+    if (detail::appliedDispatchActive(store)) {
+        error = "reentrant history mutation during applied-batch delivery";
+        return false;
+    }
+    if (!appliedSource(store).alive()) {
+        error = "project is closed";
+        return false;
+    }
+    return true;
+}
+
+detail::PreparedAppliedDelivery finishApplied(detail::AppliedBatchBuilder& builder,
+    const Store& store, std::optional<std::int64_t> after) {
+    std::string error;
+    auto result = builder.finish(store, after, error);
+    if (!result) throw std::runtime_error("cannot capture applied history batch: " + error);
+    return std::move(*result);
+}
+
 /// One op as undo/redo needs it.
 struct ChainOp {
     std::int64_t seq = 0;
+    std::int64_t txnId = 0;
     std::optional<std::int64_t> parentSeq;
     std::string opType;
     std::vector<std::byte> payload;
@@ -41,6 +63,7 @@ std::vector<ChainOp> txnOps(SQLite::Database& db, std::int64_t txnId) {
     while (st.executeStep()) {
         ChainOp o;
         o.seq = st.getColumn(0).getInt64();
+        o.txnId = txnId;
         if (!st.getColumn(1).isNull()) o.parentSeq = st.getColumn(1).getInt64();
         o.opType = st.getColumn(2).getString();
         o.payload = blobOf(st.getColumn(3));
@@ -70,8 +93,10 @@ std::optional<std::int64_t> childOf(SQLite::Database& db,
     return st.getColumn(0).getInt64();
 }
 
-bool applyOne(OpContext& ctx, const std::string& opType,
-              const std::vector<std::byte>& cbor, bool asInverse, std::string& err) {
+bool applyOne(OpContext& ctx, const ChainOp& recorded, bool asInverse, std::string& err,
+              detail::AppliedBatchBuilder* applied = nullptr) {
+    const auto& opType = recorded.opType;
+    const auto& cbor = asInverse ? recorded.inverse : recorded.payload;
     const auto* d = OpRegistry::instance().find(opType);
     if (!d) { err = "unknown op in log: " + opType; return false; }
 
@@ -88,13 +113,15 @@ bool applyOne(OpContext& ctx, const std::string& opType,
 
     auto payload = decodeFromLog(cbor, err);
     if (!payload) { err = "cannot decode payload for " + opType + ": " + err; return false; }
-    return target->apply(ctx, *payload, err);
+    if (!target->apply(ctx, *payload, err)) return false;
+    return applied == nullptr || applied->append(ctx.store, opType, targetName, *payload,
+        recorded.seq, recorded.txnId, asInverse, err);
 }
 
 /// One op, by seq, as a move between points needs it.
 std::optional<ChainOp> opAt(SQLite::Database& db, std::int64_t seq) {
     SQLite::Statement st(db,
-        "SELECT seq, parent_seq, op_type, payload, inverse FROM ops WHERE seq = ?");
+        "SELECT seq, parent_seq, op_type, payload, inverse, txn_id FROM ops WHERE seq = ?");
     st.bind(1, seq);
     if (!st.executeStep()) return std::nullopt;
     ChainOp o;
@@ -104,6 +131,7 @@ std::optional<ChainOp> opAt(SQLite::Database& db, std::int64_t seq) {
     o.payload = blobOf(st.getColumn(3));
     o.inverse = blobOf(st.getColumn(4));
     o.hasInverse = !st.getColumn(4).isNull();
+    o.txnId = st.getColumn(5).getInt64();
     return o;
 }
 
@@ -143,7 +171,8 @@ std::optional<std::int64_t> tipOf(SQLite::Database& db, std::optional<std::int64
 /// them is whole transactions, and inverting its ops newest-first is exactly
 /// what undoing each transaction in turn would do.
 bool moveBetween(OpContext& ctx, std::optional<std::int64_t> from,
-                 std::optional<std::int64_t> to, int& applied, std::string& err) {
+                 std::optional<std::int64_t> to, int& applied, std::string& err,
+                 detail::AppliedBatchBuilder* notice = nullptr) {
     std::vector<ChainOp> down, up;
     if (!chainOf(ctx.db, from, down, err) || !chainOf(ctx.db, to, up, err)) return false;
 
@@ -165,14 +194,14 @@ bool moveBetween(OpContext& ctx, std::optional<std::int64_t> from,
             err = "op " + std::to_string(o.seq) + " (" + o.opType + ") has no stored inverse";
             return false;
         }
-        if (!applyOne(ctx, o.opType, o.inverse, /*asInverse=*/true, err)) {
+        if (!applyOne(ctx, o, /*asInverse=*/true, err, notice)) {
             err = "rewinding " + o.opType + ": " + err;
             return false;
         }
         ++applied;
     }
     for (std::size_t i = k; i-- > 0;) {
-        if (!applyOne(ctx, up[i].opType, up[i].payload, /*asInverse=*/false, err)) {
+        if (!applyOne(ctx, up[i], /*asInverse=*/false, err, notice)) {
             err = "replaying " + up[i].opType + ": " + err;
             return false;
         }
@@ -266,6 +295,7 @@ std::optional<History::Step> History::nextRedo() const {
 
 History::Result History::undo() {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     const auto step = nextUndo();
@@ -278,6 +308,7 @@ History::Result History::undo() {
         // them would leave the project changed and the head disagreeing, and
         // the next undo would then act on the wrong transaction.
         SQLite::Transaction txn(db);
+        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::Undo, head());
 
         const auto ops = txnOps(db, step->txnId);
 
@@ -291,7 +322,7 @@ History::Result History::undo() {
                 return r;   // rolls back
             }
             std::string err;
-            if (!applyOne(ctx, it->opType, it->inverse, /*asInverse=*/true, err)) {
+            if (!applyOne(ctx, *it, /*asInverse=*/true, err, &applied)) {
                 r.error = "undoing " + it->opType + ": " + err;
                 return r;
             }
@@ -313,10 +344,12 @@ History::Result History::undo() {
         }
 
         freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, ops.front().parentSeq);
         txn.commit();
         freeze::remember(store_);
         r.ok = true;
         r.txnId = step->txnId;
+        delivery.publish();
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -327,6 +360,7 @@ History::Result History::undo() {
 
 History::Result History::redo() {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     const auto step = nextRedo();
@@ -336,13 +370,14 @@ History::Result History::redo() {
     OpContext ctx{store_, db};
     try {
         SQLite::Transaction txn(db);
+        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::Redo, head());
 
         const auto ops = txnOps(db, step->txnId);
         // Forward order, forward payloads -- redo replays what was originally
         // done, it does not invert anything.
         for (const auto& o : ops) {
             std::string err;
-            if (!applyOne(ctx, o.opType, o.payload, /*asInverse=*/false, err)) {
+            if (!applyOne(ctx, o, /*asInverse=*/false, err, &applied)) {
                 r.error = "redoing " + o.opType + ": " + err;
                 return r;
             }
@@ -355,10 +390,12 @@ History::Result History::redo() {
         }
 
         freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, ops.back().seq);
         txn.commit();
         freeze::remember(store_);
         r.ok = true;
         r.txnId = step->txnId;
+        delivery.publish();
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -389,6 +426,7 @@ std::vector<History::Branch> History::branches() const {
 
 History::Result History::switchToBranch(std::int64_t branchId) {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     auto& db = store_.db();
@@ -402,12 +440,15 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         const auto here = head();
         if (here == target) {
             SQLite::Transaction txn(db);
+            detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::BranchSwitch, here);
             db.exec("UPDATE op_branches SET is_current = 0 WHERE is_current = 1");
             SQLite::Statement up(db, "UPDATE op_branches SET is_current = 1 WHERE id = ?");
             up.bind(1, branchId);
             up.exec();
+            auto delivery = finishApplied(applied, store_, target);
             txn.commit();
             r.ok = true;
+            delivery.publish();
             return r;
         }
 
@@ -416,8 +457,9 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         // reachable; switching back is the same move in the other direction.
         OpContext ctx{store_, db};
         SQLite::Transaction txn(db);
+        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::BranchSwitch, here);
         std::string err;
-        if (!moveBetween(ctx, here, target, r.opsApplied, err)) {
+        if (!moveBetween(ctx, here, target, r.opsApplied, err, &applied)) {
             r.error = err;
             r.opsApplied = 0;
             return r;   // rolls back
@@ -427,9 +469,11 @@ History::Result History::switchToBranch(std::int64_t branchId) {
         up.bind(1, branchId);
         up.exec();
         freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, target);
         txn.commit();
         freeze::remember(store_);
         r.ok = true;
+        delivery.publish();
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -466,6 +510,7 @@ History::SnapshotResult History::takeSnapshot(const std::string &name, std::int6
                                               int utcOffsetMinutes, bool automatic,
                                               const HistorySnapshotPolicy &policy) {
     SnapshotResult r;
+    if (!mutationAllowed(store_, r.error)) return r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
     try {
         auto& db = store_.db();
@@ -500,6 +545,7 @@ History::SnapshotResult History::takeSnapshot(const std::string &name, std::int6
 
 History::Result History::removeSnapshot(std::int64_t id) {
     Result result;
+    if (!mutationAllowed(store_, result.error)) return result;
     if (store_.readOnly()) {
         result.error = "project is open read-only";
         return result;
@@ -524,6 +570,7 @@ History::Result History::removeSnapshot(std::int64_t id) {
 
 History::Result History::renameSnapshot(std::int64_t snapshotId, const std::string& newName) {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
     if (newName.empty()) { r.error = "a snapshot name cannot be empty"; return r; }
     try {
@@ -562,6 +609,7 @@ std::vector<History::Snapshot> History::listSnapshots() const {
 
 History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc) {
     Result r;
+    if (!mutationAllowed(store_, r.error)) return r;
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
     auto& db = store_.db();
@@ -578,6 +626,7 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
 
         OpContext ctx{store_, db};
         SQLite::Transaction txn(db);
+        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::SnapshotRevert, here);
 
         // ADR-0128 d2: nothing is lost by clicking. The line the head is on
         // may run past the head (undone work still redoable); its TIP is what
@@ -602,7 +651,7 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
         }
 
         std::string err;
-        if (!moveBetween(ctx, here, target, r.opsApplied, err)) {
+        if (!moveBetween(ctx, here, target, r.opsApplied, err, &applied)) {
             r.error = err;
             r.opsApplied = 0;
             return r;   // rolls back, the preserved branch row included
@@ -613,9 +662,11 @@ History::Result History::revertToSnapshot(std::int64_t snapshotId, std::int64_t 
             return r;
         }
         freeze::validate(store_);
+        auto delivery = finishApplied(applied, store_, target);
         txn.commit();
         freeze::remember(store_);
         r.ok = true;
+        delivery.publish();
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -650,6 +701,7 @@ Payload checkpointAt(Store &store, std::int64_t seq) {
 } // namespace history_detail
 UndoCompactionResult History::setUndoRetentionPolicy(const UndoRetentionPolicy &policy) {
     UndoCompactionResult result;
+    if (!mutationAllowed(store_, result.error)) return result;
     if (store_.readOnly()) {
         result.error = "project is open read-only";
         return result;
@@ -668,6 +720,7 @@ UndoCompactionResult History::setUndoRetentionPolicy(const UndoRetentionPolicy &
 }
 UndoCompactionResult History::compactUndo() {
     UndoCompactionResult result;
+    if (!mutationAllowed(store_, result.error)) return result;
     if (store_.readOnly()) {
         result.error = "project is open read-only";
         return result;
@@ -685,6 +738,8 @@ UndoCompactionResult History::compactUndo() {
 }
 History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store &target) {
     ReplayBaseResult result;
+    if (!mutationAllowed(target, result.error)) return result;
+    if (!appliedSource(source).alive()) { result.error = "source project is closed"; return result; }
     if (target.readOnly()) {
         result.error = "target is open read-only";
         return result;
@@ -693,6 +748,9 @@ History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store 
         if (&source == &target)
             throw std::runtime_error("replay target must be a different project");
         SQLite::Transaction transaction(target.db());
+        detail::AppliedBatchBuilder applied(target, AppliedBatchKind::ReplayBaseReset,
+                                             OpJournal(target).headSeq());
+        std::optional<detail::PreparedAppliedDelivery> delivery;
         if (OpJournal(target).count() != 0)
             throw std::runtime_error("replay target journal is not empty");
         SQLite::Statement row(const_cast<SQLite::Database &>(source.db()),
@@ -704,9 +762,11 @@ History::ReplayBaseResult History::restoreReplayBase(const Store &source, Store 
                 throw std::runtime_error("invalid history checkpoint: " + error);
             history_detail::installCheckpoint(target, *state);
             result.baseSeq = row.getColumn(0).getInt64();
+            delivery = finishApplied(applied, target, OpJournal(target).headSeq());
         }
         transaction.commit();
         result.ok = true;
+        if (delivery) delivery->publish();
     } catch (const std::exception &error) {
         result.error = error.what();
     }

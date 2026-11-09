@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -203,6 +204,11 @@ struct OpRequest {
     /// restore it. Advisory: never an input to a handler, purely a UI hint, and
     /// droppable by compaction. Recorded on the FIRST op of a transaction only.
     std::optional<Payload> selBefore;
+
+    /// Transient owner-issued runtime acknowledgement capability. Never encoded
+    /// in payload/CBOR or persisted in the op log. Unknown tokens are untrusted;
+    /// only the issuing runtime may recognise its exact complete request group.
+    std::shared_ptr<const void> runtimeProof{};
 };
 
 struct CommitResult {

@@ -3,6 +3,7 @@
 #include "adi/freeze_state.hpp"
 
 #include "adi/ops.hpp"
+#include "adi/applied_batches_detail.hpp"
 
 #include "adi/history_compaction.hpp"
 #include "adi/store.hpp"
@@ -254,6 +255,8 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs) {
 
 CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOptions& options) {
     CommitResult r;
+    if (detail::appliedDispatchActive(store_)) { r.error = "reentrant journal commit during applied-batch delivery"; return r; }
+    if (!appliedSource(store_).alive()) { r.error = "project is closed"; return r; }
     if (reqs.empty()) { r.ok = true; return r; }
     if (store_.readOnly()) { r.error = "project is open read-only"; return r; }
 
@@ -293,6 +296,7 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
 
         // Where we are in the tree. New ops hang off this.
         std::optional<std::int64_t> head = headSeq();
+        detail::AppliedBatchBuilder applied(store_, AppliedBatchKind::Commit, head);
 
         // ADR-0161: this Store's client, and the clock its ops continue from.
         // One more than every clock in the file, and than every seq, because
@@ -426,6 +430,11 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
             clock.bind(2, store_.clientId());
             clock.bind(3, ++lamport);
             clock.exec();
+            if (!applied.append(store_, q.opType, d->name, q.payload, seq, txnId, false, err, q.runtimeProof)) {
+                r.error = "cannot capture applied operation: " + err;
+                r.seqs.clear();
+                return r;
+            }
             if (!d->ephemeral) head = seq;   // the chain advances; ephemeral does not
         }
 
@@ -464,9 +473,17 @@ CommitResult OpJournal::commit(std::span<const OpRequest> reqs, const CommitOpti
                     "NOCASE IN ('tracks','mixer_strip','project') UNION ALL SELECT 1 FROM sqlite_temp_master "
                     "WHERE type='trigger' AND tbl_name COLLATE NOCASE IN ('tracks','mixer_strip','project'))")
                       .getInt() != 0));
+        std::string appliedError;
+        auto delivery = applied.finish(store_, headSeq(), appliedError);
+        if (!delivery) {
+            r.error = "cannot capture applied batch: " + appliedError;
+            r.seqs.clear();
+            return r;
+        }
         txn.commit();
         freeze::remember(store_);
         r.ok = true;
+        delivery->publish(); // noexcept; observer failure cannot falsify SQL success
         return r;
     } catch (const std::exception& e) {
         r.error = e.what();
@@ -547,6 +564,7 @@ std::optional<std::int64_t> OpJournal::headSeq() const {
 }
 
 bool OpJournal::setHeadSeq(std::optional<std::int64_t> seq) {
+    if (detail::appliedDispatchActive(store_) || !appliedSource(store_).alive()) return false;
     try {
         SQLite::Statement base(store_.db(), "SELECT base_seq FROM history_checkpoint WHERE id=1");
         if (base.executeStep() && (!seq || *seq < base.getColumn(0).getInt64()))

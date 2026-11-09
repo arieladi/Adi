@@ -33,6 +33,7 @@ class Database;
 namespace adi {
 class Store;
 namespace freeze {bool validated(Store&) noexcept;void remember(Store&) noexcept;}
+namespace detail {struct AppliedDomain; struct AppliedSourceAccess;}
 
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
@@ -189,6 +190,8 @@ public:
     [[nodiscard]] const std::string& clientLabel() const noexcept { return clientLabel_; }
 
 private:
+    friend struct detail::AppliedSourceAccess;
+    std::shared_ptr<detail::AppliedDomain> appliedDomain_;
     friend bool freeze::validated(Store&) noexcept;
     friend void freeze::remember(Store&) noexcept;
     std::int64_t frozenValidationChanges_=-1,frozenValidationDataVersion_=-1;

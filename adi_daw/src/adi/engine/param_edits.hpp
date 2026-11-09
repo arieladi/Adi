@@ -78,6 +78,11 @@ public:
     // called: a pointer held across pushes reads stale values (ADR-0141).
     // pushed counts accepted events. dropped counts rejected push attempts.
     [[nodiscard]] const Stats& stats() const noexcept;
+    /// Consumer-only snapshot: events published after a drain's boundary may
+    /// already be included in stats().pushed while still waiting in the ring.
+    [[nodiscard]] bool hasPendingEvents() const noexcept {
+        return read_.load(std::memory_order_relaxed) != write_.load(std::memory_order_acquire);
+    }
 
 private:
     struct Parameter {

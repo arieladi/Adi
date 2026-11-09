@@ -1405,6 +1405,18 @@ overrides resume through Session's existing Re-Enable API. The UI and plug-in
 captures have separate producers. `docs/ENGINE-UI-PARAM-CAPTURE.md` defines the
 commit, lifetime, refusal and delayed-echo contract. No new vocabulary/schema.
 
+N47 delivers successful journal and History mutations to existing live plug-ins
+through the Store's owned applied-batch feed. Undo carries actual inverse payloads
+in execution order, including the opener's cleared inverse; commit and Redo
+carry forwards. Branch switches and snapshot reverts retain both traversal legs.
+Observers run after COMMIT. `ParamOps::attachSession` subscribes through the
+Session; its ordinary owner drain applies queued receipts before capturing new
+edits. A refused live delivery retains its ordered retry position and reports
+separately from the already committed SQL result. State bytes and the final
+parameter projection for state-touched devices belong to that exact receipt,
+so delayed replay does not read a newer transaction's rows. See
+[Live parameter replay](ENGINE-PARAM-REPLAY.md) for ownership and admission.
+
 Device clipboard (N18): readDeviceCopy(Store&,id), in device_copy.hpp,
 returns the registered device.remove inverse as a device.insert payload, plus
 the referenced plug-in metadata. It is a read on the Store's owner, including
