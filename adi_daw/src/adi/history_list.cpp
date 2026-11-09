@@ -17,6 +17,14 @@ History::Timeline History::readTimeline() const {
         // One read snapshot across all metadata. This is an owner-thread API,
         // called outside journal mutations; nested transactions fail explicitly.
         SQLite::Transaction transaction(db);
+        {
+            SQLite::Statement checkpoint(db, "SELECT base_seq FROM history_checkpoint WHERE id=1");
+            if (checkpoint.executeStep()) {
+                if (!checkpoint.getColumn(0).isInteger() || checkpoint.getColumn(0).getInt64() <= 0)
+                    throw std::runtime_error("history checkpoint has an invalid base sequence");
+                result.baseSeq = checkpoint.getColumn(0).getInt64();
+            }
+        }
         struct Node {
             std::int64_t txn = 0;
             std::optional<std::int64_t> parent;
@@ -42,6 +50,16 @@ History::Timeline History::readTimeline() const {
             if (entry.step.opCount == std::numeric_limits<int>::max())
                 throw std::runtime_error("history transaction has too many ops");
             ++entry.step.opCount; entry.step.lastSeq = seq;
+        }
+        if (result.baseSeq != 0) {
+            const auto base = nodes.find(result.baseSeq);
+            if (base == nodes.end()) throw std::runtime_error("history checkpoint points to a missing edit root");
+            if (base->second.parent) throw std::runtime_error("history checkpoint root has a parent");
+            if (nodes.begin()->first != result.baseSeq)
+                throw std::runtime_error("history retains edit ops before its checkpoint root");
+            const auto& root = steps.at(base->second.txn).step;
+            if (root.opCount != 1 || root.firstSeq != result.baseSeq || root.lastSeq != result.baseSeq)
+                throw std::runtime_error("history checkpoint root shares a retained transaction");
         }
         // Read directly, without the legacy convenience readers' empty-on-error
         // contract: a broken metadata table must not look like empty history.
@@ -118,7 +136,13 @@ History::Timeline History::readTimeline() const {
             }
             result.snapshots.push_back(std::move(snapshot));
         }
-        for (auto& [txn, step] : steps) result.steps.push_back(std::move(step));
+        // The base remains a structural node throughout ancestry and anchor
+        // validation, but its forward edit is already in the checkpoint state.
+        // Exact-base branches/snapshots stay in their metadata lists.
+        for (auto& [txn, step] : steps) {
+            if (result.baseSeq == 0 || step.step.lastSeq != result.baseSeq)
+                result.steps.push_back(std::move(step));
+        }
         std::sort(result.steps.begin(), result.steps.end(), [](const TimelineStep& a, const TimelineStep& b) {
             return a.step.lastSeq > b.step.lastSeq; // monotonic journal order, not wall-clock timestamps
         });

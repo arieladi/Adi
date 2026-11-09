@@ -276,6 +276,10 @@ add_library(adi_core STATIC
     src/adi/row_capture.cpp
     src/adi/return_send_tap.cpp
     src/adi/note_transforms.cpp
+    src/adi/note_stream_detail.cpp
+    src/adi/note_diff_plan.cpp
+    src/adi/note_diff.cpp
+    src/adi/note_overlap_plan.cpp
     src/adi/controller_lanes.cpp
     src/juce/builtin_samples.cpp
     src/adi/sample_slots.cpp
@@ -364,6 +368,7 @@ target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cp
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
   src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
+  src/adi/edit_placement.cpp src/adi/edit_plan.cpp
   src/adi/material_commands.cpp src/adi/sample_defaults.cpp src/adi/warp_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(adi_core PUBLIC
@@ -724,6 +729,7 @@ add_test(NAME adi_history_list_tests COMMAND adi_history_list_tests)
 add_library(adi_settings STATIC
     src/adi/settings/registry.cpp
     src/adi/settings/store.cpp
+    src/adi/edit_policy.cpp
     src/adi/settings/channel_config.cpp
     src/adi/settings/bundle.cpp
     src/adi/settings/catalogue.cpp)
@@ -1136,10 +1142,12 @@ add_test(NAME adi_textproj_store_tests COMMAND adi_textproj_store_tests)
 
 # ADR-0102: headless synthetic callback timings; opt in for Release measurements.
 # The proposal and measurement limits are recorded in collab/linux.md.
-option(ADI_BUILD_BENCHMARKS "Build the headless block benchmark" OFF)
+option(ADI_BUILD_BENCHMARKS "Build headless diagnostic benchmarks" OFF)
 if(ADI_BUILD_BENCHMARKS)
     add_executable(adi_block_benchmark tools/benchmark_blocks.cpp)
     target_link_libraries(adi_block_benchmark PRIVATE adi_core adi_warnings)
+    add_executable(adi_edit_placement_measure tools/measure_edit_placement.cpp)
+    target_link_libraries(adi_edit_placement_measure PRIVATE adi_core adi_warnings Threads::Threads)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -1703,6 +1711,19 @@ add_executable(adi_clip_edit_tests tests/test_clip_edit.cpp)
 target_link_libraries(adi_clip_edit_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_clip_edit_tests COMMAND adi_clip_edit_tests)
 
+add_executable(adi_edit_placement_tests tests/test_edit_placement.cpp)
+target_link_libraries(adi_edit_placement_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_edit_placement_tests COMMAND adi_edit_placement_tests)
+
+add_executable(adi_edit_plan_tests tests/test_edit_plan.cpp)
+target_link_libraries(adi_edit_plan_tests PRIVATE adi_settings adi_core adi_warnings)
+add_test(NAME adi_edit_plan_tests COMMAND adi_edit_plan_tests)
+
+add_executable(adi_edit_plan_playback_tests tests/test_edit_plan_playback.cpp)
+target_link_libraries(adi_edit_plan_playback_tests PRIVATE adi_core adi_warnings Threads::Threads)
+add_test(NAME adi_edit_plan_playback_tests COMMAND adi_edit_plan_playback_tests)
+set_tests_properties(adi_edit_plan_playback_tests PROPERTIES TIMEOUT 600)
+
 add_executable(adi_material_commands_tests tests/test_material_commands.cpp)
 target_link_libraries(adi_material_commands_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_material_commands_tests COMMAND adi_material_commands_tests)
@@ -1773,6 +1794,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(adi_link_session_tests PRIVATE -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
 endif()
 add_test(NAME adi_link_session_tests COMMAND adi_link_session_tests)
+
+target_sources(adi_core PRIVATE src/adi/engine/link_playback.cpp)
+foreach(suite render_slices midi_clock_continuity clip_candidate_ready link_playback strip_lane_bindings)
+    add_executable(adi_${suite}_tests tests/test_${suite}.cpp)
+    target_link_libraries(adi_${suite}_tests PRIVATE adi_core adi_warnings Threads::Threads)
+    add_test(NAME adi_${suite}_tests COMMAND adi_${suite}_tests)
+endforeach()
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(adi_link_playback_tests PRIVATE ADI_TEST_LINK_WRAP_LOCKS=1)
+    target_link_options(adi_link_playback_tests PRIVATE -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
+endif()
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
@@ -1858,6 +1890,26 @@ add_test(NAME adi_separated_stems_tests COMMAND adi_separated_stems_tests)
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
 target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_note_transforms_tests COMMAND adi_note_transforms_tests)
+
+add_executable(adi_note_diff_tests tests/test_note_diff.cpp)
+target_link_libraries(adi_note_diff_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_diff_tests COMMAND adi_note_diff_tests)
+
+add_executable(adi_note_diff_compat_tests tests/test_note_diff_compat.cpp)
+target_link_libraries(adi_note_diff_compat_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_diff_compat_tests COMMAND adi_note_diff_compat_tests)
+
+add_executable(adi_note_overlap_tests tests/test_note_overlap.cpp)
+target_link_libraries(adi_note_overlap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_tests COMMAND adi_note_overlap_tests)
+
+add_executable(adi_note_overlap_ops_tests tests/test_note_overlap_ops.cpp)
+target_link_libraries(adi_note_overlap_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_ops_tests COMMAND adi_note_overlap_ops_tests)
+
+add_executable(adi_note_overlap_playback_tests tests/test_note_overlap_playback.cpp)
+target_link_libraries(adi_note_overlap_playback_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_playback_tests COMMAND adi_note_overlap_playback_tests)
 
 add_executable(adi_controller_lanes_tests tests/test_controller_lanes.cpp)
 target_link_libraries(adi_controller_lanes_tests PRIVATE adi_core adi_warnings)

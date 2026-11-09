@@ -57,6 +57,7 @@
 #include "adi/engine/summing.hpp"
 #include "adi/engine/param_automation.hpp"
 #include "adi/engine/process.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/engine/realize.hpp"
 #include "adi/store_rows.hpp"
 #include "juce/device_host.hpp"
@@ -258,6 +259,55 @@ public:
 
     // --- BlockProcessor -----------------------------------------------------
 
+    /// One driver-scoped physical callback. Every query and logical slice uses
+    /// the same published graph and its immutable clock, even if the owner
+    /// publishes another generation between slices. Acquiring another handle
+    /// expires the older one. The Session must outlive all its driver handles.
+    class RenderBlock final {
+    public:
+        RenderBlock(const RenderBlock&) = delete;
+        RenderBlock& operator=(const RenderBlock&) = delete;
+        [[nodiscard]] bool valid() const noexcept { return graph_.valid(); }
+        [[nodiscard]] std::uint64_t generation() const noexcept { return graph_.generation(); }
+        [[nodiscard]] double sampleRate() const noexcept;
+        [[nodiscard]] std::int32_t maxFrames() const noexcept;
+        [[nodiscard]] Precision precision() const noexcept;
+        [[nodiscard]] std::int32_t latencySamples() const noexcept { return graph_.latencySamples(); }
+        [[nodiscard]] std::optional<double> externalTempoBpm() const noexcept;
+        [[nodiscard]] bool constantExternalTempo() const noexcept;
+        [[nodiscard]] std::optional<std::int64_t> loopBeginTick() const noexcept;
+        [[nodiscard]] std::optional<std::int64_t> loopEndTick() const noexcept;
+        [[nodiscard]] std::int64_t tick() const noexcept;
+        [[nodiscard]] std::int64_t tickAtSample(std::int64_t) const noexcept;
+        [[nodiscard]] double beatAtSample(std::int64_t) const noexcept;
+        [[nodiscard]] std::int64_t sampleAtTick(std::int64_t) const noexcept;
+        [[nodiscard]] double bpmAtTick(std::int64_t) const noexcept;
+        /// Driver only, immediately before rendering this target. Posts bounded
+        /// read-ahead and checks mandatory pages without waiting or doing I/O.
+        [[nodiscard]] bool sourcesReadyAt(std::int64_t sample, std::int32_t frames) const noexcept;
+        [[nodiscard]] bool sourcesReady(const Transport& requested, std::int32_t frames) const noexcept;
+        bool process(const AudioIo&) noexcept;
+    private:
+        friend class Session;
+        explicit RenderBlock(Session&) noexcept;
+        // CallbackScope precedes acquisition and outlives the graph handle.
+        audio::CallbackScope callback_;
+        Session& session_;
+        GraphHost::RenderBlock graph_;
+    };
+    [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
+
+    /// Owner only. Rebuild a performance clock without changing authored tempo
+    /// or replacing device instances. Null restores authored project timing.
+    /// The owner guard admits the fully primed candidate before shared bindings
+    /// are changed; false leaves the existing source generation installed.
+    bool setExternalTempo(const Store&, std::optional<double> bpm,
+                          const std::function<bool()>& publishGuard = {}, std::int64_t primeTick = 0);
+    /// Preserve performed time before the musical boundary and replace its
+    /// future. Up to 4096 boundaries are retained in memory, never in the file.
+    bool setExternalTempoAt(const Store&, std::optional<double> bpm, std::int64_t tick,
+                            const std::function<bool()>& publishGuard = {});
+
     void prepare(double sampleRate, std::int32_t maxFrames) override;
     void process(const AudioIo& io) noexcept override;
     void release() override;
@@ -414,7 +464,11 @@ private:
         std::int64_t loopBegin=0,loopEnd=0;
         TempoMap tempo;
         std::vector<rows::TimeSignature> signatures;
+        std::shared_ptr<const StripLaneBindings> stripLanes;
+        ClipPlayback::Readiness sourceReadiness;
         double sampleRate = 48000.0;
+        SessionSpec spec;
+        void applyLoop() const noexcept;
         [[nodiscard]] TransportInfo at(const Transport& transport) const noexcept;
         [[nodiscard]] const TransportInfo* beginBlock()const noexcept override;
     };
@@ -422,8 +476,24 @@ private:
     CueSettings cueSettings_;
     CueMonitor cueMonitor_;
     TransportSettings transportSettings_; // message thread, copied into TimingView
+    std::vector<rows::TempoEvent> performedTempo_; // owner-only performance history
+    std::optional<std::int64_t> authoredResumeAt_; // future authored map resumes here
+    std::optional<std::int64_t> primeExternalAt_; // owner-only candidate readiness anchor
+    bool primeExternalFollowDriver_ = false;
+    const std::function<bool()>* externalPublishGuard_ = nullptr; // synchronous owner call only
+    struct DriverClock {
+        std::int64_t sample = 0;
+        std::uint64_t revision = 0;
+        bool playing = false;
+    };
+    void publishDriverClock() noexcept; // single audio driver only
+    bool readDriverClock(DriverClock&) const noexcept; // bounded owner observation
+    std::atomic<std::uint64_t> driverClockSequence_{0}, driverRevision_{0};
+    std::atomic<std::int64_t> driverSample_{0};
+    std::atomic<bool> driverPlaying_{false};
     bool loopApplied_=false,loopOn_=false;
     std::int64_t loopBegin_=0,loopEnd_=0;
+    std::int64_t loopStartTick_=0,loopEndTick_=0;
     // Driver-thread click state; routing moves to Cue Out when N23 arrives.
     std::int64_t clickLastSample_=-2,clickLastBeat_=-1;
     bool clickWasPlaying_=false;

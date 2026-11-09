@@ -30,6 +30,7 @@
 #include "adi/freeze_state.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/note_transforms.hpp"
+#include "adi/note_diff_ops.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 #include "adi/cue_settings.hpp"
@@ -617,184 +618,9 @@ bool clipResizeInverse(OpContext& c, const Payload& p, Payload& inv, std::string
     } catch (const std::exception& e) { err = e.what(); return false; }
 }
 
-// --- notes ------------------------------------------------------------------
-//
-// The first ops that touch a BLOB. ADR-0009 puts one notes blob per clip, so a
-// note edit is read-modify-write of that clip's blob and nothing else -- which
-// is exactly the granularity bound, exercised for the first time through the op
-// system rather than only in a unit test.
-
-std::vector<NoteRecord> readNotes(OpContext& c, std::int64_t clipId) {
-    const auto blob = c.store.getEventStream(clipId, "notes");
-    if (!blob) return {};
-    StreamReader<NoteRecord> r(*blob, FourCC::Notes);
-    if (!r.ok()) return {};
-    const auto all = r.all();
-    return all ? *all : std::vector<NoteRecord>{};
-}
-
-bool writeNotes(OpContext& c, std::int64_t clipId, std::vector<NoteRecord> notes) {
-    // Kept sorted, because the stream header advertises SortedByTime and a
-    // reader is entitled to believe it.
-    std::sort(notes.begin(), notes.end(), [](const NoteRecord& a, const NoteRecord& b) {
-        if (a.start_ticks != b.start_ticks) return a.start_ticks < b.start_ticks;
-        if (a.key != b.key) return a.key < b.key;
-        return a.note_id < b.note_id;
-    });
-    return c.store.putEventStream(clipId, "notes",
-                                  writeStream<NoteRecord>(FourCC::Notes, notes));
-}
-
-NoteRecord noteFromPayload(const Payload& p) {
-    NoteRecord n{};
-    n.note_id = p.at("note").get<std::uint64_t>();
-    n.start_ticks = p.at("start").get<std::int64_t>();
-    n.dur_ticks = p.at("dur").get<std::int64_t>();
-    n.key = static_cast<std::uint8_t>(p.at("key").get<int>());
-    n.vel_on = static_cast<std::uint8_t>(p.value("vel", 100));
-    n.vel_off = static_cast<std::uint8_t>(p.value("velOff", 64));
-    n.channel = static_cast<std::uint8_t>(p.value("chan", 0));
-    n.probability = static_cast<std::uint16_t>(p.value("prob", 10000));
-    n.tuning_cents = p.value("cents", 0.0f);
-    return n;
-}
-
-Payload noteToPayload(std::int64_t clipId, const NoteRecord& n) {
-    Payload p = Payload::object();
-    p["clip"] = clipId;
-    p["note"] = n.note_id;
-    p["start"] = n.start_ticks;
-    p["dur"] = n.dur_ticks;
-    p["key"] = static_cast<int>(n.key);
-    p["vel"] = static_cast<int>(n.vel_on);
-    p["velOff"] = static_cast<int>(n.vel_off);
-    p["chan"] = static_cast<int>(n.channel);
-    p["prob"] = static_cast<int>(n.probability);
-    p["cents"] = n.tuning_cents;
-    return p;
-}
-
-bool noteInsertApply(OpContext& c, const Payload& p, std::string& err) {
-    const auto clip = p.at("clip").get<std::int64_t>();
-    auto notes = readNotes(c, clip);
-    const auto id = p.at("note").get<std::uint64_t>();
-    if (std::any_of(notes.begin(), notes.end(),
-                    [&](const NoteRecord& n) { return n.note_id == id; })) {
-        err = "note id already exists in this clip";   // never silently reassign
-        return false;
-    }
-    notes.push_back(noteFromPayload(p));
-    if (!writeNotes(c, clip, std::move(notes))) { err = c.store.lastError(); return false; }
-    return true;
-}
-bool noteInsertInverse(OpContext&, const Payload& p, Payload& inv, std::string& err) {
-    if (!p.contains("clip") || !p.contains("note")) { err = "note.insert needs clip and note"; return false; }
-    inv = Payload::object();
-    inv["clip"] = p.at("clip");
-    inv["note"] = p.at("note");
-    return true;   // paired: note.delete
-}
-
-bool noteDeleteApply(OpContext& c, const Payload& p, std::string& err) {
-    const auto clip = p.at("clip").get<std::int64_t>();
-    const auto id = p.at("note").get<std::uint64_t>();
-    auto notes = readNotes(c, clip);
-    const auto before = notes.size();
-    notes.erase(std::remove_if(notes.begin(), notes.end(),
-                               [&](const NoteRecord& n) { return n.note_id == id; }),
-                notes.end());
-    if (notes.size() == before) { err = "no such note"; return false; }
-    if (!writeNotes(c, clip, std::move(notes))) { err = c.store.lastError(); return false; }
-    return true;
-}
-bool noteDeleteInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    const auto clip = p.at("clip").get<std::int64_t>();
-    const auto id = p.at("note").get<std::uint64_t>();
-    for (const auto& n : readNotes(c, clip))
-        if (n.note_id == id) { inv = noteToPayload(clip, n); return true; }
-    err = "no such note to capture";
-    return false;
-}
-
-/// One helper behind move, resize and setVelocity: find the note, mutate it,
-/// write back. Their inverses are all "the note as it was", which is the same
-/// capture in every case.
-template <typename Mutate>
-bool noteEdit(OpContext& c, const Payload& p, std::string& err, Mutate m) {
-    const auto clip = p.at("clip").get<std::int64_t>();
-    const auto id = p.at("note").get<std::uint64_t>();
-    auto notes = readNotes(c, clip);
-    auto it = std::find_if(notes.begin(), notes.end(),
-                           [&](const NoteRecord& n) { return n.note_id == id; });
-    if (it == notes.end()) { err = "no such note"; return false; }
-    m(*it);
-    if (!writeNotes(c, clip, std::move(notes))) { err = c.store.lastError(); return false; }
-    return true;
-}
-
-bool noteMoveApply(OpContext& c, const Payload& p, std::string& err) {
-    return noteEdit(c, p, err, [&](NoteRecord& n) {
-        n.start_ticks = p.at("start").get<std::int64_t>();
-        n.key = static_cast<std::uint8_t>(p.at("key").get<int>());
-    });
-}
-bool noteMoveInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    const auto clip = p.at("clip").get<std::int64_t>();
-    const auto id = p.at("note").get<std::uint64_t>();
-    for (const auto& n : readNotes(c, clip))
-        if (n.note_id == id) {
-            inv = Payload::object();
-            inv["clip"] = clip;
-            inv["note"] = p.at("note");
-            inv["start"] = n.start_ticks;
-            inv["key"] = static_cast<int>(n.key);
-            return true;
-        }
-    err = "no such note";
-    return false;
-}
-
-bool noteResizeApply(OpContext& c, const Payload& p, std::string& err) {
-    const auto dur = p.at("dur").get<std::int64_t>();
-    if (dur <= 0) { err = "a note's duration must be positive (SPEC 6.3.1)"; return false; }
-    return noteEdit(c, p, err, [&](NoteRecord& n) { n.dur_ticks = dur; });
-}
-bool noteResizeInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    const auto clip = p.at("clip").get<std::int64_t>();
-    const auto id = p.at("note").get<std::uint64_t>();
-    for (const auto& n : readNotes(c, clip))
-        if (n.note_id == id) {
-            inv = Payload::object();
-            inv["clip"] = clip;
-            inv["note"] = p.at("note");
-            inv["dur"] = n.dur_ticks;
-            return true;
-        }
-    err = "no such note";
-    return false;
-}
-
-bool noteSetVelocityApply(OpContext& c, const Payload& p, std::string& err) {
-    const auto v = p.at("vel").get<int>();
-    if (v < 1 || v > 127) { err = "velocity must be 1..127 (SPEC 6.3.1)"; return false; }
-    return noteEdit(c, p, err, [&](NoteRecord& n) {
-        n.vel_on = static_cast<std::uint8_t>(v);
-    });
-}
-bool noteSetVelocityInverse(OpContext& c, const Payload& p, Payload& inv, std::string& err) {
-    const auto clip = p.at("clip").get<std::int64_t>();
-    const auto id = p.at("note").get<std::uint64_t>();
-    for (const auto& n : readNotes(c, clip))
-        if (n.note_id == id) {
-            inv = Payload::object();
-            inv["clip"] = clip;
-            inv["note"] = p.at("note");
-            inv["vel"] = static_cast<int>(n.vel_on);
-            return true;
-        }
-    err = "no such note";
-    return false;
-}
+// The five historical note entry points delegate to the checked full-stride
+// note-diff kernel. Their descriptor names and inverse pairs below remain stable
+// because History resolves old journal inverses through the current catalogue.
 
 // --- tempo and signature ------------------------------------------------------
 
@@ -2063,15 +1889,15 @@ const OpDescriptor kHandWritten[] = {
      false, false, clipResizeApply, clipResizeInverse, ""},
 
     {"note.insert", "Add a note to a clip", Scope::Edit, EngineImpact::Snapshot, kFNoteFull, false, false,
-     noteInsertApply, noteInsertInverse, "note.delete"},
+     notes::noteInsertApply, notes::noteInsertInverse, "note.delete"},
     {"note.delete", "Remove a note from a clip", Scope::Edit, EngineImpact::Snapshot, kFNoteRef, false, false,
-     noteDeleteApply, noteDeleteInverse, "note.insert"},
+     notes::noteDeleteApply, notes::noteDeleteInverse, "note.insert"},
     {"note.move", "Move a note in time or pitch", Scope::Edit, EngineImpact::Snapshot, kFNoteMove, false,
-     false, noteMoveApply, noteMoveInverse, ""},
+     false, notes::noteMoveApply, notes::noteMoveInverse, ""},
     {"note.resize", "Change a note's length", Scope::Edit, EngineImpact::Snapshot, kFNoteResize, false, false,
-     noteResizeApply, noteResizeInverse, ""},
+     notes::noteResizeApply, notes::noteResizeInverse, ""},
     {"note.setVelocity", "Set a note's velocity", Scope::Edit, EngineImpact::Snapshot, kFNoteVel, true, false,
-     noteSetVelocityApply, noteSetVelocityInverse, ""},
+     notes::noteVelocityApply, notes::noteVelocityInverse, ""},
     {"note.setMute", "Activate or deactivate a MIDI note", Scope::Edit, EngineImpact::Snapshot,
      kFNoteMute, false, false, note_flags::mute, note_flags::muteInverse, ""},
 
@@ -2179,6 +2005,8 @@ std::span<const OpDescriptor> builtinOps() {
         std::vector<OpDescriptor> v(std::begin(kHandWritten), std::end(kHandWritten));
         const auto noteOps = notes::transformOps();
         v.insert(v.end(), noteOps.begin(), noteOps.end());
+        const auto noteDiffOps = notes::diffOps();
+        v.insert(v.end(), noteDiffOps.begin(), noteDiffOps.end());
         const auto controllerOps = controllers::laneOps();
         v.insert(v.end(), controllerOps.begin(), controllerOps.end());
         const auto captureOps = capture::midiOps();

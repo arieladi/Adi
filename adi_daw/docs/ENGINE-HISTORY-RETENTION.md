@@ -67,8 +67,11 @@ rows include binary content and retain their SQL types. Source media-file paths
 still use the usual resolver; this is not Collect/Export. Failed restore rolls
 back all target writes. A nonempty/read-only target is refused. History's undo
 menu stops at the retained root, while redo and protected snapshot/branch
-navigation retain their existing semantics. The retained root must likewise be
-excluded from the window's list of undoable steps (N29 integration).
+navigation retain their existing semantics. `History::readTimeline()` exposes
+that root as `baseSeq` (zero before compaction) and excludes it from `steps`.
+Its branch and snapshot lists retain anchors exactly at the base, with their
+stored sequence values. This is a metadata-only read in the same transaction as
+the rest of the timeline; it does not decode the checkpoint or compact history.
 
 Save As/Copy and Collect remain the separate N3/N30 APIs. Neither service adds
 a file-save command, changes UI code, nor appends snapshot/compaction opcodes.

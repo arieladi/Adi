@@ -99,6 +99,26 @@ struct StripLanes {
     const AutomationLaneProgram* panRight = nullptr;
 };
 
+class StripNode;
+// Scalar automation belongs to the graph that prepared its effective clock.
+// Persistent strips keep their ramps, but an owner preparing a new program
+// must not change the lanes an older, still acquired graph will read.
+class StripLaneBindings final {
+public:
+    [[nodiscard]] const StripLanes* forNode(const StripNode*) const noexcept;
+    // Owner assembling the next publication only. The caller freezes this
+    // object before exposing its raw pointer in TransportInfo.
+    void add(const StripNode&,const StripLanes*,std::shared_ptr<void> owner);
+private:
+    struct Entry {
+        const StripNode* node = nullptr;
+        const StripLanes* lanes = nullptr;
+        std::shared_ptr<void> owner;
+    };
+    std::vector<Entry> entries_;
+    friend class MixerStrips;
+};
+
 /// One track's strip as the model has it, sanitised: what its StripNode
 /// plays, and what every Post send from it plays at its first stage
 /// (SendNode). One value, applied to both by `StripNode::configure`, so a
@@ -153,7 +173,7 @@ public:
 
     /// Where a lane is read. Driver-thread state, read at the block's origin as
     /// every source reads it (Transport's contract).
-    void setTransport(const Transport* transport) noexcept { transport_ = transport; }
+    void setTransport(const Transport* transport) noexcept { transport_.store(transport,std::memory_order_release); }
 
     /// Message thread: all of the above from one track's configuration, with
     /// `audible` the gate to play it at (its mute, and its solo or not).
@@ -218,6 +238,8 @@ public:
     static constexpr double kMaxDelaySeconds = 1.0;
 
 private:
+    friend class MixerStrips;
+    [[nodiscard]] const StripLanes* lanesFor(const NodeIo&) const noexcept;
     template <typename T>
     void processGains(const NodeIo& io, const T* const* in, T* const* out) noexcept;
     template <typename T>
@@ -279,7 +301,7 @@ private:
     std::atomic<bool> restart_{false};
     std::atomic<const StripLanes*> lanes_{nullptr};
     std::shared_ptr<void> keepAlive_;   ///< message thread only
-    const Transport* transport_ = nullptr;
+    std::atomic<const Transport*> transport_{nullptr};
 
     // Audio thread only. The last inputs, so gains are recomputed only when one
     // changes; and the ramp. A strip begins AT its target, not ramping up to it
@@ -386,6 +408,7 @@ public:
     [[nodiscard]] const char* name() const noexcept override { return "send"; }
 
 private:
+    friend class MixerStrips;
     struct AutomationLife { std::shared_ptr<void> source, gain; };
     void retainAutomation() {
         auto source = source_.sourceLifetime(), gain = gain_.sourceLifetime();
@@ -629,6 +652,11 @@ public:
     /// (ADR-0122), since a retired graph may still name it.
     void sync(const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&,
               bool delayCompensation=true, const HearingFlags& = {});
+
+    // Owner, after sync: retain a complete immutable lane binding for the next
+    // graph's TransportInfo, including both stages of every send. Null lanes
+    // are captured explicitly; an older graph never falls back to newer lanes.
+    [[nodiscard]] std::shared_ptr<StripLaneBindings> captureLanes() const;
 
     /// The strip for a track the plan realises, or null.
     [[nodiscard]] StripNode* stripFor(std::int64_t trackId) noexcept;

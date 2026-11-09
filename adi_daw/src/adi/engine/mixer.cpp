@@ -50,6 +50,32 @@ double faderGain(double volumeDb) noexcept {
 
 // ---------------------------------------------------------------------------
 
+const StripLanes* StripLaneBindings::forNode(const StripNode* node) const noexcept {
+    // Indexed access avoids MSVC Debug's checked-iterator proxy lock on the
+    // audio driver. The owner froze this vector before publication.
+    std::size_t first=0,count=entries_.size();
+    while(count>0) {
+        const std::size_t step=count/2,at=first+step;
+        if(std::less<const StripNode*>{}(entries_[at].node,node)) {
+            first=at+1;count-=step+1;
+        }else count=step;
+    }
+    return first<entries_.size() && entries_[first].node==node?entries_[first].lanes:nullptr;
+}
+
+void StripLaneBindings::add(const StripNode& node,const StripLanes* lanes,std::shared_ptr<void> owner) {
+    const auto at=std::lower_bound(entries_.begin(),entries_.end(),&node,
+        [](const Entry& entry,const StripNode* wanted){return std::less<const StripNode*>{}(entry.node,wanted);});
+    Entry entry{&node,lanes,std::move(owner)};
+    if(at!=entries_.end() && at->node==&node)*at=std::move(entry);
+    else entries_.insert(at,std::move(entry));
+}
+
+const StripLanes* StripNode::lanesFor(const NodeIo& io) const noexcept {
+    if(io.transport && io.transport->stripLanes)return io.transport->stripLanes->forNode(this);
+    return lanes_.load(std::memory_order_acquire);
+}
+
 void StripNode::setStatic(double volumeDb, double pan, PanLaw law, bool audible) noexcept {
     volumeDb_.store(static_cast<float>(volumeDb), std::memory_order_relaxed);
     pan_.store(static_cast<float>(pan), std::memory_order_relaxed);
@@ -104,11 +130,12 @@ StripNode::Gains StripNode::desired(const StripLanes* lanes, std::int32_t frame)
     const int mode = panMode_.load(std::memory_order_relaxed);
     double left=panLeft_.load(std::memory_order_relaxed),right=panRight_.load(std::memory_order_relaxed);
     bool heard = audible_.load(std::memory_order_relaxed);
-    if (lanes != nullptr && transport_ != nullptr) {
+    const Transport* transport=transport_.load(std::memory_order_acquire);
+    if (lanes != nullptr && transport != nullptr) {
         // A parked playhead is ONE position. sampleAt answers position + offset
         // whether the transport is playing or not, and reading a block ahead
         // of a stopped playhead made a sloped lane saw at the block rate.
-        const std::int64_t at = transport_->sampleAt(transport_->playing() ? frame : 0);
+        const std::int64_t at = transport->sampleAt(transport->playing() ? frame : 0);
         if (lanes->volume != nullptr) vol = valueAt(*lanes->volume, at);
         if (lanes->pan != nullptr) pan = valueAt(*lanes->pan, at);
         if (lanes->panLeft != nullptr) left = valueAt(*lanes->panLeft, at);
@@ -231,7 +258,7 @@ void StripNode::silenceTaps(const NodeIo& io) noexcept {
     // fader or a send pulled down, a mute -- is landed now, where nobody can
     // hear it. Woken, the strip starts at it, rather than ramping away from
     // the gain it fell asleep at and playing that gain's first 5 ms.
-    const Gains d = desired(lanes_.load(std::memory_order_acquire), io.blockOffset);
+    const Gains d = desired(lanesFor(io), io.blockOffset);
     if (lastWidth_ == 32) ramp32_.land(d.g);
     else if (lastWidth_ == 64) ramp64_.land(d.w);
 }
@@ -269,8 +296,9 @@ void StripNode::writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
     // the timeline position it is heard at. One relaxed load when unwatched.
     if (ScopeTap* tap = slot.load(std::memory_order_relaxed); tap != nullptr && io.channels > 0) {
         std::atomic_thread_fence(std::memory_order_acquire);
-        const bool playing = transport_ != nullptr && transport_->playing();
-        const std::int64_t at = transport_ != nullptr ? transport_->sampleAt(playing ? io.blockOffset : 0) : 0;
+        const Transport* transport=transport_.load(std::memory_order_acquire);
+        const bool playing = transport != nullptr && transport->playing();
+        const std::int64_t at = transport != nullptr ? transport->sampleAt(playing ? io.blockOffset : 0) : 0;
         const T* l = audio != nullptr && audio[0] != nullptr ? audio[0] + io.blockOffset : nullptr;
         const T* r = audio != nullptr && io.channels > 1 && audio[1] != nullptr ? audio[1] + io.blockOffset : nullptr;
         tap->write(l, r, io.frames, at - tap->latency(), playing);
@@ -279,8 +307,8 @@ void StripNode::writeTap(std::atomic<ScopeTap*>& slot, const NodeIo& io,
 
 template <typename T>
 void StripNode::processGains(const NodeIo& io, const T* const* in, T* const* out) noexcept {
-    const StripLanes* lanes = lanes_.load(std::memory_order_acquire);
-    const bool moving = lanes != nullptr && transport_ != nullptr &&
+    const StripLanes* lanes = lanesFor(io);
+    const bool moving = lanes != nullptr && transport_.load(std::memory_order_acquire) != nullptr &&
                         (lanes->volume != nullptr || lanes->pan != nullptr || lanes->mute != nullptr ||
                          lanes->panLeft != nullptr || lanes->panRight != nullptr);
     const std::int32_t off = io.blockOffset;
@@ -791,6 +819,19 @@ void MixerStrips::sync(const rows::Model& model, const Transport* transport,
     for (auto& [id, send] : sends_)
         if (!live.count(id)) { send->set(kSilenceDb, 0.0, PanLaw::Live, false); send->setAutomation(nullptr, {}); }
     liveSends_ = std::move(live);
+}
+
+std::shared_ptr<StripLaneBindings> MixerStrips::captureLanes() const {
+    auto captured=std::make_shared<StripLaneBindings>();
+    captured->entries_.reserve(strips_.size()+sends_.size()*2);
+    auto retain=[&](const StripNode& node) {
+        captured->entries_.push_back({&node,node.lanes_.load(std::memory_order_acquire),node.sourceLifetime()});
+    };
+    for(const auto& [id,strip]:strips_) { (void)id;retain(*strip); }
+    for(const auto& [id,send]:sends_) { (void)id;retain(send->source_);retain(send->gain_); }
+    std::sort(captured->entries_.begin(),captured->entries_.end(),
+        [](const auto& left,const auto& right){return std::less<const StripNode*>{}(left.node,right.node);});
+    return captured;
 }
 
 void SendNode::process(const NodeIo& io) noexcept {

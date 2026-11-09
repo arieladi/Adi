@@ -39,6 +39,15 @@ void operator delete(void *p, std::size_t) noexcept {
 void operator delete[](void *p, std::size_t) noexcept {
     std::free(p);
 }
+// Nothrow allocations use the same counted malloc/free pair under sanitizers.
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept {
+    try { return ::operator new(n); } catch (...) { return nullptr; }
+}
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept {
+    try { return ::operator new[](n); } catch (...) { return nullptr; }
+}
+void operator delete(void* p, const std::nothrow_t&) noexcept { ::operator delete(p); }
+void operator delete[](void* p, const std::nothrow_t&) noexcept { ::operator delete[](p); }
 namespace {
 using namespace adi;
 using namespace adi::engine;
@@ -364,6 +373,8 @@ struct Playback {
             source->controllerDelivered(event);
         if (event.type == EventType::NoteOff)
             source->noteOffDelivered(event);
+        if (event.type == EventType::NoteOn)
+            source->noteOnDelivered(event);
     }
 };
 rows::Model playbackModel(int controller = 7) {

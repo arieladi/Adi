@@ -1020,7 +1020,13 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
         }
     }
     bypassNodes_.clear();
+    eventNodes_.clear();
     for (auto& s : slots_) {
+        if(s.node)eventNodes_.emplace_back(s.node,static_cast<NodeId>(&s-slots_.data()));
+        // A persistent device can be rebound while this graph is rendering.
+        // The pointer and lifetime belong to the prepared graph generation;
+        // no shared_ptr operation or live binding read occurs on the callback.
+        s.pendingSources.clear();
         if (!s.explicitEventSource && s.node != nullptr)
             s.eventSource = {s.node->eventSource(), s.node->eventSourceLifetime()};
         s.hasBypass = s.node != nullptr && s.node->hasBypass();
@@ -1045,6 +1051,7 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
             s.chanPtrs[c] = s.doubles ? nullptr : s.audio.data() + c * fr;
         s.eventStore.assign(static_cast<std::size_t>(eventCapacity_), Event{});
         s.events = EventList(s.eventStore.data(), eventCapacity_);
+        s.eventOrigins.assign(static_cast<std::size_t>(eventCapacity_),nullptr);
         // Same capacity as the live list. A deferred event is one that WOULD
         // have been in the list if its delay had been shorter, so the two
         // share one budget rather than one being an afterthought.
@@ -1085,6 +1092,31 @@ void Graph::prepare(double sampleRate, std::int32_t maxFrames) {
     std::sort(bypassNodes_.begin(), bypassNodes_.end(), [](const auto& a, const auto& b) {
         return std::less<Node*>{}(a.first, b.first);
     });
+    std::sort(eventNodes_.begin(),eventNodes_.end(),[](const auto& a,const auto& b){return std::less<Node*>{}(a.first,b.first);});
+    for(const auto id:order_) {
+        auto& slot=slots_[static_cast<std::size_t>(id)];
+        slot.deliversNoteStream=slot.node &&
+            (id==output_ || slot.node->eventFlow()==EventFlow::Consume);
+        for(const auto input:slot.inputs) {
+            const auto& source=slots_[static_cast<std::size_t>(input)];
+            if(source.node && source.node->eventFlow()==EventFlow::Through)
+                slot.pendingSources.insert(slot.pendingSources.end(),source.pendingSources.begin(),source.pendingSources.end());
+        }
+        if(slot.node && slot.node->retainsQueuedSourceEvents())slot.pendingSources.push_back(slot.node);
+        std::sort(slot.pendingSources.begin(),slot.pendingSources.end(),std::less<Node*>{});
+        slot.pendingSources.erase(std::unique(slot.pendingSources.begin(),slot.pendingSources.end()),slot.pendingSources.end());
+    }
+    // A delayed dead-end Stop branch cannot postpone another branch's release.
+    // Build reachability on the owner; the callback only scans bounded queues.
+    for(std::size_t i=order_.size();i>0;--i) {
+        const auto& slot=slots_[static_cast<std::size_t>(order_[i-1])];
+        if(!slot.deliversNoteStream)continue;
+        for(const auto input:slot.inputs) {
+            auto& upstream=slots_[static_cast<std::size_t>(input)];
+            if(upstream.node && upstream.node->eventFlow()==EventFlow::Through)
+                upstream.deliversNoteStream=true;
+        }
+    }
 
     // One extra split beyond the maximum distinct frame count.
     splits_.assign(fr + 2, 0);
@@ -1163,6 +1195,46 @@ std::int32_t Graph::adoptBypassHistory(const Graph& old) noexcept {
         dst.dozeGlides = kLinesUnchecked;
         ++i;
         ++j;
+    }
+    return carried;
+}
+
+std::int32_t Graph::adoptEventHistory(const Graph& old) noexcept {
+    if(sampleRate_!=old.sampleRate_)return 0;
+    std::size_t i=0,j=0;
+    std::int32_t carried=0;
+    while(i<eventNodes_.size() && j<old.eventNodes_.size()) {
+        const auto& a=eventNodes_[i];const auto& b=old.eventNodes_[j];
+        if(std::less<Node*>{}(a.first,b.first)){++i;continue;}
+        if(std::less<Node*>{}(b.first,a.first)){++j;continue;}
+        auto nextI=i+1,nextJ=j+1;
+        while(nextI<eventNodes_.size() && eventNodes_[nextI].first==a.first)++nextI;
+        while(nextJ<old.eventNodes_.size() && old.eventNodes_[nextJ].first==b.first)++nextJ;
+        if(nextI==i+1 && nextJ==j+1) {
+            auto& dst=slots_[static_cast<std::size_t>(a.second)];
+            const auto& src=old.slots_[static_cast<std::size_t>(b.second)];
+            const auto arrival=slotArrival_[static_cast<std::size_t>(a.second)].load(std::memory_order_relaxed);
+            const auto oldArrival=old.slotArrival_[static_cast<std::size_t>(b.second)].load(std::memory_order_relaxed);
+            if(arrival==oldArrival)for(std::int32_t n=0;n<src.pendingCount;++n) {
+                if(static_cast<std::size_t>(dst.pendingCount)>=dst.pending.size())break;
+                const auto& pending=src.pending[static_cast<std::size_t>(n)];
+                const auto remaining=pending.due-old.now_;
+                if(remaining<0 || remaining>std::numeric_limits<std::int64_t>::max()-now_)continue;
+                Node* owner=nullptr;
+                for(std::size_t source=0;source<dst.pendingSources.size();++source) {
+                    auto* candidate=dst.pendingSources[source];
+                    if(candidate->canRetainPendingEvent(pending.e)) {
+                        // Ambiguous identities cannot transfer another source's event.
+                        if(owner){owner=nullptr;break;}
+                        owner=candidate;
+                    }
+                }
+                if(!owner)continue;
+                dst.pending[static_cast<std::size_t>(dst.pendingCount++)]={now_+remaining,pending.e,owner};
+                owner->pendingEventRetained(pending.e);++carried;
+            }
+        }
+        i=nextI;j=nextJ;
     }
     return carried;
 }
@@ -1412,14 +1484,28 @@ void Graph::acknowledgeController(const Event &event, bool delivered) noexcept {
     else
         found->second->controllerRejected(event);
 }
+bool Graph::hasPendingNoteOff(std::uint64_t noteId) const noexcept {
+    for(std::size_t i=0;i<slots_.size();++i) {
+        const auto& slot=slots_[i];
+        if(!slot.deliversNoteStream)continue;
+        for(std::int32_t pending=0;pending<slot.pendingCount;++pending) {
+            const auto& event=slot.pending[static_cast<std::size_t>(pending)].e;
+            if(event.type==EventType::NoteOff && event.noteId==noteId)return true;
+        }
+    }
+    return false;
+}
 void Graph::forwardEvents(std::int32_t frames) noexcept {
     auto rejected = [&](const Event &e) {
         if (e.type == EventType::Controller)
             acknowledgeController(e, false);
         if (e.type == EventType::NoteOff)
-            for (auto &source : slots_)
-                if (source.node)
-                    source.node->noteOffRejected(e);
+            for (std::size_t i=0;i<slots_.size();++i)
+                if (slots_[i].node)
+                    slots_[i].node->noteOffRejected(e);
+        if (e.type == EventType::NoteOn)
+            for(std::size_t i=0;i<slots_.size();++i)
+                if(slots_[i].node)slots_[i].node->noteOnRejected(e);
     };
     const std::int64_t end = now_ + frames;
 
@@ -1436,11 +1522,16 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
             std::int32_t w = 0;
             for (std::int32_t i = 0; i < s.pendingCount; ++i) {
                 const Slot::Pending& p = s.pending[static_cast<std::size_t>(i)];
+                if(p.retainedSource && !p.retainedSource->retainedEventsStillValid(p.e)) {
+                    rejected(p.e);continue;
+                }
                 if (p.due < end) {
                     Event e = p.e;
                     const std::int64_t f = p.due - now_;
                     e.frame = f > 0 ? static_cast<std::int32_t>(f) : 0;
-                    if (!s.events.push(e)) rejected(e); // overflow counted by list
+                    const auto at=s.events.size();
+                    if(s.events.push(e))s.eventOrigins[static_cast<std::size_t>(at)]=p.retainedSource;
+                    else rejected(e); // overflow counted by list
                 } else {
                     s.pending[static_cast<std::size_t>(w++)] = p;
                 }
@@ -1478,15 +1569,20 @@ void Graph::forwardEvents(std::int32_t frames) noexcept {
 
             for (const Event& e : u.events) {
                 if (!isNoteStream(e.type)) continue;   // addressed: stays put
+                const auto origin=u.eventOrigins[static_cast<std::size_t>(&e-u.events.begin())];
                 const std::int64_t due = now_ + e.frame + delay;
                 if (due < end) {
                     Event f = e;
                     f.frame = static_cast<std::int32_t>(due - now_);
-                    if (s.events.push(f)) ++stats_.eventsForwarded;
+                    const auto at=s.events.size();
+                    if(s.events.push(f)) {
+                        s.eventOrigins[static_cast<std::size_t>(at)]=origin;
+                        ++stats_.eventsForwarded;
+                    }
                     else rejected(f);
                 } else if (s.pendingCount < static_cast<std::int32_t>(s.pending.size())) {
                     s.pending[static_cast<std::size_t>(s.pendingCount++)] =
-                        Slot::Pending{due, e};
+                        Slot::Pending{due, e,origin};
                     ++stats_.eventsForwarded;
                     ++stats_.eventsDeferred;
                 } else {
@@ -1966,6 +2062,7 @@ void Graph::process(const AudioIo& io) noexcept {
         s.node->sourceEvents(s.events, frames);
         // ADR-0165: automation addressed to this node, beside what it sources.
         if (EventSource* source = s.eventSource.source) source->emit(s.events, frames);
+        if(!s.events.empty())std::fill_n(s.eventOrigins.data(),s.events.size(),nullptr);
     }
     forwardEvents(frames);
 
@@ -2003,10 +2100,19 @@ void Graph::process(const AudioIo& io) noexcept {
         for (const auto &e : delivered.events) {
             if (e.type == EventType::Controller)
                 acknowledgeController(e, true);
-            if (e.type == EventType::NoteOff)
-                for (auto &source : slots_)
-                    if (source.node)
-                        source.node->noteOffDelivered(e);
+            if (e.type == EventType::NoteOff) {
+                // Forwarding through every hop and worker processing have
+                // finished. Even a short note's future on/off pair is now in
+                // these queues; its first consumer cannot retire the owner.
+                const bool waiting=hasPendingNoteOff(e.noteId);
+                for (std::size_t source=0;source<slots_.size();++source)
+                    if (slots_[source].node &&
+                        (!waiting || !slots_[source].node->retainsQueuedSourceEvents()))
+                        slots_[source].node->noteOffDelivered(e);
+            }
+            if(e.type==EventType::NoteOn)
+                for(std::size_t source=0;source<slots_.size();++source)
+                    if(slots_[source].node)slots_[source].node->noteOnDelivered(e);
         }
     }
     for (auto& s : slots_) {

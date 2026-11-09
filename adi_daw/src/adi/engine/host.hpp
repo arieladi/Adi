@@ -50,14 +50,16 @@ public:
     // Called once per actually adopted generation, before beginBlock. Apply
     // prevalidated raw control bindings only; no allocation/lock/destruction.
     virtual void adopted() const noexcept {}
-    // Called once per block, after adopting this graph and before any node.
-    // Returned metadata lives through this block. No allocation/lock/I/O.
+    // Called once per rendered logical slice, after adopting its pinned graph
+    // and before running any node. Returned metadata lives through that slice.
+    // No allocation/lock/I/O.
     [[nodiscard]] virtual const TransportInfo* beginBlock()const noexcept=0;
 };
 class PublishedGraph final : public Sequenced {
 public:
-    explicit PublishedGraph(std::unique_ptr<RealizedGraph> g,std::shared_ptr<const GraphTransportState> state={})
-        : transportState_(std::move(state)),graph_(std::move(g)) {}
+    explicit PublishedGraph(std::unique_ptr<RealizedGraph> g,std::shared_ptr<const GraphTransportState> state={},
+                            std::int32_t maxFrames=0)
+        : transportState_(std::move(state)),graph_(std::move(g)),maxFrames_(maxFrames) {}
 
     /// NON-CONST through a const `PublishedGraph`, on purpose. `AudioRead`
     /// hands out `const PublishedGraph*` because the snapshot's IDENTITY is
@@ -67,11 +69,13 @@ public:
     /// pointee, so this needs no `mutable` and no cast.
     [[nodiscard]] RealizedGraph& graph() const noexcept { return *graph_; }
     [[nodiscard]] const GraphTransportState* transportState()const noexcept{return transportState_.get();}
+    [[nodiscard]] std::int32_t maxFrames() const noexcept { return maxFrames_; }
 
 private:
     // The graph retires first; its block metadata remains alive through it.
     std::shared_ptr<const GraphTransportState> transportState_;
     std::unique_ptr<RealizedGraph> graph_;
+    std::int32_t maxFrames_ = 0;
 };
 
 /// Holds the live graph, replaces it, and renders through whichever one is
@@ -238,6 +242,31 @@ public:
 
     // --- audio thread -------------------------------------------------------
 
+    /// A physical callback pins one publication while rendering any number of
+    /// logical slices. Acquiring the next handle expires this one even when the
+    /// publication did not change. Keep it on the single driver's stack; owner
+    /// publication/collection is allowed throughout its lifetime.
+    class RenderBlock final {
+    public:
+        ~RenderBlock();
+        RenderBlock(const RenderBlock&) = delete;
+        RenderBlock& operator=(const RenderBlock&) = delete;
+        [[nodiscard]] bool valid() const noexcept;
+        [[nodiscard]] std::uint64_t generation() const noexcept;
+        [[nodiscard]] std::int32_t latencySamples() const noexcept;
+        [[nodiscard]] const GraphTransportState* transportState() const noexcept;
+        /// False writes silence at both widths and never dereferences an expired
+        /// publication. A successful slice applies its clock exactly once.
+        bool process(const AudioIo&) noexcept;
+    private:
+        friend class GraphHost;
+        explicit RenderBlock(GraphHost&) noexcept;
+        GraphHost& host_;
+        const PublishedGraph* snapshot_ = nullptr;
+        std::uint64_t serial_ = 0;
+    };
+    [[nodiscard]] RenderBlock beginRender() noexcept { return RenderBlock(*this); }
+
     /// Render one block through whatever is current. Allocates nothing, locks
     /// nothing, waits for nothing.
     ///
@@ -248,6 +277,8 @@ public:
 
 private:
     using Pub = SnapshotPublisher<PublishedGraph>;
+
+    const PublishedGraph* acquireRender() noexcept;
 
     void fadeIn(const AudioIo& io) noexcept;
 
@@ -275,6 +306,8 @@ private:
 
     // Audio thread only.
     std::uint64_t lastSeq_ = 0;
+    std::uint64_t renderSerial_ = 0;
+    bool renderActive_ = false;
     /// The snapshot rendered LAST block -- the one history is carried FROM.
     /// Not whatever the message thread last published: two rebuilds between
     /// blocks skip a graph that never ran, and its rings hold nothing.
