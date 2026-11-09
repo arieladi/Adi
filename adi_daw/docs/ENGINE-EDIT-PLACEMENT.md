@@ -146,3 +146,8 @@ does not prove every source ready, and the diagnostic driver is not hardware.
 Use the build configuration and source hashes with the results; there is no
 invented latency threshold. Runtime readings and their limits accompany the
 engine log's PR request.
+
+The [recorded Debug cloud measurements](ENGINE-EDIT-PLACEMENT-MEASURE.md)
+include sixteen individual observations and full raw provenance. Both paths
+show a large document synchronisation cost; this evidence leaves the actual
+window/drop responsiveness gate open.
