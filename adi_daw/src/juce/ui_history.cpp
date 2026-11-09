@@ -49,6 +49,20 @@ void UndoHistoryPanel::refresh() {
             current = static_cast<int>(rows_.size());
         rows_.push_back(std::move(row));
     }
+    // The project as created or opened, last: current when nothing on the line is applied.
+    {
+        Row root;
+        root.label = rootLabel;
+        root.applied = true;
+        root.root = true;
+        root.current = !timeline.headSeq.has_value() || current < 0;
+        for (const auto &snap : timeline.snapshots)
+            if (!snap.opSeq)
+                root.detail += (root.detail.empty() ? "" : ", ") + std::string("\u25c6 ") + snap.name;
+        if (root.current)
+            current = static_cast<int>(rows_.size());
+        rows_.push_back(std::move(root));
+    }
     list.updateContent();
     if (current >= 0)
         list.selectRow(current, true, true);
@@ -70,10 +84,11 @@ void UndoHistoryPanel::paintListBoxItem(int index, juce::Graphics &g, int width,
     if (index < 0 || index >= static_cast<int>(rows_.size()))
         return;
     const auto &row = rows_[static_cast<std::size_t>(index)];
+    // Live's rows (manual 5.4.2, its figure): a rule under each, the selected one lit.
     if (selected)
         g.fillAll(look::selection);
-    else if (index % 2 == 1)
-        g.fillAll(look::laneAlt.brighter(0.05f));
+    g.setColour(look::separator.withAlpha(0.6f));
+    g.fillRect(0, height - 1, width, 1);
     // An undone step, or one on another branch, greyed, as Live greys the steps after the current one.
     g.setColour(row.applied ? look::text : look::textDim.withAlpha(0.7f));
     g.setFont(look::font(11.5f, row.current));
@@ -90,7 +105,8 @@ void UndoHistoryPanel::paintListBoxItem(int index, juce::Graphics &g, int width,
 bool UndoHistoryPanel::restoreRow(int index) {
     if (index < 0 || index >= static_cast<int>(rows_.size()) || !restore)
         return false;
-    const bool done = restore(rows_[static_cast<std::size_t>(index)].txnId);
+    const auto &row = rows_[static_cast<std::size_t>(index)];
+    const bool done = restore(row.root ? 0 : row.txnId);
     refresh();
     return done;
 }

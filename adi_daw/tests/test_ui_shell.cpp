@@ -3273,6 +3273,110 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// Live's Undo History (A5; Live 12 manual 5.4.2): Ctrl/Cmd+Alt+Z lists the history newest first, the
+// undone steps greyed; Enter on a selected step restores it; a step on another branch is shown with
+// its branch, and a Take Snapshot name beside its step.
+void undoHistoryWindow(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "history.adi", true, {}, error);
+    check(document != nullptr, "a new project for the Undo History");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "history");
+    int synchronised = 0;
+    root.afterEdit = [&] {
+        ++synchronised;
+        document->synchronise();
+    };
+    root.setSize(1440, 900);
+    root.frame();
+    for (const auto &[id, name] : {std::pair{2, "Keys"}, std::pair{3, "Pads"}, std::pair{4, "Drums"}}) {
+        OpRequest r;
+        r.opType = "track.rename";
+        r.payload = {{"id", id}, {"name", name}};
+        r.label = std::string("Rename ") + name;
+        document->ops().submit(std::move(r));
+    }
+    check(document->takeSnapshot("Before drums", 1'700'000'000'000'000, 0).ok, "a snapshot after the three renames");
+    check(root.command(AppCommands::Undo), "undo Rename Drums");
+    root.frame();
+    auto &history = root.undoHistory;
+    history.setSize(320, 420);
+    check(root.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),
+          "Ctrl/Cmd+Alt+Z");
+    const auto &rows = history.rows();
+    // New's project is the history's root (#307), listed last as Live lists "Open Live Set".
+    check(rows.size() == 4 && rows[0].label == "Rename Drums" && rows[1].label == "Rename Pads" &&
+              rows[2].label == "Rename Keys" && rows[3].root && rows[3].label == history.rootLabel && !rows[3].current,
+          "the Undo History lists the steps newest first, the project as opened last");
+    check(!rows[0].applied && rows[1].applied && rows[1].current && rows[2].applied && history.list.getSelectedRow() == 1,
+          "the undone step is greyed; the current one selected");
+    check(rows[0].detail.find("Before drums") != std::string::npos,
+          "the snapshot taken after Rename Drums stands beside it");
+    // Enter on the step two down restores it: one refresh, the session re-read.
+    history.list.selectRow(2);
+    const auto generation = document->view().generation();
+    check(history.list.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)), "Enter");
+    root.frame();
+    check(root.reader().findTrack(3)->name != "Pads" && root.reader().findTrack(2)->name == "Keys" &&
+              document->view().generation() == generation + 1 && synchronised == 2 && history.rows()[2].current &&
+              !history.rows()[1].applied,
+          "Enter restores the selected step: Rename Pads undone, one refresh, the list following");
+    // A click on the greyed newest step redoes down to it.
+    history.restoreRow(0);
+    root.frame();
+    check(root.reader().findTrack(4)->name == "Drums" && history.rows()[0].current && history.rows()[0].applied,
+          "a click on the greyed newest step redoes down to it");
+    // The last row puts the project back as it was opened: every step undone, all greyed.
+    check(history.restoreRow(3), "the project as opened");
+    root.frame();
+    check(root.reader().findTrack(2)->name != "Keys" && history.rows()[3].current && !history.rows()[2].applied &&
+              root.undoTitle(false) == "Nothing to Undo",
+          "restoring the first action undoes every step: Nothing to Undo, every step greyed");
+    check(history.restoreRow(0), "and the newest again");
+    root.frame();
+    check(root.reader().findTrack(4)->name == "Drums", "redoes all three");
+    // An edit after an undo starts a branch: the old step is shown on its branch.
+    root.command(AppCommands::Undo);
+    {
+        OpRequest r;
+        r.opType = "track.rename";
+        r.payload = {{"id", 5}, {"name", "Bass"}};
+        r.label = "Rename Bass";
+        document->ops().submit(std::move(r));
+    }
+    root.frame();
+    history.refresh();
+    bool branchShown = false;
+    int drumsRow = -1;
+    for (std::size_t i = 0; i < history.rows().size(); ++i)
+        if (history.rows()[i].label == "Rename Drums") {
+            drumsRow = static_cast<int>(i);
+            branchShown = history.rows()[i].otherBranch && history.rows()[i].detail.rfind("on ", 0) == 0;
+        }
+    check(history.rows()[0].label == "Rename Bass" && branchShown, "Rename Drums is shown on its own branch");
+    check(history.restoreRow(drumsRow), "restoring it");
+    root.frame();
+    check(root.reader().findTrack(4)->name == "Drums" && root.reader().findTrack(5)->name != "Bass",
+          "switches to its branch");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        history.refresh();
+        juce::Image picture(juce::Image::ARGB, 2 * history.getWidth(), 2 * history.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            history.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-undo-history.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    root.afterEdit = nullptr;
+    document->release();
+}
 // A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
 // d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
 // producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
@@ -4540,8 +4644,8 @@ int main(int argc, char **argv) {
             commands.getCommandInfo(C::ToggleTrackOptions, rows);
             commands.getCommandInfo(C::ToggleMixerTrackOptions, mixer);
             check(solo.shortName == "Solo in Place" && rows.shortName == "Track Options" &&
-                      mixer.shortName == "Mixer Track Options" && C::LastId == C::ToggleMixerTrackOptions,
-                  "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options (the last id), each named");
+                      mixer.shortName == "Mixer Track Options" && C::LastId == C::UndoHistory,
+                  "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, each named; Undo History the last id");
         }
         // The Options menu as drawn, with Solo in Place ticked, for the picture beside Live 12's.
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -6659,6 +6763,7 @@ int main(int argc, char **argv) {
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
+    undoHistoryWindow(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

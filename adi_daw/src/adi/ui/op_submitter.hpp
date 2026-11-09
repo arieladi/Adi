@@ -181,9 +181,25 @@ public:
     /// current line, and, for a step on another branch, that branch first (`switchToBranch`), then
     /// undone to it. The view is refreshed ONCE, at the end, when anything moved; a refusal part way
     /// refreshes for what did move and reports the refusal. Never undoes past the protected root.
+    /// `txnId` 0 is the history's root, the project as created or opened: every step on the current
+    /// line undone, down to the protected root where there is one.
     History::Result restore(std::int64_t txnId) {
         History history(store_);
         History::Result last;
+        if (txnId == 0) {
+            bool movedToRoot = false;
+            last.ok = true;
+            while (!atRoot() && history.canUndo()) {
+                auto r = history.undo();
+                if (!r.ok) {
+                    last = std::move(r);
+                    break;
+                }
+                movedToRoot = true;
+            }
+            if (movedToRoot) view_.refresh(store_, overrides());
+            return last;
+        }
         auto timeline = history.readTimeline();
         if (!timeline.error.empty()) {
             last.error = timeline.error;

@@ -2117,6 +2117,10 @@ void undoHistoryRestores() {
     r = sub.restore(t5);
     check(r.ok && countTracks(*store) == 3 && view.current()->findTrack(5) != nullptr,
           "and back to T5's branch");
+    generation = view.generation();
+    r = sub.restore(0);
+    check(r.ok && countTracks(*store) == 0 && !sub.canUndo() && view.generation() == generation + 1,
+          "the root (0) undoes every step on the line, one refresh");
     r = sub.restore(999999);
     check(!r.ok && !r.error.empty(), "a step not in the history is refused, with a reason");
 }

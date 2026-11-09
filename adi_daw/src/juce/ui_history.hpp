@@ -20,6 +20,10 @@ class UndoHistoryPanel final : public juce::Component, private juce::ListBoxMode
     // How the panel reads the history and restores a step; the window gives them.
     std::function<History::Timeline()> read;
     std::function<bool(std::int64_t txnId)> restore;
+    // The last row, as Live lists "Open Live Set" first in its history ("Creating or opening a Set is
+    // treated as the first action in the Undo History and therefore cannot be undone"): the project as
+    // created or opened; restoring it undoes every step on the current line. The app names the file.
+    std::string rootLabel = "Open Project";
     // Reads the history again; the current step selected.
     void refresh();
     void paint(juce::Graphics &) override;
@@ -28,13 +32,13 @@ class UndoHistoryPanel final : public juce::Component, private juce::ListBoxMode
     struct Row {
         std::int64_t txnId = 0;
         std::string label, detail; // the step's label; its branch and snapshot names
-        bool applied = false, current = false, otherBranch = false;
+        bool applied = false, current = false, otherBranch = false, root = false;
     };
     const std::vector<Row> &rows() const noexcept { return rows_; }
     // Restores the row at `index` (Enter on the selected row does it too).
     bool restoreRow(int index);
     juce::ListBox list;
-    static constexpr int kRowHeight = 19;
+    static constexpr int kRowHeight = 21;
 
   private:
     int getNumRows() override;

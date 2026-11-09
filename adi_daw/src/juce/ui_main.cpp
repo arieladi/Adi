@@ -211,6 +211,9 @@ class AdiApplication final : public juce::JUCEApplication,
                 report(document_->error());
         };
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
+        // The Undo History's first action, as Live's "Open Live Set" row names the file.
+        root->undoHistory.rootLabel = std::string(create ? "New Project: \u201c" : "Open Project: \u201c") +
+                                      file.getFileName().toStdString() + "\u201d";
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
