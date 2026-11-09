@@ -4751,6 +4751,10 @@ int main(int argc, char **argv) {
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export (the last id), each named");
         }
+        // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
+            renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("File"), "File"),
+                       juce::File(pictures).getChildFile("adi-file-menu.png"));
         // The Options menu as drawn, with Solo in Place ticked, for the picture beside Live 12's.
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
