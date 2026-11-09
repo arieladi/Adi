@@ -3375,6 +3375,18 @@ void undoHistoryWindow(AppCommands &commands, const std::filesystem::path &dir) 
         if (auto stream = file.createOutputStream())
             juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
     }
+    // A restored step takes a locator with it, and the locator's selection: Set reads Set and adds again.
+    const auto located = [&] { return locatorsOf(*document->view().current()); };
+    check(root.command(AppCommands::AddLocator), "Add Locator");
+    root.frame();
+    history.refresh();
+    check(located().size() == 1 && root.arrangement.selectedLocator != 0 && history.rows()[0].label == "Add Locator",
+          "a locator added and selected, the newest step");
+    check(history.restoreRow(1), "the step before it");
+    root.frame();
+    check(located().empty() && root.arrangement.selectedLocator == 0,
+          "the step before the Add Locator restored: the locator and its selection are gone");
+    check(root.setLocator() && located().size() == 1, "Set adds again after the restore");
     root.afterEdit = nullptr;
     document->release();
 }
