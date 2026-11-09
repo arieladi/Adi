@@ -10,6 +10,7 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_history.hpp"
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
@@ -101,7 +102,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         SoloInPlace,
         ToggleTrackOptions,
         ToggleMixerTrackOptions,
-        LastId = ToggleMixerTrackOptions
+        UndoHistory,
+        LastId = UndoHistory
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -255,6 +257,12 @@ class AdiRootComponent final : public juce::Component {
     juce::TextButton aiTab{"AI"};
     BrowserPanel browser{*this};
     ArrangementView arrangement;
+    // Live's Undo History (manual 5.4.2; A5): View › Undo History and Ctrl/Cmd+Alt+Z. Its own window
+    // in the app (ui_main.cpp); not a child of this one.
+    UndoHistoryPanel undoHistory;
+    // Puts the project back to just after the history's step `txnId` (`OpSubmitter::restore`): one
+    // refresh, Follow paused as by an undo, the session re-reading the project after it.
+    bool restoreStep(std::int64_t txnId);
     DeviceChainStrip devices;
     DockResizer dockResizer;
     MixerPanel mixer;

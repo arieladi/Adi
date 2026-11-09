@@ -126,7 +126,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Activate/Deactivate Track 6", "Activate/Deactivate Track 7",
                                   "Activate/Deactivate Track 8", "Mixer Sends",
                                   "Insert Time Signature Change", "Solo in Place",
-                                  "Track Options", "Mixer Track Options"};
+                                  "Track Options", "Mixer Track Options", "Undo History"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -310,6 +310,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleMixerTrackOptions: // Live 12's Mixer Controls Track Options: the Mixer View's own Track Delay
         info.setTicked(active_ != nullptr && active_->state().mixerTrackOptions);
+        break;
+    case UndoHistory: // manual 5.4.2: View > Undo History, Ctrl/Cmd+Alt+Z
+        info.addDefaultKeypress('z', cmd | alt);
+        info.setActive(active_ != nullptr);
         break;
     case SoloSelected: // §42.19: Solo Selected Tracks, S
         info.addDefaultKeypress('s', 0);
@@ -550,6 +554,9 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
     // Live's look for everything this window holds (ui_look.hpp).
     setLookAndFeel(&look::liveLook());
+    undoHistory.setLookAndFeel(&look::liveLook());
+    undoHistory.read = [this] { return submitter_.timeline(); };
+    undoHistory.restore = [this](std::int64_t txn) { return restoreStep(txn); };
     setOpaque(true);
     setWantsKeyboardFocus(true);
     // Tab moves within the window's own controls, and Wrap Tab Navigation wraps or stops at
@@ -601,6 +608,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
 AdiRootComponent::~AdiRootComponent() {
     commands_.detach(*this);
     setLookAndFeel(nullptr);
+    undoHistory.setLookAndFeel(nullptr);
 }
 void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
@@ -611,6 +619,9 @@ void AdiRootComponent::frame() noexcept {
         generation_ = generation;
         // The project view's tree follows the project: tracks come and go, groups with them.
         arrangement.applyView();
+        // An open Undo History lists the step every edit, undo or redo made.
+        if (undoHistory.isShowing())
+            undoHistory.refresh();
         dirty_.mark(DirtySet::All);
     }
     const bool playing = mailbox_.playing();
@@ -1347,6 +1358,17 @@ bool AdiRootComponent::setSoloInPlace(bool on) {
     dirty_.mark(DirtySet::All);
     return true;
 }
+bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    const auto result = submitter_.restore(txnId);
+    if (!result.ok)
+        return fail(result.error.empty() ? "That step could not be restored." : result.error);
+    arrangement.followPaused = true; // as an undo pauses it
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    dirty_.mark(DirtySet::All);
+    return true;
+}
 bool AdiRootComponent::toggleSoloInPlace() {
     // From the CURRENT cell (ADR-0201), not the presented frame's, read at pick time: the Options
     // menu and the Solo button's menu (the Mix View's own window too) share the field, and one
@@ -1812,6 +1834,14 @@ bool AdiRootComponent::command(int id) {
         // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
         // and the marks are setSoloInPlace's, so the tail below is not run a second time.
         return toggleSoloInPlace();
+    case AppCommands::UndoHistory:
+        // The app puts the list in a window of its own (ui_main.cpp); headless, it is read as it is.
+        undoHistory.refresh();
+        if (applicationCommand)
+            applicationCommand(AppCommands::UndoHistory);
+        if (undoHistory.isShowing())
+            undoHistory.list.grabKeyboardFocus();
+        return true;
     case AppCommands::DeactivateSelected:
         if (!activateTrack(arrangement.geometry.selection.track))
             return false;
@@ -1906,7 +1936,7 @@ const std::vector<MenuEntries> &menuBar() {
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
           C::PlayReference, C::ToggleDeviceView,
-          C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
+          C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},
         // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Solo in Place

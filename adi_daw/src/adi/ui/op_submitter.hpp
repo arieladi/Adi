@@ -173,6 +173,67 @@ public:
         return r;
     }
 
+    /// Live's Undo History (manual 5.4.2): the whole history, newest first, every branch, with its
+    /// snapshots (#387). A read; nothing moves.
+    [[nodiscard]] History::Timeline timeline() const { return History(store_).readTimeline(); }
+
+    /// Back to the project as it stood just after the step `txnId`: undone or redone to it along the
+    /// current line, and, for a step on another branch, that branch first (`switchToBranch`), then
+    /// undone to it. The view is refreshed ONCE, at the end, when anything moved; a refusal part way
+    /// refreshes for what did move and reports the refusal. Never undoes past the protected root.
+    History::Result restore(std::int64_t txnId) {
+        History history(store_);
+        History::Result last;
+        auto timeline = history.readTimeline();
+        if (!timeline.error.empty()) {
+            last.error = timeline.error;
+            return last;
+        }
+        const auto find = [&timeline, txnId]() -> const History::TimelineStep * {
+            for (const auto& s : timeline.steps)
+                if (s.step.txnId == txnId) return &s;
+            return nullptr;
+        };
+        const auto* target = find();
+        if (target == nullptr) {
+            last.error = "That step is no longer in the history.";
+            return last;
+        }
+        bool moved = false;
+        const auto finish = [&](History::Result r) {
+            if (moved) view_.refresh(store_, overrides());
+            return r;
+        };
+        if (!target->onCurrentLine) {
+            if (target->branchIds.empty()) {
+                last.error = "That step is on no branch to switch to.";
+                return finish(last);
+            }
+            last = history.switchToBranch(target->branchIds.front());
+            if (!last.ok) return finish(last);
+            moved = true;
+            timeline = history.readTimeline();
+            target = find();
+            if (target == nullptr || !timeline.error.empty()) {
+                last.ok = false;
+                last.error = "The branch switched, but the step was not found on it.";
+                return finish(last);
+            }
+        }
+        const auto seq = target->step.lastSeq;
+        const bool back = target->applied;
+        for (std::size_t guard = 0; guard <= timeline.steps.size() && history.head() != seq; ++guard) {
+            if (back && atRoot()) break;
+            auto r = back ? history.undo() : history.redo();
+            if (!r.ok) return finish(r);
+            moved = true;
+            last = std::move(r);
+        }
+        last.ok = history.head() == seq;
+        if (!last.ok && last.error.empty()) last.error = "The history could not reach that step.";
+        return finish(last);
+    }
+
     /// The session's overridden lanes (ADR-0162), handed to every refresh this
     /// submitter makes, a commit, an undo or a redo, so the snapshot's
     /// `automationOverridden` and each lane's `overridden` read the session's
