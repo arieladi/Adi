@@ -3406,8 +3406,10 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && canvas.keyPressed(juce::KeyPress(juce::KeyPress::leftKey)),
           "down, then left");
     root.frame();
-    check(stored().loopStartTicks == lanes.nextGridLine(nudged, false) && root.undoTitle(false) == undoTitle,
-          "down moves it back by its length and left nudges it back; none an undo step");
+    const auto shortened = lanes.nextGridLine(endBefore, false) - (nudged + length);
+    check(stored().loopStartTicks == lanes.nextGridLine(nudged + length - shortened, false) &&
+              stored().loopEndTicks - stored().loopStartTicks == shortened && root.undoTitle(false) == undoTitle,
+          "down moves it back by its (shortened) length and left nudges it back a grid line; none an undo step");
 
     // The Loop Start and Loop Length fields typed (manual 6.6).
     bar.loopLength.onClick();
@@ -4731,9 +4733,16 @@ int main(int argc, char **argv) {
             commands.getCommandInfo(C::SoloInPlace, solo);
             commands.getCommandInfo(C::ToggleTrackOptions, rows);
             commands.getCommandInfo(C::ToggleMixerTrackOptions, mixer);
+            juce::ApplicationCommandInfo metronome(C::Metronome), loop(C::LoopSelection), selectLoop(C::SelectLoop);
+            commands.getCommandInfo(C::Metronome, metronome);
+            commands.getCommandInfo(C::LoopSelection, loop);
+            commands.getCommandInfo(C::SelectLoop, selectLoop);
             check(solo.shortName == "Solo in Place" && rows.shortName == "Track Options" &&
-                      mixer.shortName == "Mixer Track Options" && C::LastId == C::ToggleMixerTrackOptions,
-                  "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options (the last id), each named");
+                      mixer.shortName == "Mixer Track Options" && metronome.shortName == "Metronome" &&
+                      loop.shortName == "Loop Selection" && selectLoop.shortName == "Select Loop" &&
+                      C::LastId == C::SelectLoop,
+                  "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
+                  "Select Loop (the last id), each named");
         }
         // The Options menu as drawn, with Solo in Place ticked, for the picture beside Live 12's.
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -5500,7 +5509,7 @@ int main(int argc, char **argv) {
                   "the scrub area sits between the ruler and the lanes");
             check(!document->mailbox().desiredPlaying(), "the transport is stopped");
             const auto scrubPoint =
-                peerRoot.getLocalPoint(&arrangement.scrub, juce::Point<int>{100, 7}).toFloat();
+                peerRoot.getLocalPoint(&arrangement.scrub, juce::Point<int>{100, 16}).toFloat(); // under the brace
             const auto target = arrangement.geometry.tick(100);
             when += 1000;
             mouse(scrubPoint, juce::ModifierKeys::leftButtonModifier);

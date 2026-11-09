@@ -1191,7 +1191,9 @@ bool ArrangementView::selectLoop() {
             first = row.track->id;
         last = row.track->id;
     }
-    const auto loop = loopOf(reader().transport());
+    // From the CURRENT cell (ADR-0201): a brace just moved is there before the next frame presents it.
+    const auto current = root.current();
+    const auto loop = loopOf(current ? current->transport : reader().transport());
     auto &sel = geometry.selection;
     sel.track = first;
     sel.toTrack = last == first ? 0 : last;
