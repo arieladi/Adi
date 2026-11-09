@@ -374,6 +374,10 @@ public:
 
     struct Controls { StripControlImage source, gain; };
     [[nodiscard]] Controls captureControls() const { return {source_.captureControls(), gain_.captureControls()}; }
+    void captureLanes(StripLaneBindings& captured,const Controls& value) const {
+        captured.add(source_,value.source.config.lanes,value.source.config.keepAlive);
+        captured.add(gain_,value.gain.config.lanes,value.gain.config.keepAlive);
+    }
     void applyPublishedControls(const Controls& value) noexcept {
         source_.applyPublishedControls(value.source);
         gain_.applyPublishedControls(value.gain);
@@ -631,6 +635,8 @@ struct StripAutomation {
 class MixerControlBatch {
 public:
     void apply() const noexcept;
+    /// Owner: every lane this batch leaves running, as graph-independent bindings.
+    void captureLanes(StripLaneBindings&) const;
 private:
     struct Strip { StripNode* node; StripControlImage image; };
     struct Send { SendNode* node; SendNode::Controls image; };

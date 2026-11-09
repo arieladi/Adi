@@ -610,6 +610,36 @@ std::optional<OfflineSourceInfo> Session::offlineSourceInfo(std::int64_t trackId
     return info;
 }
 
+DeviceChainFn Session::eventPathFor(const rows::Model& model) {
+    return [this, plan = std::make_shared<const GraphPlan>(planGraph(model))](std::int64_t track) {
+        std::vector<Node*> result;
+        const auto start = plan->indexOf(track);
+        if (!start) return result;
+        std::vector<bool> visited(plan->nodes.size(), false);
+        std::vector<std::size_t> pending{*start};
+        for (std::size_t at = 0; at < pending.size(); ++at) {
+            const auto index = pending[at];
+            if (visited[index]) continue;
+            visited[index] = true;
+            if (plan->nodes[index].kind == PlannedKind::Vca) continue;
+            bool through = true;
+            for (auto* node : chainFor(plan->nodes[index].trackId)) {
+                result.push_back(node);
+                if (node->eventFlow() != EventFlow::Through) { through = false; break; }
+            }
+            if (!through) continue;
+            // Sends stop notes and sidechains carry only audio. An
+            // unconsumed main path can reach more than one instrument;
+            // retain every destination identity, never its later audio FX.
+            for (const auto& edge : plan->edges)
+                if (edge.from == index && edge.to < plan->nodes.size() &&
+                    edge.bus == Bus::Main && edge.routingId == 0 && !edge.feedback)
+                    pending.push_back(edge.to);
+        }
+        return result;
+    };
+}
+
 bool Session::rebuild() {
     if(const auto preview=rebuildGestureRuntime(gestureRuntime_))return *preview;
     error_.clear();
@@ -645,34 +675,7 @@ bool Session::rebuild() {
     std::unique_ptr<ClipPlayback> nextClips;
     std::unique_ptr<MidiClips> nextMidi;
     try {
-        const auto eventPlan = planGraph(model_);
-        const DeviceChainFn eventPath = [this, &eventPlan](std::int64_t track) {
-            std::vector<Node*> result;
-            const auto start = eventPlan.indexOf(track);
-            if (!start) return result;
-            std::vector<bool> visited(eventPlan.nodes.size(), false);
-            std::vector<std::size_t> pending{*start};
-            for (std::size_t at = 0; at < pending.size(); ++at) {
-                const auto index = pending[at];
-                if (visited[index]) continue;
-                visited[index] = true;
-                if (eventPlan.nodes[index].kind == PlannedKind::Vca) continue;
-                bool through = true;
-                for (auto* node : chainFor(eventPlan.nodes[index].trackId)) {
-                    result.push_back(node);
-                    if (node->eventFlow() != EventFlow::Through) { through = false; break; }
-                }
-                if (!through) continue;
-                // Sends stop notes and sidechains carry only audio. An
-                // unconsumed main path can reach more than one instrument;
-                // retain every destination identity, never its later audio FX.
-                for (const auto& edge : eventPlan.edges)
-                    if (edge.from == index && edge.to < eventPlan.nodes.size() &&
-                        edge.bus == Bus::Main && edge.routingId == 0 && !edge.feedback)
-                        pending.push_back(edge.to);
-            }
-            return result;
-        };
+        const DeviceChainFn eventPath = eventPathFor(model_);
         nextClips = std::make_unique<ClipPlayback>(clipProject_, transport_, spec_.sampleRate,
                                                 spec_.channels, spec_.maxFrames, spec_.progressiveDecoder);
         nextMidi = std::make_unique<MidiClips>(playbackModel_, transport_, spec_.sampleRate, midiState_, eventPath);
@@ -810,6 +813,26 @@ bool Session::parkedDevice(const rows::Device &device) const {
     return chain && chain->trackId &&
            (frozenSources_.contains(*chain->trackId) || frozenGroupChildren_.contains(*chain->trackId));
 }
+std::vector<rows::TempoEvent> Session::playbackTempo(const rows::Model& model) const {
+    if (performedTempo_.empty()) {
+        if (spec_.externalTempoBpm) return {rows::TempoEvent{0, *spec_.externalTempoBpm, 0, 0}};
+        return model.tempo;
+    }
+    auto result = performedTempo_;
+    if (authoredResumeAt_) {
+        const auto boundary = *authoredResumeAt_;
+        std::erase_if(result, [boundary](const auto& event) { return event.posTicks >= boundary; });
+        TempoMap authored;
+        for (const auto& event : model.tempo)
+            authored.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
+        result.push_back({boundary, authored.bpmAt(boundary), 0, 0});
+        for (const auto& event : model.tempo)
+            if (event.posTicks > boundary) result.push_back(event);
+        if (result.size() > 4096)
+            throw std::runtime_error("performed tempo history exceeds 4096 boundaries");
+    }
+    return result;
+}
 bool Session::readPlayback(const Store &store) {
     try {
         // A malformed/stale cache never falls back to a different live sound.
@@ -826,24 +849,7 @@ bool Session::readPlayback(const Store &store) {
         if (loaded_ && playbackRunning_.load(std::memory_order_acquire) && before != after)
             throw std::runtime_error("stop playback before freezing or unfreezing");
         playbackModel_ = model_;
-        if (!performedTempo_.empty()) {
-            playbackModel_.tempo = performedTempo_;
-            if (authoredResumeAt_) {
-                const auto boundary = *authoredResumeAt_;
-                std::erase_if(playbackModel_.tempo, [boundary](const auto& event) {
-                    return event.posTicks >= boundary;
-                });
-                TempoMap authored;
-                for (const auto& event : model_.tempo)
-                    authored.events.push_back({event.posTicks, event.bpm, static_cast<int>(event.curve)});
-                playbackModel_.tempo.push_back({boundary, authored.bpmAt(boundary), 0, 0});
-                for (const auto& event : model_.tempo)
-                    if (event.posTicks > boundary) playbackModel_.tempo.push_back(event);
-                if (playbackModel_.tempo.size() > 4096)
-                    throw std::runtime_error("performed tempo history exceeds 4096 boundaries");
-            }
-        } else if(spec_.externalTempoBpm)
-            playbackModel_.tempo={rows::TempoEvent{0,*spec_.externalTempoBpm,0,0}};
+        playbackModel_.tempo = playbackTempo(model_);
         frozenSources_.clear();
         frozenGroupChildren_.clear();
         for (const auto &[root, members] : freeze::groups(const_cast<SQLite::Database &>(store.db()))) {
@@ -1108,6 +1114,10 @@ bool Session::setExternalTempo(const Store& store, std::optional<double> bpm,
         error_ = "external tempo needs a loaded performance session and finite 20..999 BPM";
         return false;
     }
+    if (gestureHoldsExternalTempo(gestureRuntime_)) {
+        error_ = "external tempo waits for the active gesture";
+        return false;
+    }
     auto previousPlayback = playbackModel_;
     auto previousProject = clipProject_;
     const auto previousBpm = spec_.externalTempoBpm;
@@ -1141,6 +1151,10 @@ bool Session::setExternalTempoAt(const Store& store, std::optional<double> bpm, 
     if (!loaded_ || !spec_.performanceState || tick < 0 ||
         (bpm && (!std::isfinite(*bpm) || *bpm < 20 || *bpm > 999))) {
         error_ = "performed tempo needs a loaded performance session, nonnegative tick and finite 20..999 BPM";
+        return false;
+    }
+    if (gestureHoldsExternalTempo(gestureRuntime_)) {
+        error_ = "external tempo waits for the active gesture";
         return false;
     }
     std::vector<rows::TempoEvent> candidate;
@@ -1459,9 +1473,10 @@ void Session::TimingView::applyLoop() const noexcept {
 
 const TransportInfo* Session::TimingView::beginBlock()const noexcept {
     if(generationControls)generationControls->apply();
-    if(gestureAudio)gestureAudio->apply(gestureGeneration);
+    const StripLaneBindings* overlay=gestureAudio?gestureAudio->apply(gestureGeneration):nullptr;
     applyLoop();
     blockInfo=at(session->transport_);
+    if(overlay)blockInfo.stripLanes=overlay;
     return &blockInfo;
 }
 

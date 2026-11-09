@@ -35,6 +35,7 @@ public:
         captured.add(gain_,configured_ && configured_->bound?&configured_->lanes:nullptr,configured_);
     }
     void published(const StripControlImage& value) noexcept { published_.store(&value,std::memory_order_release); }
+    const StripNode& node() const noexcept { return gain_; }
     void collect(){parameters_.collect();}
     void prepare(double rate,std::int32_t frames) override{gain_.prepare(rate,frames);}
     void release() override{gain_.release();}
@@ -159,6 +160,9 @@ bool CueMonitor::publish(const CueSettings& settings,double rate,int maxFrames,i
     impl_->scenes.publish(std::move(scene));collect();return true;
     } catch(...) {return false;}
 }
+void CueControlBatch::captureLanes(StripLaneBindings& captured) const {
+    for(const auto& entry:entries_)captured.add(*entry.node,entry.image.config.lanes,entry.image.config.keepAlive);
+}
 void CueControlBatch::apply() const noexcept {
     for(const auto& entry:entries_)entry.apply(entry.target,entry.image);
 }
@@ -183,7 +187,7 @@ std::shared_ptr<const CueControlBatch> CueMonitor::prepareControls(const rows::M
             value.config.lanes=&held->lanes;value.config.keepAlive=std::move(held);
         }
         result->entries_.push_back({&found->second->gain,
-            [](void* target,const StripControlImage& image) noexcept {static_cast<CueGain*>(target)->published(image);},std::move(value)});
+            [](void* target,const StripControlImage& image) noexcept {static_cast<CueGain*>(target)->published(image);},std::move(value),&found->second->gain.node()});
     }
     return result;
 }

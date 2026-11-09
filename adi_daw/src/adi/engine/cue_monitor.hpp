@@ -8,8 +8,9 @@ namespace adi::engine {
 class CueControlBatch {
 public:
     void apply() const noexcept;
+    void captureLanes(StripLaneBindings&) const;
 private:
-    struct Entry { void* target; void (*apply)(void*,const StripControlImage&) noexcept; StripControlImage image; };
+    struct Entry { void* target; void (*apply)(void*,const StripControlImage&) noexcept; StripControlImage image; const StripNode* node; };
     std::vector<Entry> entries_;
     friend class CueMonitor;
 };

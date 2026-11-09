@@ -5,6 +5,7 @@
 #include "adi/audio/io_audit.hpp"
 #include "adi/automation_edits.hpp"
 #include "adi/blob.hpp"
+#include "adi/controller_lanes.hpp"
 #include "adi/digest.hpp"
 #include "adi/engine/project_view.hpp"
 #include "adi/engine/session.hpp"
@@ -12,6 +13,7 @@
 #include "adi/gesture_producers.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
+#include "adi/textproj.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <sqlite3.h>
 #include <algorithm>
@@ -56,6 +58,7 @@ struct Probe {
     std::array<std::int64_t, 128> noteOns{};
     std::size_t notes = 0;
     std::int64_t clock = 0;
+    int pedalUps = 0, pedalDowns = 0;
 };
 struct Device final : device::DeviceInstance {
     device::DeviceIdentity identity_;
@@ -79,6 +82,7 @@ struct Device final : device::DeviceInstance {
     void process(const NodeIo& io) noexcept override {
         if (io.wide()) ++probe->wideBlocks; else ++probe->floatBlocks;
         for (const auto& event : io.events) {
+            if (event.type == EventType::Controller && event.paramId == 64) ++(event.value == 0 ? probe->pedalUps : probe->pedalDowns);
             if (event.type != EventType::NoteOn) continue;
             if (probe->notes < probe->noteOns.size()) probe->noteOns[probe->notes++] = probe->clock + event.frame;
             else probe->overflow = true;
@@ -141,7 +145,8 @@ struct Fixture {
     Precision precision;
     int loads = 0;
     std::int64_t clock = 0;
-    explicit Fixture(Precision width, bool midi = false, bool automated = false) : precision(width) {
+    explicit Fixture(Precision width, bool midi = false, bool automated = false, std::int32_t maxFrames = 64,
+                     bool pedal = false) : precision(width) {
         StoreError error{};
         store = Store::createEmpty(directory.path() / "project.adi", error);
         require(static_cast<bool>(store), "create native gesture project");
@@ -159,6 +164,12 @@ struct Fixture {
             NoteRecord note{}; note.note_id = 42; note.key = 60; note.vel_on = 100;
             note.probability = 10000; note.start_ticks = 24024; note.dur_ticks = 12012;
             require(store->putEventStream(4, "notes", writeStream<NoteRecord>(FourCC::Notes, std::vector<NoteRecord>{note})), "seed native ANOT");
+            if (pedal) {
+                store->db().exec("UPDATE clips SET length_ticks=23063040 WHERE id=4"); // past every block rendered here
+                const std::array<controllers::Point, 1> held{{{0, 0, 1, 0, 0, 0}}};
+                auto sustain = controllers::prepareWrite(*store, 4, 0, 64, held);
+                require(sustain.ok && controllers::commitPrepared(*store, sustain).ok, "seed held pedal");
+            }
         }
         if (automated) {
             store->db().exec("INSERT INTO automation_lanes(id,owner_kind,owner_id,param_ref,time_base,value_domain) VALUES(6,'track',1,'volume',0,'real')");
@@ -168,7 +179,7 @@ struct Fixture {
         }
         session.graph().setFadeFrames(0);
         if (!midi) session.setSourcesFor([this](std::int64_t track) { return track == 1 ? std::vector<Node*>{&source} : std::vector<Node*>{}; });
-        SessionSpec spec; spec.sampleRate = 48000; spec.maxFrames = 64; spec.precision = width;
+        SessionSpec spec; spec.sampleRate = 48000; spec.maxFrames = maxFrames; spec.precision = width;
         require(session.load(*store, [this, midi](const DeviceRequest&, std::string&) {
             ++loads; return std::make_unique<Device>(probe, store->db().getHandle(), midi);
         }, spec), "load native gesture Session: " + session.error());
@@ -196,6 +207,24 @@ struct Fixture {
         AudioIo io; io.out = outputs; io.numOut = 2; io.frames = 64; io.streamTimeSamples = clock;
         if (precision == Precision::Float64) io.out64 = wide;
         probe->clock = clock; session.process(io); clock += 64;
+        if (!verify) return;
+        bool match = true;
+        for (std::size_t at = 0; at < a.size(); ++at) {
+            const auto l = precision == Precision::Float64 ? aw[at] : static_cast<double>(a[at]);
+            const auto r = precision == Precision::Float64 ? bw[at] : static_cast<double>(b[at]);
+            match = match && std::abs(l - left) < 1e-7 && std::abs(r - right) < 1e-7;
+        }
+        check(match, label + ": independent PCM oracle at native width");
+    }
+    void large(double left, double right, bool verify, const std::string& label) {
+        const std::int32_t frames = 1024;
+        std::vector<float> a(frames), b(frames); std::vector<double> aw(frames), bw(frames);
+        float* outputs[]{a.data(), b.data()}; double* wide[]{aw.data(), bw.data()};
+        AudioIo io; io.out = outputs; io.numOut = 2; io.frames = frames; io.streamTimeSamples = clock;
+        if (precision == Precision::Float64) io.out64 = wide;
+        const auto before = session.transport().position();
+        probe->clock = clock; session.process(io); clock += frames;
+        check(session.transport().position() == before + frames, label + ": the block renders and advances the transport");
         if (!verify) return;
         bool match = true;
         for (std::size_t at = 0; at < a.size(); ++at) {
@@ -610,10 +639,108 @@ void readOnlyInspection() {
           "read-only view, playback and refused gesture admission write no SQL or journal records");
 }
 
+void largeBlockPreview(Precision precision) {
+    Fixture f(precision, false, true, 1024);
+    for (int n = 0; n < 2; ++n) f.large(0, 0, false, "committed at the device block size");
+    f.large(0.25, 0.5, true, "committed at the device block size");
+    auto edit = f.begin(g::automationMoveProducer(8, 6, std::nullopt, {UINT64_MAX - 7}), g::Strategy::Structural);
+    f.update(*edit, std::make_unique<g::AutomationMoveInput>(std::vector<g::AutomationPointPosition>{{UINT64_MAX - 7, 0, -150}}),
+             "structural preview at the device block size");
+    { auto block = f.session.beginRender(); check(block.maxFrames() == 1024, "preview generation carries the Session's block limit"); }
+    for (int n = 0; n < 2; ++n) f.large(0, 0, false, "preview at the device block size");
+    f.large(0, 0, true, "preview renders above the default 512-frame limit");
+    f.cancel(*edit, "cancel at the device block size");
+    { auto block = f.session.beginRender(); check(block.maxFrames() == 1024, "restored generation carries the Session's block limit"); }
+    for (int n = 0; n < 2; ++n) f.large(0, 0, false, "restored at the device block size");
+    f.large(0.25, 0.5, true, "cancel keeps rendering above the default 512-frame limit");
+}
+
+void firstScalarOverAutomation(Precision precision) {
+    Fixture f(precision, false, true);
+    f.sound(0.25, 0.5, "automated volume on its ordinary generation");
+    auto manual = f.begin(g::scalarProducer({g::ScalarKind::TrackVolume, 1}));
+    f.update(*manual, std::make_unique<g::ScalarInput>(-20), "first scalar preview over automation");
+    f.sound(0.025, 0.05, "a scalar overlay suspends the lane on an ordinary generation");
+    f.cancel(*manual, "cancel the first scalar preview");
+    f.sound(0.25, 0.5, "the lane resumes after the first scalar preview");
+}
+
+void pedalAcrossPreview(Precision precision) {
+    Fixture f(precision, true, true, 64, true);
+    for (int n = 0; n < 8; ++n) f.block(0, 0, false, "pedal held before preview");
+    const auto ups = f.probe->pedalUps, downs = f.probe->pedalDowns;
+    check(downs == 1 && ups == 0, "the held pedal reached the instrument once");
+    auto edit = f.begin(g::automationMoveProducer(8, 6, std::nullopt, {UINT64_MAX - 7}), g::Strategy::Structural);
+    f.update(*edit, std::make_unique<g::AutomationMoveInput>(std::vector<g::AutomationPointPosition>{{UINT64_MAX - 7, 0, -150}}),
+             "structural preview under a held pedal");
+    for (int n = 0; n < 8; ++n) f.block(0, 0, false, "pedal held through preview");
+    f.cancel(*edit, "cancel under a held pedal");
+    for (int n = 0; n < 8; ++n) f.block(0, 0, false, "pedal held after cancel");
+    require(f.session.refresh(*f.store), "ordinary refresh under a held pedal");
+    for (int n = 0; n < 8; ++n) f.block(0, 0, false, "pedal held after refresh");
+    check(f.probe->pedalUps == ups && f.probe->pedalDowns == downs,
+          "preview, cancel and refresh keep the controller route: no pedal release or re-chase");
+}
+
+void linkAcrossGesture(Precision precision) {
+    Fixture f(precision, false, true);
+    const auto external = [&] { auto block = f.session.beginRender(); return block.externalTempoBpm(); };
+    require(f.session.setExternalTempo(*f.store, 240.0), "prepare external tempo: " + f.session.error());
+    check(external() == 240.0, "ordinary generation follows external tempo");
+    auto manual = f.begin(g::scalarProducer({g::ScalarKind::TrackVolume, 1}));
+    f.update(*manual, std::make_unique<g::ScalarInput>(-20), "scalar preview under external tempo");
+    check(!f.session.setExternalTempo(*f.store, 140.0) && external() == 240.0,
+          "external tempo reset refuses during a gesture and changes nothing");
+    check(!f.session.setExternalTempoAt(*f.store, 140.0, textproj::kPPQ) && external() == 240.0,
+          "performed tempo refuses during a gesture and changes nothing");
+    f.sound(0.025, 0.05, "refused tempo leaves the scalar preview audible");
+    f.cancel(*manual, "cancel scalar under external tempo");
+    check(f.session.setExternalTempo(*f.store, 140.0) && external() == 140.0, "a refused tempo succeeds once the gesture ends");
+    auto edit = f.begin(g::automationMoveProducer(8, 6, std::nullopt, {UINT64_MAX - 7}), g::Strategy::Structural);
+    f.update(*edit, std::make_unique<g::AutomationMoveInput>(std::vector<g::AutomationPointPosition>{{UINT64_MAX - 7, 0, -150}}),
+             "structural preview under external tempo");
+    {
+        auto block = f.session.beginRender();
+        check(block.externalTempoBpm() == 140.0 && block.constantExternalTempo() && block.maxFrames() == 64,
+              "a preview generation stays a Link generation");
+        check(block.sourcesReady(f.session.transport(), 64), "a preview generation can admit a pending Link launch");
+    }
+    f.cancel(*edit, "cancel structural under external tempo");
+    check(external() == 140.0, "a restored generation stays a Link generation");
+}
+
+void performedTempoAcrossGesture(Precision precision) {
+    constexpr auto ppq = textproj::kPPQ;
+    Fixture f(precision, false, true);
+    const auto bpm = [&](std::int64_t tick) { auto block = f.session.beginRender(); return block.bpmAtTick(tick); };
+    const auto preview = [&](const std::string& label) {
+        auto edit = f.begin(g::automationMoveProducer(8, 6, std::nullopt, {UINT64_MAX - 7}), g::Strategy::Structural);
+        f.update(*edit, std::make_unique<g::AutomationMoveInput>(std::vector<g::AutomationPointPosition>{{UINT64_MAX - 7, 0, -150}}), label);
+        return edit;
+    };
+    require(f.session.setExternalTempoAt(*f.store, 240.0, ppq / 2), "perform a tempo boundary: " + f.session.error());
+    check(bpm(0) == 120 && bpm(ppq) == 240, "the performed boundary is playing");
+    auto edit = preview("structural preview over performed history");
+    check(bpm(0) == 120 && bpm(ppq) == 240, "a preview keeps performed history");
+    f.cancel(*edit, "cancel over performed history");
+    check(bpm(0) == 120 && bpm(ppq) == 240, "a restored generation keeps performed history");
+    auto manual = f.begin(g::scalarProducer({g::ScalarKind::TrackVolume, 1}));
+    f.update(*manual, std::make_unique<g::ScalarInput>(-20), "scalar preview over performed history");
+    const auto committed = manual->commit();
+    check(committed.status.ok() && committed.durable && committed.durable->ok, "a scalar commits over performed history");
+    require(f.session.setExternalTempoAt(*f.store, 200.0, 2 * ppq), "extend the performed history: " + f.session.error());
+    check(bpm(0) == 120 && bpm(ppq) == 240 && bpm(3 * ppq) == 200, "promotion does not flatten the next performed boundary");
+    require(f.session.setExternalTempoAt(*f.store, std::nullopt, 4 * ppq), "resume authored: " + f.session.error());
+    check(bpm(0) == 120 && bpm(ppq) == 240 && bpm(3 * ppq) == 200 && bpm(5 * ppq) == 120, "authored resume keeps the performed prefix");
+    edit = preview("structural preview after authored resume");
+    check(bpm(0) == 120 && bpm(ppq) == 240 && bpm(3 * ppq) == 200 && bpm(5 * ppq) == 120, "a preview keeps the authored resume");
+    f.cancel(*edit, "cancel after authored resume");
+}
+
 } // namespace
 int main() {
     for (const auto precision : {Precision::Float32, Precision::Float64}) {
-        try { scalars(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); retainedRefusal(precision); nativeMaterialGuard(precision); referenceAndCue(precision); }
+        try { scalars(precision); switches(precision); foreignAndCommit(precision); structure(precision); automationPreview(precision); largeBlockPreview(precision); firstScalarOverAutomation(precision); pedalAcrossPreview(precision); linkAcrossGesture(precision); performedTempoAcrossGesture(precision); retainedRefusal(precision); nativeMaterialGuard(precision); referenceAndCue(precision); }
         catch (const std::exception& exception) { check(false, std::string("unexpected native fixture exception: ") + exception.what()); }
     }
     try { endpointLifetimes(); } catch (const std::exception& exception) { check(false, std::string("unexpected endpoint fixture exception: ") + exception.what()); }

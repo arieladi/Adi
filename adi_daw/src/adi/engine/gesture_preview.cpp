@@ -10,6 +10,7 @@
 #include <sqlite3.h>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -25,6 +26,7 @@ using gesture::PresentationStatus;
 using gesture::Status;
 using gesture::Error;
 using Tables=std::map<std::string,std::vector<Payload>>;
+using TempoFor=std::function<std::vector<rows::TempoEvent>(const rows::Model&)>;
 const std::set<std::string> materialTables{
     "project","tracks","track_recording_options","mixer_strip","mixer_pan_settings","group_summing",
     "tempo_map","time_signature_map","tuning_systems","tuning_degrees","key_map","key_map_tunings","key_map_degrees",
@@ -78,7 +80,7 @@ struct Image {
     std::shared_ptr<const std::vector<std::uint8_t>> viewBytes;
 };
 std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::set<std::int64_t>& overridden,
-                               const std::optional<double>& externalTempo) {
+                               const TempoFor& tempoFor) {
     std::optional<SQLite::Transaction> read;
     if(sqlite3_get_autocommit(store.db().getHandle())!=0)
         read.emplace(const_cast<SQLite::Database&>(store.db()),SQLite::TransactionBehavior::DEFERRED);
@@ -91,7 +93,7 @@ std::shared_ptr<Image> readImage(const Store& store,const Base& base,const std::
     out->viewBytes=std::make_shared<const std::vector<std::uint8_t>>(out->bytes);
     out->snapshot=SnapshotBuilder::fromStore(store,overridden,false);
     auto playback=out->model;
-    if(externalTempo)playback.tempo={rows::TempoEvent{0,*externalTempo,0,0}};
+    playback.tempo=tempoFor(playback);
     out->clips=readClipProject(store,playback);
     return out;
 }
@@ -230,6 +232,8 @@ struct Controls final:GestureControls {
     std::shared_ptr<const CueControlBatch> cue;
     std::vector<SummingControl> summing;
     std::vector<std::pair<InputGainNode*,double>> input;
+    std::shared_ptr<const StripLaneBindings> lanes; // the lanes these controls leave running
+    const StripLaneBindings* laneBindings() const noexcept override {return lanes.get();}
     void apply() const noexcept override {
         if(mixer)mixer->apply();
         if(cue)cue->apply();
@@ -252,17 +256,19 @@ struct Audio final:GestureAudio {
     SnapshotPublisher<PublishedControls> publisher;
     std::uint64_t next=0,current=0; // owner only; callback receives its immutable graph tag
     std::atomic<std::uint64_t> rendered{0};
-    void apply(std::uint64_t generation) noexcept override {
+    const StripLaneBindings* apply(std::uint64_t generation) noexcept override {
         const auto* value=publisher.peek();
         // A graph still rendering the previous generation must not announce a
         // newer overlay that it cannot use: its previous raw lanes stay pinned
         // until the matching generation installs replacement bindings.
-        if(!value)return;
+        if(!value)return nullptr;
         const auto* controls=value->forGeneration(generation);
-        if(!controls)return;
+        if(!controls)return nullptr;
         publisher.announce(value);
         if(*controls)(*controls)->apply();
         rendered.store(generation,std::memory_order_release);
+        // The publisher's announced value keeps these bindings for the block.
+        return *controls?(*controls)->laneBindings():nullptr;
     }
     std::uint64_t reserveGeneration() override {
         if(next==std::numeric_limits<std::uint64_t>::max())throw std::runtime_error("preview generation counter exhausted");
@@ -375,9 +381,10 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
     explicit GestureRuntime(Session& owner,ProjectView& project):session(owner.endpoint()),view(project.endpoint()){}
     Session* engine()const noexcept{return session?session->get():nullptr;}
     ProjectView* project()const noexcept{return view?view->get():nullptr;}
+    static TempoFor tempoRule(const Session* owner){return [owner](const rows::Model& model){return owner->playbackTempo(model);};}
     std::shared_ptr<Controls> controls(const rows::Model& model,const std::set<std::int64_t>& suspended) {
         auto* owner=engine();if(!owner)throw std::runtime_error("preview Session ended");
-        auto playback=model;if(owner->spec_.externalTempoBpm)playback.tempo={rows::TempoEvent{0,*owner->spec_.externalTempoBpm,0,0}};
+        auto playback=model;playback.tempo=owner->playbackTempo(model);
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         const auto bound=bindStripAutomation(program,suspended);
         HearingFlags hearing;hearing.soloInPlace=committed->cue.soloInPlace;
@@ -391,6 +398,10 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             if(gain!=owner->inputGains_.end())out->input.emplace_back(gain->second.get(),strip.inputGainDb);
             else if(strip.inputGainDb!=0.0)throw std::runtime_error("input-gain preview requires an existing input-gain node");
         }
+        // Link's per-graph bindings outrank a strip's raw lanes, so an overlay
+        // or a generation is heard only through bindings of its own.
+        auto lanes=std::make_shared<StripLaneBindings>();
+        out->mixer->captureLanes(*lanes);out->cue->captureLanes(*lanes);out->lanes=std::move(lanes);
         return out;
     }
     std::set<std::int64_t> suspended(const std::vector<std::shared_ptr<Active>>& owners)const {
@@ -427,10 +438,10 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             throw std::runtime_error("structural preview of frozen playback is unsupported");
         auto out=std::make_shared<Generation>();out->image=image;
         auto playback=image->model;
-        if(owner->spec_.externalTempoBpm)playback.tempo={rows::TempoEvent{0,*owner->spec_.externalTempoBpm,0,0}};
+        playback.tempo=owner->playbackTempo(image->model);
         out->clips=std::make_shared<ClipPlayback>(image->clips,owner->transport_,owner->spec_.sampleRate,
             owner->spec_.channels,owner->spec_.maxFrames,owner->spec_.progressiveDecoder);
-        out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_);
+        out->midi=std::make_shared<MidiClips>(playback,owner->transport_,owner->spec_.sampleRate,owner->midiState_,owner->eventPathFor(image->model));
         const auto program=compileAutomation(playback,owner->spec_.sampleRate);
         auto excluded=committedOverrides?*committedOverrides:owner->overridden_;excluded.insert(owner->writingAutomation_.begin(),owner->writingAutomation_.end());
         out->strips=bindStripAutomation(program,excluded);
@@ -440,6 +451,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         timing->generationControls=out->controls;timing->gestureAudio=owner->gestureAudio_;
         out->tag=owner->gestureAudio_->reserveGeneration();timing->gestureGeneration=out->tag;
         timing->sampleRate=owner->spec_.sampleRate;timing->settings=owner->spec_.performanceState?image->transport:TransportSettings{};
+        timing->spec=owner->spec_;timing->sourceReadiness=out->clips->readiness();timing->stripLanes=out->controls->lanes;
         for(const auto& event:playback.tempo)timing->tempo.events.push_back({event.posTicks,event.bpm,static_cast<int>(event.curve)});
         if(timing->tempo.events.empty())timing->tempo.events.push_back({0,120.0,0});
         auto sample=[&](std::int64_t tick){
@@ -503,7 +515,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(sqlite3_get_autocommit(store.db().getHandle())==0)return refused("committed presentation adoption requires no SQL transaction");
         if(!owner->appliedSource_.sameConnection(base.source))return refused("preview source does not match the loaded Session");
         try {
-            auto next=readImage(store,base,owner->overridden_,owner->spec_.externalTempoBpm);
+            auto next=readImage(store,base,owner->overridden_,tempoRule(owner));
             if(committed && sameBase(committed->base,base) && committed->bytes==next->bytes &&
                committed->transport==next->transport && committed->cue==next->cue && committed->overrides==owner->overridden_) {
                 if(!owner->presentationReady(base.source,base.sequence))return {PresentationState::Pending,"earlier device delivery or capture is pending",{}};
@@ -537,7 +549,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             std::unique_ptr<PublishedControls> baseControls;
             rows::Model nextModel=next->model,nextPlayback=next->model;
             CueSettings nextCue=next->cue;
-            if(owner->spec_.externalTempoBpm)nextPlayback.tempo={rows::TempoEvent{0,*owner->spec_.externalTempoBpm,0,0}};
+            nextPlayback.tempo=owner->playbackTempo(nextPlayback);
             // A foreign clip/tempo/automation edit also has to become audible
             // while a scalar gesture is suspended. Stage the full base once.
             try {
@@ -572,7 +584,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
                 if(change.operation=="group.setSummingDrive" && !owner->summing_.bussOf(change.id))
                     return {failed(Error::UnsupportedPreview,"drive preview requires an existing native summing buss"),{}, {}};
             }
-            auto image=readImage(store,base,owner->overridden_,owner->spec_.externalTempoBpm);
+            auto image=readImage(store,base,owner->overridden_,tempoRule(owner));
             if(encodeTables(topology(image->tables))!=encodeTables(topology(committed->tables)))
                 return {failed(Error::UnsupportedPreview,"preview changes native topology, device material, width or latency"),{}, {}};
             if(image->cue!=committed->cue)return {failed(Error::UnsupportedPreview,"preview changes cue routing"),{}, {}};
@@ -679,7 +691,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
         if(at==active.end())return adopt(store,base,&receipt);
         auto* owner=engine();if(!owner || !project())return {PresentationState::Detached,"preview endpoint ended after durable commit",{}};
         try {
-            auto actual=readImage(store,base,owner->overridden_,owner->spec_.externalTempoBpm);
+            auto actual=readImage(store,base,owner->overridden_,tempoRule(owner));
             const auto entry=*at;
             if(entry->image->bytes!=actual->bytes || entry->image->cue!=actual->cue || entry->image->transport!=actual->transport) {
                 const auto status=adopt(store,base,&receipt);
@@ -689,9 +701,9 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
             auto nextOverrides=manualOverrides(owner->model_,actual->model,owner->overridden_,owner->writingAutomation_,owner->spec_.sampleRate);
             actual->snapshot=annotateSnapshot(*actual->snapshot,nextOverrides);actual->overrides=nextOverrides;
             rows::Model nextModel=actual->model,nextPlayback=actual->model;
+            nextPlayback.tempo=owner->playbackTempo(nextPlayback);
             committed=actual;owner->model_=std::move(nextModel);owner->playbackModel_=std::move(nextPlayback);
             owner->overridden_=std::move(nextOverrides);
-            if(owner->spec_.externalTempoBpm)owner->playbackModel_.tempo={rows::TempoEvent{0,*owner->spec_.externalTempoBpm,0,0}};
             owner->clipProject_=actual->clips;owner->appliedSequence_=base.sequence;
             // SQL's actual typed after-image matched the heard material. Keep
             // its resources; removing ownership does not replay the operation.
@@ -734,6 +746,7 @@ struct GestureRuntime final:SessionRuntimeClient, std::enable_shared_from_this<G
     }
 };
 bool isGestureCommittedRefresh(const std::shared_ptr<GestureRuntime>& runtime) noexcept {return runtime && runtime->refreshing;}
+bool gestureHoldsExternalTempo(const std::shared_ptr<GestureRuntime>& runtime) noexcept {return runtime && !runtime->active.empty();}
 std::optional<bool> refreshGestureRuntime(const std::shared_ptr<GestureRuntime>& runtime,const Store& store) {
     if(!runtime || runtime->refreshing)return std::nullopt;
     if(runtime->active.empty()) {runtime->committed.reset();runtime->renderedGeneration.reset();return std::nullopt;}

@@ -433,6 +433,11 @@ private:
     friend class gesture::EnginePresentation;
     void attach(std::shared_ptr<const GraphTransportState>);
     bool readPlayback(const Store &);
+    // The tempo this Session plays a model at: performed history (with its
+    // authored resume), else the external tempo, else the model's map.
+    [[nodiscard]] std::vector<rows::TempoEvent> playbackTempo(const rows::Model&) const;
+    // Every node a track's events reach, which is MIDI's controller route identity.
+    [[nodiscard]] DeviceChainFn eventPathFor(const rows::Model&);
     bool parkedDevice(const rows::Device &) const;
     void resolveNewRows(const Store& store);
     void resolveOne(const Store& store, const rows::Device& row);

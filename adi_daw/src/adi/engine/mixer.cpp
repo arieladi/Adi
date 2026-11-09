@@ -605,6 +605,10 @@ void StripNode::applyPublishedControls(const StripControlImage& value) noexcept 
     setPanMode(value.config.panMode,value.config.panLeft,value.config.panRight);
     usePublishedLanes(value.config.lanes);
 }
+void MixerControlBatch::captureLanes(StripLaneBindings& captured) const {
+    for(const auto& value:strips_)captured.add(*value.node,value.image.config.lanes,value.image.config.keepAlive);
+    for(const auto& value:sends_)value.node->captureLanes(captured,value.image);
+}
 void MixerControlBatch::apply() const noexcept {
     for(const auto& value:strips_)value.node->applyPublishedControls(value.image);
     for(const auto& value:sends_)value.node->applyPublishedControls(value.image);
