@@ -45,6 +45,25 @@ class ProjectDocument final : public engine::BlockProcessor {
     // failed to re-read the new file, in `warning()`.
     bool saveAs(const std::filesystem::path &);
     const std::string &warning() const noexcept { return warning_; }
+    // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
+    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
+    bool saveCopy(const std::filesystem::path &);
+    // Live's Collect All and Save (manual 5.7): every outside media file the project and its
+    // history use is copied into `audio/` beside it and the project points at the copies
+    // (`Store::collectAllAndSave`, #411). Live's dialog chooses which locations to collect; the
+    // store collects them all. Not an undo step; the view and the session read the project again.
+    bool collectAllAndSave();
+    // ADI's Collect and Export (MR 1.6, 11.3): a portable `.zip` of the project and every file it
+    // uses (`media::collectExport`, #411, behind `Store::collectAndExport`), of the project as committed,
+    // the open one left as it is. Prepared here on the message thread: the destination is refused
+    // when it exists, and the job names the project's file. Run anywhere: `runCollectAndExport` reads
+    // the file on a short read-only connection of its own (SPEC §3.8), so the app runs it on a worker
+    // it owns and the window keeps working; a project replaced meanwhile does not wait for it.
+    struct ExportJob {
+        std::filesystem::path project, zip;
+    };
+    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
+    static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
     void prepare(double rate, std::int32_t frames) override;

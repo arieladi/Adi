@@ -5274,15 +5274,17 @@ int main(int argc, char **argv) {
         check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
               "the Options menu: Follow (§6.2), the grid (§6.10), then Solo in Place (§18.6)");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
-                                                C::TakeSnapshot, C::SaveAs},
-              "the File menu; Quit is the application menu's on the Mac");
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport},
+              "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
+              "Collect and Export after them; Quit is the application menu's on the Mac");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the menu bar: File, Edit, Create, View, Options, Navigate");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
-                                                C::TakeSnapshot, C::SaveAs, 0, C::Quit},
-              "the File menu ends with Quit and no longer holds Settings");
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::Quit},
+              "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
+              "Collect and Export after them; it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
               "the Options menu: Follow (§6.2), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
@@ -5301,13 +5303,22 @@ int main(int argc, char **argv) {
             commands.getCommandInfo(C::Metronome, metronome);
             commands.getCommandInfo(C::LoopSelection, loop);
             commands.getCommandInfo(C::SelectLoop, selectLoop);
+            juce::ApplicationCommandInfo copy(C::SaveCopy), collect(C::CollectAllAndSave), exportZip(C::CollectAndExport);
+            commands.getCommandInfo(C::SaveCopy, copy);
+            commands.getCommandInfo(C::CollectAllAndSave, collect);
+            commands.getCommandInfo(C::CollectAndExport, exportZip);
             check(solo.shortName == "Solo in Place" && rows.shortName == "Track Options" &&
                       mixer.shortName == "Mixer Track Options" && metronome.shortName == "Metronome" &&
                       loop.shortName == "Loop Selection" && selectLoop.shortName == "Select Loop" &&
-                      C::LastId == C::UndoHistory,
+                      copy.shortName == "Save a Copy..." && collect.shortName == "Collect All and Save" &&
+                      exportZip.shortName == "Collect and Export..." && C::LastId == C::CollectAndExport,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
-                  "Select Loop, each named; Undo History the last id");
+                  "Select Loop, Save a Copy, Collect All and Save, Collect and Export (the last id), each named");
         }
+        // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
+            renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("File"), "File"),
+                       juce::File(pictures).getChildFile("adi-file-menu.png"));
         // The Options menu as drawn, with Solo in Place ticked, for the picture beside Live 12's.
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
