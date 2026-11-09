@@ -128,7 +128,7 @@ struct Clip {
         if(c<channels) return sample[c];
         return V{0};
     }
-    std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames) const noexcept {
+    std::array<std::int64_t,slots> wanted(const Transport& t, std::int32_t frames,bool lookAhead=true) const noexcept {
         std::array<std::int64_t,slots> out; out.fill(-1);
         if (!t.playing()) return out;
         std::size_t used = 0;
@@ -166,7 +166,7 @@ struct Clip {
         // Mandatory current-block pages first, then two scaled pages: at least
         // 16384/48000 seconds of lead at every session rate.
         horizon(frames);
-        horizon(pageFrames*2);
+        if(lookAhead)horizon(pageFrames*2);
         return out;
     }
     void request(const std::array<std::int64_t,slots>& w) noexcept {
@@ -275,7 +275,7 @@ struct Clip {
         }
         p.number=number;
     }
-    bool service() {
+    bool service(const ClipPlayback::RequestSnapshotProbeForTest* probe) {
         if(failed)return false;
         if(progressive) {
             const auto status=progressive->snapshot().status;
@@ -288,6 +288,11 @@ struct Clip {
         if ((seq&1u)!=0) return false;
         for(std::size_t i=0;i<slots;++i) w[i]=requests[i].load(std::memory_order_seq_cst);
         if(requestSeq.load(std::memory_order_seq_cst)!=seq) return false;
+        struct CompletedProbe {
+            const ClipPlayback::RequestSnapshotProbeForTest* probe;
+            ~CompletedProbe(){if(probe && probe->afterService)probe->afterService(probe->context);}
+        } completed{probe};
+        if(probe && probe->afterSnapshot)probe->afterSnapshot(probe->context,w.front());
         bool worked=false;
         for(const auto number:w) {
             if(number<0) continue;
@@ -301,6 +306,16 @@ struct Clip {
                 int state=p.state.load(std::memory_order_relaxed);
                 if(state!=0 && state!=2) continue;
                 if(!p.state.compare_exchange_strong(state,1,std::memory_order_acquire)) continue;
+                // The audio driver can replace the request while this worker
+                // is walking an older snapshot. Recheck AFTER owning the page:
+                // a ready query that acquired/released this page after posting
+                // its request synchronizes with this claim, so stale work cannot
+                // evict a page it just admitted. If we claimed first, the query
+                // sees worker-owned state and refuses instead.
+                if(requestSeq.load(std::memory_order_seq_cst)!=seq) {
+                    p.state.store(state,std::memory_order_release);
+                    return worked;
+                }
                 if(state==2 && std::find(w.begin(),w.end(),p.number.load(std::memory_order_relaxed))!=w.end()) {
                     p.state.store(2,std::memory_order_release); continue;
                 }
@@ -396,6 +411,7 @@ struct ClipPlayback::Impl {
     std::vector<std::unique_ptr<TrackSource>> tracks;
     std::vector<std::string> problems;
     std::atomic<bool> stalled{false};
+    std::atomic<const ClipPlayback::RequestSnapshotProbeForTest*> requestProbe{nullptr};
     std::jthread worker;
     Impl(Transport& t,std::int32_t f):transport(t),maxFrames(f){}
     ~Impl() { worker.request_stop(); if(worker.joinable()) worker.join(); }
@@ -558,7 +574,10 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
     impl_->worker=std::jthread([p=impl_.get()](std::stop_token stop){
         while(!stop.stop_requested()) {
             bool work=false;
-            if(!p->stalled.load(std::memory_order_acquire)) for(auto& c:p->clips) { if(stop.stop_requested()) break; work=c->service()||work; }
+            if(!p->stalled.load(std::memory_order_acquire)) for(auto& c:p->clips) {
+                if(stop.stop_requested()) break;
+                work=c->service(p->requestProbe.load(std::memory_order_acquire))||work;
+            }
             if(!work) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
@@ -570,6 +589,9 @@ std::vector<Node*> ClipPlayback::sourcesFor(std::int64_t id) {
 }
 const std::vector<std::string>& ClipPlayback::problems() const noexcept { return impl_->problems; }
 void ClipPlayback::stallForTest(bool v) noexcept { impl_->stalled.store(v,std::memory_order_release); }
+void ClipPlayback::setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest* probe) noexcept {
+    impl_->requestProbe.store(probe,std::memory_order_release);
+}
 std::uint32_t ClipPlayback::underrunSamples() const noexcept { std::uint32_t n=0;for(const auto& c:impl_->clips)n+=c->underruns.load();return n; }
 std::uint32_t ClipPlayback::readErrors() const noexcept { std::uint32_t n=0;for(const auto& c:impl_->clips)n+=c->errors.load();return n; }
 std::vector<std::string> ClipPlayback::decodeProblems() const {
@@ -583,18 +605,77 @@ std::vector<std::string> ClipPlayback::decodeProblems() const {
     return result;
 }
 bool ClipPlayback::prime(std::chrono::milliseconds timeout) {
-    const auto until=std::chrono::steady_clock::now()+timeout;
-    for(auto& c:impl_->clips)c->request(c->wanted(impl_->transport,impl_->maxFrames));
+    if(audio::onAudioThread)return false;
+    return primeAt(impl_->transport,timeout);
+}
+ClipPlayback::Readiness ClipPlayback::readiness() const {
+    if(audio::onAudioThread)return {};
+    return [held=impl_](const Transport& snapshot,std::int32_t frames) noexcept {
+        if(frames<1 || frames>held->maxFrames)return false;
+        // One producer, the audio driver. This fixed target is shared by the
+        // admission check and the source immediately rendered after it.
+        const Transport target=snapshot;
+        // No checked vector iterators on the callback (MSVC Debug can lock
+        // their shared proxy). Source generations have a fixed clip count.
+        for(std::size_t i=0;i<held->clips.size();++i) {
+            auto& clip=held->clips[i];clip->request(clip->wanted(target,frames));
+        }
+        for(std::size_t i=0;i<held->clips.size();++i) {
+            auto& clip=held->clips[i];
+            if(clip->errors.load(std::memory_order_relaxed))return false;
+            for(const auto number:clip->wanted(target,frames,false)) {
+                if(number<0)continue;
+                Page* page=clip->acquire(number);
+                if(!page)return false;
+                page->state.store(2,std::memory_order_release);
+            }
+        }
+        return true;
+    };
+}
+bool ClipPlayback::primeAt(const Transport& snapshot,std::chrono::milliseconds timeout) {
+    return primeTargets(snapshot,nullptr,timeout);
+}
+bool ClipPlayback::primeAt(const Transport& snapshot,const Transport& alternate,std::chrono::milliseconds timeout) {
+    return primeTargets(snapshot,&alternate,timeout);
+}
+bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alternate,std::chrono::milliseconds timeout) {
+    if(audio::onAudioThread || timeout.count()<0)return false;
+    // One stable request for the entire wait. In particular, a driver advancing
+    // the live Transport cannot move a candidate's readiness target mid-wait.
+    const Transport target=snapshot;
+    const Transport other=alternate?*alternate:Transport{};
+    auto wanted=[&](const Clip& clip,std::array<std::int64_t,slots>& pages) {
+        pages=clip.wanted(target,impl_->maxFrames);
+        if(alternate)for(const auto number:clip.wanted(other,impl_->maxFrames)) {
+            if(number<0 || std::find(pages.begin(),pages.end(),number)!=pages.end())continue;
+            const auto empty=std::find(pages.begin(),pages.end(),-1);
+            if(empty==pages.end())return false;
+            *empty=number;
+        }
+        return true;
+    };
+    const auto started=std::chrono::steady_clock::now();
+    std::array<std::int64_t,slots> pages;
+    // Refuse the complete preparation before posting any partial union.
+    for(const auto& clip:impl_->clips)if(!wanted(*clip,pages))return false;
+    for(auto& clip:impl_->clips){(void)wanted(*clip,pages);clip->request(pages);}
     do {
         bool ready=true;
         for(const auto& c:impl_->clips)if(c->errors.load(std::memory_order_relaxed))return false;
-        for(auto& c:impl_->clips) for(const auto n:c->wanted(impl_->transport,impl_->maxFrames)) {
-            if(n<0)continue;
-            if(auto* p=c->acquire(n))p->state.store(2,std::memory_order_release);else ready=false;
+        for(auto& clip:impl_->clips) {
+            (void)wanted(*clip,pages);
+            for(const auto number:pages) {
+                if(number<0)continue;
+                if(auto* page=clip->acquire(number))page->state.store(2,std::memory_order_release);else ready=false;
+            }
         }
         if(ready)return true;
+        // Compare elapsed milliseconds rather than adding an arbitrary timeout
+        // to a nanosecond time_point, which can overflow for a large duration.
+        if(std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now()-started)>=timeout)return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    } while(std::chrono::steady_clock::now()<until);
-    return false;
+    } while(true);
 }
 }
