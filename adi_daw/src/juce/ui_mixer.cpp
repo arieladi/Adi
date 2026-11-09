@@ -204,6 +204,12 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         return text.trim().upToFirstOccurrenceOf("ms", false, true).trim().getDoubleValue();
     };
     delay.updateText();
+    keepLatency.setTitle("Keep Latency");
+    keepLatency.setTooltip("Keep Monitoring Latency in Recorded Audio: recordings line up with what was heard "
+                           "through the monitoring. Right-click In or Auto for the same switch.");
+    keepLatency.setClickingTogglesState(false);
+    keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };
+    addChildComponent(keepLatency);
     delay.setTitle("Track Delay");
     delay.setTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
     delay.setScrollWheelEnabled(false);
@@ -332,6 +338,7 @@ void MixerStrip::frame(bool changed) noexcept {
         pan.setValue(t->pan, juce::dontSendNotification);
         // The delay as the sample grid keeps it, in ms at the project's rate (manual 18.7).
         delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
+        keepLatency.setToggleState(t->recording.keepMonitoringLatency, juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
         solo.setToggleState(t->soloed, juce::dontSendNotification);
         // A group holding a soloed track shows its Solo half coloured (Live 12 manual 18.3). The
@@ -424,6 +431,9 @@ void MixerStrip::resized() {
         // Live's figure: the box across the strip, the "ms" box at its right edge.
         delay.setVisible(delay_ > 0);
         delay.setBounds(4, mixerBottom() + 19, getWidth() - 32, 13);
+        // Under it, on a track that records (Live's figure: none on a return or Main).
+        keepLatency.setVisible(delay_ > 0 && kind_ != "master" && kind_ != "return" && kind_ != "group");
+        keepLatency.setBounds(4, mixerBottom() + 36, getWidth() - 8, 14);
         for (std::size_t i = 0; i < sends_.size(); ++i) {
             sends_[i]->setVisible(i < shown_);
             sends_[i]->setBounds(sendBounds(i));

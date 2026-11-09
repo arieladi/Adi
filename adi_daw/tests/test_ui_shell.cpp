@@ -3949,6 +3949,19 @@ void recordingOptions(AppCommands &commands, settings::AppSettings &settings, co
     };
     const auto step = [&] { return document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0; };
     const auto before = step();
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        renderMenu(look::liveLook(), headers.quantizeMenu(2, true), juce::File(folder).getChildFile("adi-rec-q-menu.png"));
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-recording-options.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
     check(pick(headers.quantizeMenu(2, true), "1/8"), "Rec-Q's menu, 1/8");
     root.frame();
     midi = root.reader().findTrack(2);
@@ -3975,12 +3988,34 @@ void recordingOptions(AppCommands &commands, settings::AppSettings &settings, co
     check(audio != nullptr, "3 Audio's row");
     if (audio != nullptr) {
         check(!audio->showsInOut() || audio->onMonitorInOrAuto({30, 40}), "a right-click on Auto is the monitor's");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty())
+            renderMenu(look::liveLook(), audio->monitorMenu(), juce::File(folder).getChildFile("adi-monitor-menu.png"));
         check(pick(audio->monitorMenu(), "Keep Monitoring Latency in Recorded Audio"), "its menu's one item");
         root.frame();
         check(!root.reader().findTrack(4)->recording.keepMonitoringLatency &&
                   document->ops().nextUndo()->label == "Keep Monitoring Latency",
               "Keep Monitoring Latency off, one step, read back");
     }
+    // Live 12's Keep Latency toggle under Track Delay in the Mixer View's Track Options (manual 18.8).
+    root.command(AppCommands::ToggleMixerView);
+    if (!root.state().mixerTrackOptions)
+        root.command(AppCommands::ToggleMixerTrackOptions);
+    root.frame();
+    MixerStrip *wide = nullptr;
+    for (const auto &strip : root.mixerView.strips())
+        if (strip->track() == 4)
+            wide = strip.get();
+    check(wide != nullptr && wide->keepLatency.isVisible() && !wide->keepLatency.getToggleState(),
+          "the Mixer View's Track Options: 3 Audio's Keep Latency, unlit as the project holds it");
+    if (wide != nullptr) {
+        wide->keepLatency.onClick();
+        root.frame();
+        check(root.reader().findTrack(4)->recording.keepMonitoringLatency && wide->keepLatency.getToggleState(),
+              "clicked: on again, lit from the snapshot");
+    }
+    root.command(AppCommands::ToggleMixerTrackOptions);
+    root.command(AppCommands::ToggleMixerView);
+    root.frame();
     // Insert MIDI Track takes the registry's defaults.
     std::string why;
     check(settings.set("record.quantize", "1/32", {}, why), "record.quantize 1/32");

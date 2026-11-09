@@ -1764,12 +1764,13 @@ void TrackHeaderList::endRename() {
     repaint();
 }
 juce::Rectangle<int> TrackHeaderList::quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept {
-    if (height < 42)
+    // One under the other, the header's width each, in a row tall enough for both.
+    if (height < 56)
         return {};
-    const int x = nameLeft(depth) + 4, w = std::max(0, (getWidth() - x - 6) / 2);
-    if (w < 30)
+    const int x = nameLeft(depth) + 4, w = getWidth() - x - 6;
+    if (w < 50)
         return {};
-    return {record ? x : x + w + 2, top + 21, w, 14};
+    return {x, top + (record ? 21 : 37), w, 14};
 }
 juce::PopupMenu TrackHeaderList::quantizeMenu(std::int64_t track, bool record) {
     juce::PopupMenu menu;

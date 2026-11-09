@@ -75,8 +75,8 @@ MR § is the Master Reference's section.
 | A small live scope and spectrum inside every strip; a click opens the Scope or the analyser on that track; Compare in Scope for two selected tracks, or Alt-click a second track's scope button | 1.3, 3.2, 8.1, 8.6 | Partial: the analyser's big window and the engine's scope taps exist; the strip's view and the Scope window are Missing |
 | A loudness meter, LUFS and true peak, on the master only | 1.3, 8.6 | Waits (N13, and N6 for the master) |
 | Live's CPU meter; the per-track Performance Impact meter | V.3, V.4 §1 | Partial: the CPU meter is drawn; the per-track meter waits for the engine's numbers |
-| Rec-Q ([1/16] or [Free]) and Play-Q on every MIDI track header | V.2 §9 | Waits: no op, and no track kind (N6) |
-| Keep Monitoring Latency from the monitor button's right-click | V.2 §9 | Waits: no op (new Need) |
+| Rec-Q ([1/16] or [Free]) and Play-Q on every MIDI track header | V.2 §9 | Built (`window/rec-q`, C6, N31): two boxes under the name, each a menu of Free/Off and the four grids, one undo step; nothing follows them yet (Play-Q unscheduled, no MIDI recording) |
+| Keep Monitoring Latency from the monitor button's right-click | V.2 §9 | Built (`window/rec-q`, C6, N31): a right-click on In or Auto in the track controls, and Live 12's Keep Latency toggle under Track Delay in the Mixer View's Track Options; the recorder ignores it yet (#406) |
 | Freeze, Freeze All Channels, Freeze Group; Bounce in Place, Bounce to New Track, with a prompt | 1.3, 7 | Waits (engine, P1) |
 | Group Tracks; a group as a folder and its bus | 7 | Partial: the folder is built, read from the snapshot (#299): the tree in every panel, folding, Group Tracks and Ungroup Tracks (`window/groups`, `window/group-commands`; parity-7.3 row 33); dragging into a group and the summing controls are not built |
 | Save as Default Audio/MIDI Track in the header's menu | V.2 §9 | Later (P2) |
