@@ -3,6 +3,8 @@
 // See device_model.hpp for why this file has no JUCE in it.
 
 #include "juce/device_model.hpp"
+#include "adi/gesture_navigation_detail.hpp"
+#include <stdexcept>
 
 #include <algorithm>
 #include <utility>
@@ -222,6 +224,64 @@ void DeviceInstance::setParamSink(engine::ParamEditCapture* capture,
     sink_.store(capture, std::memory_order_release);
 }
 
+void DeviceInstance::installCaptureBinding(std::shared_ptr<const DeviceCaptureBinding> binding) {
+    if (!binding || !binding->parameters) throw std::invalid_argument("capture binding has no parameter ring");
+    // Allocate bookkeeping before exchange; publication itself cannot fail.
+    captureOwners_.push_back(std::move(binding));
+    setParamSink(nullptr,0);
+    captureBinding_.store(captureOwners_.back().get(),std::memory_order_seq_cst);
+    (void)collectCaptureBindings();
+}
+void DeviceInstance::detachCaptureBinding() noexcept {
+    captureBinding_.store(nullptr,std::memory_order_seq_cst);
+}
+bool DeviceInstance::captureCallbacksQuiescent() const noexcept {
+    return captureReaders_.load(std::memory_order_seq_cst)==0;
+}
+bool DeviceInstance::collectCaptureBindings() noexcept {
+    if(!captureCallbacksQuiescent())return false;
+    const auto* current=captureBinding_.load(std::memory_order_seq_cst);
+    std::erase_if(captureOwners_,[current](const auto& owner){return owner.get()!=current;});
+    return true;
+}
+const DeviceCaptureBinding* DeviceInstance::acquireCaptureBinding(bool& admitted) noexcept {
+    static_assert(std::atomic<std::uint64_t>::is_always_lock_free);
+    // Announcement precedes pointer load in the same total order as owner
+    // exchange/zero observation. Unsupported concurrent SDK entry is faulted
+    // while this announcement still protects the immutable binding.
+    constexpr std::uint64_t maximumSupportedCallbacks=65535;
+    const auto readers=captureReaders_.fetch_add(1,std::memory_order_seq_cst);
+    const auto* binding=captureBinding_.load(std::memory_order_seq_cst);
+    admitted=readers<maximumSupportedCallbacks;
+    if(!admitted && binding) {
+        if(binding->parameterFence)binding->parameterFence->captureFault();
+        if(binding->stateFence)binding->stateFence->captureFault();
+    }
+    return binding;
+}
+void DeviceInstance::reportCaptureFault() noexcept {
+    bool admitted=false;const auto* binding=acquireCaptureBinding(admitted);(void)admitted;
+    if(binding) {
+        if(binding->parameterFence)binding->parameterFence->captureFault();
+        if(binding->stateFence)binding->stateFence->captureFault();
+    }
+    releaseCaptureBinding();
+}
+void DeviceInstance::releaseCaptureBinding() noexcept {
+    captureReaders_.fetch_sub(1,std::memory_order_seq_cst);
+}
+DeviceInstance::StateSignal::StateSignal(DeviceInstance& owner) noexcept : owner_(&owner) {
+    bool admitted=false;binding_=owner.acquireCaptureBinding(admitted);
+    if(admitted && binding_ && binding_->stateFence) {
+        reserved_=binding_->stateFence->beginSignal();
+        if(!reserved_)binding_->stateFence->captureFault();
+    }
+}
+DeviceInstance::StateSignal::~StateSignal() {
+    if(reserved_)binding_->stateFence->finishSignal();
+    owner_->releaseCaptureBinding();
+}
+
 void DeviceInstance::setParamAutomated(std::int32_t index, bool on) noexcept {
     if (index < 0) return;
     const std::size_t bit = static_cast<std::size_t>(index);
@@ -279,19 +339,29 @@ void DeviceInstance::broadcastParam(std::int32_t index, engine::ParamEventKind k
     // plug-in's own control, which is exactly the thing ADR-0162's override
     // is for -- a user grabbing an automated parameter should take it over.
     // Only the values are dropped.
-    if (kind == engine::ParamEventKind::Value && paramIsAutomated(index)) {
+    const auto bit=index>=0?static_cast<std::size_t>(index):kAutomatedWords*64;
+    const auto word=bit/64;
+    const auto mask=std::uint64_t{1}<<(bit%64);
+    if(word<gesturing_.size() && kind==engine::ParamEventKind::Begin)
+        gesturing_[word].fetch_or(mask,std::memory_order_relaxed);
+    const bool human=word<gesturing_.size() && (gesturing_[word].load(std::memory_order_relaxed)&mask)!=0;
+    if (kind == engine::ParamEventKind::Value && paramIsAutomated(index) && !human) {
         echoesFiltered_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-
-    engine::ParamEditCapture* c = sink_.load(std::memory_order_acquire);
-    if (c == nullptr) return;
-    engine::ParamEvent e;
-    e.deviceId = sinkDevice_.load(std::memory_order_acquire);
-    e.paramIndex = index;
-    e.kind = kind;
-    e.value = normalized;
-    c->push(e);   // a full ring is counted by the capture, never blocked on
+    bool admitted=false;
+    const auto* binding=acquireCaptureBinding(admitted);
+    if(admitted && binding) {
+        (void)binding->parameters->push({binding->deviceId,index,kind,normalized},binding->parameterFence.get());
+    } else if(admitted) {
+        // Legacy standalone binding: caller owns capture lifetime and ensures
+        // producer quiescence when changing its borrowed pointer/identity.
+        auto* capture=sink_.load(std::memory_order_acquire);
+        if(capture)(void)capture->push({sinkDevice_.load(std::memory_order_acquire),index,kind,normalized});
+    }
+    releaseCaptureBinding();
+    if(word<gesturing_.size() && kind==engine::ParamEventKind::End)
+        gesturing_[word].fetch_and(~mask,std::memory_order_relaxed);
 }
 
 }  // namespace adi::device

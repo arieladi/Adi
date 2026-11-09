@@ -208,14 +208,16 @@ struct Snapshot : Sequenced {
 /// being slower, not wrong, which is the kind nobody notices.
 class SnapshotBuilder {
 public:
+    /// probeMediaFiles=false captures stored media metadata without filesystem
+    /// probes; rollback-preview capture uses this mode and prepares readers later.
     /// Reads the whole project. Use for the first snapshot, or after a change
     /// too broad to describe.
-    static std::unique_ptr<Snapshot> fromStore(const Store&, const std::set<std::int64_t>& overridden = {});
+    static std::unique_ptr<Snapshot> fromStore(const Store&, const std::set<std::int64_t>& overridden = {}, bool probeMediaFiles = true);
 
     /// Reads the project but reuses every node from `previous` that is
     /// unchanged. Returns a snapshot sharing structure with it.
     static std::unique_ptr<Snapshot> fromStore(const Store&, const Snapshot& previous,
-                                              const std::set<std::int64_t>& overridden = {});
+                                              const std::set<std::int64_t>& overridden = {}, bool probeMediaFiles = true);
 
     /// How many nodes the two snapshots share by pointer. For tests: the sharing
     /// claim above is checkable, so it is checked.

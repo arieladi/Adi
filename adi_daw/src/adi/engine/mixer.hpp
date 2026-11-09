@@ -99,6 +99,26 @@ struct StripLanes {
     const AutomationLaneProgram* panRight = nullptr;
 };
 
+class StripNode;
+// Scalar automation belongs to the graph that prepared its effective clock.
+// Persistent strips keep their ramps, but an owner preparing a new program
+// must not change the lanes an older, still acquired graph will read.
+class StripLaneBindings final {
+public:
+    [[nodiscard]] const StripLanes* forNode(const StripNode*) const noexcept;
+    // Owner assembling the next publication only. The caller freezes this
+    // object before exposing its raw pointer in TransportInfo.
+    void add(const StripNode&,const StripLanes*,std::shared_ptr<void> owner);
+private:
+    struct Entry {
+        const StripNode* node = nullptr;
+        const StripLanes* lanes = nullptr;
+        std::shared_ptr<void> owner;
+    };
+    std::vector<Entry> entries_;
+    friend class MixerStrips;
+};
+
 /// One track's strip as the model has it, sanitised: what its StripNode
 /// plays, and what every Post send from it plays at its first stage
 /// (SendNode). One value, applied to both by `StripNode::configure`, so a
@@ -128,6 +148,11 @@ struct StripMeter {
 };
 static_assert(std::atomic<float>::is_always_lock_free);
 
+struct StripControlImage {
+    StripConfig config;
+    bool audible = true;
+};
+
 class StripNode final : public Node {
 public:
     /// Message thread: the model's values. `audible` is mute and solo together.
@@ -148,7 +173,7 @@ public:
 
     /// Where a lane is read. Driver-thread state, read at the block's origin as
     /// every source reads it (Transport's contract).
-    void setTransport(const Transport* transport) noexcept { transport_ = transport; }
+    void setTransport(const Transport* transport) noexcept { transport_.store(transport,std::memory_order_release); }
 
     /// Message thread: all of the above from one track's configuration, with
     /// `audible` the gate to play it at (its mute, and its solo or not).
@@ -159,6 +184,11 @@ public:
         setDelay(config.delaySamples, config.delayRate);
         setLanes(config.lanes, config.lanes != nullptr ? config.keepAlive : std::shared_ptr<void>{});
     }
+
+    /// Owner capture, followed by allocation-free audio-owner adoption. The
+    /// publishing generation retains config.keepAlive through every read.
+    [[nodiscard]] StripControlImage captureControls() const;
+    void applyPublishedControls(const StripControlImage&) noexcept;
 
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return keepAlive_; }
 
@@ -208,6 +238,8 @@ public:
     static constexpr double kMaxDelaySeconds = 1.0;
 
 private:
+    friend class MixerStrips;
+    [[nodiscard]] const StripLanes* lanesFor(const NodeIo&) const noexcept;
     template <typename T>
     void processGains(const NodeIo& io, const T* const* in, T* const* out) noexcept;
     template <typename T>
@@ -269,7 +301,7 @@ private:
     std::atomic<bool> restart_{false};
     std::atomic<const StripLanes*> lanes_{nullptr};
     std::shared_ptr<void> keepAlive_;   ///< message thread only
-    const Transport* transport_ = nullptr;
+    std::atomic<const Transport*> transport_{nullptr};
 
     // Audio thread only. The last inputs, so gains are recomputed only when one
     // changes; and the ramp. A strip begins AT its target, not ramping up to it
@@ -340,6 +372,16 @@ public:
         retainAutomation();
     }
 
+    struct Controls { StripControlImage source, gain; };
+    [[nodiscard]] Controls captureControls() const { return {source_.captureControls(), gain_.captureControls()}; }
+    void captureLanes(StripLaneBindings& captured,const Controls& value) const {
+        captured.add(source_,value.source.config.lanes,value.source.config.keepAlive);
+        captured.add(gain_,value.gain.config.lanes,value.gain.config.keepAlive);
+    }
+    void applyPublishedControls(const Controls& value) noexcept {
+        source_.applyPublishedControls(value.source);
+        gain_.applyPublishedControls(value.gain);
+    }
     [[nodiscard]] std::shared_ptr<void> sourceLifetime() const override { return automationLife_; }
     /// The source's track delay, as its strip reports it: so the edge after
     /// this node waits as the edge after the strip does.
@@ -370,6 +412,7 @@ public:
     [[nodiscard]] const char* name() const noexcept override { return "send"; }
 
 private:
+    friend class MixerStrips;
     struct AutomationLife { std::shared_ptr<void> source, gain; };
     void retainAutomation() {
         auto source = source_.sourceLifetime(), gain = gain_.sourceLifetime();
@@ -589,14 +632,37 @@ struct StripAutomation {
     std::shared_ptr<const AutomationProgram> program, const std::set<std::int64_t>& overridden);
 
 /// One strip per track id, kept for the life of the session. Message thread.
+class MixerControlBatch {
+public:
+    void apply() const noexcept;
+    /// Owner: every lane this batch leaves running, as graph-independent bindings.
+    void captureLanes(StripLaneBindings&) const;
+private:
+    struct Strip { StripNode* node; StripControlImage image; };
+    struct Send { SendNode* node; SendNode::Controls image; };
+    std::vector<Strip> strips_;
+    std::vector<Send> sends_;
+    friend class MixerStrips;
+};
+
 class MixerStrips {
 public:
+    /// Derive the existing hearing/Pre/Post-send rules using isolated control
+    /// nodes, then bind the result to existing runtime nodes. No live mutation.
+    [[nodiscard]] std::shared_ptr<const MixerControlBatch> prepareControls(
+        const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&,
+        bool delayCompensation, const HearingFlags&) const;
     /// Recompute every strip from the model -- fader, pan, law, mute and solo --
     /// and bind its lanes. Creates strips for new tracks; a departed track's
     /// strip is kept, silent, until the session ends, as a departed device is
     /// (ADR-0122), since a retired graph may still name it.
     void sync(const rows::Model&, const Transport*, const std::shared_ptr<StripAutomation>&,
               bool delayCompensation=true, const HearingFlags& = {});
+
+    // Owner, after sync: retain a complete immutable lane binding for the next
+    // graph's TransportInfo, including both stages of every send. Null lanes
+    // are captured explicitly; an older graph never falls back to newer lanes.
+    [[nodiscard]] std::shared_ptr<StripLaneBindings> captureLanes() const;
 
     /// The strip for a track the plan realises, or null.
     [[nodiscard]] StripNode* stripFor(std::int64_t trackId) noexcept;

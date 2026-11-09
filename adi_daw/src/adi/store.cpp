@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/store.hpp"
+#include "adi/gesture_navigation_detail.hpp"
+#include "adi/applied_batches_detail.hpp"
 #include "adi/track_recording.hpp"
 
 #include "adi/schema_sql.hpp"  // generated from docs/format/schema.sql
@@ -226,7 +228,9 @@ bool isClientId(const std::string& id) {
 }  // namespace
 
 Store::Store(std::unique_ptr<SQLite::Database> db, std::filesystem::path p, bool ro)
-    : db_(std::move(db)), path_(std::move(p)), readOnly_(ro), clientId_(newClientId()) {}
+    : db_(std::move(db)), path_(std::move(p)), readOnly_(ro), clientId_(newClientId()) {
+    appliedDomain_ = detail::makeAppliedDomain(*this);
+}
 
 bool Store::setClientId(std::string id) {
     if (!isClientId(id)) return false;
@@ -238,7 +242,9 @@ Store::~Store() {
     // Best effort. close() is where the result can actually be reported, which
     // is why it is public and why callers who care should call it.
     try {
-        close();
+        gesture::detail::invalidateSource(*this);
+        detail::invalidateAppliedDomain(*this, AppliedSourceInvalidation::Closed);
+        closeFinalized();
     } catch (...) {
     }
 }
@@ -477,6 +483,21 @@ std::unique_ptr<Store> Store::open(const std::filesystem::path& path, StoreError
 }
 
 bool Store::close() {
+    if (detail::appliedDispatchActive(*this)) {
+        lastError_ = "reentrant Store close during applied-batch delivery";
+        return false;
+    }
+    if (closed_ || !db_) return true;
+    auto change = gesture::detail::beginSourceChange(*this);
+    if (!change.status.ok()) { lastError_ = change.status.message; return false; }
+    const auto finished = gesture::detail::finishSourceChange(change.permit);
+    if (!finished.ok()) { lastError_ = finished.message; return false; }
+    gesture::detail::invalidateSource(*this);
+    detail::invalidateAppliedDomain(*this, AppliedSourceInvalidation::Closed);
+    return closeFinalized();
+}
+
+bool Store::closeFinalized() {
     if (closed_ || !db_) return true;
     closed_ = true;
 

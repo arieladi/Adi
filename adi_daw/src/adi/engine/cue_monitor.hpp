@@ -5,6 +5,15 @@
 #include "adi/engine/mixer.hpp"
 #include <memory>
 namespace adi::engine {
+class CueControlBatch {
+public:
+    void apply() const noexcept;
+    void captureLanes(StripLaneBindings&) const;
+private:
+    struct Entry { void* target; void (*apply)(void*,const StripControlImage&) noexcept; StripControlImage image; const StripNode* node; };
+    std::vector<Entry> entries_;
+    friend class CueMonitor;
+};
 class CueMonitor {
 public:
     CueMonitor();
@@ -14,9 +23,14 @@ public:
     /// Message thread, before realisation. Persistent nodes reuse rendered
     /// Post FX audio; the reference keeps its fader/pan/automation, Cue is PFL.
     void configure(const rows::Model&,const CueSettings&,const Transport*,const std::shared_ptr<StripAutomation>&,bool enabled);
+    // Owner, after configure and before publication: bind Reference's private
+    // gain stages to the same immutable effective-tempo generation as Main.
+    void captureLanes(StripLaneBindings&) const;
     std::vector<MonitorPoint> points(const TapFn&) const;
     /// Publish only after the matching graph was prepared successfully.
-    void publish(const CueSettings&,double rate,int maxFrames,int channels,bool enabled,const Graph* prepared=nullptr);
+    bool publish(const CueSettings&,double rate,int maxFrames,int channels,bool enabled,const Graph* prepared=nullptr) noexcept;
+    [[nodiscard]] std::shared_ptr<const CueControlBatch> prepareControls(const rows::Model&,const CueSettings&,
+        const std::shared_ptr<StripAutomation>&,bool enabled) const;
     void collect();
     struct Click {
         void* context=nullptr;

@@ -14,6 +14,25 @@
 
 namespace adi::device {
 
+struct Vst3Device::HostMutationScope {
+    inline static thread_local std::array<const Vst3Device*,8> stack{};
+    inline static thread_local std::size_t depth=0;
+    Vst3Device& owner;
+    bool admitted=false;
+    explicit HostMutationScope(Vst3Device& value) noexcept : owner(value) {
+        if(depth==stack.size()){owner.reportCaptureFault();return;}
+        stack[depth++]=&owner;owner.hostMutations_.fetch_add(1,std::memory_order_release);admitted=true;
+    }
+    ~HostMutationScope() {
+        if(!admitted)return;
+        stack[--depth]=nullptr;owner.hostMutations_.fetch_sub(1,std::memory_order_release);
+    }
+};
+bool Vst3Device::hostMutationOnCurrentThread() const noexcept {
+    for(const auto* owner:HostMutationScope::stack)if(owner==this)return true;
+    return false;
+}
+
 namespace {
 
 /// VST3 identifies a parameter by a 32-bit `ParamID`, and `plugin_params`
@@ -386,11 +405,8 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
         // Muted from our own listener (ADR-0124): the three calls below tell
         // every listener, including us, and a host-initiated set is not an
         // edit. Scoped, so an early return cannot leave it set.
-        struct Mute {
-            bool& flag;
-            explicit Mute(bool& f) : flag(f) { flag = true; }
-            ~Mute() { flag = false; }
-        } mute(settingFromHost_);
+        HostMutationScope mute(*this);
+        if(!mute.admitted)return false;
         h->beginChangeGesture();
         h->setValueNotifyingHost(static_cast<float>(v.normalized));
         h->endChangeGesture();
@@ -400,21 +416,24 @@ bool Vst3Device::setParam(const std::string& paramId, const ParamValue& v) {
 }
 
 void Vst3Device::audioProcessorParameterChanged(juce::AudioProcessor*, int index, float value) {
-    if (settingFromHost_) return;
+    if (hostMutationOnCurrentThread()) return;
+    if(hostMutations_.load(std::memory_order_acquire)!=0)reportCaptureFault();
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::Value, static_cast<double>(value));
 }
 
 void Vst3Device::audioProcessorParameterChangeGestureBegin(juce::AudioProcessor*, int index) {
-    if (settingFromHost_) return;
+    if (hostMutationOnCurrentThread()) return;
+    if(hostMutations_.load(std::memory_order_acquire)!=0)reportCaptureFault();
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::Begin, 0.0);
 }
 
 void Vst3Device::audioProcessorParameterChangeGestureEnd(juce::AudioProcessor*, int index) {
-    if (settingFromHost_) return;
+    if (hostMutationOnCurrentThread()) return;
+    if(hostMutations_.load(std::memory_order_acquire)!=0)reportCaptureFault();
     if (index < 0 || static_cast<std::size_t>(index) >= juceToOurs_.size()) return;
     const std::int32_t ours = juceToOurs_[static_cast<std::size_t>(index)];
     if (ours >= 0) broadcastParam(ours, engine::ParamEventKind::End, 0.0);
@@ -851,12 +870,8 @@ bool Vst3Device::loadState(const std::string& role, const std::vector<std::uint8
     // and JUCE turns that -- synchronously, on this thread -- into a value
     // broadcast per changed parameter and a program-changed notification.
     // None of it is an edit: the op that caused this load is in the log.
-    struct Mute {
-        bool& flag;
-        const bool was;
-        explicit Mute(bool& f) : flag(f), was(f) { flag = true; }
-        ~Mute() { flag = was; }
-    } mute(settingFromHost_);
+    HostMutationScope mute(*this);
+    if(!mute.admitted)return false;
     inst_->setStateInformation(b.data(), static_cast<int>(b.size()));
     return true;
 }
@@ -877,8 +892,12 @@ void Vst3Device::audioProcessorChanged(juce::AudioProcessor*, const ChangeDetail
         latencyEpoch_.fetch_add(1, std::memory_order_release);
     if (d.parameterInfoChanged || d.programChanged || d.nonParameterStateChanged) {
         // ADR-0142: the answer to our own load or set is not a boundary.
-        if (settingFromHost_) mutedStateSignals_.fetch_add(1, std::memory_order_release);
-        else stateEpoch_.fetch_add(1, std::memory_order_release);
+        if (hostMutationOnCurrentThread()) mutedStateSignals_.fetch_add(1, std::memory_order_release);
+        else {
+            auto signal=beginStateSignal();
+            if(hostMutations_.load(std::memory_order_acquire)!=0)reportCaptureFault();
+            stateEpoch_.fetch_add(1, std::memory_order_release);
+        }
     }
 }
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "adi/engine/summing.hpp"
+#include <stdexcept>
 
 #include "adi/engine/plan.hpp"
 #include "adi/summing_flavors.hpp"
@@ -211,6 +212,27 @@ std::shared_ptr<ConsoleNode> makeConsoleHalf(const std::string& flavor, bool bus
 double summingUnityGain(const std::string& flavor) {
     const SummingFlavor* f = findSummingFlavor(flavor);
     return f == nullptr ? 1.0 : unityGain(*f);
+}
+
+std::vector<SummingControl> GroupSumming::prepareControls(const rows::Model& model) const {
+    std::vector<SummingControl> result;
+    for(const auto& group:model.summing) {
+        if(!group.enabled)continue;
+        const auto found=busses_.find(group.trackId);
+        if(found==busses_.end())continue; // an unknown/unplayable flavor stays named by sync(), not invented here
+        if(found->second.flavor!=group.flavor)throw std::runtime_error("preview changes summing topology");
+        const double drive=std::clamp(group.driveDb,-12.0,24.0);
+        result.push_back({found->second.node,1.0f,dbToGain(-drive)*static_cast<float>(summingUnityGain(group.flavor))});
+        for(const auto& [id,half]:channels_) {
+            (void)id;
+            if(half.group==group.trackId)result.push_back({half.node,dbToGain(drive),1.0f});
+        }
+        for(const auto& [id,half]:sends_) {
+            (void)id;
+            if(half.group==group.trackId)result.push_back({half.node,dbToGain(drive),1.0f});
+        }
+    }
+    return result;
 }
 
 void GroupSumming::sync(const rows::Model& model) {
