@@ -11,12 +11,14 @@
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -3443,6 +3445,110 @@ void locators(AppCommands &commands, const std::filesystem::path &dir) {
     root.frame();
     check(located().size() == 1 && arrangement.selectedLocator == 0 && document->ops().nextUndo()->label == "Delete Locator",
           "Delete removes the selected locator, one step");
+    root.afterEdit = nullptr;
+    document->release();
+}
+// Live's audio clips draw their waveforms (C4, N40; Live 12 manual 6.1, chapter 9): a stereo file
+// of decaying bursts dropped on 3 Audio, its peaks built on the document's worker, each channel in
+// a band of the clip's body, and nothing past the clip's source window once the clip is longer.
+void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "waves.adi", true, {}, error);
+    check(document != nullptr, "a new project for the waveforms");
+    if (!document)
+        return;
+    // Two seconds at 48 kHz, stereo: a burst on each beat, the right channel quieter.
+    const auto wav = dir / "Break.wav";
+    {
+        std::vector<float> samples(2 * 96000);
+        for (std::size_t i = 0; i < 96000; ++i) {
+            const double t = static_cast<double>(i % 24000) / 48000.;
+            const double v = std::sin(2 * 3.14159265358979 * 80 * t) * std::exp(-t * 9) +
+                             .15 * std::sin(static_cast<double>(i) * .9) * std::exp(-t * 30);
+            samples[2 * i] = static_cast<float>(v * .9);
+            samples[2 * i + 1] = static_cast<float>(v * .55);
+        }
+        audio::WavWriter writer(wav, 48000, 2, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), 96000);
+    }
+    AudioImport import;
+    check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file is read");
+    auto edit = dropAudio(*document->view().current(), 4, 0, "Break", import);
+    check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok && document->synchronise(),
+          "dropped on 3 Audio at bar 1: four beats at 120 BPM");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "waves");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.arrangement.waveforms = &document->waveforms();
+    root.setSize(1440, 900);
+    auto &lanes = root.arrangement.geometry;
+    lanes.scale = 40;
+    lanes.left = 0;
+    lanes.selection.track = 4;
+    root.frame();
+    root.frame();
+    auto &canvas = root.arrangement.canvas;
+    auto paintCanvas = [&canvas] {
+        juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            canvas.paintEntireComponent(g, true);
+        }
+        return image;
+    };
+    auto &waves = document->waveforms();
+    check(waves.builds() == 0 && waves.idle(), "nothing asked before the clip is painted");
+    paintCanvas(); // the first paint asks for the file's peaks and draws the clip without them
+    for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const auto seenBefore = root.arrangement.waveformsSeen;
+    root.frame();
+    check(waves.builds() == 1 && waves.problem().empty() && root.arrangement.waveformsSeen != seenBefore,
+          "the worker built the file's peaks, and the next frame saw them land");
+    const auto *clip = root.reader().findTrack(4)->clips.empty() ? nullptr : root.reader().findTrack(4)->clips[0].get();
+    check(clip != nullptr && clip->audio && clip->audio->sourceLengthFrames == 96000, "the clip and its source window");
+    if (clip == nullptr)
+        return;
+    // The clip twice as long as its file: its body past the source window holds no waveform.
+    check(document->ops().submit([&] {
+        OpRequest r;
+        r.opType = "clip.resize";
+        r.payload = {{"id", clip->id}, {"pos", 0}, {"length", 2 * clip->lengthTicks}};
+        r.label = "Resize Clip";
+        return r;
+    }()).ok && document->synchronise(), "the clip lengthened past its file's end");
+    root.frame();
+    clip = root.reader().findTrack(4)->clips[0].get();
+    const auto image = paintCanvas();
+    const int top = laneTop(root, 4) + 1 + ArrangementCanvas::kClipBarHeight + 2,
+              bottom = laneTop(root, 4) + lanes.heightFor(4) - 5;
+    const int sourceEnd = static_cast<int>(lanes.x(clip->lengthTicks / 2)), clipEnd = static_cast<int>(lanes.x(clip->lengthTicks));
+    // A waveform pixel is much darker than the clip's body around it.
+    const auto body = image.getPixelAt(sourceEnd + 20, top + 1).getBrightness();
+    auto darkIn = [&](int x0, int x1) {
+        int dark = 0;
+        for (int x = std::max(0, x0); x < std::min(x1, image.getWidth()); ++x)
+            for (int y = top; y < bottom; ++y)
+                if (image.getPixelAt(x, y).getBrightness() < body - .2f)
+                    ++dark;
+        return dark;
+    };
+    const int inside = darkIn(static_cast<int>(lanes.x(0)) + 2, sourceEnd - 1), past = darkIn(sourceEnd + 2, clipEnd - 2);
+    check(inside > 200 && past == 0, "waveform pixels inside the clip's body over its file, none past its source window");
+    if (inside <= 200 || past != 0)
+        std::printf("waveform pixels: %d inside, %d past\n", inside, past);
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-waveforms.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
     root.afterEdit = nullptr;
     document->release();
 }
@@ -7034,6 +7140,7 @@ int main(int argc, char **argv) {
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
+    clipWaveforms(commands, temp.path());
     loopMetronome(commands, settings, temp.path());
     locators(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);

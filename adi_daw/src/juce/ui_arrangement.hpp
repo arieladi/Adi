@@ -4,6 +4,7 @@
 #include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/track_edits.hpp"
+#include "adi/ui/waveform.hpp"
 #include "adi/ui/track_tree.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
@@ -271,6 +272,10 @@ class ArrangementCanvas final : public juce::Component,
     const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
     // A group's lane, row `at`: Live's overview of the clips of what it holds.
     void paintGroupLane(juce::Graphics &, std::size_t at, int y, int h, juce::Colour) const;
+    // An audio clip's waveform in its body, from `left` to `right` and `top` to `bottom`, the clip
+    // drawn at `pos`.
+    void paintWaveform(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
+                       float bottom) const;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
@@ -372,6 +377,10 @@ class ArrangementView final : public juce::Component {
     // across every track shown.
     bool selectLoop();
     const SnapshotReader &reader() const;
+    // The audio clips' waveforms (N40): the document's cache, which the app and the tests give it;
+    // without one, an audio clip is drawn as its colour and its name.
+    WaveformCache *waveforms = nullptr;
+    std::uint64_t waveformsSeen = 0;
     // Live 11's measures at 100 % (2026-10-27): the Overview with its margin, the beat
     // ruler with its numbers along its foot, the locator band, a dark gap, then the
     // lanes; the time ruler under them; a margin left of the time; the track header's

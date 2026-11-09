@@ -195,6 +195,8 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!document_->synchronise())
                 report(document_->error());
         };
+        // The audio clips' waveforms, from the document's own worker (N40).
+        root->arrangement.waveforms = &document_->waveforms();
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
