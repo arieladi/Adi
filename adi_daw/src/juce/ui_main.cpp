@@ -18,6 +18,19 @@ juce::File withAdiExtension(const juce::File &file) {
         return file;
     return file.getParentDirectory().getChildFile(file.getFileName() + ".adi");
 }
+// Live's Undo History window (manual 5.4.2; A5): the main window's list in a window of its own,
+// which closing hides. The list stays the root's; the window only shows it.
+class UndoHistoryWindow final : public juce::DocumentWindow {
+  public:
+    explicit UndoHistoryWindow(UndoHistoryPanel &panel)
+        : juce::DocumentWindow("Undo History", look::frame, juce::DocumentWindow::closeButton) {
+        setUsingNativeTitleBar(true);
+        setContentNonOwned(&panel, false);
+        setResizable(true, false);
+        centreWithSize(320, 420);
+    }
+    void closeButtonPressed() override { setVisible(false); }
+};
 } // namespace
 class AdiApplication final : public juce::JUCEApplication,
                              private juce::Timer,
@@ -86,6 +99,7 @@ class AdiApplication final : public juce::JUCEApplication,
         manager_.removeChangeListener(this);
         detachAudio();
         floating_.reset();
+        historyWindow_.reset();
         window_.reset();
         document_.reset();
         commands_.reset();
@@ -136,6 +150,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
         floating_.reset();
+        historyWindow_.reset();
         window_.reset();
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
@@ -195,7 +210,12 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!document_->synchronise())
                 report(document_->error());
         };
+        // The audio clips' waveforms, from the document's own worker (N40).
+        root->arrangement.waveforms = &document_->waveforms();
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
+        // The Undo History's first action, as Live's "Open Live Set" row names the file.
+        root->undoHistory.rootLabel = std::string(create ? "New Project: \u201c" : "Open Project: \u201c") +
+                                      file.getFileName().toStdString() + "\u201d";
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
@@ -342,6 +362,15 @@ class AdiApplication final : public juce::JUCEApplication,
             return detachMixView(*floating_, *root_, !root_->state().mixViewDetached);
         if (id == AppCommands::ToggleMixView)
             return toggleMixViewWindow(*floating_, *root_);
+        if (id == AppCommands::UndoHistory) {
+            if (!root_)
+                return false;
+            if (!historyWindow_)
+                historyWindow_ = std::make_unique<UndoHistoryWindow>(root_->undoHistory);
+            historyWindow_->setVisible(true);
+            historyWindow_->toFront(true);
+            return true;
+        }
         if (id == AppCommands::Settings) {
             // Live's Settings window (ADR-0203 d11): its Audio page holds the device
             // chooser of STEP-7-PLAN §3.0, unless this run has no audio device.
@@ -459,6 +488,7 @@ class AdiApplication final : public juce::JUCEApplication,
     std::unique_ptr<juce::FileChooser> chooser_;
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
+    std::unique_ptr<UndoHistoryWindow> historyWindow_; // shows the main root's list; goes before it
 };
 } // namespace adi::ui
 START_JUCE_APPLICATION(adi::ui::AdiApplication)

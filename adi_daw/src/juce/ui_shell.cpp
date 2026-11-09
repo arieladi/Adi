@@ -128,7 +128,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Activate/Deactivate Track 8", "Mixer Sends",
                                   "Insert Time Signature Change", "Solo in Place",
                                   "Track Options", "Mixer Track Options", "Metronome", "Loop Selection",
-                                  "Select Loop"};
+                                  "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
+                                  "Undo History"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -248,6 +249,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         info.addDefaultKeypress('t', cmd | shift);
         break;
     case DeleteTrack:
+        // On a selected locator, Delete removes it (Live 12 manual 6.4).
+        if (active_ != nullptr && active_->arrangement.selectedLocator != 0) {
+            info.shortName = "Delete Locator";
+            info.setActive(true);
+            break;
+        }
         // On a selected time signature marker, Delete removes it (Live 12 manual 6.5).
         if (active_ != nullptr && active_->arrangement.selectedMeter >= 0) {
             info.shortName = "Delete Time Signature Change";
@@ -265,6 +272,11 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case RenameTrack: // §41.5; on a selected time signature marker, Edit Time Signature (manual 6.5)
         info.addDefaultKeypress('r', cmd);
+        if (active_ != nullptr && active_->arrangement.selectedLocator != 0) {
+            info.shortName = "Rename Locator";
+            info.setActive(true);
+            break;
+        }
         if (active_ != nullptr && active_->arrangement.selectedMeter >= 0) {
             info.shortName = "Edit Time Signature";
             info.setActive(true);
@@ -313,6 +325,10 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ToggleMixerTrackOptions: // Live 12's Mixer Controls Track Options: the Mixer View's own Track Delay
         info.setTicked(active_ != nullptr && active_->state().mixerTrackOptions);
         break;
+    case UndoHistory: // manual 5.4.2: View > Undo History, Ctrl/Cmd+Alt+Z
+        info.addDefaultKeypress('z', cmd | alt);
+        info.setActive(active_ != nullptr);
+        break;
     case Metronome: // §42.20: Toggle Metronome, O; lit from the snapshot (#383)
         info.addDefaultKeypress('o', 0);
         info.setTicked(active_ != nullptr && active_->reader().transport().metronome);
@@ -321,6 +337,13 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case LoopSelection: // manual 6.6, §42.16: Ctrl/Cmd+L, the Edit menu's
         info.addDefaultKeypress('l', cmd);
         info.setActive(active_ != nullptr);
+        break;
+    case AddLocator: // manual 6.4: the Create menu's and the scrub area's
+        info.setActive(active_ != nullptr);
+        break;
+    case DeleteLocator: // manual 6.4: the Create menu's, on a selected locator
+    case EditInfoText:  // manual 6.4: the Edit menu's, on a selected locator
+        info.setActive(active_ != nullptr && active_->arrangement.selectedLocator != 0);
         break;
     case SelectLoop: // §42.8: Select Material in Loop, Ctrl/Cmd+Shift+L; a click on the brace too
         info.addDefaultKeypress('l', cmd | shift);
@@ -565,6 +588,9 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
       state_(persistence.load(window_, defaults)), infoShown_(commands.infoView()) {
     // Live's look for everything this window holds (ui_look.hpp).
     setLookAndFeel(&look::liveLook());
+    undoHistory.setLookAndFeel(&look::liveLook());
+    undoHistory.read = [this] { return submitter_.timeline(); };
+    undoHistory.restore = [this](std::int64_t txn) { return restoreStep(txn); };
     setOpaque(true);
     setWantsKeyboardFocus(true);
     // Tab moves within the window's own controls, and Wrap Tab Navigation wraps or stops at
@@ -616,6 +642,7 @@ AdiRootComponent::AdiRootComponent(engine::ProjectView &view, OpSubmitter &submi
 AdiRootComponent::~AdiRootComponent() {
     commands_.detach(*this);
     setLookAndFeel(nullptr);
+    undoHistory.setLookAndFeel(nullptr);
 }
 void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
@@ -626,6 +653,17 @@ void AdiRootComponent::frame() noexcept {
         generation_ = generation;
         // The project view's tree follows the project: tracks come and go, groups with them.
         arrangement.applyView();
+        // An open Undo History lists the step every edit, undo or redo made.
+        if (undoHistory.isShowing())
+            undoHistory.refresh();
+        // A selected locator goes with its locator, however it left: Undo, Redo, a restored step, another window.
+        if (arrangement.selectedLocator != 0) {
+            const auto *snapshot = reader_->get();
+            if (snapshot == nullptr || locatorById(locatorsOf(*snapshot), arrangement.selectedLocator) == nullptr) {
+                arrangement.selectedLocator = 0;
+                arrangement.repaint();
+            }
+        }
         dirty_.mark(DirtySet::All);
     }
     const bool playing = mailbox_.playing();
@@ -1362,6 +1400,17 @@ bool AdiRootComponent::setSoloInPlace(bool on) {
     dirty_.mark(DirtySet::All);
     return true;
 }
+bool AdiRootComponent::restoreStep(std::int64_t txnId) {
+    const auto result = submitter_.restore(txnId);
+    if (!result.ok)
+        return fail(result.error.empty() ? "That step could not be restored." : result.error);
+    arrangement.followPaused = true; // as an undo pauses it
+    if (afterEdit)
+        afterEdit();
+    error_.clear();
+    dirty_.mark(DirtySet::All);
+    return true;
+}
 bool AdiRootComponent::submitTransport(LoopEdit edit) {
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
@@ -1452,6 +1501,128 @@ bool AdiRootComponent::linkLoopToSelection() {
     if (!commands_.linkLoopToSelection() || sel.end == sel.start || sel.clip != 0 || !sel.pickedClips.empty())
         return true;
     return setLoopRange({std::min(sel.start, sel.end), std::max(sel.start, sel.end)});
+}
+std::int64_t AdiRootComponent::arrangementEnd() const {
+    const auto current = view_.current();
+    std::int64_t end = 0;
+    if (!current)
+        return end;
+    for (const auto &t : current->tracks)
+        for (const auto &c : t->clips)
+            end = std::max(end, c->posTicks + c->lengthTicks);
+    for (const auto &l : locatorsOf(*current))
+        end = std::max(end, l.pos);
+    return end;
+}
+bool AdiRootComponent::jumpTo(std::int64_t tick) {
+    // While playing, playback jumps there (manual 6.4); while stopped, the insert marker goes there.
+    if (playing_) {
+        if (!locate(tick))
+            return fail("The project has no tempo map to locate in.");
+        return true;
+    }
+    auto &sel = arrangement.geometry.selection;
+    sel.insert = sel.start = sel.end = tick;
+    sel.clip = 0;
+    sel.pickedClips.clear();
+    sel.marked = true;
+    arrangement.locate();
+    publishSelection();
+    arrangement.changed();
+    return true;
+}
+bool AdiRootComponent::addLocatorAt(std::int64_t pos) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Locators need an open project.");
+    auto edit = addLocator(*current, pos);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.selectedLocator = edit.id;
+    arrangement.selectedMeter = -1;
+    arrangement.loopSelected = false; // the new locator is the selection; the arrows go to it
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::setLocator() {
+    // Set Locator (manual 6.4): "the Set Locator button becomes the Delete Locator button for any
+    // selected locators". Live quantizes it to the global launch quantization, which arrives with
+    // the Session View's launch settings (ADR-0203 d10): unquantized here.
+    if (arrangement.selectedLocator != 0)
+        return deleteLocator(arrangement.selectedLocator);
+    const auto &sel = arrangement.geometry.selection;
+    const auto at = playing_ ? timelineTick() : sel.start != sel.end ? std::min(sel.start, sel.end) : sel.insert;
+    return addLocatorAt(at);
+}
+bool AdiRootComponent::jumpLocator(bool forward) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Locators need an open project.");
+    const auto &sel = arrangement.geometry.selection;
+    const auto from = playing_ ? timelineTick() : sel.insert;
+    const auto to = nextLocator(locatorsOf(*current), from, forward);
+    // Past the first or the last locator, the arrangement's start or end (manual 6.4).
+    return jumpTo(to ? *to : forward ? arrangementEnd() : 0);
+}
+bool AdiRootComponent::deleteLocator(std::int64_t id) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Locators need an open project.");
+    auto edit = ::adi::ui::deleteLocator(*current, id);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.selectedLocator = 0;
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::moveLocator(std::int64_t id, std::int64_t to) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Locators need an open project.");
+    auto edit = ::adi::ui::moveLocator(*current, id, to);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    if (!submitEdits(std::move(edit.ops)))
+        return false;
+    arrangement.scrub.repaint();
+    return true;
+}
+bool AdiRootComponent::renameLocator(std::int64_t id, const std::string &name) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Locators need an open project.");
+    auto edit = ::adi::ui::renameLocator(*current, id, name);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::setLocatorInfo(std::int64_t id, const std::string &text) {
+    const auto current = view_.current();
+    if (!current)
+        return fail("Locators need an open project.");
+    auto edit = ::adi::ui::setLocatorInfo(*current, id, text);
+    if (!edit.refusal.empty())
+        return fail(std::move(edit.refusal));
+    return submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::loopToNextLocator(std::int64_t id) {
+    // Loop to Next Locator (manual 6.4): the loop on, from this locator to the next, or to the
+    // arrangement's end after the last.
+    const auto current = view_.current();
+    if (!current)
+        return fail("Locators need an open project.");
+    const auto locators = locatorsOf(*current);
+    const auto *from = locatorById(locators, id);
+    if (from == nullptr)
+        return fail("Select a locator to loop from.");
+    const auto to = nextLocator(locators, from->pos, true).value_or(arrangementEnd());
+    if (to <= from->pos)
+        return fail("Nothing follows this locator to loop to.");
+    return submitTransport(setLoop(current->transport, true, {from->pos, to}));
 }
 bool AdiRootComponent::toggleSoloInPlace() {
     // From the CURRENT cell (ADR-0201), not the presented frame's, read at pick time: the Options
@@ -1883,6 +2054,8 @@ bool AdiRootComponent::command(int id) {
             return false;
         break;
     case AppCommands::DeleteTrack:
+        if (arrangement.selectedLocator != 0)
+            return deleteLocator(arrangement.selectedLocator);
         if (arrangement.selectedMeter >= 0)
             return deleteMeter(arrangement.selectedMeter);
         if (!deleteTrack())
@@ -1918,6 +2091,14 @@ bool AdiRootComponent::command(int id) {
         // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
         // and the marks are setSoloInPlace's, so the tail below is not run a second time.
         return toggleSoloInPlace();
+    case AppCommands::UndoHistory:
+        // The app puts the list in a window of its own (ui_main.cpp); headless, it is read as it is.
+        undoHistory.refresh();
+        if (applicationCommand)
+            applicationCommand(AppCommands::UndoHistory);
+        if (undoHistory.isShowing())
+            undoHistory.list.grabKeyboardFocus();
+        return true;
     // The metronome and the loop are complete on their own too (submitTransport).
     case AppCommands::Metronome:
         return toggleMetronome();
@@ -1925,6 +2106,13 @@ bool AdiRootComponent::command(int id) {
         return loopSelection();
     case AppCommands::SelectLoop:
         return arrangement.selectLoop();
+    case AppCommands::AddLocator:
+        return setLocator(); // the Create menu's Add Locator, at the play position as Set
+    case AppCommands::DeleteLocator:
+        return deleteLocator(arrangement.selectedLocator);
+    case AppCommands::EditInfoText:
+        return arrangement.selectedLocator != 0 ? arrangement.scrub.beginLocatorEdit(arrangement.selectedLocator, true)
+                                               : fail("Select a locator to edit its info text.");
     case AppCommands::DeactivateSelected:
         if (!activateTrack(arrangement.geometry.selection.track))
             return false;
@@ -1947,6 +2135,8 @@ bool AdiRootComponent::command(int id) {
         // Rename acts on the selection: a selected time signature marker (Edit Time Signature), the
         // device with the focus, else the selected track. The edit itself is its own op when the
         // name is committed.
+        if (arrangement.selectedLocator != 0)
+            return arrangement.scrub.beginLocatorEdit(arrangement.selectedLocator, false);
         if (arrangement.selectedMeter >= 0)
             return arrangement.scrub.beginMeterEdit(arrangement.selectedMeter, false);
         for (auto &panel : devices.panels)
@@ -2014,15 +2204,19 @@ const std::vector<MenuEntries> &menuBar() {
         // Paste and Duplicate; those wait for their ops.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
         // Edit menu is to be read on Live.
-        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0,
+        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
+                  C::SelectLoop, 0,
                   C::GroupTracks, C::UngroupTracks}},
-        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertTimeSignatureChange}},
+        // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change; their place
+        // in Live 12's Create menu is to be read on Live.
+        {"Create", {C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0, C::InsertTimeSignatureChange, 0,
+                    C::AddLocator, C::DeleteLocator}},
         // The show and hide toggles in §42.1's order, ADI's Channel EQ after the Mixer.
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
           C::PlayReference, C::ToggleDeviceView,
-          C::ToggleInfoView, 0, C::ZoomIn, C::ZoomOut, 0,
+          C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},
         // Follow (§6.2) and the grid's commands (§6.10) are the Options menu's; so is Solo in Place

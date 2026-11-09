@@ -3,6 +3,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/momentary_latch.hpp"
@@ -11,6 +12,7 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_history.hpp"
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
@@ -105,7 +107,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Metronome,
         LoopSelection,
         SelectLoop,
-        LastId = SelectLoop
+        AddLocator,
+        DeleteLocator,
+        EditInfoText,
+        UndoHistory,
+        LastId = UndoHistory
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -262,6 +268,12 @@ class AdiRootComponent final : public juce::Component {
     juce::TextButton aiTab{"AI"};
     BrowserPanel browser{*this};
     ArrangementView arrangement;
+    // Live's Undo History (manual 5.4.2; A5): View › Undo History and Ctrl/Cmd+Alt+Z. Its own window
+    // in the app (ui_main.cpp); not a child of this one.
+    UndoHistoryPanel undoHistory;
+    // Puts the project back to just after the history's step `txnId` (`OpSubmitter::restore`): one
+    // refresh, Follow paused as by an undo, the session re-reading the project after it.
+    bool restoreStep(std::int64_t txnId);
     DeviceChainStrip devices;
     DockResizer dockResizer;
     MixerPanel mixer;
@@ -369,6 +381,24 @@ class AdiRootComponent final : public juce::Component {
     bool braceKey(BraceKey key, bool command);
     bool setLoopStartAt(const std::string &text);
     bool setLoopLengthAt(const std::string &text);
+    // Live's locators (manual 6.4; N25, #385), from the CURRENT cell (ADR-0201), each edit one undo
+    // step. Set Locator: on a selected locator, Delete Locator; else a locator at the playhead while
+    // playing, at the time selection's start or the insert marker while stopped. Previous and Next
+    // jump to the locator before or after the play position, past the first or the last to the
+    // arrangement's start or end. A jump while playing moves playback there; while stopped, the
+    // insert marker. Add, delete, move, rename and Edit Info Text (the marker's note) act on one
+    // locator; Loop to Next Locator loops from a locator to the next, or to the arrangement's end.
+    bool setLocator();
+    bool jumpLocator(bool forward);
+    bool jumpTo(std::int64_t tick);
+    bool addLocatorAt(std::int64_t pos);
+    bool deleteLocator(std::int64_t id);
+    bool moveLocator(std::int64_t id, std::int64_t to);
+    bool renameLocator(std::int64_t id, const std::string &name);
+    bool setLocatorInfo(std::int64_t id, const std::string &text);
+    bool loopToNextLocator(std::int64_t id);
+    // Where the arrangement ends: the latest clip's end or locator, whichever is later.
+    std::int64_t arrangementEnd() const;
     // `editing.linkLoopToSelection` (REAPER's, off by default): with it on, a time selection made
     // in the lanes moves the brace to it, the loop's switch as it is. Nothing when it is off.
     bool linkLoopToSelection();

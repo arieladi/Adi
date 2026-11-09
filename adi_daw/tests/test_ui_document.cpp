@@ -240,6 +240,41 @@ int main(int argc, char **argv) {
             }
             check(heard, "and it plays");
             dropped->release();
+            {
+                // Its waveform (N40, #404): the first request queues the file and draws nothing; the
+                // worker builds its peaks once, through its own read-only store; the second request is
+                // served from memory; a new generation that still uses the file keeps them, and one
+                // that no longer does drops them.
+                auto &waves = dropped->waveforms();
+                const auto snapshot = dropped->view().current();
+                const auto &clip = *snapshot->findTrack(8)->clips[0];
+                const auto hash = clip.audio && clip.audio->mediaInfo ? clip.audio->mediaInfo->contentHash : std::string{};
+                const bool first = clip.audio && waves.peaks(*clip.audio) == nullptr;
+                for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                const auto built = clip.audio ? waves.peaks(*clip.audio) : nullptr;
+                check(first && !hash.empty() && built != nullptr && built->contentHash == hash &&
+                          built->sampleRate == 48000 && built->channels == 1 && built->frames == 24000 &&
+                          !built->bins.empty() && waves.builds() == 1 && waves.delivered() == 1 && waves.problem().empty(),
+                      "the worker builds the file's peaks once: none drawn at the first request, there at the next");
+                const auto again = waves.peaks(*clip.audio);
+                for (int i = 0; i < 20; ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                check(again == built && waves.builds() == 1, "the second request is served from memory, nothing built");
+                waves.follow(*snapshot, 1001);
+                check(waves.holds(hash) && waves.peaks(*clip.audio) == built,
+                      "a new generation that still uses the file keeps its peaks");
+                OpRequest rename;
+                rename.opType = "track.rename";
+                rename.payload = {{"id", 8}, {"name", "Kick"}};
+                check(dropped->ops().submit(rename).ok, "an edit elsewhere");
+                waves.follow(*dropped->view().current(), 1002);
+                check(waves.holds(hash), "and so does the edit's");
+                check(dropped->ops().undo().ok && dropped->ops().undo().ok && dropped->synchronise(), "undo the drop");
+                waves.follow(*dropped->view().current(), 1003);
+                check(!waves.holds(hash) && waves.builds() == 1, "a generation without the clip drops its peaks");
+                check(dropped->ops().redo().ok && dropped->synchronise(), "redo the drop");
+            }
             check(dropped->ops().undo().ok && dropped->synchronise() &&
                       dropped->view().current()->findTrack(8)->clips.empty() &&
                       dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
