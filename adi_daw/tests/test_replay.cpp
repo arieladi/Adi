@@ -22,17 +22,20 @@
 #include "adi/digest.hpp"
 #include "adi/blob.hpp"
 #include "adi/history.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <filesystem>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -211,6 +214,40 @@ std::vector<OpRequest> corpus() {
         {"added", Payload::array({Payload{{"bytes", Payload::binary(std::move(noteBytes))}}})},
         {"removed", Payload::array()}, {"changed", Payload::array()}, {"create", create}},
        "Add captured note");
+
+    // MI-02 carries both literal intent and its complete induced effects. This
+    // corpus supplies them independently, with no capture/selection/producer
+    // call during replay. Even the inactive victim collides by stored key.
+    const auto packetFor = [](const NoteRecord& note) {
+        std::vector<std::uint8_t> bytes(sizeof note);
+        std::memcpy(bytes.data(), &note, sizeof note);
+        return Payload{{"bytes", Payload::binary(std::move(bytes))}};
+    };
+    const std::array<NoteRecord, 1> priorNotes{{diffNote}};
+    const auto priorBytes = writeStream<NoteRecord>(FourCC::Notes, priorNotes);
+    const auto priorHash = media::blake3Bytes(priorBytes);
+    if (!priorHash) throw std::runtime_error("cannot hash literal overlap corpus baseline");
+    NoteRecord incoming{};
+    incoming.note_id = std::uint64_t{0x8000000000000012ULL};
+    incoming.start_ticks = 720600;
+    incoming.dur_ticks = 1000;
+    incoming.key = 65;
+    incoming.vel_on = 100;
+    incoming.vel_off = 64;
+    incoming.channel = 7;
+    incoming.probability = 10000;
+    incoming.tuning_cents = -3.25f;
+    auto shortened = diffNote;
+    shortened.dur_ticks = 720720;
+    const auto incomingPacket = packetFor(incoming);
+    const Payload overlapIntent = {{"added", Payload::array({incomingPacket})},
+        {"removed", Payload::array()}, {"changed", Payload::array()}};
+    op("note.applyDiff", {{"clip", 41}, {"stream_id", 700}, {"from", priorHash.hex},
+        {"added", Payload::array({incomingPacket})}, {"removed", Payload::array()},
+        {"changed", Payload::array({Payload{{"old", packetFor(diffNote)}, {"new", packetFor(shortened)}}})},
+        {"overlap", {{"version", 1}, {"intent", overlapIntent},
+            {"expression_guards", Payload::array({Payload{{"note_id", diffNote.note_id}, {"rows", Payload::array()}}})}}}},
+       "Shorten the overlapping note");
 
     // Devices (OPS.md 9.7). The chain first, because device.chain_id is NOT
     // NULL with foreign keys on, and then the whole device lifecycle: insert,

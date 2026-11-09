@@ -600,7 +600,7 @@ Warp setters remain separate from this captured producer.
 | `cc.restoreStream` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
 
-MI-01: `note.applyDiff {clip,stream_id,from,added[],removed[],changed[],create?}`
+MI-01/MI-02: `note.applyDiff {clip,stream_id,from,added[],removed[],changed[],create?,overlap?}`
 is one noncoalescable edit of the canonical musical notes stream
 (`stream_kind='notes'`, NULL channel and controller). It writes that stream
 once, in the same transaction as the op and any removed expression rows.
@@ -621,8 +621,9 @@ sections, absent targets, colliding additions, identity-changing replacements,
 old-byte mismatches and unsupported record extents refuse before mutation.
 Future-width additions must supply their complete opaque tail. A retained
 record's existing tail, unedited flags and note-relative expression remain
-unchanged. MI-02's overlap resolution is a separate producer of explicit
-removals/changes; this op does not infer an overlap policy.
+unchanged. Without `overlap`, the packet is a literal MI-01 mutation. With the
+versioned MI-02 envelope below, the handler recomputes its overlap effects;
+neither path reads an ambient merge policy.
 
 Every known note field is validated before narrowing: nonzero uint64 ID,
 signed start, positive duration with checked endpoint, key 0..127, velocity
@@ -656,6 +657,61 @@ The public `notes::captureNotes`, pure `prepareDiff` and owner `commitDiff` in
 expected-head and source-file guards. The prepared result is zero requests for
 a semantic no-op, otherwise one `note.applyDiff`; its literal effects can feed
 a preview. Details and examples are in [ENGINE-NOTE-DIFF.md](ENGINE-NOTE-DIFF.md).
+
+MI-02's `notes::prepareOverlapDiff` in `note_overlap.hpp` produces the same op
+with an optional closed envelope:
+
+```text
+overlap: {
+  version: 1,
+  intent: {added:[{bytes}], removed:[{bytes}], changed:[{old:{bytes},new:{bytes}}]},
+  expression_guards: [{note_id:uint64, rows:[complete typed SQL rows...]}]
+}
+```
+
+The outer arrays contain the complete effective mutation, including every
+induced shortening and removal; inner `intent.removed` contains plain records,
+while outer removals retain their full expression packets. The handler fully
+validates the original intent before composing effects, recomputes version 1
+against the current stream, and compares the entire effective diff. Omitted,
+extra or contradictory effects refuse. Array order is canonicalized, without
+silently deduplicating identities or dropping extra outer no-op changes.
+Guards name exactly the retained changed identities, including empty expression
+sets, and compare complete rows with SQLite storage classes preserved. Missing,
+duplicate or extra guard identities refuse. Removed-expression and added-orphan
+guards keep their MI-01 meaning. A changed expression row cannot bypass these
+guards merely because the ANOT hash stayed the same.
+
+Version 1 uses the stored key only; channel, cents and inactive flags do not
+partition collisions. Additions and start/duration/key changes are incoming
+drivers; stage all drivers and exclude their original identities and explicit
+removals before resolving victims. Touching half-open intervals do not overlap.
+If an incoming interval covers a victim's original start, remove that victim;
+otherwise shorten its end to the earliest incoming start strictly inside it.
+A survivor keeps its identity, start, flags, opaque tail and expression bytes;
+no second fragment or identity is invented. Same-key overlapping incoming
+drivers refuse with `IncomingOverlap`, because no precedence is adopted.
+Unrelated preexisting overlaps remain literal. More than 100000 original
+victim/driver collisions refuses the complete preparation with
+`CollisionLimitExceeded`; a successful preview is never truncated.
+
+`PreparedOverlap` binds its owned immutable source capture, requests and
+preview. `commitOverlapDiff` preserves the mandatory captured head and source
+guards, including a null head and a no-op, and permits only actor/detail/label
+and advisory first-request `selBefore` metadata. A modified raw request is a
+separate submission: removing its entire optional envelope may yield a valid
+literal MI-01 request. Undo restores exact captured rows without resolving
+historical overlaps. Versioned Redo recomputes the stored rule and must agree
+with its recorded inverse; other valid intents yielding identical material
+are not distinguished by that inverse. Old literal packets and scalar wrappers
+retain their prior replay semantics. The rule and its fixed resource bound are
+versioned; future corrections must not reinterpret existing version-1 history.
+
+This is the documentary interpretation adopted from PLAN MI-02 and ADR-0203
+d1/d7, with measured Live boundary/channel/expression parity still open.
+Intentional stretch expression scaling is a separate producer requirement.
+The exact table, preview contract and limits are in
+[ENGINE-NOTE-OVERLAP.md](ENGINE-NOTE-OVERLAP.md).
 
 The five original P0 entries (`note.insert`, `note.delete`, `note.move`,
 `note.resize`, `note.setVelocity`) delegate to the same checked full-stride

@@ -277,6 +277,7 @@ add_library(adi_core STATIC
     src/adi/note_stream_detail.cpp
     src/adi/note_diff_plan.cpp
     src/adi/note_diff.cpp
+    src/adi/note_overlap_plan.cpp
     src/adi/controller_lanes.cpp
     src/juce/builtin_samples.cpp
     src/adi/sample_slots.cpp
@@ -1826,6 +1827,18 @@ add_test(NAME adi_note_diff_tests COMMAND adi_note_diff_tests)
 add_executable(adi_note_diff_compat_tests tests/test_note_diff_compat.cpp)
 target_link_libraries(adi_note_diff_compat_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_note_diff_compat_tests COMMAND adi_note_diff_compat_tests)
+
+add_executable(adi_note_overlap_tests tests/test_note_overlap.cpp)
+target_link_libraries(adi_note_overlap_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_tests COMMAND adi_note_overlap_tests)
+
+add_executable(adi_note_overlap_ops_tests tests/test_note_overlap_ops.cpp)
+target_link_libraries(adi_note_overlap_ops_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_ops_tests COMMAND adi_note_overlap_ops_tests)
+
+add_executable(adi_note_overlap_playback_tests tests/test_note_overlap_playback.cpp)
+target_link_libraries(adi_note_overlap_playback_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_overlap_playback_tests COMMAND adi_note_overlap_playback_tests)
 
 add_executable(adi_controller_lanes_tests tests/test_controller_lanes.cpp)
 target_link_libraries(adi_controller_lanes_tests PRIVATE adi_core adi_warnings)

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/note_diff.hpp"
 #include "adi/note_diff_ops.hpp"
+#include "adi/note_overlap_detail.hpp"
 #include "adi/note_stream_detail.hpp"
 #include "adi/edit_rows.hpp"
 #include "adi/row_capture.hpp"
@@ -232,8 +233,8 @@ void applyPlan(OpContext& context,const Plan& plan) {
     if(!sameSqlRows(expressions(context.db,plan.clip),expected))
         throw std::runtime_error("trigger changed the complete clip expression set after application");
 }
-Plan fromDiff(OpContext& context,const detail::SnapshotData& captured,const Diff& diff,bool historicalScalar=false) {
-    const auto planned=detail::planRecords(captured.baseline,diff);
+Plan fromStreamPlan(OpContext& context,const detail::SnapshotData& captured,
+                    const detail::StreamPlan& planned,bool historicalScalar=false) {
     if(!planned.ok)throw std::runtime_error(planned.error);
     Plan result;result.clip=captured.clip;result.stream.before=captured.captured.streamRow;
     result.stream.after=result.stream.before;
@@ -254,8 +255,38 @@ Plan fromDiff(OpContext& context,const detail::SnapshotData& captured,const Diff
     }
     validatePlan(context,result);return result;
 }
+Plan fromDiff(OpContext& context,const detail::SnapshotData& captured,const Diff& diff,bool historicalScalar=false) {
+    return fromStreamPlan(context,captured,detail::planRecords(captured.baseline,diff),historicalScalar);
+}
+Diff overlapIntent(const Payload& packet) {
+    closed(packet,{"added","removed","changed"});
+    for(const char* field:{"added","removed","changed"})
+        if(!packet.at(field).is_array())throw std::runtime_error("overlap intent sections must be arrays");
+    Diff result;
+    for(const auto& record:packet.at("added"))result.added.push_back(parseRecord(record));
+    for(const auto& record:packet.at("removed"))result.removed.push_back(parseRecord(record));
+    for(const auto& change:packet.at("changed")) {
+        closed(change,{"old","new"});
+        result.changed.push_back({parseRecord(change.at("old")),parseRecord(change.at("new"))});
+    }
+    return result;
+}
+void overlapExpressionGuards(const Payload& guards,const Diff& effects,const ExpressionIndex& expressionsByNote) {
+    if(!guards.is_array())throw std::runtime_error("overlap expression guards must be an array");
+    std::set<std::uint64_t> expected;
+    for(const auto& change:effects.changed)expected.insert(recordValues(change.oldRecord).id);
+    std::set<std::uint64_t> seen;
+    for(const auto& guard:guards) {
+        closed(guard,{"note_id","rows"});const auto id=noteId(guard.at("note_id"));
+        if(!seen.insert(id).second)throw std::runtime_error("duplicate overlap expression guard identity");
+        if(!expected.contains(id))throw std::runtime_error("extra overlap expression guard identity");
+        if(!sameSqlRows(orderedRows(guard.at("rows")),expressionRows(expressionsByNote,id)))
+            throw std::runtime_error("retained note expression set changed after overlap preparation");
+    }
+    if(seen!=expected)throw std::runtime_error("missing overlap expression guard identity");
+}
 Plan forwardPlan(OpContext& context,const Payload& packet) {
-    closed(packet,{"clip","stream_id","from","added","removed","changed"},{"create"});
+    closed(packet,{"clip","stream_id","from","added","removed","changed"},{"create","overlap"});
     const auto clip=integer(packet.at("clip")),streamId=integer(packet.at("stream_id"));
     if(!packet.at("from").is_string())throw std::runtime_error("note diff from must be a text hash or absent");
     auto captured=capture(context.db,clip);
@@ -289,7 +320,21 @@ Plan forwardPlan(OpContext& context,const Payload& packet) {
     for(const auto& changed:packet.at("changed")) {
         closed(changed,{"old","new"});diff.changed.push_back({parseRecord(changed.at("old")),parseRecord(changed.at("new"))});
     }
-    return fromDiff(context,value,diff);
+    if(!packet.contains("overlap"))return fromDiff(context,value,diff);
+    const auto& overlap=packet.at("overlap");closed(overlap,{"version","intent","expression_guards"});
+    if(integer(overlap.at("version"))!=static_cast<std::int64_t>(noteOverlapVersion))
+        throw std::runtime_error("unsupported note overlap version");
+    // The resolver validates the whole requested intent before composition,
+    // including changes later superseded by an induced removal. The outer
+    // packet is only ordered here: full byte equality with the computed result
+    // proves its complete mutation, without encoding another final stream.
+    const auto resolved=detail::resolveOverlap(value.baseline,overlapIntent(overlap.at("intent")));
+    if(!resolved.ok())throw std::runtime_error(resolved.error);
+    std::string error;const auto ordered=detail::orderOverlapDiff(value.baseline,diff,error);
+    if(!ordered)throw std::runtime_error(error);
+    if(*ordered!=resolved.stream.effects)throw std::runtime_error("note overlap effective diff contradicts its intent");
+    overlapExpressionGuards(overlap.at("expression_guards"),resolved.stream.effects,expressionIndex);
+    return fromStreamPlan(context,value,resolved.stream);
 }
 Payload inverseCapture(const Plan& plan) {
     Payload stream=nullptr,expression=Payload::array();
@@ -544,7 +589,8 @@ bool buildInverse(OpContext& context,const Payload& packet,Payload& inverse,std:
     catch(const std::exception& exception){error=exception.what();return false;}
 }
 constexpr Field fields[]={{"clip",FieldType::Int},{"stream_id",FieldType::Int},{"from",FieldType::Text},
-    {"added",FieldType::Array},{"removed",FieldType::Array},{"changed",FieldType::Array},{"create",FieldType::Object,false}};
+    {"added",FieldType::Array},{"removed",FieldType::Array},{"changed",FieldType::Array},{"create",FieldType::Object,false},
+    {"overlap",FieldType::Object,false}};
 const OpDescriptor descriptors[]={{"note.applyDiff","Apply an explicit exact-record MIDI note diff",Scope::Edit,
     EngineImpact::Snapshot,fields,false,false,apply,buildInverse,""}};
 } // namespace
@@ -580,6 +626,40 @@ CommitResult commitDiff(Store& store,const PreparedDiff& prepared,Actor actor) {
         return OpJournal(store).commit(requests,prepared.options);
     } catch(const std::exception& exception){result.error=exception.what();return result;}
 }
+CommitResult commitOverlapDiff(Store& store,const PreparedOverlap& prepared,const OverlapCommitMetadata& metadata) {
+    CommitResult result;
+    if(!prepared.ok()) {
+        result.error=prepared.error().empty()?"note overlap has not been prepared":prepared.error();return result;
+    }
+    try {
+        const auto* backing=detail::PreparedOverlapAccess::get(prepared);
+        const auto* source=backing?detail::SnapshotAccess::get(backing->source):nullptr;
+        if(!backing || !source || !backing->plan.ok() || !backing->plan.stream.ok ||
+           backing->requests.size()!=(backing->plan.stream.changed?std::size_t{1}:std::size_t{0}))
+            throw std::runtime_error("overlap preparation has no coherent captured request");
+        if(filename(store)!=source->captured.sourceFile) {
+            result.error="project changed after note overlap preparation";result.stale=true;return result;
+        }
+        CommitOptions options;options.expectHead.emplace(source->captured.head);
+        if(backing->requests.empty()) {
+            // Even an empty expected head is a real guard. No-op submission
+            // must not use OpJournal's unguarded empty-batch fast path.
+            Read read(store.db());const auto current=OpJournal(store).headSeq();
+            if(current!=source->captured.head) {
+                result.stale=true;result.headFound=current;result.error="stale: the undo head moved";return result;
+            }
+            result.ok=true;return result;
+        }
+        auto requests=backing->requests;
+        for(auto& request:requests) {
+            request.actor=metadata.actor;request.actorDetail=metadata.actorDetail;
+            if(metadata.label)request.label=*metadata.label;
+            request.selBefore.reset();
+        }
+        requests.front().selBefore=metadata.selBefore;
+        return OpJournal(store).commit(requests,options);
+    } catch(const std::exception& exception){result.error=exception.what();return result;}
+}
 std::span<const OpDescriptor> diffOps(){return descriptors;}
 bool noteInsertApply(OpContext& c,const Payload& p,std::string& e){return legacyApply(c,p,e,Legacy::Insert);}
 bool noteInsertInverse(OpContext& c,const Payload& p,Payload& i,std::string& e){return legacyInverse(c,p,i,e,Legacy::Insert);}
@@ -613,6 +693,26 @@ bool makeForwardRequest(const SnapshotData& snapshot,const StreamPlan& plan,OpRe
         request.payload={{"clip",snapshot.clip},{"stream_id",snapshot.streamId?*snapshot.streamId:*snapshot.creationId},
             {"from",snapshot.from},{"added",std::move(added)},{"removed",std::move(removed)},{"changed",std::move(changed)}};
         if(!snapshot.streamId)request.payload["create"]=*snapshot.captured.creationRow;
+        output=std::move(request);return true;
+    } catch(const std::exception& exception){error=exception.what();return false;}
+}
+bool makeOverlapRequest(const SnapshotData& snapshot,const OverlapPlan& plan,OpRequest& output,std::string& error) {
+    try {
+        if(!plan.ok())throw std::runtime_error("overlap request needs a resolved valid plan");
+        OpRequest request;
+        if(!makeForwardRequest(snapshot,plan.stream,request,error))return false;
+        Payload added=Payload::array(),removed=Payload::array(),changed=Payload::array(),guards=Payload::array();
+        for(const auto& record:plan.intent.added)added.push_back(recordPacket(record));
+        for(const auto& record:plan.intent.removed)removed.push_back(recordPacket(record));
+        for(const auto& change:plan.intent.changed)
+            changed.push_back({{"old",recordPacket(change.oldRecord)},{"new",recordPacket(change.newRecord)}});
+        const auto expressionIndex=indexExpressions(snapshot.captured.expressionRows);
+        std::set<std::uint64_t> guardedIds;
+        for(const auto& change:plan.stream.effects.changed)guardedIds.insert(recordValues(change.oldRecord).id);
+        for(const auto id:guardedIds)guards.push_back({{"note_id",id},{"rows",expressionRows(expressionIndex,id)}});
+        request.payload["overlap"]={{"version",noteOverlapVersion},
+            {"intent",{{"added",std::move(added)},{"removed",std::move(removed)},{"changed",std::move(changed)}}},
+            {"expression_guards",std::move(guards)}};
         output=std::move(request);return true;
     } catch(const std::exception& exception){error=exception.what();return false;}
 }

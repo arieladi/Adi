@@ -6,8 +6,10 @@ the owner. The result is one `note.applyDiff` request, one stream write and one
 Undo step, irrespective of the number of affected notes. Several clip requests
 may be submitted together through the existing journal/document batching path.
 
-This is the note mutation kernel. MI-02's overlap resolver, gesture lifetime,
-recording/overdub producers and expression-curve editing remain separate work.
+This is the literal note mutation kernel. MI-02's versioned overlap producer is
+described in [ENGINE-NOTE-OVERLAP.md](ENGINE-NOTE-OVERLAP.md); it uses this same
+operation and exact inverse. Gesture lifetime, recording/overdub producers and
+expression-curve editing remain separate work.
 Nothing reads selection, grid, playhead or settings implicitly. These helpers
 allocate; Store access and all preparation stay outside the audio callback.
 
