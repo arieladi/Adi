@@ -75,7 +75,9 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -93,6 +95,18 @@ class Session;
 struct StateBlob {
     std::string hash;                 ///< BLAKE3, 64 lowercase hex digits
     std::vector<std::uint8_t> bytes;
+};
+
+enum class AppliedDeliveryState { Idle, Pending, AwaitingAttachment, Refused, Invalidated };
+struct AppliedDeliveryStatus {
+    AppliedDeliveryState state = AppliedDeliveryState::Idle;
+    std::size_t pendingBatchCount = 0;
+    std::uint64_t batchSerial = 0;
+    std::size_t opIndex = 0;
+    bool reconcilingParameters = false;
+    std::size_t projectionIndex = 0;
+    std::size_t parameterIndex = 0;
+    std::string error;
 };
 
 class ParamOps {
@@ -127,6 +141,14 @@ public:
     /// live automation override. Returns new attachments; call after refresh.
     std::size_t attachSession(Session& s);
 
+    /// N47: source notifications only enqueue owned committed batches. Drain
+    /// retries before capturing new producer events, using the same owner
+    /// clock as echo guards. A refused suffix and all later batches stay FIFO.
+    /// SQL success is never changed by a runtime refusal. Repeated attachSession
+    /// on the same source preserves this queue and its acknowledged cursor.
+    [[nodiscard]] AppliedDeliveryStatus retryApplied(std::int64_t nowMs);
+    [[nodiscard]] const AppliedDeliveryStatus& appliedDeliveryStatus() const noexcept;
+
     /// Drain every ring into `device.setParam` requests, appended to `out`.
     /// Returns how many requests were appended. The caller commits them; the
     /// devices already hold the values, so nothing is sent back.
@@ -158,6 +180,8 @@ public:
     /// UI, the agent. Pushes the value into the device with the echo guard
     /// armed. Returns true when the device was set; false when the device
     /// already held the value, the payload clears the row, or nothing matched.
+    /// A non-clearing payload alone does not acknowledge a stored row. That
+    /// bookkeeping belongs to the committed applied-batch receipt.
     bool applied(const Payload& payload, std::int64_t nowMs);
 
     /// ADR-0142. A `device.loadState` payload something else wrote -- an
@@ -215,8 +239,13 @@ private:
         std::vector<std::uint8_t> baseline;  ///< decision 6: kept while `!recorded`
     };
     struct Attached {
+        struct StateAcknowledgement {
+            std::uint64_t epoch = 0;
+            std::vector<double> parameters;
+        };
         device::DeviceInstance* inst = nullptr;
-        Session* session = nullptr; // attachSession's owner outlives this glue
+        Session* session = nullptr; // dereference only while sessionLife is live
+        std::weak_ptr<const void> sessionLife;
         std::unique_ptr<ParamEditCapture> capture;   ///< stable address: the device holds it
         std::unique_ptr<ParamEditCapture> uiCapture; ///< message thread, never handed to the device
         std::set<std::int32_t> uiExplicit, uiPending;
@@ -225,6 +254,7 @@ private:
         std::uint64_t seenEpoch = 0;
         std::map<std::string, Role> roles;
         std::vector<double> mirror;   ///< per index: where rows and plugin last agreed
+        std::optional<StateAcknowledgement> stateAcknowledgement;
     };
     /// What the project already holds for a device, when a session knows it.
     struct Recorded {
@@ -237,7 +267,13 @@ private:
     std::size_t drainUi(std::int64_t id, Attached&, std::int64_t nowMs, std::vector<OpRequest>& out);
     std::size_t flushUi(std::int64_t id, Attached&, std::int64_t nowMs, std::vector<OpRequest>& out);
     void cancelUi(std::int64_t id, Attached&, std::int32_t index);
-    bool appliedImpl(const Payload&, std::int64_t nowMs, bool fromUi);
+    bool appliedImpl(const Payload&, std::int64_t nowMs, bool fromUi,bool fromReceipt=false);
+    bool appliedStateBytes(const Payload&, std::span<const std::byte>, bool hasBytes, std::int64_t nowMs);
+    void discardExpiredSessions();
+    void followApplied(Session&);
+    void stampOwnGroup(std::int64_t,Attached&,std::vector<OpRequest>&,std::size_t first,bool state);
+    void acknowledgeState(Attached&, std::uint64_t epoch);
+    void settleStateAcknowledgement(Attached&);
     std::size_t snapshotOne(std::int64_t id, Attached& a, std::vector<OpRequest>& out, bool save);
     void rereadParams(std::int64_t id, Attached& a);
     [[nodiscard]] static std::string hashOf(const std::vector<std::uint8_t>& bytes);
@@ -253,6 +289,8 @@ private:
     std::int32_t capacity_;
     double tolerance_ = 1e-6;
     Stats stats_;
+    struct Replay;
+    std::unique_ptr<Replay> replay_;
 };
 
 }  // namespace adi::engine

@@ -43,7 +43,15 @@ inactive. Successful state recall clears older controls under the reactivation
 gate; equal-state detection checks the actual chunk and pending controls. A
 cached hash cannot hide a newer manual edit. No callback allocates, locks or logs.
 
-No schema or op name is added. The window owns wiring its existing
-`ProjectDocument::parameterGesture` stub. The engine tests use headless devices
-and the CLAP protocol fake; JUCE/native editor and hardware parity require
-their platform validation.
+N47's [live parameter replay](ENGINE-PARAM-REPLAY.md) connects successful
+journal/history receipts through the existing Session attachment and owner
+drain. The first-touch opener's clear reaches the same bookkeeping on Undo;
+Redo acknowledges row presence even for an equal value. An owned transient
+producer proof distinguishes an unchanged self-submission from history replay,
+so accepting an already heard gesture does not replay its opener into the device.
+The proof is absent from the saved operation and every History receipt.
+
+No schema or op name is added. The existing window-owned
+`ProjectDocument::parameterGesture` and timer drain supply the normal calls.
+The engine tests use headless devices and the CLAP protocol fake; JUCE/native
+editor and hardware parity require their platform validation.

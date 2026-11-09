@@ -47,7 +47,7 @@ device::ParamValue valueOf(const rows::PluginParam& p) noexcept {
 }  // namespace
 
 Session::Session():recording_(std::make_unique<AudioInputRecorder>()) {}
-Session::~Session() = default;
+Session::~Session() { lifetime_.reset(); }
 
 AudioInputRecorder& Session::recording() noexcept{return *recording_;}
 bool Session::startRecording(const AudioRecordingSpec& options,std::string& error) {
@@ -255,6 +255,8 @@ void Session::resolveOne(const Store& store, const rows::Device& row) {
     const rows::PluginRef* ref = refFor(row);
     Entry e;
     e.deviceId = row.id;
+    e.resolvedPluginRef = row.pluginRefId;
+    if(ref!=nullptr) {e.resolvedFormat=ref->format;e.resolvedUid=ref->uid;}
     e.trackId = chain->trackId.value_or(0);
     e.name = !row.name.empty() ? row.name
            : (ref != nullptr && !ref->name.empty()) ? ref->name
@@ -808,6 +810,7 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
         return false;
     }
     loader_ = std::move(loader);
+    appliedSource_ = adi::appliedSource(store);
     spec_ = spec;
     graph_.setPrecision(spec_.precision);   // ADR-0207 d2
     graph_.setDelayCompensation(spec_.delayCompensation);
@@ -821,7 +824,9 @@ bool Session::load(const Store& store, DeviceLoader loader, SessionSpec spec) {
         return false;
     loaded_ = true;
     resolveNewRows(store);
-    return rebuild();
+    const bool rebuilt = rebuild();
+    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
+    return rebuilt;
 }
 
 std::optional<std::string> automationParamRef(const std::string& format, const std::string& id) {
@@ -869,6 +874,9 @@ bool Session::refresh(const Store& store) {
         error_ = "no project loaded";
         return false;
     }
+    const auto source = adi::appliedSource(store);
+    if (!appliedSource_.sameConnection(source)) appliedSequence_ = 0;
+    appliedSource_ = source;
     const std::map<std::int64_t, StripValues> before = stripValues(model_);
     const std::map<std::pair<std::int64_t, std::string>, double> paramsBefore = paramValues(model_);
     std::map<std::int64_t, double> sendsBefore;
@@ -920,7 +928,9 @@ bool Session::refresh(const Store& store) {
     resolveNewRows(store);
     retireDepartedRows();
     syncFlags();
-    return rebuild();
+    const bool rebuilt = rebuild();
+    if (rebuilt) appliedSequence_ = appliedSource_.sequence();
+    return rebuilt;
 }
 
 void Session::setSourcesFor(SourceFn fn) { sources_ = std::move(fn); }

@@ -42,6 +42,7 @@
 #pragma once
 
 #include "adi/engine/host.hpp"
+#include "adi/applied_batches.hpp"
 #include "adi/engine/gain_stage.hpp"
 #include "adi/engine/main_loudness.hpp"
 #include "adi/engine/input_gain.hpp"
@@ -153,6 +154,10 @@ public:
         bool retired = false;          ///< the row is gone; the instance is kept
         std::string error;             ///< why the loader refused, when it did
         std::size_t hostIndex = 0;     ///< into `devices()`
+        /// Identity used to resolve this instance, independent of newer rows
+        /// reusing the same device ID. Runtime receipts must match this too.
+        std::optional<std::int64_t> resolvedPluginRef;
+        std::string resolvedFormat, resolvedUid;
         std::uint8_t route = 0;        ///< the RouteChoice last asked of the instance (ADR-0149)
     };
 
@@ -270,6 +275,14 @@ public:
 
     [[nodiscard]] bool loaded() const noexcept { return loaded_; }
     [[nodiscard]] const rows::Model& model() const noexcept { return model_; }
+    /// Owner-side runtime notifications for this loaded Store connection.
+    /// No Store/SQLite pointer survives in the revocable source token.
+    [[nodiscard]] const AppliedSource& appliedNotifications() const noexcept { return appliedSource_; }
+    /// Last successful model/instance refresh in this notification domain.
+    [[nodiscard]] std::uint64_t realisedAppliedSequence() const noexcept { return appliedSequence_; }
+    /// Invalidated before Session-owned devices are destroyed. Session-bound
+    /// ParamOps may outlive the Session without dereferencing an old instance.
+    [[nodiscard]] std::weak_ptr<const void> lifetimeToken() const noexcept { return lifetime_; }
     [[nodiscard]] const SessionSpec& spec() const noexcept { return spec_; }
     [[nodiscard]] const Stats& stats() const noexcept { return stats_; }
     [[nodiscard]] const std::string& error() const noexcept { return error_; }
@@ -430,6 +443,9 @@ private:
     device::DeviceHost devices_;
     GraphHost graph_;
     rows::Model model_;
+    AppliedSource appliedSource_;
+    std::uint64_t appliedSequence_ = 0;
+    std::shared_ptr<const void> lifetime_ = std::make_shared<const int>(0);
     rows::Model playbackModel_;
     std::set<std::int64_t> frozenGroupChildren_;
     struct FrozenMediaFile {
