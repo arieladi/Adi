@@ -7,9 +7,9 @@ namespace adi::ui {
 namespace {
 // The waveform worker's build: its own read-only store on the project's file, opened on the worker
 // at its first build and kept for the next (the worker is the only caller).
-WaveformCache::Build peaksFrom(std::filesystem::path path) {
+WaveformCache::Build peaksFrom(std::filesystem::path file) {
     auto reader = std::make_shared<std::unique_ptr<Store>>();
-    return [path = std::move(path), reader](std::int64_t mediaId, std::stop_token stop) {
+    return [path = std::move(file), reader](std::int64_t mediaId, std::stop_token stop) {
         if (!*reader) {
             StoreError error{};
             *reader = Store::open(path, error, true);
