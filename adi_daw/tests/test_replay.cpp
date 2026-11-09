@@ -20,6 +20,7 @@
 #include "temp_directory.hpp"
 
 #include "adi/digest.hpp"
+#include "adi/blob.hpp"
 #include "adi/history.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -28,6 +29,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <string>
@@ -179,6 +181,36 @@ std::vector<OpRequest> corpus() {
        "Move G to A");
     op("note.delete", {{"clip", 40}, {"note", 1}}, "Drop the C");
     op("clip.resize", {{"id", 40}, {"pos", 1441440}, {"length", 11531520}}, "Trim");
+
+    // Literal note.applyDiff creation is replayed under both ambient states.
+    // The producer supplies the stream identity and complete native row, so
+    // neither application chooses an ID or evaluates a default.
+    op("clip.create", {{"id", 41}, {"track", 10}, {"kind", "midi"},
+                       {"name", "Captured notes"}, {"pos", 0}, {"length", 23063040}},
+       "Add diff clip");
+    NoteRecord diffNote{};
+    diffNote.note_id = std::uint64_t{0x8000000000000011ULL};
+    diffNote.start_ticks = -120;
+    diffNote.dur_ticks = 1441440;
+    diffNote.key = 65;
+    diffNote.vel_on = 91;
+    diffNote.vel_off = 37;
+    diffNote.channel = 2;
+    diffNote.flags = static_cast<std::uint16_t>(NoteFlags::Muted | NoteFlags::Selected);
+    diffNote.probability = 8750;
+    diffNote.tuning_cents = 3.25f;
+    std::vector<std::uint8_t> noteBytes(sizeof diffNote);
+    std::memcpy(noteBytes.data(), &diffNote, sizeof diffNote);
+    const auto emptyNotes = writeStream<NoteRecord>(FourCC::Notes, {});
+    std::vector<std::uint8_t> emptyBytes(emptyNotes.size());
+    std::memcpy(emptyBytes.data(), emptyNotes.data(), emptyNotes.size());
+    const Payload create = {{"id", 700}, {"clip_id", 41}, {"stream_kind", "notes"},
+                            {"channel", nullptr}, {"controller", nullptr},
+                            {"data", Payload::binary(std::move(emptyBytes))}};
+    op("note.applyDiff", {{"clip", 41}, {"stream_id", 700}, {"from", "absent"},
+        {"added", Payload::array({Payload{{"bytes", Payload::binary(std::move(noteBytes))}}})},
+        {"removed", Payload::array()}, {"changed", Payload::array()}, {"create", create}},
+       "Add captured note");
 
     // Devices (OPS.md 9.7). The chain first, because device.chain_id is NOT
     // NULL with foreign keys on, and then the whole device lifecycle: insert,

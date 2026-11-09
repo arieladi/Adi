@@ -362,7 +362,10 @@ MidiClips::MidiClips(const rows::Model& model,Transport& transport,double rate,s
             bool unsupported=false;
             for(const auto& note:model.notes) {
                 if(note.clipId!=clip.id || (note.flags&1u)!=0)continue;
-                if(note.startTicks<0||note.startTicks>tickLimit||note.durTicks<=0||note.durTicks>tickLimit||note.key<0||note.key>127||note.channel<0||note.channel>15||note.velOn<1||note.velOn>127||note.velOff<0||note.velOff>127||!std::isfinite(note.tuningCents))throw std::runtime_error("invalid MIDI note; clip silent");
+                // ANOT starts are signed. A note crossing source zero is
+                // chased by add()'s visible-start clamp; an earlier finished
+                // note is skipped. Keep the same bounded arithmetic domain.
+                if(note.startTicks < -tickLimit||note.startTicks>tickLimit||note.durTicks<=0||note.durTicks>tickLimit||note.key<0||note.key>127||note.channel<0||note.channel>15||note.velOn<1||note.velOn>127||note.velOff<0||note.velOff>127||!std::isfinite(note.tuningCents))throw std::runtime_error("invalid MIDI note; clip silent");
                 unsupported=unsupported || note.probability!=10000 || (note.flags&12u)!=0;
                 auto add=[&](std::int64_t on,std::int64_t off){
                     on=std::max<std::int64_t>(on,0);

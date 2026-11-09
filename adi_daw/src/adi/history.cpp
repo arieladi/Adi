@@ -70,8 +70,9 @@ std::optional<std::int64_t> childOf(SQLite::Database& db,
     return st.getColumn(0).getInt64();
 }
 
-bool applyOne(OpContext& ctx, const std::string& opType,
-              const std::vector<std::byte>& cbor, bool asInverse, std::string& err) {
+bool applyOne(OpContext& ctx, const ChainOp& recorded, bool asInverse, std::string& err) {
+    const auto& opType = recorded.opType;
+    const auto& cbor = asInverse ? recorded.inverse : recorded.payload;
     const auto* d = OpRegistry::instance().find(opType);
     if (!d) { err = "unknown op in log: " + opType; return false; }
 
@@ -88,7 +89,10 @@ bool applyOne(OpContext& ctx, const std::string& opType,
 
     auto payload = decodeFromLog(cbor, err);
     if (!payload) { err = "cannot decode payload for " + opType + ": " + err; return false; }
-    return target->apply(ctx, *payload, err);
+    OpContext replayContext{ctx.store, ctx.db};
+    replayContext.replay = OpReplayMetadata{recorded.opType, recorded.inverse,
+                                           recorded.hasInverse, asInverse};
+    return target->apply(replayContext, *payload, err);
 }
 
 /// One op, by seq, as a move between points needs it.
@@ -165,14 +169,14 @@ bool moveBetween(OpContext& ctx, std::optional<std::int64_t> from,
             err = "op " + std::to_string(o.seq) + " (" + o.opType + ") has no stored inverse";
             return false;
         }
-        if (!applyOne(ctx, o.opType, o.inverse, /*asInverse=*/true, err)) {
+        if (!applyOne(ctx, o, /*asInverse=*/true, err)) {
             err = "rewinding " + o.opType + ": " + err;
             return false;
         }
         ++applied;
     }
     for (std::size_t i = k; i-- > 0;) {
-        if (!applyOne(ctx, up[i].opType, up[i].payload, /*asInverse=*/false, err)) {
+        if (!applyOne(ctx, up[i], /*asInverse=*/false, err)) {
             err = "replaying " + up[i].opType + ": " + err;
             return false;
         }
@@ -291,7 +295,7 @@ History::Result History::undo() {
                 return r;   // rolls back
             }
             std::string err;
-            if (!applyOne(ctx, it->opType, it->inverse, /*asInverse=*/true, err)) {
+            if (!applyOne(ctx, *it, /*asInverse=*/true, err)) {
                 r.error = "undoing " + it->opType + ": " + err;
                 return r;
             }
@@ -342,7 +346,7 @@ History::Result History::redo() {
         // done, it does not invert anything.
         for (const auto& o : ops) {
             std::string err;
-            if (!applyOne(ctx, o.opType, o.payload, /*asInverse=*/false, err)) {
+            if (!applyOne(ctx, o, /*asInverse=*/false, err)) {
                 r.error = "redoing " + o.opType + ": " + err;
                 return r;
             }

@@ -274,6 +274,9 @@ add_library(adi_core STATIC
     src/adi/row_capture.cpp
     src/adi/return_send_tap.cpp
     src/adi/note_transforms.cpp
+    src/adi/note_stream_detail.cpp
+    src/adi/note_diff_plan.cpp
+    src/adi/note_diff.cpp
     src/adi/controller_lanes.cpp
     src/juce/builtin_samples.cpp
     src/adi/sample_slots.cpp
@@ -1815,6 +1818,14 @@ add_test(NAME adi_separated_stems_tests COMMAND adi_separated_stems_tests)
 add_executable(adi_note_transforms_tests tests/test_note_transforms.cpp)
 target_link_libraries(adi_note_transforms_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_note_transforms_tests COMMAND adi_note_transforms_tests)
+
+add_executable(adi_note_diff_tests tests/test_note_diff.cpp)
+target_link_libraries(adi_note_diff_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_diff_tests COMMAND adi_note_diff_tests)
+
+add_executable(adi_note_diff_compat_tests tests/test_note_diff_compat.cpp)
+target_link_libraries(adi_note_diff_compat_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_note_diff_compat_tests COMMAND adi_note_diff_compat_tests)
 
 add_executable(adi_controller_lanes_tests tests/test_controller_lanes.cpp)
 target_link_libraries(adi_controller_lanes_tests PRIVATE adi_core adi_warnings)

@@ -579,9 +579,10 @@ Warp setters remain separate from this captured producer.
 | `note.insert` | e | S | pair `note.delete` | P0 |
 | `capture.createMidi` | e | G | pair `clip.delete` | P1 |
 | `note.delete` | e | S | cap | P0 |
-| `note.move` | e | S | sym | P0 |
-| `note.resize` | e | S | sym | P0 |
+| `note.move` | e | S | cap | P0 |
+| `note.resize` | e | S | cap | P0 |
 | `note.setVelocity` | e | S | sym, coalescable | P0 |
+| `note.applyDiff` | e | S | cap | P0 |
 | `note.setReleaseVelocity` | e | S | sym, coalescable | P2 |
 | `note.setChannel` | e | S | sym | P1 |
 | `note.setProbability` | e | S | sym, coalescable | P2 |
@@ -598,6 +599,88 @@ Warp setters remain separate from this captured producer.
 | `cc.delete` | e | S | cap | P0 |
 | `cc.restoreStream` | e | S | cap | P0 |
 | `sysex.write` | e | S | cap | P3 |
+
+MI-01: `note.applyDiff {clip,stream_id,from,added[],removed[],changed[],create?}`
+is one noncoalescable edit of the canonical musical notes stream
+(`stream_kind='notes'`, NULL channel and controller). It writes that stream
+once, in the same transaction as the op and any removed expression rows.
+`clip` and `stream_id` are literal signed SQLite identities. `from` is the
+64-character lowercase BLAKE3 of the complete original ANOT, including header,
+future record tails and trailer; `"absent"` denotes a missing row, distinct from
+a present empty stream. The canonical row identity, hash, full old record bytes
+and affected expression sets must still match at commit. A stale diff refuses;
+it is never rebased or reduced to the notes that still happen to exist.
+
+Record packets are closed objects `{bytes}` containing a CBOR byte string (or
+an array of integral bytes for JSON callers). `added` contains full records,
+`removed` contains `{record:{bytes},expressions:[full captured typed rows...]}`,
+and `changed` contains `{old:{bytes},new:{bytes}}`. Removed expression rows come
+from owner capture, including an explicitly empty set; they are preconditions
+and deletion captures, not arbitrary curve writes. Duplicate identities across
+sections, absent targets, colliding additions, identity-changing replacements,
+old-byte mismatches and unsupported record extents refuse before mutation.
+Future-width additions must supply their complete opaque tail. A retained
+record's existing tail, unedited flags and note-relative expression remain
+unchanged. MI-02's overlap resolution is a separate producer of explicit
+removals/changes; this op does not infer an overlap policy.
+
+Every known note field is validated before narrowing: nonzero uint64 ID,
+signed start, positive duration with checked endpoint, key 0..127, velocity
+1..127, release velocity 0..127, channel 0..15, probability 0..10000, uint16
+flags, finite cents within -1200..+1200, and zero reserved word. Negative starts
+and note IDs above INT64_MAX remain valid. Expression joins preserve the ID's
+bits in SQLite's signed integer representation. Strict musical stream admission
+requires a supported stride, version at least one, header flags limited to
+SortedByTime and truthful advertised ordering. Whole records are stably sorted
+by start only when an advertised sorted stream gains notes or changes starts;
+other edits preserve order, and exact inverse capture restores original bytes.
+
+An absent stream requires a caller-allocated `stream_id` and `create`, the full
+typed canonical row captured by the owner with native empty ANOT data. Defaults
+are evaluated once in a private scratch database during capture, then carried
+as literal values. Apply validates the identity, address, native empty baseline,
+row shape and free destination, replaces only data, and inserts that literal row.
+Unsupported future default functions, generated columns or required fields
+refuse capture. No unknown future value or wider record tail is invented.
+Undo restores exact row absence, rather than leaving an empty stream behind.
+After applying captured rows, the handler rereads their complete typed values
+before the transaction can commit. SQLite affinity coercion or trigger changes
+that differ from the predicted result cause rollback; INTEGER and REAL storage
+classes are distinct even when their numeric values compare equal.
+The connection's actual row-change delta must also equal the planned row
+changes. Hidden trigger writes, including a second same-value stream update,
+refuse and roll back rather than violating the single-write contract.
+
+The public `notes::captureNotes`, pure `prepareDiff` and owner `commitDiff` in
+`note_diff.hpp` capture a coherent row/expression/head snapshot and add the
+expected-head and source-file guards. The prepared result is zero requests for
+a semantic no-op, otherwise one `note.applyDiff`; its literal effects can feed
+a preview. Details and examples are in [ENGINE-NOTE-DIFF.md](ENGINE-NOTE-DIFF.md).
+
+The five original P0 entries (`note.insert`, `note.delete`, `note.move`,
+`note.resize`, `note.setVelocity`) delegate to the same checked full-stride
+kernel. Scalar insertion into an existing wider future stream refuses because
+it cannot supply an unknown tail. Its historical implicit first-stream creation
+is retained only for the native table-column shape; a future-column creation
+uses the explicit captured diff API instead. Existing-stream edits retain all
+unknown typed columns. New deletion captures every matching expression row in
+every dimension and restores it, including inactive/unknown flags, on Undo.
+Move and resize preserve expression bytes without cropping or stretching them.
+
+Historical inverse dispatch is unchanged: insert pairs with delete, delete
+with insert, and move/resize/velocity remain self-inverse operation names.
+The first four now emit a versioned exact `note_capture` inverse packet, which
+their handlers validate in addition to accepting valid historical scalar
+inverses. The packet is not a forward submission field. Velocity retains its
+scalar old-value inverse and coalescable descriptor, so a sequence can restore
+the original velocity without an intermediate-state hash. `note.restoreNotes`
+still requires an identical identity set; it is not the add/remove inverse.
+History supplies the original operation's inverse bytes as borrowed replay
+metadata. A verified pre-MI-01 scalar insert/delete retains the historical
+expression-row behavior through repeated Undo/Redo. New captured Redo
+reuses its recorded creation identity and literal defaults, recomputes the
+forward intent, and refuses any disagreement with the captured result. Neither
+path reads the current head to guess which historical format it is executing.
 
 N34: `note.setMute {clip,note,muted}` sets the note's active flag as
 `active = !muted`. `note` is its exact uint64 ANOT id, not a row index;
@@ -1821,7 +1904,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**210 ops** — 70 P0, 84 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**211 ops** — 71 P0, 84 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
