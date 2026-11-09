@@ -129,7 +129,8 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Insert Time Signature Change", "Solo in Place",
                                   "Track Options", "Mixer Track Options", "Metronome", "Loop Selection",
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
-                                  "Undo History"};
+                                  "Undo History", "Save a Copy...", "Collect All and Save",
+                                  "Collect and Export..."};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -1864,7 +1865,8 @@ bool AdiRootComponent::command(int id) {
     // host); docked, the root's.
     if (id == AppCommands::DetachMixView || (id == AppCommands::ToggleMixView && state_.mixViewDetached))
         return applicationCommand && applicationCommand(id);
-    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit)
+    if ((id >= AppCommands::NewProject && id <= AppCommands::Settings) || id == AppCommands::Quit ||
+        (id >= AppCommands::SaveCopy && id <= AppCommands::CollectAndExport))
         return applicationCommand && applicationCommand(id);
     if ((id >= AppCommands::TimeZoomIn && id <= AppCommands::GoStart) ||
         (id >= AppCommands::InsertMarkerToPlayhead && id <= AppCommands::ShrinkTracks) ||
@@ -2196,9 +2198,11 @@ const std::vector<MenuEntries> &menuBar() {
     using C = AppCommands;
     static const std::vector<MenuEntries> bar{
 #if JUCE_MAC
-        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs}},
+        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+                  C::CollectAndExport}},
 #else
-        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, 0, C::Quit}},
+        {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
+                  C::CollectAndExport, 0, C::Quit}},
 #endif
         // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
         // Paste and Duplicate; those wait for their ops.

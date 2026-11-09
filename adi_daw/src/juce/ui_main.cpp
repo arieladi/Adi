@@ -7,17 +7,21 @@
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <atomic>
+#include <memory>
+#include <thread>
 namespace adi::ui {
 namespace {
 // A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
 // `withFileExtension` cuts the name at its last dot, so "Song v1.2" would become "Song v1.adi"
 // where Live writes "Song v1.2.als". The native choosers on Windows and macOS add the extension
 // themselves; Linux's hand the typed name back.
-juce::File withAdiExtension(const juce::File &file) {
-    if (file.hasFileExtension("adi"))
+juce::File withExtension(const juce::File &file, const char *extension) {
+    if (file.hasFileExtension(extension))
         return file;
-    return file.getParentDirectory().getChildFile(file.getFileName() + ".adi");
+    return file.getParentDirectory().getChildFile(file.getFileName() + "." + extension);
 }
+juce::File withAdiExtension(const juce::File &file) { return withExtension(file, "adi"); }
 // Live's Undo History window (manual 5.4.2; A5): the main window's list in a window of its own,
 // which closing hides. The list stays the root's; the window only shows it.
 class UndoHistoryWindow final : public juce::DocumentWindow {
@@ -91,6 +95,9 @@ class AdiApplication final : public juce::JUCEApplication,
         startTimer(20);
     }
     void shutdown() override {
+        // A Collect and Export still running finishes first: its ZIP is not left half written.
+        if (export_.joinable())
+            export_.join();
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -325,6 +332,48 @@ class AdiApplication final : public juce::JUCEApplication,
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         root_->say(document_->warning());
     }
+    // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
+    // else in the window changes.
+    void saveCopy(const juce::File &file) {
+        if (!document_ || !root_)
+            return;
+        if (!document_->saveCopy(pathFromUtf8(file.getFullPathName().toStdString()))) {
+            root_->say(document_->error());
+            return;
+        }
+        root_->say(document_->warning().empty() ? ("Saved a copy as " + file.getFileName()).toStdString()
+                                                : document_->warning());
+    }
+    // Collect and Export, once the chooser has a file: on a worker the application owns, so the
+    // window keeps working and a project opened meanwhile does not wait for it; the Status Bar says it
+    // runs, then how it ended. One at a time. Quitting waits for it, the window still up.
+    void collectAndExport(const juce::File &file) {
+        if (!document_ || !root_)
+            return;
+        if (exportRunning_->load()) {
+            root_->say("Collect and Export is already running.");
+            return;
+        }
+        ProjectDocument::ExportJob job;
+        if (!document_->prepareCollectAndExport(pathFromUtf8(file.getFullPathName().toStdString()), job)) {
+            root_->say(document_->error());
+            return;
+        }
+        if (export_.joinable())
+            export_.join(); // the last one has finished
+        const auto name = file.getFileName().toStdString();
+        exportRunning_->store(true);
+        export_ = std::thread([this, job, name, running = exportRunning_] {
+            const auto result = ProjectDocument::runCollectAndExport(job);
+            running->store(false);
+            juce::MessageManager::callAsync([this, name, result] {
+                if (juce::JUCEApplicationBase::getInstance() != this || !root_ || !window_)
+                    return;
+                root_->say(result.ok ? "Exported " + name : "Collect and Export failed: " + result.error);
+            });
+        });
+        root_->say("Collecting and exporting to " + name + "...");
+    }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {
             systemRequestedQuit();
@@ -354,6 +403,43 @@ class AdiApplication final : public juce::JUCEApplication,
                                               chooser_.reset();
                                       });
                                   });
+            return true;
+        }
+        // Live's Save a Copy (manual 5.4.1): a save chooser, then the copy; the open project and
+        // its window stay as they are (`Store::saveCopy`, N30).
+        if (id == AppCommands::SaveCopy || id == AppCommands::CollectAndExport) {
+            if (chooser_ || !document_)
+                return false;
+            const bool zip = id == AppCommands::CollectAndExport;
+            const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
+                document_->store().path().u8string().c_str())));
+            chooser_ = std::make_unique<juce::FileChooser>(
+                zip ? "Collect and export ADI project as" : "Save a copy of the ADI project as",
+                zip ? current.withFileExtension("zip") : current, zip ? "*.zip" : "*.adi");
+            chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [this, zip](const juce::FileChooser &chooser) {
+                                      const auto file = chooser.getResult();
+                                      if (file != juce::File{})
+                                          zip ? collectAndExport(withExtension(file, "zip"))
+                                              : saveCopy(withAdiExtension(file));
+                                      juce::MessageManager::callAsync([this] {
+                                          if (juce::JUCEApplicationBase::getInstance() == this)
+                                              chooser_.reset();
+                                      });
+                                  });
+            return true;
+        }
+        // Live's Collect All and Save (manual 5.7): the outside media copied into `audio/`; the
+        // store collects every location, where Live's dialog lets one choose (window log, A4).
+        if (id == AppCommands::CollectAllAndSave) {
+            if (!document_ || !root_)
+                return false;
+            if (!document_->collectAllAndSave()) {
+                root_->say(document_->error());
+                return false;
+            }
+            root_->say(document_->warning().empty() ? "Collected every file the project uses into its audio folder."
+                                                    : document_->warning());
             return true;
         }
         // The Mix View in a window of its own, or docked back (ADR-0209 d11); F4 while it opens
@@ -486,6 +572,9 @@ class AdiApplication final : public juce::JUCEApplication,
     AdiRootComponent *root_ = nullptr;
     std::unique_ptr<FloatingHost> floating_;
     std::unique_ptr<juce::FileChooser> chooser_;
+    // Collect and Export's worker and whether it runs (A4); the flag is shared with the worker.
+    std::thread export_;
+    std::shared_ptr<std::atomic<bool>> exportRunning_ = std::make_shared<std::atomic<bool>>(false);
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
     std::unique_ptr<UndoHistoryWindow> historyWindow_; // shows the main root's list; goes before it

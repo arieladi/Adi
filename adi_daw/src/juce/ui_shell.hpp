@@ -111,7 +111,10 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         DeleteLocator,
         EditInfoText,
         UndoHistory,
-        LastId = UndoHistory
+        SaveCopy,
+        CollectAllAndSave,
+        CollectAndExport,
+        LastId = CollectAndExport
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();

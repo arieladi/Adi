@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
+#include "adi/media/collect_export.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <chrono>
@@ -113,6 +114,66 @@ bool ProjectDocument::saveAs(const std::filesystem::path &path) {
     }
     error_.clear();
     return true;
+}
+namespace {
+// The store never replaces a file; the Status Bar says so in the window's words, with the name.
+bool refuseExisting(const std::filesystem::path &path, const char *what, std::string &error) {
+    std::error_code ignored;
+    if (std::filesystem::exists(path, ignored) ||
+        std::filesystem::is_symlink(std::filesystem::symlink_status(path, ignored))) {
+        error = std::string(what) + ": " + media::pathUtf8(path.filename()) +
+                " already exists; ADI never replaces a file. Choose another name.";
+        return true;
+    }
+    return false;
+}
+} // namespace
+bool ProjectDocument::saveCopy(const std::filesystem::path &path) {
+    warning_.clear();
+    if (refuseExisting(path, "Save a Copy", error_))
+        return false;
+    const auto result = store_->saveCopy(path);
+    if (!result.ok) {
+        error_ = "Save a Copy failed: " + result.error;
+        return false;
+    }
+    warning_ = result.warning;
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::collectAllAndSave() {
+    warning_.clear();
+    const auto result = store_->collectAllAndSave();
+    if (!result.ok) {
+        error_ = "Collect All and Save failed: " + result.error;
+        return false;
+    }
+    warning_ = result.warning;
+    // The media rows point at the copies now: the view and the session read them again.
+    view_.refresh(*store_);
+    if (!synchronise()) {
+        if (!warning_.empty())
+            warning_ += ' ';
+        warning_ += "Collected, but the session did not re-read the project: " + error_;
+    }
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out) {
+    if (refuseExisting(zip, "Collect and Export", error_))
+        return false;
+    out.project = media::projectFolder(*store_) / store_->path().filename();
+    out.zip = zip;
+    error_.clear();
+    return true;
+}
+StoreFileResult ProjectDocument::runCollectAndExport(const ExportJob &job) {
+    try {
+        const auto result = media::collectExport(job.project, job.zip);
+        return {result.ok, result.error, {}};
+    } catch (const std::exception &e) {
+        return {false, e.what(), {}};
+    }
 }
 bool ProjectDocument::synchronise() {
     if (realisedGeneration_ != view_.generation()) {
