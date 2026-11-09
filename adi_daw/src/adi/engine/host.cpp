@@ -56,7 +56,7 @@ bool GraphHost::rebuild(const rows::Model &model, const RealizeOptions &opts, do
     // line the running graph has not been touched, so a model with a cycle or
     // no master costs a wasted build and nothing else.
     live_ = rg.get();
-    pub_.publish(std::make_unique<PublishedGraph>(std::move(rg),std::move(transportState)));
+    pub_.publish(std::make_unique<PublishedGraph>(std::move(rg),std::move(transportState),maxFrames));
     ++stats_.published;
     return true;
 }
@@ -141,33 +141,33 @@ std::int32_t GraphHost::handover(const PublishedGraph& from,
            gb.adoptBypassHistory(ga);
 }
 
-void GraphHost::process(const AudioIo& io) noexcept {
-    ++stats_.blocks;
-
-    // PEEK, DO NOT ANNOUNCE YET (ADR-0092). The graph rendered last block was
-    // announced last block, so it is protected by the publisher's strictly-
-    // greater rule until we announce something newer -- which is the only
-    // window in which it is safe to read its rings.
-    const PublishedGraph* snap = pub_.peek();
-    if (snap == nullptr) {
-        // Silence, WRITTEN. Returning without writing hands the driver
-        // uninitialised memory on the first call and the previous block on
-        // every one after, which is the artefact people describe as a stutter.
-        if (io.out != nullptr)
-            for (std::int32_t c = 0; c < io.numOut; ++c)
-                if (io.out[c] != nullptr)
-                    std::memset(io.out[c], 0,
-                                static_cast<std::size_t>(io.frames) * sizeof(float));
-        // Both outputs, as AudioIo promises (ADR-0207 d2).
-        if (io.out64 != nullptr)
-            for (std::int32_t c = 0; c < io.numOut; ++c)
-                if (io.out64[c] != nullptr)
-                    std::memset(io.out64[c], 0,
-                                static_cast<std::size_t>(io.frames) * sizeof(double));
-        return;
+namespace {
+void clearOutput(const AudioIo& io) noexcept {
+    if (io.frames <= 0) return;
+    for (std::int32_t c = 0; c < io.numOut; ++c) {
+        if (io.out && io.out[c])
+            std::memset(io.out[c], 0, static_cast<std::size_t>(io.frames) * sizeof(float));
+        if (io.out64 && io.out64[c])
+            std::memset(io.out64[c], 0, static_cast<std::size_t>(io.frames) * sizeof(double));
     }
+}
+}
+
+const PublishedGraph* GraphHost::acquireRender() noexcept {
+    ++stats_.blocks;
+    ++renderSerial_;
+    renderActive_ = true;
+    // Retain the previous publication until its history has been carried. The
+    // publisher's strictly-greater reclamation rule protects both pointers.
+    const PublishedGraph* snap = pub_.peek();
+    if (!snap) return nullptr;
 
     if (snap->seq != lastSeq_) {
+        // Accepted MIDI ownership is independent of the optional audio ring
+        // history policy. Transfer pending deliveries before the old graph can
+        // retire even when ring-history carry has deliberately been disabled.
+        if (lastSnap_ != nullptr)
+            (void)snap->graph().graph().adoptEventHistory(lastSnap_->graph().graph());
         if (lastSnap_ != nullptr && keepHistory_)
             stats_.historyCarried += handover(*lastSnap_, *snap);
 
@@ -200,10 +200,41 @@ void GraphHost::process(const AudioIo& io) noexcept {
     pub_.announce(snap);
     lastSnap_ = snap;
 
-    AudioIo block=io;
-    if(const auto* state=snap->transportState())block.transport=state->beginBlock();
-    snap->graph().graph().process(block);
-    fadeIn(io);
+    return snap;
+}
+
+GraphHost::RenderBlock::RenderBlock(GraphHost& host) noexcept
+    : host_(host), snapshot_(host.acquireRender()), serial_(host.renderSerial_) {}
+GraphHost::RenderBlock::~RenderBlock() {
+    if (serial_ == host_.renderSerial_) host_.renderActive_ = false;
+}
+bool GraphHost::RenderBlock::valid() const noexcept {
+    return host_.renderActive_ && serial_ == host_.renderSerial_ && snapshot_ != nullptr;
+}
+std::uint64_t GraphHost::RenderBlock::generation() const noexcept {
+    return valid() ? snapshot_->seq : 0;
+}
+std::int32_t GraphHost::RenderBlock::latencySamples() const noexcept {
+    return valid() ? snapshot_->graph().graph().latencySamples() : 0;
+}
+const GraphTransportState* GraphHost::RenderBlock::transportState() const noexcept {
+    return valid() ? snapshot_->transportState() : nullptr;
+}
+bool GraphHost::RenderBlock::process(const AudioIo& io) noexcept {
+    if (!valid() || io.frames <= 0 || io.numOut < 0 || io.numIn < 0 ||
+        io.frames > snapshot_->maxFrames()) {
+        clearOutput(io);
+        return false;
+    }
+    AudioIo block = io;
+    if (const auto* state = snapshot_->transportState()) block.transport = state->beginBlock();
+    snapshot_->graph().graph().process(block);
+    host_.fadeIn(io);
+    return true;
+}
+void GraphHost::process(const AudioIo& io) noexcept {
+    auto block = beginRender();
+    (void)block.process(io);
 }
 
 const GraphTransportState* GraphHost::renderedTransportState()const noexcept {
