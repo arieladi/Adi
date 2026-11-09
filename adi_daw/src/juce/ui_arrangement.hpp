@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
 #include "adi/ui/arrangement_geometry.hpp"
+#include "adi/ui/locator_edits.hpp"
+#include "adi/ui/loop_edits.hpp"
 #include "adi/ui/track_edits.hpp"
+#include "adi/ui/waveform.hpp"
 #include "adi/ui/track_tree.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
@@ -51,6 +54,30 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
     void mouseUp(const juce::MouseEvent &) override;
     // While a marker is dragged: where it would land; else -1.
     std::int64_t movingTo() const noexcept { return dragged_ >= 0 ? movingTo_ : -1; }
+    // Live's loop brace (manual 6.6) along the band's top, over the loop region, dark while the loop
+    // is on: a press on it selects it, and the material in the loop with it (Select Loop); dragged by
+    // an edge it moves that end, by its bar it moves whole, its length kept, each to the nearest grid
+    // line while snapping; let go, the loop is set there, outside undo.
+    enum class BracePart { None, Start, End, Bar };
+    static constexpr float kBraceHeight = 8.f, kBraceEdge = 5.f;
+    BracePart bracePart(juce::Point<float>) const;
+    juce::Rectangle<float> braceBox(LoopRange) const;
+    // While the brace is dragged: where it would be; else none.
+    std::optional<LoopRange> braceMoving() const noexcept {
+        return brace_ != BracePart::None ? std::optional<LoopRange>(braceTo_) : std::nullopt;
+    }
+    // Live's locators (manual 6.4) in the band under the brace, beside the time signature markers: a
+    // triangle at each, its name after it. A click selects one and jumps there; a double-click while
+    // stopped selects it and plays from it; a drag moves it, to the nearest grid line while snapping,
+    // one step when let go. The locator drawn under `x`, by id, or 0.
+    std::int64_t locatorAt(float x) const;
+    void mouseDoubleClick(const juce::MouseEvent &) override;
+    // While a locator is dragged: where it would land; else -1.
+    std::int64_t locatorMovingTo() const noexcept { return locatorDragged_ != 0 ? locatorTo_ : -1; }
+    // Rename (Ctrl/Cmd+R) or Edit Info Text on a locator: a field over it, holding its name or its
+    // info text, selected; Enter commits, one step; Esc cancels.
+    bool beginLocatorEdit(std::int64_t id, bool info);
+    std::int64_t locatorEditing() const noexcept { return locatorEditing_; }
     // The position of the time signature marker drawn under `x`, or -1.
     std::int64_t markerAt(float x) const;
     // Insert Time Signature Change at `pos` (inserting), or Edit Time Signature on the marker there:
@@ -64,12 +91,23 @@ class ScrubArea final : public juce::Component, public juce::SettableTooltipClie
 
   private:
     juce::Rectangle<float> markerBox(const textproj::Meter &) const;
+    juce::Rectangle<float> locatorBox(const Locator &) const;
     void endMeterEdit();
+    // The locator being renamed or given info text, and which; the locator pressed, the ticks from
+    // it to the press, where a drag would put it, and whether the mouse moved.
+    std::int64_t locatorEditing_ = 0;
+    bool editingInfo_ = false;
+    std::int64_t locatorDragged_ = 0, locatorGrab_ = 0, locatorTo_ = -1;
+    bool locatorMoved_ = false;
     ArrangementView &view;
     std::int64_t editing_ = -1;
     bool inserting_ = false;
     // The marker pressed, the ticks from its start to the press, and where a drag would put it.
     std::int64_t dragged_ = -1, grabbed_ = 0, movingTo_ = -1;
+    // The brace's part pressed, the tick pressed, the brace then, and where a drag would put it.
+    BracePart brace_ = BracePart::None;
+    std::int64_t braceGrab_ = 0;
+    LoopRange braceFrom_, braceTo_;
 };
 // The beat-time ruler (Live 12 manual 6.1): bars-beats-sixteenths; drag sideways
 // scrolls, vertically zooms; a double-click zooms to the selection, or out to the
@@ -234,6 +272,10 @@ class ArrangementCanvas final : public juce::Component,
     const engine::ClipNode *barAt(int x, int y, std::int64_t &track, bool &edge) const;
     // A group's lane, row `at`: Live's overview of the clips of what it holds.
     void paintGroupLane(juce::Graphics &, std::size_t at, int y, int h, juce::Colour) const;
+    // An audio clip's waveform in its body, from `left` to `right` and `top` to `bottom`, the clip
+    // drawn at `pos`.
+    void paintWaveform(juce::Graphics &, const engine::ClipNode &, std::int64_t pos, float left, float right, float top,
+                       float bottom) const;
     std::vector<std::unique_ptr<ClipAccessible>> accessible_;
     ArrangementView &view;
     juce::Point<float> last;
@@ -324,7 +366,21 @@ class ArrangementView final : public juce::Component {
     // The selected time signature marker's position (Live 12 manual 6.5), or -1. A click in the
     // lanes or on a track's title lets it go; Delete and Ctrl/Cmd+R act on it while it is selected.
     std::int64_t selectedMeter = -1;
+    // The loop brace, selected by a press on it (Live 12 manual 6.6): the arrows act on it while it
+    // is (§42.8), and a click in the lanes, on a title or on a marker lets it go.
+    bool loopSelected = false;
+    // The selected locator's marker id (Live 12 manual 6.4), or 0: Set reads Del, Delete and Ctrl/Cmd+R
+    // act on it and the arrows move it while it is selected; a click in the lanes or on a title lets
+    // it go.
+    std::int64_t selectedLocator = 0;
+    // Live's Select Loop (manual 6.6, §42.8; a click on the brace): a time selection over the loop
+    // across every track shown.
+    bool selectLoop();
     const SnapshotReader &reader() const;
+    // The audio clips' waveforms (N40): the document's cache, which the app and the tests give it;
+    // without one, an audio clip is drawn as its colour and its name.
+    WaveformCache *waveforms = nullptr;
+    std::uint64_t waveformsSeen = 0;
     // Live 11's measures at 100 % (2026-10-27): the Overview with its margin, the beat
     // ruler with its numbers along its foot, the locator band, a dark gap, then the
     // lanes; the time ruler under them; a margin left of the time; the track header's

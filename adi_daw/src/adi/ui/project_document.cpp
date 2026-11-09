@@ -4,9 +4,29 @@
 #include <algorithm>
 #include <chrono>
 namespace adi::ui {
+namespace {
+// The waveform worker's build: its own read-only store on the project's file, opened on the worker
+// at its first build and kept for the next (the worker is the only caller).
+WaveformCache::Build peaksFrom(std::filesystem::path file) {
+    auto reader = std::make_shared<std::unique_ptr<Store>>();
+    return [path = std::move(file), reader](std::int64_t mediaId, std::stop_token stop) {
+        if (!*reader) {
+            StoreError error{};
+            *reader = Store::open(path, error, true);
+            if (!*reader) {
+                media::PeakResult refused;
+                refused.problem = media::PeakProblem::database;
+                refused.detail = "the project could not be read for its waveforms: " + std::string(toString(error));
+                return refused;
+            }
+        }
+        return media::buildMediaPeaks(**reader, mediaId, 4096, std::move(stop));
+    };
+}
+} // namespace
 ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
     : store_(std::move(s)), name_(std::move(name)), ops_(*store_, view_), views_(*store_),
-      sessionState_(*store_) {
+      sessionState_(*store_), waveforms_(peaksFrom(store_->path())) {
     // Every refresh the submitter makes carries the session's overridden lanes (N26); the set is
     // the session's own member, alive as long as this document.
     ops_.followOverrides(session_.overriddenLanes());

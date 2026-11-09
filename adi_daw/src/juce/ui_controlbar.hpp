@@ -72,6 +72,10 @@ class TransportBar final : public juce::Component {
     void beginSignatureEdit();
     // Live's Arrangement Position fields (manual 6.1): typed, or up and down, a bar at a time.
     void beginPositionEdit();
+    // Live's Loop Start and Loop Length fields (manual 6.6): typed, the start keeping the length, the
+    // length keeping the start.
+    void beginLoopStartEdit();
+    void beginLoopLengthEdit();
     // The field being typed in: the tempo's or the signature's, or none.
     const BarItem *editing() const noexcept { return fieldEditor.isVisible() ? editing_ : nullptr; }
     juce::TextEditor fieldEditor;
@@ -103,5 +107,6 @@ class TransportBar final : public juce::Component {
     double shownBpm_ = -1;
     BarPosition shownPosition_{0, 0, 0};
     std::uint32_t shownSignature_ = 0; // numerator << 16 | denominator
+    BarPosition shownLoopStart_{0, 0, 0}, shownLoopLength_{-1, 0, 0};
 };
 } // namespace adi::ui

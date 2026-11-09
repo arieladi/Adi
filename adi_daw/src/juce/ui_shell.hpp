@@ -3,6 +3,8 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/locator_edits.hpp"
+#include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/momentary_latch.hpp"
 #include "adi/ui/reference_audition.hpp"
@@ -102,6 +104,12 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         SoloInPlace,
         ToggleTrackOptions,
         ToggleMixerTrackOptions,
+        Metronome,
+        LoopSelection,
+        SelectLoop,
+        AddLocator,
+        DeleteLocator,
+        EditInfoText,
         UndoHistory,
         LastId = UndoHistory
     };
@@ -136,6 +144,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
     bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
+    // `editing.linkLoopToSelection` (REAPER's), off by default: the brace follows a time selection.
+    bool linkLoopToSelection() const noexcept { return linkLoop_; }
     // Each window's interface zoom, kept per window and per display in `window.zoom` (N4;
     // ADR-0129 d3, ADR-0203 d11): what was kept for that window on that display, if anything;
     // and keeping a window's zoom there, saved at once.
@@ -155,6 +165,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
+    bool linkLoop_ = false;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
 // Info View's show/hide toggle in its bottom-left corner (manual 2.2.2).
@@ -354,6 +365,43 @@ class AdiRootComponent final : public juce::Component {
     bool setPositionAt(const std::string &text);
     bool stepPosition(int bars);
     const TapTempo &taps() const noexcept { return tap_; }
+    // Live's metronome (manual 19.4.1): O and the control bar's switch, `transport.setMetronome`
+    // outside undo and saved with the project (#383, N19); the switch lights from the snapshot.
+    bool setMetronome(bool on);
+    bool toggleMetronome();
+    // Live's Arrangement Loop (manual 6.6), `transport.setLoop` outside undo and saved with the
+    // project (#383, N19), from the CURRENT cell (ADR-0201). The control bar's switch; the brace over
+    // `range`, the switch as it is; Loop Selection (Ctrl/Cmd+L): the brace to the time selection or
+    // the selected clips' span and the loop on, or the loop toggled where the brace is already there
+    // or nothing is selected; the brace's keys while it is selected (manual 6.6, §42.8); the Loop
+    // Start and Loop Length fields typed, its length or its start kept.
+    bool toggleLoop();
+    bool setLoopRange(LoopRange range);
+    bool loopSelection();
+    bool braceKey(BraceKey key, bool command);
+    bool setLoopStartAt(const std::string &text);
+    bool setLoopLengthAt(const std::string &text);
+    // Live's locators (manual 6.4; N25, #385), from the CURRENT cell (ADR-0201), each edit one undo
+    // step. Set Locator: on a selected locator, Delete Locator; else a locator at the playhead while
+    // playing, at the time selection's start or the insert marker while stopped. Previous and Next
+    // jump to the locator before or after the play position, past the first or the last to the
+    // arrangement's start or end. A jump while playing moves playback there; while stopped, the
+    // insert marker. Add, delete, move, rename and Edit Info Text (the marker's note) act on one
+    // locator; Loop to Next Locator loops from a locator to the next, or to the arrangement's end.
+    bool setLocator();
+    bool jumpLocator(bool forward);
+    bool jumpTo(std::int64_t tick);
+    bool addLocatorAt(std::int64_t pos);
+    bool deleteLocator(std::int64_t id);
+    bool moveLocator(std::int64_t id, std::int64_t to);
+    bool renameLocator(std::int64_t id, const std::string &name);
+    bool setLocatorInfo(std::int64_t id, const std::string &text);
+    bool loopToNextLocator(std::int64_t id);
+    // Where the arrangement ends: the latest clip's end or locator, whichever is later.
+    std::int64_t arrangementEnd() const;
+    // `editing.linkLoopToSelection` (REAPER's, off by default): with it on, a time selection made
+    // in the lanes moves the brace to it, the loop's switch as it is. Nothing when it is off.
+    bool linkLoopToSelection();
     // An edit of the start's tempo or signature, where the snapshot cannot tell a stored value from
     // its own: `tried` (an insert) first; refused, it changed nothing, and `otherwise` (a replace)
     // follows. One step either way.
@@ -379,6 +427,9 @@ class AdiRootComponent final : public juce::Component {
     bool deleteTrack();
     // Live's Group Tracks and Ungroup Tracks (manual 18.3), each one undo step.
     bool groupTracks(bool ungroup);
+    // A transport edit (the metronome, the loop): outside undo, so no step and no Follow paused; the
+    // session re-reads the project after it (afterEdit), so the engine clicks and loops as it says.
+    bool submitTransport(LoopEdit edit);
     // After a submit: a refusal to the Status Bar; an edit pauses Follow and repaints.
     bool edited(const SubmitResult &);
     bool focusView(int);

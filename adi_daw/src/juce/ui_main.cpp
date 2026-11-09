@@ -210,6 +210,8 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!document_->synchronise())
                 report(document_->error());
         };
+        // The audio clips' waveforms, from the document's own worker (N40).
+        root->arrangement.waveforms = &document_->waveforms();
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
         // The Undo History's first action, as Live's "Open Live Set" row names the file.
         root->undoHistory.rootLabel = std::string(create ? "New Project: \u201c" : "Open Project: \u201c") +
