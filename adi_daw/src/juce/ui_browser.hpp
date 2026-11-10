@@ -103,6 +103,10 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
     void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override { load(row); }
+    // A folder's heading is never selected: the selection steps past it, the way it was moving.
+    void selectedRowsChanged(int lastRowSelected) override;
+    int firstItem() const;
+    int lastSelected_ = -1;
     void returnKeyPressed(int row) override { load(row); }
     std::vector<Row> rows_;
     LibraryListing listing_;

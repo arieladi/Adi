@@ -2473,7 +2473,13 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     for (const auto &r : browser.rows()) {
         if (r.heading.isNotEmpty())
             folders.push_back(r.heading);
-        if (r.device != nullptr && BrowserPanel::unavailable(*r.device).empty() != r.device->available)
+        // Every entry loads but Hybrid Reverb with Pd on; none with it off.
+#if ADI_WITH_PD
+        const bool expected = r.device == nullptr || r.device->name != "Hybrid Reverb";
+#else
+        const bool expected = r.device == nullptr;
+#endif
+        if (r.device != nullptr && BrowserPanel::unavailable(*r.device).empty() != expected)
             dimmedRight = false;
     }
     check(folders == std::vector<juce::String>{"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color",
@@ -2499,7 +2505,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
             out.push_back(q.getColumn(0).getString());
         return out;
     };
-    const auto chains = [&](std::int64_t track) {
+    [[maybe_unused]] const auto chains = [&](std::int64_t track) {
         return document->store().db().execAndGet("SELECT count(*) FROM device_chains WHERE track_id = " +
                                                  std::to_string(track)).getInt();
     };
@@ -2543,10 +2549,35 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     check(!browser.load(find("Auto Filter")) && root.error().find("leaves out") != std::string::npos &&
               chainOf(4).empty(),
           "with Pd off, Auto Filter is refused with the reason, and nothing is written");
-    root.arrangement.geometry.selection.track = 0;
-    check(!browser.load(find("Utility")) && root.error().find("Select a track") != std::string::npos,
-          "with no track selected, a load says to select one");
 #endif
+    // With no track selected a load says to select one (the root's own refusal, Pd or not).
+    check(!root.insertDevice("org.adidaw.builtin.utility", 0, std::nullopt) &&
+              root.error().find("Select a track") != std::string::npos,
+          "with no track selected, a load says to select one");
+    // Below the tracks a dragged device says where to drop it, and loads nothing.
+    {
+        const juce::DragAndDropTarget::SourceDetails below(
+            BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.utility")), nullptr,
+            {40, root.arrangement.canvas.getHeight() - 2});
+        if (root.arrangement.geometry.trackAt(root.reader(), root.arrangement.canvas.getHeight() - 2) == nullptr) {
+            root.arrangement.canvas.itemDropped(below);
+            check(root.error().find("on a track's lane") != std::string::npos, "a device dropped below the tracks says to drop it on a lane");
+        }
+    }
+    // The keyboard never lands on a folder's heading: into the list, the first entry is a device.
+    browser.choose(audioEffects);
+    browser.search.setText("reverb", false);
+    browser.search.onTextChange();
+    browser.searchKeys().keyPressed(juce::KeyPress(juce::KeyPress::downKey), &browser.search);
+    const int picked = browser.list.getSelectedRow();
+    check(picked >= 0 && browser.rows()[static_cast<std::size_t>(picked)].device != nullptr &&
+              browser.rows()[static_cast<std::size_t>(picked)].device->name == "Hybrid Reverb",
+          "search, then Down: the first entry is selected, never the folder's heading");
+    browser.list.selectRow(0);
+    check(browser.list.getSelectedRow() > 0 && browser.rows()[static_cast<std::size_t>(browser.list.getSelectedRow())].heading.isEmpty(),
+          "a heading clicked or stepped onto passes the selection to an entry");
+    browser.search.setText({}, false);
+    browser.search.onTextChange();
     document->release();
 }
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {

@@ -2894,7 +2894,13 @@ void ArrangementCanvas::itemDropped(const SourceDetails &details) {
     // lane (the director, 28 October; audit row 101).
     if (const auto uid = BrowserPanel::droppedDevice(details.description); !uid.empty()) {
         const auto *track = view.geometry.trackAt(view.reader(), details.localPosition.y);
-        view.root.insertDevice(uid, track != nullptr ? track->id : 0, std::nullopt);
+        if (track == nullptr) {
+            const auto *info = findBuiltin(uid);
+            view.root.say("Drop " + (info != nullptr ? std::string(info->name) : std::string("a device")) +
+                          " on a track's lane to load it there.");
+            return;
+        }
+        view.root.insertDevice(uid, track->id, std::nullopt);
         return;
     }
     filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);

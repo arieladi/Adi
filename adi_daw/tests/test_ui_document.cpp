@@ -431,8 +431,9 @@ int main(int argc, char **argv) {
         check(built != nullptr, "a project for a built-in device");
         if (built) {
             const auto count = [&](const char *sql) { return built->store().db().execAndGet(sql).getInt(); };
-            const auto refs = count("SELECT count(*) FROM plugin_refs"), chains = count("SELECT count(*) FROM device_chains"),
-                       devices = count("SELECT count(*) FROM devices");
+            [[maybe_unused]] const auto refs = count("SELECT count(*) FROM plugin_refs");
+            [[maybe_unused]] const auto chains = count("SELECT count(*) FROM device_chains");
+            const auto devices = count("SELECT count(*) FROM devices");
 #if ADI_WITH_PD
             check(count("SELECT count(*) FROM device_chains WHERE track_id = 2") == 0 &&
                       built->insertBuiltin("org.adidaw.builtin.auto-filter", 2, std::nullopt),

@@ -141,11 +141,36 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     addAndMakeVisible(list);
 }
 void BrowserPanel::enterList() {
-    if (getNumRows() > 0) {
+    if (firstItem() >= 0) {
         if (list.getSelectedRows().isEmpty())
-            list.selectRow(0);
+            list.selectRow(firstItem());
         list.grabKeyboardFocus();
     }
+}
+int BrowserPanel::firstItem() const {
+    for (std::size_t i = 0; i < rows_.size(); ++i)
+        if (rows_[i].heading.isEmpty())
+            return static_cast<int>(i);
+    return -1;
+}
+void BrowserPanel::selectedRowsChanged(int row) {
+    if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].heading.isEmpty()) {
+        lastSelected_ = row;
+        return;
+    }
+    // Past the heading, the way the selection moved; at the list's top, down to the first entry.
+    const int step = row < lastSelected_ ? -1 : 1;
+    for (int r = row + step; r >= 0 && r < static_cast<int>(rows_.size()); r += step)
+        if (rows_[static_cast<std::size_t>(r)].heading.isEmpty()) {
+            list.selectRow(r);
+            return;
+        }
+    for (int r = row - step; r >= 0 && r < static_cast<int>(rows_.size()); r -= step)
+        if (rows_[static_cast<std::size_t>(r)].heading.isEmpty()) {
+            list.selectRow(r);
+            return;
+        }
+    list.deselectAllRows();
 }
 bool BrowserPanel::SearchKeys::keyPressed(const juce::KeyPress &k, juce::Component *) {
     if (k != juce::KeyPress::downKey)
@@ -254,6 +279,7 @@ void BrowserPanel::refill() {
     }
     list.updateContent();
     list.deselectAllRows();
+    lastSelected_ = -1;
     list.repaint();
 }
 int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
@@ -442,11 +468,7 @@ void BrowserPanel::choose(int i) {
 bool BrowserPanel::keyPressed(const juce::KeyPress &k) {
     // Right goes from the sidebar into the list (§41.22), its first row selected.
     if (k == juce::KeyPress::rightKey) {
-        if (getNumRows() > 0) {
-            if (list.getSelectedRows().isEmpty())
-                list.selectRow(0);
-            list.grabKeyboardFocus();
-        }
+        enterList();
         return true;
     }
     if (k != juce::KeyPress::upKey && k != juce::KeyPress::downKey)
