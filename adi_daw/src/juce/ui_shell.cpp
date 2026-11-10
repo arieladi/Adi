@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_shell.hpp"
+#include "ui_floating.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
 #include "adi/ui/tempo_edits.hpp"
@@ -42,6 +43,9 @@ void AppCommands::reload() {
     const auto delay = settings_.get("lookfeel.tooltipDelayMs");
     tooltipDelayMs_ = delay.is_number_integer() ? delay.get<int>() : 600;
     zoomOnSelection_ = flag(settings_, "lookfeel.zoomOnSelection", true);
+    multiplePluginWindows_ = flag(settings_, "plugins.multipleWindows", false);
+    autoHidePluginWindows_ = flag(settings_, "plugins.autoHideWindows", true);
+    pluginWindowsOnTop_ = flag(settings_, "plugins.editorsAlwaysOnTop", true);
     tabMovesFocus_ = flag(settings_, "lookfeel.tabMovesFocus", false);
     wrapTab_ = flag(settings_, "lookfeel.wrapTabNavigation", true);
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
@@ -130,7 +134,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Track Options", "Mixer Track Options", "Metronome", "Loop Selection",
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
                                   "Undo History", "Save a Copy...", "Collect All and Save",
-                                  "Collect and Export..."};
+                                  "Collect and Export...", "Show Plug-In Windows"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -325,6 +329,12 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
         break;
     case ToggleMixerTrackOptions: // Live 12's Mixer Controls Track Options: the Mixer View's own Track Delay
         info.setTicked(active_ != nullptr && active_->state().mixerTrackOptions);
+        break;
+    case TogglePluginWindows: // manual 23.3, 41.4: View > Show/Hide Plug-In Windows, Ctrl/Cmd+Alt+P
+        info.addDefaultKeypress('p', cmd | alt);
+        info.shortName = active_ != nullptr && active_->pluginWindowsShown() ? "Hide Plug-In Windows"
+                                                                            : "Show Plug-In Windows";
+        info.setActive(active_ != nullptr);
         break;
     case UndoHistory: // manual 5.4.2: View > Undo History, Ctrl/Cmd+Alt+Z
         info.addDefaultKeypress('z', cmd | alt);
@@ -645,6 +655,71 @@ AdiRootComponent::~AdiRootComponent() {
     setLookAndFeel(nullptr);
     undoHistory.setLookAndFeel(nullptr);
 }
+std::string AdiRootComponent::pluginWindowKey(std::int64_t device) { return "plugin:" + std::to_string(device); }
+bool AdiRootComponent::pluginWindowOpen(std::int64_t device) const {
+    return pluginHost != nullptr && pluginHost->contains(pluginWindowKey(device));
+}
+bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
+    if (pluginHost == nullptr || !pluginEditor)
+        return fail("Plug-in windows open in the application.");
+    const auto key = pluginWindowKey(device);
+    if (pluginHost->contains(key)) {
+        pluginHost->close(key);
+        return true;
+    }
+    // One plug-in window at a time unless Multiple Plug-In Windows is on, or Ctrl/Cmd is held
+    // (manual 23.3.1.1).
+    if (!several && !commands_.multiplePluginWindows())
+        for (const auto &other : pluginHost->keys("plugin:"))
+            pluginHost->close(other);
+    std::string why;
+    auto editor = pluginEditor(device, why);
+    if (!editor.view)
+        return fail(why.empty() ? "This device has no plug-in window." : why);
+    auto frameEditor = std::move(editor.frame);
+    const auto safe = juce::Component::SafePointer<AdiRootComponent>(this);
+    // The window's own clock runs the editor's; an error it reports goes to the Status Bar once.
+    auto onFrame = [safe, frameEditor, said = std::make_shared<std::string>()](const SnapshotReader &) {
+        if (!frameEditor)
+            return;
+        const auto error = frameEditor();
+        if (!error.empty() && error != *said && safe) {
+            *said = error;
+            safe->say(error);
+        }
+    };
+    if (!pluginHost->openView(key, device, std::move(editor.view), std::move(onFrame), false))
+        return fail("The plug-in window could not open.");
+    pluginHost->setAlwaysOnTop(key, commands_.pluginWindowsOnTop());
+    if (!pluginWindowsShown_)
+        pluginHost->show(key, false);
+    devices.repaint();
+    return true;
+}
+void AdiRootComponent::followPluginWindows() {
+    // Auto-Hide Plug-In Windows (manual 23.3.1.1): only the selected track's show; Show/Hide
+    // Plug-In Windows hides them all. Always on top follows the setting.
+    if (pluginHost == nullptr)
+        return;
+    const auto keys = pluginHost->keys("plugin:");
+    if (keys.empty())
+        return;
+    const auto feed = devices.publication ? devices.publication() : nullptr;
+    const auto selected = arrangement.geometry.selection.track;
+    for (const auto &key : keys) {
+        const auto id = std::stoll(key.substr(7));
+        std::int64_t track = 0;
+        if (feed)
+            for (const auto &d : *feed)
+                if (d.id == id)
+                    track = d.track;
+        const bool show = pluginWindowsShown_ && (!commands_.autoHidePluginWindows() || track == selected);
+        if (pluginHost->shown(key) != show)
+            pluginHost->show(key, show);
+        if (pluginHost->alwaysOnTop(key) != commands_.pluginWindowsOnTop())
+            pluginHost->setAlwaysOnTop(key, commands_.pluginWindowsOnTop());
+    }
+}
 void AdiRootComponent::frame() noexcept {
     // Root owns exactly one reader for the presented frame; descendants borrow it.
     // JUCE may paint after this callback, so it remains alive until the next frame.
@@ -701,6 +776,7 @@ void AdiRootComponent::frame() noexcept {
     lastDrain_ = dirty_.drain();
     arrangement.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     devices.frame(arrangement.geometry.selection.track);
+    followPluginWindows();
     mixer.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
     if (mixerView.isVisible())
         mixerView.frame((lastDrain_ & (DirtySet::Layout | DirtySet::Content)) != 0);
@@ -2093,6 +2169,14 @@ bool AdiRootComponent::command(int id) {
         // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
         // and the marks are setSoloInPlace's, so the tail below is not run a second time.
         return toggleSoloInPlace();
+    case AppCommands::TogglePluginWindows:
+        // Every plug-in window hidden, or shown again where it stood (Auto-Hide still applies).
+        pluginWindowsShown_ = !pluginWindowsShown_;
+        if (pluginHost != nullptr)
+            for (const auto &key : pluginHost->keys("plugin:"))
+                pluginHost->show(key, pluginWindowsShown_);
+        commands_.manager.commandStatusChanged();
+        return true;
     case AppCommands::UndoHistory:
         // The app puts the list in a window of its own (ui_main.cpp); headless, it is read as it is.
         undoHistory.refresh();
@@ -2219,7 +2303,7 @@ const std::vector<MenuEntries> &menuBar() {
         {"View",
          {C::FullScreen, 0, C::ToggleBrowser, C::ToggleOverview, kTrackControlsMenu, kMixerControlsMenu,
           C::ToggleMixerView, C::ShowChannelEq, C::ToggleMixView, C::DetachMixView, C::ToggleReferenceTrack,
-          C::PlayReference, C::ToggleDeviceView,
+          C::PlayReference, C::ToggleDeviceView, C::TogglePluginWindows,
           C::ToggleInfoView, C::UndoHistory, 0, C::ZoomIn, C::ZoomOut, 0,
           C::ZoomToSelection, C::ZoomBack, C::OptimizeWidth, C::OptimizeHeight, C::LargeTracks, 0,
           C::SwapPanels}},

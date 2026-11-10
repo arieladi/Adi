@@ -125,6 +125,17 @@ void ActivatorButton::paintButton(juce::Graphics &g, bool over, bool) {
     g.setColour(over ? look::text : look::outline);
     g.drawEllipse(r.reduced(0.5f), 1.f);
 }
+void WrenchButton::paintButton(juce::Graphics &g, bool over, bool) {
+    // A wrench: a handle across the box, an open jaw at its head.
+    const auto r = getLocalBounds().toFloat().reduced(2.f);
+    g.setColour(getToggleState() ? look::accent : over ? look::text : look::outline);
+    juce::Path handle;
+    handle.startNewSubPath(r.getX() + 1.f, r.getBottom() - 1.f);
+    handle.lineTo(r.getCentreX() + 1.f, r.getCentreY() - 1.f);
+    g.strokePath(handle, juce::PathStrokeType(2.2f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    const auto head = juce::Rectangle<float>(r.getRight() - 6.5f, r.getY(), 6.5f, 6.5f);
+    g.drawEllipse(head.reduced(0.6f), 1.8f);
+}
 DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     : id(d.id), strip(s) {
     // The title is the bar's text, not a box (Live's device title).
@@ -136,6 +147,13 @@ DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     addAndMakeVisible(title);
     addAndMakeVisible(enabled);
     addAndMakeVisible(configureButton);
+    addChildComponent(wrench);
+    wrench.setTitle("Plug-In Window");
+    wrench.setTooltip("Opens or closes the plug-in's own window; Ctrl/Cmd keeps the other plug-in windows open.");
+    wrench.onClick = [this] {
+        strip.root.togglePluginWindow(id, juce::ModifierKeys::currentModifiers.isCommandDown());
+        wrench.setToggleState(strip.root.pluginWindowOpen(id), juce::dontSendNotification);
+    };
     addChildComponent(search);
     enabled.setTitle("Device Activator");
     enabled.setTooltip("Switches the device on or off.");
@@ -164,6 +182,11 @@ void DevicePanelView::present(const DevicePanelData &d) {
         title.setTooltip("Double-click to fold the device; right-click for its commands.");
     }
     enabled.setToggleState(d.enabled, juce::dontSendNotification);
+    // Only a plug-in has a window of its own (parity-7.5 row 1).
+    if (wrench.isVisible() != (d.plugin && !strip.folded(id))) {
+        wrench.setVisible(d.plugin && !strip.folded(id));
+        resized();
+    }
     bool same = controls.size() == d.resolved.entries.size();
     if (same)
         for (std::size_t i = 0; i < controls.size(); ++i)
@@ -211,7 +234,11 @@ void DevicePanelView::resized() {
     enabled.setBounds(2, 1, 16, 15);
     title.setVisible(!isFolded);
     configureButton.setVisible(!isFolded);
-    title.setBounds(32, 1, std::max(0, getWidth() - 32 - 58), 15);
+    wrench.setVisible(!isFolded && data != nullptr && data->plugin);
+    // The wrench before Configure, the name in what is left.
+    const int tools = wrench.isVisible() ? 58 + 18 : 58;
+    title.setBounds(32, 1, std::max(0, getWidth() - 32 - tools), 15);
+    wrench.setBounds(getWidth() - 74, 1, 16, 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     search.setVisible(!isFolded && configuring);
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
@@ -397,6 +424,10 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     scroll.setScrollBarsShown(false, false, false, true);
 }
 void DeviceChainStrip::frame(std::int64_t track) {
+    // A wrench is lit while its window is open, however it closed (its own button, the host).
+    for (auto &p : panels)
+        if (p->wrench.isVisible() && p->wrench.getToggleState() != root.pluginWindowOpen(p->id))
+            p->wrench.setToggleState(root.pluginWindowOpen(p->id), juce::dontSendNotification);
     auto next = publication ? publication() : nullptr;
     if (next == presented && track == selectedTrack)
         return;

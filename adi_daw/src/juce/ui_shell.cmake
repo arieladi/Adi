@@ -30,7 +30,7 @@ if(ADI_WITH_JUCE)
         COMPILE_OPTIONS "$<TARGET_PROPERTY:adi_warnings,INTERFACE_COMPILE_OPTIONS>")
     add_test(NAME adi_ui_shell_tests COMMAND adi_ui_shell_tests)
     juce_add_gui_app(adi_app PRODUCT_NAME "ADI" COMPANY_NAME "ADI" BUNDLE_ID "org.adi.daw")
-    target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp)
+    target_sources(adi_app PRIVATE src/juce/ui_main.cpp src/juce/app_audio_page.cpp src/juce/juce_device_loader.cpp src/juce/vst3_host.cpp src/juce/vst3_events.cpp src/juce/editor_host_component.cpp)
     # Reuse the player's host-format/ASIO switches, not its console entry or fixture.
     get_target_property(adi_ui_host_defs adi_play COMPILE_DEFINITIONS)
     list(FILTER adi_ui_host_defs EXCLUDE REGEX "^(_CONSOLE|ADI_TEST_VST3)")

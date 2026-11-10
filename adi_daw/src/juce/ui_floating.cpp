@@ -116,7 +116,7 @@ std::string zoomKey(const std::string &key) { return "floating:" + key; }
 struct FloatingHost::Entry {
     std::string key;
     std::int64_t device = 0;
-    bool closing = false;
+    bool closing = false, scaled = true, hidden = false, onTop = false;
     std::uint64_t drains = 0;
     juce::Component::SafePointer<juce::Component> component, dock;
     juce::Rectangle<int> dockBounds, first;
@@ -173,7 +173,7 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     auto *raw = e.get();
     entries_[key] = std::move(e);
     raw->window = std::make_unique<Entry::Window>(*this, *raw);
-    if (raw->owned)
+    if (raw->owned && raw->scaled)
         raw->zoomed = std::make_unique<Zoomed>(*raw->component);
     raw->window->setContentNonOwned(raw->zoomed ? static_cast<juce::Component *>(raw->zoomed.get())
                                                 : raw->component.getComponent(),
@@ -209,14 +209,47 @@ bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Compone
 }
 bool FloatingHost::openView(const std::string &key, std::int64_t id,
                             std::unique_ptr<juce::Component> component,
-                            std::function<void(const SnapshotReader &)> fn) {
+                            std::function<void(const SnapshotReader &)> fn, bool scaled) {
     auto e = std::make_unique<Entry>();
     e->key = key;
     e->device = id;
     e->component = component.get();
     e->owned = std::move(component);
     e->onFrame = std::move(fn);
+    e->scaled = scaled;
     return install(std::move(e));
+}
+void FloatingHost::show(const std::string &key, bool on) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end())
+        return;
+    auto &e = *it->second;
+    e.hidden = !on;
+    if (native_ && e.window && !e.closing)
+        e.window->setVisible(on);
+}
+bool FloatingHost::shown(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && !it->second->hidden && !it->second->closing;
+}
+void FloatingHost::setAlwaysOnTop(const std::string &key, bool onTop) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end())
+        return;
+    it->second->onTop = onTop;
+    if (it->second->window)
+        it->second->window->setAlwaysOnTop(onTop);
+}
+bool FloatingHost::alwaysOnTop(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && it->second->onTop;
+}
+std::vector<std::string> FloatingHost::keys(const std::string &prefix) const {
+    std::vector<std::string> out;
+    for (const auto &[key, entry] : entries_)
+        if (key.rfind(prefix, 0) == 0)
+            out.push_back(key);
+    return out;
 }
 void FloatingHost::frame(const std::string &key) {
     auto it = entries_.find(key);

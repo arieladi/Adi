@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
+#include "juce/editor_host_component.hpp"
 #include "juce/juce_device_loader.hpp"
 #include "app_audio_page.hpp"
 #include "ui_floating.hpp"
@@ -239,6 +240,28 @@ class AdiApplication final : public juce::JUCEApplication,
                 const auto *e = document_->session().entryFor(id);
                 return e && !e->retired;
             });
+        // A plug-in's own window (Live 12 manual 23.3; N8, #391): the hosted editor at the
+        // plug-in's size, in a floating window the root opens from a device's wrench. Its frame
+        // runs on that window's clock; an error it reports reaches the Status Bar.
+        root_->pluginHost = floating_.get();
+        root_->pluginEditor = [this](std::int64_t id, std::string &error) {
+            AdiRootComponent::PluginEditorView out;
+            auto *instance = document_->session().instanceFor(id);
+            if (instance == nullptr || !instance->loaded()) {
+                error = "The plug-in is not loaded, so it has no window.";
+                return out;
+            }
+            auto editor = device::createEditorComponent(*instance, error);
+            if (!editor)
+                return out;
+            auto *raw = editor.get();
+            out.frame = [raw] {
+                raw->frame();
+                return raw->error();
+            };
+            out.view = std::move(editor);
+            return out;
+        };
         window_->setVisible(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
