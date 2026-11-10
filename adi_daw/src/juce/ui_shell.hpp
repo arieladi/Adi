@@ -314,6 +314,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     void followPluginWindows();
     // Live's Show/Hide Plug-In Windows (Ctrl/Cmd+Alt+P): every plug-in window at once.
     bool pluginWindowsShown() const noexcept { return pluginWindowsShown_; }
+    // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
+    // undo step); `insertDevice` checks there is a track and says why it cannot.
+    std::function<bool(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before)> loadBuiltin;
+    bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     DeviceChainStrip devices;
     DockResizer dockResizer;
     MixerPanel mixer;

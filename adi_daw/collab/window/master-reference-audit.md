@@ -45,7 +45,7 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Collections, Categories (Pd Devices in Max for Live's place), Places (Packs, User Library, Current Project, Add Folder…) | 3.1 | Partial: all listed, but the sidebar does not scroll, so on a short window Places is cut off below Templates. Missing: a scrolling sidebar |
 | Search; Ctrl/Cmd+F from anywhere | 3.1 | Built |
-| The lists under each label; double-click or drag to load | 3.1 | Waits (N15) |
+| The lists under each label; double-click or drag to load | 3.1 | Partial (D4, N15): Samples and the Places (D1); Audio Effects in Live's seven folders and ADI's own (Chord Comb, Color Cab) under Pd Devices, from the catalogue. Double-click or Enter loads onto the selected track in front of the device chosen in the strip; a drag drops into the chain or onto a lane's track; one undo step with the reference and the chain. An entry this build cannot load is dimmed and says why (every one with Pd off; Hybrid Reverb always). Missing: Instruments, MIDI Effects, Sounds and Drums (the devices lane), Plug-Ins (the scanner, #438 to #440), presets (no format) |
 | The AI chat as a collapsed tab at the browser's foot | 3.1 | Built (the tab); the chat is the agent's (Later) |
 | The floating palette, Ctrl+P / Cmd+P: V/serum, S/snare, P/ presets, arrows, Space auditions, Enter loads; sentences become tasks | 1.1, 3.1 (ADR-0104) | Missing. Commands by name are the window's alone; plug-ins, samples and presets wait for N15; sentences for the agent |
 | AudioGridder servers' plug-ins beside the local ones, with a server icon | 3.1, 9.5 | Later (engine, P1) |
@@ -98,7 +98,7 @@ MR § is the Master Reference's section.
 | MIDI Learn on every lane header | 6.1 | Later (P2) |
 | Clip names; the Main track last | 3.3 | Waits (N6) |
 | Take lanes and comping | 4.6 | Later (P1, engine first) |
-| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15) |
+| Dropping an audio file on a track | 3.3 | Waits (N5). The director, 28 October, as Ableton: files, synths and plug-ins drop on an audio, MIDI or synth track or the empty area; a device or plug-in dropped on a track goes to its device chain below, never into the lanes (N5, N15). The file drop is built (#327); a built-in device dropped on a lane loads onto that track's chain, never a clip (D4); below the tracks it says to drop it on a lane, where Live makes a track |
 
 ## 5. Devices and the editors (MR 3.4, 4, 5, 9)
 

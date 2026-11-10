@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ui_devices.hpp"
 #include "ui_shell.hpp"
+#include "ui_browser.hpp"
 #include <algorithm>
 #include <cmath>
 namespace adi::ui {
@@ -292,6 +293,15 @@ bool DevicePanelView::keyPressed(const juce::KeyPress &k) {
         return strip.focusNext(id, k == juce::KeyPress::rightKey);
     return false;
 }
+void DevicePanelView::focusGained(FocusChangeType) {
+    strip.chose(id);
+    repaint();
+}
+void DevicePanelView::focusOfChildComponentChanged(FocusChangeType) {
+    if (hasKeyboardFocus(true))
+        strip.chose(id);
+    repaint();
+}
 void DevicePanelView::mouseDown(const juce::MouseEvent &e) {
     if (e.mods.isPopupMenu() && (e.eventComponent == &title || e.eventComponent == this))
         contextMenu(e.getScreenPosition());
@@ -442,8 +452,35 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     content.addMouseListener(this, false);
 }
 void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
-    if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu())
+    if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu()) {
+        chosen_.reset();
         grabKeyboardFocus();
+    }
+}
+std::optional<std::int64_t> DeviceChainStrip::insertPoint() const {
+    if (const auto focused = focusedDevice())
+        return focused;
+    if (endChosen() || !chosen_)
+        return std::nullopt;
+    for (const auto &p : panels)
+        if (p->id == *chosen_)
+            return chosen_;
+    return std::nullopt;
+}
+bool DeviceChainStrip::isInterestedInDragSource(const SourceDetails &details) {
+    return !BrowserPanel::droppedDevice(details.description).empty();
+}
+std::optional<std::int64_t> DeviceChainStrip::dropBefore(int x) const {
+    const int at = x + scroll.getViewPositionX();
+    for (const auto &p : panels)
+        if (at < p->getBounds().getCentreX())
+            return p->id;
+    return std::nullopt;
+}
+void DeviceChainStrip::itemDropped(const SourceDetails &details) {
+    const auto uid = BrowserPanel::droppedDevice(details.description);
+    if (!uid.empty())
+        root.insertDevice(uid, selectedTrack, dropBefore(details.localPosition.x));
 }
 const DevicePanelData *DeviceChainStrip::dataOf(std::int64_t device) const {
     if (presented)
@@ -506,6 +543,8 @@ void DeviceChainStrip::frame(std::int64_t track) {
     auto next = publication ? publication() : nullptr;
     if (next == presented && track == selectedTrack)
         return;
+    if (track != selectedTrack)
+        chosen_.reset();
     selectedTrack = track;
     // Keep the old publication alive until every control has adopted the new one.
     std::vector<const DevicePanelData *> visible;

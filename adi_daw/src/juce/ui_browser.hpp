@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include "adi/builtin_catalog.hpp"
 #include "adi/ui/library_listing.hpp"
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <functional>
@@ -25,7 +26,10 @@ class BrowserList final : public juce::ListBox {
 // Categories and Places, and the content pane. Samples and the Places list what the library index
 // holds (D1, N15's index part): Samples every audio file of the folders the settings name, a Place
 // that folder's; the search narrows the list as it is typed. A row dragged onto the lanes is the
-// audio drop. The other categories wait for the catalogue and the devices (D4) and say so.
+// audio drop. Audio Effects lists Live's folders with ADI's built-in effects, and Pd Devices ADI's
+// own (D4, N15's catalogue part): double-click or Enter loads one onto the selected track, in front
+// of the device chosen in the strip; a drag drops it onto a lane's track or into the chain. An entry
+// this build cannot load is dimmed and says why. The other categories say what they wait for.
 class BrowserPanel final : public juce::Component, public juce::SettableTooltipClient, private juce::ListBoxModel {
   public:
     explicit BrowserPanel(AdiRootComponent &);
@@ -72,6 +76,20 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     void choose(int);
     // The files the list shows now, in its order.
     const std::vector<const LibraryFile *> &shown() const noexcept { return shown_; }
+    // A row of the list: a sample, a folder's heading or a built-in device.
+    struct Row {
+        const LibraryFile *file = nullptr;
+        const BuiltinInfo *device = nullptr;
+        juce::String heading;
+    };
+    const std::vector<Row> &rows() const noexcept { return rows_; }
+    // Loads the device on `row` (double-click, Enter), or says why it cannot.
+    bool load(int row);
+    // Why a catalogue entry cannot load in this build; empty when it can.
+    static std::string unavailable(const BuiltinInfo &);
+    // A device's drag description, and the uid a drop carries ("" when it is not a device).
+    static juce::String deviceDescription(const BuiltinInfo &);
+    static std::string droppedDevice(const juce::var &description);
     // The drag's description of these files: what the lanes accept as a drop (`dropDescription`).
     static juce::String dragDescription(const std::vector<const LibraryFile *> &);
     static juce::StringArray droppedFiles(const juce::var &description);
@@ -84,6 +102,13 @@ class BrowserPanel final : public juce::Component, public juce::SettableTooltipC
     int getNumRows() override;
     void paintListBoxItem(int row, juce::Graphics &, int width, int height, bool selected) override;
     juce::var getDragSourceDescription(const juce::SparseSet<int> &rows) override;
+    void listBoxItemDoubleClicked(int row, const juce::MouseEvent &) override { load(row); }
+    // A folder's heading is never selected: the selection steps past it, the way it was moving.
+    void selectedRowsChanged(int lastRowSelected) override;
+    int firstItem() const;
+    int lastSelected_ = -1;
+    void returnKeyPressed(int row) override { load(row); }
+    std::vector<Row> rows_;
     LibraryListing listing_;
     bool ready_ = false;
     int footLimit_ = 1 << 20;

@@ -673,6 +673,19 @@ AdiRootComponent::~AdiRootComponent() {
     setLookAndFeel(nullptr);
     undoHistory.setLookAndFeel(nullptr);
 }
+bool AdiRootComponent::insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
+    const auto *info = findBuiltin(uid);
+    const std::string name = info != nullptr ? std::string(info->name) : std::string("the device");
+    if (!loadBuiltin)
+        return fail("Devices load in the application.");
+    if (track == 0 || reader().findTrack(track) == nullptr)
+        return fail("Select a track to load " + name + " onto.");
+    if (!loadBuiltin(uid, track, before))
+        return false;
+    // The strip shows the new device on the next frame; the browser keeps the focus, as Live's.
+    devices.repaint();
+    return true;
+}
 std::string AdiRootComponent::pluginWindowKey(std::int64_t device) { return "plugin:" + std::to_string(device); }
 bool AdiRootComponent::pluginWindowOpen(std::int64_t device) const {
     return pluginHost != nullptr && pluginHost->contains(pluginWindowKey(device));

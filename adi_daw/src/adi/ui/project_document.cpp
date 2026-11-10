@@ -294,6 +294,21 @@ bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
     error_.clear();
     return true;
 }
+bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
+    auto prepared = prepareBuiltinInsert(*store_, uid, track, before);
+    if (!prepared.ok) {
+        error_ = prepared.error.empty() ? "The device could not be loaded." : prepared.error;
+        return false;
+    }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedBuiltinInsert &p, Actor actor) {
+        return commitBuiltinInsert(s, p, actor);
+    });
+    error_ = result.error;
+    if (!result.ok || !synchronise())
+        return false;
+    feed_.publish(session_);
+    return true;
+}
 std::string ProjectDocument::deviceCopyIdentity() const {
     SQLite::Statement row(store_->db(), "PRAGMA database_list");
     while (row.executeStep())

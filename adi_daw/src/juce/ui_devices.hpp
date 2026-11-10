@@ -70,6 +70,9 @@ class DevicePanelView final : public juce::Component {
     bool keyPressed(const juce::KeyPress &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    // The device the keyboard chose, itself or one of its controls: where a load goes (D4).
+    void focusGained(FocusChangeType) override;
+    void focusOfChildComponentChanged(FocusChangeType) override;
     // The width this device takes at a given strip height.
     int widthFor(int height) const noexcept;
     // Live's round fold switch in the title bar, beside the activator.
@@ -95,7 +98,7 @@ class DevicePanelView final : public juce::Component {
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
 };
-class DeviceChainStrip final : public juce::Component {
+class DeviceChainStrip final : public juce::Component, public juce::DragAndDropTarget {
   public:
     explicit DeviceChainStrip(AdiRootComponent &);
     void frame(std::int64_t track);
@@ -118,6 +121,16 @@ class DeviceChainStrip final : public juce::Component {
     // Whether the chain's end is chosen: the strip itself has the focus, after a click past the
     // last device.
     bool endChosen() const { return hasKeyboardFocus(false); }
+    // Where a device loaded from the browser goes (manual 4.10): in front of the device chosen
+    // last in the strip, though the browser now has the focus; at the chain's end after a click
+    // past the last device, or when none is chosen.
+    std::optional<std::int64_t> insertPoint() const;
+    void chose(std::int64_t device) { chosen_ = device; }
+    // A device dragged from the browser drops into the chain, in front of the device it lands on.
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
+    // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
+    std::optional<std::int64_t> dropBefore(int x) const;
     void mouseDown(const juce::MouseEvent &) override;
     void focusGained(FocusChangeType) override { repaint(); }
     void focusLost(FocusChangeType) override { repaint(); }
@@ -137,6 +150,7 @@ class DeviceChainStrip final : public juce::Component {
   private:
     const DevicePanelData *dataOf(std::int64_t device) const;
     std::int64_t selectedTrack = -1;
+    std::optional<std::int64_t> chosen_;
     int end_ = 0; // where the chain ends, in the content's pixels
     juce::Viewport scroll;
     juce::Component content;

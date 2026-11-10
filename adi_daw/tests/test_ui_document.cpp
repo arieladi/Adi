@@ -424,6 +424,39 @@ int main(int argc, char **argv) {
         }
     }
     {
+        // A built-in device from the browser (D4; N15, #395): Auto Filter onto a track with no chain
+        // makes the plug-in reference, the chain and the device in one undo step, and undo removes
+        // all three; with Pd off the load is refused with the catalogue's reason.
+        auto built = ui::ProjectDocument::open(temp.path() / "builtin.adi", true, {}, error);
+        check(built != nullptr, "a project for a built-in device");
+        if (built) {
+            const auto count = [&](const char *sql) { return built->store().db().execAndGet(sql).getInt(); };
+            [[maybe_unused]] const auto refs = count("SELECT count(*) FROM plugin_refs");
+            [[maybe_unused]] const auto chains = count("SELECT count(*) FROM device_chains");
+            const auto devices = count("SELECT count(*) FROM devices");
+#if ADI_WITH_PD
+            check(count("SELECT count(*) FROM device_chains WHERE track_id = 2") == 0 &&
+                      built->insertBuiltin("org.adidaw.builtin.auto-filter", 2, std::nullopt),
+                  "Auto Filter loads onto 1 MIDI, which has no chain");
+            check(count("SELECT count(*) FROM plugin_refs") == refs + 1 &&
+                      count("SELECT count(*) FROM device_chains") == chains + 1 &&
+                      count("SELECT count(*) FROM devices") == devices + 1 &&
+                      built->ops().nextUndo()->label == "Insert Auto Filter",
+                  "the reference, the chain and the device, in one step named Insert Auto Filter");
+            check(built->ops().undo().ok && built->synchronise() && count("SELECT count(*) FROM plugin_refs") == refs &&
+                      count("SELECT count(*) FROM device_chains") == chains &&
+                      count("SELECT count(*) FROM devices") == devices,
+                  "one undo removes all three");
+#else
+            check(!built->insertBuiltin("org.adidaw.builtin.auto-filter", 2, std::nullopt) &&
+                      built->error().find("not available") != std::string::npos &&
+                      count("SELECT count(*) FROM devices") == devices,
+                  "with Pd off, the load is refused with the catalogue's reason");
+#endif
+            built->release();
+        }
+    }
+    {
         // Live's device clipboard (manual 23.2.1; D2, N18, #394), on a device the project stores and
         // no plug-in loaded: Copy reads the stored rows only; Paste in front of a device is one undo
         // step with a new id and the source's stored parameters; Cut and Paste bring it back.
