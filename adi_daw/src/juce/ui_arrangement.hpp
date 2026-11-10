@@ -207,6 +207,7 @@ class ClipAccessible final : public juce::Component {
 // ONE component paints every clip and hit-tests them itself (ADR-0044).
 class ArrangementCanvas final : public juce::Component,
                                 public juce::FileDragAndDropTarget,
+                                public juce::DragAndDropTarget,
                                 public juce::SettableTooltipClient {
   public:
     explicit ArrangementCanvas(ArrangementView &);
@@ -218,6 +219,9 @@ class ArrangementCanvas final : public juce::Component,
     bool keyPressed(const juce::KeyPress &) override;
     void mouseMagnify(const juce::MouseEvent &, float) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    // A sample dragged from the browser (D1) lands as a file dropped from the desktop does.
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
     std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
     // One accessible child per clip on screen; on a model or view change only.

@@ -865,6 +865,7 @@ void AdiRootComponent::resized() {
                                          browserArea_.getWidth() - 2 * look::border, chatH);
         aiTab.setVisible(true);
         aiTab.setBounds(chatArea_.withHeight(kTabHeight));
+        browser.setFootLimit(chatArea_.getY() - browserArea_.getY());
     }
     leftWidth_ = left;
     rightWidth_ = right;

@@ -188,7 +188,8 @@ class StatusBar final : public juce::Component {
   private:
     AdiRootComponent &root_;
 };
-class AdiRootComponent final : public juce::Component {
+// The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
+class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {
   public:
     AdiRootComponent(engine::ProjectView &, OpSubmitter &, TransportMailbox &, AppCommands &,
                      ViewStateStore &, SessionState &, std::string window,
