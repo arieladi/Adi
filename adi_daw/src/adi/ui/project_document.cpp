@@ -275,6 +275,51 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     feed_.publish(session_);
     return true;
 }
+bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
+    auto copy = readDeviceCopy(*store_, id);
+    if (!copy.ok) {
+        error_ = copy.error.empty() ? "The device could not be copied." : copy.error;
+        return false;
+    }
+    out = std::move(copy);
+    error_.clear();
+    return true;
+}
+bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before) {
+    // The chain the device goes into: the one holding `before`, else the track's own (a rack's
+    // nested chains belong to a device, never to the track).
+    std::int64_t chain = 0;
+    if (before) {
+        SQLite::Statement q(store_->db(), "SELECT chain_id FROM devices WHERE id = ?");
+        q.bind(1, *before);
+        if (q.executeStep())
+            chain = q.getColumn(0).getInt64();
+    } else {
+        SQLite::Statement q(store_->db(), "SELECT id FROM device_chains WHERE track_id = ? AND parent_device_id IS NULL "
+                                          "ORDER BY ord, id LIMIT 1");
+        q.bind(1, track);
+        if (q.executeStep())
+            chain = q.getColumn(0).getInt64();
+    }
+    if (chain == 0) {
+        error_ = "The track has no device chain to paste into.";
+        return false;
+    }
+    const auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM devices").getInt64();
+    auto prepared = prepareDevicePaste(*store_, copy, id, chain, before);
+    if (!prepared.ok) {
+        error_ = prepared.error.empty() ? "The device could not be pasted." : prepared.error;
+        return false;
+    }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedDevicePaste &p, Actor actor) {
+        return commitDevicePaste(s, p, actor);
+    });
+    error_ = result.error;
+    if (!result.ok || !synchronise())
+        return false;
+    feed_.publish(session_);
+    return true;
+}
 bool ProjectDocument::prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out) {
     // A new pool row takes the next id; a file already in the pool keeps its own (the capture
     // reuses it by content).

@@ -114,7 +114,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         SaveCopy,
         CollectAllAndSave,
         CollectAndExport,
-        LastId = CollectAndExport
+        Cut,
+        Copy,
+        Paste,
+        Duplicate,
+        LastId = Duplicate
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
