@@ -109,6 +109,8 @@ The next three items of `collab/window/worklist-2026-11-05.md` after C2, C4, C3 
 
 **Since: D3** ([#506](https://github.com/arieladi/Adi/pull/506) `window/plugin-window`): a plug-in's own window from the wrench in its title bar, at the plug-in's size and never scaled; Ctrl/Cmd+Alt+P hides and shows them all; Multiple, Auto-Hide and Always on Top followed (N8 for the window's part). The review found eight defects, all fixed, among them the window torn down before a CLAP editor's native view and a shadowed name that MSVC `/WX` rejects. Not followed yet: Auto-Open Plug-In Windows, which waits for a device insert from the window (D4). Real drawing, native parenting and HiDPI are win's desktop check. #501 (D1), #503 (C6) and #505 (D2) are merged.
 
+**For the manager: C5 (remark pips and the Info View's split, N27) is held, not built.** The worklist entry says it is ADI's addition, so its picture goes to the director before it is built. Live has no remarks, so the pip's look, the agent's colour and glyph, and how the Info View splits are design choices nobody has made yet. The user asked that this be raised with them later rather than settled here. What would unblock it: a mock-up of the pips on a track, clip, device and parameter, and of the split Info View, for the director to approve. The window lane can draw it on request. C5 also touches `ui_mixer.cpp` and `ui_devices.cpp`, so it is best taken after the group B and D items on those files. The lane goes on with D4.
+
 **For win.**
 - A4: the ZIP's progress, which Live shows and `collectExport` does not report.
 - D1: the sidebar's labels beyond Samples and Places, which wait on the content they list.
