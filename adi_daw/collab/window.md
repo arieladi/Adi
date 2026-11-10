@@ -111,6 +111,8 @@ The next three items of `collab/window/worklist-2026-11-05.md` after C2, C4, C3 
 
 **For the manager: C5 (remark pips and the Info View's split, N27) is held, not built.** The worklist entry says it is ADI's addition, so its picture goes to the director before it is built. Live has no remarks, so the pip's look, the agent's colour and glyph, and how the Info View splits are design choices nobody has made yet. The user asked that this be raised with them later rather than settled here. What would unblock it: a mock-up of the pips on a track, clip, device and parameter, and of the split Info View, for the director to approve. The window lane can draw it on request. C5 also touches `ui_mixer.cpp` and `ui_devices.cpp`, so it is best taken after the group B and D items on those files. The lane goes on with D4.
 
+**Since: D4** ([#508](https://github.com/arieladi/Adi/pull/508) `window/browser-devices`): the browser's Audio Effects in Live's seven folders and ADI's own under Pd Devices, loaded with double-click, Enter or a drag onto the selected track. Each load is one undo step; the reference and the chain come with it, so a track with no devices takes one. That is what D2's paste (N51) still lacks. #506 (D3) is merged. A lesson from the review: `ui.yml` builds the UI tests with Pd off, and the local tree has Pd on. Two `-Werror` failures and a wrong check showed only in the Pd-off branch. The lane now builds a Pd-off tree, as `ui.yml` configures it, before pushing anything that branches on `ADI_WITH_PD`.
+
 **For win.**
 - A4: the ZIP's progress, which Live shows and `collectExport` does not report.
 - D1: the sidebar's labels beyond Samples and Places, which wait on the content they list.
