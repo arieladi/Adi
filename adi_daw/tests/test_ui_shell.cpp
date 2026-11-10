@@ -2419,6 +2419,136 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
 // makes a new audio track. Each drop is one undo step (#308).
+// D4: the browser's devices (Live 12 manual 4.1, 4.10, 41.4; N15's catalogue part, #395). Audio
+// Effects lists Live's seven folders with ADI's built-in effects, Pd Devices ADI's own; an entry this
+// build cannot load is dimmed and says why; double-click or Enter loads onto the selected track in
+// front of the device chosen in the strip; a drag drops onto a lane's track or into the chain; each
+// load is one undo step, the reference and the chain made in it.
+void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-devices.adi", true, {}, error);
+    check(document != nullptr, "a project for the browser's devices");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "devices");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.loadBuiltin = [&](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
+        const bool ok = document->insertBuiltin(uid, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    // 3 Audio, track 4: no chain of its own yet.
+    root.arrangement.geometry.selection.track = 4;
+    refresh();
+    auto &browser = root.browser;
+    int audioEffects = -1, pdDevices = -1, plugIns = -1;
+    for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+        const auto &e = browser.sidebar()[i];
+        if (e.name == "Audio Effects")
+            audioEffects = static_cast<int>(i);
+        if (e.name == "Pd Devices")
+            pdDevices = static_cast<int>(i);
+        if (e.name == "Plug-Ins")
+            plugIns = static_cast<int>(i);
+    }
+    browser.choose(audioEffects);
+    std::vector<juce::String> folders;
+    bool dimmedRight = true;
+    int rowOf = -1;
+    const auto find = [&](const char *name) {
+        for (std::size_t i = 0; i < browser.rows().size(); ++i)
+            if (browser.rows()[i].device != nullptr && browser.rows()[i].device->name == name)
+                return static_cast<int>(i);
+        return -1;
+    };
+    for (const auto &r : browser.rows()) {
+        if (r.heading.isNotEmpty())
+            folders.push_back(r.heading);
+        if (r.device != nullptr && BrowserPanel::unavailable(*r.device).empty() != r.device->available)
+            dimmedRight = false;
+    }
+    check(folders == std::vector<juce::String>{"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color",
+                                               "Pitch & Modulation", "Reverb & Resonance", "Utilities"} &&
+              dimmedRight && find("Auto Filter") >= 0 && find("Chord Comb") < 0,
+          "Audio Effects lists Live's seven folders with their effects, each dimmed when this build cannot load it");
+    rowOf = find("Hybrid Reverb");
+    check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("not built in ADI yet") != std::string::npos,
+          "Hybrid Reverb is dimmed always, and a double-click says why");
+    browser.choose(pdDevices);
+    check(browser.rows().size() == 2 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr,
+          "Pd Devices lists ADI's own: Chord Comb and Color Cab");
+    browser.choose(plugIns);
+    check(root.error().find("#438") != std::string::npos, "Plug-Ins says it waits for the scanner");
+    browser.choose(audioEffects);
+    const auto chainOf = [&](std::int64_t track) {
+        std::vector<std::string> out;
+        SQLite::Statement q(document->store().db(),
+                            "SELECT d.name FROM devices d JOIN device_chains c ON c.id = d.chain_id "
+                            "WHERE c.track_id = ? ORDER BY d.ord, d.id");
+        q.bind(1, track);
+        while (q.executeStep())
+            out.push_back(q.getColumn(0).getString());
+        return out;
+    };
+    const auto chains = [&](std::int64_t track) {
+        return document->store().db().execAndGet("SELECT count(*) FROM device_chains WHERE track_id = " +
+                                                 std::to_string(track)).getInt();
+    };
+#if ADI_WITH_PD
+    check(browser.load(find("Auto Filter")), "a double-click on Auto Filter loads it");
+    refresh();
+    check(chainOf(4) == std::vector<std::string>{"Auto Filter"} && chains(4) == 1 &&
+              document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Auto Filter",
+          "onto 3 Audio, its chain made with it: one step, Insert Auto Filter");
+    check(root.command(AppCommands::Undo), "undo");
+    refresh();
+    check(chainOf(4).empty() && chains(4) == 0, "one undo takes the device and the chain away together");
+    check(browser.load(find("Utility")), "Utility");
+    refresh();
+    check(root.devices.panels.size() == 1, "the strip shows it");
+    // In front of the device chosen in the strip, though the browser now has the focus.
+    root.devices.chose(root.devices.panels[0]->id);
+    check(browser.load(find("EQ Eight")), "EQ Eight with Utility chosen");
+    refresh();
+    check(chainOf(4) == std::vector<std::string>{"EQ Eight", "Utility"}, "goes in front of it");
+    // A drag: into the chain past the last device, and onto another track's lane.
+    const juce::DragAndDropTarget::SourceDetails reverb(
+        BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.reverb")), nullptr,
+        {root.devices.getWidth() - 20, root.devices.getHeight() / 2});
+    check(root.devices.isInterestedInDragSource(reverb), "the strip takes a dragged device");
+    root.devices.itemDropped(reverb);
+    refresh();
+    check(chainOf(4) == std::vector<std::string>{"EQ Eight", "Utility", "Reverb"}, "dropped past the last device: at the end");
+    auto &canvas = root.arrangement.canvas;
+    const juce::DragAndDropTarget::SourceDetails onLane(
+        BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.delay")), nullptr,
+        {40, laneTop(root, 5) + 10});
+    check(canvas.isInterestedInDragSource(onLane), "the lanes take a dragged device");
+    const auto clipsBefore = document->store().db().execAndGet("SELECT count(*) FROM clips").getInt();
+    canvas.itemDropped(onLane);
+    refresh();
+    check(chainOf(5) == std::vector<std::string>{"Delay"} &&
+              document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
+          "dropped on 4 Audio's lane: onto that track, never a clip in the lane");
+#else
+    check(!browser.load(find("Auto Filter")) && root.error().find("leaves out") != std::string::npos &&
+              chainOf(4).empty(),
+          "with Pd off, Auto Filter is refused with the reason, and nothing is written");
+    root.arrangement.geometry.selection.track = 0;
+    check(!browser.load(find("Utility")) && root.error().find("Select a track") != std::string::npos,
+          "with no track selected, a load says to select one");
+#endif
+    document->release();
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -2665,8 +2795,8 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
         check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav",
               "an addedFolder Drums folder inside the User Library lists the file under it");
         browser.choose(drumsLabel);
-        check(browser.shown().empty() && root.error().find("not listed yet") != std::string::npos,
-              "the Drums category stays the catalogue's, whatever a folder is called");
+        check(browser.shown().empty() && root.error().find("devices lane") != std::string::npos,
+              "the Drums category stays the catalogue's, whatever a folder is called, and says what it waits for");
         browser.setListing(listing, true);
         check(browser.selected() == drumsLabel, "a new listing keeps the label chosen");
         browser.setListing(listing, false);
@@ -7934,6 +8064,7 @@ int main(int argc, char **argv) {
     automationArm(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
+    browserDevices(commands, temp.path());
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
