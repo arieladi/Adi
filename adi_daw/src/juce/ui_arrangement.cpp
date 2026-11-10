@@ -4,6 +4,7 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "ui_browser.hpp"
 #include "ui_shell.hpp"
 #include <limits>
@@ -1676,6 +1677,18 @@ void TrackHeaderList::paint(juce::Graphics &g) {
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.position + 1).c_str()), x + 23, y + 2,
                        getWidth() - x - 25, 15, juce::Justification::centredLeft);
         }
+        // ADI's Rec-Q and Play-Q (MR V.2 §9) on a MIDI track's header: what new recordings are
+        // quantized to ([1/16] or [Free]) and the live quantization (a grid or Off).
+        if (isMidiTrack(*t))
+            for (const bool record : {true, false})
+                if (const auto box = quantizeBox(row.place.depth, y, h, record); !box.isEmpty()) {
+                    look::box(g, box.toFloat(), look::chooser);
+                    g.setColour(look::text);
+                    g.setFont(look::font(10.f));
+                    const auto value = record ? recordQuantizeText(t->recording) : playQuantizeText(t->recording);
+                    g.drawText(juce::String(record ? "Rec-Q " : "Play-Q ") + juce::String(value), box.reduced(3, 0),
+                               juce::Justification::centredLeft, true);
+                }
         y += h;
     }
     // Where the dragged tracks would land: a line at their depth, or the group they would go into.
@@ -1751,6 +1764,30 @@ void TrackHeaderList::endRename() {
         view.canvas.grabKeyboardFocus();
     repaint();
 }
+juce::Rectangle<int> TrackHeaderList::quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept {
+    // One under the other, the header's width each, in a row tall enough for both.
+    if (height < 56)
+        return {};
+    const int x = nameLeft(depth) + 4, w = getWidth() - x - 6;
+    if (w < 50)
+        return {};
+    return {x, top + (record ? 21 : 37), w, 14};
+}
+juce::PopupMenu TrackHeaderList::quantizeMenu(std::int64_t track, bool record) {
+    juce::PopupMenu menu;
+    const auto *t = view.reader().findTrack(track);
+    if (t == nullptr)
+        return menu;
+    const auto &o = t->recording;
+    const bool on = record ? o.recordEnabled : o.playEnabled;
+    const auto &grid = record ? o.recordGrid : o.playGrid;
+    menu.addSectionHeader(record ? "Record Quantization" : "Live Quantization");
+    menu.addItem(record ? "Free" : "Off", true, !on, [this, track, record] { view.root.setQuantize(track, record, "off"); });
+    for (const char *choice : kQuantizeGrids)
+        menu.addItem(choice, true, on && grid == choice,
+                     [this, track, record, choice] { view.root.setQuantize(track, record, choice); });
+    return menu;
+}
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
     if (view.loopSelected || view.selectedLocator != 0) {
         view.loopSelected = false;
@@ -1779,6 +1816,16 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.root.say(ArrangementView::kUnfoldWaits);
         return;
     }
+    // Rec-Q and Play-Q open their menus, and select nothing.
+    if (const auto at = view.geometry.rowAt(view.reader(), e.y, &top); at < rows.size() && isMidiTrack(*rows[at].track))
+        for (const bool record : {true, false})
+            if (quantizeBox(rows[at].place.depth, top, view.geometry.heightFor(rows[at].track->id), record)
+                    .contains(e.getPosition())) {
+                resizeId = moveId_ = 0;
+                quantizeMenu(rows[at].track->id, record)
+                    .showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+                return;
+            }
     resizeId = 0;
     moveId_ = 0;
     moving_ = selectOnUp_ = false;

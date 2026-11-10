@@ -114,7 +114,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         SaveCopy,
         CollectAllAndSave,
         CollectAndExport,
-        LastId = CollectAndExport
+        Cut,
+        Copy,
+        Paste,
+        Duplicate,
+        LastId = Duplicate
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -147,6 +151,9 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
     bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
+    // The registry's recording defaults a new track takes (`record.quantize`,
+    // `audio.keepMonitoringLatency`; N31).
+    const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
     // `editing.linkLoopToSelection` (REAPER's), off by default: the brace follows a time selection.
     bool linkLoopToSelection() const noexcept { return linkLoop_; }
     // Each window's interface zoom, kept per window and per display in `window.zoom` (N4;
@@ -168,6 +175,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
+    RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
@@ -338,6 +346,10 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
     bool setSoloInPlace(bool on);
+    // A track's Rec-Q or Play-Q ("off" or a grid) and its Keep Monitoring Latency in Recorded Audio
+    // (#397, N31; MR V.2 §9; Live 12 manual 18.8), each one undo step. Nothing follows them yet.
+    bool setQuantize(std::int64_t track, bool record, const std::string &choice);
+    bool setKeepMonitoringLatency(std::int64_t track, bool on);
     // The toggle both entries pick: the field's opposite as the CURRENT cell holds it at pick time,
     // so a menu left open while the other entry threw the switch still toggles, never a no-op.
     bool toggleSoloInPlace();

@@ -2,6 +2,7 @@
 #include "ui_shell.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
@@ -47,6 +48,9 @@ void AppCommands::reload() {
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
+    if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())
+        recordingDefaults_.quantize = quantize.get<std::string>();
+    recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
     linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
@@ -130,7 +134,7 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
                                   "Track Options", "Mixer Track Options", "Metronome", "Loop Selection",
                                   "Select Loop", "Add Locator", "Delete Locator", "Edit Info Text",
                                   "Undo History", "Save a Copy...", "Collect All and Save",
-                                  "Collect and Export..."};
+                                  "Collect and Export...", "Cut", "Copy", "Paste", "Duplicate"};
     info.setInfo(names[id - PlayStop], names[id - PlayStop], "ADI", 0);
     if (id == Undo || id == Redo) {
         const bool redo = id == Redo;
@@ -326,6 +330,19 @@ void AppCommands::getCommandInfo(juce::CommandID id, juce::ApplicationCommandInf
     case ToggleMixerTrackOptions: // Live 12's Mixer Controls Track Options: the Mixer View's own Track Delay
         info.setTicked(active_ != nullptr && active_->state().mixerTrackOptions);
         break;
+    // Live's Edit menu (manual 41.5): Cut, Copy, Paste and Duplicate on Ctrl/Cmd+X, C, V and D.
+    // They act on the device with the focus, Paste also at the chain's chosen end (manual 23.2.1);
+    // the arrangement's clips are not on the clipboard yet.
+    case Cut:
+    case Copy:
+    case Paste:
+    case Duplicate: {
+        info.addDefaultKeypress(id == Cut ? 'x' : id == Copy ? 'c' : id == Paste ? 'v' : 'd', cmd);
+        using Clip = DeviceChainStrip::Clip;
+        const auto clip = id == Cut ? Clip::Cut : id == Copy ? Clip::Copy : id == Paste ? Clip::Paste : Clip::Duplicate;
+        info.setActive(active_ != nullptr && active_->devices.canClipboard(clip));
+        break;
+    }
     case UndoHistory: // manual 5.4.2: View > Undo History, Ctrl/Cmd+Alt+Z
         info.addDefaultKeypress('z', cmd | alt);
         info.setActive(active_ != nullptr);
@@ -1218,7 +1235,8 @@ bool AdiRootComponent::insertTrack(bool midi) {
     const auto current = view_.current();
     if (!current)
         return fail("Inserting a track needs an open project.");
-    auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi);
+    auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi,
+                                       &commands_.recordingDefaults());
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     edit.ops.front().selBefore = session_.advisory();
@@ -1326,7 +1344,8 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
         }
         dropped.push_back(std::move(file));
     }
-    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate);
+    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate,
+                                   &commands_.recordingDefaults());
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     if (!submitEdits(std::move(edit.ops)))
@@ -1625,6 +1644,22 @@ bool AdiRootComponent::loopToNextLocator(std::int64_t id) {
     if (to <= from->pos)
         return fail("Nothing follows this locator to loop to.");
     return submitTransport(setLoop(current->transport, true, {from->pos, to}));
+}
+bool AdiRootComponent::setQuantize(std::int64_t track, bool record, const std::string &choice) {
+    const auto current = view_.current();
+    const auto *t = current ? current->findTrack(track) : nullptr;
+    if (t == nullptr)
+        return fail("That track is gone.");
+    auto edit = ::adi::ui::setQuantize(*t, record, choice);
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::setKeepMonitoringLatency(std::int64_t track, bool on) {
+    const auto current = view_.current();
+    const auto *t = current ? current->findTrack(track) : nullptr;
+    if (t == nullptr)
+        return fail("That track is gone.");
+    auto edit = ::adi::ui::setKeepMonitoringLatency(*t, on);
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
 bool AdiRootComponent::toggleSoloInPlace() {
     // From the CURRENT cell (ADR-0201), not the presented frame's, read at pick time: the Options
@@ -2094,6 +2129,20 @@ bool AdiRootComponent::command(int id) {
         // Complete on its own, as the Solo button's menu is: the session's re-read, the Status Bar
         // and the marks are setSoloInPlace's, so the tail below is not run a second time.
         return toggleSoloInPlace();
+    case AppCommands::Cut:
+    case AppCommands::Copy:
+    case AppCommands::Paste:
+    case AppCommands::Duplicate: {
+        using Clip = DeviceChainStrip::Clip;
+        const auto clip = id == AppCommands::Cut    ? Clip::Cut
+                          : id == AppCommands::Copy ? Clip::Copy
+                          : id == AppCommands::Paste ? Clip::Paste
+                                                     : Clip::Duplicate;
+        if (!devices.canClipboard(clip))
+            return fail(clip == Clip::Paste ? "Copy a device first, then select a device or click past the last one."
+                                            : "Select a device first: click its title bar.");
+        return devices.clipboard(clip);
+    }
     case AppCommands::UndoHistory:
         // The app puts the list in a window of its own (ui_main.cpp); headless, it is read as it is.
         undoHistory.refresh();
@@ -2205,11 +2254,10 @@ const std::vector<MenuEntries> &menuBar() {
         {"File", {C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs, C::SaveCopy, C::CollectAllAndSave,
                   C::CollectAndExport, 0, C::Quit}},
 #endif
-        // Tracks are deleted with the Edit menu's Delete (§18.2), which follows Cut, Copy,
-        // Paste and Duplicate; those wait for their ops.
+        // Live's Cut, Copy, Paste and Duplicate, then Delete (§18.2, 41.5); the four act on devices.
         // Loop Selection and Select Loop (manual 6.6, §42.8) after Select All; their place in Live 12's
         // Edit menu is to be read on Live.
-        {"Edit", {C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
+        {"Edit", {C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText, C::SelectAll, 0, C::LoopSelection,
                   C::SelectLoop, 0,
                   C::GroupTracks, C::UngroupTracks}},
         // Add Locator and Delete Locator (manual 6.4) after Insert Time Signature Change; their place

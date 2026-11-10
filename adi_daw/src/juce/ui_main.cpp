@@ -7,6 +7,7 @@
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
+#include <optional>
 #include <juce_audio_utils/juce_audio_utils.h>
 #include <atomic>
 #include <condition_variable>
@@ -239,8 +240,8 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
-        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()),
-                                          create, loader_.fn(), error);
+        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
+                                          &commands_->recordingDefaults());
         if (!next) {
             report(error);
             return false;
@@ -271,6 +272,31 @@ class AdiApplication final : public juce::JUCEApplication,
                 root_->say(document_->error());
             return ok;
         };
+        root->devices.copy = [this](std::int64_t id, bool cut) {
+            // Cut keeps the copy only once the device is gone, so a refused Cut leaves the
+            // clipboard as it was.
+            adi::DeviceCopy copy;
+            bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
+            if (ok)
+                deviceClipboard_ = std::move(copy);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->devices.paste = [this](std::int64_t track, std::optional<std::int64_t> before) {
+            const bool ok = deviceClipboard_ && document_->pasteDevice(*deviceClipboard_, track, before);
+            if (!ok && root_)
+                root_->say(deviceClipboard_ ? document_->error() : std::string("Copy a device first."));
+            return ok;
+        };
+        root->devices.duplicate = [this](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
+            adi::DeviceCopy copy;
+            const bool ok = document_->copyDevice(id, copy) && document_->pasteDevice(copy, track, before);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
         // The control bar's Re-Enable Automation and Automation Arm (manual 25.4, 25.1; N26): the
         // session's state, through the document.
         root->reenableAutomation = [this] {
@@ -417,10 +443,14 @@ class AdiApplication final : public juce::JUCEApplication,
     void saveAs(const juce::File &file) {
         if (!document_ || !root_ || !window_)
             return;
+        const auto before = document_->deviceCopyIdentity();
         if (!document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()))) {
             root_->say(document_->error());
             return;
         }
+        // The same project under a new file: a copy held from it still pastes into it.
+        if (deviceClipboard_ && deviceClipboard_->sourceFile == before)
+            deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         root_->say(document_->warning());
     }
@@ -671,6 +701,9 @@ class AdiApplication final : public juce::JUCEApplication,
     bool libraryReady_ = false;
     // Collect and Export's worker and whether it runs (A4); the flag is shared with the worker.
     std::thread export_;
+    // Live's device clipboard (manual 23.2.1): the app's, so a copy outlives the document it came
+    // from; the engine refuses a paste into another project and says so.
+    std::optional<adi::DeviceCopy> deviceClipboard_;
     std::shared_ptr<std::atomic<bool>> exportRunning_ = std::make_shared<std::atomic<bool>>(false);
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;

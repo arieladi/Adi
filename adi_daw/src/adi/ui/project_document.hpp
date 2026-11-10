@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/device_copy.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
@@ -9,8 +10,10 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
+#include "adi/ui/track_edits.hpp"
 #include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
+#include <optional>
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -23,8 +26,11 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // a named snapshot instead, a point in the history that copies nothing.
 class ProjectDocument final : public engine::BlockProcessor {
   public:
+    // New (`create`) captures the registry's recording defaults for its four tracks in the history's
+    // root (`Store::createNewProject`'s four-argument form, #397, N31) when `defaults` is given.
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
-                                                 engine::DeviceLoader, std::string &error);
+                                                 engine::DeviceLoader, std::string &error,
+                                                 const RecordingDefaults *defaults = nullptr);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,
@@ -101,6 +107,17 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
+    // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
+    // so a device whose plug-in is not loaded copies too; the clipboard is the app's, not the
+    // document's. Paste puts a new device, with the next free id and the copy's stored state, in
+    // front of `before` in its chain, or at the end of `track`'s own chain: one undo step. The
+    // engine's refusals (a rack with nested chains, a copy from another project) come back in
+    // `error()`.
+    bool copyDevice(std::int64_t id, DeviceCopy &out);
+    bool pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before);
+    // The file the engine names a device copy's project by (`DeviceCopy::sourceFile`): after Save As
+    // the app moves a held copy over to the new file, the same project under a new name.
+    std::string deviceCopyIdentity() const;
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with

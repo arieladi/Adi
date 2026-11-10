@@ -354,6 +354,20 @@ int main(int argc, char **argv) {
         }
     }
     {
+        // New captures the registry's recording defaults for its four tracks (#397, N31).
+        const ui::RecordingDefaults defaults{"off", false};
+        auto fresh = ui::ProjectDocument::open(temp.path() / "defaults.adi", true, {}, error, &defaults);
+        check(fresh != nullptr, "a new project with recording defaults");
+        if (fresh) {
+            const auto options = readTrackRecordingOptions(fresh->store());
+            bool all = options.size() >= 4;
+            for (const auto &[id, o] : options)
+                all = all && !o.recordEnabled && !o.keepMonitoringLatency;
+            check(all && !fresh->ops().canUndo(), "New stores Rec-Q Free and Keep Monitoring Latency off on its tracks, in the root");
+            fresh->release();
+        }
+    }
+    {
         // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the project carries on in the new
         // file, its history with it, and the old file keeps what it had. No audio media here:
         // relocating media is what fails on macOS, and this suite runs there.
@@ -407,6 +421,85 @@ int main(int argc, char **argv) {
                   "a folder that does not exist is refused with the store's reason");
             check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
                   "and the history still redoes after a refusal");
+        }
+    }
+    {
+        // Live's device clipboard (manual 23.2.1; D2, N18, #394), on a device the project stores and
+        // no plug-in loaded: Copy reads the stored rows only; Paste in front of a device is one undo
+        // step with a new id and the source's stored parameters; Cut and Paste bring it back.
+        auto clip = ui::ProjectDocument::open(temp.path() / "clipboard.adi", true, {}, error);
+        check(clip != nullptr, "a project with no plug-in loader");
+        if (clip) {
+            clip->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                    test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(3);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            make[2].opType = "device.setParam";
+            make[2].payload = {{"dev", 3}, {"param", "cutoff"}, {"norm", 0.75}};
+            check(clip->ops().submit(std::move(make)).ok && clip->synchronise(), "a stored device with a parameter set");
+            const auto chainOrder = [&] {
+                std::vector<std::int64_t> out;
+                SQLite::Statement q(clip->store().db(), "SELECT id FROM devices WHERE chain_id = 3 ORDER BY ord, id");
+                while (q.executeStep())
+                    out.push_back(q.getColumn(0).getInt64());
+                return out;
+            };
+            DeviceCopy copied;
+            check(clip->copyDevice(3, copied) && copied.ok && chainOrder() == std::vector<std::int64_t>{3},
+                  "Copy reads the stored device, with no plug-in loaded, and writes nothing");
+            check(clip->pasteDevice(copied, 2, 3), "Paste in front of the device");
+            const auto order = chainOrder();
+            DeviceCopy pasted;
+            check(order.size() == 2 && order[1] == 3 && order[0] > 3 && clip->copyDevice(order[0], pasted) &&
+                      pasted.insert.value("params", Payload::array()) == copied.insert.value("params", Payload::array()) &&
+                      !copied.insert.value("params", Payload::array()).empty() &&
+                      clip->ops().nextUndo()->label == "Paste Device",
+                  "a new id in front of it, with the source's stored parameters, one step named Paste Device");
+            check(clip->ops().undo().ok && clip->synchronise() && chainOrder() == std::vector<std::int64_t>{3},
+                  "one undo takes it away");
+            DeviceCopy cut;
+            check(clip->copyDevice(3, cut) && clip->deviceAction("device.remove", {{"id", 3}}) && chainOrder().empty(),
+                  "Cut: the copy kept, the device removed");
+            check(clip->pasteDevice(cut, 2, std::nullopt) && chainOrder().size() == 1,
+                  "Paste at the empty chain's end brings it back");
+            DeviceCopy back;
+            check(!chainOrder().empty() && clip->copyDevice(chainOrder()[0], back) &&
+                      back.insert.value("params", Payload::array()) == cut.insert.value("params", Payload::array()) &&
+                      back.insert.value("name", "") == "UI knobs",
+                  "with its name and stored parameters");
+            check(!clip->pasteDevice(cut, 999, std::nullopt) && clip->error().find("no device chain") != std::string::npos,
+                  "a track with no chain is refused, with the reason");
+            // A rack with a chain inside it: the engine cannot paste it yet, so Copy (and Cut) refuse.
+            {
+                const auto rack = chainOrder()[0];
+                OpRequest nested;
+                nested.opType = "chain.create";
+                nested.payload = {{"id", 60}, {"device", rack}, {"ord", 0}, {"name", "Nested"}};
+                DeviceCopy refused;
+                check(clip->ops().submit(nested).ok && clip->synchronise() && !clip->copyDevice(rack, refused) &&
+                          clip->error().find("nested chain") != std::string::npos,
+                      "a rack with chains inside it is refused at Copy, with the engine's reason");
+                check(clip->ops().undo().ok && clip->synchronise(), "the nested chain undone");
+            }
+            // Save As: the same project under a new file; the app moves a held copy over to it.
+            {
+                DeviceCopy held;
+                const auto before = clip->deviceCopyIdentity();
+                check(!before.empty() && clip->copyDevice(chainOrder()[0], held) && held.sourceFile == before,
+                      "a copy names its project by the engine's file identity");
+                check(clip->saveAs(temp.path() / "clipboard-renamed.adi") && clip->deviceCopyIdentity() != before,
+                      "Save As moves the project to a new file");
+                check(!clip->pasteDevice(held, 2, std::nullopt) &&
+                          clip->error().find("different project") != std::string::npos,
+                      "a copy still keyed to the old file reads as another project");
+                held.sourceFile = clip->deviceCopyIdentity();
+                check(clip->pasteDevice(held, 2, std::nullopt) && chainOrder().size() == 2,
+                      "moved over to the new file, as ui_main.cpp does after Save As, it pastes");
+            }
+            clip->release();
         }
     }
     {
