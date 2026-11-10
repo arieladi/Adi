@@ -175,6 +175,18 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     raw->window = std::make_unique<Entry::Window>(*this, *raw);
     if (raw->owned && raw->scaled)
         raw->zoomed = std::make_unique<Zoomed>(*raw->component);
+    if (raw->owned && !raw->scaled) {
+        // A plug-in's own window takes the plug-in's size, which only the plug-in changes: the
+        // window fits it and is not resized from outside; a kept place moves it, never sizes it.
+        raw->window->setContentNonOwned(raw->component.getComponent(), true);
+        raw->window->setResizable(false, false);
+        if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
+            raw->window->setTopLeftPosition(restoreFloating(kept, currentMonitors()).getTopLeft());
+        if (native_)
+            raw->window->setVisible(true);
+        save(*raw, true);
+        return true;
+    }
     raw->window->setContentNonOwned(raw->zoomed ? static_cast<juce::Component *>(raw->zoomed.get())
                                                 : raw->component.getComponent(),
                                     false);
