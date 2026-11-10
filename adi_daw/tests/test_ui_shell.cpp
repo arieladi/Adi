@@ -4426,8 +4426,24 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
               panels[2]->wrench.isVisible(),
           "the wrench shows on the plug-ins' title bars, not on a device of no plug-in");
     const auto key3 = AdiRootComponent::pluginWindowKey(3), key5 = AdiRootComponent::pluginWindowKey(5);
+    check(panels[0]->wrench.getX() < panels[0]->title.getX() && panels[0]->title.getX() > panels[1]->title.getX(),
+          "the wrench sits before the name, after the fold switch, as Live's");
     panels[0]->wrench.onClick();
     root.frame();
+    // The strip with a plug-in's window open, for the picture beside Live 12's.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.devices.getWidth(), 2 * root.devices.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.devices.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-plugin-wrench.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
     check(opened == 1 && host.contains(key3) && host.content(key3) != nullptr &&
               host.content(key3)->getWidth() == 320 && host.content(key3)->getHeight() == 200 &&
               !host.zoom(key3, true) && host.alwaysOnTop(key3) && panels[0]->wrench.getToggleState(),

@@ -235,10 +235,10 @@ void DevicePanelView::resized() {
     title.setVisible(!isFolded);
     configureButton.setVisible(!isFolded);
     wrench.setVisible(!isFolded && data != nullptr && data->plugin);
-    // The wrench before Configure, the name in what is left.
-    const int tools = wrench.isVisible() ? 58 + 18 : 58;
-    title.setBounds(32, 1, std::max(0, getWidth() - 32 - tools), 15);
-    wrench.setBounds(getWidth() - 74, 1, 16, 15);
+    // Live's order (manual 23.3's figure): the activator, the fold switch, the wrench, the name.
+    const int nameLeft = wrench.isVisible() ? 50 : 32;
+    wrench.setBounds(32, 1, 16, 15);
+    title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - 58), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
     search.setVisible(!isFolded && configuring);
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
