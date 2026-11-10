@@ -2,6 +2,7 @@
 #include "ui_browser.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
+#include <algorithm>
 namespace adi::ui {
 namespace {
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
@@ -225,28 +226,101 @@ void BrowserPanel::refill() {
             if ((samples || under(f.path)) &&
                 (query.isEmpty() || juce::String::fromUTF8(f.name.c_str()).toLowerCase().contains(query)))
                 shown_.push_back(&f);
+    rows_.clear();
+    for (const auto *f : shown_)
+        rows_.push_back({f, nullptr, {}});
+    // Audio Effects in Live's folders (manual 4.10), Pd Devices ADI's own, from the catalogue.
+    const auto matches = [&query](const BuiltinInfo &d) {
+        return query.isEmpty() || juce::String(std::string(d.name)).toLowerCase().contains(query);
+    };
+    if (!chosen.heading && chosen.name == "Audio Effects") {
+        for (const char *folder : {"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color", "Pitch & Modulation",
+                                   "Reverb & Resonance", "Utilities"}) {
+            std::vector<const BuiltinInfo *> in;
+            for (const auto &d : builtinCatalog())
+                if (d.category == "Audio Effects" && d.group == folder && matches(d))
+                    in.push_back(&d);
+            if (in.empty())
+                continue;
+            rows_.push_back({nullptr, nullptr, folder});
+            std::sort(in.begin(), in.end(), [](const BuiltinInfo *a, const BuiltinInfo *b) { return a->name < b->name; });
+            for (const auto *d : in)
+                rows_.push_back({nullptr, d, {}});
+        }
+    } else if (!chosen.heading && chosen.name == "Pd Devices") {
+        for (const auto &d : builtinCatalog())
+            if (d.category == "ADI" && matches(d))
+                rows_.push_back({nullptr, &d, {}});
+    }
     list.updateContent();
     list.deselectAllRows();
     list.repaint();
 }
-int BrowserPanel::getNumRows() { return static_cast<int>(shown_.size()); }
+int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
 void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) {
-    if (row < 0 || row >= static_cast<int>(shown_.size()))
+    if (row < 0 || row >= static_cast<int>(rows_.size()))
         return;
-    if (selected)
+    const auto &r = rows_[static_cast<std::size_t>(row)];
+    if (selected && r.heading.isEmpty())
         g.fillAll(look::selection);
-    icon(g, Samples, juce::Rectangle<float>(6.f, (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
-    g.setColour(look::text);
+    if (r.heading.isNotEmpty()) {
+        // A folder of Live's, as its heading.
+        g.setColour(look::textDim);
+        g.setFont(look::font(12.f, true));
+        g.drawText(r.heading, 6, 0, width - 10, height, juce::Justification::centredLeft, true);
+        return;
+    }
+    const bool device = r.device != nullptr;
+    const int indent = device && r.device->category == "Audio Effects" ? 12 : 0;
+    icon(g, device ? AudioFx : Samples,
+         juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
+    // An entry this build cannot load is dimmed (its reason is said when it is chosen).
+    g.setColour(device && !unavailable(*r.device).empty() ? look::textDim : look::text);
     g.setFont(look::font(12.5f));
-    g.drawText(juce::String::fromUTF8(shown_[static_cast<std::size_t>(row)]->name.c_str()), 24, 0, width - 28, height,
-               juce::Justification::centredLeft, true);
+    const auto name = device ? juce::String(std::string(r.device->name)) : juce::String::fromUTF8(r.file->name.c_str());
+    g.drawText(name, 24 + indent, 0, width - 28 - indent, height, juce::Justification::centredLeft, true);
 }
 juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &rows) {
     std::vector<const LibraryFile *> files;
     for (int i = 0; i < rows.size(); ++i)
-        if (const int r = rows[i]; r >= 0 && r < static_cast<int>(shown_.size()))
-            files.push_back(shown_[static_cast<std::size_t>(r)]);
+        if (const int r = rows[i]; r >= 0 && r < static_cast<int>(rows_.size())) {
+            const auto &row = rows_[static_cast<std::size_t>(r)];
+            // A device drags alone, the first one chosen; one this build cannot load drags nothing.
+            if (row.device != nullptr)
+                return unavailable(*row.device).empty() ? juce::var(deviceDescription(*row.device)) : juce::var();
+            if (row.file != nullptr)
+                files.push_back(row.file);
+        }
     return files.empty() ? juce::var() : juce::var(dragDescription(files));
+}
+std::string BrowserPanel::unavailable(const BuiltinInfo &d) {
+    if (d.available)
+        return {};
+    if (d.uid == "org.adidaw.builtin.hybrid-reverb")
+        return "Hybrid Reverb is not built in ADI yet.";
+    return std::string(d.name) + " runs on ADI's Pd devices, which this build leaves out.";
+}
+juce::String BrowserPanel::deviceDescription(const BuiltinInfo &d) {
+    return "adi-device:" + juce::String(std::string(d.uid));
+}
+std::string BrowserPanel::droppedDevice(const juce::var &description) {
+    const auto text = description.toString();
+    if (!text.startsWith("adi-device:"))
+        return {};
+    const auto uid = text.fromFirstOccurrenceOf("adi-device:", false, false).toStdString();
+    return findBuiltin(uid) != nullptr ? uid : std::string();
+}
+bool BrowserPanel::load(int row) {
+    if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].device == nullptr)
+        return false;
+    const auto &d = *rows_[static_cast<std::size_t>(row)].device;
+    if (const auto why = unavailable(d); !why.empty()) {
+        root_.say(why);
+        return false;
+    }
+    // Onto the selected track, in front of the device chosen in the strip (manual 4.10, 41.4).
+    return root_.insertDevice(std::string(d.uid), root_.arrangement.geometry.selection.track,
+                              root_.devices.insertPoint());
 }
 void BrowserPanel::resized() {
     // Live's shape: the search row and the preview row start right of the round
@@ -343,9 +417,20 @@ void BrowserPanel::choose(int i) {
         refill();
         const auto &entry = sidebar_[static_cast<std::size_t>(i)];
         const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
-        if (!library)
-            // Collections, the catalogue's categories and Packs wait for their pieces (D4; N15).
-            root_.say((entry.name + " is not listed yet.").toStdString());
+        if (entry.name == "Audio Effects" || entry.name == "Pd Devices") {
+            // The catalogue's (D4): with Pd off, every entry is dimmed and the Status Bar says why.
+            if (!rows_.empty() && std::none_of(rows_.begin(), rows_.end(), [](const Row &r) {
+                    return r.device != nullptr && unavailable(*r.device).empty();
+                }))
+                root_.say("ADI's built-in devices run on its Pd devices, which this build leaves out.");
+        } else if (!library)
+            // The other categories say what they wait for (D4; N15).
+            root_.say(entry.name == "Plug-Ins"
+                          ? "Plug-Ins list once the plug-in scanner is in (#438 to #440)."
+                      : entry.name == "Instruments" || entry.name == "MIDI Effects" || entry.name == "Sounds" ||
+                              entry.name == "Drums"
+                          ? (entry.name + " wait for the devices lane's instruments and MIDI effects.").toStdString()
+                          : (entry.name + " is not listed yet.").toStdString());
         else if (!ready_)
             root_.say("The library is still being indexed; its samples list when it is done.");
         else if (shown_.empty())

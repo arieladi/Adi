@@ -298,6 +298,13 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
+        root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
+            const bool ok = document_->insertBuiltin(uid, track, before);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
         // The control bar's Re-Enable Automation and Automation Arm (manual 25.4, 25.1; N26): the
         // session's state, through the document.
         root->reenableAutomation = [this] {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
@@ -118,6 +119,11 @@ class ProjectDocument final : public engine::BlockProcessor {
     // The file the engine names a device copy's project by (`DeviceCopy::sourceFile`): after Save As
     // the app moves a held copy over to the new file, the same project under a new name.
     std::string deviceCopyIdentity() const;
+    // A built-in device from the browser (D4; N15, #395): `uid` from `builtinCatalog()` onto
+    // `track`, in front of `before` or at the end of its chain. The plug-in reference and the
+    // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
+    // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
+    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with

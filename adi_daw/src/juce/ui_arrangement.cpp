@@ -2886,9 +2886,17 @@ bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
     return !files.isEmpty();
 }
 bool ArrangementCanvas::isInterestedInDragSource(const SourceDetails &details) {
-    return !BrowserPanel::droppedFiles(details.description).isEmpty();
+    return !BrowserPanel::droppedFiles(details.description).isEmpty() ||
+           !BrowserPanel::droppedDevice(details.description).empty();
 }
 void ArrangementCanvas::itemDropped(const SourceDetails &details) {
+    // A device dropped on a lane loads onto that track, at its chain's end; never a clip in the
+    // lane (the director, 28 October; audit row 101).
+    if (const auto uid = BrowserPanel::droppedDevice(details.description); !uid.empty()) {
+        const auto *track = view.geometry.trackAt(view.reader(), details.localPosition.y);
+        view.root.insertDevice(uid, track != nullptr ? track->id : 0, std::nullopt);
+        return;
+    }
     filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
 }
 void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int y) {
