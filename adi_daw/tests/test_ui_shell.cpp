@@ -10,6 +10,7 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
+#include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/project_document.hpp"
 #include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
@@ -152,7 +153,7 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
                 // A MIDI track's Rec-Q and Play-Q boxes hold text too: their place, not their glyphs.
                 const int height = root.arrangement.geometry.heightFor(row.track->id);
                 for (const bool record : {true, false})
-                    if (isMidiTrack(*row.track))
+                    if (adi::ui::isMidiTrack(*row.track))
                     g.fillRect(root.arrangement.headers.quantizeBox(row.place.depth, top, height, record) +
                                headers.getPosition());
             }
@@ -4024,9 +4025,13 @@ void recordingOptions(AppCommands &commands, settings::AppSettings &settings, co
               "clicked: on again, lit from the snapshot");
         // The Mixer View's own In/Out section draws In and Auto 59 px under the mixer's top (40): a
         // right-click there is the monitor's too, as the toggle's tooltip says; Audio From is not.
+        // A strip tall enough for the In/Out section, Track Options and the mixer together.
+        const auto keptHeight = wide->getHeight();
+        wide->setSize(wide->getWidth(), 360);
         check(wide->onMonitorInOrAuto({10, 40 + 65}) && wide->onMonitorInOrAuto({35, 40 + 65}) &&
                   !wide->onMonitorInOrAuto({10, 40 + 20}),
               "a right-click on In or Auto in the Mixer View's In/Out section is the monitor's");
+        wide->setSize(wide->getWidth(), keptHeight);
     }
     if (!inOutWasOn)
         root.command(AppCommands::ToggleMixerInOut);
