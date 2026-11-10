@@ -311,10 +311,13 @@ jobs:
       #                   Link). App data was the one real share -- every suite
       #                   now gets its own ADI_HOME -- and the two Link suites
       #                   hold one RESOURCE_LOCK. Nothing runs RUN_SERIAL.
-      #                   --timeout stays per test and 600 still fits: a suite
-      #                   sharing the runner with three others runs slower, but
-      #                   the slowest stayed well inside it (PR measurements in
-      #                   the next paragraph).
+      #                   A suite sharing the runner runs slower, so --timeout
+      #                   600 stays the default and the three heaviest suites
+      #                   carry their own 1200 (mixer had it already;
+      #                   clip_playback and midi_clips were cut off at 600
+      #                   under --parallel 8 locally, every check passing).
+      #                   They also carry a COST, so a fresh runner starts them
+      #                   first rather than halfway through the list.
       #                   Measured locally first (ORC-VST, MSVC Debug, Ninja):
       #                   all 206 suites passed at --parallel 4 in 27.6 min,
       #                   slowest clip_playback 392 s, midi_clips 362 s, mixer
