@@ -298,9 +298,34 @@ jobs:
       #                   every suite passing (link playback 111 s, midi_clips
       #                   409 s). Raising the bound again is a stopgap: the next
       #                   step is running the Windows suites in parallel.
+      #   --parallel N    since 2026-11-10 (win): the suites run N at a time, N
+      #                   the runner's processor count -- COUNTED, as the Build
+      #                   step says why, never a bare flag. Every leg, not only
+      #                   Windows: the suites are single-process programs that
+      #                   mostly wait on one core, so the serial step was
+      #                   leaving the other cores of every runner idle. What
+      #                   made it safe is in adi_daw/CMakeLists.txt beside
+      #                   adi_isolate_tests: an audit of every way two suites
+      #                   could see each other (temp folders, the build dir,
+      #                   ports, scanner children and quarantine, app data,
+      #                   Link). App data was the one real share -- every suite
+      #                   now gets its own ADI_HOME -- and the two Link suites
+      #                   hold one RESOURCE_LOCK. Nothing runs RUN_SERIAL.
+      #                   --timeout stays per test and 600 still fits: a suite
+      #                   sharing the runner with three others runs slower, but
+      #                   the slowest stayed well inside it (PR measurements in
+      #                   the next paragraph).
+      #                   Measured locally first (ORC-VST, MSVC Debug, Ninja):
+      #                   all 206 suites passed at --parallel 4 in 27.6 min,
+      #                   slowest clip_playback 392 s, midi_clips 362 s, mixer
+      #                   357 s -- the same three that lead the serial run.
       - name: adi_tests
         timeout-minutes: 150
-        run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure --timeout 600
+        run: |
+          jobs="${NUMBER_OF_PROCESSORS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+          echo "running the suites $jobs at a time"
+          ctest --test-dir adi_daw/build --build-config Debug --output-on-failure \
+                --timeout 600 --parallel "$jobs"
 
       # The Visual Studio generator puts binaries in build/Debug/, everything
       # else puts them in build/. Resolve it once, loudly, rather than letting a
@@ -495,8 +520,10 @@ jobs:
           # Counted, as the Build step above says why.
           cmake --build build-strict --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
-          # Every registered test, run -- not merely compiled.
-          ctest --test-dir build-strict --output-on-failure
+          # Every registered test, run -- not merely compiled. In parallel and
+          # counted, as the adi_tests step in the build job says why.
+          ctest --test-dir build-strict --output-on-failure \
+                --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
           # The gate is only as good as its coverage, so say what it covered.
           # A target count that quietly drops is the failure mode this job has
