@@ -146,9 +146,16 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(area.getX(), area.getY() + ArrangementView::kOverviewHeight, area.getWidth(),
                    ArrangementView::kRulerHeight);
         const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
-        for (const auto track : laneOrder(root))
-            if (const int top = root.arrangement.geometry.rowTop(root.reader(), track); top >= 0)
+        for (const auto row : root.arrangement.geometry.rows(root.reader()))
+            if (const int top = root.arrangement.geometry.rowTop(root.reader(), row.track->id); top >= 0) {
                 g.fillRect(headers.getX() + 6, headers.getY() + top + 4, std::max(0, headers.getWidth() - 8), 24);
+                // A MIDI track's Rec-Q and Play-Q boxes hold text too: their place, not their glyphs.
+                const int height = root.arrangement.geometry.heightFor(row.track->id);
+                for (const bool record : {true, false})
+                    if (isMidiTrack(*row.track))
+                    g.fillRect(root.arrangement.headers.quantizeBox(row.place.depth, top, height, record) +
+                               headers.getPosition());
+            }
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
@@ -4000,6 +4007,9 @@ void recordingOptions(AppCommands &commands, settings::AppSettings &settings, co
     root.command(AppCommands::ToggleMixerView);
     if (!root.state().mixerTrackOptions)
         root.command(AppCommands::ToggleMixerTrackOptions);
+    const bool inOutWasOn = root.state().mixerInOut;
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
     root.frame();
     MixerStrip *wide = nullptr;
     for (const auto &strip : root.mixerView.strips())
@@ -4012,7 +4022,14 @@ void recordingOptions(AppCommands &commands, settings::AppSettings &settings, co
         root.frame();
         check(root.reader().findTrack(4)->recording.keepMonitoringLatency && wide->keepLatency.getToggleState(),
               "clicked: on again, lit from the snapshot");
+        // The Mixer View's own In/Out section draws In and Auto 59 px under the mixer's top (40): a
+        // right-click there is the monitor's too, as the toggle's tooltip says; Audio From is not.
+        check(wide->onMonitorInOrAuto({10, 40 + 65}) && wide->onMonitorInOrAuto({35, 40 + 65}) &&
+                  !wide->onMonitorInOrAuto({10, 40 + 20}),
+              "a right-click on In or Auto in the Mixer View's In/Out section is the monitor's");
     }
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
     root.command(AppCommands::ToggleMixerTrackOptions);
     root.command(AppCommands::ToggleMixerView);
     root.frame();

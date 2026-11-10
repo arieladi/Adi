@@ -205,8 +205,8 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
     };
     delay.updateText();
     keepLatency.setTitle("Keep Latency");
-    keepLatency.setTooltip("Keep Monitoring Latency in Recorded Audio: recordings line up with what was heard "
-                           "through the monitoring. Right-click In or Auto for the same switch.");
+    keepLatency.setTooltip("Keep Monitoring Latency in Recorded Audio, stored with the track; recording does not "
+                           "follow it yet. Right-click In or Auto for the same switch.");
     keepLatency.setClickingTogglesState(false);
     keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };
     addChildComponent(keepLatency);
@@ -692,8 +692,14 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(4, "", false);
 }
 bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
-    // Where paintInOut draws them: In and Auto at x 5 and 27, y 37, in a track that records.
-    if (!showsInOut() || kind_ == "master" || kind_ == "return" || kind_ == "group" || (getHeight() - 1) / 17 <= 2)
+    // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut)
+    // has In and Auto at x 4 and 23, y kMixerTop + 59; the track controls' column (paintInOut) at x 5
+    // and 27, y 37.
+    if (kind_ == "master" || kind_ == "return" || kind_ == "group")
+        return false;
+    if (panel_.vertical())
+        return io_ > 0 && juce::Rectangle<int>(4, kMixerTop + 59, 16 + 3 + 23, 13).contains(at);
+    if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
         return false;
     return juce::Rectangle<int>(5, 37, 16 + 6 + 23, 13).contains(at);
 }
