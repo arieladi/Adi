@@ -25,6 +25,7 @@
 #include <optional>
 namespace adi::ui {
 class AdiRootComponent;
+class FloatingHost;
 // The app-scoped command layer (ADR-0180 d6): one manager, installed on every window.
 // The keys are Live 12's (manual §41, ADR-0203 d6) unless a preset says otherwise.
 class AppCommands final : public juce::ApplicationCommandTarget {
@@ -118,7 +119,8 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Copy,
         Paste,
         Duplicate,
-        LastId = Duplicate
+        TogglePluginWindows,
+        LastId = TogglePluginWindows
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -148,6 +150,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool arrowKeysMoveClips() const noexcept { return arrowKeysMoveClips_; }
     // Ctrl/Cmd+wheel zooms around the selection, as Live; off, around the cursor.
     bool zoomOnSelection() const noexcept { return zoomOnSelection_; }
+    // The Plug-Ins page's window settings (Live 12 manual 23.3.1.1): Multiple Plug-In Windows,
+    // Auto-Hide Plug-In Windows and Plug-in windows always on top.
+    bool multiplePluginWindows() const noexcept { return multiplePluginWindows_; }
+    bool autoHidePluginWindows() const noexcept { return autoHidePluginWindows_; }
+    bool pluginWindowsOnTop() const noexcept { return pluginWindowsOnTop_; }
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
     bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
@@ -172,6 +179,7 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
+    bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
@@ -286,6 +294,26 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     // Puts the project back to just after the history's step `txnId` (`OpSubmitter::restore`): one
     // refresh, Follow paused as by an undo, the session re-reading the project after it.
     bool restoreStep(std::int64_t txnId);
+    // A plug-in's own window (Live 12 manual 23.3; N8, #391). The wrench in a plug-in device's
+    // title bar opens it in a floating window at the plug-in's size, never scaled; a second click
+    // closes it. Opening one closes the others unless Multiple Plug-In Windows is on or Ctrl/Cmd is
+    // held. The app wires the opener (`createEditorComponent`) and the host; `frame` runs on the
+    // window's clock and returns the editor's error, which goes to the Status Bar.
+    struct PluginEditorView {
+        std::unique_ptr<juce::Component> view;
+        std::function<std::string()> frame;
+        // Whether the plug-in has dropped its editor: its window then closes.
+        std::function<bool()> gone;
+    };
+    std::function<PluginEditorView(std::int64_t device, std::string &error)> pluginEditor;
+    FloatingHost *pluginHost = nullptr;
+    bool togglePluginWindow(std::int64_t device, bool several);
+    bool pluginWindowOpen(std::int64_t device) const;
+    static std::string pluginWindowKey(std::int64_t device);
+    // Each frame: Auto-Hide and Show/Hide applied, Always on Top followed.
+    void followPluginWindows();
+    // Live's Show/Hide Plug-In Windows (Ctrl/Cmd+Alt+P): every plug-in window at once.
+    bool pluginWindowsShown() const noexcept { return pluginWindowsShown_; }
     DeviceChainStrip devices;
     DockResizer dockResizer;
     MixerPanel mixer;
@@ -463,6 +491,7 @@ class AdiRootComponent final : public juce::Component, public juce::DragAndDropC
     DirtySet dirty_;
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;
+    bool pluginWindowsShown_ = true;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
     bool infoShown_ = true;

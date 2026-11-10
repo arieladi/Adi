@@ -4364,6 +4364,161 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     host.removeChildComponent(&root);
     document->release();
 }
+// D3: a plug-in's own window (Live 12 manual 23.3, 23.3.1.1, 41.4; N8, #391), with a fake opener in
+// the app's place: the wrench on plug-in devices only; a click opens the editor in a floating window
+// at its own size, never scaled, and a second closes it; one window at a time unless Ctrl/Cmd or
+// Multiple Plug-In Windows; Ctrl/Cmd+Alt+P hides and shows them all; Auto-Hide shows only the
+// selected track's; the opener's error and the editor's reach the Status Bar.
+void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "plugin-windows.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "a project for the plug-in windows");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(4);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    make[2].opType = "device.insert";
+    make[2].payload = {{"id", 4}, {"chain", 3}, {"ord", 1}, {"name", "Rack"}, {"latency", 0}};
+    make[3].opType = "device.insert";
+    make[3].payload = {{"id", 5}, {"chain", 3}, {"ord", 2}, {"ref", 3}, {"name", "UI knobs 2"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+          "two plug-ins and a device of no plug-in on 1 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "plugins");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    refresh();
+    FloatingHost host(root, commands, document->views(), document->view(), [](std::int64_t) { return true; }, false);
+    int opened = 0;
+    std::string refuse, editorError;
+    bool editorGone = false;
+    check(!root.togglePluginWindow(3, false) && root.error().find("in the application") != std::string::npos,
+          "with no opener wired, the wrench says plug-in windows open in the application");
+    root.pluginHost = &host;
+    root.pluginEditor = [&](std::int64_t, std::string &why) {
+        AdiRootComponent::PluginEditorView view;
+        if (!refuse.empty()) {
+            why = refuse;
+            return view;
+        }
+        ++opened;
+        auto editor = std::make_unique<juce::Component>();
+        editor->setSize(320, 200);
+        view.view = std::move(editor);
+        view.frame = [&] { return editorError; };
+        view.gone = [&] { return editorGone; };
+        return view;
+    };
+    auto &panels = root.devices.panels;
+    check(panels.size() == 3 && panels[0]->wrench.isVisible() && !panels[1]->wrench.isVisible() &&
+              panels[2]->wrench.isVisible(),
+          "the wrench shows on the plug-ins' title bars, not on a device of no plug-in");
+    const auto key3 = AdiRootComponent::pluginWindowKey(3), key5 = AdiRootComponent::pluginWindowKey(5);
+    check(panels[0]->wrench.getX() < panels[0]->title.getX() && panels[0]->title.getX() > panels[1]->title.getX(),
+          "the wrench sits before the name, after the fold switch, as Live's");
+    panels[0]->wrench.onClick();
+    root.frame();
+    // The strip with a plug-in's window open, for the picture beside Live 12's.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.devices.getWidth(), 2 * root.devices.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.devices.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-plugin-wrench.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
+    check(opened == 1 && host.contains(key3) && host.content(key3) != nullptr &&
+              host.content(key3)->getWidth() == 320 && host.content(key3)->getHeight() == 200 &&
+              !host.zoom(key3, true) && host.alwaysOnTop(key3) && panels[0]->wrench.getToggleState(),
+          "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit");
+    {
+        auto *window = dynamic_cast<juce::DocumentWindow *>(host.window(key3));
+        const auto *track = root.reader().findTrack(2);
+        check(window != nullptr && track != nullptr && window->getName() == juce::String(track->name + "/UI knobs") &&
+                  !window->isResizable() && window->getContentComponentBorder().addedTo(host.content(key3)->getBounds()).getWidth() == window->getWidth(),
+              "its window is titled track/device, fits the plug-in, and does not resize");
+    }
+    panels[0]->wrench.onClick();
+    root.frame();
+    check(!host.contains(key3) && !panels[0]->wrench.getToggleState(), "a second click closes it");
+    // One at a time; Ctrl/Cmd keeps the others open.
+    check(root.togglePluginWindow(3, false) && root.togglePluginWindow(5, false) && !host.contains(key3) &&
+              host.contains(key5),
+          "opening another plug-in's window closes the first (Multiple Plug-In Windows off)");
+    check(root.togglePluginWindow(3, true) && host.contains(key3) && host.contains(key5),
+          "with Ctrl/Cmd both stay open");
+    // A plug-in with no editor refuses before any other window closes.
+    root.togglePluginWindow(5, true);
+    refuse = "This VST3 has no editor";
+    check(!root.togglePluginWindow(5, false) && host.contains(key3) && root.error() == refuse,
+          "a refusal leaves the open plug-in window open");
+    refuse.clear();
+    check(root.togglePluginWindow(5, true) && host.contains(key3) && host.contains(key5), "both open again");
+    // Ctrl/Cmd+Alt+P hides and shows them all.
+    const juce::KeyPress hideAll('p', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0);
+    juce::ApplicationCommandInfo info(AppCommands::TogglePluginWindows);
+    commands.activate(root);
+    commands.getCommandInfo(AppCommands::TogglePluginWindows, info);
+    check(info.shortName == "Hide Plug-In Windows" && info.defaultKeypresses.contains(hideAll),
+          "View > Hide Plug-In Windows on Ctrl/Cmd+Alt+P while they show");
+    check(root.keyPressed(hideAll) && !root.pluginWindowsShown() && !host.shown(key3) && !host.shown(key5) &&
+              host.contains(key3),
+          "Ctrl/Cmd+Alt+P hides every plug-in window, open still");
+    commands.getCommandInfo(AppCommands::TogglePluginWindows, info);
+    root.frame();
+    check(info.shortName == "Show Plug-In Windows" && !host.shown(key3), "then the menu offers to show them");
+    check(root.keyPressed(hideAll) && root.pluginWindowsShown() && host.shown(key3) && host.shown(key5),
+          "and again shows them where they stood");
+    // Auto-Hide Plug-In Windows (on by default): only the selected track's show.
+    root.arrangement.geometry.selection.track = 3;
+    root.frame();
+    check(!host.shown(key3) && !host.shown(key5) && host.contains(key3), "another track selected: they hide");
+    root.arrangement.geometry.selection.track = 2;
+    root.frame();
+    check(host.shown(key3) && host.shown(key5), "their track selected again: they show");
+    // A window opened on purpose while they are hidden shows, and the others with it.
+    check(root.keyPressed(hideAll) && !root.pluginWindowsShown(), "hidden");
+    check(root.togglePluginWindow(5, true) && !host.contains(key5), "a wrench click closes the hidden one");
+    check(root.togglePluginWindow(5, true) && root.pluginWindowsShown() && host.shown(key5) && host.shown(key3),
+          "and opening one on purpose shows it, and the others Show/Hide had hidden");
+    // Errors reach the Status Bar: the editor's, on its window's clock, and the opener's.
+    editorError = "Plug-in refused to show its editor";
+    host.frame(key3);
+    check(root.error() == editorError, "an editor's error reaches the Status Bar");
+    editorGone = true;
+    host.frame(key3);
+    check(root.error().find("closed its window") != std::string::npos && !host.shown(key3),
+          "an editor the plug-in dropped hides its window at once and says so");
+    host.collect();
+    root.frame();
+    check(!host.contains(key3) && host.contains(key5) && !panels[0]->wrench.getToggleState(),
+          "and the next collect closes it, the wrench unlit");
+    editorGone = false;
+    host.closeAll(false);
+    refuse = "This VST3 has no editor";
+    check(!root.togglePluginWindow(3, false) && root.error() == refuse && !host.contains(key3),
+          "an opener's refusal reaches the Status Bar, and no window opens");
+    commands.detach(root);
+    root.pluginHost = nullptr;
+    document->release();
+}
 void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "strip-undo.adi", true, test::knobsLoader(), error);
@@ -5652,9 +5807,10 @@ int main(int argc, char **argv) {
                       exportZip.shortName == "Collect and Export..." && cut.shortName == "Cut" && keyed(cut, 'x') &&
                       copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
                       keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
-                      C::LastId == C::Duplicate,
+                      C::LastId == C::TogglePluginWindows,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
-                  "Select Loop, Save a Copy, Collect All and Save, Collect and Export (the last id), each named");
+                  "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, then Show/Hide Plug-In Windows (the "
+                  "last id), each named");
         }
         // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -7774,6 +7930,7 @@ int main(int argc, char **argv) {
     newProject(commands, temp.path());
     stripParamUndo(commands, temp.path());
     deviceClipboard(commands, temp.path());
+    pluginWindows(commands, temp.path());
     automationArm(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());

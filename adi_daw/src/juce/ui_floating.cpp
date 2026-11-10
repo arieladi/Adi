@@ -116,7 +116,8 @@ std::string zoomKey(const std::string &key) { return "floating:" + key; }
 struct FloatingHost::Entry {
     std::string key;
     std::int64_t device = 0;
-    bool closing = false;
+    bool closing = false, scaled = true, hidden = false, onTop = false;
+    std::string title; // the window's title, where it is not the key
     std::uint64_t drains = 0;
     juce::Component::SafePointer<juce::Component> component, dock;
     juce::Rectangle<int> dockBounds, first;
@@ -125,7 +126,9 @@ struct FloatingHost::Entry {
     std::function<void(const SnapshotReader &)> onFrame;
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
-            : DocumentWindow(entry.key, juce::Colours::black, allButtons, host.native_), h(host),
+            : DocumentWindow(entry.title.empty() ? entry.key : entry.title, juce::Colours::black,
+                             entry.scaled ? allButtons : (closeButton | minimiseButton), host.native_),
+              h(host),
               e(entry), clock(this, [this](double) {
                   followTooltips(*this, h.commands_, tips, tipDelayMs);
                   h.frame(e.key);
@@ -173,8 +176,20 @@ bool FloatingHost::install(std::unique_ptr<Entry> e) {
     auto *raw = e.get();
     entries_[key] = std::move(e);
     raw->window = std::make_unique<Entry::Window>(*this, *raw);
-    if (raw->owned)
+    if (raw->owned && raw->scaled)
         raw->zoomed = std::make_unique<Zoomed>(*raw->component);
+    if (raw->owned && !raw->scaled) {
+        // A plug-in's own window takes the plug-in's size, which only the plug-in changes: the
+        // window fits it and is not resized from outside; a kept place moves it, never sizes it.
+        raw->window->setContentNonOwned(raw->component.getComponent(), true);
+        raw->window->setResizable(false, false);
+        if (const auto kept = states_.loadFloating(key); !kept.monitor.empty())
+            raw->window->setTopLeftPosition(restoreFloating(kept, currentMonitors()).getTopLeft());
+        if (native_)
+            raw->window->setVisible(true);
+        save(*raw, true);
+        return true;
+    }
     raw->window->setContentNonOwned(raw->zoomed ? static_cast<juce::Component *>(raw->zoomed.get())
                                                 : raw->component.getComponent(),
                                     false);
@@ -209,14 +224,48 @@ bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Compone
 }
 bool FloatingHost::openView(const std::string &key, std::int64_t id,
                             std::unique_ptr<juce::Component> component,
-                            std::function<void(const SnapshotReader &)> fn) {
+                            std::function<void(const SnapshotReader &)> fn, bool scaled, std::string title) {
     auto e = std::make_unique<Entry>();
     e->key = key;
+    e->title = std::move(title);
     e->device = id;
     e->component = component.get();
     e->owned = std::move(component);
     e->onFrame = std::move(fn);
+    e->scaled = scaled;
     return install(std::move(e));
+}
+void FloatingHost::show(const std::string &key, bool on) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end())
+        return;
+    auto &e = *it->second;
+    e.hidden = !on;
+    if (native_ && e.window && !e.closing)
+        e.window->setVisible(on);
+}
+bool FloatingHost::shown(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && !it->second->hidden && !it->second->closing;
+}
+void FloatingHost::setAlwaysOnTop(const std::string &key, bool onTop) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end())
+        return;
+    it->second->onTop = onTop;
+    if (it->second->window)
+        it->second->window->setAlwaysOnTop(onTop);
+}
+bool FloatingHost::alwaysOnTop(const std::string &key) const {
+    const auto it = entries_.find(key);
+    return it != entries_.end() && it->second->onTop;
+}
+std::vector<std::string> FloatingHost::keys(const std::string &prefix) const {
+    std::vector<std::string> out;
+    for (const auto &[key, entry] : entries_)
+        if (key.rfind(prefix, 0) == 0)
+            out.push_back(key);
+    return out;
 }
 void FloatingHost::frame(const std::string &key) {
     auto it = entries_.find(key);
@@ -283,7 +332,19 @@ void FloatingHost::close(const std::string &key) {
         e.dock->addAndMakeVisible(e.component);
         e.component->setBounds(e.dockBounds);
     }
+    // The content before its window: a plug-in's editor tears its native view down while the
+    // window that parents it still exists.
+    e.zoomed.reset();
+    e.owned.reset();
     entries_.erase(it);
+}
+void FloatingHost::requestClose(const std::string &key) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end())
+        return;
+    it->second->closing = true;
+    if (it->second->window)
+        it->second->window->setVisible(false);
 }
 void FloatingHost::collect() {
     for (auto it = entries_.begin(); it != entries_.end();) {
@@ -304,6 +365,10 @@ void FloatingHost::closeAll(bool remember) {
             e.dock->addAndMakeVisible(e.component);
             e.component->setBounds(e.dockBounds);
         }
+        // The content before its window: a plug-in's editor tears its native view down while
+        // the window that parents it still exists.
+        e.zoomed.reset();
+        e.owned.reset();
         entries_.erase(entries_.begin());
     }
 }

@@ -52,6 +52,13 @@ class ActivatorButton final : public juce::ToggleButton {
   public:
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+// Live's wrench in a plug-in device's title bar (manual 23.3): opens and closes the plug-in's own
+// window; lit while it is open.
+class WrenchButton final : public juce::Button {
+  public:
+    WrenchButton() : juce::Button("Plug-In Window") {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
 class DevicePanelView final : public juce::Component {
@@ -78,6 +85,7 @@ class DevicePanelView final : public juce::Component {
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
     ActivatorButton enabled;
+    WrenchButton wrench;
     juce::TextEditor search;
     std::vector<std::unique_ptr<ParameterControl>> controls;
     bool configuring = false;

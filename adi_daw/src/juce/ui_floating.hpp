@@ -5,6 +5,7 @@
 #include "ui_shell.hpp"
 #include <array>
 #include <thread>
+#include <vector>
 namespace adi::ui {
 struct MonitorArea {
     std::string id;
@@ -52,8 +53,22 @@ class FloatingHost {
     bool detach(const std::string &key, std::int64_t device, juce::Component &,
                 juce::Component &dock, std::function<void(const SnapshotReader &)> frame = {},
                 juce::Rectangle<int> first = {});
+    // `scaled`: an ADI view zooms with Ctrl/Cmd + and - (N4); a plug-in's own window opens at the
+    // plug-in's size and is never scaled (parity-7.5 row 10).
     bool openView(const std::string &key, std::int64_t device, std::unique_ptr<juce::Component>,
-                  std::function<void(const SnapshotReader &)> frame = {});
+                  std::function<void(const SnapshotReader &)> frame = {}, bool scaled = true,
+                  std::string title = {});
+    // Closed at the next collect(), hidden at once: safe from inside the window's own frame.
+    void requestClose(const std::string &key);
+    bool contains(const std::string &key) const { return entries_.contains(key); }
+    // Shown or hidden without closing (Live's Show/Hide Plug-In Windows, Auto-Hide): a hidden
+    // window keeps its content and its place.
+    void show(const std::string &key, bool shown);
+    bool shown(const std::string &key) const;
+    void setAlwaysOnTop(const std::string &key, bool onTop);
+    bool alwaysOnTop(const std::string &key) const;
+    // The keys open under `prefix`, in key order.
+    std::vector<std::string> keys(const std::string &prefix) const;
     void frame(const std::string &key); // per-window attachment; public for deterministic tests
     void collect();                     // message-thread lifecycle, not a renderer clock
     void close(const std::string &key);

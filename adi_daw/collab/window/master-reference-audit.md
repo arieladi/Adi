@@ -36,7 +36,7 @@ MR § is the Master Reference's section.
 | Three view states in one value, Global / Group focus / Detailed zoom (Macro / Main / Micro); the mixer and the timeline always show the same tracks | 1.1, 3.2, 10 (ADR-0112) | Missing. Global is the window's alone; Group focus needs the snapshot's groups (N6: a track's parent and kind); Detailed zoom needs the detail editor (section 5) |
 | Named view filters, Bitwig's project filter (figure 32: a menu at the top of the track-header column listing the project's group tree; choose one to see only it), a manual filter tab and an un-filter toggle, applied to the timeline and the mixer | 1.1, 3.2, 10 (ADR-0112 d2) | Partial (window/view-filter, 29 October): Bitwig's project view, the director's choice over the funnel picture: the button at the top of the names, its menu of the project and its groups as a tree, a group's tracks and Main shown in the lanes, the track controls and the Mixer View alike, the button lit while a group is chosen, kept per window. The groups are read from the project file (the director's choice, 29 October; N6 may replace it); the menu drawn as Bitwig's; the manual tab and the name filter come after |
 | The AI builds a view from a sentence ("put all percussion in a view group") | 3.2, 10 | Later (the agent, steps 8 and 9) |
-| Every window, zoom and selection restored on open | 1.6, 11.3 | Built (`ui_view`); plug-in windows on their monitor wait for N8 |
+| Every window, zoom and selection restored on open | 1.6, 11.3 | Built (`ui_view`); a plug-in window keeps its place (its size is the plug-in's), reopened from its wrench |
 | Hebrew and right-to-left text in text fields; the timeline stays left to right | 1.1 (ADR-0125 d4) | Unchecked: JUCE shapes it, no test yet |
 
 ## 2. The browser (MR 3.1)
@@ -108,7 +108,7 @@ MR § is the Master Reference's section.
 | ADI's searchable Parameter List button beside Configure | 3.4, 9.2 (ADR-0150 d3) | Missing |
 | The parameter context menu: Edit MIDI Map, Show Automation, Return to Default | 3.7 | Partial: Return to Default is built as Live's key, Delete on a clicked control (`window/strip-param-undo`, parity-7.4 row 16), a gesture to the plug-in's declared default; the menu itself is missing, and its Edit MIDI Map and Show Automation wait for MIDI mapping and the automation lanes in the window |
 | A drag on a control is one undo step | 9.1 | Built (`window/strip-param-undo`, N7): Begin, Values and End through `ParamOps::uiEvent`, one step with its opener; the undone value reaches the plug-in at the next load only (N44) |
-| A plug-in's own window, floating, from the wrench | 3.4 | Waits (N8) |
+| A plug-in's own window, floating, from the wrench | 3.4 | Built (D3, N8): the wrench on a plug-in's title bar, the hosted editor at its own size, never scaled; Ctrl/Cmd+Alt+P; Multiple, Auto-Hide and Always on Top followed. Missing: Auto-Open (no device insert from the window yet) |
 | The expression route in the device header (Auto / VST3 Expression / MIDI-MPE / Poly-AT) | V.2 §5 | Missing: `device.setExpressionRoute` exists; whether the snapshot carries the route is to check |
 | Color Cab's sample drop tile on the device panel, "with step 7" | 9.8 | Waits: the sample slot has no op the window can call (new Need) |
 | The missing-file mark on a device whose sample is gone | 9.3 | Waits (new Need: the mark in the snapshot) |

@@ -15,6 +15,8 @@ struct DevicePanelData {
     // Whether it plays notes as sound: a plug-in of the instrument subtype (`plugin_refs.subtype`).
     // A MIDI track holding one has an audio mixer, as Live's.
     bool instrument = false;
+    // Whether it is a plug-in (a `plugin_refs` row), which has a window of its own (manual 23.3).
+    bool plugin = false;
     panel::Resolved resolved;
     std::vector<panel::Declared> declared;
     std::vector<panel::Record> records;
