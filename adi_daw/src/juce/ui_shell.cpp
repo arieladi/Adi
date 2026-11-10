@@ -2,6 +2,7 @@
 #include "ui_shell.hpp"
 #include "adi/ui/meter_edits.hpp"
 #include "adi/ui/meters.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/tempo_edits.hpp"
 #include "adi/ui/track_edits.hpp"
 #include <algorithm>
@@ -47,6 +48,9 @@ void AppCommands::reload() {
     arrowKeysMoveClips_ = flag(settings_, "editing.arrowKeysMoveClips", true);
     followByPage_ = settings_.get("lookfeel.followMode") != "scroll";
     exclusiveSolo_ = flag(settings_, "record.exclusiveSolo", true);
+    if (const auto quantize = settings_.get("record.quantize"); quantize.is_string())
+        recordingDefaults_.quantize = quantize.get<std::string>();
+    recordingDefaults_.keepMonitoringLatency = flag(settings_, "audio.keepMonitoringLatency", true);
     linkLoop_ = flag(settings_, "editing.linkLoopToSelection", false);
     // A preset changes default keys, so the old registrations go first.
     manager.clearCommands();
@@ -874,6 +878,7 @@ void AdiRootComponent::resized() {
                                          browserArea_.getWidth() - 2 * look::border, chatH);
         aiTab.setVisible(true);
         aiTab.setBounds(chatArea_.withHeight(kTabHeight));
+        browser.setFootLimit(chatArea_.getY() - browserArea_.getY());
     }
     leftWidth_ = left;
     rightWidth_ = right;
@@ -1230,7 +1235,8 @@ bool AdiRootComponent::insertTrack(bool midi) {
     const auto current = view_.current();
     if (!current)
         return fail("Inserting a track needs an open project.");
-    auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi);
+    auto edit = ::adi::ui::insertTrack(current->tracks, arrangement.geometry.selection.track, midi,
+                                       &commands_.recordingDefaults());
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     edit.ops.front().selBefore = session_.advisory();
@@ -1338,7 +1344,8 @@ bool AdiRootComponent::dropAudioFiles(const std::vector<std::pair<std::string, s
         }
         dropped.push_back(std::move(file));
     }
-    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate);
+    auto edit = adi::ui::dropAudio(*view_.current(), track, pos, std::move(dropped), separate,
+                                   &commands_.recordingDefaults());
     if (!edit.refusal.empty())
         return fail(std::move(edit.refusal));
     if (!submitEdits(std::move(edit.ops)))
@@ -1637,6 +1644,22 @@ bool AdiRootComponent::loopToNextLocator(std::int64_t id) {
     if (to <= from->pos)
         return fail("Nothing follows this locator to loop to.");
     return submitTransport(setLoop(current->transport, true, {from->pos, to}));
+}
+bool AdiRootComponent::setQuantize(std::int64_t track, bool record, const std::string &choice) {
+    const auto current = view_.current();
+    const auto *t = current ? current->findTrack(track) : nullptr;
+    if (t == nullptr)
+        return fail("That track is gone.");
+    auto edit = ::adi::ui::setQuantize(*t, record, choice);
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
+}
+bool AdiRootComponent::setKeepMonitoringLatency(std::int64_t track, bool on) {
+    const auto current = view_.current();
+    const auto *t = current ? current->findTrack(track) : nullptr;
+    if (t == nullptr)
+        return fail("That track is gone.");
+    auto edit = ::adi::ui::setKeepMonitoringLatency(*t, on);
+    return edit.ops.empty() || submitEdits(std::move(edit.ops));
 }
 bool AdiRootComponent::toggleSoloInPlace() {
     // From the CURRENT cell (ADR-0201), not the presented frame's, read at pick time: the Options

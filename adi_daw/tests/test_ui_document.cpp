@@ -354,6 +354,20 @@ int main(int argc, char **argv) {
         }
     }
     {
+        // New captures the registry's recording defaults for its four tracks (#397, N31).
+        const ui::RecordingDefaults defaults{"off", false};
+        auto fresh = ui::ProjectDocument::open(temp.path() / "defaults.adi", true, {}, error, &defaults);
+        check(fresh != nullptr, "a new project with recording defaults");
+        if (fresh) {
+            const auto options = readTrackRecordingOptions(fresh->store());
+            bool all = options.size() >= 4;
+            for (const auto &[id, o] : options)
+                all = all && !o.recordEnabled && !o.keepMonitoringLatency;
+            check(all && !fresh->ops().canUndo(), "New stores Rec-Q Free and Keep Monitoring Latency off on its tracks, in the root");
+            fresh->release();
+        }
+    }
+    {
         // Save As (Live 12 manual 5.4.1, 41.3; ADR-0203 d6; N3): the project carries on in the new
         // file, its history with it, and the old file keeps what it had. No audio media here:
         // relocating media is what fails on macOS, and this suite runs there.

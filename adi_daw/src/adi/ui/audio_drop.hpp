@@ -60,7 +60,8 @@ inline std::string audioDropRefusal(const engine::Snapshot &snapshot, std::int64
 // own at the end, all at `pos`. One batch, one undo step: the pool rows, the new tracks, the clips.
 // The first clip and its track are selected.
 inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track, std::int64_t pos,
-                           std::vector<DroppedAudio> files, bool separate = false) {
+                           std::vector<DroppedAudio> files, bool separate = false,
+                           const RecordingDefaults *defaults = nullptr) {
     using namespace track_edits_detail;
     constexpr const char *label = "Insert Audio Clip";
     TrackEdit edit;
@@ -98,6 +99,10 @@ inline TrackEdit dropAudio(const engine::Snapshot &snapshot, std::int64_t track,
         const auto id = nextTrack++;
         edit.ops.push_back(op("track.create",
                               {{"id", id}, {"kind", "audio"}, {"name", "# Audio"}, {"index", index++}}, label));
+        // A new track takes the registry's recording defaults, as Insert Audio Track's does (N31).
+        if (defaults != nullptr)
+            for (auto &o : recordingDefaultOps(id, *defaults, label))
+                edit.ops.push_back(std::move(o));
         return id;
     };
     if (track == 0)
