@@ -301,14 +301,19 @@ bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, st
         if (q.executeStep())
             chain = q.getColumn(0).getInt64();
     }
-    if (chain == 0) {
-        error_ = "The track has no device chain to paste into.";
-        return false;
-    }
-    const auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM devices").getInt64();
+    // The next free id, never the copy's own: a cut device's id is free again, and the engine
+    // refuses a paste that would take it ("device copy needs a new identity").
+    auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM devices").getInt64();
+    if (copy.ok && copy.insert.contains("id") && copy.insert.at("id").is_number_integer() &&
+        id == copy.insert.at("id").get<std::int64_t>())
+        ++id;
+    // With no chain the engine still checks the copy first, so a copy from another project or a rack
+    // says so rather than that the track has no chain.
     auto prepared = prepareDevicePaste(*store_, copy, id, chain, before);
     if (!prepared.ok) {
-        error_ = prepared.error.empty() ? "The device could not be pasted." : prepared.error;
+        error_ = prepared.error == "destination chain is missing" ? "The track has no device chain to paste into."
+                 : prepared.error.empty()                         ? "The device could not be pasted."
+                                                                  : prepared.error;
         return false;
     }
     const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedDevicePaste &p, Actor actor) {
