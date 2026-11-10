@@ -2531,14 +2531,14 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     auto &canvas = root.arrangement.canvas;
     const juce::DragAndDropTarget::SourceDetails onLane(
         BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.delay")), nullptr,
-        {40, laneTop(root, 5) + 10});
+        {40, laneTop(root, 3) + 10});
     check(canvas.isInterestedInDragSource(onLane), "the lanes take a dragged device");
     const auto clipsBefore = document->store().db().execAndGet("SELECT count(*) FROM clips").getInt();
     canvas.itemDropped(onLane);
     refresh();
-    check(chainOf(5) == std::vector<std::string>{"Delay"} &&
+    check(chainOf(3) == std::vector<std::string>{"Delay"} &&
               document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
-          "dropped on 4 Audio's lane: onto that track, never a clip in the lane");
+          "dropped on 2 MIDI's lane: onto that track, never a clip in the lane");
 #else
     check(!browser.load(find("Auto Filter")) && root.error().find("leaves out") != std::string::npos &&
               chainOf(4).empty(),
