@@ -4,6 +4,7 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
+#include "ui_browser.hpp"
 #include "ui_shell.hpp"
 #include <limits>
 namespace adi::ui {
@@ -2836,6 +2837,12 @@ std::int64_t ArrangementCanvas::clipEdge(std::int64_t tick, bool forward) const 
 bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
     // One file or several, as Live takes them; what each holds is read on the drop.
     return !files.isEmpty();
+}
+bool ArrangementCanvas::isInterestedInDragSource(const SourceDetails &details) {
+    return !BrowserPanel::droppedFiles(details.description).isEmpty();
+}
+void ArrangementCanvas::itemDropped(const SourceDetails &details) {
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
 }
 void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int y) {
     // Live's drop (manual 6.1): the clip starts where the file was dropped, on the nearest grid
