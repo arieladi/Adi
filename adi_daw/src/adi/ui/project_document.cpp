@@ -281,9 +281,22 @@ bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
         error_ = copy.error.empty() ? "The device could not be copied." : copy.error;
         return false;
     }
+    // A rack with nested chains reads, but the engine cannot paste it (no nested chain image yet):
+    // refused here, so a Cut never removes what could not come back.
+    if (copy.hasNestedChains) {
+        error_ = "A rack with chains inside it cannot be copied yet (rack paste needs a nested chain image).";
+        return false;
+    }
     out = std::move(copy);
     error_.clear();
     return true;
+}
+std::string ProjectDocument::deviceCopyIdentity() const {
+    SQLite::Statement row(store_->db(), "PRAGMA database_list");
+    while (row.executeStep())
+        if (row.getColumn(1).getString() == "main")
+            return row.getColumn(2).getString();
+    return {};
 }
 bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before) {
     // The chain the device goes into: the one holding `before`, else the track's own (a rack's

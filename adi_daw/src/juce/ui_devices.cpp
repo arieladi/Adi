@@ -282,11 +282,11 @@ juce::PopupMenu DevicePanelView::commands() {
     juce::PopupMenu m;
     const auto safe = SafePointer<DevicePanelView>(this);
     using Clip = DeviceChainStrip::Clip;
-    const auto clipItem = [&](const char *name, char key, Clip c, bool enabled) {
+    const auto clipItem = [&](const char *name, char key, Clip c, bool active) {
         juce::PopupMenu::Item item(name);
         item.shortcutKeyDescription =
             juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
-        item.isEnabled = enabled;
+        item.isEnabled = active;
         item.action = [safe, c] {
             if (safe)
                 safe->strip.clipboard(c, safe->id);
@@ -427,8 +427,9 @@ const DevicePanelData *DeviceChainStrip::dataOf(std::int64_t device) const {
     return nullptr;
 }
 std::optional<std::int64_t> DeviceChainStrip::focusedDevice() const {
+    // While its name is being edited the keys are the editor's: no device is chosen.
     for (const auto &p : panels)
-        if (p->hasKeyboardFocus(true))
+        if (p->hasKeyboardFocus(true) && !p->rename.isVisible())
             return p->id;
     return std::nullopt;
 }

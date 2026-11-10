@@ -4011,6 +4011,11 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
         root.devices.panels[i]->grabKeyboardFocus();
         return root.devices.panels[i]->hasKeyboardFocus(true);
     };
+    // While a device's name is being edited the keys are the editor's: no device is chosen.
+    check(focus(0) && root.devices.panels[0]->beginRename() && !root.devices.focusedDevice() &&
+              !root.devices.canClipboard(Clip::Duplicate),
+          "while its name is edited, the device is not the clipboard's: Ctrl/Cmd+D stays the editor's");
+    root.devices.panels[0]->rename.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
     const auto opsBefore = document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
     check(focus(0) && key('c') && clipboard.has_value() && chain() == std::vector<std::int64_t>{3} &&
               document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,

@@ -181,13 +181,12 @@ class AdiApplication final : public juce::JUCEApplication,
             return ok;
         };
         root->devices.copy = [this](std::int64_t id, bool cut) {
+            // Cut keeps the copy only once the device is gone, so a refused Cut leaves the
+            // clipboard as it was.
             adi::DeviceCopy copy;
-            bool ok = document_->copyDevice(id, copy);
-            if (ok) {
+            bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
+            if (ok)
                 deviceClipboard_ = std::move(copy);
-                if (cut)
-                    ok = document_->deviceAction("device.remove", {{"id", id}});
-            }
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
@@ -352,10 +351,14 @@ class AdiApplication final : public juce::JUCEApplication,
     void saveAs(const juce::File &file) {
         if (!document_ || !root_ || !window_)
             return;
+        const auto before = document_->deviceCopyIdentity();
         if (!document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()))) {
             root_->say(document_->error());
             return;
         }
+        // The same project under a new file: a copy held from it still pastes into it.
+        if (deviceClipboard_ && deviceClipboard_->sourceFile == before)
+            deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         root_->say(document_->warning());
     }

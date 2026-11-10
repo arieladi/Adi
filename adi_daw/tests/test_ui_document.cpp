@@ -458,6 +458,33 @@ int main(int argc, char **argv) {
                   "with its name and stored parameters");
             check(!clip->pasteDevice(cut, 999, std::nullopt) && clip->error().find("no device chain") != std::string::npos,
                   "a track with no chain is refused, with the reason");
+            // A rack with a chain inside it: the engine cannot paste it yet, so Copy (and Cut) refuse.
+            {
+                const auto rack = chainOrder()[0];
+                OpRequest nested;
+                nested.opType = "chain.create";
+                nested.payload = {{"id", 60}, {"device", rack}, {"ord", 0}, {"name", "Nested"}};
+                DeviceCopy refused;
+                check(clip->ops().submit(nested).ok && clip->synchronise() && !clip->copyDevice(rack, refused) &&
+                          clip->error().find("nested chain") != std::string::npos,
+                      "a rack with chains inside it is refused at Copy, with the engine's reason");
+                check(clip->ops().undo().ok && clip->synchronise(), "the nested chain undone");
+            }
+            // Save As: the same project under a new file; the app moves a held copy over to it.
+            {
+                DeviceCopy held;
+                const auto before = clip->deviceCopyIdentity();
+                check(!before.empty() && clip->copyDevice(chainOrder()[0], held) && held.sourceFile == before,
+                      "a copy names its project by the engine's file identity");
+                check(clip->saveAs(temp.path() / "clipboard-renamed.adi") && clip->deviceCopyIdentity() != before,
+                      "Save As moves the project to a new file");
+                check(!clip->pasteDevice(held, 2, std::nullopt) &&
+                          clip->error().find("different project") != std::string::npos,
+                      "a copy still keyed to the old file reads as another project");
+                held.sourceFile = clip->deviceCopyIdentity();
+                check(clip->pasteDevice(held, 2, std::nullopt) && chainOrder().size() == 2,
+                      "moved over to the new file, as ui_main.cpp does after Save As, it pastes");
+            }
             clip->release();
         }
     }

@@ -111,6 +111,9 @@ class ProjectDocument final : public engine::BlockProcessor {
     // `error()`.
     bool copyDevice(std::int64_t id, DeviceCopy &out);
     bool pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before);
+    // The file the engine names a device copy's project by (`DeviceCopy::sourceFile`): after Save As
+    // the app moves a held copy over to the new file, the same project under a new name.
+    std::string deviceCopyIdentity() const;
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
