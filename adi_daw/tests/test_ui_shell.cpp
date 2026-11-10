@@ -3960,6 +3960,7 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
     FloatingHost host(root, commands, document->views(), document->view(), [](std::int64_t) { return true; }, false);
     int opened = 0;
     std::string refuse, editorError;
+    bool editorGone = false;
     check(!root.togglePluginWindow(3, false) && root.error().find("in the application") != std::string::npos,
           "with no opener wired, the wrench says plug-in windows open in the application");
     root.pluginHost = &host;
@@ -3974,6 +3975,7 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
         editor->setSize(320, 200);
         view.view = std::move(editor);
         view.frame = [&] { return editorError; };
+        view.gone = [&] { return editorGone; };
         return view;
     };
     auto &panels = root.devices.panels;
@@ -3987,6 +3989,13 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
               host.content(key3)->getWidth() == 320 && host.content(key3)->getHeight() == 200 &&
               !host.zoom(key3, true) && host.alwaysOnTop(key3) && panels[0]->wrench.getToggleState(),
           "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit");
+    {
+        auto *window = dynamic_cast<juce::DocumentWindow *>(host.window(key3));
+        const auto *track = root.reader().findTrack(2);
+        check(window != nullptr && track != nullptr && window->getName() == juce::String(track->name + "/UI knobs") &&
+                  !window->isResizable() && window->getContentComponentBorder().addedTo(host.content(key3)->getBounds()).getWidth() == window->getWidth(),
+              "its window is titled track/device, fits the plug-in, and does not resize");
+    }
     panels[0]->wrench.onClick();
     root.frame();
     check(!host.contains(key3) && !panels[0]->wrench.getToggleState(), "a second click closes it");
@@ -3996,6 +4005,13 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
           "opening another plug-in's window closes the first (Multiple Plug-In Windows off)");
     check(root.togglePluginWindow(3, true) && host.contains(key3) && host.contains(key5),
           "with Ctrl/Cmd both stay open");
+    // A plug-in with no editor refuses before any other window closes.
+    root.togglePluginWindow(5, true);
+    refuse = "This VST3 has no editor";
+    check(!root.togglePluginWindow(5, false) && host.contains(key3) && root.error() == refuse,
+          "a refusal leaves the open plug-in window open");
+    refuse.clear();
+    check(root.togglePluginWindow(5, true) && host.contains(key3) && host.contains(key5), "both open again");
     // Ctrl/Cmd+Alt+P hides and shows them all.
     const juce::KeyPress hideAll('p', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0);
     juce::ApplicationCommandInfo info(AppCommands::TogglePluginWindows);
@@ -4018,10 +4034,24 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
     root.arrangement.geometry.selection.track = 2;
     root.frame();
     check(host.shown(key3) && host.shown(key5), "their track selected again: they show");
+    // A window opened on purpose while they are hidden shows, and the others with it.
+    check(root.keyPressed(hideAll) && !root.pluginWindowsShown(), "hidden");
+    check(root.togglePluginWindow(5, true) && !host.contains(key5), "a wrench click closes the hidden one");
+    check(root.togglePluginWindow(5, true) && root.pluginWindowsShown() && host.shown(key5) && host.shown(key3),
+          "and opening one on purpose shows it, and the others Show/Hide had hidden");
     // Errors reach the Status Bar: the editor's, on its window's clock, and the opener's.
     editorError = "Plug-in refused to show its editor";
     host.frame(key3);
     check(root.error() == editorError, "an editor's error reaches the Status Bar");
+    editorGone = true;
+    host.frame(key3);
+    check(root.error().find("closed its window") != std::string::npos && !host.shown(key3),
+          "an editor the plug-in dropped hides its window at once and says so");
+    host.collect();
+    root.frame();
+    check(!host.contains(key3) && !host.contains(key5) && !panels[0]->wrench.getToggleState(),
+          "and the next collect closes it, the wrench unlit");
+    editorGone = false;
     host.closeAll(false);
     refuse = "This VST3 has no editor";
     check(!root.togglePluginWindow(3, false) && root.error() == refuse && !host.contains(key3),

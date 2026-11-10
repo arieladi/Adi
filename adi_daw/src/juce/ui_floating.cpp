@@ -117,6 +117,7 @@ struct FloatingHost::Entry {
     std::string key;
     std::int64_t device = 0;
     bool closing = false, scaled = true, hidden = false, onTop = false;
+    std::string title; // the window's title, where it is not the key
     std::uint64_t drains = 0;
     juce::Component::SafePointer<juce::Component> component, dock;
     juce::Rectangle<int> dockBounds, first;
@@ -125,7 +126,9 @@ struct FloatingHost::Entry {
     std::function<void(const SnapshotReader &)> onFrame;
     struct Window final : juce::DocumentWindow, juce::KeyListener {
         Window(FloatingHost &host, Entry &entry)
-            : DocumentWindow(entry.key, juce::Colours::black, allButtons, host.native_), h(host),
+            : DocumentWindow(entry.title.empty() ? entry.key : entry.title, juce::Colours::black,
+                             entry.scaled ? allButtons : (closeButton | minimiseButton), host.native_),
+              h(host),
               e(entry), clock(this, [this](double) {
                   followTooltips(*this, h.commands_, tips, tipDelayMs);
                   h.frame(e.key);
@@ -221,9 +224,10 @@ bool FloatingHost::detach(const std::string &key, std::int64_t id, juce::Compone
 }
 bool FloatingHost::openView(const std::string &key, std::int64_t id,
                             std::unique_ptr<juce::Component> component,
-                            std::function<void(const SnapshotReader &)> fn, bool scaled) {
+                            std::function<void(const SnapshotReader &)> fn, bool scaled, std::string title) {
     auto e = std::make_unique<Entry>();
     e->key = key;
+    e->title = std::move(title);
     e->device = id;
     e->component = component.get();
     e->owned = std::move(component);
@@ -328,7 +332,19 @@ void FloatingHost::close(const std::string &key) {
         e.dock->addAndMakeVisible(e.component);
         e.component->setBounds(e.dockBounds);
     }
+    // The content before its window: a plug-in's editor tears its native view down while the
+    // window that parents it still exists.
+    e.zoomed.reset();
+    e.owned.reset();
     entries_.erase(it);
+}
+void FloatingHost::requestClose(const std::string &key) {
+    const auto it = entries_.find(key);
+    if (it == entries_.end())
+        return;
+    it->second->closing = true;
+    if (it->second->window)
+        it->second->window->setVisible(false);
 }
 void FloatingHost::collect() {
     for (auto it = entries_.begin(); it != entries_.end();) {
@@ -349,6 +365,10 @@ void FloatingHost::closeAll(bool remember) {
             e.dock->addAndMakeVisible(e.component);
             e.component->setBounds(e.dockBounds);
         }
+        // The content before its window: a plug-in's editor tears its native view down while
+        // the window that parents it still exists.
+        e.zoomed.reset();
+        e.owned.reset();
         entries_.erase(entries_.begin());
     }
 }

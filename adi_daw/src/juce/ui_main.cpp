@@ -244,14 +244,14 @@ class AdiApplication final : public juce::JUCEApplication,
         // plug-in's size, in a floating window the root opens from a device's wrench. Its frame
         // runs on that window's clock; an error it reports reaches the Status Bar.
         root_->pluginHost = floating_.get();
-        root_->pluginEditor = [this](std::int64_t id, std::string &error) {
+        root_->pluginEditor = [this](std::int64_t id, std::string &why) {
             AdiRootComponent::PluginEditorView out;
             auto *instance = document_->session().instanceFor(id);
             if (instance == nullptr || !instance->loaded()) {
-                error = "The plug-in is not loaded, so it has no window.";
+                why = "The plug-in is not loaded, so it has no window.";
                 return out;
             }
-            auto editor = device::createEditorComponent(*instance, error);
+            auto editor = device::createEditorComponent(*instance, why);
             if (!editor)
                 return out;
             auto *raw = editor.get();
@@ -259,6 +259,7 @@ class AdiApplication final : public juce::JUCEApplication,
                 raw->frame();
                 return raw->error();
             };
+            out.gone = [raw] { return !raw->editor() || !raw->editor()->valid(); };
             out.view = std::move(editor);
             return out;
         };

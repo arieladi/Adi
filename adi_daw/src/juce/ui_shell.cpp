@@ -667,32 +667,53 @@ bool AdiRootComponent::togglePluginWindow(std::int64_t device, bool several) {
         pluginHost->close(key);
         return true;
     }
+    // The editor first: a plug-in that has none refuses before any other window closes.
+    std::string why;
+    auto editor = pluginEditor(device, why);
+    if (!editor.view)
+        return fail(why.empty() ? "This device has no plug-in window." : why);
     // One plug-in window at a time unless Multiple Plug-In Windows is on, or Ctrl/Cmd is held
     // (manual 23.3.1.1).
     if (!several && !commands_.multiplePluginWindows())
         for (const auto &other : pluginHost->keys("plugin:"))
             pluginHost->close(other);
-    std::string why;
-    auto editor = pluginEditor(device, why);
-    if (!editor.view)
-        return fail(why.empty() ? "This device has no plug-in window." : why);
+    // Titled as Live titles it: the track, then the device.
+    std::string title;
+    if (const auto feed = devices.publication ? devices.publication() : nullptr)
+        for (const auto &d : *feed)
+            if (d.id == device) {
+                const auto *t = reader().findTrack(d.track);
+                title = (t != nullptr ? t->name + "/" : std::string()) + d.name;
+            }
     auto frameEditor = std::move(editor.frame);
+    auto gone = std::move(editor.gone);
     const auto safe = juce::Component::SafePointer<AdiRootComponent>(this);
-    // The window's own clock runs the editor's; an error it reports goes to the Status Bar once.
-    auto onFrame = [safe, frameEditor, said = std::make_shared<std::string>()](const SnapshotReader &) {
-        if (!frameEditor)
+    // The window's own clock runs the editor's; an error it reports goes to the Status Bar once;
+    // an editor the plug-in has dropped takes its window with it, at the next collect.
+    auto onFrame = [safe, key, frameEditor, gone, said = std::make_shared<std::string>()](const SnapshotReader &) {
+        if (!safe)
             return;
-        const auto error = frameEditor();
-        if (!error.empty() && error != *said && safe) {
-            *said = error;
-            safe->say(error);
+        if (frameEditor) {
+            const auto error = frameEditor();
+            if (!error.empty() && error != *said) {
+                *said = error;
+                safe->say(error);
+            }
+        }
+        if (gone && gone() && safe->pluginHost != nullptr) {
+            safe->say("The plug-in closed its window.");
+            safe->pluginHost->requestClose(key);
         }
     };
-    if (!pluginHost->openView(key, device, std::move(editor.view), std::move(onFrame), false))
+    if (!pluginHost->openView(key, device, std::move(editor.view), std::move(onFrame), false, title))
         return fail("The plug-in window could not open.");
     pluginHost->setAlwaysOnTop(key, commands_.pluginWindowsOnTop());
-    if (!pluginWindowsShown_)
-        pluginHost->show(key, false);
+    // A window opened on purpose shows, and with it the others Show/Hide had hidden.
+    if (!pluginWindowsShown_) {
+        pluginWindowsShown_ = true;
+        commands_.manager.commandStatusChanged();
+    }
+    followPluginWindows();
     devices.repaint();
     return true;
 }
@@ -2172,9 +2193,7 @@ bool AdiRootComponent::command(int id) {
     case AppCommands::TogglePluginWindows:
         // Every plug-in window hidden, or shown again where it stood (Auto-Hide still applies).
         pluginWindowsShown_ = !pluginWindowsShown_;
-        if (pluginHost != nullptr)
-            for (const auto &key : pluginHost->keys("plugin:"))
-                pluginHost->show(key, pluginWindowsShown_);
+        followPluginWindows(); // shown again as Auto-Hide allows
         commands_.manager.commandStatusChanged();
         return true;
     case AppCommands::UndoHistory:

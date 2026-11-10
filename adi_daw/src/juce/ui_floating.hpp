@@ -56,7 +56,10 @@ class FloatingHost {
     // `scaled`: an ADI view zooms with Ctrl/Cmd + and - (N4); a plug-in's own window opens at the
     // plug-in's size and is never scaled (parity-7.5 row 10).
     bool openView(const std::string &key, std::int64_t device, std::unique_ptr<juce::Component>,
-                  std::function<void(const SnapshotReader &)> frame = {}, bool scaled = true);
+                  std::function<void(const SnapshotReader &)> frame = {}, bool scaled = true,
+                  std::string title = {});
+    // Closed at the next collect(), hidden at once: safe from inside the window's own frame.
+    void requestClose(const std::string &key);
     bool contains(const std::string &key) const { return entries_.contains(key); }
     // Shown or hidden without closing (Live's Show/Hide Plug-In Windows, Auto-Hide): a hidden
     // window keeps its content and its place.

@@ -293,6 +293,8 @@ class AdiRootComponent final : public juce::Component {
     struct PluginEditorView {
         std::unique_ptr<juce::Component> view;
         std::function<std::string()> frame;
+        // Whether the plug-in has dropped its editor: its window then closes.
+        std::function<bool()> gone;
     };
     std::function<PluginEditorView(std::int64_t device, std::string &error)> pluginEditor;
     FloatingHost *pluginHost = nullptr;
