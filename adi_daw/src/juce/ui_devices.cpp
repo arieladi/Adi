@@ -277,30 +277,24 @@ void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
         strip.fold(id);
 }
 juce::PopupMenu DevicePanelView::commands() {
-    // Live's order (manual 23.2.1): Cut, Copy, Paste, Duplicate and Delete, then Rename, then the
-    // device's own; the keys shown as the Edit menu's.
+    // Live 12's order (manual 23.2.1, its figure of a device's menu): Cut, Copy and Duplicate; Rename;
+    // Delete and Fold; then the device's own. Paste is not in it: the Edit menu's and Ctrl/Cmd+V.
     juce::PopupMenu m;
     const auto safe = SafePointer<DevicePanelView>(this);
     using Clip = DeviceChainStrip::Clip;
-    const auto clipItem = [&](const char *name, char key, Clip c, bool active) {
+    const auto clipItem = [&](const char *name, char key, Clip c) {
         juce::PopupMenu::Item item(name);
         item.shortcutKeyDescription =
             juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
-        item.isEnabled = active;
         item.action = [safe, c] {
             if (safe)
                 safe->strip.clipboard(c, safe->id);
         };
         m.addItem(std::move(item));
     };
-    clipItem("Cut", 'x', Clip::Cut, true);
-    clipItem("Copy", 'c', Clip::Copy, true);
-    clipItem("Paste", 'v', Clip::Paste, strip.holdsCopy && strip.holdsCopy());
-    clipItem("Duplicate", 'd', Clip::Duplicate, true);
-    m.addItem("Delete", [safe] {
-        if (safe)
-            safe->strip.action("device.remove", {{"id", safe->id}});
-    });
+    clipItem("Cut", 'x', Clip::Cut);
+    clipItem("Copy", 'c', Clip::Copy);
+    clipItem("Duplicate", 'd', Clip::Duplicate);
     m.addSeparator();
     juce::PopupMenu::Item renameItem("Rename");
     renameItem.shortcutKeyDescription =
@@ -312,10 +306,15 @@ juce::PopupMenu DevicePanelView::commands() {
     };
     m.addItem(std::move(renameItem));
     m.addSeparator();
+    m.addItem("Delete", [safe] {
+        if (safe)
+            safe->strip.action("device.remove", {{"id", safe->id}});
+    });
     m.addItem(strip.folded(id) ? "Unfold" : "Fold", [safe] {
         if (safe)
             safe->strip.fold(safe->id);
     });
+    m.addSeparator();
     m.addItem("Configure", [safe] {
         if (safe)
             safe->configure();

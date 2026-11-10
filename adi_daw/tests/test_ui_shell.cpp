@@ -4064,6 +4064,23 @@ void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
     order = chain();
     check(order.size() == 2 && order[0] == 3 && order[1] > 3 && label() == "Paste Device",
           "the cut device comes back at the chain's end, a new id, one step");
+    // The device's menu and the strip with its end chosen, for the picture beside Live 12's.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        renderMenu(look::liveLook(), root.devices.panels[0]->commands(),
+                   juce::File(folder).getChildFile("adi-device-menu.png"));
+        root.devices.grabKeyboardFocus();
+        juce::Image picture(juce::Image::ARGB, 2 * root.devices.getWidth(), 2 * root.devices.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.devices.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-device-strip.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
     // A copy from one project does not paste into another: the engine's refusal, in the Status Bar.
     {
         auto other = ProjectDocument::open(dir / "device-clipboard-other.adi", true, {}, error);
@@ -6322,9 +6339,9 @@ int main(int argc, char **argv) {
                     if (it.getItem().text == "Rename")
                         renameAction = it.getItem().action;
                 }
-            check(items == juce::StringArray{"Cut", "Copy", "Paste", "Duplicate", "Delete", "Rename", "Fold", "Configure"},
-                  "a device's menu: Cut, Copy, Paste, Duplicate and Delete, Rename, then the device's own, in Live's "
-                  "order (23.2.1)");
+            check(items == juce::StringArray{"Cut", "Copy", "Duplicate", "Rename", "Delete", "Fold", "Configure"},
+                  "a device's menu in Live 12's order (23.2.1's figure): Cut, Copy and Duplicate; Rename; Delete and "
+                  "Fold; then the device's own");
             std::string renameOp;
             Payload renamed;
             integrated.devices.submit = [&](const std::string &op, Payload p) {
