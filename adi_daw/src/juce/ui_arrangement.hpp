@@ -166,6 +166,11 @@ class TrackHeaderList final : public juce::Component, public juce::SettableToolt
     // Where a row's colour and name begin, past its groups' bands; and its fold switch.
     int nameLeft(std::uint32_t depth) const noexcept;
     juce::Rectangle<float> foldSwitch(std::uint32_t depth, int top) const noexcept;
+    // A MIDI track's Rec-Q and Play-Q boxes under its name (MR V.2 §9; N31), in a row tall enough for
+    // them; empty where the row is not.
+    juce::Rectangle<int> quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept;
+    // The box's menu: Free (Rec-Q) or Off (Play-Q), then the four grids, the track's ticked.
+    juce::PopupMenu quantizeMenu(std::int64_t track, bool record);
     // The bands drawn at most: deeper groups share the last one's place.
     static constexpr std::uint32_t kMaxBands = 16;
 
@@ -202,6 +207,7 @@ class ClipAccessible final : public juce::Component {
 // ONE component paints every clip and hit-tests them itself (ADR-0044).
 class ArrangementCanvas final : public juce::Component,
                                 public juce::FileDragAndDropTarget,
+                                public juce::DragAndDropTarget,
                                 public juce::SettableTooltipClient {
   public:
     explicit ArrangementCanvas(ArrangementView &);
@@ -213,6 +219,9 @@ class ArrangementCanvas final : public juce::Component,
     bool keyPressed(const juce::KeyPress &) override;
     void mouseMagnify(const juce::MouseEvent &, float) override;
     bool isInterestedInFileDrag(const juce::StringArray &) override;
+    // A sample dragged from the browser (D1) lands as a file dropped from the desktop does.
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
     void filesDropped(const juce::StringArray &, int, int) override;
     std::unique_ptr<juce::AccessibilityHandler> createAccessibilityHandler() override;
     // One accessible child per clip on screen; on a model or view change only.

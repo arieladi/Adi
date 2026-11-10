@@ -2125,6 +2125,32 @@ void undoHistoryRestores() {
     check(!r.ok && !r.error.empty(), "a step not in the history is refused, with a reason");
 }
 
+// The registry's recording defaults ride the new-track batch (#397, N31): Insert MIDI Track's batch
+// carries Rec-Q and Keep Monitoring Latency as the settings name them, one undo step.
+void recordingDefaultsRideTheBatch() {
+    section("a new track's batch carries the registry's recording defaults");
+    ui::SnapshotTracks none;
+    const ui::RecordingDefaults defaults{"1/8", false};
+    const auto edit = ui::insertTrack(none, 0, true, &defaults);
+    bool record = false, keep = false, labelled = true;
+    for (const auto &op : edit.ops) {
+        labelled = labelled && op.label == "Insert MIDI Track";
+        if (op.opType == "track.setRecordQuantize")
+            record = op.payload.at("on").get<bool>() && op.payload.at("grid").get<std::string>() == "1/8";
+        if (op.opType == "track.setKeepMonitoringLatency")
+            keep = !op.payload.at("on").get<bool>();
+    }
+    check(edit.ops.front().opType == "track.create" && record && keep && labelled,
+          "Insert MIDI Track: the track, then Rec-Q 1/8 and Keep Monitoring Latency off, one label");
+    const ui::RecordingDefaults free{"off", true};
+    bool off = false;
+    for (const auto &op : ui::insertTrack(none, 0, false, &free).ops)
+        if (op.opType == "track.setRecordQuantize")
+            off = !op.payload.at("on").get<bool>() && !op.payload.contains("grid");
+    check(off, "record.quantize off: Rec-Q Free");
+    check(ui::insertTrack(none, 0, true).ops.size() == 1, "without defaults, the track alone, as before");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -2166,6 +2192,7 @@ int main() {
     midiTrackMixer();
     soloRules();
     undoHistoryRestores();
+    recordingDefaultsRideTheBatch();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

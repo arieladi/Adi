@@ -304,14 +304,24 @@ void DevicePanelView::mouseDoubleClick(const juce::MouseEvent &e) {
         strip.fold(id);
 }
 juce::PopupMenu DevicePanelView::commands() {
-    // Live's order (manual 23.2.1): Cut, Copy, Duplicate and Delete, then Rename, then the
-    // device's own. Cut, Copy and Duplicate wait for a device's copy (window log, N18).
+    // Live 12's order (manual 23.2.1, its figure of a device's menu): Cut, Copy and Duplicate; Rename;
+    // Delete and Fold; then the device's own. Paste is not in it: the Edit menu's and Ctrl/Cmd+V.
     juce::PopupMenu m;
     const auto safe = SafePointer<DevicePanelView>(this);
-    m.addItem("Delete", [safe] {
-        if (safe)
-            safe->strip.action("device.remove", {{"id", safe->id}});
-    });
+    using Clip = DeviceChainStrip::Clip;
+    const auto clipItem = [&](const char *name, char key, Clip c) {
+        juce::PopupMenu::Item item(name);
+        item.shortcutKeyDescription =
+            juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0).getTextDescriptionWithIcons();
+        item.action = [safe, c] {
+            if (safe)
+                safe->strip.clipboard(c, safe->id);
+        };
+        m.addItem(std::move(item));
+    };
+    clipItem("Cut", 'x', Clip::Cut);
+    clipItem("Copy", 'c', Clip::Copy);
+    clipItem("Duplicate", 'd', Clip::Duplicate);
     m.addSeparator();
     juce::PopupMenu::Item renameItem("Rename");
     renameItem.shortcutKeyDescription =
@@ -323,10 +333,15 @@ juce::PopupMenu DevicePanelView::commands() {
     };
     m.addItem(std::move(renameItem));
     m.addSeparator();
+    m.addItem("Delete", [safe] {
+        if (safe)
+            safe->strip.action("device.remove", {{"id", safe->id}});
+    });
     m.addItem(strip.folded(id) ? "Unfold" : "Fold", [safe] {
         if (safe)
             safe->strip.fold(safe->id);
     });
+    m.addSeparator();
     m.addItem("Configure", [safe] {
         if (safe)
             safe->configure();
@@ -422,6 +437,66 @@ DeviceChainStrip::DeviceChainStrip(AdiRootComponent &r) : root(r) {
     // Devices run left to right; the strip scrolls sideways, never down, and shows no
     // scroll bar (Live's Device View).
     scroll.setScrollBarsShown(false, false, false, true);
+    // A click past the last device chooses the chain's end, where a paste goes (manual 23.2.1).
+    setWantsKeyboardFocus(true);
+    content.addMouseListener(this, false);
+}
+void DeviceChainStrip::mouseDown(const juce::MouseEvent &e) {
+    if (e.eventComponent == &content && e.x >= end_ - 11 && !e.mods.isPopupMenu())
+        grabKeyboardFocus();
+}
+const DevicePanelData *DeviceChainStrip::dataOf(std::int64_t device) const {
+    if (presented)
+        for (const auto &d : *presented)
+            if (d.id == device)
+                return &d;
+    return nullptr;
+}
+std::optional<std::int64_t> DeviceChainStrip::focusedDevice() const {
+    // While its name is being edited the keys are the editor's: no device is chosen.
+    for (const auto &p : panels)
+        if (p->hasKeyboardFocus(true) && !p->rename.isVisible())
+            return p->id;
+    return std::nullopt;
+}
+bool DeviceChainStrip::canClipboard(Clip c) const {
+    const auto device = focusedDevice();
+    if (c == Clip::Paste)
+        return holdsCopy && holdsCopy() && (device || (endChosen() && selectedTrack >= 0));
+    return device.has_value();
+}
+bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
+    if (!device)
+        device = focusedDevice();
+    const auto *data = device ? dataOf(*device) : nullptr;
+    switch (c) {
+    case Clip::Cut:
+    case Clip::Copy:
+        return data != nullptr && copy && copy(*device, c == Clip::Cut);
+    case Clip::Paste:
+        if (!paste || !holdsCopy || !holdsCopy())
+            return false;
+        if (data != nullptr)
+            return paste(data->track, *device);
+        return endChosen() && selectedTrack >= 0 && paste(selectedTrack, std::nullopt);
+    case Clip::Duplicate: {
+        if (data == nullptr || !duplicate)
+            return false;
+        // In front of the next device in its chain, else at the chain's end.
+        std::optional<std::int64_t> next;
+        bool after = false;
+        if (presented)
+            for (const auto &d : *presented) {
+                if (after && d.chain == data->chain) {
+                    next = d.id;
+                    break;
+                }
+                after = after || d.id == data->id;
+            }
+        return duplicate(*device, data->track, next);
+    }
+    }
+    return false;
 }
 void DeviceChainStrip::frame(std::int64_t track) {
     // A wrench is lit while its window is open, however it closed (its own button, the host).
@@ -487,6 +562,11 @@ void DeviceChainStrip::paint(juce::Graphics &g) {
     g.setFont(look::font(11.5f));
     g.drawText("Drop Audio Effects Here", from, 0, std::max(0, getWidth() - from), getHeight(),
                juce::Justification::centred);
+    // The chosen end: where a paste goes, marked as Live marks an insert point.
+    if (endChosen()) {
+        g.setColour(look::accent);
+        g.fillRect(std::max(0, end_ - scroll.getViewPositionX() - 7), 4, 2, std::max(0, getHeight() - 8));
+    }
 }
 void DeviceChainStrip::fold(std::int64_t id) {
     auto &set = root.state().foldedDevices;

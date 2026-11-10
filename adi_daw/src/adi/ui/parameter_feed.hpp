@@ -8,6 +8,8 @@
 namespace adi::ui {
 struct DevicePanelData {
     std::int64_t id = 0, track = 0;
+    // The track's device chain holding it (`device_chains.id`): where a paste in front of it goes.
+    std::int64_t chain = 0;
     std::string name;
     bool enabled = true;
     // Whether it plays notes as sound: a plug-in of the instrument subtype (`plugin_refs.subtype`).

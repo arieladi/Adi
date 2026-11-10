@@ -14,6 +14,7 @@ void ParameterFeed::publish(engine::Session &session) {
             DevicePanelData data;
             data.id = row.id;
             data.track = *chain.trackId;
+            data.chain = chain.id;
             data.name = row.name;
             data.enabled = row.enabled;
             data.plugin = row.pluginRefId.has_value();

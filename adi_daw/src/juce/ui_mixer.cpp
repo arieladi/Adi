@@ -204,6 +204,12 @@ MixerStrip::MixerStrip(MixerPanel &panel) : panel_(panel) {
         return text.trim().upToFirstOccurrenceOf("ms", false, true).trim().getDoubleValue();
     };
     delay.updateText();
+    keepLatency.setTitle("Keep Latency");
+    keepLatency.setTooltip("Keep Monitoring Latency in Recorded Audio, stored with the track; recording does not "
+                           "follow it yet. Right-click In or Auto for the same switch.");
+    keepLatency.setClickingTogglesState(false);
+    keepLatency.onClick = [this] { panel_.root.setKeepMonitoringLatency(track_, !keepLatency.getToggleState()); };
+    addChildComponent(keepLatency);
     delay.setTitle("Track Delay");
     delay.setTooltip("Delays the track's output by this many milliseconds; a negative value pre-delays it.");
     delay.setScrollWheelEnabled(false);
@@ -332,6 +338,7 @@ void MixerStrip::frame(bool changed) noexcept {
         pan.setValue(t->pan, juce::dontSendNotification);
         // The delay as the sample grid keeps it, in ms at the project's rate (manual 18.7).
         delay.setValue(trackDelayMs(t->delaySamples, panel_.root.reader().sampleRate()), juce::dontSendNotification);
+        keepLatency.setToggleState(t->recording.keepMonitoringLatency, juce::dontSendNotification);
         active.setToggleState(!t->muted, juce::dontSendNotification);
         solo.setToggleState(t->soloed, juce::dontSendNotification);
         // A group holding a soloed track shows its Solo half coloured (Live 12 manual 18.3). The
@@ -424,6 +431,9 @@ void MixerStrip::resized() {
         // Live's figure: the box across the strip, the "ms" box at its right edge.
         delay.setVisible(delay_ > 0);
         delay.setBounds(4, mixerBottom() + 19, getWidth() - 32, 13);
+        // Under it, on a track that records (Live's figure: none on a return or Main).
+        keepLatency.setVisible(delay_ > 0 && kind_ != "master" && kind_ != "return" && kind_ != "group");
+        keepLatency.setBounds(4, mixerBottom() + 36, getWidth() - 8, 14);
         for (std::size_t i = 0; i < sends_.size(); ++i) {
             sends_[i]->setVisible(i < shown_);
             sends_[i]->setBounds(sendBounds(i));
@@ -681,6 +691,28 @@ void MixerStrip::paintInOut(juce::Graphics &g, int x) const {
     chooser(3, outputLabel(), true);
     chooser(4, "", false);
 }
+bool MixerStrip::onMonitorInOrAuto(juce::Point<int> at) const noexcept {
+    // Where they are drawn, in a track that records: the Mixer View's In/Out section (paintMixerInOut)
+    // has In and Auto at x 4 and 23, y kMixerTop + 59; the track controls' column (paintInOut) at x 5
+    // and 27, y 37.
+    if (kind_ == "master" || kind_ == "return" || kind_ == "group")
+        return false;
+    if (panel_.vertical())
+        return io_ > 0 && juce::Rectangle<int>(4, kMixerTop + 59, 16 + 3 + 23, 13).contains(at);
+    if (!showsInOut() || (getHeight() - 1) / 17 <= 2)
+        return false;
+    return juce::Rectangle<int>(5, 37, 16 + 6 + 23, 13).contains(at);
+}
+juce::PopupMenu MixerStrip::monitorMenu() {
+    juce::PopupMenu menu;
+    const auto *t = panel_.root.reader().findTrack(track_);
+    if (t == nullptr)
+        return menu;
+    const bool on = t->recording.keepMonitoringLatency;
+    menu.addItem("Keep Monitoring Latency in Recorded Audio", true, on,
+                 [this, id = track_, on] { panel_.root.setKeepMonitoringLatency(id, !on); });
+    return menu;
+}
 const char *MixerStrip::outputLabel() const noexcept {
     // Main plays to the outputs; a MIDI track with no instrument to nothing (No Output); a track in a
     // group to its group, as Live assigns a grouped track's Audio To (manual 18.3), shown as Live's
@@ -822,6 +854,10 @@ void MixerStrip::mouseDown(const juce::MouseEvent &e) {
     }
     if (!e.mods.isPopupMenu())
         return;
+    if (e.eventComponent == this && onMonitorInOrAuto(e.getPosition())) {
+        monitorMenu().showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+        return;
+    }
     if (e.eventComponent == &pan)
         panMenu();
     else

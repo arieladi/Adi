@@ -34,13 +34,16 @@ ProjectDocument::ProjectDocument(std::unique_ptr<Store> s, std::string name)
 }
 std::unique_ptr<ProjectDocument> ProjectDocument::open(const std::filesystem::path &path,
                                                        bool create, engine::DeviceLoader loader,
-                                                       std::string &error) {
+                                                       std::string &error, const RecordingDefaults *defaults) {
     try {
         StoreError result{};
         // New is the store's: the project row, Main and Live's default Set (two MIDI and two audio
         // tracks), their strips and the 120 BPM, 4/4 maps, written as the history's root, not an
         // undo step (#307, N2; Live 12 manual 5.4.2; ADR-0209 §10 d10).
-        auto store = create ? Store::createNewProject(path, result) : Store::open(path, result);
+        auto store = !create          ? Store::open(path, result)
+                     : defaults != nullptr ? Store::createNewProject(path, result, defaults->quantize,
+                                                                     defaults->keepMonitoringLatency)
+                                           : Store::createNewProject(path, result);
         if (!store) {
             error = "Cannot open project: " + std::string(toString(result));
             return {};
@@ -269,6 +272,69 @@ bool ProjectDocument::deviceAction(const std::string &op, Payload payload) {
     r.opType = op;
     r.payload = std::move(payload);
     const auto result = ops_.submit(r);
+    error_ = result.error;
+    if (!result.ok || !synchronise())
+        return false;
+    feed_.publish(session_);
+    return true;
+}
+bool ProjectDocument::copyDevice(std::int64_t id, DeviceCopy &out) {
+    auto copy = readDeviceCopy(*store_, id);
+    if (!copy.ok) {
+        error_ = copy.error.empty() ? "The device could not be copied." : copy.error;
+        return false;
+    }
+    // A rack with nested chains reads, but the engine cannot paste it (no nested chain image yet):
+    // refused here, so a Cut never removes what could not come back.
+    if (copy.hasNestedChains) {
+        error_ = "A rack with chains inside it cannot be copied yet (rack paste needs a nested chain image).";
+        return false;
+    }
+    out = std::move(copy);
+    error_.clear();
+    return true;
+}
+std::string ProjectDocument::deviceCopyIdentity() const {
+    SQLite::Statement row(store_->db(), "PRAGMA database_list");
+    while (row.executeStep())
+        if (row.getColumn(1).getString() == "main")
+            return row.getColumn(2).getString();
+    return {};
+}
+bool ProjectDocument::pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before) {
+    // The chain the device goes into: the one holding `before`, else the track's own (a rack's
+    // nested chains belong to a device, never to the track).
+    std::int64_t chain = 0;
+    if (before) {
+        SQLite::Statement q(store_->db(), "SELECT chain_id FROM devices WHERE id = ?");
+        q.bind(1, *before);
+        if (q.executeStep())
+            chain = q.getColumn(0).getInt64();
+    } else {
+        SQLite::Statement q(store_->db(), "SELECT id FROM device_chains WHERE track_id = ? AND parent_device_id IS NULL "
+                                          "ORDER BY ord, id LIMIT 1");
+        q.bind(1, track);
+        if (q.executeStep())
+            chain = q.getColumn(0).getInt64();
+    }
+    // The next free id, never the copy's own: a cut device's id is free again, and the engine
+    // refuses a paste that would take it ("device copy needs a new identity").
+    auto id = store_->db().execAndGet("SELECT COALESCE(MAX(id), 0) + 1 FROM devices").getInt64();
+    if (copy.ok && copy.insert.contains("id") && copy.insert.at("id").is_number_integer() &&
+        id == copy.insert.at("id").get<std::int64_t>())
+        ++id;
+    // With no chain the engine still checks the copy first, so a copy from another project or a rack
+    // says so rather than that the track has no chain.
+    auto prepared = prepareDevicePaste(*store_, copy, id, chain, before);
+    if (!prepared.ok) {
+        error_ = prepared.error == "destination chain is missing" ? "The track has no device chain to paste into."
+                 : prepared.error.empty()                         ? "The device could not be pasted."
+                                                                  : prepared.error;
+        return false;
+    }
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedDevicePaste &p, Actor actor) {
+        return commitDevicePaste(s, p, actor);
+    });
     error_ = result.error;
     if (!result.ok || !synchronise())
         return false;

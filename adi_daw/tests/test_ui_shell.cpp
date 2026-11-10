@@ -10,7 +10,10 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
+#include "adi/ui/midi_tracks.hpp"
+#include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/recording_edits.hpp"
 #include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "knobs_device.hpp"
@@ -145,9 +148,16 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(area.getX(), area.getY() + ArrangementView::kOverviewHeight, area.getWidth(),
                    ArrangementView::kRulerHeight);
         const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
-        for (const auto track : laneOrder(root))
-            if (const int top = root.arrangement.geometry.rowTop(root.reader(), track); top >= 0)
+        for (const auto row : root.arrangement.geometry.rows(root.reader()))
+            if (const int top = root.arrangement.geometry.rowTop(root.reader(), row.track->id); top >= 0) {
                 g.fillRect(headers.getX() + 6, headers.getY() + top + 4, std::max(0, headers.getWidth() - 8), 24);
+                // A MIDI track's Rec-Q and Play-Q boxes hold text too: their place, not their glyphs.
+                const int height = root.arrangement.geometry.heightFor(row.track->id);
+                for (const bool record : {true, false})
+                    if (adi::ui::isMidiTrack(*row.track))
+                    g.fillRect(root.arrangement.headers.quantizeBox(row.place.depth, top, height, record) +
+                               headers.getPosition());
+            }
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
@@ -2585,6 +2595,139 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
           "the Snare dropped twice below the tracks: a new track, one after the other, pooled once");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+
+    // The browser's Samples and Places (D1; Live 12 manual 4.1, 4.6, 4.7; N15's index part): a folder
+    // registered and scanned into the library index (#102) lists its audio files, and not its others;
+    // right goes from the sidebar into the list, left back; the search narrows it; a row dragged onto a
+    // lane is the audio drop.
+    {
+        const auto library = dir / "Library";
+        std::filesystem::create_directories(library / "Drums");
+        for (const auto &[name, value] : {std::pair{"Drums/Clap.wav", .2f}, std::pair{"Bass Hit.wav", .4f}}) {
+            std::vector<float> samples(4800, value);
+            audio::WavWriter writer(library / name, 48000, 1, audio::WavFormat::Pcm16);
+            writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        }
+        std::ofstream(library / "notes.txt") << "not audio";
+        std::string why;
+        auto index = library::Index::open(dir / "library.sqlite", why, false);
+        check(index != nullptr, "a library index");
+        if (!index)
+            return;
+        // An added folder whose name is a sidebar label's: told apart by its volume, not its name.
+        const auto addedFolder = dir / "Samples";
+        std::filesystem::create_directories(addedFolder);
+        {
+            std::vector<float> samples(4800, .3f);
+            audio::WavWriter writer(addedFolder / "Rim.wav", 48000, 1, audio::WavFormat::Pcm16);
+            writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        }
+        library::MarkerVolumeProvider volumes;
+        const std::vector<LibraryFolder> folders{{"User Library", library, true}, {"Samples", addedFolder, false},
+                                                 {"Drums", library / "Drums", false}};
+        auto listing = scanLibrary(*index, folders, volumes);
+        check(listing.error.empty() && listing.places.size() == 3 && listing.samples.size() == 3 &&
+                  listing.samples[0].name == "Bass Hit.wav" && listing.samples[1].name == "Clap.wav" &&
+                  listing.samples[2].name == "Rim.wav" && listing.places[0].userLibrary,
+              "the scan lists the three audio files once each by name (Clap.wav under two folders), and no text file");
+        std::atomic<bool> stopNow{true};
+        check(scanLibrary(*index, folders, volumes, &stopNow).places.empty(), "a stop before the first folder scans none");
+        auto &browser = root.browser;
+        browser.setListing(listing);
+        int samples = -1, user = -1;
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+            if (browser.sidebar()[i].samples)
+                samples = static_cast<int>(i);
+            if (browser.sidebar()[i].name == "User Library")
+                user = static_cast<int>(i);
+        }
+        int addedSamples = -1, addedDrums = -1, drumsLabel = -1;
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+            const auto &e = browser.sidebar()[i];
+            if (e.name == "Samples" && !e.samples)
+                addedSamples = static_cast<int>(i);
+            if (e.name == "Drums" && !e.place.empty())
+                addedDrums = static_cast<int>(i);
+            if (e.name == "Drums" && e.place.empty() && !e.heading)
+                drumsLabel = static_cast<int>(i);
+        }
+        root.say({});
+        browser.choose(samples);
+        check(browser.shown().size() == 3 && browser.shown()[0]->name == "Bass Hit.wav" && root.error().empty() &&
+                  browser.list.getNumRowsOnScreen() > 0,
+              "Samples lists all three, and says nothing");
+        browser.choose(user);
+        check(browser.shown().size() == 2, "the User Library place lists its two, its Drums folder's included");
+        browser.choose(addedSamples);
+        check(addedSamples > user && browser.shown().size() == 1 && browser.shown()[0]->name == "Rim.wav",
+              "an addedFolder folder named Samples is a Place of its own, listing its one file");
+        browser.choose(addedDrums);
+        check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav",
+              "an addedFolder Drums folder inside the User Library lists the file under it");
+        browser.choose(drumsLabel);
+        check(browser.shown().empty() && root.error().find("not listed yet") != std::string::npos,
+              "the Drums category stays the catalogue's, whatever a folder is called");
+        browser.setListing(listing, true);
+        check(browser.selected() == drumsLabel, "a new listing keeps the label chosen");
+        browser.setListing(listing, false);
+        browser.choose(samples);
+        check(root.error().find("still being indexed") != std::string::npos,
+              "while the first scan runs, the Status Bar says so");
+        browser.setListing(listing, true);
+        browser.choose(user);
+        check(browser.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && browser.list.getSelectedRow() == 0,
+              "right goes into the list, its first row selected");
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && browser.list.getSelectedRow() == 1,
+              "down moves to the next row");
+        browser.choose(user);
+        // JUCE posts a typed change; the test runs the editor's callback as the message loop would.
+        browser.search.setText("clap", false);
+        browser.search.onTextChange();
+        check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav", "the search narrows the list");
+        browser.list.deselectAllRows();
+        check(browser.searchKeys().keyPressed(juce::KeyPress(juce::KeyPress::downKey), &browser.search) &&
+                  browser.list.getSelectedRow() == 0,
+              "the down arrow in the search goes to its results, the first selected");
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        // Dragged onto Drums at bar 5: the audio drop, one clip, one step.
+        const auto drag = BrowserPanel::dragDescription({browser.shown()[1]});
+        const auto bar5 = 4 * textproj::kWhole;
+        const juce::Point<int> at{static_cast<int>(geometry.x(bar5)) + 3, laneTop(root, 1) + 10};
+        const auto carried = BrowserPanel::droppedFiles(drag);
+        check(carried.size() == 1 && juce::File::createFileWithoutCheckingPath(carried[0]).getFileName() == "Clap.wav",
+              "the drag carries the sample's native path, its file name Clap.wav on every system");
+        juce::DragAndDropTarget::SourceDetails details(drag, nullptr, at);
+        check(canvas.isInterestedInDragSource(details) &&
+                  !canvas.isInterestedInDragSource(juce::DragAndDropTarget::SourceDetails("something else", nullptr, at)),
+              "the lanes take a browser sample, and nothing else dragged");
+        const auto before = clipsOn(1).size();
+        canvas.itemDropped(details);
+        root.frame();
+        const auto after = clipsOn(1);
+        check(after.size() == before + 1 && after.back().first == "Clap" && after.back().second == bar5 &&
+                  submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip",
+              "Clap.wav dropped from the browser on Drums at bar 5: one clip there, one step, as a file from the desktop");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+            browser.choose(samples);
+            browser.list.selectRow(1);
+            root.frame();
+            juce::Image picture(juce::Image::ARGB, 2 * browser.getWidth(), 2 * browser.getHeight(), true,
+                                juce::SoftwareImageType{});
+            {
+                juce::Graphics g(picture);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                browser.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-browser-samples.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+        }
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        browser.setListing({});
+    }
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
@@ -3918,9 +4061,309 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     root.afterEdit = nullptr;
     document->release();
 }
+// A track's recording options (C6, N31; MR V.2 §9; Live 12 manual 18.8): a MIDI track's Rec-Q and
+// Play-Q on its header, Keep Monitoring Latency from a right-click on In or Auto, each one undo step,
+// read back from `TrackNode::recording`; Insert MIDI Track carries the registry's defaults.
+void recordingOptions(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "recording.adi", true, {}, error);
+    check(document != nullptr, "a new project for the recording options");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "recording");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    auto &headers = root.arrangement.headers;
+    const auto *midi = root.reader().findTrack(2);
+    check(midi != nullptr && recordQuantizeText(midi->recording) == "1/16" && playQuantizeText(midi->recording) == "Off" &&
+              !headers.quantizeBox(0, 0, root.arrangement.geometry.heightFor(2), true).isEmpty(),
+          "1 MIDI's header shows Rec-Q 1/16 and Play-Q Off");
+    auto pick = [](const juce::PopupMenu &menu, const juce::String &text) {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == text && it.getItem().action) {
+                it.getItem().action();
+                return true;
+            }
+        return false;
+    };
+    const auto step = [&] { return document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0; };
+    const auto before = step();
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        renderMenu(look::liveLook(), headers.quantizeMenu(2, true), juce::File(folder).getChildFile("adi-rec-q-menu.png"));
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-recording-options.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    check(pick(headers.quantizeMenu(2, true), "1/8"), "Rec-Q's menu, 1/8");
+    root.frame();
+    midi = root.reader().findTrack(2);
+    check(midi->recording.recordEnabled && midi->recording.recordGrid == "1/8" && step() != before &&
+              document->ops().nextUndo()->label == "Change Record Quantization" && document->ops().nextUndo()->opCount == 1,
+          "Rec-Q writes track.setRecordQuantize, one undo step, read back from the snapshot");
+    check(pick(headers.quantizeMenu(2, true), "Free"), "Rec-Q Free");
+    root.frame();
+    check(!root.reader().findTrack(2)->recording.recordEnabled && recordQuantizeText(root.reader().findTrack(2)->recording) == "Free",
+          "and Free turns it off");
+    check(pick(headers.quantizeMenu(2, false), "1/4"), "Play-Q 1/4");
+    root.frame();
+    check(root.reader().findTrack(2)->recording.playEnabled && root.reader().findTrack(2)->recording.playGrid == "1/4" &&
+              document->ops().nextUndo()->label == "Change Live Quantization",
+          "Play-Q writes track.setPlayQuantize, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(!root.reader().findTrack(2)->recording.playEnabled, "undo puts Play-Q back off");
+    // Keep Monitoring Latency from 3 Audio's In or Auto button.
+    MixerStrip *audio = nullptr;
+    for (const auto &strip : root.mixer.strips())
+        if (strip->track() == 4)
+            audio = strip.get();
+    check(audio != nullptr, "3 Audio's row");
+    if (audio != nullptr) {
+        check(!audio->showsInOut() || audio->onMonitorInOrAuto({30, 40}), "a right-click on Auto is the monitor's");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty())
+            renderMenu(look::liveLook(), audio->monitorMenu(), juce::File(folder).getChildFile("adi-monitor-menu.png"));
+        check(pick(audio->monitorMenu(), "Keep Monitoring Latency in Recorded Audio"), "its menu's one item");
+        root.frame();
+        check(!root.reader().findTrack(4)->recording.keepMonitoringLatency &&
+                  document->ops().nextUndo()->label == "Keep Monitoring Latency",
+              "Keep Monitoring Latency off, one step, read back");
+    }
+    // Live 12's Keep Latency toggle under Track Delay in the Mixer View's Track Options (manual 18.8).
+    root.command(AppCommands::ToggleMixerView);
+    if (!root.state().mixerTrackOptions)
+        root.command(AppCommands::ToggleMixerTrackOptions);
+    const bool inOutWasOn = root.state().mixerInOut;
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.frame();
+    MixerStrip *wide = nullptr;
+    for (const auto &strip : root.mixerView.strips())
+        if (strip->track() == 4)
+            wide = strip.get();
+    check(wide != nullptr && wide->keepLatency.isVisible() && !wide->keepLatency.getToggleState(),
+          "the Mixer View's Track Options: 3 Audio's Keep Latency, unlit as the project holds it");
+    if (wide != nullptr) {
+        wide->keepLatency.onClick();
+        root.frame();
+        check(root.reader().findTrack(4)->recording.keepMonitoringLatency && wide->keepLatency.getToggleState(),
+              "clicked: on again, lit from the snapshot");
+        // The Mixer View's own In/Out section draws In and Auto 59 px under the mixer's top (40): a
+        // right-click there is the monitor's too, as the toggle's tooltip says; Audio From is not.
+        // A strip tall enough for the In/Out section, Track Options and the mixer together.
+        const auto keptHeight = wide->getHeight();
+        wide->setSize(wide->getWidth(), 360);
+        check(wide->onMonitorInOrAuto({10, 40 + 65}) && wide->onMonitorInOrAuto({35, 40 + 65}) &&
+                  !wide->onMonitorInOrAuto({10, 40 + 20}),
+              "a right-click on In or Auto in the Mixer View's In/Out section is the monitor's");
+        wide->setSize(wide->getWidth(), keptHeight);
+    }
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.command(AppCommands::ToggleMixerTrackOptions);
+    root.command(AppCommands::ToggleMixerView);
+    root.frame();
+    // Insert MIDI Track takes the registry's defaults.
+    std::string why;
+    check(settings.set("record.quantize", "1/32", {}, why), "record.quantize 1/32");
+    commands.reload();
+    root.arrangement.geometry.selection.track = 2;
+    check(root.command(AppCommands::InsertMidiTrack), "Insert MIDI Track");
+    root.frame();
+    const auto *added = root.reader().findTrack(root.arrangement.geometry.selection.track);
+    check(added != nullptr && added->kind == "midi" && added->recording.recordGrid == "1/32",
+          "the new MIDI track records quantized to 1/32, the registry's default");
+    settings.set("record.quantize", "1/16", {}, why);
+    commands.reload();
+    root.afterEdit = nullptr;
+    document->release();
+}
 // A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
 // d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
 // producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
+// D2: Live's device clipboard (manual 23.2.1, 41.5; N18, #394). Cut, Copy, Paste and Duplicate on
+// a device the project stores, from the keys through the peer, with the app's clipboard wired as
+// ui_main.cpp wires it; a click past the last device chooses the chain's end.
+void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "device-clipboard.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "a project for the device clipboard");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI to copy");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "clipboard");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.submit = [&](const std::string &op, Payload p) {
+        const bool ok = document->deviceAction(op, std::move(p));
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    std::optional<DeviceCopy> clipboard;
+    root.devices.copy = [&](std::int64_t id, bool cut) {
+        DeviceCopy copy;
+        bool ok = document->copyDevice(id, copy);
+        if (ok) {
+            clipboard = std::move(copy);
+            if (cut)
+                ok = document->deviceAction("device.remove", {{"id", id}});
+        }
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.paste = [&](std::int64_t track, std::optional<std::int64_t> before) {
+        const bool ok = clipboard && document->pasteDevice(*clipboard, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.duplicate = [&](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
+        DeviceCopy copy;
+        const bool ok = document->copyDevice(id, copy) && document->pasteDevice(copy, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.holdsCopy = [&] { return clipboard.has_value(); };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    refresh();
+    const auto chain = [&] {
+        std::vector<std::int64_t> out;
+        SQLite::Statement q(document->store().db(), "SELECT id FROM devices WHERE chain_id = 3 ORDER BY ord, id");
+        while (q.executeStep())
+            out.push_back(q.getColumn(0).getInt64());
+        return out;
+    };
+    const auto label = [&] { return document->ops().nextUndo() ? document->ops().nextUndo()->label : std::string(); };
+    using Clip = DeviceChainStrip::Clip;
+    check(root.devices.panels.size() == 1 && !root.devices.canClipboard(Clip::Copy) &&
+              !root.devices.canClipboard(Clip::Paste) && !root.command(AppCommands::Copy) &&
+              root.error().find("Select a device") != std::string::npos,
+          "with no device chosen, Copy has nothing to act on and the Status Bar says so");
+    UiPeerRoot host;
+    host.setSize(root.getWidth(), root.getHeight());
+    host.addAndMakeVisible(root);
+    host.setVisible(true);
+    host.addToDesktop(0);
+    auto *peer = host.getPeer();
+    const auto key = [&](char c) {
+        return peer != nullptr && peer->handleKeyPress(juce::KeyPress(c, juce::ModifierKeys::commandModifier, 0));
+    };
+    const auto focus = [&](std::size_t i) {
+        if (i >= root.devices.panels.size())
+            return false;
+        root.devices.panels[i]->grabKeyboardFocus();
+        return root.devices.panels[i]->hasKeyboardFocus(true);
+    };
+    // While a device's name is being edited the keys are the editor's: no device is chosen.
+    check(focus(0) && root.devices.panels[0]->beginRename() && !root.devices.focusedDevice() &&
+              !root.devices.canClipboard(Clip::Duplicate),
+          "while its name is edited, the device is not the clipboard's: Ctrl/Cmd+D stays the editor's");
+    root.devices.panels[0]->rename.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    const auto opsBefore = document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+    check(focus(0) && key('c') && clipboard.has_value() && chain() == std::vector<std::int64_t>{3} &&
+              document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,
+          "Ctrl/Cmd+C on the focused device copies it, and writes nothing");
+    check(focus(0) && key('v'), "Ctrl/Cmd+V on the focused device pastes");
+    refresh();
+    auto order = chain();
+    check(order.size() == 2 && order[0] > 3 && order[1] == 3 && label() == "Paste Device" &&
+              document->store()
+                      .db()
+                      .execAndGet("SELECT name FROM devices WHERE id = " + std::to_string(order[0]))
+                      .getString() == "UI knobs" &&
+              root.devices.panels.size() == 2,
+          "a new device in front of it, with the next free id and the copy's name: one step, Paste Device");
+    check(root.command(AppCommands::Undo), "undo");
+    refresh();
+    check(chain() == std::vector<std::int64_t>{3}, "undo takes the pasted device away in one step");
+    const auto held = clipboard->insert.dump();
+    check(focus(0) && key('d'), "Ctrl/Cmd+D on the focused device duplicates");
+    refresh();
+    order = chain();
+    check(order.size() == 2 && order[0] == 3 && order[1] > 3 && clipboard->insert.dump() == held,
+          "the duplicate goes after it, at the chain's end, and the clipboard keeps what it held");
+    const auto duplicateId = order[1];
+    check(focus(1) && key('x'), "Ctrl/Cmd+X on the duplicate cuts it");
+    refresh();
+    check(chain() == std::vector<std::int64_t>{3} && clipboard->insert.value("name", "") == "UI knobs" &&
+              clipboard->insert.value("id", std::int64_t{0}) == duplicateId,
+          "cut: the device goes, and the clipboard holds it");
+    // A click past the last device chooses the chain's end; Paste lands there.
+    const auto past = host.getLocalPoint(&root.devices, juce::Point<int>{root.devices.panels.back()->getRight() + 40,
+                                                                          root.devices.getHeight() / 2})
+                          .toFloat();
+    juce::int64 when = 200000;
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past, juce::ModifierKeys(), 1.f, 0.f,
+                           when += 100);
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past,
+                           juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier), 1.f, 0.f, when += 100);
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past, juce::ModifierKeys(), 1.f, 0.f,
+                           when += 100);
+    check(root.devices.endChosen() && !root.devices.focusedDevice() && root.devices.canClipboard(Clip::Paste) &&
+              !root.devices.canClipboard(Clip::Copy),
+          "a click past the last device chooses the chain's end: Paste can go there, Copy has no device");
+    check(key('v'), "Ctrl/Cmd+V at the chain's end");
+    refresh();
+    order = chain();
+    check(order.size() == 2 && order[0] == 3 && order[1] > 3 && label() == "Paste Device",
+          "the cut device comes back at the chain's end, a new id, one step");
+    // The device's menu and the strip with its end chosen, for the picture beside Live 12's.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        renderMenu(look::liveLook(), root.devices.panels[0]->commands(),
+                   juce::File(folder).getChildFile("adi-device-menu.png"));
+        root.devices.grabKeyboardFocus();
+        juce::Image picture(juce::Image::ARGB, 2 * root.devices.getWidth(), 2 * root.devices.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.devices.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-device-strip.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
+    // A copy from one project does not paste into another: the engine's refusal, in the Status Bar.
+    {
+        auto other = ProjectDocument::open(dir / "device-clipboard-other.adi", true, {}, error);
+        check(other != nullptr, "a second project");
+        if (other) {
+            check(!other->pasteDevice(*clipboard, 2, std::nullopt) &&
+                      other->error().find("different project") != std::string::npos,
+                  "a copy from another project is refused, with the engine's reason");
+            other->release();
+        }
+    }
+    host.removeChildComponent(&root);
+    document->release();
+}
 // D3: a plug-in's own window (Live 12 manual 23.3, 23.3.1.1, 41.4; N8, #391), with a fake opener in
 // the app's place: the wrench on plug-in devices only; a click opens the editor in a floating window
 // at its own size, never scaled, and a second closes it; one window at a time unless Ctrl/Cmd or
@@ -5333,14 +5776,24 @@ int main(int argc, char **argv) {
             commands.getCommandInfo(C::SaveCopy, copy);
             commands.getCommandInfo(C::CollectAllAndSave, collect);
             commands.getCommandInfo(C::CollectAndExport, exportZip);
+            juce::ApplicationCommandInfo cut(C::Cut), copyInfo(C::Copy), paste(C::Paste), duplicate(C::Duplicate);
+            commands.getCommandInfo(C::Cut, cut);
+            commands.getCommandInfo(C::Copy, copyInfo);
+            commands.getCommandInfo(C::Paste, paste);
+            commands.getCommandInfo(C::Duplicate, duplicate);
+            const auto keyed = [](const juce::ApplicationCommandInfo &info, char key) {
+                return info.defaultKeypresses.contains(juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0));
+            };
             check(solo.shortName == "Solo in Place" && rows.shortName == "Track Options" &&
                       mixer.shortName == "Mixer Track Options" && metronome.shortName == "Metronome" &&
                       loop.shortName == "Loop Selection" && selectLoop.shortName == "Select Loop" &&
                       copy.shortName == "Save a Copy..." && collect.shortName == "Collect All and Save" &&
-                      exportZip.shortName == "Collect and Export..." && C::LastId == C::TogglePluginWindows,
+                      exportZip.shortName == "Collect and Export..." && cut.shortName == "Cut" && keyed(cut, 'x') &&
+                      copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
+                      keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
+                      C::LastId == C::TogglePluginWindows,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
-                  "Select Loop, Save a Copy, Collect All and Save, Collect and Export, then Show/Hide Plug-In Windows (the "
-                  "last id), each named");
+                  "Select Loop, Save a Copy, Collect All and Save, Collect and Export (the last id), each named");
         }
         // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -5350,10 +5803,10 @@ int main(int argc, char **argv) {
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText,
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText,
                                                 C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0, C::GroupTracks,
                                                 C::UngroupTracks},
-              "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Loop Selection "
+              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), before Rename (§18.2) and Select All, then Loop Selection "
               "and Select Loop (§6.6), then Group and Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
@@ -6294,8 +6747,9 @@ int main(int argc, char **argv) {
                     if (it.getItem().text == "Rename")
                         renameAction = it.getItem().action;
                 }
-            check(items == juce::StringArray{"Delete", "Rename", "Fold", "Configure"},
-                  "a device's menu: Delete, Rename, then the device's own, in Live's order");
+            check(items == juce::StringArray{"Cut", "Copy", "Duplicate", "Rename", "Delete", "Fold", "Configure"},
+                  "a device's menu in Live 12's order (23.2.1's figure): Cut, Copy and Duplicate; Rename; Delete and "
+                  "Fold; then the device's own");
             std::string renameOp;
             Payload renamed;
             integrated.devices.submit = [&](const std::string &op, Payload p) {
@@ -7458,6 +7912,7 @@ int main(int argc, char **argv) {
     footRows(commands, temp.path());
     newProject(commands, temp.path());
     stripParamUndo(commands, temp.path());
+    deviceClipboard(commands, temp.path());
     pluginWindows(commands, temp.path());
     automationArm(commands, temp.path());
     sendKnobs(commands, temp.path());
@@ -7465,6 +7920,7 @@ int main(int argc, char **argv) {
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
+    recordingOptions(commands, settings, temp.path());
     undoHistoryWindow(commands, temp.path());
     clipWaveforms(commands, temp.path());
     loopMetronome(commands, settings, temp.path());
