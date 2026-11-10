@@ -107,6 +107,8 @@ The next three items of `collab/window/worklist-2026-11-05.md` after C2, C4, C3 
 
 **Since: D2** ([#505](https://github.com/arieladi/Adi/pull/505) `window/device-clipboard`): Cut, Copy, Paste and Duplicate a device, on Ctrl/Cmd+X, C, V and D. The device's menu follows Live 12's 23.2.1 figure, which has no Paste. Raised **N51**: a paste onto a track with no device chain yet needs the engine to create the chain in the paste's batch.
 
+**Since: D3** ([#506](https://github.com/arieladi/Adi/pull/506) `window/plugin-window`): a plug-in's own window from the wrench in its title bar, at the plug-in's size and never scaled; Ctrl/Cmd+Alt+P hides and shows them all; Multiple, Auto-Hide and Always on Top followed (N8 for the window's part). The review found eight defects, all fixed, among them the window torn down before a CLAP editor's native view and a shadowed name that MSVC `/WX` rejects. Not followed yet: Auto-Open Plug-In Windows, which waits for a device insert from the window (D4). Real drawing, native parenting and HiDPI are win's desktop check. #501 (D1), #503 (C6) and #505 (D2) are merged.
+
 **For win.**
 - A4: the ZIP's progress, which Live shows and `collectExport` does not report.
 - D1: the sidebar's labels beyond Samples and Places, which wait on the content they list.
