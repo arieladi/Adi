@@ -3921,6 +3921,158 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
 // A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
 // d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
 // producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
+// D2: Live's device clipboard (manual 23.2.1, 41.5; N18, #394). Cut, Copy, Paste and Duplicate on
+// a device the project stores, from the keys through the peer, with the app's clipboard wired as
+// ui_main.cpp wires it; a click past the last device chooses the chain's end.
+void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "device-clipboard.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "a project for the device clipboard");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI to copy");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "clipboard");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.submit = [&](const std::string &op, Payload p) {
+        const bool ok = document->deviceAction(op, std::move(p));
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    std::optional<DeviceCopy> clipboard;
+    root.devices.copy = [&](std::int64_t id, bool cut) {
+        DeviceCopy copy;
+        bool ok = document->copyDevice(id, copy);
+        if (ok) {
+            clipboard = std::move(copy);
+            if (cut)
+                ok = document->deviceAction("device.remove", {{"id", id}});
+        }
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.paste = [&](std::int64_t track, std::optional<std::int64_t> before) {
+        const bool ok = clipboard && document->pasteDevice(*clipboard, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.duplicate = [&](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
+        DeviceCopy copy;
+        const bool ok = document->copyDevice(id, copy) && document->pasteDevice(copy, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.holdsCopy = [&] { return clipboard.has_value(); };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    refresh();
+    const auto chain = [&] {
+        std::vector<std::int64_t> out;
+        SQLite::Statement q(document->store().db(), "SELECT id FROM devices WHERE chain_id = 3 ORDER BY ord, id");
+        while (q.executeStep())
+            out.push_back(q.getColumn(0).getInt64());
+        return out;
+    };
+    const auto label = [&] { return document->ops().nextUndo() ? document->ops().nextUndo()->label : std::string(); };
+    using Clip = DeviceChainStrip::Clip;
+    check(root.devices.panels.size() == 1 && !root.devices.canClipboard(Clip::Copy) &&
+              !root.devices.canClipboard(Clip::Paste) && !root.command(AppCommands::Copy) &&
+              root.error().find("Select a device") != std::string::npos,
+          "with no device chosen, Copy has nothing to act on and the Status Bar says so");
+    UiPeerRoot host;
+    host.setSize(root.getWidth(), root.getHeight());
+    host.addAndMakeVisible(root);
+    host.setVisible(true);
+    host.addToDesktop(0);
+    auto *peer = host.getPeer();
+    const auto key = [&](char c) {
+        return peer != nullptr && peer->handleKeyPress(juce::KeyPress(c, juce::ModifierKeys::commandModifier, 0));
+    };
+    const auto focus = [&](std::size_t i) {
+        if (i >= root.devices.panels.size())
+            return false;
+        root.devices.panels[i]->grabKeyboardFocus();
+        return root.devices.panels[i]->hasKeyboardFocus(true);
+    };
+    const auto opsBefore = document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+    check(focus(0) && key('c') && clipboard.has_value() && chain() == std::vector<std::int64_t>{3} &&
+              document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,
+          "Ctrl/Cmd+C on the focused device copies it, and writes nothing");
+    check(focus(0) && key('v'), "Ctrl/Cmd+V on the focused device pastes");
+    refresh();
+    auto order = chain();
+    check(order.size() == 2 && order[0] > 3 && order[1] == 3 && label() == "Paste Device" &&
+              document->store()
+                      .db()
+                      .execAndGet("SELECT name FROM devices WHERE id = " + std::to_string(order[0]))
+                      .getString() == "UI knobs" &&
+              root.devices.panels.size() == 2,
+          "a new device in front of it, with the next free id and the copy's name: one step, Paste Device");
+    check(root.command(AppCommands::Undo), "undo");
+    refresh();
+    check(chain() == std::vector<std::int64_t>{3}, "undo takes the pasted device away in one step");
+    const auto held = clipboard->insert.dump();
+    check(focus(0) && key('d'), "Ctrl/Cmd+D on the focused device duplicates");
+    refresh();
+    order = chain();
+    check(order.size() == 2 && order[0] == 3 && order[1] > 3 && clipboard->insert.dump() == held,
+          "the duplicate goes after it, at the chain's end, and the clipboard keeps what it held");
+    const auto duplicateId = order[1];
+    check(focus(1) && key('x'), "Ctrl/Cmd+X on the duplicate cuts it");
+    refresh();
+    check(chain() == std::vector<std::int64_t>{3} && clipboard->insert.value("name", "") == "UI knobs" &&
+              clipboard->insert.value("id", std::int64_t{0}) == duplicateId,
+          "cut: the device goes, and the clipboard holds it");
+    // A click past the last device chooses the chain's end; Paste lands there.
+    const auto past = host.getLocalPoint(&root.devices, juce::Point<int>{root.devices.panels.back()->getRight() + 40,
+                                                                          root.devices.getHeight() / 2})
+                          .toFloat();
+    juce::int64 when = 200000;
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past, juce::ModifierKeys(), 1.f, 0.f,
+                           when += 100);
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past,
+                           juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier), 1.f, 0.f, when += 100);
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past, juce::ModifierKeys(), 1.f, 0.f,
+                           when += 100);
+    check(root.devices.endChosen() && !root.devices.focusedDevice() && root.devices.canClipboard(Clip::Paste) &&
+              !root.devices.canClipboard(Clip::Copy),
+          "a click past the last device chooses the chain's end: Paste can go there, Copy has no device");
+    check(key('v'), "Ctrl/Cmd+V at the chain's end");
+    refresh();
+    order = chain();
+    check(order.size() == 2 && order[0] == 3 && order[1] > 3 && label() == "Paste Device",
+          "the cut device comes back at the chain's end, a new id, one step");
+    // A copy from one project does not paste into another: the engine's refusal, in the Status Bar.
+    {
+        auto other = ProjectDocument::open(dir / "device-clipboard-other.adi", true, {}, error);
+        check(other != nullptr, "a second project");
+        if (other) {
+            check(!other->pasteDevice(*clipboard, 2, std::nullopt) &&
+                      other->error().find("different project") != std::string::npos,
+                  "a copy from another project is refused, with the engine's reason");
+            other->release();
+        }
+    }
+    host.removeChildComponent(&root);
+    document->release();
+}
 void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "strip-undo.adi", true, test::knobsLoader(), error);
@@ -5194,11 +5346,22 @@ int main(int argc, char **argv) {
             commands.getCommandInfo(C::SaveCopy, copy);
             commands.getCommandInfo(C::CollectAllAndSave, collect);
             commands.getCommandInfo(C::CollectAndExport, exportZip);
+            juce::ApplicationCommandInfo cut(C::Cut), copyInfo(C::Copy), paste(C::Paste), duplicate(C::Duplicate);
+            commands.getCommandInfo(C::Cut, cut);
+            commands.getCommandInfo(C::Copy, copyInfo);
+            commands.getCommandInfo(C::Paste, paste);
+            commands.getCommandInfo(C::Duplicate, duplicate);
+            const auto keyed = [](const juce::ApplicationCommandInfo &info, char key) {
+                return info.defaultKeypresses.contains(juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0));
+            };
             check(solo.shortName == "Solo in Place" && rows.shortName == "Track Options" &&
                       mixer.shortName == "Mixer Track Options" && metronome.shortName == "Metronome" &&
                       loop.shortName == "Loop Selection" && selectLoop.shortName == "Select Loop" &&
                       copy.shortName == "Save a Copy..." && collect.shortName == "Collect All and Save" &&
-                      exportZip.shortName == "Collect and Export..." && C::LastId == C::CollectAndExport,
+                      exportZip.shortName == "Collect and Export..." && cut.shortName == "Cut" && keyed(cut, 'x') &&
+                      copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
+                      keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
+                      C::LastId == C::Duplicate,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
                   "Select Loop, Save a Copy, Collect All and Save, Collect and Export (the last id), each named");
         }
@@ -5210,10 +5373,10 @@ int main(int argc, char **argv) {
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText,
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText,
                                                 C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0, C::GroupTracks,
                                                 C::UngroupTracks},
-              "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Loop Selection "
+              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), before Rename (§18.2) and Select All, then Loop Selection "
               "and Select Loop (§6.6), then Group and Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
@@ -6154,8 +6317,9 @@ int main(int argc, char **argv) {
                     if (it.getItem().text == "Rename")
                         renameAction = it.getItem().action;
                 }
-            check(items == juce::StringArray{"Delete", "Rename", "Fold", "Configure"},
-                  "a device's menu: Delete, Rename, then the device's own, in Live's order");
+            check(items == juce::StringArray{"Cut", "Copy", "Paste", "Duplicate", "Delete", "Rename", "Fold", "Configure"},
+                  "a device's menu: Cut, Copy, Paste, Duplicate and Delete, Rename, then the device's own, in Live's "
+                  "order (23.2.1)");
             std::string renameOp;
             Payload renamed;
             integrated.devices.submit = [&](const std::string &op, Payload p) {
@@ -7318,6 +7482,7 @@ int main(int argc, char **argv) {
     footRows(commands, temp.path());
     newProject(commands, temp.path());
     stripParamUndo(commands, temp.path());
+    deviceClipboard(commands, temp.path());
     automationArm(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
