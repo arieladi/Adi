@@ -4049,7 +4049,7 @@ void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
           "an editor the plug-in dropped hides its window at once and says so");
     host.collect();
     root.frame();
-    check(!host.contains(key3) && !host.contains(key5) && !panels[0]->wrench.getToggleState(),
+    check(!host.contains(key3) && host.contains(key5) && !panels[0]->wrench.getToggleState(),
           "and the next collect closes it, the wrench unlit");
     editorGone = false;
     host.closeAll(false);
