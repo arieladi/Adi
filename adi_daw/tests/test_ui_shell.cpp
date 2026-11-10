@@ -2578,6 +2578,22 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
           "a heading clicked or stepped onto passes the selection to an entry");
     browser.search.setText({}, false);
     browser.search.onTextChange();
+    // The browser with Audio Effects chosen, for the picture beside Live 12's.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        browser.choose(audioEffects);
+        browser.list.selectRow(1);
+        juce::Image picture(juce::Image::ARGB, 2 * browser.getWidth(), 2 * browser.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            browser.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-browser-devices.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
     document->release();
 }
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
