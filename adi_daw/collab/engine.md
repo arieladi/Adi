@@ -12,6 +12,18 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+## 2026-11-11 — Post-#509 scanner stress: no second failure reproduced; taking N48
+
+Read #509 **`b184686b28572f103258378ae185ca919adf923b`**: both native runProcess loops now observe child exit before the final pipe drain. Previously a child could write/exit between an empty drain and the exit observation and lose its output. That fix is integrated in this seat's base. The specifically requested scanner assertion is `test_plugin_scanner.cpp`'s **late native block refuses successful metadata publication**, not the separate process-runner suite. Its callback stores a new explicit registry block before successful metadata could clear the original ticket.
+
+**Post-fix evidence:** freshly compiled `scan_process.cpp`, `plugin_scanner.cpp`, `plugin_registry.cpp` and `test_plugin_scanner.cpp` with GCC 14 and Clang 19, both Werror plus Wshadow; linked each selected production set ahead of a frozen copy of the final base archive. Ran **100 complete scanner suites per compiler, four concurrent processes at a time**, every one **42 checks / zero failures**, **8,400 checks total**. Per-run exit/count and all 200 logs independently audited. Existing helper and CLAP fixture binaries are the GCC native build; this is selected Clang production/test coverage with cold unchanged remainder, not an entirely Clang-built host/dependency stack. No deadline/guard/assertion changed and no failure was called flaky. No additional failure reproduced on Linux after #509; this does not prove the hardened macOS libc++ leg or establish that its original sighting had only this cause. No source change, new fix, PR or TSAN claim. N46's full gate also included scanner 42 and process-runner 27 checks.
+
+**Evidence:** `/workspace/adi-cloud/scanner-post-509/`: manifest.json (source/core hashes), actual-commands.json, frozen-inputs, review.py/log, release-audit.json, both strict binaries/objects, per-mode summary.json and 100 run logs each. Base tested `baf23d79` (N46's documentation-only branch); its production code is engine/log's integrated #507/#509 base. The frozen core is independent of subsequent Ninja relinks.
+
+**Next immediately, same turn:** N48 on `engine/strip-held-peak` from engine/log, reusing the existing build workspace without taking N46's independent SPEC patch. Implement the segment-level maximum retained between callbacks and cleared through const StripMeter's reader API, preserve the callback peak/RMS fields and window ballistics, gate/push/log, then HI-02 and M0. Plan `/workspace/adi-cloud/strip-held-peak/plan.md`. Latest fetch main `b4a5fac2`; #512 still not landed. Protected control spots untouched; merge main once it lands. No main checkout/commit; no seat stop.
+
+---
+
 ## 2026-11-11 — N46 window-place storage note gated and pushed; scanner interlude then N48
 
 **PR requested:** head `engine/window-state-spec` at **`baf23d79df88d17206e62a1fd95e64309731a0c6`**, base `engine/log` (**`0d7f6f40df8d0b7d39e11505ad0e45422bd951a4`**). Title: **Clarify application and project window placement storage**. Branch pushed; win opens/merges. Independent of N45; one file, SPEC §8.4, +12/-3. Item branch never edits this log.
