@@ -18094,6 +18094,7 @@ infrastructure, on a seat of its own, in parallel with the lanes.
 | LANES §1 | a control seat row and the paths of d7, per `docs/PLAN.md` §8.1 and his Q-C answer |
 | CTL-01, CTL-03, CTL-04 (`docs/PLAN.md`) | decided; the record at M0, the code with Track C |
 
+<<<<<<< HEAD
 ## ADR-0233 — The director's MCP request of 11 November is ADR-0232's control stack, built now: the registry's own schema, the transport-free core with its MCP projection, telemetry from what the engine already publishes, and a headless `adi-mcp` that holds no writable handle; win builds the first slice — `DECIDED` (2026-11-11) — **WIN'S CONTRACT UNDER ADR-0232, ADR-0168 d3, ADR-0039, ADR-0148, ADR-0209 d11, ADR-0203 d8/d14/d20 AND ADR-0222, AT THE DIRECTOR'S REQUEST OF 11 NOVEMBER; Q-O STAYS HIS; THE DIRECTOR MAY STRIKE IT**
 
 **Where this comes from.** On 11 November the director asked for "a native C++20/JUCE MCP server and
@@ -18259,11 +18260,47 @@ diagram.
      - telemetry;
      - hostile lines;
      - the binary over pipes.
+=======
+## ADR-0234 — The ArtCraft integration is cancelled: no bridge, no FilmCraft time base or link tables, no contribution to storytold's apps; the general AAF, OTIO and timecode work stays, built from specifications and ADI's own code — `DECIDED` (2026-11-11) — **DIRECTOR'S RULING; CANCELS ADR-0206 EXCEPT d6; AMENDS ADR-0232 d1 AND ADR-0207's FILMCRAFT ITEM**
+
+**The ruling.** On 11 November the director cancelled the integration with storytold's ArtCraft
+suite (FilmCraft, SoundCraft, EffectCraft). His reason: ADI cannot plan on storytold doing any work
+for it, so nothing in ADI's plan may depend on them. He allowed one exception: work that needs
+nothing from them and is trivial. The bridge is neither trivial nor needed, so it goes.
+
+### Decisions
+
+1. **Cancelled:**
+   - the bridge in every phase: ADR-0206 d1, d4, d5 (attach, Send to ADI, Return to FilmCraft,
+     transport master, everything at P3);
+   - ADR-0206 d3's FilmCraft-specific prerequisites: its 254,016,000,000 ticks-per-second time base
+     as a target, and the `external_sessions` / `external_links` schema reservation (never built,
+     so no schema changes);
+   - the FilmCraft contribution (the stale-waveform PR 1 and its prompt, the Rust toolchain gate on
+     adi-ubuntu, the "open the FilmCraft PR" gate);
+   - the settings catalogue's "Return to FilmCraft" row, removed with the next registry PR.
+2. **Kept, because each stands on its own and needs nothing from storytold:**
+   - OTIO and AAF import and export (TM-IC-04), the industry's handoff to Pro Tools, Resolve and
+     Premiere. They predate ADR-0206 (ADR-0127 d7).
+   - The AAF writer is now written clean-room from the AAF and compound-file specifications. It
+     is no longer ported from FilmCraft (take IC10).
+   - The exact integer time base and SMPTE timecode (TM-IC-01), which MTC, AAF, OTIO and video
+     need anyway.
+   - ADR-0206 d6 (`files.sampleEditorOpens` defaults to opening in place, Live's way). It was
+     never about storytold.
+3. **What stays as reading only.** `reference/filmcraft` and `reference/soundcraft` remain
+   read-only reference clones, like every other reference repository. The plan names a few ideas
+   from them (for example how a long job reports progress), and those may be read and
+   reimplemented. Nothing connects to their apps, and nothing waits on them.
+4. **`docs/INTEROP-ARTCRAFT.md` is kept as history** with a cancelled banner, so the facts read on
+   25 October are not lost.
+>>>>>>> origin/main
 
 ### Amendments, in one place
 
 | Entry | What this entry does to it |
 |---|---|
+<<<<<<< HEAD
 | ADR-0232 d1, d7 | the first slice is win's, at the director's request; the listener and the app host come next |
 | ADR-0168 d3 | resources join the four tools as read-only views; the tools are unchanged |
 | CTL-02 (`docs/PLAN.md`) | default bounds at the remote boundary only; whole-number floats normalised; ids-at-least-0 deferred |
@@ -18273,3 +18310,10 @@ diagram.
 | ADR-0232 d4 | validation on the calling thread is each method's screen |
 | AGT-01 | the cap defaults to 6000 and adi-mcp reads the row; the queue is in memory, by credential |
 | AGT-02 | `project_read` carries ids and `nextIds`; levels 0 to 2 are built, and 3 is refused with its card |
+=======
+| ADR-0206 | cancelled except d6 |
+| ADR-0232 d1 | the ArtCraft bridge is no longer one of the control stack's clients |
+| ADR-0207 | its FilmCraft contribution item is withdrawn |
+| PLAN TM-IC-01, IC-03, TM-IC-04, take IC10 | the FilmCraft time base, the link tables and the bridge are struck; the AAF writer is clean-room |
+| FEATURES, BUILD-BRIEF 7e and 19-20, LANES §3 item 3 and its gates | marked cancelled |
+>>>>>>> origin/main
