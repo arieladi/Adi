@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1019;          -- schema 1.19
+PRAGMA user_version   = 1020;          -- schema 1.20
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -1054,20 +1054,32 @@ these budgets. `adi_meta` keys `history.undo.max_transactions`,
 default local budgets. The obsolete `oplog_max_entries`/`oplog_max_age_days` keys
 remain readable extension metadata and do not control this implementation.
 
-Compaction runs inside the same SQLite transaction as a new journal commit,
-before its final caller hook. It can also be requested explicitly. It replaces
+Compaction runs in an optional savepoint inside the same SQLite transaction as
+a new journal commit, before its final caller hook. Recoverable retention failure
+rolls back only that savepoint and returns `CommitResult::retentionWarning`; the
+edit, clock rows, caller hook and applied-batch delivery continue. A final caller
+hook may still reject the whole edit. Explicit compaction returns its own failure
+result without modifying history. Fatal storage errors that prevent SQLite from
+committing remain actual write failures. Compaction can also be requested explicitly. It replaces
 an oldest complete prefix with one replayable checkpoint, retaining the prefix's
 last op as a root (`parent_seq`, `inverse` and `sel_before` NULL). The root is not
-an undo step. The newest complete transaction is retained even when that one
+an undo step. Compaction triggers only above a hard budget, then targets 90% of
+both limits (integer floor, at least one): 1,800 transactions and 900 decimal MB
+at the defaults. Whole transactions are removed; an anchor can stop the pass
+before that low-water mark. The newest complete transaction is retained even when that one
 transaction alone exceeds the byte budget. No partial transaction is pruned.
 
-A named snapshot, any other existing persistent snapshot, a branch head, and a
-reachable fork point protect their positions. Compaction can stop AT an anchor
+ADR-0213 requires named snapshots and dead ends to remain openable/revertible as
+row-deduplicated stored states before compaction crosses their positions. The
+current foundation retains named snapshot, branch-head and reachable-fork anchors
+until the archived-state navigation path is implemented. These points protect their positions. Compaction can stop AT an anchor
 but MUST NOT pass it. A root snapshot/branch protects the entire prefix. In
 collaboration mode no seq after the contiguous upload acknowledgement may be
 compacted; a missing acknowledgement protects the entire log. Protections can
 leave the active history above its budget; the API reports `protectedHistory`.
-Legacy embedded-media rows also protect the log until extraction, because the
+Automatic daily snapshots are compactable: they never stop a pass, and their
+metadata/daily reference is removed if its point is pruned. Legacy embedded-media
+rows also protect the log until extraction, because the
 current schema deliberately forbids reinserting their old embedded rows.
 
 The byte budget counts retained non-ephemeral payload, inverse and selection
@@ -1084,7 +1096,21 @@ journal/audit metadata and locks are excluded. Checkpoint capture temporarily
 rewinds to the boundary inside a savepoint, reads the state, then rolls back the
 savepoint; the live project, head and UI remain unchanged. Checkpoint replacement,
 root retapping, old-op/clock pruning and orphan audit cleanup commit together.
-A checkpoint failure rolls back the edit as well as compaction.
+A recoverable checkpoint failure rolls back compaction, preserving the committed
+edit and reporting the deferral. No partial checkpoint, hash object, root change
+or pruning can escape the optional savepoint.
+
+Schema 1.20 adds immutable `history_state_rows(hash,data)` and
+`history_state_manifests(hash,data)`, plus `history_checkpoint_content(id,state_hash)`
+linking the current checkpoint to its content manifest. Keys are lowercase BLAKE3
+hashes of exact CBOR bytes. Rows retain the typed cell arrays; manifests carry
+format/schema version, table names, columns and sorted row hashes, preserving
+row multiplicity. Unchanged rows and repeated complete states are reused, and
+reads validate every referenced hash. These tables are history metadata excluded
+from the musical digest. The one format-1 whole-state image in `history_checkpoint`
+remains available to older replay readers; historical content does not require
+another whole-state copy per checkpoint. Named/dead-end content references and
+their restore/navigation path are the following HI-02 slice.
 
 For replay, hold one read transaction on the source while copying its checkpoint
 and retained log. `History::restoreReplayBase(source, emptyJournalTarget)`

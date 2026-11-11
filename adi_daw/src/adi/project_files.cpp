@@ -4,6 +4,7 @@
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/applied_batches_detail.hpp"
 #include "adi/ops.hpp"
+#include "adi/history_content.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/media/collect_export.hpp"
@@ -87,6 +88,26 @@ void visitPaths(SQLite::Database& db,const PathTransform& transform,bool write) 
             update.bind(4,rows.getColumn(0).getInt64());update.exec();
         }
     }
+    history_detail::visitCheckpointState(db,[&](Payload& state){
+        bool changed=false;
+        for(auto& table:state.at("tables")){
+            if(table.at("name")!="media_files")continue;
+            const auto names=table.at("columns").get<std::vector<std::string>>();
+            std::map<std::string,std::size_t> columns;for(std::size_t i=0;i<names.size();++i)columns.emplace(names[i],i);
+            for(auto& row:table.at("rows")){
+                const auto value=[&](const char* name)->Payload&{return row.at(columns.at(name)).at(1);};
+                if(value("embedded")!=0)continue;
+                Payload paths={{"rel_path",value("rel_path")},{"abs_path_hint",value("abs_path_hint")},{"missing",value("missing")}};
+                if(!transform(paths,value("orig_name").get<std::string>(),value("hash_blake3").get<std::string>()))continue;
+                changed=true;
+                if(write)for(const auto* field:{"rel_path","abs_path_hint","missing"}){
+                    const auto& cell=paths.at(field);const char* type=cell.is_null()?"null":cell.is_string()?"text":"int";
+                    row.at(columns.at(field))=Payload::array({type,cell});
+                }
+            }
+        }
+        return changed;
+    },write);
     SQLite::Statement rows(db,"SELECT seq,payload,inverse FROM ops WHERE op_type IN ('media.import','media.unlink','media.relink')");
     while(rows.executeStep()) {
         for(int column=1;column<=2;++column) {
