@@ -18252,3 +18252,80 @@ elements from mix view in the device area".
 | ADR-0209 d12 | ADI-View and ADI-FUSE are products with their own cores, per his roadmap; the guide reconciles d12's "parity passes" (d4) |
 | LANES §2 | a `mixview/` prefix and a Mix View seat (d3) |
 | PLAN MX-20, MX-21, MX-31, MX-36 | their "waits for the list" parts are unblocked, through the guide's answers |
+
+## ADR-0237 — The Mix View's first answers: one of each function per channel, added and removed like Live devices; EQ carries the unmasking; the limiter carries the clipper; analysers live in the Info box and a Mix View tab, and cost nothing unseen — `DECIDED` (2026-11-12) — **DIRECTOR'S RULING; ANSWERS ADR-0236 d4's FIRST QUESTIONS**
+
+**His answers, in his words (12 November),** to the eight questions win put to him from ADR-0236 d4:
+
+- Disabling: "as deleting a Live device does but we can undo of curse"
+- Analysers and visualisers: "mostly meant to run on the master unless comparison between channels
+  like psyscope - we need a very efficient way of handling the mix view while is not apparent (if
+  someone choosing to look at it in second screen all the time so be it but if its not visible it
+  should not use cpu at all) visualizers from adi mixview shuld sit in the info box in a boxed
+  version.. not as tabs in the device area"
+- Second inputs: "to enable this function one needs to go into mix view and enable this function
+  with all its goodness on modulation and routing and easy sidechaining to the kick and so on, so if
+  one use that function he can then see a tab (this abilities of trackspacer and fuser should go into
+  the EQ window the rest need to have there own new designs like pro-c pro-ds pro-g clones and the
+  adi-clip can be part of the adi-L as another mode or tab"
+- Latency: "if one hover on the tab to look for info it then show it in the info box for a sec until
+  not hovering on it anymore then it goes back to boxed version analyzers.."
+- Two of the same: "no this part of the mix view is for easy broad changes on all instance for vca
+  trick or clip2zero method - easy routing and AI assistant friendly across all channels if someone
+  wants another EQ he can load ADI-Q or a fabfilter PRO-Q or pulsar massive or whatever they want"
+- Presets and defaults: "both, nothing starts defult on a track one dose need to enable it from the
+  mix view or from an add tabs the tabs will show the mix view functions we can add from the device
+  area like adding a clipper (adi-clip) wich its defaults is like kclip defaults."
+- Standalones: "an ADI-View-style app showing the current channel I'm on and act as the full
+  analyzer suite for that channel we can then from there go to mix view and still be on that channel
+  and then add whatever , the mix view will have the fabfilter instance view like interface for the
+  processing plugins while all the analizer and visualizer will live in a separate tab within the mix
+  view where we have a master view of span + smexoscope and so on.. and a compare where we have a
+  psyscope like and a multi channel phase compare and so on.."
+- The Mix View row: "like what the device area show but without modulation and as a compacted (like
+  dabble clicking in Ableton on a device to shrink it so it wont take a lot of space - we need to see
+  the name and be able to disable or enable if we want like in device view)"
+
+### Decisions
+
+1. **One of each function per channel.** The Mix View's functions are for broad changes across all
+   channels at once (the VCA trick, clip-to-zero), easy routing, and work the AI assistant can do
+   across channels. A second EQ on a channel is an ordinary plug-in: ADI-Q's VST3, Pro-Q, Pulsar
+   Massive or anything else.
+2. **The functions.** The EQ (ADI-Q), which also carries the Trackspacer- and FUSER-class unmasking
+   (ADI-FUSE) inside its window; the compressor (ADI-C), the de-esser (ADI-DS) and the gate (ADI-G),
+   each with a new design of its own; the limiter (ADI-L), with the clipper (ADI-Clip) as one of its
+   modes or tabs. Default order at the chain's end: EQ first, the others between, the limiter (with
+   its clipper) last (ADR-0236 d2). ADI Still's place is to be confirmed.
+3. **Added and removed like Live devices.** Nothing is enabled on a new track. A function is added
+   from the Mix View or from the device area's add-tab control, which lists the Mix View functions;
+   it starts at its reference's defaults (the clipper at KClip's). Disabling removes it, as deleting
+   a Live device does, and Undo brings it back. A function that needs a second input (the EQ's
+   unmasking keyed from the kick) is enabled and routed in the Mix View, with its modulation and
+   routing there; its tab then appears in the device area.
+4. **Presets at both levels:** a channel's whole set, and each function.
+5. **Analysers and visualisers are not chain functions and never device-area tabs.** They run on Main
+   mostly, and across channels only for comparison (a Psyscope-class view, a multi-channel phase
+   compare). They live in two places: boxed in the Info box, and in a tab of their own inside the Mix
+   View with a master view (SPAN- and sMexoscope-class and the rest) and a compare view. The Mix View
+   itself keeps the FabFilter instance-list interface for the processing functions.
+6. **Nothing unseen costs CPU.** When the Mix View and the analysers are not visible they use no CPU
+   at all (no taps fed, no workers running); visible on a second screen all the time is the user's
+   choice.
+7. **Hovering a tab** shows its information, latency included, in the Info box while the pointer is
+   on it; then the Info box returns to the boxed analysers.
+8. **A Mix View row** shows what the device area shows for that track, without modulation, folded
+   compact as a double-click folds a Live device: each device's name and its on/off switch.
+9. **The analyser window ("standalone").** An ADI-View-style window follows the channel you are on
+   and is that channel's full analyser suite; from it you go to the Mix View on the same channel and
+   add functions. Win reads this as a window of ADI, possibly on a second screen; whether separate
+   standalone apps are also wanted is for the seat to confirm with him.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0236 d4 | questions 2 to 8, 10 and 11 of the guide answered (d1 to d9); the guide carries the rest |
+| ADR-0209 §7, d12 | the Info View's analysers are boxed in the Info box and in the Mix View's analyser tab (d5) |
+| ADR-0212 | its unified feature is these functions (d2); still no slots, never hosting the VST3 |
+| ADR-0203 d14 | the compressor and the gate exist only as opt-in functions a user adds (d2, d3); nothing on a channel by default |
