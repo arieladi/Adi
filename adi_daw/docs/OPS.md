@@ -1897,6 +1897,8 @@ commands do not invent schema migrations or rewrite historical op payloads.
 | `transport.setLoop` | t | S | — | P0 |
 | `transport.setRecord` | t | G | — | P0 |
 | `transport.setMetronome` | t | S | — | P1 |
+| `transport.setCountIn` | t | S | — | P1 |
+| `transport.setSongStart` | t | S | — | P1 |
 | `controller.bind` | e | N | cap | P1 |
 | `controller.unbind` | e | N | pair `controller.bind` | P1 |
 | `controller.map` | h | N | pair `controller.unmap` | P2 |
@@ -1938,6 +1940,30 @@ compensated output latency, including loop wraps. Default output is the first st
 pair, outside Main's device/fader chain; N23 routes it through Cue Out/volume. Offline
 export/analysis sets `SessionSpec::performanceState=false` so saved monitoring
 loop/click choices do not change rendered material.
+
+`transport.setCountIn {bars}` saves one of `0` (None), `1`, `2`, `4`.
+`transport.setSongStart {on, start?}` saves a nonnegative musical tick when on;
+`on:false` clears the override. Both use session metadata, Snapshot impact and
+the same ephemeral/audit/batch-rollback rules as loop/click. A missing song start
+uses the insert marker or active time selection supplied by the caller.
+
+The driver calls `Session::RenderBlock::startPlayback(insertMarkerTick, recording)`
+between slices using its pinned generation. The saved song start wins over that
+fallback. Ordinary Play starts immediately; only a record start uses Count-In.
+Prepare the armed recorder on the owner before the driver command. During the
+lead-in the timeline is held, input monitoring runs and no clip/recording timeline
+advances. Count-In clicks use the launch's effective tempo and meter, through
+Cue Out/volume, even when the ordinary metronome is off. The callback splits at
+the exact launch sample, preserving the suffix's input/output pointers and
+physical stream timestamp. No lead-in audio is written to a take. Stop, explicit
+Play, locate or a device format change cancels the pending lead-in. Direct
+`transport().locate/play` is the explicit-seek path and bypasses default-start
+policy; the window must marshal these commands to the driver, not mutate it
+concurrently. Offline `performanceState=false` ignores both saved start choices.
+The count-in split supports64 physical input channels (the recorder's existing
+limit) and output widths through `max(64, SessionSpec::channels)`; an invalid
+slice format refuses before rendering either half. The UI binding and measured
+Live count-in/punch behavior remain separate from this native start contract.
 
 `controller.bind` (ADR-0195 d3) takes `{id, binding}`; binding names all
 14 non-id columns of `controller_maps`, including explicit nulls. It inserts
@@ -1990,7 +2016,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**211 ops** — 71 P0, 84 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**213 ops** — 71 P0, 86 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 

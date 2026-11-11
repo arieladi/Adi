@@ -656,6 +656,9 @@ bool Session::rebuild() {
     timing->sampleRate = spec_.sampleRate;
     timing->spec = spec_;
     timing->settings=spec_.performanceState ? transportSettings_ : TransportSettings{};
+    timing->inputSlice.resize(64);
+    timing->outputSlice.resize(static_cast<std::size_t>(std::max(64, spec_.channels)));
+    timing->outputSlice64.resize(timing->outputSlice.size());
     // Same construction as MidiClips: TempoMap integrates STEP tempos, even
     // when a stored event requests a ramp. Do not create a second converter.
     for (const auto& e : playbackModel_.tempo)
@@ -1387,7 +1390,11 @@ bool Session::tick(std::int64_t nowMs) {
 void Session::prepare(double sampleRate, std::int32_t maxFrames) {
     ++stats_.prepares;
     const bool changed = (sampleRate != spec_.sampleRate) || (maxFrames != spec_.maxFrames);
-    if(changed)recording_->stop();
+    if (changed) {
+        recording_->stop();
+        if (transport_.countInRemaining() > 0)
+            transport_.play(false);
+    }
 
     // Decision 3, second half: same format, graph live, nothing to do. A driver
     // that stops and restarts at the same size -- a device-list change, a
@@ -1593,6 +1600,43 @@ double Session::RenderBlock::bpmAtTick(std::int64_t tick) const noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     return timing ? timing->tempo.bpmAt(tick) : 0;
 }
+bool Session::RenderBlock::startPlayback(std::int64_t insertMarkerTick, bool recording) noexcept {
+    const auto *timing = dynamic_cast<const TimingView *>(graph_.transportState());
+    if (!timing || insertMarkerTick < 0)
+        return false;
+    const auto tick = timing->settings.songStartTicks.value_or(insertMarkerTick);
+    const auto sample = sampleAtTick(tick);
+    if (sample == std::numeric_limits<std::int64_t>::max())
+        return false;
+    std::int64_t numerator = 4, denominator = 4;
+    for (const auto &meter : timing->signatures) {
+        if (meter.posTicks > tick)
+            break;
+        numerator = meter.numerator;
+        denominator = meter.denominator;
+    }
+    const double beatSamples = timing->sampleRate * 60.0 / timing->tempo.bpmAt(tick) * 4.0 /
+                               static_cast<double>(denominator);
+    const long double frames = static_cast<long double>(beatSamples) *
+                               static_cast<long double>(numerator) *
+                               static_cast<long double>(timing->settings.countInBars);
+    if (!std::isfinite(beatSamples) || beatSamples <= 0 || numerator <= 0 ||
+        frames > static_cast<long double>(std::int64_t{1} << 50))
+        return false;
+    timing->applyLoop();
+    session_.transport_.locate(sample);
+    if (recording && timing->settings.countInBars > 0) {
+        session_.countInBeatSamples_ = beatSamples;
+        session_.countInBeatsPerBar_ = numerator;
+        session_.clickEnvelope_ = 0;
+        session_.clickWasPlaying_ = false;
+        session_.transport_.countIn(
+            std::max<std::int64_t>(1, static_cast<std::int64_t>(std::llround(frames))));
+    } else
+        session_.transport_.play();
+    session_.publishDriverClock();
+    return true;
+}
 bool Session::RenderBlock::process(const AudioIo& io) noexcept {
     const auto* timing = dynamic_cast<const TimingView*>(graph_.transportState());
     if (!graph_.valid() || io.frames <= 0 || io.numIn < 0 || io.numOut < 0 ||
@@ -1606,6 +1650,41 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
         }
         return false;
     }
+    const auto remaining = session_.transport_.countInRemaining();
+    if (remaining > 0 && timing &&
+        (static_cast<std::size_t>(io.numIn) > timing->inputSlice.size() ||
+         static_cast<std::size_t>(io.numOut) > timing->outputSlice.size() ||
+         io.streamTimeSamples < 0 ||
+         io.streamTimeSamples > std::numeric_limits<std::int64_t>::max() - io.frames)) {
+        SilenceProcessor silence;
+        silence.process(io);
+        return false;
+    }
+    if (remaining > 0 && remaining < io.frames && timing) {
+        // Bounds and the whole physical stream interval were validated before
+        // rendering either half. No heap work or new graph acquisition.
+        const auto prefix = static_cast<std::int32_t>(remaining);
+        AudioIo lead = io;
+        lead.frames = prefix;
+        if (!process(lead))
+            return false;
+        for (std::int32_t channel = 0; channel < io.numIn; ++channel)
+            timing->inputSlice[static_cast<std::size_t>(channel)] =
+                io.in && io.in[channel] ? io.in[channel] + prefix : nullptr;
+        for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
+            const auto c = static_cast<std::size_t>(channel);
+            timing->outputSlice[c] = io.out && io.out[channel] ? io.out[channel] + prefix : nullptr;
+            timing->outputSlice64[c] =
+                io.out64 && io.out64[channel] ? io.out64[channel] + prefix : nullptr;
+        }
+        AudioIo tail = io;
+        tail.frames -= prefix;
+        tail.streamTimeSamples += prefix;
+        tail.in = io.in ? timing->inputSlice.data() : nullptr;
+        tail.out = io.out ? timing->outputSlice.data() : nullptr;
+        tail.out64 = io.out64 ? timing->outputSlice64.data() : nullptr;
+        return process(tail);
+    }
     session_.recording_->capture(io, session_.transport_);
     session_.playbackRunning_.store(session_.transport_.playing(), std::memory_order_release);
     if (!graph_.process(io)) return false;
@@ -1615,13 +1694,18 @@ bool Session::RenderBlock::process(const AudioIo& io) noexcept {
     struct ClickContext { Session* session; const TimingView* timing; };
     ClickContext click{&session_, timing};
     CueMonitor::Click renderClick;
-    if (timing && timing->settings.metronome && session_.transport_.playing()) {
+    if (timing && (session_.transport_.countInRemaining() > 0 ||
+                   (timing->settings.metronome && session_.transport_.playing()))) {
         renderClick.context = &click;
         renderClick.render = [](void* context, const AudioIo& cueIo) noexcept {
             const auto& call = *static_cast<ClickContext*>(context);
-            call.session->renderMetronome(*call.timing, cueIo);
+            if (call.session->transport_.countInRemaining() > 0)
+                call.session->renderCountIn(*call.timing, cueIo);
+            else
+                call.session->renderMetronome(*call.timing, cueIo);
         };
-    } else if (timing) session_.renderMetronome(*timing, AudioIo{});
+    } else if (timing)
+        session_.renderMetronome(*timing, AudioIo{});
     session_.cueMonitor_.process(session_.graph_, block, renderClick);
     session_.transport_.advance(io.frames);
     session_.publishDriverClock();
@@ -1632,6 +1716,33 @@ void Session::process(const AudioIo& io) noexcept {
     (void)block.process(io);
 }
 
+void Session::renderCountIn(const TimingView &timing, const AudioIo &io) noexcept {
+    const auto elapsed = transport_.countInElapsed();
+    const double decay = std::exp(-1.0 / (0.004 * timing.sampleRate));
+    for (std::int32_t frame = 0; frame < io.frames; ++frame) {
+        const auto sample = elapsed + frame;
+        const auto beat = static_cast<std::int64_t>(
+            std::llround(static_cast<double>(sample) / countInBeatSamples_));
+        const auto boundary = static_cast<std::int64_t>(
+            std::llround(static_cast<double>(beat) * countInBeatSamples_));
+        if (sample == boundary) {
+            clickPhase_ = 0;
+            clickEnvelope_ = 0.2;
+            clickFrequency_ = beat % countInBeatsPerBar_ == 0 ? 1760 : 880;
+        }
+        const double value = std::sin(clickPhase_) * clickEnvelope_;
+        clickPhase_ += 2 * std::numbers::pi * clickFrequency_ / timing.sampleRate;
+        if (clickPhase_ >= 2 * std::numbers::pi)
+            clickPhase_ -= 2 * std::numbers::pi;
+        clickEnvelope_ *= decay;
+        for (std::int32_t channel = 0; channel < io.numOut; ++channel) {
+            if (io.out && io.out[channel])
+                io.out[channel][frame] += static_cast<float>(value);
+            if (io.out64 && io.out64[channel])
+                io.out64[channel][frame] += value;
+        }
+    }
+}
 void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexcept {
     if(!timing.settings.metronome || !transport_.playing()) {
         clickEnvelope_=0;clickWasPlaying_=false;return;
