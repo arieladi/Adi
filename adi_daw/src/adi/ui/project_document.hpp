@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/builtin_catalog.hpp"
 #include "adi/device_copy.hpp"
+#include "adi/sample_slots.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
@@ -124,6 +125,15 @@ class ProjectDocument final : public engine::BlockProcessor {
     // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
     // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
     bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
+    // A built-in device's sample slot (D5; N28, #414; ENGINE-SAMPLE-SLOTS.md): `file` imported by its
+    // content and prepared for the engine's rate, then the slot replaced, in one undo step; Clear
+    // empties it. The live device takes the new state at once (`ParamOps::appliedState`). The
+    // engine's refusals (a device this build cannot run, an undeclared slot, a file that is not
+    // audio) come back in `error()`. Preparation decodes on the calling thread.
+    bool assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc);
+    bool clearSample(std::int64_t device, std::int32_t slot);
+    // The parameter glue's counters (for the tests: a sample's state reached the live device).
+    const engine::ParamOps::Stats &parameterStats() const noexcept { return parameterOps_.stats(); }
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
@@ -159,6 +169,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     SessionState sessionState_;
     engine::Session session_;
     engine::ParamOps parameterOps_; // destroyed before Session and its instances
+    double engineRate_ = 48000.0;   // the rate `prepare` last set, for a sample's preparation
     ParameterFeed feed_;
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;

@@ -137,6 +137,77 @@ void WrenchButton::paintButton(juce::Graphics &g, bool over, bool) {
     const auto head = juce::Rectangle<float>(r.getRight() - 6.5f, r.getY(), 6.5f, 6.5f);
     g.drawEllipse(head.reduced(0.6f), 1.8f);
 }
+SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::int32_t sl, juce::String n)
+    : device(d), slot(sl), slotName(std::move(n)), strip_(s) {
+    setTitle(slotName + " sample");
+    setTooltip("Drop a sample file here, from the desktop or the browser.");
+    clear.getProperties().set("live.small", true);
+    clear.setTooltip("Empties the " + slotName + " slot: one undo step.");
+    clear.onClick = [this] {
+        if (strip_.clearSample)
+            strip_.clearSample(device, slot);
+    };
+    addChildComponent(clear);
+}
+void SampleTile::resized() { clear.setBounds(getWidth() - 40, getHeight() - 17, 36, 13); }
+void SampleTile::show(const engine::SampleSlotNode *node) {
+    const auto next = node == nullptr || node->empty ? State::Empty : node->missing ? State::Missing : State::Loaded;
+    const auto problem = node != nullptr ? node->problem : std::string();
+    if (next == state_ && problem == problem_)
+        return;
+    state_ = next;
+    problem_ = problem;
+    clear.setVisible(state_ != State::Empty);
+    setTooltip(problem_.empty() ? "Drop a sample file here, from the desktop or the browser." : juce::String(problem_));
+    repaint();
+}
+void SampleTile::paint(juce::Graphics &g) {
+    // A drop well, as Live's sample tiles: the slot's name, then its state.
+    const auto r = getLocalBounds().toFloat().reduced(1.f);
+    g.setColour(look::display);
+    g.fillRoundedRectangle(r, 3.f);
+    g.setColour(state_ == State::Missing ? juce::Colour(0xffe5352b) : look::outline);
+    const float dash[] = {4.f, 3.f};
+    juce::Path edge;
+    edge.addRoundedRectangle(r.reduced(0.5f), 3.f);
+    if (state_ == State::Empty) {
+        juce::Path dashed;
+        juce::PathStrokeType(1.f).createDashedStroke(dashed, edge, dash, 2);
+        g.fillPath(dashed);
+    } else {
+        g.strokePath(edge, juce::PathStrokeType(1.f));
+    }
+    // Light text on the dark display, as a device's display draws it.
+    g.setColour(look::textOnBand);
+    g.setFont(look::font(11.5f, true));
+    g.drawText(slotName, 6, 3, getWidth() - 12, 14, juce::Justification::centredLeft);
+    g.setFont(look::font(11.f));
+    const char *what = state_ == State::Empty ? "Drop a sample" : state_ == State::Missing ? "File missing" : "Sample loaded";
+    g.setColour(state_ == State::Empty     ? juce::Colour(0xff8a8a8a)
+                : state_ == State::Missing ? juce::Colour(0xffe5352b)
+                                           : look::textOnBand);
+    g.drawFittedText(what, 6, 18, getWidth() - 12, std::max(14, getHeight() - 38), juce::Justification::centred, 2);
+}
+bool SampleTile::drop(const juce::String &path) {
+    if (path.isEmpty())
+        return false;
+    if (!strip_.assignSample) {
+        strip_.root.say("Samples load in the application.");
+        return false;
+    }
+    return strip_.assignSample(device, slot, path.toStdString());
+}
+void SampleTile::filesDropped(const juce::StringArray &files, int, int) {
+    if (!files.isEmpty())
+        drop(files[0]);
+}
+bool SampleTile::isInterestedInDragSource(const SourceDetails &details) {
+    return !BrowserPanel::droppedFiles(details.description).isEmpty();
+}
+void SampleTile::itemDropped(const SourceDetails &details) {
+    if (const auto files = BrowserPanel::droppedFiles(details.description); !files.isEmpty())
+        drop(files[0]);
+}
 DevicePanelView::DevicePanelView(DeviceChainStrip &s, const DevicePanelData &d)
     : id(d.id), strip(s) {
     // The title is the bar's text, not a box (Live's device title).
@@ -183,6 +254,12 @@ void DevicePanelView::present(const DevicePanelData &d) {
         title.setTooltip("Double-click to fold the device; right-click for its commands.");
     }
     enabled.setToggleState(d.enabled, juce::dontSendNotification);
+    // Color Cab's Impulse slot, its one declared sample slot (ENGINE-SAMPLE-SLOTS.md).
+    if (!sample && d.uid == "org.adidaw.builtin.color-cab") {
+        sample = std::make_unique<SampleTile>(strip, id, 1, "Impulse");
+        addAndMakeVisible(*sample);
+        resized();
+    }
     // Only a plug-in has a window of its own (parity-7.5 row 1).
     if (wrench.isVisible() != (d.plugin && !strip.folded(id))) {
         wrench.setVisible(d.plugin && !strip.folded(id));
@@ -227,8 +304,8 @@ int DevicePanelView::widthFor(int height) const noexcept {
     const int rows = std::max(1, (height - top - 2) / ParameterControl::kHeight);
     const int columns = static_cast<int>((controls.size() + static_cast<std::size_t>(rows) - 1) /
                                          static_cast<std::size_t>(rows));
-    // Wide enough for the title bar's switches, a name and Configure.
-    return std::max(150, columns * ParameterControl::kWidth + 12);
+    // Wide enough for the title bar's switches, a name and Configure; and a sample tile beside.
+    return std::max(150, columns * ParameterControl::kWidth + 12 + (sample ? kTileWidth : 0));
 }
 void DevicePanelView::resized() {
     const bool isFolded = strip.folded(id);
@@ -241,6 +318,11 @@ void DevicePanelView::resized() {
     wrench.setBounds(32, 1, 16, 15);
     title.setBounds(nameLeft, 1, std::max(0, getWidth() - nameLeft - 58), 15);
     configureButton.setBounds(getWidth() - 56, 2, 52, 13);
+    if (sample) {
+        sample->setVisible(!isFolded);
+        const int tileTop = kTitleHeight + (configuring ? 26 : 4);
+        sample->setBounds(getWidth() - kTileWidth, tileTop, kTileWidth - 6, std::min(84, std::max(0, getHeight() - tileTop - 4)));
+    }
     search.setVisible(!isFolded && configuring);
     search.setBounds(4, kTitleHeight + 2, std::max(0, getWidth() - 8), 22);
     const int top = kTitleHeight + (configuring ? 26 : 2);
@@ -535,11 +617,26 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
     }
     return false;
 }
+void DeviceChainStrip::showSamples() {
+    // A sample tile shows its slot as the snapshot holds it: empty, loaded or missing.
+    const auto *snapshot = root.reader().get();
+    if (snapshot == nullptr)
+        return;
+    for (auto &p : panels)
+        if (p->sample) {
+            const engine::SampleSlotNode *node = nullptr;
+            for (const auto &slot : snapshot->sampleSlots)
+                if (slot && slot->deviceId == p->id && slot->slot == p->sample->slot)
+                    node = slot.get();
+            p->sample->show(node);
+        }
+}
 void DeviceChainStrip::frame(std::int64_t track) {
     // A wrench is lit while its window is open, however it closed (its own button, the host).
     for (auto &p : panels)
         if (p->wrench.isVisible() && p->wrench.getToggleState() != root.pluginWindowOpen(p->id))
             p->wrench.setToggleState(root.pluginWindowOpen(p->id), juce::dontSendNotification);
+    showSamples();
     auto next = publication ? publication() : nullptr;
     if (next == presented && track == selectedTrack)
         return;
@@ -570,6 +667,8 @@ void DeviceChainStrip::frame(std::int64_t track) {
     for (std::size_t i = 0; i < panels.size(); ++i)
         panels[i]->present(*visible[i]);
     presented = std::move(next);
+    // The panels just made show their sample slots in this frame, not the next.
+    showSamples();
     resized();
     repaint();
 }

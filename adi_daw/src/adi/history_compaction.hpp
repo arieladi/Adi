@@ -20,8 +20,14 @@ namespace history_detail {
 UndoRetentionPolicy undoPolicy(SQLite::Database &);
 void writeUndoPolicy(SQLite::Database &, const UndoRetentionPolicy &);
 UndoCompactionResult compactUndo(Store &, const UndoRetentionPolicy &);
+// Isolate optional retention work from an existing edit transaction.
+UndoCompactionResult tryCompactUndo(Store &);
+// Content-addressed typed rows, used by the current checkpoint and stored states.
+std::string storeCheckpointContent(SQLite::Database &, const Payload &);
+Payload readCheckpointContent(SQLite::Database &, const std::string &);
 Payload checkpointState(Store &);
-Payload checkpointAt(Store &, std::int64_t seq);
-void installCheckpoint(Store &, const Payload &);
+Payload checkpointAt(Store &, std::optional<std::int64_t> seq);
+void installCheckpoint(Store &, const Payload &, bool preserveContentPools = false);
+void copyCheckpointPools(const Store &, Store &);
 } // namespace history_detail
 } // namespace adi
