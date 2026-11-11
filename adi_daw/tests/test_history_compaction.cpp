@@ -118,7 +118,8 @@ void transactionsAndReplay() {
     auto log = OpJournal(*p.store).recent(100);
     std::reverse(log.begin(), log.end());
     for (const auto &op : log)
-        if (op.seq > restored.baseSeq) {
+        if (std::find(restored.retainedSeqs.begin(), restored.retainedSeqs.end(), op.seq) !=
+            restored.retainedSeqs.end()) {
             OpRequest request;
             request.opType = op.opType;
             request.payload = op.payload;
@@ -192,42 +193,59 @@ void exactBytesAndLegacy() {
           "legacy embedded-media rows retain their replay log until extraction");
 }
 void anchors() {
+    constexpr auto prepared = History::StoredRestore::SessionReloadPrepared;
     Project p;
     History h(*p.store);
     p.edits(1, 2);
     const auto named = h.takeSnapshot("Pinned", 1, 0);
     p.edits(3, 7);
     const auto retained = h.setUndoRetentionPolicy(budget(2));
-    check(named.ok && retained.ok && retained.protectedHistory && retained.baseSeq == 2,
-          "named snapshot limits compaction even above the budget");
-    check(h.revertToSnapshot(named.id, 2).ok && p.name() == "2", "protected named point remains navigable");
-    Project root;
-    History rootHistory(*root.store);
-    const auto point = rootHistory.takeSnapshot("Before edits", 1, 0);
-    root.edits(1, 5);
-    const auto blocked = rootHistory.setUndoRetentionPolicy(budget(2));
-    check(point.ok && blocked.ok && blocked.protectedHistory && blocked.baseSeq == 0 &&
-              OpJournal(*root.store).count() == 5,
-          "a named root preserves the whole prefix");
+    check(named.ok && retained.ok && !retained.protectedHistory && retained.baseSeq == 6 &&
+              retained.transactions == 1,
+          "named snapshots become stored states without blocking the active undo cap");
+    const auto before = digestProject(*p.store).text;
+    const auto oldHead = h.head();
+    const auto refused = h.revertToSnapshot(named.id, 2);
+    check(!refused.ok && refused.sessionReloadRequired && h.head() == oldHead &&
+              digestProject(*p.store).text == before,
+          "cross-baseline default refuses before mutation and requests document reload");
+    const auto restored = h.revertToSnapshot(named.id, 2, prepared);
+    check(restored.ok && restored.sessionReloadRequired && p.name() == "2" && !h.canUndo(),
+          "prepared stored snapshot restores its exact point without fabricated undo history");
+    check(h.listSnapshots().front().storedStateHash.has_value() && checkProject(*p.store).clean(),
+          "stored named point exposes a content identity and passes integrity");
+    Project origin;
+    History root(*origin.store);
+    const auto emptyName = origin.name();
+    const auto point = root.takeSnapshot("Before edits", 1, 0);
+    origin.edits(1, 5);
+    const auto capped = root.setUndoRetentionPolicy(budget(2));
+    check(point.ok && capped.ok && !capped.protectedHistory && capped.transactions == 1 &&
+              capped.baseSeq == 4,
+          "a named original root no longer pins the edit prefix");
+    check(root.revertToSnapshot(point.id, 2, prepared).ok && origin.name() == emptyName &&
+              !root.canUndo(),
+          "synthetic origin metadata restores the actual pre-edit state");
+    check(checkProject(*origin.store).clean() && root.readTimeline().error.empty(),
+          "a later synthetic origin sequence is a valid structural parent");
     Project fork;
     History tree(*fork.store);
     fork.edits(1, 6);
     check(tree.undo().ok && tree.undo().ok && tree.undo().ok, "fork fixture rewinds");
-    check(fork.edit("B1").ok && fork.edit("B2").ok, "fork fixture creates a second reachable line");
-    const auto branchList = tree.branches();
+    check(fork.edit("B1").ok && fork.edit("B2").ok, "fork fixture creates second reachable line");
     std::int64_t old = 0;
-    for (const auto &branch : branchList)
+    for (const auto &branch : tree.branches())
         if (!branch.isCurrent)
             old = branch.id;
     const auto cap = tree.setUndoRetentionPolicy(budget(2));
-    check(cap.ok && cap.protectedHistory && cap.baseSeq == 3 && old != 0,
-          "reachable fork point prevents compaction crossing either branch");
-    check(old != 0 && tree.switchToBranch(old).ok && fork.name() == "6",
-          "old branch still replays after shared-prefix compaction");
-    const auto oldBranchCap = tree.compactUndo();
-    check(oldBranchCap.ok && oldBranchCap.protectedHistory && oldBranchCap.baseSeq == 3,
-          "compaction after switching to the older branch also preserves the reachable fork");
-    check(checkProject(*fork.store).clean(), "forked compacted tree passes integrity checks");
+    check(cap.ok && !cap.protectedHistory && cap.baseSeq == 7 && cap.transactions == 1 && old != 0,
+          "dead ends become stored states before their bridge is pruned");
+    check(tree.switchToBranch(old, prepared).ok && fork.name() == "6" && !tree.canUndo(),
+          "old dead end opens from its saved baseline after active history crosses the fork");
+    const auto oldCap = tree.compactUndo();
+    check(oldCap.ok && !oldCap.protectedHistory && oldCap.baseSeq == 6 &&
+              checkProject(*fork.store).clean(),
+          "switching to a stored dead end preserves cap and integrity");
 }
 void collaborationAndFailures() {
     Project p;

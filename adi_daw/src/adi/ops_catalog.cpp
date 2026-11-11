@@ -42,6 +42,7 @@
 #include "adi/summing_flavors.hpp"
 #include "adi/track_image.hpp"
 #include "adi/tuning_ops.hpp"
+#include "adi/history_roots.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -2024,6 +2025,7 @@ std::span<const OpDescriptor> builtinOps() {
         v.insert(v.end(), lanes.begin(), lanes.end());
         const auto tuningOps=tunings::ops();
         v.insert(v.end(),tuningOps.begin(),tuningOps.end());
+        const auto roots=historyRootOps();v.insert(v.end(),roots.begin(),roots.end());
         return v;
     }();
     return all;

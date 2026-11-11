@@ -78,7 +78,7 @@ is merely advisory is a trap. See ADR-0029.
 
 ```sql
 PRAGMA application_id = 1094994225;
-PRAGMA user_version   = 1020;          -- schema 1.20
+PRAGMA user_version   = 1021;          -- schema 1.21
 PRAGMA page_size      = 4096;          -- set before the first write; see §3.4
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
@@ -1065,15 +1065,18 @@ an oldest complete prefix with one replayable checkpoint, retaining the prefix's
 last op as a root (`parent_seq`, `inverse` and `sel_before` NULL). The root is not
 an undo step. Compaction triggers only above a hard budget, then targets 90% of
 both limits (integer floor, at least one): 1,800 transactions and 900 decimal MB
-at the defaults. Whole transactions are removed; an anchor can stop the pass
-before that low-water mark. The newest complete transaction is retained even when that one
+at the defaults. Whole transactions are removed; upload acknowledgement or the
+newest transaction can stop the pass before that low-water mark. The newest complete transaction is retained even when that one
 transaction alone exceeds the byte budget. No partial transaction is pruned.
 
 ADR-0213 requires named snapshots and dead ends to remain openable/revertible as
 row-deduplicated stored states before compaction crosses their positions. The
-current foundation retains named snapshot, branch-head and reachable-fork anchors
-until the archived-state navigation path is implemented. These points protect their positions. Compaction can stop AT an anchor
-but MUST NOT pass it. A root snapshot/branch protects the entire prefix. In
+schema 1.21 implementation stores every crossed named snapshot and branch head,
+and every retained line's frontier, before pruning. A dead-end/redo tip without a
+branch receives a system branch name before its bridge is discarded. Named and
+origin snapshots remain openable and revertible independently of the active undo
+window. Their old edit steps may compact; their stored state never blocks the
+active budget. In
 collaboration mode no seq after the contiguous upload acknowledgement may be
 compacted; a missing acknowledgement protects the entire log. Protections can
 leave the active history above its budget; the API reports `protectedHistory`.
@@ -1086,7 +1089,8 @@ The byte budget counts retained non-ephemeral payload, inverse and selection
 bytes, UTF-8 metadata bytes, and an 80-byte fixed allowance per op. It excludes
 the checkpoint, media/content pools and SQLite page/WAL overhead; it is not a
 limit on the whole project file. Ephemeral audit rows in a compacted prefix are
-removed only within the same safe uploaded/anchor boundary.
+removed only within the same safe uploaded boundary. Metadata roots are excluded
+from this accounting, including roots holding named snapshots or inactive branches.
 
 Schema 1.19 adds `history_checkpoint(id, base_seq, state)`, one row with id 1.
 The CBOR state envelope has format 1, the writer's schema major/minor, and typed
@@ -1109,17 +1113,51 @@ row multiplicity. Unchanged rows and repeated complete states are reused, and
 reads validate every referenced hash. These tables are history metadata excluded
 from the musical digest. The one format-1 whole-state image in `history_checkpoint`
 remains available to older replay readers; historical content does not require
-another whole-state copy per checkpoint. Named/dead-end content references and
-their restore/navigation path are the following HI-02 slice.
+another whole-state copy per checkpoint.
+
+Schema 1.21 adds `history_roots(seq,state_hash)` and
+`history_origin_root(id,root_seq)`. A root is internal `history.root` metadata with
+CBOR `{state_hash: Text}`, no parent, inverse or selection. It reuses a complete
+old boundary's sequence or, for an original null origin, receives a synthetic
+metadata sequence and migration attribution/clock. The latter can be newer than
+its real edit descendants; only a root-parent edge may run backwards in numeric
+sequence order. Existing snapshot and branch references name these roots. Roots
+are structural metadata, never accepted journal submissions, and are hidden from
+Undo/Redo, `recent` and timeline steps. Branch/Snapshot DTOs expose optional
+`storedStateHash` for exact-root anchors. The current legacy checkpoint and its
+content link follow the current line's root; other roots have only shared row
+objects and manifests. Capture, normalization, verified restoration and all graph
+changes occur under the same retention savepoint. No domain or UI change escapes
+capture. Unreferenced old root records can be removed after references are moved;
+content object collection is separate from this active-log budget.
+
+Same-baseline Undo/Redo and navigation still apply the recorded real edits.
+Cross-baseline branch/snapshot navigation defaults to refusal before mutation,
+with `Result::sessionReloadRequired`. A caller that has stopped/fenced its Session
+may pass `StoredRestore::SessionReloadPrepared`; the engine installs the verified
+baseline and replays its retained ancestry atomically. It publishes one
+`ReplayBaseReset` without invented op records. This invalidates pending ParamOps;
+it does **not** instantiate or rehydrate plugins. The caller must reload the
+Document/Session before resuming audio. Existing UI callers must adopt this
+contract to open stored points. Target UI/session metadata is preserved. The
+immutable `state_blobs` pool is merged and collision-checked across restores,
+so a later branch's state hashes remain resolvable, as with ordinary Undo.
 
 For replay, hold one read transaction on the source while copying its checkpoint
 and retained log. `History::restoreReplayBase(source, emptyJournalTarget)`
 installs the domain state atomically, preserving target UI metadata, and returns
-`baseSeq`. Replay ONLY source ops strictly greater than `baseSeq`; the retained
-root's forward payload has already been folded into the checkpoint. With no
-checkpoint, baseSeq is zero and the existing full-log replay applies. A nonempty
+`baseSeq` and `retainedSeqs`. Replay exactly those current-ancestry sequences in
+returned order, excluding every metadata root, inactive branch and current redo
+tail. Numeric `seq > baseSeq` is insufficient for independent roots and synthetic
+origins. With no checkpoint, baseSeq is zero and the returned current ancestry
+starts at the original root. Immutable plugin resources needed by retained steps
+are copied as well. A nonempty
 or read-only target, malformed data or incompatible schema is refused without
-changing target state. Checkpoint bytes are content, never a new undo operation.
+changing target state. `restoreStoredSnapshot(source, snapshotId, emptyTarget)`
+opens an archived point from a writable or read-only source without moving its
+head; its verified stored root needs no retained replay. A point still inside
+the stepwise window is refused by that helper and uses ordinary copy/navigation.
+Checkpoint bytes are content, never a new undo operation.
 
 ### 8.4 UI and session state
 

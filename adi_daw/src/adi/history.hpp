@@ -35,6 +35,9 @@ class Store;
 class History {
 public:
     explicit History(Store&);
+    // A cross-baseline restore invalidates stateful runtime consumers. The
+    // caller explicitly prepares a stopped/reloadable Session, then reloads it.
+    enum class StoredRestore { Refuse, SessionReloadPrepared };
 
     /// What Ctrl-Z / Ctrl-Y would act on. Describes a whole transaction, since
     /// that is the unit both operate on.
@@ -62,6 +65,7 @@ public:
         /// Purely a UI hint -- restoring it is the view's business, and ignoring
         /// it is always correct.
         std::optional<Payload> selBefore;
+        bool sessionReloadRequired = false;
     };
 
     Result undo();
@@ -76,13 +80,14 @@ public:
         std::optional<std::int64_t> headSeq;
         bool isCurrent = false;
         std::int64_t createdUtc = 0;
+        std::optional<std::string> storedStateHash = std::nullopt;
     };
     [[nodiscard]] std::vector<Branch> branches() const;
 
     /// Move to another branch's head. The project is rewound to the common
     /// ancestor and replayed forward, so this is a real navigation, not a label
     /// change. The branch left keeps its head, so nothing becomes unreachable.
-    Result switchToBranch(std::int64_t branchId);
+    Result switchToBranch(std::int64_t branchId, StoredRestore = StoredRestore::Refuse);
 
     // Caps are project metadata. Setting a policy also compacts atomically.
     UndoCompactionResult setUndoRetentionPolicy(const UndoRetentionPolicy &);
@@ -91,11 +96,18 @@ public:
         bool ok = false;
         std::int64_t baseSeq = 0;
         std::string error;
+        std::vector<std::int64_t> retainedSeqs; // current ancestry, oldest first
     };
     // Hold a source read transaction across this call and retained-log reads.
     // Restore the source checkpoint into a journal-empty target, preserving its
-    // UI metadata. Replay source ops strictly AFTER returned baseSeq.
+    // UI metadata. Replay exactly retainedSeqs in order; other roots/branches
+    // and the current redo tail are not part of the materialized current state.
     static ReplayBaseResult restoreReplayBase(const Store &source, Store &target);
+    // Open an archived snapshot into an empty target without modifying the
+    // source, including a read-only source. A point still in stepwise history
+    // is refused; it uses ordinary copy/navigation. No retained replay is needed.
+    static ReplayBaseResult restoreStoredSnapshot(const Store &source, std::int64_t snapshotId,
+                                                  Store &target);
 
     // --- snapshots (ADR-0128, SPEC 8.6) ---------------------------------------
     //
@@ -113,6 +125,7 @@ public:
         std::int64_t branchId = 0;           // current when taken; a record, not a pointer
         std::int64_t createdUtc = 0;         // microseconds, UTC
         bool automatic = false;
+        std::optional<std::string> storedStateHash = std::nullopt;
     };
 
     struct TimelineStep {
@@ -134,7 +147,8 @@ public:
     };
 
     /// Message-thread metadata read, outside journal mutations. One consistent
-    /// read transaction; no op/state blobs are loaded or decoded. Ephemeral
+    /// read transaction; only structural hash payloads are decoded, never edit
+    /// payloads, inverses or full-state blobs. Ephemeral
     /// performance/session ops and the checkpoint root are excluded from steps.
     /// Root snapshots remain in snapshots, including anchors exactly at baseSeq;
     /// branch heads and step parents retain their stored sequence values.
@@ -170,7 +184,8 @@ public:
     /// across branches. Whatever the head's line held beyond that point stays
     /// reachable: if no other branch already holds its tip, a branch named
     /// "before revert to '<name>'" is created for it, stamped `nowUtc`.
-    Result revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc);
+    Result revertToSnapshot(std::int64_t snapshotId, std::int64_t nowUtc,
+                            StoredRestore = StoredRestore::Refuse);
 
     /// "<Project Name> <YYYY-MM-DD HH:MM>" at UTC + `utcOffsetMinutes`. An
     /// unnamed project is "Untitled". Pure: exposed so the format is testable.

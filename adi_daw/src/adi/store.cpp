@@ -104,6 +104,7 @@ const std::vector<MigrationStep>& migrationSteps() {
         // 1.19 (ADR-0203 d13): retained undo root and replay checkpoint.
         {19, {"history_checkpoint"}},
         {20, {"history_state_rows", "history_state_manifests", "history_checkpoint_content"}},
+        {21, {"history_roots", "history_origin_root"}},
     };
     return steps;
 }

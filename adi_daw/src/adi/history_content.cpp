@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-#include "adi/history_compaction.hpp"
 #include "adi/history_content.hpp"
+#include "adi/history_compaction.hpp"
 #include "adi/media/blake3.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
 #include <limits>
+#include <map>
 #include <stdexcept>
 namespace adi::history_detail {
 namespace {
@@ -70,6 +71,52 @@ Payload readCheckpointContent(SQLite::Database& db,const std::string& hash) {
 }
 void visitCheckpointState(SQLite::Database& db,const std::function<bool(Payload&)>& visitor,bool write) {
     const auto exists=[&](const char* table){SQLite::Statement query(db,"SELECT 1 FROM main.sqlite_master WHERE type='table' AND name=?");query.bind(1,table);return query.executeStep();};
+    if (exists("history_roots") &&
+        db.execAndGet("SELECT count(*) FROM history_roots").getInt64() != 0) {
+        std::map<std::string, std::vector<std::int64_t>> roots;
+        {
+            SQLite::Statement rows(db, "SELECT seq,state_hash FROM history_roots ORDER BY seq");
+            while (rows.executeStep())
+                roots[rows.getColumn(1).getString()].push_back(rows.getColumn(0).getInt64());
+        }
+        for (const auto &[oldHash, seqs] : roots) {
+            auto saved = readCheckpointContent(db, oldHash);
+            if (!visitor(saved) || !write)
+                continue;
+            const auto hash = storeCheckpointContent(db, saved);
+            const auto payload = encodePayload({{"state_hash", hash}});
+            for (const auto seq : seqs) {
+                SQLite::Statement mapping(db, "UPDATE history_roots SET state_hash=? WHERE seq=?");
+                mapping.bind(1, hash);
+                mapping.bind(2, seq);
+                mapping.exec();
+                SQLite::Statement metadata(
+                    db, "UPDATE ops SET payload=? WHERE seq=? AND op_type='history.root'");
+                metadata.bind(1, payload.data(), static_cast<int>(payload.size()));
+                metadata.bind(2, seq);
+                if (metadata.exec() != 1)
+                    throw std::runtime_error("missing stored baseline during relocation");
+            }
+        }
+        if (write) {
+            SQLite::Statement current(db, "SELECT r.state_hash FROM history_checkpoint c JOIN "
+                                          "history_roots r ON r.seq=c.base_seq WHERE c.id=1");
+            if (!current.executeStep())
+                throw std::runtime_error("missing stored current checkpoint during relocation");
+            const auto hash = current.getColumn(0).getString();
+            const auto bytes = encodePayload(readCheckpointContent(db, hash));
+            if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+                throw std::runtime_error("relocated checkpoint exceeds SQLite blob limit");
+            SQLite::Statement image(db, "UPDATE history_checkpoint SET state=? WHERE id=1");
+            image.bind(1, bytes.data(), static_cast<int>(bytes.size()));
+            image.exec();
+            SQLite::Statement link(db,
+                                   "UPDATE history_checkpoint_content SET state_hash=? WHERE id=1");
+            link.bind(1, hash);
+            link.exec();
+        }
+        return;
+    }
     if(!exists("history_checkpoint"))return;
     std::optional<Payload> state;
     {SQLite::Statement row(db,"SELECT state FROM history_checkpoint WHERE id=1");if(row.executeStep()){

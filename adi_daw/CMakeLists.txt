@@ -373,6 +373,8 @@ add_library(adi_core STATIC
     src/adi/history_policy.cpp
     src/adi/history_compaction.cpp
     src/adi/history_content.cpp
+    src/adi/history_roots.cpp
+    src/adi/history_archive.cpp
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp
@@ -2019,6 +2021,10 @@ add_test(NAME adi_track_bounce_tests COMMAND adi_track_bounce_tests)
 add_executable(adi_history_compaction_tests tests/test_history_compaction.cpp)
 target_link_libraries(adi_history_compaction_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_history_compaction_tests COMMAND adi_history_compaction_tests)
+
+add_executable(adi_history_stored_tests tests/test_history_stored.cpp)
+target_link_libraries(adi_history_stored_tests PRIVATE adi_core adi_warnings adi_miniz Threads::Threads)
+add_test(NAME adi_history_stored_tests COMMAND adi_history_stored_tests)
 
 add_executable(adi_midi_controllers_tests tests/test_midi_controllers.cpp)
 target_link_libraries(adi_midi_controllers_tests PRIVATE adi_core adi_warnings)

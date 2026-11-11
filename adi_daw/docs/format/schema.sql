@@ -24,7 +24,7 @@
 -- ============================================================================
 
 PRAGMA application_id = 1094994225;   -- 0x41444931 = 'ADI1'
-PRAGMA user_version   = 1020;         -- schema_major*1000 + schema_minor
+PRAGMA user_version   = 1021;         -- schema_major*1000 + schema_minor
 PRAGMA encoding       = 'UTF-8';
 PRAGMA foreign_keys   = ON;
 
@@ -41,7 +41,7 @@ CREATE TABLE adi_meta (
 -- user_version remains authoritative.
 INSERT INTO adi_meta(key, value) VALUES
     ('schema_major',        '1'),
-    ('schema_minor',        '20'),
+    ('schema_minor',        '21'),
     ('project_uuid',        ''),      -- stable identity across Save As
     ('created_utc',         ''),
     ('created_by',          ''),      -- "ADI DAW 0.1.0 (win32-x64)"
@@ -1150,4 +1150,14 @@ CREATE TABLE history_state_manifests (
 CREATE TABLE history_checkpoint_content (
     id INTEGER PRIMARY KEY CHECK(id=1) REFERENCES history_checkpoint(id) ON DELETE CASCADE,
     state_hash TEXT NOT NULL REFERENCES history_state_manifests(hash)
+) STRICT;
+
+-- HI-02: independent stored baselines. Root records are metadata, not undo steps.
+CREATE TABLE history_roots (
+    seq INTEGER PRIMARY KEY REFERENCES ops(seq) ON DELETE CASCADE,
+    state_hash TEXT NOT NULL REFERENCES history_state_manifests(hash)
+) STRICT;
+CREATE TABLE history_origin_root (
+    id INTEGER PRIMARY KEY CHECK(id=1),
+    root_seq INTEGER NOT NULL REFERENCES history_roots(seq)
 ) STRICT;
