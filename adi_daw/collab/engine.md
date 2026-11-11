@@ -16,6 +16,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 
 
+
+## 2026-11-11 — needed main merged for HI03; continuing on the landed stored-baseline contract
+
+**Source merge:** engine/log **`fc3ec031658eb4d15b443822823dee491baf261a`** merges **origin/main `ecbc7f24`** after the allocator completion50e89b9b. No conflict or manual source rewrite. HI03 needs #522's actual stored-root APIs and replay reset semantics; the source log base had not yet imported them. All existing engine log entries survived. The imported changes in ops.hpp/ops.cpp/ops_catalog are the already landed HI02 retentionWarning/compaction/root/fork/head handling and registration, as logged above; no Field, validateSubmission, routing.connect/track.create field-array, changeset or main.cpp change. #512 still absent/held for director Q-O; its named spots remain fenced. N45 includes win501bc849 and is preserved.
+
+**Environment now follows this source:** Link4.1.1 **5ba907ae027a8c2ec8824463e37296dcefc5e9be**, Asio1.38.2 **8806a6803cde7054c3049d3666d3ec36786568c5** restored from clean local objects, matching the merged pin. Prior independent allocator/adapter artifacts remain archived against their original source/SDK. No main checkout/commit, no CI wait, no seat stop.
+
+**Next immediately:** cut **`engine/history-move-to`** from this log successor. Reuse actual `moveBetween`, StoredRestore::SessionReloadPrepared and empty ReplayBaseReset on cross-baseline navigation. Window must stop/fence/reload its Session, as the landed contract says; the earlier log's helper names are not exported in this landed source, so no nonexistent helper is promised. Draft `/tmp/adi-history-move.inc` remains preparation until adapted/compiled/tested on this base. One transaction and one applied delivery, whole-transaction targets, preserved departing tips, exact no-op/refusal/rollback, no UI or protected control edits. AU05/Crop questions remain with win; continue the queue.
+
+
 ## 2026-11-11 — shared SQL row allocator gated and pushed; taking HI03 moveTo
 
 **PR requested:** head **`engine/row-ids` `dc2c025bf33523b1af4084ab5296e4f68cd3da01`**, independent base **`engine/log` `d3d14cd1`**. Title: **Share owner allocation of persistent SQL row IDs**. Twelve owned files, remote verified; win opens/merges and runs MSVC. All6 protected source files remain byte-identical to base. No UI, opcode/schema, binary-stream ID format or feature-log edit.
