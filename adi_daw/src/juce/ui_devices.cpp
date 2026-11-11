@@ -177,12 +177,15 @@ void SampleTile::paint(juce::Graphics &g) {
     } else {
         g.strokePath(edge, juce::PathStrokeType(1.f));
     }
-    g.setColour(look::text);
+    // Light text on the dark display, as a device's display draws it.
+    g.setColour(look::textOnBand);
     g.setFont(look::font(11.5f, true));
     g.drawText(slotName, 6, 3, getWidth() - 12, 14, juce::Justification::centredLeft);
     g.setFont(look::font(11.f));
     const char *what = state_ == State::Empty ? "Drop a sample" : state_ == State::Missing ? "File missing" : "Sample loaded";
-    g.setColour(state_ == State::Empty ? look::textDim : state_ == State::Missing ? juce::Colour(0xffe5352b) : look::text);
+    g.setColour(state_ == State::Empty     ? juce::Colour(0xff8a8a8a)
+                : state_ == State::Missing ? juce::Colour(0xffe5352b)
+                                           : look::textOnBand);
     g.drawFittedText(what, 6, 18, getWidth() - 12, std::max(14, getHeight() - 38), juce::Justification::centred, 2);
 }
 bool SampleTile::drop(const juce::String &path) {
