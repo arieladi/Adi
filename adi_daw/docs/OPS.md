@@ -2,7 +2,9 @@
 
 **Status:** framework complete and **implemented** — machinery in
 `src/adi/ops.{hpp,cpp}`, catalogue in `src/adi/ops_catalog.cpp`, undo in
-`src/adi/history.{hpp,cpp}`.
+`src/adi/history.{hpp,cpp}`. The tables also record intended vocabulary that
+has no native handler yet; a catalogue row is not an implementation claim.
+`adi_tool ops` is the current registered vocabulary.
 
 The implemented ops have handlers and inverses, covering most of the
 P0 editing surface. `adi_tool ops` lists them. Roughly half are generated from a
@@ -11,19 +13,19 @@ old value", and 24 textually identical handlers is 24 chances to get a `WHERE`
 clause wrong. Generated, that failure mode does not exist and the 25th is one
 line.
 
-Every one is covered by `adi_catalog_tests` — applied, then undone, then checked
-that the world came back, which exercises the inverse the way undo actually will
-rather than inspecting the stored blob. And all of them are in the round-trip
-corpus (ADR-0021 §7.4, `adi_replay_tests`), which is the only test that can catch
-a handler reading ambient state.
+`adi_catalog_tests` exercises native handlers by applying and undoing them,
+then checking that the state came back. The round-trip corpus
+(`adi_replay_tests`, ADR-0021 §7.4) and the feature suites check captured input
+and replay without ambient reads. A planned row's presence in this document
+proves neither handler coverage nor measured Live parity.
 
 The contracts in §1–§8 are the part that is expensive to change.
 
-Every mutation to an `.adi` project is an **op**: a typed, scoped, attributed,
+Every durable project-material edit is an **op**: a typed, scoped, attributed,
 invertible command appended to the `ops` table in the same transaction that
-performs it (SPEC §8.1, ADR-0003). This document defines what an op *is*.
-
-This is the last design document before code.
+performs it (SPEC §8.1, ADR-0003). History naming/navigation and UI/session
+metadata use their stated metadata APIs; they do not invent undo operations.
+This document defines the editing contract and the intended vocabulary.
 
 ---
 
@@ -202,12 +204,40 @@ Where an inverse would still exceed a threshold (proposed: 4 MB), the op is
 marked `lossy_undo` and the user is told **before** it commits. Silently dropping
 undo is not acceptable; neither is a 2 GB op log.
 
-### 6.4 Coalescing
+### 6.4 Gestures: preview, then one committed action
 
-Ops marked `coalescable` merge with the immediately preceding op when actor,
-target and `txn_id` match and they fall inside a window (proposed: 300 ms). The
-**first** op's inverse is kept — that is the one that returns to where the drag
-started. Coalescing happens before the log is written, never after.
+ADR-0216 supersedes the proposed 300 ms journal merge. `GestureSession`
+(`adi::gesture::Session`) owns one begin/update/commit/cancel lifetime, one
+actor and one frozen label. Updates carry absolute input and derive requests
+from the captured origin and the current committed base; a preview never becomes
+the next update's origin. A foreign commit triggers reapplication on its new
+base, or a named suspension if the captured target no longer matches.
+
+Continuous scalars publish live values without journal writes. Structural
+preview runs the real handlers in a scratch transaction, captures owned model
+and presentation data, then rolls back before preparing or publishing it.
+Unsupported topology or mixed preview composition refuses explicitly. Preview
+and cancellation never append ops or leave state blobs in the project.
+
+Commit executes one `OpJournal` transaction, capturing inverses from the
+committed state being replaced. A semantic no-op creates no transaction.
+Cancel clears only this owner's preview and preserves newer committed edits;
+a refused restoration remains owned for retry. SQL durability and later runtime
+presentation are separate outcomes: a runtime failure cannot resubmit an
+already durable edit. Open gestures, undrained callback reservations and capture
+faults fence Undo, Redo, revert and branch/source replacement.
+
+`ParamOps` and native controls use this same lifetime; surface and control
+clients must adopt it when they bind gestures. A quiet interval may detect the end of input without a release; it
+never merges committed transactions or implements Undo-and-recommit. The
+`coalescable` descriptor remains a symmetric-inverse capability, not a timer or
+permission to discard arbitrary captured state. A gesture writes automation
+only through the separately armed AU-03 recording path.
+
+[ENGINE-GESTURES.md](ENGINE-GESTURES.md) documents the built coordinator,
+submission capability, runtime ownership, explicit retry and current adapter
+limits. Live interaction-label parity remains NOT RUN until the measurement
+seat records it.
 
 ---
 
@@ -410,8 +440,6 @@ the five existing relational scale tables. No schema/binary-layout change.
 | `track.setTimeBase` | e | S | sym | P0 |
 | `track.setAutomationMode` | e | N | sym | P2 |
 | `track.setLocked` | e | N | sym | P1 |
-| `track.freeze` | e | G | pair `track.unfreeze` | P1 |
-| `track.unfreeze` | e | G | cap | P1 |
 | `lane.create` | e | S | pair `lane.delete` | P1 |
 | `lane.delete` | e | S | cap | P1 |
 | `lane.reorder` | e | S | sym | P1 |
@@ -1990,7 +2018,7 @@ Two §7 points specific to remarks:
   that lets a human tell who wrote what (ADR-0131 d3) is enforced where the
   agent's requests are built, not in the handler.
 
-**211 ops** — 71 P0, 84 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
+**209 ops** — 71 P0, 82 P1, 53 P2, 3 P3. Every P0 and P1 feature in FEATURES.md
 has a corresponding op, or is explicitly a runtime concern with no persisted
 state. Counted and consistency-checked by `tools/validate_ops.py`, not asserted.
 
@@ -2080,9 +2108,17 @@ in one native transaction. It adds no opcode or schema table. The master is
 retained in the container, excluded from the playing stem group. Document
 identity/generation/head guards and no-clobber file publication precede the
 commit point; one Undo removes the whole group. NI export remains application
-queue state, without project operations.
+queue state, without project operations. NI Stems normalization must be Off:
+Queue add/update and direct rendering refuse Peak/Loudness before source,
+codec or staging work until encoded AAC verification exists (PLAN EX-10).
+Ordinary WAV normalization remains supported.
 
 ### Whole-track freeze state
+
+Freeze and Unfreeze are user commands composed by the native producers from
+`track.setFreeze`, with `group.setFreezeScope` for a captured group. There are
+no registered `track.freeze` or `track.unfreeze` opcodes. Both directions use
+explicit before/after state and the existing media/material operations.
 
 track.setFreeze carries id, before and after objects. Each captured state holds
 armed, frozen, media and render (the complete frozen_renders row or null). The
