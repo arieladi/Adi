@@ -408,6 +408,12 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
 
         auto store = std::unique_ptr<Store>(new Store(std::move(db), path, false,lease));
         if (!store->applySessionPragmas()) {
+            // As the catch below: no schema-only file left at the user's path.
+            // Close SQLite first (on Windows it holds the file without
+            // FILE_SHARE_DELETE); removeCreated still keeps a file another
+            // reader has already opened.
+            store.reset();
+            if(lease)(void)lease->removeCreated(ec);
             err = StoreError::SqlError;
             return nullptr;
         }

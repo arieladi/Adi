@@ -323,7 +323,19 @@ std::shared_ptr<ProjectFileLease> ProjectFileLease::open(const fs::path& path,bo
         }else identity=identityAt(value->path,error);
         if(!identity)return {};
         value->file=openLeaseInode(*identity,error);
-        if(value->file==invalidFile)return {};
+        if(value->file==invalidFile){
+            // The lease folder is unusable (wrong owner or mode, /tmp full or
+            // read-only, out of descriptors). Nobody has adopted the empty
+            // file we just created -- no lease was ever possible -- so take it
+            // back while the name still names it; otherwise a retry at this
+            // path would fail as AlreadyExists. A lock refused later is
+            // different: another process's replace has adopted the file.
+            struct stat info{};
+            if(create && ::stat(value->path.c_str(),&info)==0 &&
+               FileIdentity{static_cast<std::uint64_t>(info.st_dev),static_cast<std::uint64_t>(info.st_ino)}==*identity)
+                (void)::unlink(value->path.c_str());
+            return {};
+        }
 #endif
         if((error=lockNative(value->file,exclusive)))return {};
         // A replacement that won the open-to-lock interval must not redirect
