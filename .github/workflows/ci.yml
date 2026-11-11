@@ -298,9 +298,38 @@ jobs:
       #                   every suite passing (link playback 111 s, midi_clips
       #                   409 s). Raising the bound again is a stopgap: the next
       #                   step is running the Windows suites in parallel.
+      #   --parallel N    since 2026-11-11 (win): the suites run N at a time, N
+      #                   the runner's processor count -- COUNTED, as the Build
+      #                   step says why, never a bare flag. Every leg.
+      #                   What made it SAFE is in adi_daw/CMakeLists.txt beside
+      #                   adi_isolate_tests: an audit of every way two suites
+      #                   could see each other (temp folders, the build dir,
+      #                   ports, scanner children and quarantine, app data,
+      #                   Link). App data was the one real share -- every suite
+      #                   now gets its own ADI_HOME -- and the two Link suites
+      #                   hold one RESOURCE_LOCK. Nothing runs RUN_SERIAL.
+      #                   What made it FAST was not parallelism. The first try
+      #                   (#507 at f9bab26e) ran every Windows suite about six
+      #                   times slower at --parallel 4 -- 21722 s of suite time
+      #                   against 3990 s serial -- and timed out 11 of them.
+      #                   The suites were not computing: adi_mixer_tests used
+      #                   33 s of CPU in 145 s. They were waiting on the disk,
+      #                   because Store::createEmpty committed each of
+      #                   schema.sql's ~100 statements on its own, in the
+      #                   rollback journal at synchronous=FULL, and most suites
+      #                   create dozens of stores (mixer: 71). Four suites at
+      #                   once queued on one disk. One transaction for the
+      #                   schema (store.cpp) took mixer from 145 s to 38 s alone,
+      #                   and the whole local MSVC Debug run from 27.6 min at
+      #                   --parallel 4 to 5.2 min (15.9 min serial).
+      #                   CI step durations against main: #507.
       - name: adi_tests
         timeout-minutes: 150
-        run: ctest --test-dir adi_daw/build --build-config Debug --output-on-failure --timeout 600
+        run: |
+          jobs="${NUMBER_OF_PROCESSORS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
+          echo "running the suites $jobs at a time"
+          ctest --test-dir adi_daw/build --build-config Debug --output-on-failure \
+                --timeout 600 --parallel "$jobs"
 
       # The Visual Studio generator puts binaries in build/Debug/, everything
       # else puts them in build/. Resolve it once, loudly, rather than letting a
@@ -495,8 +524,10 @@ jobs:
           # Counted, as the Build step above says why.
           cmake --build build-strict --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
-          # Every registered test, run -- not merely compiled.
-          ctest --test-dir build-strict --output-on-failure
+          # Every registered test, run -- not merely compiled. In parallel and
+          # counted, as the adi_tests step in the build job says why.
+          ctest --test-dir build-strict --output-on-failure \
+                --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)"
 
           # The gate is only as good as its coverage, so say what it covered.
           # A target count that quietly drops is the failure mode this job has
