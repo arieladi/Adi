@@ -2118,3 +2118,14 @@ bypass, baked input-gain reset and optional disarm. Both play Warp off and use
 one undo transaction with project/document/head guards. No new opcode or schema
 is required. In-place preparation refuses partial extents or live incoming
 main/send audio rather than applying a baked mix twice.
+
+### Stored history baselines (schema 1.21)
+
+`history.root` is internal history metadata with a single required Text field,
+`state_hash`. Its Read descriptor has no apply handler or inverse: journal
+submission is refused. It is excluded from the editing catalogue count above.
+Compaction may replace an old transaction boundary with this hash reference or
+allocate an origin metadata record. Neither is a user edit or undo step.
+`history_roots` verifies the reference; named snapshots and dead ends keep their
+existing sequence references when their step history is compacted. All roots
+are hidden from `recent`, Undo/Redo steps and the timeline's step list.

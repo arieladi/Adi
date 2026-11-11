@@ -39,7 +39,7 @@ namespace gesture::detail {struct Domain; struct DomainAccess;}
 // SPEC §2. 0x41444931 == 'ADI1'.
 inline constexpr std::int32_t kApplicationId = 1094994225;
 inline constexpr int kSchemaMajor = 1;
-inline constexpr int kSchemaMinor = 20;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: marker notes/prompts (N25); 1.11: split stereo pan (N12); 1.13: retained musical Warp fade domains; 1.14: track recording options; 1.15: return send taps (ADR-0203 d3); 1.16: local clip properties (N33); 1.18: whole-group freeze scope; 1.19: undo checkpoint (ADR-0203 d13); 1.20: content-addressed checkpoint rows (HI-02)
+inline constexpr int kSchemaMinor = 21;   // 1.1: ADR-0136; 1.2: remarks (ADR-0131); 1.3: history snapshots (ADR-0128); 1.4: routes, agent requests (ADR-0146); 1.5: the plug-in panel (ADR-0154); 1.6: op clients and clocks (ADR-0161); 1.7: group summing (ADR-0174); 1.8: tuning systems (ADR-0178); 1.9: 44.1 kHz project default (ADR-0203 d18); 1.10: marker notes/prompts (N25); 1.11: split stereo pan (N12); 1.13: retained musical Warp fade domains; 1.14: track recording options; 1.15: return send taps (ADR-0203 d3); 1.16: local clip properties (N33); 1.18: whole-group freeze scope; 1.19: undo checkpoint (ADR-0203 d13); 1.20: content-addressed checkpoint rows (HI-02); 1.21: stored history baselines (HI-02)
 inline constexpr int kUserVersion = kSchemaMajor * 1000 + kSchemaMinor;
 
 enum class StoreError {

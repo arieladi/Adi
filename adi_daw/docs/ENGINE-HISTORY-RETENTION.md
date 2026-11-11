@@ -46,32 +46,55 @@ been uploaded. Missing acknowledgement protects the whole log. A new
 collaboration session must transfer any existing checkpoint with its log.
 
 Compaction reports remaining transaction/byte counts, retained baseSeq,
-removedOps and protectedHistory. Named snapshots, other existing snapshots,
-branch heads and forks can keep history above budget. The newest whole
-transaction and legacy embedded-media rows are also protected. Nothing deletes
-these protections to meet a numeric limit. Daily automatic points remain usable
-until the snapshot-budget/user removal path removes them.
+removedOps and protectedHistory. It triggers above a hard limit and removes
+whole oldest transactions towards 90% low water (at least one), preserving the
+newest whole transaction. Upload acknowledgement and legacy embedded media may
+leave history above budget. Daily automatic snapshots never block compaction;
+pruned automatic points and their daily markers are removed together.
 
-Schema 1.19's single history_checkpoint row contains typed project state at the
-new root. Taking it temporarily rewinds under a SQLite savepoint, captures state,
-then rolls back that savepoint; only the checkpoint and old prefix pruning are
-committed. Keep all of this on the document owner, never on the audio callback.
-Checkpoint building can be proportional to project content and retained history.
-The byte limit is active journal storage, not total file size or content pools;
-see format/SPEC §8.3 for the exact accounting and retained-root contract.
+Named snapshots and dead ends survive beyond the undo window as verified,
+row-deduplicated states. Schema 1.20 stores typed rows and manifests by exact
+CBOR BLAKE3 identity; schema 1.21 maps internal structural roots to manifests.
+An old boundary can become a `history.root` hash reference; a named original
+origin may need a synthetic metadata sequence. Roots are hidden from Undo/Redo,
+`recent` and timeline steps. Their stored branch/snapshot DTOs expose
+`storedStateHash`; existing IDs and names remain stable. An unheld redo/dead-end
+tip gets a system branch before compaction removes its old bridge. Neither
+named points nor forks pin the stepwise prefix. The active budget excludes all
+metadata roots, state objects, content/media pools and SQLite overhead.
 
-Replay consumers must hold a source read transaction while reading base and log.
-`History::restoreReplayBase(source, emptyJournalTarget)` preserves target UI
-metadata and returns baseSeq; replay source ops strictly after that seq. Domain
-rows include binary content and retain their SQL types. Source media-file paths
-still use the usual resolver; this is not Collect/Export. Failed restore rolls
-back all target writes. A nonempty/read-only target is refused. History's undo
-menu stops at the retained root, while redo and protected snapshot/branch
-navigation retain their existing semantics. `History::readTimeline()` exposes
-that root as `baseSeq` (zero before compaction) and excludes it from `steps`.
-Its branch and snapshot lists retain anchors exactly at the base, with their
-stored sequence values. This is a metadata-only read in the same transaction as
-the rest of the timeline; it does not decode the checkpoint or compact history.
+Capture temporarily moves project state under a savepoint and rolls back. All
+required states are captured and actually restored/validated before any graph
+rewrite or pruning. A recoverable failure rolls back only retention; normal edit
+commit succeeds with `CommitResult::retentionWarning`. Explicit compaction rolls
+back its entire metadata transaction. No partial graph or hash objects escape.
+All work stays on the document owner, never on the audio callback.
 
-Save As/Copy and Collect remain the separate N3/N30 APIs. Neither service adds
-a file-save command, changes UI code, nor appends snapshot/compaction opcodes.
+Same-baseline navigation keeps existing inverse/forward applied batches.
+Cross-baseline navigation requires a full runtime reload: default
+`revertToSnapshot`/`switchToBranch` returns a failure with
+`sessionReloadRequired`, before changing state. Window must stop/fence the live
+Session, call with `History::StoredRestore::SessionReloadPrepared`, then reload
+the Document/Session before audio resumes. Successful transition publishes an
+empty `ReplayBaseReset`, invalidating old ParamOps; that event alone does not
+rehydrate plugins. UI/session metadata is preserved. The immutable state-blob pool
+is merged with collision checks, keeping resources from other branches available.
+
+Replay consumers hold a source read transaction across baseline and retained-log
+reads. `restoreReplayBase(source, emptyJournalTarget)` installs the current line's
+verified baseline, preserves target UI metadata and returns `retainedSeqs` in
+oldest-first order. Replay exactly that list, rather than a numeric seq suffix or
+all recent ops. It excludes independent roots, inactive branches and the redo
+tail beyond the current head. Target plugin resources include retained-log blobs.
+A nonempty/read-only target or corrupt/incompatible content fails atomically.
+`restoreStoredSnapshot(source, snapshotId, emptyTarget)` opens an archived named
+point without changing the source, including a read-only source. It installs the
+verified stored root and needs no retained replay; a snapshot still in stepwise
+history uses ordinary project copy/navigation and is refused by this helper.
+
+Save As/Copy, Collect and Export visit all distinct stored root states, including
+media absent from the current pool and retained ops. Writes refresh row hashes,
+root metadata payloads and the current legacy compatibility image together;
+unchanged states share immutable content. Older read-only files retain their
+legacy checkpoint path. The legacy full-state compatibility envelope is marked
+with schema 1.21 after normalization so older readers refuse newer semantics.

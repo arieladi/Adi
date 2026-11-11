@@ -165,6 +165,8 @@ std::span<const TableCoverage> coverage() {
         {"history_state_rows", Coverage::Excluded, "Layer 3: content-addressed checkpoint rows (HI-02)"},
         {"history_state_manifests", Coverage::Excluded, "Layer 3: checkpoint content manifests (HI-02)"},
         {"history_checkpoint_content", Coverage::Excluded, "Layer 3: checkpoint content reference (HI-02)"},
+        {"history_roots", Coverage::Excluded, "Layer 3: stored history baselines (HI-02)"},
+        {"history_origin_root", Coverage::Excluded, "Layer 3: oldest available history baseline (HI-02)"},
         {"history_snapshots", Coverage::Excluded, "Layer 3: history metadata, like op_branches (ADR-0128)"},
         {"agent_requests", Coverage::Excluded, "Layer 3: log metadata beside a txn, like the ops rows (ADR-0146)"},
         {"op_clients", Coverage::Excluded, "Layer 3: who wrote the log, not the project (ADR-0161)"},

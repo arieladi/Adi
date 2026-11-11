@@ -3,6 +3,8 @@
 #include "adi/check.hpp"
 
 #include "adi/blob.hpp"
+#include "adi/history_compaction.hpp"
+#include "adi/history_roots.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/ops.hpp"
 #include "adi/store.hpp"
@@ -288,6 +290,54 @@ void checkHistory(Ctx& c) {
         }
     } catch (const std::exception &error) {
         c.add(Severity::Error, "history.checkpoint", "history_checkpoint", error.what());
+    }
+
+    c.ran();
+    try {
+        if (c.db.execAndGet("PRAGMA user_version").getInt() >= 1021 &&
+            history_detail::hasStoredRoots(c.db)) {
+            SQLite::Statement unmapped(c.db,
+                                       "SELECT o.seq FROM ops o LEFT JOIN history_roots r ON "
+                                       "r.seq=o.seq WHERE (o.op_type='history.root')<>(r.seq IS "
+                                       "NOT NULL) OR (r.seq IS NOT NULL AND o.tags='ephemeral')");
+            if (unmapped.executeStep())
+                throw std::runtime_error("history baseline mapping mismatch");
+            SQLite::Statement roots(c.db, "SELECT seq,state_hash FROM history_roots");
+            while (roots.executeStep()) {
+                const auto seq = roots.getColumn(0).getInt64();
+                if (history_detail::rootForPoint(c.db, seq) != seq)
+                    throw std::runtime_error("invalid stored baseline");
+                (void)history_detail::readCheckpointContent(c.db, roots.getColumn(1).getString());
+            }
+            SQLite::Statement heads(
+                c.db,
+                "SELECT head_seq FROM op_branches UNION SELECT op_seq FROM history_snapshots");
+            while (heads.executeStep()) {
+                if (heads.getColumn(0).isNull())
+                    throw std::runtime_error("stored history has null point");
+                (void)history_detail::rootForPoint(c.db, heads.getColumn(0).getInt64());
+            }
+            SQLite::Statement current(
+                c.db, "SELECT c.state,h.state_hash,c.base_seq,r.state_hash FROM history_checkpoint "
+                      "c JOIN history_checkpoint_content h ON h.id=c.id LEFT JOIN history_roots r "
+                      "ON r.seq=c.base_seq WHERE c.id=1");
+            if (!current.executeStep())
+                throw std::runtime_error("missing stored checkpoint compatibility image");
+            SQLite::Statement head(c.db, "SELECT head_seq FROM op_branches WHERE is_current=1");
+            if (!head.executeStep() || head.getColumn(0).isNull() ||
+                current.getColumn(3).isNull() ||
+                current.getColumn(1).getString() != current.getColumn(3).getString() ||
+                history_detail::rootForPoint(c.db, head.getColumn(0).getInt64()) !=
+                    current.getColumn(2).getInt64())
+                throw std::runtime_error("stored checkpoint does not match current baseline");
+            std::string error;
+            const auto legacy = decodeFromLog(blobOf(current.getColumn(0)), error);
+            if (!legacy || *legacy != history_detail::readCheckpointContent(
+                                          c.db, current.getColumn(1).getString()))
+                throw std::runtime_error("stored checkpoint compatibility image mismatch");
+        }
+    } catch (const std::exception &error) {
+        c.add(Severity::Error, "history.storedState", "history_roots", error.what());
     }
 
     c.ran();

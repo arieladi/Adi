@@ -194,7 +194,7 @@ void compactedTimeline() {
     // Listing is deliberately metadata-only, including its new checkpoint read.
     // Navigation was exercised above before these opaque blobs were corrupted.
     f.store->db().exec("UPDATE history_checkpoint SET state=X'FF'");
-    f.store->db().exec("UPDATE ops SET payload=X'FF'");
+    f.store->db().exec("UPDATE ops SET payload=X'FF' WHERE op_type<>'history.root'");
     const auto metadata = history.readTimeline();
     check(metadata.error.empty() && metadata.baseSeq == 7 && metadata.steps.size() == 2,
           "checkpoint state and forward payload blobs are not decoded by timeline listing");
@@ -247,78 +247,74 @@ void compactedTransactions() {
 }
 
 void compactedAnchors() {
-    Fixture f("compacted_snapshot"); History history(*f.store);
-    names(f, 1, 2); const auto pinned = history.takeSnapshot("Pinned base", 1, 0); names(f, 3, 7);
+    Fixture f("compacted_snapshot");
+    History history(*f.store);
+    names(f, 1, 2);
+    const auto pinned = history.takeSnapshot("Pinned base", 1, 0);
+    names(f, 3, 7);
     const auto compacted = history.setUndoRetentionPolicy(budget(2));
     const auto view = history.readTimeline();
-    const auto* anchor = snapshot(view, pinned.id);
-    check(pinned.ok && compacted.ok && compacted.protectedHistory && compacted.baseSeq == 2 &&
-              view.error.empty() && view.baseSeq == 2 && view.steps.size() == 5 && anchor && anchor->opSeq == 2 &&
-              anchor->name == "Pinned base" && anchor->branchId == 1,
-          "an exact-base snapshot remains metadata even though its protected root is not a step");
-    check(std::none_of(view.steps.begin(), view.steps.end(), [&](const auto& step) {
-                  return step.step.firstSeq <= view.baseSeq || has(step.snapshotIds, pinned.id);
-              }), "the base snapshot is never misattached to a later visible transaction");
-    check(history.revertToSnapshot(pinned.id, 2).ok && projectName(f) == "2" && !history.canUndo(),
-          "a named snapshot at the hidden root remains a real navigable point");
+    const auto *anchor = snapshot(view, pinned.id);
+    check(pinned.ok && compacted.ok && !compacted.protectedHistory && compacted.baseSeq == 6 &&
+              view.error.empty() && view.steps.size() == 1 && anchor && anchor->opSeq == 2 &&
+              anchor->storedStateHash,
+          "stored snapshot stays named and addressable while only the active suffix appears as "
+          "undo steps");
+    check(std::none_of(view.steps.begin(), view.steps.end(),
+                       [&](const auto &step) { return has(step.snapshotIds, pinned.id); }),
+          "stored snapshot is never attached to an unrelated retained step");
+    check(
+        history.revertToSnapshot(pinned.id, 2, History::StoredRestore::SessionReloadPrepared).ok &&
+            projectName(f) == "2" && !history.canUndo(),
+        "prepared navigation restores stored snapshot without an undo step");
     const auto reverted = history.readTimeline();
-    check(reverted.error.empty() && reverted.baseSeq == 2 && reverted.headSeq == 2 &&
-              snapshot(reverted, pinned.id) && snapshot(reverted, pinned.id)->opSeq == 2 &&
-              reverted.steps.size() == 5 && std::all_of(reverted.steps.begin(), reverted.steps.end(), [](const auto& step) {
-                  return !step.applied && step.onCurrentLine;
-              }), "snapshot navigation to the base retains its anchor and the complete visible redo line");
-    Fixture root("uncompacted_root_snapshot"); History rootHistory(*root.store);
-    const auto beforeEdits = rootHistory.takeSnapshot("Before edits", 1, 0); names(root, 1, 5);
-    const auto protectedRoot = rootHistory.setUndoRetentionPolicy(budget(2));
-    const auto rootView = rootHistory.readTimeline();
-    check(beforeEdits.ok && protectedRoot.ok && protectedRoot.protectedHistory && protectedRoot.baseSeq == 0 &&
-              rootView.error.empty() && rootView.baseSeq == 0 && rootView.steps.size() == 5 &&
-              snapshot(rootView, beforeEdits.id) && !snapshot(rootView, beforeEdits.id)->opSeq,
-          "an ordinary null-root snapshot still protects the whole log and differs from a compacted base anchor");
+    check(
+        reverted.error.empty() && reverted.baseSeq == 2 && reverted.headSeq == 2 &&
+            snapshot(reverted, pinned.id)->storedStateHash && reverted.steps.size() == 1 &&
+            !reverted.steps[0].applied && !reverted.steps[0].onCurrentLine,
+        "stored point has its own baseline and leaves the other branch suffix visible as inactive");
+    Fixture origin("origin_snapshot");
+    History root(*origin.store);
+    const auto point = root.takeSnapshot("Before edits", 1, 0);
+    names(origin, 1, 5);
+    const auto cap = root.setUndoRetentionPolicy(budget(2));
+    const auto originView = root.readTimeline();
+    check(point.ok && cap.ok && !cap.protectedHistory && cap.baseSeq == 4 &&
+              originView.error.empty() && originView.steps.size() == 1 &&
+              snapshot(originView, point.id) && snapshot(originView, point.id)->storedStateHash,
+          "original null-root snapshot is stored independently and does not protect the whole log");
 }
-
 void compactedFork() {
-    Fixture f("compacted_fork"); History history(*f.store);
+    Fixture f("compacted_fork");
+    History history(*f.store);
     names(f, 1, 6);
-    check(history.undo().ok && history.undo().ok && history.undo().ok, "fork timeline rewinds to its future compacted base");
+    check(history.undo().ok && history.undo().ok && history.undo().ok, "fork timeline rewinds");
     const auto first = rename(f, "B1"), last = rename(f, "B2");
     const auto compacted = history.setUndoRetentionPolicy(budget(2));
     const auto view = history.readTimeline();
-    std::int64_t oldBranch = 0;
-    for (const auto& entry : view.branches) if (!entry.isCurrent) oldBranch = entry.id;
-    check(compacted.ok && compacted.protectedHistory && compacted.baseSeq == 3 && view.error.empty() &&
-              view.baseSeq == 3 && view.steps.size() == 5 && view.branches.size() == 2 && oldBranch != 0,
-          "a real fork compacts through its shared root while retaining both descendant branches");
-    const auto* b1 = find(view, first.txnId); const auto* b2 = find(view, last.txnId);
-    const auto oldFirst = std::find_if(view.steps.begin(), view.steps.end(), [](const auto& step) { return step.step.firstSeq == 4; });
-    check(b1 && b2 && b1->parentSeq == 3 && b1->applied && b2->applied && has(b1->branchIds, 1) &&
-              oldFirst != view.steps.end() && oldFirst->parentSeq == 3 && !oldFirst->applied &&
-              !oldFirst->onCurrentLine && has(oldFirst->branchIds, oldBranch),
-          "both first descendants name the hidden shared parent and retain correct active and alternate flags");
-    check(history.undo().ok && history.undo().ok && history.head() == 3 && !history.canUndo(),
-          "new branch undoes exactly to the compacted shared root");
-    const auto undone = history.readTimeline();
-    check(undone.error.empty() && undone.baseSeq == 3 && undone.headSeq == 3 && branch(undone, 1) &&
-              branch(undone, 1)->headSeq == 3 && find(undone, first.txnId) &&
-              find(undone, first.txnId)->onCurrentLine && !find(undone, first.txnId)->applied &&
-              std::none_of(undone.steps.begin(), undone.steps.end(), [](const auto& step) { return step.applied; }),
-          "a branch may point exactly at the hidden root while its newer redo tail remains visible");
-    check(oldBranch != 0 && history.switchToBranch(oldBranch).ok && projectName(f) == "6",
-          "switch to the older branch still replays through the compacted common ancestor");
+    std::int64_t old = 0;
+    for (const auto &entry : view.branches)
+        if (!entry.isCurrent)
+            old = entry.id;
+    const auto *newest = find(view, last.txnId);
+    check(compacted.ok && !compacted.protectedHistory && compacted.baseSeq == first.seqs.back() &&
+              view.error.empty() && view.steps.size() == 1 && old != 0 && newest &&
+              newest->applied && newest->parentSeq == first.seqs.back(),
+          "compacted fork exposes one active step and independently stored dead-end metadata");
+    check(history.undo().ok && !history.canUndo() && projectName(f) == "B1" && history.nextRedo() &&
+              history.nextRedo()->txnId == last.txnId,
+          "retained branch undoes to its own baseline and keeps real redo");
+    check(history.switchToBranch(old, History::StoredRestore::SessionReloadPrepared).ok &&
+              projectName(f) == "6",
+          "prepared branch navigation opens the stored dead end");
     const auto switched = history.readTimeline();
-    check(switched.error.empty() && switched.baseSeq == 3 && switched.currentBranchId == oldBranch &&
-              branch(switched, 1) && branch(switched, 1)->headSeq == 3 && find(switched, first.txnId) &&
-              !find(switched, first.txnId)->applied && !find(switched, first.txnId)->onCurrentLine &&
-              find(switched, first.txnId)->branchIds.empty(),
-          "an inactive branch at the base retains its stored anchor without claiming its former redo tail");
-    check(history.switchToBranch(1).ok && history.head() == 3 && history.nextRedo() &&
-              history.nextRedo()->txnId == first.txnId,
-          "switch back to the exact-base branch recovers the real highest-child redo path");
-    const auto returned = history.readTimeline();
-    check(returned.error.empty() && find(returned, first.txnId) && find(returned, last.txnId) &&
-              find(returned, first.txnId)->onCurrentLine && find(returned, last.txnId)->onCurrentLine &&
-              history.redo().ok && history.redo().ok && projectName(f) == "B2",
-          "reactivated compacted branch flags agree with replay of its retained redo tail");
+    check(switched.error.empty() && switched.baseSeq == 6 && switched.steps.size() == 1 &&
+              !switched.steps[0].applied && !switched.steps[0].onCurrentLine &&
+              branch(switched, old)->storedStateHash,
+          "stored dead end is not an applied undo step on the active suffix");
+    check(history.switchToBranch(1, History::StoredRestore::SessionReloadPrepared).ok &&
+              projectName(f) == "B1" && history.redo().ok && projectName(f) == "B2",
+          "returning to the retained branch restores its baseline and redo tail");
 }
 
 void checkpointErrors() {

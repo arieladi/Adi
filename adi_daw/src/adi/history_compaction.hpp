@@ -26,7 +26,8 @@ UndoCompactionResult tryCompactUndo(Store &);
 std::string storeCheckpointContent(SQLite::Database &, const Payload &);
 Payload readCheckpointContent(SQLite::Database &, const std::string &);
 Payload checkpointState(Store &);
-Payload checkpointAt(Store &, std::int64_t seq);
-void installCheckpoint(Store &, const Payload &);
+Payload checkpointAt(Store &, std::optional<std::int64_t> seq);
+void installCheckpoint(Store &, const Payload &, bool preserveContentPools = false);
+void copyCheckpointPools(const Store &, Store &);
 } // namespace history_detail
 } // namespace adi
