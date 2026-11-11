@@ -513,8 +513,12 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 endSeconds=tempo.ticksToSeconds(endTicks);
             } else {
                 const auto nanos=row.lengthNs.value_or(0);
-                if(nanos<0) throw std::runtime_error("invalid clip duration");
-                endSeconds+=static_cast<double>(nanos)*1e-9;
+                const auto begin=row.posNs.value_or(0);
+                if(begin<0 || nanos<0 || begin>std::numeric_limits<std::int64_t>::max()-nanos)
+                    throw std::runtime_error("invalid clip duration");
+                // Preserve the stored absolute endpoint before conversion: a
+                // separately converted begin + duration can miss a sample tie.
+                endSeconds=static_cast<double>(begin+nanos)*1e-9;
                 endTicks=tempo.secondsToTicks(endSeconds);
             }
             // Quantise both absolute endpoints once. Rounding a duration and
