@@ -439,7 +439,7 @@ target_sources(adi_core PRIVATE src/adi/split_pan_ops.cpp)
 target_sources(adi_core PRIVATE src/adi/audio/warp.cpp src/adi/audio/warp_map.cpp src/adi/audio/transients.cpp src/adi/audio/auto_warp.cpp src/adi/engine/warp_projection.cpp)
 target_link_libraries(adi_core PRIVATE adi_rubberband)
 target_sources(adi_core PRIVATE src/adi/row_capture.cpp src/adi/clip_edit_ops.cpp src/adi/edit_rows.cpp src/adi/edit_time.cpp
-  src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
+  src/adi/automation_time_edit.cpp src/adi/automation_clipboard.cpp src/adi/automation_splice.cpp src/adi/clip_image.cpp src/adi/clip_commands.cpp
   src/adi/edit_placement.cpp src/adi/edit_plan.cpp
   src/adi/material_commands.cpp src/adi/sample_defaults.cpp src/adi/warp_commands.cpp)
 target_include_directories(adi_core PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -1877,6 +1877,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(adi_link_playback_tests PRIVATE ADI_TEST_LINK_WRAP_LOCKS=1)
     target_link_options(adi_link_playback_tests PRIVATE -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock)
 endif()
+add_executable(adi_automation_splice_tests tests/test_automation_splice.cpp)
+target_link_libraries(adi_automation_splice_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_splice_tests COMMAND adi_automation_splice_tests)
+
 add_executable(adi_curves_tests tests/test_curves.cpp)
 target_link_libraries(adi_curves_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_curves_tests COMMAND adi_curves_tests)
