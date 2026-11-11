@@ -1303,7 +1303,17 @@ bool AdiRootComponent::splitAtMarker() {
     if (!current)
         return fail("Splitting needs an open project.");
     const auto &sel = arrangement.geometry.selection;
-    if (sel.start != sel.end)
+    // A clicked clip carries its own span as the selection: that is the clip chosen, not a time
+    // selection, and Split cuts it at the marker.
+    bool clipSpan = false;
+    if (sel.clip != 0)
+        for (const auto &t : current->tracks)
+            if (t)
+                for (const auto &c : t->clips)
+                    if (c && c->id == sel.clip && std::min(sel.start, sel.end) == c->posTicks &&
+                        std::max(sel.start, sel.end) == c->posTicks + c->lengthTicks)
+                        clipSpan = true;
+    if (sel.start != sel.end && !clipSpan)
         // Live's Split of a selection cuts at both of its edges: the two-point split (N17's open part).
         return fail("Splitting at a time selection's edges waits for the engine's two-point split (N17); "
                     "place the insert marker in a clip and split there.");

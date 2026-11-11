@@ -2550,9 +2550,27 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
     if (content.crossing > 0 && !deactivate) {
         clip_edit::RangeSelection range{selected, {0, std::min(sel.start, sel.end)}, {0, std::max(sel.start, sel.end)}};
         const edit_plan::Options options{view.root.editRate(), edit_plan::capturePolicy(view.root.commandSettings())};
-        if (!view.root.commitEdit(clip_edit::prepareDeleteRange(view.root.editStore(), range, options)))
+        auto prepared = clip_edit::prepareDeleteRange(view.root.editStore(), range, options);
+        if (prepared.ok) {
+            if (!view.root.commitEdit(std::move(prepared)))
+                return false;
+            view.changed();
+            return true;
+        }
+        // The engine will not trim here (a track whose automation follows its clips, a frozen track,
+        // the editing settings): the whole clips inside go as before, and the Status Bar says why the
+        // crossing ones stay.
+        const auto why = "The clips that cross the selection stay whole: the engine will not trim them here (" +
+                         prepared.error + ").";
+        auto whole = deleteRange(current->tracks, selected, sel.start, sel.end);
+        if (whole.ops.empty()) {
+            view.root.say(why);
+            return false;
+        }
+        if (!view.root.submitEdits(std::move(whole.ops)))
             return false;
         view.changed();
+        view.root.say(why);
         return true;
     }
     if (deactivate)
@@ -2561,7 +2579,13 @@ bool ArrangementCanvas::rangeEdit(bool deactivate) {
             auto prepared = clip_edit::prepareSplit(view.root.editStore(), split->clip, right,
                                                     clip_edit::TimePoint{0, split->at}, view.root.editRate());
             const auto inside = split->insideIsRight ? right : split->clip;
-            auto mute = track_edits_detail::op("clip.setMute", {{"id", inside}, {"muted", true}}, "Deactivate Clip");
+            // 0 toggles, as on whole clips: a clip already deactivated has its inside part activated.
+            bool wasOff = false;
+            for (const auto *c : content.crossers)
+                if (c->id == split->clip)
+                    wasOff = c->muted;
+            auto mute = track_edits_detail::op("clip.setMute", {{"id", inside}, {"muted", !wasOff}},
+                                               wasOff ? "Activate Clip" : "Deactivate Clip");
             mute.targetKind = "clip";
             mute.targetId = inside;
             if (!view.root.commitEdit(std::move(prepared), std::move(mute)))

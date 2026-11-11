@@ -88,7 +88,7 @@ MR § is the Master Reference's section.
 |---|---|---|
 | Tracks, clips, the ruler, the scrub area, the Overview, Live's zoom, Follow, the grid, moving and resizing clips, Live's keys | 3.3 | Built (#262 to #290) |
 | A time range across one or more tracks | 3.3, 4.4 | Partial: one track only. Missing: the selection across tracks |
-| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Waits (N17) |
+| Cut, copy, delete and silence over a range; Insert and Delete Time; Ctrl+I Insert Silence | 3.3, 4.4 | Partial (E1): Delete over a range trims the clips crossing its edges, and Split (Ctrl/Cmd+E) cuts at the insert marker; cut, copy and silence over a range, a split at two points, and Insert and Delete Time wait (N17) |
 | Live's fade handles, one fade for all selected clips; Create Fade In/Out and Create Crossfade on Ctrl+Alt+F / Cmd+Option+F | 4.3 | Waits (N17: no fade op) |
 | The fade editor on a double-click | 4.3 | Later (P2) |
 | A gain handle on every audio clip | 4.3 | Waits: `clip.setGain` exists, but the snapshot does not carry the gain (N6) |

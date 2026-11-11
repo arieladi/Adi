@@ -2598,7 +2598,7 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
 }
 // E1: Split at the insert marker (Ctrl/Cmd+E; Live 12 manual 6.12, 41.5), and Delete and 0 over a
 // selection that crosses a clip (6.9; N17, #393): one undo step each, from the keys.
-void splitAndRangeEdits(AppCommands &commands, const std::filesystem::path &dir) {
+void splitAndRangeEdits(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "split.adi", true, {}, error);
     check(document != nullptr, "a project for Split");
@@ -2640,6 +2640,20 @@ void splitAndRangeEdits(AppCommands &commands, const std::filesystem::path &dir)
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(clipsOf(2).size() == 1, "one undo makes it whole again");
+    // A clicked clip carries its own span as the selection: Split cuts it at the marker.
+    sel = {};
+    sel.track = 2;
+    sel.clip = 50;
+    sel.start = 0;
+    sel.end = 2 * bar;
+    sel.insert = bar;
+    sel.marked = true;
+    check(root.keyPressed(split), "Ctrl/Cmd+E with a clip clicked");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}, {bar, bar}} && clipsOf(3).size() == 1,
+          "a clicked clip splits at the marker, not refused as a time selection");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
     // Nothing chosen, editing.splitAllWithNoSelection on (its default): every track splits.
     sel = {};
     sel.insert = bar;
@@ -2686,6 +2700,56 @@ void splitAndRangeEdits(AppCommands &commands, const std::filesystem::path &dir)
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
     check(clipsOf(3).size() == 1, "one undo puts the whole clip back");
+    // 0 over the edge of a clip already deactivated activates the part inside: 0 toggles.
+    {
+        OpRequest off;
+        off.opType = "clip.setMute";
+        off.payload = {{"id", 51}, {"muted", true}};
+        off.label = "Deactivate Clip";
+        check(document->ops().submit(std::move(off)).ok && document->synchronise(), "2 MIDI's clip deactivated");
+        root.frame();
+    }
+    sel = {};
+    sel.track = 3;
+    sel.start = bar;
+    sel.end = 3 * bar;
+    check(canvas.keyPressed(juce::KeyPress('0')), "0 over the deactivated clip's right edge");
+    root.frame();
+    bool rightOn = false, leftOff = false;
+    if (const auto *t = root.reader().findTrack(3))
+        for (const auto &c : t->clips) {
+            if (c->posTicks == bar)
+                rightOn = !c->muted;
+            if (c->posTicks == 0)
+                leftOff = c->muted;
+        }
+    check(clipsOf(3).size() == 2 && rightOn && leftOff,
+          "split at bar 2, the part inside activated, the part outside still off");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "undo the split and the deactivation");
+    root.frame();
+    // When the editing policy has the engine refuse to trim, Delete still removes the whole clips
+    // inside and says why the crossing clip stays.
+    {
+        OpRequest inside;
+        inside.opType = "clip.create";
+        inside.payload = {{"id", 52}, {"track", 2}, {"kind", "midi"}, {"pos", 3 * bar}, {"length", bar / 2}};
+        check(document->ops().submit(std::move(inside)).ok && document->synchronise(), "a short clip in bar 4 on 1 MIDI");
+        root.frame();
+    }
+    std::string why;
+    check(settings.set("editing.mutedClipsAsDeleted", true, {}, why), "editing.mutedClipsAsDeleted on");
+    sel = {};
+    sel.track = 2;
+    sel.start = bar;
+    sel.end = 4 * bar;
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete over bars 2 to 4 under the refusing policy");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, 2 * bar}} &&
+              root.error().find("stay whole") != std::string::npos,
+          "the clip inside goes; the crossing clip stays whole and the Status Bar says why");
+    settings.set("editing.mutedClipsAsDeleted", false, {}, why);
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
     // 0 inside one clip waits for the two-point split.
     sel = {};
     sel.track = 3;
@@ -8213,7 +8277,7 @@ int main(int argc, char **argv) {
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     browserDevices(commands, temp.path());
-    splitAndRangeEdits(commands, temp.path());
+    splitAndRangeEdits(commands, settings, temp.path());
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
