@@ -113,6 +113,8 @@ The next three items of `collab/window/worklist-2026-11-05.md` after C2, C4, C3 
 
 **Since: D4** ([#508](https://github.com/arieladi/Adi/pull/508) `window/browser-devices`): the browser's Audio Effects in Live's seven folders and ADI's own under Pd Devices, loaded with double-click, Enter or a drag onto the selected track. Each load is one undo step; the reference and the chain come with it, so a track with no devices takes one. That is what D2's paste (N51) still lacks. #506 (D3) is merged. A lesson from the review: `ui.yml` builds the UI tests with Pd off, and the local tree has Pd on. Two `-Werror` failures and a wrong check showed only in the Pd-off branch. The lane now builds a Pd-off tree, as `ui.yml` configures it, before pushing anything that branches on `ADI_WITH_PD`.
 
+**Since: D5** ([#514](https://github.com/arieladi/Adi/pull/514) `window/color-cab-tile`): Color Cab's Impulse drop tile. A file from the desktop or the browser assigns the slot, in any format the browser lists; Clear empties it. Each is one undo step, and the live device takes the new state through `ParamOps::appliedState`. Also fixed: D3's wrench showed on D4's built-ins, which have a reference row but no plug-in window. #508 (D4) is merged. Undo and redo of an assignment do not reach the live device; that waits on N47, already open. The file is decoded on the message thread; a worker is a follow-up.
+
 **For win.**
 - A4: the ZIP's progress, which Live shows and `collectExport` does not report.
 - D1: the sidebar's labels beyond Samples and Places, which wait on the content they list.
