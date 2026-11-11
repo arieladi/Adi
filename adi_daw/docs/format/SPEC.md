@@ -1082,9 +1082,18 @@ changing target state. Checkpoint bytes are content, never a new undo operation.
 
 ### 8.4 UI and session state
 
-`ui_view`, `window_state`, `session_state`: track heights, fold states, zoom,
-scroll offsets, selection, playhead, loop, per-plugin-window rectangles *with
-their monitor identity*, mixer layout, visible panels, last-used tool.
+`ui_view` and `session_state` keep project-scoped view and performance state:
+track heights, fold states, zoom, scroll offsets, selection, playhead, loop,
+mixer layout, visible panels and the last-used tool. Floating and plug-in window
+places belong in `ui_view`, with their monitor identity and the display's area
+(ADR-0180 d3, d7). A restored rectangle alone is not a portable window place.
+
+The main window's and Settings window's places are application-scoped, in the
+App record `window.places`, not in the project: each entry carries
+`{display, area, rect, fullScreen}` (ADR-0203 d11, ADR-0129 d3; WIN-02).
+The schema's `window_state` table is reserved and currently has no writer; it is
+not the home of these application window places. This describes their assigned
+storage; WIN-02 owns the window's placement and display-change behavior.
 
 Reserved `session_state` keys for saved performance controls:
 `transport.metronome` is a JSON boolean; `transport.loop` is JSON
