@@ -88,6 +88,74 @@ bool clean(const fs::path &parent) {
             return false;
     return true;
 }
+void normalizationRefusal() {
+    test::TempDirectory dir{"ni_stems", "normalization-refusal"};
+    const auto namedRefusal = [](const std::function<void()> &call) {
+        try {
+            call();
+        } catch (const std::invalid_argument &error) {
+            return std::string(error.what()).find("NI Stems normalization") != std::string::npos;
+        }
+        return false;
+    };
+    for (const auto mode : {render::NormalizeMode::Peak, render::NormalizeMode::Loudness}) {
+        for (const double rate : {44100.0, 48000.0}) {
+            for (const auto precision : {engine::Precision::Float32, engine::Precision::Float64}) {
+                render::Job job;
+                job.project = dir.path() / "source-not-opened.adi";
+                job.directory = dir.path();
+                job.nameTemplate = "Normalized NI";
+                job.endSample = 128;
+                job.session.sampleRate = rate;
+                job.session.precision = precision;
+                job.niStems = render::NiStems{
+                    {{{1, engine::OfflineTap::PostFader}, "Drums", "#fd4a4a"}}, 256000};
+                job.normalization.mode = mode;
+                check(namedRefusal([&] { render::validateNiStems(job); }),
+                      "NI normalization has a named refusal independent of codec availability");
+                render::Queue queue;
+                check(namedRefusal([&] { (void)queue.add(job); }) && queue.snapshot().empty(),
+                      "unsupported NI normalization cannot enter the queue");
+                auto off = job;
+                off.normalization.mode = render::NormalizeMode::Off;
+                off.nameTemplate = "Original NI";
+                const auto id = queue.add(off);
+                check(id == 1 && queue.snapshot().size() == 1,
+                      "refused add consumes no identity and NI normalization Off remains valid");
+                const bool refusedUpdate = namedRefusal([&] { (void)queue.update(id, job); });
+                const auto pending = queue.snapshot();
+                const auto original = std::find_if(pending.begin(), pending.end(),
+                    [&](const auto &entry) { return entry.id == id; });
+                check(refusedUpdate && original != pending.end() &&
+                          original->result.state == render::JobState::Pending &&
+                          original->job.nameTemplate == off.nameTemplate &&
+                          original->job.normalization.mode == render::NormalizeMode::Off,
+                      "refused queue update preserves the entire pending NI choice");
+                unsigned services = 0, loads = 0, progress = 0;
+                render::Control control;
+                control.serviceHost = [&] { ++services; };
+                control.progress = [&](render::JobId, std::uint64_t, std::uint64_t) { ++progress; };
+                const auto result = render::renderNiStems(job,
+                    [&](const engine::DeviceRequest &, std::string &) -> std::unique_ptr<device::DeviceInstance> {
+                        ++loads;
+                        return {};
+                    }, control);
+                check(result.state == render::JobState::Failed && result.output.empty() &&
+                          result.framesWritten == 0 &&
+                          result.error.find("NI Stems normalization") != std::string::npos,
+                      "direct NI render returns the normalization refusal before opening its source");
+                check(services == 0 && loads == 0 && progress == 0 && fs::is_empty(dir.path()),
+                      "refused NI normalization creates no files and invokes no host or progress callback");
+                job.niStems.reset();
+                render::Queue wav;
+                const auto wavId = wav.add(job);
+                check(wavId == 1 && wav.snapshot().size() == 1 &&
+                          wav.snapshot().front().job.normalization.mode == mode,
+                      "ordinary WAV peak and loudness normalization remain accepted");
+            }
+        }
+    }
+}
 void integration() {
     if (!audio::aacCodecAvailable()) {
         std::puts("NI Stems native codec unavailable; metadata tests still run");
@@ -324,6 +392,7 @@ void integration() {
 int main() {
     try {
         metadata();
+        normalizationRefusal();
         integration();
     } catch (const std::exception &error) {
         check(false, error.what());

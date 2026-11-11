@@ -70,9 +70,15 @@ intentions while retaining local transport control and shared tempo.
 Before a playing slice, the pinned source generation must admit its actual
 mandatory pages. An unavailable distant position requests owner preparation
 with the intended launch tick. A page-readiness result is used immediately with
-the same request target; worker eviction rejects stale request snapshots. Owner
-preparation also covers the current position and loop head within the fixed page
-budget. It never reads mutable driver Transport state directly.
+the same request target. Admission retains actual fixed-slot page reservations,
+so even a worker's temporary claim cannot make an admitted page unavailable.
+Reservations survive repeated loop visits and processing parts; superseding
+requests, failed admission, owner timeout and stopped rendering release them.
+Ordinary rendering drops obsolete reservations before requesting its next range,
+so a full admitted cache cannot starve later playback. The worker still rejects
+stale request snapshots. Owner preparation covers the current position and loop
+head within the fixed page budget and retains its prepared pages until adoption.
+It never reads mutable driver Transport state directly.
 
 Stored note identity, authored content and the actual instrument route decide
 whether a held voice survives a clock-only rebuild. Matching voices retain their

@@ -17,12 +17,14 @@ void ParameterFeed::publish(engine::Session &session) {
             data.chain = chain.id;
             data.name = row.name;
             data.enabled = row.enabled;
-            data.plugin = row.pluginRefId.has_value();
             // A rack's kind has no values in the format yet, so only a plug-in can be an instrument.
             if (row.pluginRefId)
                 for (const auto &ref : model.pluginRefs)
                     if (ref.id == *row.pluginRefId) {
                         data.instrument = ref.subtype == "instrument";
+                        data.uid = ref.uid;
+                        // A plug-in has a window of its own; ADI's built-ins ("internal") have none.
+                        data.plugin = ref.format != "internal";
                         break;
                     }
             auto *instance = session.instanceFor(row.id);
