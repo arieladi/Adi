@@ -23,6 +23,14 @@ Every mutation to an `.adi` project is an **op**: a typed, scoped, attributed,
 invertible command appended to the `ops` table in the same transaction that
 performs it (SPEC §8.1, ADR-0003). This document defines what an op *is*.
 
+Optional history retention (ADR-0213, SPEC §8.3) has a separate savepoint inside
+`OpJournal::commit`. A recoverable checkpoint/pruning failure returns a successful
+edit with `CommitResult::retentionWarning`; the edit's rows, journal clocks,
+caller hook and applied-batch delivery still complete. A final caller hook may
+reject the entire transaction as before. Protected history above its budget also
+reports through the warning; callers can surface that deferral without treating
+the edit as failed. Compaction does not append an undo operation.
+
 This is the last design document before code.
 
 ---

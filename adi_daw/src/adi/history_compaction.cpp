@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/history_compaction.hpp"
 #include "adi/digest.hpp"
+#include "adi/history_policy.hpp"
 #include "adi/store.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -227,6 +228,9 @@ UndoCompactionResult compactUndo(Store &store, const UndoRetentionPolicy &policy
         result.ok = true;
         return result;
     }
+    const auto lowTransactions=std::max(std::int64_t{1},policy.maxTransactions*9/10);
+    const auto lowBytes=std::max(std::int64_t{1},policy.maxBytes*9/10);
+    const auto aboveLow=[&]{return result.transactions>lowTransactions || result.bytes>lowBytes;};
     // Old 1.0 files can still contain embedded media. Current schema triggers
     // deliberately forbid reinserting those rows, so preserve their log until
     // the separate extraction path has removed the legacy content.
@@ -249,7 +253,7 @@ UndoCompactionResult compactUndo(Store &store, const UndoRetentionPolicy &policy
     }
     const auto head = OpJournal(store).headSeq();
     std::int64_t protection = std::numeric_limits<std::int64_t>::max();
-    SQLite::Statement anchors(db, "SELECT op_seq FROM history_snapshots UNION ALL SELECT head_seq FROM "
+    SQLite::Statement anchors(db, "SELECT op_seq FROM history_snapshots WHERE auto=0 UNION ALL SELECT head_seq FROM "
                                   "op_branches UNION ALL SELECT parent_seq FROM ops WHERE tags<>'ephemeral' "
                                   "AND parent_seq IS NOT NULL GROUP BY parent_seq HAVING COUNT(*)>1");
     while (anchors.executeStep())
@@ -271,7 +275,7 @@ UndoCompactionResult compactUndo(Store &store, const UndoRetentionPolicy &policy
         throw std::runtime_error("undo chain does not reach its checkpoint");
     std::reverse(chain.begin(), chain.end());
     std::int64_t candidate = base;
-    for (std::size_t i = 0; i < chain.size() && over();) {
+    for (std::size_t i = 0; i < chain.size() && aboveLow();) {
         const auto txn = chain[i].txn;
         std::int64_t bytes = 0;
         std::size_t end = i;
@@ -293,7 +297,8 @@ UndoCompactionResult compactUndo(Store &store, const UndoRetentionPolicy &policy
         result.ok = true;
         return result;
     }
-    const auto state = encodePayload(checkpointAt(store, candidate));
+    const auto captured=checkpointAt(store,candidate);
+    const auto state = encodePayload(captured);
     if (state.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
         throw std::runtime_error("checkpoint exceeds SQLite blob limit");
     SQLite::Statement checkpoint(
@@ -302,6 +307,14 @@ UndoCompactionResult compactUndo(Store &store, const UndoRetentionPolicy &policy
     checkpoint.bind(1, candidate);
     checkpoint.bind(2, state.data(), static_cast<int>(state.size()));
     checkpoint.exec();
+    const auto hash=storeCheckpointContent(db,captured);
+    SQLite::Statement content(db,"INSERT INTO history_checkpoint_content(id,state_hash) VALUES(1,?) "
+        "ON CONFLICT(id) DO UPDATE SET state_hash=excluded.state_hash");content.bind(1,hash);content.exec();
+    std::vector<std::int64_t> automatic;
+    {SQLite::Statement old(db,"SELECT id FROM history_snapshots WHERE auto=1 AND (op_seq IS NULL OR op_seq<?)");old.bind(1,candidate);while(old.executeStep())automatic.push_back(old.getColumn(0).getInt64());}
+    for(const auto id:automatic){
+        clearDailyReference(db,id);SQLite::Statement remove(db,"DELETE FROM history_snapshots WHERE id=?");remove.bind(1,id);remove.exec();
+    }
     SQLite::Statement root(db, "UPDATE ops SET parent_seq=NULL,inverse=NULL,sel_before=NULL WHERE seq=?");
     root.bind(1, candidate);
     root.exec();
@@ -312,6 +325,20 @@ UndoCompactionResult compactUndo(Store &store, const UndoRetentionPolicy &policy
             "ops.txn_id=agent_requests.txn_id)");
     result.baseSeq = candidate;
     result.ok = true;
+    return result;
+}
+UndoCompactionResult tryCompactUndo(Store& store) {
+    auto& db=store.db();UndoCompactionResult result;
+    bool active=false;
+    try{
+        db.exec("SAVEPOINT adi_optional_compaction");active=true;
+        result=compactUndo(store,undoPolicy(db));
+        if(!result.ok){db.exec("ROLLBACK TO adi_optional_compaction");}
+        db.exec("RELEASE adi_optional_compaction");active=false;
+    }catch(const std::exception& error){
+        if(active){db.exec("ROLLBACK TO adi_optional_compaction");db.exec("RELEASE adi_optional_compaction");}
+        result={};result.error=error.what();
+    }
     return result;
 }
 } // namespace adi::history_detail

@@ -490,13 +490,13 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             return r;
         }
 
-        // ADR-0203 d13: checkpoint and prefix pruning share the edit transaction.
-        const auto retention = history_detail::compactUndo(store_, history_detail::undoPolicy(db));
-        if (!retention.ok) {
-            r.error = "history compaction: " + retention.error;
-            r.seqs.clear();
-            return r;
-        }
+        // ADR-0213: optional compaction has its own savepoint. Its failure
+        // reports a warning and cannot discard the edit or its applied batch.
+        const auto retention = history_detail::tryCompactUndo(store_);
+        if (!retention.ok)
+            r.retentionWarning = "history compaction: " + retention.error;
+        else if (retention.protectedHistory)
+            r.retentionWarning = "history remains above its undo budget; protected content retained";
 
         // ADR-0153: the caller's last word, still inside the transaction.
         if (options.beforeCommit) {

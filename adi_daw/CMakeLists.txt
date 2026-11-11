@@ -372,6 +372,7 @@ add_library(adi_core STATIC
     src/adi/history_list.cpp
     src/adi/history_policy.cpp
     src/adi/history_compaction.cpp
+    src/adi/history_content.cpp
     src/adi/digest.cpp
     src/adi/check.cpp
     src/adi/engine/snapshot.cpp

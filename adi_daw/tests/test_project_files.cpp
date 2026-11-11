@@ -2,6 +2,7 @@
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
+#include "adi/history_compaction.hpp"
 #include "adi/digest.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/audio/wav_file.hpp"
@@ -168,6 +169,21 @@ void symlinkedDestination() {
     History history(*copy);
     check(history.undo().ok && history.redo().ok && resolves(*copy),"its captured import paths resolve there too");
 }
+void checkpointRelocation() {
+    Fixture f;History history(*f.store);UndoRetentionPolicy policy;policy.maxTransactions=2;
+    check(history.setUndoRetentionPolicy(policy).ok,"checkpoint relocation policy");
+    for(const char* name:{"A","B","C"}){OpRequest edit;edit.opType="project.setName";edit.payload={{"name",name}};if(!OpJournal(*f.store).commit(edit).ok)throw std::runtime_error("checkpoint edit");}
+    const auto hash=f.store->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString();
+    const auto copyPath=f.target("checkpoint-copy");check(f.store->saveCopy(copyPath).ok,"copy a compacted project with checkpoint media");
+    StoreError error{};auto copy=Store::open(copyPath,error);check(copy!=nullptr,"compacted copy reopens");if(!copy)return;
+    auto replay=Store::create(copyPath.parent_path()/"Replay.adi",error);if(!replay)throw std::runtime_error("checkpoint replay fixture");
+    check(History::restoreReplayBase(*copy,*replay).ok && resolves(*replay),"copied legacy checkpoint resolves media from its relocated folder");
+    const auto copiedHash=copy->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString();
+    check(copiedHash!=hash && f.store->db().execAndGet("SELECT state_hash FROM history_checkpoint_content WHERE id=1").getString()==hash,"copy refreshes its checkpoint content identity without changing source content");
+    auto cached=Store::create(copyPath.parent_path()/"Cached.adi",error);if(!cached)throw std::runtime_error("cached replay fixture");
+    {SQLite::Transaction transaction(cached->db());history_detail::installCheckpoint(*cached,history_detail::readCheckpointContent(copy->db(),copiedHash));transaction.commit();}
+    check(resolves(*cached) && digestProject(*cached).text==digestProject(*replay).text,"content-addressed checkpoint and compatibility image relocate identically");
+}
 void unknownMajorAndReaders() {
     Fixture f;f.store->db().exec("PRAGMA busy_timeout=0");
     {
@@ -191,5 +207,5 @@ void unknownMajorAndReaders() {
     check(!newer->saveAs(refused).ok && !fs::exists(refused),"Save As cannot turn an unsupported major into an editable project");
 }
 }
-int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
+int main(){try{copiesAndSwitches();refusalsAndMissingMedia();readOnlySource();historyBranches();symlinkedDestination();checkpointRelocation();unknownMajorAndReaders();}catch(const std::exception& e){check(false,e.what());}
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;}
