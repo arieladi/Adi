@@ -2,6 +2,7 @@
 #pragma once
 #include "adi/engine/snapshot.hpp"
 #include "adi/ops.hpp"
+#include "adi/track_recording.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -268,7 +269,21 @@ inline TrackEdit groupTrack(const SnapshotTracks &tracks, std::int64_t id) { ret
 // down one place in the same batch, as `track.create` moves none. With nothing selected, or Main or
 // a return, it comes after the last track at the top. Named "# Audio" or "# MIDI": '#' shows its
 // number.
-inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected, bool midi) {
+// The registry's recording defaults for a new track (#397, N31): `record.quantize` ("off" or a grid)
+// and `audio.keepMonitoringLatency`, captured into the creating batch as ops, so a replay never
+// reads the settings again.
+struct RecordingDefaults {
+    std::string quantize = "1/16";
+    bool keepMonitoringLatency = true;
+};
+inline std::vector<OpRequest> recordingDefaultOps(std::int64_t track, const RecordingDefaults &defaults, const char *label) {
+    auto ops = trackRecordingDefaults(track, defaults.quantize, defaults.keepMonitoringLatency);
+    for (auto &o : ops)
+        o.label = label;
+    return ops;
+}
+inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected, bool midi,
+                             const RecordingDefaults *defaults = nullptr) {
     using namespace track_edits_detail;
     const char *label = midi ? "Insert MIDI Track" : "Insert Audio Track";
     TrackEdit edit;
@@ -293,6 +308,9 @@ inline TrackEdit insertTrack(const SnapshotTracks &tracks, std::int64_t selected
                            {"parent", parentValue(parent)},
                            {"index", static_cast<std::int64_t>(at)}},
                           label));
+    if (defaults != nullptr)
+        for (auto &o : recordingDefaultOps(id, *defaults, label))
+            edit.ops.push_back(std::move(o));
     for (std::size_t i = 0; i < order.size(); ++i) {
         const auto place = static_cast<std::int64_t>(i < at ? i : i + 1);
         if (order[i]->indexInParent != place)

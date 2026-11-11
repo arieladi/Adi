@@ -4,6 +4,8 @@
 #include "adi/ui/meters.hpp"
 #include "adi/ui/midi_tracks.hpp"
 #include "adi/ui/range_edits.hpp"
+#include "adi/ui/recording_edits.hpp"
+#include "ui_browser.hpp"
 #include "ui_shell.hpp"
 #include <limits>
 namespace adi::ui {
@@ -115,6 +117,15 @@ ScrubArea::ScrubArea(ArrangementView &v) : view(v) {
     editor.setTitle("Time signature");
     editor.setJustification(juce::Justification::centredLeft);
     editor.onCommit = [this] {
+        if (locatorEditing_ != 0) {
+            const auto id = locatorEditing_;
+            const auto text = editor.getText().toStdString();
+            if (editingInfo_ ? view.root.setLocatorInfo(id, text) : view.root.renameLocator(id, text))
+                endMeterEdit();
+            else if (editor.isShowing())
+                editor.selectAll();
+            return;
+        }
         if (editing_ < 0)
             return;
         const auto pos = editing_;
@@ -132,6 +143,47 @@ juce::Rectangle<float> ScrubArea::markerBox(const textproj::Meter &m) const {
     const float x = static_cast<float>(view.geometry.x(m.start_ticks));
     const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), text);
     return {x, kBraceHeight, w, 15.f}; // under the loop brace
+}
+juce::Rectangle<float> ScrubArea::locatorBox(const Locator &l) const {
+    const float x = static_cast<float>(view.geometry.x(l.pos));
+    const float w = 18.f + juce::GlyphArrangement::getStringWidth(look::font(11.5f), juce::String::fromUTF8(l.name.c_str()));
+    return {x, kBraceHeight, w, 15.f};
+}
+std::int64_t ScrubArea::locatorAt(float x) const {
+    const auto *snapshot = view.reader().get();
+    if (snapshot == nullptr)
+        return 0;
+    const auto locators = locatorsOf(*snapshot);
+    // The later one is drawn over the earlier where two touch.
+    for (auto it = locators.rbegin(); it != locators.rend(); ++it)
+        if (const auto box = locatorBox(*it); x >= box.getX() && x < box.getRight())
+            return it->id;
+    return 0;
+}
+bool ScrubArea::beginLocatorEdit(std::int64_t id, bool info) {
+    const auto *snapshot = view.reader().get();
+    const auto locators = snapshot != nullptr ? locatorsOf(*snapshot) : std::vector<Locator>{};
+    const auto *l = locatorById(locators, id);
+    if (l == nullptr)
+        return false;
+    if (const auto x = view.geometry.x(l->pos); x < 0 || x > getWidth() - 120) {
+        view.geometry.left = std::max(0., static_cast<double>(l->pos) / textproj::kPPQ -
+                                              static_cast<double>(getWidth()) / 4. / std::max(view.geometry.scale, 1.));
+        view.changed();
+    }
+    editing_ = -1;
+    locatorEditing_ = id;
+    editingInfo_ = info;
+    const int x = std::clamp(static_cast<int>(view.geometry.x(l->pos)) + 12, 0, std::max(0, getWidth() - 120));
+    editor.setTitle(info ? "Locator info text" : "Locator name");
+    editor.setBounds(x, 2, 120, std::max(0, getHeight() - 4));
+    editor.setText(juce::String::fromUTF8((info ? l->note : l->name).c_str()), false);
+    editor.setVisible(true);
+    editor.selectAll();
+    if (editor.isShowing())
+        editor.grabKeyboardFocus();
+    repaint();
+    return true;
 }
 std::int64_t ScrubArea::markerAt(float x) const {
     const auto &meters = view.reader().meters();
@@ -225,6 +277,32 @@ void ScrubArea::paint(juce::Graphics &g) {
         g.setColour(look::text);
         g.drawText(juce::String(meterText(m)), box.withTrimmedLeft(12.f), juce::Justification::centredLeft, false);
     }
+    // Live's locators (manual 6.4, its figures): a light box with a dark edge from each, a triangle
+    // pointing right at its start, its name after it; the selected one lit. Its colours are ADI's
+    // until measured on Live 11.
+    if (const auto *snapshot = view.reader().get())
+        for (auto l : locatorsOf(*snapshot)) {
+            if (l.id == locatorDragged_ && locatorTo_ >= 0)
+                l.pos = locatorTo_; // drawn where the drag would put it
+            const auto box = locatorBox(l);
+            if (box.getRight() < 0 || box.getX() > static_cast<float>(getWidth()))
+                continue;
+            const bool lit = l.id == view.selectedLocator;
+            g.setColour(lit ? look::selection : juce::Colour(0xffb4b4b4));
+            g.fillRect(box);
+            g.setColour(look::separator);
+            g.drawRect(box, 1.5f);
+            juce::Path mark;
+            mark.addTriangle(box.getX() + 2.f, box.getY() + 2.f, box.getX() + 2.f, box.getBottom() - 2.f,
+                             box.getX() + 10.f, box.getCentreY());
+            g.setColour(juce::Colour(0xffe8e8e8));
+            g.fillPath(mark);
+            g.setColour(look::separator);
+            g.strokePath(mark, juce::PathStrokeType(1.f));
+            g.setColour(look::text);
+            g.drawText(juce::String::fromUTF8(l.name.c_str()), box.withTrimmedLeft(13.f), juce::Justification::centredLeft,
+                       false);
+        }
 }
 void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     // The loop brace pressed is selected, and the material in the loop with it (manual 6.6: "Clicking
@@ -236,6 +314,7 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
         braceGrab_ = view.geometry.tick(e.position.x);
         braceFrom_ = braceTo_ = loopOf(view.reader().transport());
         view.selectedMeter = -1;
+        view.selectedLocator = 0; // one thing selected: Delete and the arrows must not reach a locator
         view.selectLoop();
         view.loopSelected = true;
         view.canvas.grabKeyboardFocus(); // the arrows go to the lanes, which act on the brace
@@ -248,6 +327,33 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     }
     // A marker clicked is selected, and plays nothing; its menu acts on it; a drag moves it.
     const auto marker = e.position.y >= kBraceHeight ? markerAt(e.position.x) : -1;
+    // A locator pressed is selected (manual 6.4): let go without a drag, it jumps there; a drag moves
+    // it; its menu acts on it. A time signature marker drawn over it is pressed first.
+    locatorDragged_ = 0;
+    if (const auto locator = marker < 0 && e.position.y >= kBraceHeight ? locatorAt(e.position.x) : 0; locator != 0) {
+        view.selectedLocator = locator;
+        view.selectedMeter = -1;
+        const auto *snapshot = view.reader().get();
+        const auto locators = snapshot != nullptr ? locatorsOf(*snapshot) : std::vector<Locator>{};
+        const auto pos = locatorById(locators, locator) != nullptr ? locatorById(locators, locator)->pos : 0;
+        if (e.mods.isPopupMenu()) {
+            repaint();
+            menu(view.geometry.tick(e.position.x))
+                .showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+            return;
+        }
+        locatorDragged_ = locator;
+        locatorGrab_ = view.geometry.tick(e.position.x) - pos;
+        locatorTo_ = pos;
+        locatorMoved_ = false;
+        view.canvas.grabKeyboardFocus(); // Delete and the arrows go to the lanes, which act on it
+        repaint();
+        return;
+    }
+    if (view.selectedLocator != 0) {
+        view.selectedLocator = 0; // anything else pressed here lets the locator go
+        repaint();
+    }
     dragged_ = e.mods.isPopupMenu() ? -1 : marker;
     movingTo_ = marker;
     grabbed_ = marker >= 0 ? view.geometry.tick(e.position.x) - marker : 0;
@@ -275,6 +381,16 @@ void ScrubArea::mouseDown(const juce::MouseEvent &e) {
     view.root.playFrom(view.geometry.tick(e.position.x));
 }
 void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
+    if (locatorDragged_ != 0) {
+        if (e.getDistanceFromDragStart() < 3 && !locatorMoved_)
+            return; // a click, not a drag
+        locatorMoved_ = true;
+        const auto raw = view.geometry.tick(e.position.x) - locatorGrab_;
+        const auto down = view.geometry.snap(raw, false), up = view.geometry.snap(raw, true);
+        locatorTo_ = std::max<std::int64_t>(0, !view.snaps(e.mods) ? raw : (raw - down <= up - raw ? down : up));
+        repaint();
+        return;
+    }
     if (brace_ != BracePart::None) {
         // To the nearest grid line while snapping (manual 6.6: "dragging from the left or right edge
         // adjusts the loop start/end points, while dragging the brace bar horizontally moves the loop
@@ -318,6 +434,20 @@ void ScrubArea::mouseDrag(const juce::MouseEvent &e) {
     repaint();
 }
 void ScrubArea::mouseUp(const juce::MouseEvent &) {
+    if (locatorDragged_ != 0) {
+        const auto id = locatorDragged_, to = locatorTo_;
+        const bool moved = locatorMoved_;
+        locatorDragged_ = 0;
+        locatorTo_ = -1;
+        locatorMoved_ = false;
+        if (moved)
+            view.root.moveLocator(id, to);
+        else if (const auto *snapshot = view.reader().get())
+            if (const auto locators = locatorsOf(*snapshot); const auto *l = locatorById(locators, id))
+                view.root.jumpTo(l->pos); // "You can jump to locators by clicking on them"
+        repaint();
+        return;
+    }
     if (brace_ != BracePart::None) {
         brace_ = BracePart::None;
         if (braceTo_ != braceFrom_ && view.root.setLoopRange(braceTo_))
@@ -332,6 +462,22 @@ void ScrubArea::mouseUp(const juce::MouseEvent &) {
         view.root.moveMeter(from, to);
     repaint();
 }
+void ScrubArea::mouseDoubleClick(const juce::MouseEvent &e) {
+    // "If the transport is stopped, double-clicking on a locator will select it and start playback
+    // from that point" (manual 6.4).
+    if (view.root.playing() || e.position.y < kBraceHeight)
+        return;
+    const auto id = locatorAt(e.position.x);
+    const auto *snapshot = view.reader().get();
+    if (id == 0 || snapshot == nullptr)
+        return;
+    const auto locators = locatorsOf(*snapshot);
+    if (const auto *l = locatorById(locators, id)) {
+        view.selectedLocator = id;
+        view.root.playFrom(l->pos);
+        repaint();
+    }
+}
 juce::PopupMenu ScrubArea::menu(std::int64_t at) {
     // Live's scrub area menu (manual 6.5): Insert Time Signature Change at the insert marker; on a
     // marker, Edit Time Signature and Delete (the Edit menu's Rename and Delete, which act on the
@@ -339,6 +485,16 @@ juce::PopupMenu ScrubArea::menu(std::int64_t at) {
     auto &commands = view.root.commands();
     commands.activate(view.root);
     juce::PopupMenu out;
+    // Add Locator (manual 6.4: "the Add Locator option in the scrub area's context menu"); on a
+    // locator, Rename, Edit Info Text, Delete Locator and Loop to Next Locator.
+    out.addCommandItem(&commands.manager, AppCommands::AddLocator);
+    if (view.selectedLocator != 0) {
+        out.addCommandItem(&commands.manager, AppCommands::RenameTrack);
+        out.addCommandItem(&commands.manager, AppCommands::EditInfoText);
+        out.addCommandItem(&commands.manager, AppCommands::DeleteLocator);
+        out.addItem("Loop to Next Locator", [this, id = view.selectedLocator] { view.root.loopToNextLocator(id); });
+    }
+    out.addSeparator();
     out.addCommandItem(&commands.manager, AppCommands::InsertTimeSignatureChange);
     if (view.selectedMeter >= 0) {
         out.addSeparator();
@@ -369,6 +525,8 @@ bool ScrubArea::beginMeterEdit(std::int64_t pos, bool inserting) {
     }
     editing_ = pos;
     inserting_ = inserting;
+    locatorEditing_ = 0;
+    editor.setTitle("Time signature");
     const int x = std::clamp(static_cast<int>(view.geometry.x(pos)), 0, std::max(0, getWidth() - 64));
     editor.setBounds(x, 2, 64, std::max(0, getHeight() - 4));
     editor.setText(juce::String(meterText(meterAt(pos, view.reader().meters()))), false);
@@ -381,6 +539,7 @@ bool ScrubArea::beginMeterEdit(std::int64_t pos, bool inserting) {
 }
 void ScrubArea::endMeterEdit() {
     editing_ = -1;
+    locatorEditing_ = 0;
     editor.setVisible(false);
     if (view.canvas.isShowing())
         view.canvas.grabKeyboardFocus();
@@ -879,11 +1038,17 @@ juce::Rectangle<float> ArrangementView::topButton(TopButton which) const noexcep
 void ArrangementView::mouseDown(const juce::MouseEvent &e) {
     // The window's rule for a control that cannot act yet: a click says what it waits for.
     using B = TopButton;
+    // Live's Set Locator, which reads Del on a selected locator, and Previous and Next (manual 6.4).
+    if (topButton(B::Set).expanded(1.f).contains(e.position)) {
+        root.setLocator();
+        return;
+    }
+    if (topButton(B::Previous).expanded(1.f).contains(e.position) || topButton(B::Next).expanded(1.f).contains(e.position)) {
+        root.jumpLocator(topButton(B::Next).expanded(1.f).contains(e.position));
+        return;
+    }
     for (const auto &[button, words] :
-         {std::pair{B::Set, "Set Locator waits for the engine's locators (window log, N25)."},
-          std::pair{B::Previous, "Previous Locator waits for the engine's locators (window log, N25)."},
-          std::pair{B::Next, "Next Locator waits for the engine's locators (window log, N25)."},
-          std::pair{B::Automation, "Automation Mode waits for the engine's automation lanes (window log, N26)."},
+         {std::pair{B::Automation, "Automation Mode waits for the engine's automation lanes (window log, N26)."},
           std::pair{B::Lock, "Lock Envelopes waits for the engine's automation lanes (window log, N26)."}})
         if (topButton(button).expanded(1.f).contains(e.position)) {
             root.say(words);
@@ -903,7 +1068,7 @@ void ArrangementView::paint(juce::Graphics &g) {
     g.drawRoundedRectangle(set.reduced(0.5f), 6.f, 1.f);
     g.setColour(look::text);
     g.setFont(look::font(11.f));
-    g.drawText("Set", set, juce::Justification::centred);
+    g.drawText(selectedLocator != 0 ? "Del" : "Set", set, juce::Justification::centred);
     for (int i = 0; i < 2; ++i) {
         const auto c = topButton(i == 0 ? TopButton::Previous : TopButton::Next);
         g.setColour(look::button);
@@ -971,6 +1136,16 @@ void ArrangementView::frame(bool modelChanged) noexcept {
     playhead.setVisible(root.playing() && x >= 0 && x < canvas.getWidth());
     playhead.setBounds(canvas.getX() + x, canvas.getY(), 1, canvas.getHeight());
     playhead.toFront(false);
+    // The waveforms follow the document; peaks that have landed since the last frame are drawn.
+    if (waveforms != nullptr) {
+        if (modelChanged)
+            if (const auto *snapshot = reader().get())
+                waveforms->follow(*snapshot, root.generation());
+        if (const auto landed = waveforms->delivered(); landed != waveformsSeen) {
+            waveformsSeen = landed;
+            canvas.repaint();
+        }
+    }
     if (modelChanged) {
         canvas.realiseAccessible();
         overview.repaint();
@@ -1502,6 +1677,18 @@ void TrackHeaderList::paint(juce::Graphics &g) {
             g.drawText(juce::String::fromUTF8(displayName(t->name, row.position + 1).c_str()), x + 23, y + 2,
                        getWidth() - x - 25, 15, juce::Justification::centredLeft);
         }
+        // ADI's Rec-Q and Play-Q (MR V.2 §9) on a MIDI track's header: what new recordings are
+        // quantized to ([1/16] or [Free]) and the live quantization (a grid or Off).
+        if (isMidiTrack(*t))
+            for (const bool record : {true, false})
+                if (const auto box = quantizeBox(row.place.depth, y, h, record); !box.isEmpty()) {
+                    look::box(g, box.toFloat(), look::chooser);
+                    g.setColour(look::text);
+                    g.setFont(look::font(10.f));
+                    const auto value = record ? recordQuantizeText(t->recording) : playQuantizeText(t->recording);
+                    g.drawText(juce::String(record ? "Rec-Q " : "Play-Q ") + juce::String(value), box.reduced(3, 0),
+                               juce::Justification::centredLeft, true);
+                }
         y += h;
     }
     // Where the dragged tracks would land: a line at their depth, or the group they would go into.
@@ -1577,10 +1764,36 @@ void TrackHeaderList::endRename() {
         view.canvas.grabKeyboardFocus();
     repaint();
 }
+juce::Rectangle<int> TrackHeaderList::quantizeBox(std::uint32_t depth, int top, int height, bool record) const noexcept {
+    // One under the other, the header's width each, in a row tall enough for both.
+    if (height < 56)
+        return {};
+    const int x = nameLeft(depth) + 4, w = getWidth() - x - 6;
+    if (w < 50)
+        return {};
+    return {x, top + (record ? 21 : 37), w, 14};
+}
+juce::PopupMenu TrackHeaderList::quantizeMenu(std::int64_t track, bool record) {
+    juce::PopupMenu menu;
+    const auto *t = view.reader().findTrack(track);
+    if (t == nullptr)
+        return menu;
+    const auto &o = t->recording;
+    const bool on = record ? o.recordEnabled : o.playEnabled;
+    const auto &grid = record ? o.recordGrid : o.playGrid;
+    menu.addSectionHeader(record ? "Record Quantization" : "Live Quantization");
+    menu.addItem(record ? "Free" : "Off", true, !on, [this, track, record] { view.root.setQuantize(track, record, "off"); });
+    for (const char *choice : kQuantizeGrids)
+        menu.addItem(choice, true, on && grid == choice,
+                     [this, track, record, choice] { view.root.setQuantize(track, record, choice); });
+    return menu;
+}
 void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
-    if (view.loopSelected) {
+    if (view.loopSelected || view.selectedLocator != 0) {
         view.loopSelected = false;
+        view.selectedLocator = 0;
         view.scrub.repaint();
+        view.repaint();
     }
     if (view.selectedMeter >= 0) {
         view.selectedMeter = -1; // a click on a title lets a selected marker go
@@ -1603,6 +1816,16 @@ void TrackHeaderList::mouseDown(const juce::MouseEvent &e) {
             view.root.say(ArrangementView::kUnfoldWaits);
         return;
     }
+    // Rec-Q and Play-Q open their menus, and select nothing.
+    if (const auto at = view.geometry.rowAt(view.reader(), e.y, &top); at < rows.size() && isMidiTrack(*rows[at].track))
+        for (const bool record : {true, false})
+            if (quantizeBox(rows[at].place.depth, top, view.geometry.heightFor(rows[at].track->id), record)
+                    .contains(e.getPosition())) {
+                resizeId = moveId_ = 0;
+                quantizeMenu(rows[at].track->id, record)
+                    .showMenuAsync(juce::PopupMenu::Options{}.withTargetComponent(this).withMousePosition());
+                return;
+            }
     resizeId = 0;
     moveId_ = 0;
     moving_ = selectOnUp_ = false;
@@ -1886,6 +2109,8 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(h - 4));
             g.setColour(clipColour);
             g.fillRect(left, static_cast<float>(y + 1), std::max(1.f, right - left), static_cast<float>(kClipBarHeight));
+            paintWaveform(g, *c, pos, left, right, static_cast<float>(y + 1 + kClipBarHeight),
+                          static_cast<float>(y + h - 3));
             // Its name in its title strip, cut at the clip's end, as Live's (the manual's demo
             // arrangement).
             if (!c->name.empty() && right - left > 6.f) {
@@ -1946,6 +2171,41 @@ void ArrangementCanvas::paint(juce::Graphics &g) {
         }
     }
 }
+void ArrangementCanvas::paintWaveform(juce::Graphics &g, const engine::ClipNode &clip, std::int64_t pos, float left,
+                                      float right, float top, float bottom) const {
+    // Live's audio clip (manual 6.1, chapter 9): its waveform across the body, each channel in a
+    // band of its own, inside the clip's source window only. The colour is ADI's until measured.
+    if (view.waveforms == nullptr || !clip.audio || bottom - top < 4.f)
+        return;
+    const auto peaks = view.waveforms->peaks(*clip.audio);
+    if (!peaks || peaks->channels == 0 || peaks->sampleRate == 0)
+        return;
+    const auto *snapshot = view.reader().get();
+    const auto &geo = view.geometry;
+    auto moved = clip;
+    moved.posTicks = pos; // drawn where a drag would put it
+    const ClipSourceMap source(moved, snapshot != nullptr ? snapshot->tempo.get() : nullptr,
+                               static_cast<double>(peaks->sampleRate));
+    const float band = (bottom - top) / static_cast<float>(peaks->channels);
+    g.setColour(juce::Colours::black.withAlpha(clip.muted ? 0.35f : 0.6f));
+    const int from = std::max(0, static_cast<int>(std::floor(left))),
+              to = std::min(getWidth(), static_cast<int>(std::ceil(right)));
+    for (int x = from; x < to; ++x) {
+        const auto f0 = source.frameAt(geo.tick(x)), f1 = source.frameAt(geo.tick(x + 1));
+        if (!f0)
+            continue;
+        const double end = f1 ? *f1 : *f0 + 1.;
+        for (std::uint32_t ch = 0; ch < peaks->channels; ++ch) {
+            const auto span = peakSpan(*peaks, std::min(*f0, end), std::max(*f0 + 1., end), ch);
+            if (!span)
+                continue;
+            const float mid = top + band * (static_cast<float>(ch) + .5f), half = band * .5f;
+            const float y0 = mid - std::clamp(span->maximum, -1.f, 1.f) * half,
+                        y1 = mid - std::clamp(span->minimum, -1.f, 1.f) * half;
+            g.fillRect(static_cast<float>(x), y0, 1.f, std::max(1.f, y1 - y0));
+        }
+    }
+}
 void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y, int h, juce::Colour colour) const {
     // Live's group track (manual 18.3, its figure of a folded group): a darker lane, and in it an
     // overview of the clips of every track the group holds, at any depth, a thin row each, in
@@ -1980,9 +2240,11 @@ void ArrangementCanvas::paintGroupLane(juce::Graphics &g, std::size_t at, int y,
 }
 void ArrangementCanvas::mouseDown(const juce::MouseEvent &e) {
     grabKeyboardFocus();
-    if (view.loopSelected) {
-        view.loopSelected = false; // a click in the lanes lets the brace go
+    if (view.loopSelected || view.selectedLocator != 0) {
+        view.loopSelected = false; // a click in the lanes lets the brace and a locator go
+        view.selectedLocator = 0;
         view.scrub.repaint();
+        view.repaint();
     }
     if (view.selectedMeter >= 0) {
         view.selectedMeter = -1; // a click in the lanes lets a selected marker go
@@ -2369,6 +2631,19 @@ bool ArrangementCanvas::keyPressed(const juce::KeyPress &k) {
             view.selectLoop();
         return true;
     }
+    // A selected locator (manual 6.4): left and right move it a grid line, Delete removes it.
+    if (view.selectedLocator != 0 && !mods.isAnyModifierKeyDown() &&
+        (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey)) {
+        if (const auto *snapshot = view.reader().get())
+            if (const auto locators = locatorsOf(*snapshot); const auto *l = locatorById(locators, view.selectedLocator))
+                view.root.moveLocator(l->id, view.geometry.nextGridLine(l->pos, code == juce::KeyPress::rightKey));
+        return true;
+    }
+    if (view.selectedLocator != 0 && (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey)) {
+        view.root.deleteLocator(view.selectedLocator);
+        view.repaint();
+        return true;
+    }
     // Left and right move a selected time signature marker by the grid (Live 12 manual 6.5).
     if (view.selectedMeter >= 0 && (code == juce::KeyPress::leftKey || code == juce::KeyPress::rightKey) &&
         !mods.isAnyModifierKeyDown()) {
@@ -2518,7 +2793,7 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
         return true;
     }
     if (edgeKey) {
-        // The previous or next clip edge on the track (the locators are not built yet).
+        // The previous or next clip edge on the track, or locator.
         const auto from = sel.start == sel.end ? sel.insert
                           : forward            ? std::max(sel.start, sel.end)
                                                : std::min(sel.start, sel.end);
@@ -2589,18 +2864,46 @@ bool ArrangementCanvas::arrow(bool forward, const juce::ModifierKeys &mods) {
     return true;
 }
 std::int64_t ArrangementCanvas::clipEdge(std::int64_t tick, bool forward) const {
+    // The nearest clip edge on the selected track, or locator (manual 6.9: Ctrl/Option with the arrows
+    // "snaps the insert marker to locators and the edges of clips in the selected track or tracks").
     auto best = tick;
+    const auto consider = [&](std::int64_t edge) {
+        if (forward ? edge > tick && (best == tick || edge < best) : edge < tick && (best == tick || edge > best))
+            best = edge;
+    };
     if (const auto *t = view.reader().findTrack(view.geometry.selection.track))
-        for (const auto &c : t->clips)
-            for (const auto edge : {c->posTicks, c->posTicks + c->lengthTicks})
-                if (forward ? edge > tick && (best == tick || edge < best)
-                            : edge < tick && (best == tick || edge > best))
-                    best = edge;
+        for (const auto &c : t->clips) {
+            consider(c->posTicks);
+            consider(c->posTicks + c->lengthTicks);
+        }
+    if (const auto *snapshot = view.reader().get())
+        for (const auto &l : locatorsOf(*snapshot))
+            consider(l.pos);
     return best;
 }
 bool ArrangementCanvas::isInterestedInFileDrag(const juce::StringArray &files) {
     // One file or several, as Live takes them; what each holds is read on the drop.
     return !files.isEmpty();
+}
+bool ArrangementCanvas::isInterestedInDragSource(const SourceDetails &details) {
+    return !BrowserPanel::droppedFiles(details.description).isEmpty() ||
+           !BrowserPanel::droppedDevice(details.description).empty();
+}
+void ArrangementCanvas::itemDropped(const SourceDetails &details) {
+    // A device dropped on a lane loads onto that track, at its chain's end; never a clip in the
+    // lane (the director, 28 October; audit row 101).
+    if (const auto uid = BrowserPanel::droppedDevice(details.description); !uid.empty()) {
+        const auto *track = view.geometry.trackAt(view.reader(), details.localPosition.y);
+        if (track == nullptr) {
+            const auto *info = findBuiltin(uid);
+            view.root.say("Drop " + (info != nullptr ? std::string(info->name) : std::string("a device")) +
+                          " on a track's lane to load it there.");
+            return;
+        }
+        view.root.insertDevice(uid, track->id, std::nullopt);
+        return;
+    }
+    filesDropped(BrowserPanel::droppedFiles(details.description), details.localPosition.x, details.localPosition.y);
 }
 void ArrangementCanvas::filesDropped(const juce::StringArray &files, int x, int y) {
     // Live's drop (manual 6.1): the clip starts where the file was dropped, on the nearest grid

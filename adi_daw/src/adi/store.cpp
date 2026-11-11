@@ -10,6 +10,7 @@
 
 #include <SQLiteCpp/SQLiteCpp.h>
 
+#include <atomic>
 #include <chrono>
 #include <map>
 #include <random>
@@ -330,6 +331,14 @@ std::unique_ptr<Store> Store::createNewProject(const std::filesystem::path& path
     }
 }
 
+namespace {
+std::atomic<bool> failNextCreate{false};
+}  // namespace
+
+void Store::failNextCreateBeforeCommitForTest() noexcept {
+    failNextCreate.store(true, std::memory_order_relaxed);
+}
+
 std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, StoreError& err) {
     std::error_code ec;
     if (std::filesystem::exists(path, ec)) {
@@ -350,6 +359,18 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
         db->exec("PRAGMA user_version = " + std::to_string(kUserVersion));
         db->exec("PRAGMA foreign_keys = ON");
 
+        // ONE transaction for the schema and its seed. Before this, each of the
+        // schema's ~100 statements committed on its own, in the rollback
+        // journal with synchronous=FULL (WAL starts below), so a new project
+        // cost ~100 journal create/flush/delete cycles. On Windows that was
+        // most of every store-making test suite's time: adi_mixer_tests, which
+        // makes 71 stores, spent 112 of its 145 s waiting on the disk. Same
+        // bytes either way, and a create that fails part-way now leaves no
+        // half-built schema behind. foreign_keys is set above because that
+        // pragma is a no-op inside a transaction (schema.sql repeats it; that
+        // repeat is harmless).
+        SQLite::Transaction create(*db);
+
         // The DDL is the generated copy of docs/format/schema.sql, so there is
         // exactly one source of truth and the validator tests the same bytes.
         db->exec(std::string(kSchemaSql));
@@ -368,6 +389,9 @@ std::unique_ptr<Store> Store::createEmpty(const std::filesystem::path& path, Sto
             meta.bind(2, k);
             meta.exec();
         }
+        if (failNextCreate.exchange(false, std::memory_order_relaxed))
+            throw SQLite::Exception("injected create fault (test seam)", 1 /* SQLITE_ERROR */);
+        create.commit();
 
         auto store = std::unique_ptr<Store>(new Store(std::move(db), path, false));
         if (!store->applySessionPragmas()) {

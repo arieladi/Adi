@@ -14,8 +14,10 @@ void ParameterFeed::publish(engine::Session &session) {
             DevicePanelData data;
             data.id = row.id;
             data.track = *chain.trackId;
+            data.chain = chain.id;
             data.name = row.name;
             data.enabled = row.enabled;
+            data.plugin = row.pluginRefId.has_value();
             // A rack's kind has no values in the format yet, so only a plug-in can be an instrument.
             if (row.pluginRefId)
                 for (const auto &ref : model.pluginRefs)

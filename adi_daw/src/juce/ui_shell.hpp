@@ -3,6 +3,7 @@
 #include "adi/engine/project_view.hpp"
 #include "adi/settings/store.hpp"
 #include "adi/ui/audio_drop.hpp"
+#include "adi/ui/locator_edits.hpp"
 #include "adi/ui/loop_edits.hpp"
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/momentary_latch.hpp"
@@ -11,6 +12,7 @@
 #include "adi/ui/snapshot_reader.hpp"
 #include "adi/ui/window_state.hpp"
 #include "ui_arrangement.hpp"
+#include "ui_history.hpp"
 #include "ui_browser.hpp"
 #include "ui_controlbar.hpp"
 #include "ui_look.hpp"
@@ -23,6 +25,7 @@
 #include <optional>
 namespace adi::ui {
 class AdiRootComponent;
+class FloatingHost;
 // The app-scoped command layer (ADR-0180 d6): one manager, installed on every window.
 // The keys are Live 12's (manual §41, ADR-0203 d6) unless a preset says otherwise.
 class AppCommands final : public juce::ApplicationCommandTarget {
@@ -105,7 +108,19 @@ class AppCommands final : public juce::ApplicationCommandTarget {
         Metronome,
         LoopSelection,
         SelectLoop,
-        LastId = SelectLoop
+        AddLocator,
+        DeleteLocator,
+        EditInfoText,
+        UndoHistory,
+        SaveCopy,
+        CollectAllAndSave,
+        CollectAndExport,
+        Cut,
+        Copy,
+        Paste,
+        Duplicate,
+        TogglePluginWindows,
+        LastId = TogglePluginWindows
     };
     explicit AppCommands(settings::AppSettings &);
     void reload();
@@ -135,9 +150,17 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     bool arrowKeysMoveClips() const noexcept { return arrowKeysMoveClips_; }
     // Ctrl/Cmd+wheel zooms around the selection, as Live; off, around the cursor.
     bool zoomOnSelection() const noexcept { return zoomOnSelection_; }
+    // The Plug-Ins page's window settings (Live 12 manual 23.3.1.1): Multiple Plug-In Windows,
+    // Auto-Hide Plug-In Windows and Plug-in windows always on top.
+    bool multiplePluginWindows() const noexcept { return multiplePluginWindows_; }
+    bool autoHidePluginWindows() const noexcept { return autoHidePluginWindows_; }
+    bool pluginWindowsOnTop() const noexcept { return pluginWindowsOnTop_; }
     // Live's Exclusive Solo (Record, Warp & Launch Settings), on by default: soloing a track unsolos
     // the others unless Ctrl/Cmd is held.
     bool exclusiveSolo() const noexcept { return exclusiveSolo_; }
+    // The registry's recording defaults a new track takes (`record.quantize`,
+    // `audio.keepMonitoringLatency`; N31).
+    const RecordingDefaults &recordingDefaults() const noexcept { return recordingDefaults_; }
     // `editing.linkLoopToSelection` (REAPER's), off by default: the brace follows a time selection.
     bool linkLoopToSelection() const noexcept { return linkLoop_; }
     // Each window's interface zoom, kept per window and per display in `window.zoom` (N4;
@@ -156,9 +179,11 @@ class AppCommands final : public juce::ApplicationCommandTarget {
     int tooltipDelayMs_ = 600;
     bool zoomOnSelection_ = true;
     bool tabMovesFocus_ = false;
+    bool multiplePluginWindows_ = false, autoHidePluginWindows_ = true, pluginWindowsOnTop_ = true;
     bool wrapTab_ = true, arrowKeysMoveClips_ = true;
     bool followByPage_ = true;
     bool exclusiveSolo_ = true;
+    RecordingDefaults recordingDefaults_;
     bool linkLoop_ = false;
 };
 // Live's Status Bar (manual 3.2): messages along the window's foot, with the
@@ -175,7 +200,8 @@ class StatusBar final : public juce::Component {
   private:
     AdiRootComponent &root_;
 };
-class AdiRootComponent final : public juce::Component {
+// The window is JUCE's drag container, so a browser row can be dragged onto the lanes (D1).
+class AdiRootComponent final : public juce::Component, public juce::DragAndDropContainer {
   public:
     AdiRootComponent(engine::ProjectView &, OpSubmitter &, TransportMailbox &, AppCommands &,
                      ViewStateStore &, SessionState &, std::string window,
@@ -262,6 +288,36 @@ class AdiRootComponent final : public juce::Component {
     juce::TextButton aiTab{"AI"};
     BrowserPanel browser{*this};
     ArrangementView arrangement;
+    // Live's Undo History (manual 5.4.2; A5): View › Undo History and Ctrl/Cmd+Alt+Z. Its own window
+    // in the app (ui_main.cpp); not a child of this one.
+    UndoHistoryPanel undoHistory;
+    // Puts the project back to just after the history's step `txnId` (`OpSubmitter::restore`): one
+    // refresh, Follow paused as by an undo, the session re-reading the project after it.
+    bool restoreStep(std::int64_t txnId);
+    // A plug-in's own window (Live 12 manual 23.3; N8, #391). The wrench in a plug-in device's
+    // title bar opens it in a floating window at the plug-in's size, never scaled; a second click
+    // closes it. Opening one closes the others unless Multiple Plug-In Windows is on or Ctrl/Cmd is
+    // held. The app wires the opener (`createEditorComponent`) and the host; `frame` runs on the
+    // window's clock and returns the editor's error, which goes to the Status Bar.
+    struct PluginEditorView {
+        std::unique_ptr<juce::Component> view;
+        std::function<std::string()> frame;
+        // Whether the plug-in has dropped its editor: its window then closes.
+        std::function<bool()> gone;
+    };
+    std::function<PluginEditorView(std::int64_t device, std::string &error)> pluginEditor;
+    FloatingHost *pluginHost = nullptr;
+    bool togglePluginWindow(std::int64_t device, bool several);
+    bool pluginWindowOpen(std::int64_t device) const;
+    static std::string pluginWindowKey(std::int64_t device);
+    // Each frame: Auto-Hide and Show/Hide applied, Always on Top followed.
+    void followPluginWindows();
+    // Live's Show/Hide Plug-In Windows (Ctrl/Cmd+Alt+P): every plug-in window at once.
+    bool pluginWindowsShown() const noexcept { return pluginWindowsShown_; }
+    // A built-in device loaded from the browser (D4): the app wires the load (`insertBuiltin`, one
+    // undo step); `insertDevice` checks there is a track and says why it cannot.
+    std::function<bool(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before)> loadBuiltin;
+    bool insertDevice(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     DeviceChainStrip devices;
     DockResizer dockResizer;
     MixerPanel mixer;
@@ -322,6 +378,10 @@ class AdiRootComponent final : public juce::Component {
     // field, which the Solo button's menu and the Options menu's entry share (`mixer.setSoloInPlace`,
     // #412); outside undo, saved with the project; the session re-reads the project after it.
     bool setSoloInPlace(bool on);
+    // A track's Rec-Q or Play-Q ("off" or a grid) and its Keep Monitoring Latency in Recorded Audio
+    // (#397, N31; MR V.2 §9; Live 12 manual 18.8), each one undo step. Nothing follows them yet.
+    bool setQuantize(std::int64_t track, bool record, const std::string &choice);
+    bool setKeepMonitoringLatency(std::int64_t track, bool on);
     // The toggle both entries pick: the field's opposite as the CURRENT cell holds it at pick time,
     // so a menu left open while the other entry threw the switch still toggles, never a no-op.
     bool toggleSoloInPlace();
@@ -369,6 +429,24 @@ class AdiRootComponent final : public juce::Component {
     bool braceKey(BraceKey key, bool command);
     bool setLoopStartAt(const std::string &text);
     bool setLoopLengthAt(const std::string &text);
+    // Live's locators (manual 6.4; N25, #385), from the CURRENT cell (ADR-0201), each edit one undo
+    // step. Set Locator: on a selected locator, Delete Locator; else a locator at the playhead while
+    // playing, at the time selection's start or the insert marker while stopped. Previous and Next
+    // jump to the locator before or after the play position, past the first or the last to the
+    // arrangement's start or end. A jump while playing moves playback there; while stopped, the
+    // insert marker. Add, delete, move, rename and Edit Info Text (the marker's note) act on one
+    // locator; Loop to Next Locator loops from a locator to the next, or to the arrangement's end.
+    bool setLocator();
+    bool jumpLocator(bool forward);
+    bool jumpTo(std::int64_t tick);
+    bool addLocatorAt(std::int64_t pos);
+    bool deleteLocator(std::int64_t id);
+    bool moveLocator(std::int64_t id, std::int64_t to);
+    bool renameLocator(std::int64_t id, const std::string &name);
+    bool setLocatorInfo(std::int64_t id, const std::string &text);
+    bool loopToNextLocator(std::int64_t id);
+    // Where the arrangement ends: the latest clip's end or locator, whichever is later.
+    std::int64_t arrangementEnd() const;
     // `editing.linkLoopToSelection` (REAPER's, off by default): with it on, a time selection made
     // in the lanes moves the brace to it, the loop's switch as it is. Nothing when it is off.
     bool linkLoopToSelection();
@@ -417,6 +495,7 @@ class AdiRootComponent final : public juce::Component {
     DirtySet dirty_;
     std::optional<SnapshotReader> reader_;
     std::uint64_t generation_ = 0;
+    bool pluginWindowsShown_ = true;
     unsigned lastDrain_ = 0;
     bool playing_ = false;
     bool infoShown_ = true;

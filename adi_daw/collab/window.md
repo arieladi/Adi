@@ -75,6 +75,76 @@ The checklists live in `collab/window/parity-*.md`, one per item, in that item's
 | N45 | Save As and Save a Copy over an existing file, as Live: the save dialog asks, and on yes the engine replaces the chosen file atomically from its stage (PD-04's `replaceFile`), never the file that is open; SPEC §3.7's "Existing destinations are never overwritten by these APIs" becomes "never without the user's confirmation" (PD-01's contract, item 3; win's placement under ADR-0203 d1 and d6, `docs/PLAN.md` §6.2, to strike if wrong; M3). Written by win from `docs/PLAN.md` §8.4, 2026-11-08 | engine | worklist A1 (Save As) and A4 (Save a Copy) are the window's; `Store::saveAs` and `Store::saveCopy` (#380; N3 and N30) refuse an existing destination, so the dialog cannot offer Live's replace | the dialog refuses an existing name and says why in the Status Bar; the replace path is offered once this row merges |
 | N46 | SPEC §8.4's `window_state` note brought to what is built and placed: `window_state` has no writer; the main window's and the Settings window's places are app-scoped, in the App record `window.places` (`{display, area, rect, fullScreen}`, a registry row of the plan's R-e, win's; ADR-0203 d11 "kept with the application"; ADR-0129 d3; N4's home, #359); floating and plug-in windows stay in `ui_view` with their monitor identity and the display's area (ADR-0180 d3, d7; ADR-0231's closed item, a restored rectangle carries monitor identity); the "readers MUST clamp" sentence stands (WIN-02, M1; `docs/PLAN.md` §8.4). Written by win from `docs/PLAN.md` §8.4, 2026-11-08 | engine (the text; the code is the window's, WIN-02) | WIN-02 is the window's M1 item and SPEC is the format's word on where a place lives; a reader of §8.4 would otherwise look for the main window's rectangle in the project file | builds WIN-02 against the App record and `ui_view` as placed; the project file carries no window place |
 | N48 | A held peak per strip: the highest peak since the last read, per strip, cleared by the reader. `StripNode::meter()` (#381) is reset on each callback's first segment and holds nothing between reads, so with 512-frame callbacks at 48 kHz (94 a second) and 60 Hz frames about a third of the callbacks are never read, and a transient over 0 dBFS inside one never reaches the Peak Level pill or the peak line (the 1024-frame tap it replaced read about twice as much and lost the rest the same way). Raised by B3 (`window/strip-meters`, #479, 2026-11-08), the worklist's "rows these items may raise"; the measure needs no audio to settle | engine (`src/adi/engine/mixer.*`, the `StripMeter` #381 writes) | the Peak Level pill (Live 12 manual 18.1.1: resettable peak level indicators) and the peak line, parity-7.6 row 13b, partial for it | the pill takes the highest of the per-callback peaks the frames read and is red from 0 dBFS; the fall and the hold are the window's placement until the Live 12 readings M1-02 to M1-04; the day the row merges the pill reads the held peak |
+| N49 | The transport's Count-In and Set Song Start Time Here: #383 saves the metronome and the loop, and nothing else of Live's transport. Live's metronome menu holds Count-In (Live 12 manual 19.4.1; the audit's row 134), and the loop brace's and a locator's menus hold Set Song Start Time Here, which "overrules the default behavior, which triggers playback at the insert marker or active time selection" (6.6, 6.4). Each needs a saved field (outside undo, as `transport.setLoop`) and the engine following it: count-in bars before recording starts, and playback starting at the chosen brace or locator. Raised by C2 and C3 (`window/loop-metronome`, #495; `window/locators`, #497; 2026-11-09) | engine (`src/adi/transport_settings.*`, the transport ops and the driver) | the Metronome switch's menu; the brace's and a locator's menus; parity-7.2-shell row 33, parity-7.3 rows 40 and 42, partial for them | the switch has no menu; neither menu lists Set Song Start Time Here; playback starts at the insert marker or the time selection, as Live's default |
+| N50 | A cancellable library scan: `library::Index::scan(volume)` walks a whole folder with no stop token and no progress, so a quit during the first scan of a large User Library waits for it to end, or the window has to leave the scan running. The window's `scanLibrary` checks its stop flag only between folders. Raised by D1 (`window/browser-samples`, #501, 2026-11-09) | engine (`src/adi/library/index.*`) | quitting promptly while the browser's first scan runs (Live 12 manual 4.6: the browser indexes in the background) | between folders the scan stops at once; inside one folder, quit detaches a scan that has not finished, and its result is dropped |
+| N51 | A device paste that creates the destination chain: `prepareDevicePaste` (#394) needs a top-level `device_chains` row for the track, and New's tracks and `track.create` make none (only the returns have chains), so a paste onto a track with no devices cannot go in one undo step from outside the engine. `prepareBuiltinInsert` already puts a `chain.create` in its own batch; the paste needs the same (an optional track to create the chain for, or a `chain.create` the window may prepend that the prepare accepts). Raised by D2 (`window/device-clipboard`, #505, 2026-11-10) | engine (`src/adi/device_copy.*`) | Paste at the chain's end on a track with no devices yet (Live 12 manual 23.2.1) | the paste is refused, "The track has no device chain to paste into."; a paste in front of a device and on a track with a chain works |
+
+## 2026-11-10, window lane — A4, D1 and C6: Save a Copy and the collects, the browser's samples, Rec-Q and Keep Monitoring Latency; N50
+
+The next three items of `collab/window/worklist-2026-11-05.md` after C2, C4, C3 and A5. Each is a `window/<topic>` PR to base main, with its headless checks, its parity rows and its picture beside Live 12's figure. C5 is skipped for now: it is ADI's addition, so its picture goes to the director before it is built. B8 and Mix View stay excluded.
+
+| Item | PR | Head | Size | What it builds |
+|---|---|---|---|---|
+| A4 | [#500](https://github.com/arieladi/Adi/pull/500) `window/save-copy-collect`, merged 9 November | `1067ecad` | 5 commits; 9 files, +273 −16 | Save a Copy, Collect All and Save, and Collect and Export in the File menu after Save As. Each refuses an existing destination and says why (N45). The ZIP export runs on an app-owned thread, joined at quit, while the project stays open (N30, #380, #411) |
+| D1 | [#501](https://github.com/arieladi/Adi/pull/501) `window/browser-samples` | `fcfe582e` | 6 commits; 11 files, +567 −13 | The browser's Samples and Places from the library index (#102), scanned off the message thread. Folders are told apart by volume, not name. Right and left move between sidebar and list, the search's down arrow goes to its results, and a row dragged onto a lane is the audio drop (N15's index part) |
+| C6 | [#503](https://github.com/arieladi/Adi/pull/503) `window/rec-q` | `6b1a5c79` | 4 commits; 20 files, +395 −14 (3 goldens) | Rec-Q and Play-Q on a MIDI track's header, and Keep Monitoring Latency from a right-click on In or Auto (both views) or Live's Keep Latency toggle in the Mixer View's Track Options. New tracks and New projects take the Record settings' defaults. Nothing follows a choice yet (N31, #397) |
+
+**Review.** Each branch had an adversarial review of its diff (correctness, behaviour, tests, a skeptic per finding), and every confirmed finding was fixed before the PR:
+- A4: 3. The export thread moved from the document to the app, so replacing the document no longer blocks; the export no longer holds an extra connection; shadowed test names.
+- D1: 8. Place identity by name; a quit hang during a scan; an uncaught exception on the indexing thread; nested folders listing a file twice; the chosen label moving on a new listing; the search's down arrow going nowhere; a Status Bar message during the first scan; the list running under the AI tab.
+- C6: 3. The goldens held the quantize boxes' text, which no other platform renders the same, so they are masked now; the Keep Latency tooltip claimed an effect the recorder does not have; the right-click did nothing in the Mixer View's own In/Out section.
+
+**CI.**
+- D1 failed the Windows shell suite once. A browser drag carried the sample's path with forward slashes (`media::pathUtf8` is generic), and JUCE on Windows splits a name only at backslashes, so the clip was named after the whole path. The drag now carries the native path, and a check asserts the file name.
+- The `windows x86_64 · msvc · ms stl` job then timed out twice on #501 at its 90-minute limit, at suites 184 and 127 of 206, with every suite before the cutoff passing. Main's run on #500's merge took about 85 minutes. The job sits at the edge of its limit on a slow runner; raising it is the maintainer's call, and the PR says so.
+
+**What they cost.** About 1,240 lines across the three, a third of them tests. Shell suite 1032 → 1090 on C6; `tools/test_all.sh` passes on each, 34002 checks across 207 suites after main's growth. Full Linux builds have no failed targets now, and the shadow and clang warning sweeps are clean.
+
+**Engine gaps.**
+- **N50 (new): `library::Index::scan` cannot be stopped.** A quit during the first scan of a large folder detaches the scan; between folders it stops at once.
+- **N31's open part:** Play-Q is not scheduled, nothing records MIDI, and #406's recorder ignores Keep Monitoring Latency. C6 stores the choices and says nothing about the sound.
+- **N45** stands: Save a Copy refuses an existing file instead of asking.
+
+**Since: D2** ([#505](https://github.com/arieladi/Adi/pull/505) `window/device-clipboard`): Cut, Copy, Paste and Duplicate a device, on Ctrl/Cmd+X, C, V and D. The device's menu follows Live 12's 23.2.1 figure, which has no Paste. Raised **N51**: a paste onto a track with no device chain yet needs the engine to create the chain in the paste's batch.
+
+**For win.**
+- A4: the ZIP's progress, which Live shows and `collectExport` does not report.
+- D1: the sidebar's labels beyond Samples and Places, which wait on the content they list.
+- C6: the place of Rec-Q and Play-Q, which is ADI's (MR V.2 §9); Live has no header boxes for them.
+
+---
+
+## 2026-11-09, window lane — C2, C4, C3 and A5: the metronome and the loop, waveforms, locators, the Undo History; N49
+
+Four items of `collab/window/worklist-2026-11-05.md`, in the order the director gave on 9 November, each a `window/<topic>` PR to base main with its headless checks, its parity rows and its picture beside Live 12's figure:
+
+| Item | PR | Head | Size | What it builds |
+|---|---|---|---|---|
+| C2 | [#495](https://github.com/arieladi/Adi/pull/495) `window/loop-metronome` | `129cb58f` | 4 commits; 21 files, +760 −20 (8 goldens) | O and the Metronome switch; the Loop switch, Loop Start and Loop Length typed; Loop Selection (Ctrl/Cmd+L) and Select Loop (Ctrl/Cmd+Shift+L); the brace drawn along the scrub area's top, dragged by an edge or its bar, its arrow keys; `editing.linkLoopToSelection` followed; all `transport.setMetronome` and `transport.setLoop`, outside undo (N19, #383) |
+| C4 | [#496](https://github.com/arieladi/Adi/pull/496) `window/clip-waveforms` | `ddca0a69` | 4 commits; 10 files, +444 −2 | `WaveformCache`: a worker with its own read-only store builds `buildMediaPeaks`, kept by content hash while the document uses the file; each channel drawn in its band, only over the clip's source window, warped clips through their markers (N40, #404) |
+| C3 | [#497](https://github.com/arieladi/Adi/pull/497) `window/locators`, stacked on #495 | `827199c8` | 3 commits over C2; 8 files, +732 −35 | Set (Del on a selected locator), Previous and Next; locators drawn as Live's labels, clicked, double-clicked, dragged, moved by the arrows, renamed, given info text, deleted; Add and Delete Locator in the Create menu; Loop to Next Locator; Ctrl+arrows stop at locators (N25, #385) |
+| A5 | [#498](https://github.com/arieladi/Adi/pull/498) `window/undo-history` | `c89cbf18` | 3 commits; 11 files, +488 −7 | `OpSubmitter::restore`: undo, redo or switch branch to a step, one refresh; the Undo History window (View menu, Ctrl/Cmd+Alt+Z), newest first, undone steps greyed, branches and snapshots named, the project as opened last (N29 in part, #387) |
+
+**Stacking.** C3 is stacked on C2 because the worklist puts it after C2: Loop to Next Locator uses C2's loop, and both draw in the scrub area under C2's brace. #495 merges first; the other three are cut from main.
+
+**What they cost.** About 2,400 lines across the four, a third of them tests. Shell suite 958 → 1032 on the C3 branch (C2 1003, C4 974, A5 983 from main), seams 499 → 511, document 99 → 107; `tools/test_all.sh` passes on each (15685 to 15697 checks, 188 suites). Each branch ran a full Linux build: 17 failed targets, all JUCE module compiles in `adi_audio_probe`, `adi_vst3_probe`, `adi_play`, `adi_play_render_tests` and `adi_vst3_scanner_tests`, new on main and failing as the probes do; the shadow sweep and the clang warnings pass were clean, and the sweep caught one shadowed init-capture in C4. C2 moved the eight structural goldens, by the brace's 8-unit strip only (pixel-diffed: rows 84 to 92). The build first needed `tools/fetch_external.sh --build-only` for main's new Rubber Band. Several test expectations were mine to correct: a brace shortened by Ctrl+left moves by its new length; two bars on from bar 3 is not bar 6; New's project is the history's root, not a step. MSVC and macOS were not run here; CI runs them. The headless shell suite prints JUCE's message-queue assertion (`juce_Messaging_linux.cpp:87`) from its first scenes, as on main.
+
+**Engine gaps the four exposed.**
+- **N49 (new): Count-In and Set Song Start Time Here** have no field in #383's transport. The Metronome switch has no menu yet, and the brace's and the locators' menus leave the command out.
+- **#449 (open): no pool peaks cache.** Nothing on main writes it, so C4 decodes each file once a session. C4 therefore keeps a file's peaks while any clip uses it, rather than dropping them at every generation as the worklist's wording reads: dropping them would decode every file after every edit. The PR says so.
+- **The global launch quantization** for Set and the locator jumps waits on the Session View's launch settings (ADR-0203 d10). This is not a new row.
+- **#383's default brace** covers the first four bars; Live's covers the whole arrangement. The window draws what the engine saves.
+- **N29's open part** (after compaction, the retained root lists as an ordinary step) stands; A5 does not work around it.
+
+**For win.** Each PR lists its measures for the Live 12 readings:
+- the brace's and the locators' colours;
+- the place of Loop Selection, Select Loop, Add/Delete Locator and Edit Info Text in Live 12's Edit and Create menus;
+- a control drag's wording in Live's Undo History;
+- the waveform's colour and scaling.
+
+A5 is a new window, and its picture is in #498 for the director's first look.
+
+---
 
 ## 2026-11-08, win (ORC-VST) — the eleven surfaces of 8 November: A1 to A3, C1, B1 to B5, F1 and F2; N3, N9 and N22 struck; N48
 

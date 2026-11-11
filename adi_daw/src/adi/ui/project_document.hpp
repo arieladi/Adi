@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "adi/builtin_catalog.hpp"
+#include "adi/device_copy.hpp"
 #include "adi/engine/param_ops.hpp"
 #include "adi/engine/session.hpp"
 #include "adi/history.hpp"
@@ -9,7 +11,10 @@
 #include "adi/ui/op_submitter.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "adi/ui/session_state.hpp"
+#include "adi/ui/track_edits.hpp"
+#include "adi/ui/waveform.hpp"
 #include "adi/ui/window_state.hpp"
+#include <optional>
 namespace adi::ui {
 using media::pathFromUtf8;
 // The history's first entry in a project made by New; never undone (Live 5.4.2).
@@ -22,8 +27,11 @@ inline constexpr const char *kNewProjectLabel = "New project";
 // a named snapshot instead, a point in the history that copies nothing.
 class ProjectDocument final : public engine::BlockProcessor {
   public:
+    // New (`create`) captures the registry's recording defaults for its four tracks in the history's
+    // root (`Store::createNewProject`'s four-argument form, #397, N31) when `defaults` is given.
     static std::unique_ptr<ProjectDocument> open(const std::filesystem::path &, bool create,
-                                                 engine::DeviceLoader, std::string &error);
+                                                 engine::DeviceLoader, std::string &error,
+                                                 const RecordingDefaults *defaults = nullptr);
     // Take Snapshot (ADR-0203 d6, d13; ADR-0128): history metadata, not an op,
     // so it neither refreshes the view nor enters the undo list.
     History::SnapshotResult takeSnapshot(const std::string &name, std::int64_t nowUtc,
@@ -40,6 +48,25 @@ class ProjectDocument final : public engine::BlockProcessor {
     // failed to re-read the new file, in `warning()`.
     bool saveAs(const std::filesystem::path &);
     const std::string &warning() const noexcept { return warning_; }
+    // Live's Save a Copy (manual 5.4.1): the project as it stands into a new `.adi`, the open one
+    // left as it is (`Store::saveCopy`, #380, N30). An existing file is refused, as for Save As.
+    bool saveCopy(const std::filesystem::path &);
+    // Live's Collect All and Save (manual 5.7): every outside media file the project and its
+    // history use is copied into `audio/` beside it and the project points at the copies
+    // (`Store::collectAllAndSave`, #411). Live's dialog chooses which locations to collect; the
+    // store collects them all. Not an undo step; the view and the session read the project again.
+    bool collectAllAndSave();
+    // ADI's Collect and Export (MR 1.6, 11.3): a portable `.zip` of the project and every file it
+    // uses (`media::collectExport`, #411, behind `Store::collectAndExport`), of the project as committed,
+    // the open one left as it is. Prepared here on the message thread: the destination is refused
+    // when it exists, and the job names the project's file. Run anywhere: `runCollectAndExport` reads
+    // the file on a short read-only connection of its own (SPEC §3.8), so the app runs it on a worker
+    // it owns and the window keeps working; a project replaced meanwhile does not wait for it.
+    struct ExportJob {
+        std::filesystem::path project, zip;
+    };
+    bool prepareCollectAndExport(const std::filesystem::path &zip, ExportJob &out);
+    static StoreFileResult runCollectAndExport(const ExportJob &);
     bool synchronise();
     void tick(std::int64_t milliseconds);
     void prepare(double rate, std::int32_t frames) override;
@@ -81,11 +108,30 @@ class ProjectDocument final : public engine::BlockProcessor {
     bool autoGainStage(bool lufs);
     // A device edit from the strip (enable, remove, panel), as one op.
     bool deviceAction(const std::string &op, Payload payload);
+    // Live's device clipboard (manual 23.2.1; N18, #394). Copy reads the device's stored state only,
+    // so a device whose plug-in is not loaded copies too; the clipboard is the app's, not the
+    // document's. Paste puts a new device, with the next free id and the copy's stored state, in
+    // front of `before` in its chain, or at the end of `track`'s own chain: one undo step. The
+    // engine's refusals (a rack with nested chains, a copy from another project) come back in
+    // `error()`.
+    bool copyDevice(std::int64_t id, DeviceCopy &out);
+    bool pasteDevice(const DeviceCopy &copy, std::int64_t track, std::optional<std::int64_t> before);
+    // The file the engine names a device copy's project by (`DeviceCopy::sourceFile`): after Save As
+    // the app moves a held copy over to the new file, the same project under a new name.
+    std::string deviceCopyIdentity() const;
+    // A built-in device from the browser (D4; N15, #395): `uid` from `builtinCatalog()` onto
+    // `track`, in front of `before` or at the end of its chain. The plug-in reference and the
+    // chain are made in the same batch when the project has neither: one undo step, "Insert <name>".
+    // The catalogue's refusals (an unavailable device, a missing track) come back in `error()`.
+    bool insertBuiltin(const std::string &uid, std::int64_t track, std::optional<std::int64_t> before);
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with
     // `error()` saying why, a file that is not audio included.
     bool prepareImport(const std::string &utf8Path, std::int64_t nowUtc, AudioImport &out);
+    // The audio clips' waveforms (N40, #404): peaks built on a worker of their own, which reads the
+    // project through its own read-only store (`Store::open(path, error, true)`), never this one.
+    WaveformCache &waveforms() noexcept { return waveforms_; }
 
   private:
     ProjectDocument(std::unique_ptr<Store>, std::string name);
@@ -117,5 +163,7 @@ class ProjectDocument final : public engine::BlockProcessor {
     TransportMailbox mailbox_;
     std::uint64_t realisedGeneration_ = 0;
     std::string error_, warning_;
+    // Last, so its worker stops before anything else goes; it touches nothing of the above.
+    WaveformCache waveforms_;
 };
 } // namespace adi::ui

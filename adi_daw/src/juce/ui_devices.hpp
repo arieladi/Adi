@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #pragma once
+#include <optional>
 #include "adi/engine/param_edits.hpp"
 #include "adi/ui/parameter_feed.hpp"
 #include "ui_arrangement.hpp"
@@ -51,6 +52,13 @@ class ActivatorButton final : public juce::ToggleButton {
   public:
     void paintButton(juce::Graphics &, bool over, bool down) override;
 };
+// Live's wrench in a plug-in device's title bar (manual 23.3): opens and closes the plug-in's own
+// window; lit while it is open.
+class WrenchButton final : public juce::Button {
+  public:
+    WrenchButton() : juce::Button("Plug-In Window") {}
+    void paintButton(juce::Graphics &, bool over, bool down) override;
+};
 // One device in the chain, as Live draws it: a title bar with the activator,
 // the name and Configure; the controls in columns that fit the strip's height.
 class DevicePanelView final : public juce::Component {
@@ -62,6 +70,9 @@ class DevicePanelView final : public juce::Component {
     bool keyPressed(const juce::KeyPress &) override;
     void mouseDown(const juce::MouseEvent &) override;
     void mouseDoubleClick(const juce::MouseEvent &) override;
+    // The device the keyboard chose, itself or one of its controls: where a load goes (D4).
+    void focusGained(FocusChangeType) override;
+    void focusOfChildComponentChanged(FocusChangeType) override;
     // The width this device takes at a given strip height.
     int widthFor(int height) const noexcept;
     // Live's round fold switch in the title bar, beside the activator.
@@ -77,6 +88,7 @@ class DevicePanelView final : public juce::Component {
     std::int64_t id;
     juce::TextButton title, configureButton{"Configure"};
     ActivatorButton enabled;
+    WrenchButton wrench;
     juce::TextEditor search;
     std::vector<std::unique_ptr<ParameterControl>> controls;
     bool configuring = false;
@@ -86,7 +98,7 @@ class DevicePanelView final : public juce::Component {
     DeviceChainStrip &strip;
     const DevicePanelData *data = nullptr;
 };
-class DeviceChainStrip final : public juce::Component {
+class DeviceChainStrip final : public juce::Component, public juce::DragAndDropTarget {
   public:
     explicit DeviceChainStrip(AdiRootComponent &);
     void frame(std::int64_t track);
@@ -98,14 +110,47 @@ class DeviceChainStrip final : public juce::Component {
     bool action(const std::string &, Payload);
     // Moves the focus from a device to its neighbour; at either end it stays.
     bool focusNext(std::int64_t from, bool forward);
+    // Live's device clipboard (manual 23.2.1; N18): Cut, Copy, Paste and Duplicate on `device`, or
+    // on the device with the focus. Paste goes in front of that device, or at the chain's end after
+    // a click in the strip's empty space; Duplicate goes in front of the next device in its chain
+    // and leaves the clipboard as it was. False when there is nothing to act on.
+    enum class Clip { Cut, Copy, Paste, Duplicate };
+    bool clipboard(Clip, std::optional<std::int64_t> device = std::nullopt);
+    bool canClipboard(Clip) const;
+    std::optional<std::int64_t> focusedDevice() const;
+    // Whether the chain's end is chosen: the strip itself has the focus, after a click past the
+    // last device.
+    bool endChosen() const { return hasKeyboardFocus(false); }
+    // Where a device loaded from the browser goes (manual 4.10): in front of the device chosen
+    // last in the strip, though the browser now has the focus; at the chain's end after a click
+    // past the last device, or when none is chosen.
+    std::optional<std::int64_t> insertPoint() const;
+    void chose(std::int64_t device) { chosen_ = device; }
+    // A device dragged from the browser drops into the chain, in front of the device it lands on.
+    bool isInterestedInDragSource(const SourceDetails &) override;
+    void itemDropped(const SourceDetails &) override;
+    // The device a drop at `x` (the strip's coordinates) goes in front of; none past the last.
+    std::optional<std::int64_t> dropBefore(int x) const;
+    void mouseDown(const juce::MouseEvent &) override;
+    void focusGained(FocusChangeType) override { repaint(); }
+    void focusLost(FocusChangeType) override { repaint(); }
     AdiRootComponent &root;
     std::function<std::shared_ptr<const ParameterPublication>()> publication;
     std::function<bool(std::int64_t, const std::string &, engine::ParamEventKind, double)> gesture;
     std::function<bool(const std::string &, Payload)> submit;
+    // The app's clipboard: `copy` keeps a device's copy (and removes it, for Cut); `paste` puts the
+    // kept copy on `track`, in front of `before` or at the chain's end; `duplicate` copies and
+    // pastes at once, the clipboard untouched; `holdsCopy` says whether there is one to paste.
+    std::function<bool(std::int64_t device, bool cut)> copy;
+    std::function<bool(std::int64_t track, std::optional<std::int64_t> before)> paste;
+    std::function<bool(std::int64_t device, std::int64_t track, std::optional<std::int64_t> before)> duplicate;
+    std::function<bool()> holdsCopy;
     std::vector<std::unique_ptr<DevicePanelView>> panels;
 
   private:
+    const DevicePanelData *dataOf(std::int64_t device) const;
     std::int64_t selectedTrack = -1;
+    std::optional<std::int64_t> chosen_;
     int end_ = 0; // where the chain ends, in the content's pixels
     juce::Viewport scroll;
     juce::Component content;

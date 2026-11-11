@@ -6,6 +6,82 @@ Only the `win` agent writes to this file. Newest entry at the top.
 
 ---
 
+## 2026-11-09 to 11 — the lanes split; the chain of nine and the window seat's screens land; CI runs in parallel; a scanner race
+
+**The director's lane split (9 November).** He stopped the Codex engine seat because it had drained
+his weekly limit, and ruled: no new engine work until the Codex work seat is available again on
+11 November, while the window lane continues on his separate Claude **work seat**. Win is not a work
+seat: it opens and merges that seat's PRs and proves them on MSVC, and does not run window batches
+itself. An earlier "hold the window lane" the same day was a question, not an order. The engine
+seat logged the pause after HI-01 and started nothing new.
+
+**The engine chain of nine is on main (#486 to #494, through #494).** Integration found one blocker
+in the auto-merge of Link with the gesture session: `GestureRuntime::generation` set no spec,
+`sourceReadiness` or `stripLanes`, so buffers longer than 512 frames went silent. That and the
+review's majors are fixed in 5a31b901; the conflicting range-survivor test kept both `main()` lists
+(its dropped braces fixed in 18e563a3). MSVC passed 33,840 checks across 206 suites. One behaviour
+for the director: a Link tempo change during a gesture is applied when the gesture ends.
+
+**The window seat's screens, all on main:**
+- 9 November: C2 metronome and Arrangement Loop (#495), C4 waveforms (#496), A5 Undo History (#498),
+  the seat's log (#499), and A4 Save a Copy and Collect (#500).
+- 10 November: D1 browser Samples and Places (#501), C6 Rec-Q and Play-Q (#503), the log (#504),
+  D2 device Cut, Copy, Paste and Duplicate (#505), D3 plug-in windows (#506), and D4 the browser's
+  Audio Effects and ADI's devices (#508).
+
+#496, #503 and #505 conflicted with main and were stacked by integration runs (gate, independent
+review, push); #496's run also found and fixed two locator bugs.
+
+**CI.** #501's Windows Debug tests ran past 90 minutes, so #502 raised the bound to 150. The window
+seat's chip "run the Windows CI tests in parallel" became #507: ctest runs `--parallel <nproc>`,
+every test with its own `ADI_HOME`, and the two Link suites share a resource lock. Its first run
+timed out 13 suites on Windows, and its session found why: `Store::createEmpty` ran the schema's
+~100 statements in autocommit under the rollback journal with `synchronous=FULL`, so every new store
+cost ~100 journal flushes (adi_mixer_tests makes 71). One transaction around schema and seed
+(PRAGMAs outside it; a test proves foreign keys and WAL are on and a failed create leaves nothing)
+took the Windows step from 3,883–3,991 s to 528 s, macOS from 508–639 s to 109 s, Linux from
+337–481 s to 81–110 s. #507 merged from 5376d15f although its branch had moved on to 8d552b89
+(comments, and the bound 150 → 45); that commit went in as #510.
+
+**A real race, exposed by the parallel load (#509).** Main's macOS hardened leg then failed
+`adi_scan_process_tests` "repeated children preserve exact stdout". `runProcess` drained the pipe,
+then checked for the child's exit, and finished when the drain had found it empty; a child that wrote
+and exited between the two lost its output from a successful result. Both loops (Windows and POSIX)
+now observe the exit first, then drain. An independent review found the fix sound and no regression.
+The earlier one-off macOS failure of `adi_plugin_scanner_tests` may share the cause. Main is green
+at 23190435 on every leg.
+
+**Earlier on the 10th:** a macOS job "cancelled" after 15 minutes with "not acquired by Runner" is
+GitHub's arm64 capacity, not code; rerun the failed jobs. `land_queue.sh` once cancelled main's
+own proof run; it now cancels only runs of older heads.
+
+**Gemini, the standing arrangement.** A Gemini chat review (on a truncated upload) found one real
+engine bug, confirmed by reading the code: `automation_lanes.cpp` captures and restores a lane without
+its `automation_segment_ranges`, so undoing any lane operation loses the lane's curve shapes, and
+`clearLane` and the point operations in `automation_edits.cpp` leave stale `record_index` rows.
+A paid API pass gave three claims, all false. The director's ruling: when a Gemini check would help,
+win gives him a plain-text file and a ready prompt (at most five pairs at a time), he runs them in
+his own Gemini chat and pastes the report back, and win verifies every claim. Gemini is dropped if
+two rounds in a row confirm nothing.
+
+**The engine seat resumes (11 November).** `collab/prompts/2026-11-11-engine-lane-codex.md` is the
+Codex seat's prompt:
+1. the automation undo bug;
+2. N45, N46 and N48;
+3. HI-02's part inside authority;
+4. the M0 items.
+
+Between items, two intermittents to find: the clip-candidate PCM check on Ubuntu clang, and the
+plug-in scanner on macOS. The prompt also flags #507's `store.cpp` change.
+
+**Night instance-list rounds** stayed blocked both nights by the director's open Cubase session;
+IL-Q23 (an idle Cubase counted as absent, or closed on test nights) and IL-Q3 (the clipboard steps)
+are his.
+
+**Landing tools** used all along are now in `collab/win/tools/` (see its README).
+
+---
+
 ## 2026-11-08 (Sunday) — the chain of twenty lands; the M0 records and the catalogue resync; eleven window surfaces in one day
 
 **6 and 7 November were the usage-limit pause:** the weekly limit fell on the evening of the 5th, took

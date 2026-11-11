@@ -2,6 +2,7 @@
 #include "ui_browser.hpp"
 #include "ui_look.hpp"
 #include "ui_shell.hpp"
+#include <algorithm>
 namespace adi::ui {
 namespace {
 enum Glyph { None, Favorite, Sounds, Drums, Instruments, AudioFx, MidiFx, Pd, PlugIns, Clips,
@@ -108,7 +109,7 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
                 {"Categories", None, true},  {"Sounds", Sounds},       {"Drums", Drums},
                 {"Instruments", Instruments}, {"Audio Effects", AudioFx}, {"MIDI Effects", MidiFx},
                 {"Pd Devices", Pd},          {"Plug-Ins", PlugIns},    {"Clips", Clips},
-                {"Samples", Samples},        {"Grooves", Grooves},     {"Templates", Templates},
+                {"Samples", Samples, false, true},        {"Grooves", Grooves},     {"Templates", Templates},
                 {{}, None, true},            {"Places", None, true},   {"Packs", Packs},
                 {"User Library", User},      {"Current Project", Project},
                 {"Add Folder...", AddFolder}};
@@ -126,6 +127,226 @@ BrowserPanel::BrowserPanel(AdiRootComponent &root) : root_(root) {
     search.setColour(juce::TextEditor::outlineColourId, juce::Colours::transparentBlack);
     search.setColour(juce::TextEditor::focusedOutlineColourId, juce::Colours::transparentBlack);
     addAndMakeVisible(search);
+    baseEntries_ = sidebar_.size();
+    // The search narrows the list as it is typed; Enter or the down arrow goes into it (§41.4.1.6).
+    search.onTextChange = [this] { refill(); };
+    search.onReturnKey = [this] { enterList(); };
+    search.addKeyListener(&searchKeys_);
+    list.setTitle("Browser content");
+    list.setModel(this);
+    list.setRowHeight(kRowHeight);
+    list.setColour(juce::ListBox::backgroundColourId, juce::Colours::transparentBlack);
+    list.setMultipleSelectionEnabled(true);
+    list.onLeft = [this] { grabKeyboardFocus(); };
+    addAndMakeVisible(list);
+}
+void BrowserPanel::enterList() {
+    if (firstItem() >= 0) {
+        if (list.getSelectedRows().isEmpty())
+            list.selectRow(firstItem());
+        list.grabKeyboardFocus();
+    }
+}
+int BrowserPanel::firstItem() const {
+    for (std::size_t i = 0; i < rows_.size(); ++i)
+        if (rows_[i].heading.isEmpty())
+            return static_cast<int>(i);
+    return -1;
+}
+void BrowserPanel::selectedRowsChanged(int row) {
+    if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].heading.isEmpty()) {
+        lastSelected_ = row;
+        return;
+    }
+    // Past the heading, the way the selection moved; at the list's top, down to the first entry.
+    const int step = row < lastSelected_ ? -1 : 1;
+    for (int r = row + step; r >= 0 && r < static_cast<int>(rows_.size()); r += step)
+        if (rows_[static_cast<std::size_t>(r)].heading.isEmpty()) {
+            list.selectRow(r);
+            return;
+        }
+    for (int r = row - step; r >= 0 && r < static_cast<int>(rows_.size()); r -= step)
+        if (rows_[static_cast<std::size_t>(r)].heading.isEmpty()) {
+            list.selectRow(r);
+            return;
+        }
+    list.deselectAllRows();
+}
+bool BrowserPanel::SearchKeys::keyPressed(const juce::KeyPress &k, juce::Component *) {
+    if (k != juce::KeyPress::downKey)
+        return false;
+    panel.enterList();
+    return true;
+}
+void BrowserPanel::setFootLimit(int y) {
+    footLimit_ = y;
+    resized();
+}
+juce::String BrowserPanel::dragDescription(const std::vector<const LibraryFile *> &files) {
+    juce::StringArray paths;
+    // The native spelling, as a file dragged from the desktop arrives: JUCE names a file by its last
+    // native separator, so a generic path on Windows would name the clip after the whole path.
+    for (const auto *f : files) {
+        const auto native = std::filesystem::path(f->path).make_preferred().u8string();
+        paths.add(juce::String::fromUTF8(reinterpret_cast<const char *>(native.data()), static_cast<int>(native.size())));
+    }
+    return "adi-sample:" + paths.joinIntoString("\n");
+}
+juce::StringArray BrowserPanel::droppedFiles(const juce::var &description) {
+    const auto text = description.toString();
+    if (!text.startsWith("adi-sample:"))
+        return {};
+    return juce::StringArray::fromLines(text.fromFirstOccurrenceOf("adi-sample:", false, false));
+}
+void BrowserPanel::setListing(LibraryListing listing, bool ready) {
+    // The label chosen stays chosen across a new listing, found again by its name and place.
+    const auto keep = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : Entry{};
+    listing_ = std::move(listing);
+    ready_ = ready;
+    // Live's added folders stand among the Places, after Current Project and before Add Folder; the
+    // User Library's own label is Live's.
+    sidebar_.resize(baseEntries_);
+    auto addFolder = sidebar_.back();
+    sidebar_.pop_back();
+    for (auto &e : sidebar_)
+        if (e.name == "User Library" && !e.heading)
+            e.place.clear();
+    for (const auto &place : listing_.places) {
+        if (place.userLibrary) {
+            for (auto &e : sidebar_)
+                if (e.name == "User Library" && !e.heading)
+                    e.place = place.volumeId;
+            continue;
+        }
+        sidebar_.push_back({juce::String::fromUTF8(place.name.c_str()), User, false, false, place.volumeId});
+    }
+    sidebar_.push_back(addFolder);
+    selected_ = -1;
+    // The User Library's label is Live's own, whatever folder it names now; any other by its place.
+    for (std::size_t i = 0; i < sidebar_.size() && keep.name.isNotEmpty() && selected_ < 0; ++i)
+        if (sidebar_[i].name == keep.name && sidebar_[i].heading == keep.heading &&
+            (sidebar_[i].place == keep.place || (keep.name == "User Library" && i < baseEntries_)))
+            selected_ = static_cast<int>(i);
+    refill();
+    repaint();
+}
+void BrowserPanel::refill() {
+    shown_.clear();
+    const Entry none{};
+    const auto &chosen = selected_ >= 0 ? sidebar_[static_cast<std::size_t>(selected_)] : none;
+    // Samples, or a Place the listing holds, by its volume; the search alone looks through Samples.
+    const bool samples = chosen.samples || (selected_ < 0 && search.getText().isNotEmpty());
+    std::filesystem::path root;
+    for (const auto &p : listing_.places)
+        if (!chosen.place.empty() && p.volumeId == chosen.place)
+            root = p.root;
+    const auto query = search.getText().trim().toLowerCase();
+    // A Place lists every sample under its folder, a folder inside it included.
+    const auto under = [&root](const std::filesystem::path &path) {
+        const auto rel = path.lexically_relative(root);
+        return !rel.empty() && *rel.begin() != "..";
+    };
+    if (samples || !root.empty())
+        for (const auto &f : listing_.samples)
+            if ((samples || under(f.path)) &&
+                (query.isEmpty() || juce::String::fromUTF8(f.name.c_str()).toLowerCase().contains(query)))
+                shown_.push_back(&f);
+    rows_.clear();
+    for (const auto *f : shown_)
+        rows_.push_back({f, nullptr, {}});
+    // Audio Effects in Live's folders (manual 4.10), Pd Devices ADI's own, from the catalogue.
+    const auto matches = [&query](const BuiltinInfo &d) {
+        return query.isEmpty() || juce::String(std::string(d.name)).toLowerCase().contains(query);
+    };
+    if (!chosen.heading && chosen.name == "Audio Effects") {
+        for (const char *folder : {"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color", "Pitch & Modulation",
+                                   "Reverb & Resonance", "Utilities"}) {
+            std::vector<const BuiltinInfo *> in;
+            for (const auto &d : builtinCatalog())
+                if (d.category == "Audio Effects" && d.group == folder && matches(d))
+                    in.push_back(&d);
+            if (in.empty())
+                continue;
+            rows_.push_back({nullptr, nullptr, folder});
+            std::sort(in.begin(), in.end(), [](const BuiltinInfo *a, const BuiltinInfo *b) { return a->name < b->name; });
+            for (const auto *d : in)
+                rows_.push_back({nullptr, d, {}});
+        }
+    } else if (!chosen.heading && chosen.name == "Pd Devices") {
+        for (const auto &d : builtinCatalog())
+            if (d.category == "ADI" && matches(d))
+                rows_.push_back({nullptr, &d, {}});
+    }
+    list.updateContent();
+    list.deselectAllRows();
+    lastSelected_ = -1;
+    list.repaint();
+}
+int BrowserPanel::getNumRows() { return static_cast<int>(rows_.size()); }
+void BrowserPanel::paintListBoxItem(int row, juce::Graphics &g, int width, int height, bool selected) {
+    if (row < 0 || row >= static_cast<int>(rows_.size()))
+        return;
+    const auto &r = rows_[static_cast<std::size_t>(row)];
+    if (selected && r.heading.isEmpty())
+        g.fillAll(look::selection);
+    if (r.heading.isNotEmpty()) {
+        // A folder of Live's, as its heading.
+        g.setColour(look::textDim);
+        g.setFont(look::font(12.f, true));
+        g.drawText(r.heading, 6, 0, width - 10, height, juce::Justification::centredLeft, true);
+        return;
+    }
+    const bool device = r.device != nullptr;
+    const int indent = device && r.device->category == "Audio Effects" ? 12 : 0;
+    icon(g, device ? AudioFx : Samples,
+         juce::Rectangle<float>(6.f + static_cast<float>(indent), (static_cast<float>(height) - 13.f) / 2.f, 13.f, 13.f));
+    // An entry this build cannot load is dimmed (its reason is said when it is chosen).
+    g.setColour(device && !unavailable(*r.device).empty() ? look::textDim : look::text);
+    g.setFont(look::font(12.5f));
+    const auto name = device ? juce::String(std::string(r.device->name)) : juce::String::fromUTF8(r.file->name.c_str());
+    g.drawText(name, 24 + indent, 0, width - 28 - indent, height, juce::Justification::centredLeft, true);
+}
+juce::var BrowserPanel::getDragSourceDescription(const juce::SparseSet<int> &rows) {
+    std::vector<const LibraryFile *> files;
+    for (int i = 0; i < rows.size(); ++i)
+        if (const int r = rows[i]; r >= 0 && r < static_cast<int>(rows_.size())) {
+            const auto &row = rows_[static_cast<std::size_t>(r)];
+            // A device drags alone, the first one chosen; one this build cannot load drags nothing.
+            if (row.device != nullptr)
+                return unavailable(*row.device).empty() ? juce::var(deviceDescription(*row.device)) : juce::var();
+            if (row.file != nullptr)
+                files.push_back(row.file);
+        }
+    return files.empty() ? juce::var() : juce::var(dragDescription(files));
+}
+std::string BrowserPanel::unavailable(const BuiltinInfo &d) {
+    if (d.available)
+        return {};
+    if (d.uid == "org.adidaw.builtin.hybrid-reverb")
+        return "Hybrid Reverb is not built in ADI yet.";
+    return std::string(d.name) + " runs on ADI's Pd devices, which this build leaves out.";
+}
+juce::String BrowserPanel::deviceDescription(const BuiltinInfo &d) {
+    return "adi-device:" + juce::String(std::string(d.uid));
+}
+std::string BrowserPanel::droppedDevice(const juce::var &description) {
+    const auto text = description.toString();
+    if (!text.startsWith("adi-device:"))
+        return {};
+    const auto uid = text.fromFirstOccurrenceOf("adi-device:", false, false).toStdString();
+    return findBuiltin(uid) != nullptr ? uid : std::string();
+}
+bool BrowserPanel::load(int row) {
+    if (row < 0 || row >= static_cast<int>(rows_.size()) || rows_[static_cast<std::size_t>(row)].device == nullptr)
+        return false;
+    const auto &d = *rows_[static_cast<std::size_t>(row)].device;
+    if (const auto why = unavailable(d); !why.empty()) {
+        root_.say(why);
+        return false;
+    }
+    // Onto the selected track, in front of the device chosen in the strip (manual 4.10, 41.4).
+    return root_.insertDevice(std::string(d.uid), root_.arrangement.geometry.selection.track,
+                              root_.devices.insertPoint());
 }
 void BrowserPanel::resized() {
     // Live's shape: the search row and the preview row start right of the round
@@ -137,6 +358,9 @@ void BrowserPanel::resized() {
     sidebarArea_ = {edge, top, kSidebarWidth, std::max(0, bottom - top)};
     contentArea_ = {sidebarArea_.getRight() + 2, top,
                     std::max(0, r.getWidth() - sidebarArea_.getRight() - 2 - edge), sidebarArea_.getHeight()};
+    // Under the list's header, and above the AI tab at the panes' foot.
+    auto rows = contentArea_.withTrimmedTop(19);
+    list.setBounds(rows.withBottom(std::max(rows.getY(), std::min(rows.getBottom(), footLimit_))));
 }
 void BrowserPanel::paint(juce::Graphics &g) {
     g.fillAll(look::frame);
@@ -216,11 +440,37 @@ void BrowserPanel::choose(int i) {
     if (i >= 0 && i < static_cast<int>(sidebar_.size()) && !sidebar_[static_cast<std::size_t>(i)].heading) {
         selected_ = i;
         repaint();
-        // The content pane is the browser's next piece (LANES §3b item 2).
-        root_.say((sidebar_[static_cast<std::size_t>(i)].name + " is not listed yet.").toStdString());
+        refill();
+        const auto &entry = sidebar_[static_cast<std::size_t>(i)];
+        const bool library = entry.samples || entry.name == "User Library" || !entry.place.empty();
+        if (entry.name == "Audio Effects" || entry.name == "Pd Devices") {
+            // The catalogue's (D4): with Pd off, every entry is dimmed and the Status Bar says why.
+            if (!rows_.empty() && std::none_of(rows_.begin(), rows_.end(), [](const Row &r) {
+                    return r.device != nullptr && unavailable(*r.device).empty();
+                }))
+                root_.say("ADI's built-in devices run on its Pd devices, which this build leaves out.");
+        } else if (!library)
+            // The other categories say what they wait for (D4; N15).
+            root_.say(entry.name == "Plug-Ins"
+                          ? "Plug-Ins list once the plug-in scanner is in (#438 to #440)."
+                      : entry.name == "Instruments" || entry.name == "MIDI Effects" || entry.name == "Sounds" ||
+                              entry.name == "Drums"
+                          ? (entry.name + " wait for the devices lane's instruments and MIDI effects.").toStdString()
+                          : (entry.name + " is not listed yet.").toStdString());
+        else if (!ready_)
+            root_.say("The library is still being indexed; its samples list when it is done.");
+        else if (shown_.empty())
+            root_.say(listing_.places.empty() || (!entry.samples && entry.place.empty())
+                          ? "Set the User Library or add a folder in the Settings' Library page to list samples."
+                          : (entry.name + " holds no audio files.").toStdString());
     }
 }
 bool BrowserPanel::keyPressed(const juce::KeyPress &k) {
+    // Right goes from the sidebar into the list (§41.22), its first row selected.
+    if (k == juce::KeyPress::rightKey) {
+        enterList();
+        return true;
+    }
     if (k != juce::KeyPress::upKey && k != juce::KeyPress::downKey)
         return false;
     // The next label up or down, past the headings; at either end the selection stays.

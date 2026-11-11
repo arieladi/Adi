@@ -36,7 +36,7 @@ the priorities were re-ruled row by row. A row that cites ADR-0203 was changed b
 |---|---|---|---|---|
 | Arrangement timeline | both | P0 | ✅ | `clips`, `tracks` |
 | **Tempo detection from audio** (Live's Auto-Warp finds the tempo and the transients) | Ableton | **P0** | ✅ | ADR-0203 d7 (B4-18): raised to P0 with warping, because Warp on a clean import runs what Live's Auto-Warp runs on import. No Tempo Follower: the director does not need it (ADR-0203 d9) |
-| **Exact time-base converter for picture and audio-post apps**: FilmCraft's and EffectCraft's 254,016,000,000 ticks/s (= 2¹²·3⁴·5⁶·7²) ↔ sample frames at any ADI rate (exact: 5,760,000 ticks per 44.1 kHz sample, 5,292,000 at 48 kHz, 330,750 at 768 kHz), ↔ nanoseconds (exact on the 125 ns = 31,752-tick grid), musical ticks through the tempo map (rounded, < 2 ps), a range check against `Tick::MAX`; units = samples for SoundCraft | neither | P1 | — | ADR-0206 d3: one pure component in the time library, integer arithmetic, tests from `docs/INTEROP-ARTCRAFT.md` §3; nothing calls it until the bridge |
+| **Cancelled (ADR-0234): the FilmCraft time base. The general integer time base and SMPTE timecode continue in PLAN TM-IC-01.** ~~Exact time-base converter for picture and audio-post apps~~: FilmCraft's and EffectCraft's 254,016,000,000 ticks/s (= 2¹²·3⁴·5⁶·7²) ↔ sample frames at any ADI rate (exact: 5,760,000 ticks per 44.1 kHz sample, 5,292,000 at 48 kHz, 330,750 at 768 kHz), ↔ nanoseconds (exact on the 125 ns = 31,752-tick grid), musical ticks through the tempo map (rounded, < 2 ps), a range check against `Tick::MAX`; units = samples for SoundCraft | neither | P1 | — | ADR-0206 d3: one pure component in the time library, integer arithmetic, tests from `docs/INTEROP-ARTCRAFT.md` §3; nothing calls it until the bridge |
 | Tempo map with ramps | both | P0 | ✅ | `tempo_map.curve` covers jump/linear/bezier |
 | Time signature map | both | P0 | ✅ | separate table, deliberately (SPEC §4.4) |
 | Musical **and** linear time per track | Cubase | P0 | ✅ | `time_base`; the reason for the dual-domain model |
@@ -275,7 +275,7 @@ for the transport, the tempo map, the groove pool and the track's scale
 | Restore zoom, scroll, selection, playhead | partially | P1 | ✅ | `ui_view`, `session_state` |
 | Restore plugin windows *with monitor identity* | neither, well | P1 | ✅ | `window_state` — SPEC §8.4 |
 | **One installer with tiers**: base DAW · + tools · + ADI plug-ins · + local AI features · + the AI features on another PC or server | neither | P1 | — | ADR-0204 d2, the director's end goal; Windows first, macOS and Linux immediately after (ADR-0203 d23); "portability first" (ADR-0109) is the agents' means to it |
-| **The ArtCraft bridge** (FilmCraft, SoundCraft): attach to a running Craft app over its loopback control channel; **Send to ADI** (its AAF or OTIO plus media through ADI's converters, a link row per clip with the remote's ticks verbatim); **Return to FilmCraft** as an After Export action (the render written over the files its linked clips reference, then `media.refreshChanged`); **ADI as transport master** (`ui.playback`, `playhead.set` at frame resolution) | neither (Adobe's Dynamic Link is the idea) | P2 | 🔶 | ADR-0206 d1, d4: a client of ADI's own control API (ADR-0181 d2) on one side and the Craft app's channel on the other; ADI's core knows no Craft app. **P3 until storytold adds a push channel:** ADI following FilmCraft (poll-only, MTC-class), sample-locked sync, merging into an existing FilmCraft sequence (ADR-0206 d5). Design: `docs/INTEROP-ARTCRAFT.md` |
+| **Cancelled (ADR-0234).** ~~The ArtCraft bridge~~ (FilmCraft, SoundCraft): attach to a running Craft app over its loopback control channel; **Send to ADI** (its AAF or OTIO plus media through ADI's converters, a link row per clip with the remote's ticks verbatim); **Return to FilmCraft** as an After Export action (the render written over the files its linked clips reference, then `media.refreshChanged`); **ADI as transport master** (`ui.playback`, `playhead.set` at frame resolution) | neither (Adobe's Dynamic Link is the idea) | P2 | 🔶 | ADR-0206 d1, d4: a client of ADI's own control API (ADR-0181 d2) on one side and the Craft app's channel on the other; ADI's core knows no Craft app. **P3 until storytold adds a push channel:** ADI following FilmCraft (poll-only, MTC-class), sample-locked sync, merging into an existing FilmCraft sequence (ADR-0206 d5). Design: `docs/INTEROP-ARTCRAFT.md` |
 | **Persistent undo across restarts** | neither | P1 | ✅ | `ops` |
 | **Branching undo tree** | neither | P2 | ✅ | `op_branches` |
 | Project-scoped controller maps | partially | P2 | ✅ | `controller_maps` |
@@ -518,7 +518,7 @@ neither:
 4. **Groove pool / groove templates** — shared, project-scoped, no table.
    *Not in SPEC §12.*
 5. **VariAudio-class pitch-segment editing** — no model. *Not in SPEC §12.*
-7. **Linked external sessions** — `external_sessions` and `external_links` (an app, its
+7. **Cancelled (ADR-0234), never built.** ~~Linked external sessions~~ — `external_sessions` and `external_links` (an app, its
    document, its units per second, the remote ids and verbatim tick ranges, a link state),
    two whole tables in an additive minor (ADR-0206 d3, ADR-0144); nothing writes them until
    the ArtCraft bridge (P2). *Not in SPEC §12.*

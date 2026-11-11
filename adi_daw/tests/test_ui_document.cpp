@@ -6,6 +6,7 @@
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <array>
+#include <filesystem>
 #include <chrono>
 #include <cmath>
 #include <complex>
@@ -240,6 +241,41 @@ int main(int argc, char **argv) {
             }
             check(heard, "and it plays");
             dropped->release();
+            {
+                // Its waveform (N40, #404): the first request queues the file and draws nothing; the
+                // worker builds its peaks once, through its own read-only store; the second request is
+                // served from memory; a new generation that still uses the file keeps them, and one
+                // that no longer does drops them.
+                auto &waves = dropped->waveforms();
+                const auto snapshot = dropped->view().current();
+                const auto &clip = *snapshot->findTrack(8)->clips[0];
+                const auto hash = clip.audio && clip.audio->mediaInfo ? clip.audio->mediaInfo->contentHash : std::string{};
+                const bool first = clip.audio && waves.peaks(*clip.audio) == nullptr;
+                for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                const auto built = clip.audio ? waves.peaks(*clip.audio) : nullptr;
+                check(first && !hash.empty() && built != nullptr && built->contentHash == hash &&
+                          built->sampleRate == 48000 && built->channels == 1 && built->frames == 24000 &&
+                          !built->bins.empty() && waves.builds() == 1 && waves.delivered() == 1 && waves.problem().empty(),
+                      "the worker builds the file's peaks once: none drawn at the first request, there at the next");
+                const auto again = waves.peaks(*clip.audio);
+                for (int i = 0; i < 20; ++i)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                check(again == built && waves.builds() == 1, "the second request is served from memory, nothing built");
+                waves.follow(*snapshot, 1001);
+                check(waves.holds(hash) && waves.peaks(*clip.audio) == built,
+                      "a new generation that still uses the file keeps its peaks");
+                OpRequest rename;
+                rename.opType = "track.rename";
+                rename.payload = {{"id", 8}, {"name", "Kick"}};
+                check(dropped->ops().submit(rename).ok, "an edit elsewhere");
+                waves.follow(*dropped->view().current(), 1002);
+                check(waves.holds(hash), "and so does the edit's");
+                check(dropped->ops().undo().ok && dropped->ops().undo().ok && dropped->synchronise(), "undo the drop");
+                waves.follow(*dropped->view().current(), 1003);
+                check(!waves.holds(hash) && waves.builds() == 1, "a generation without the clip drops its peaks");
+                check(dropped->ops().redo().ok && dropped->synchronise(), "redo the drop");
+            }
             check(dropped->ops().undo().ok && dropped->synchronise() &&
                       dropped->view().current()->findTrack(8)->clips.empty() &&
                       dropped->store().db().execAndGet("SELECT count(*) FROM media_files").getInt() == 0,
@@ -247,6 +283,88 @@ int main(int argc, char **argv) {
             ui::AudioImport none;
             check(!dropped->prepareImport((temp.path() / "missing.wav").string(), 1, none) && !dropped->error().empty(),
                   "a file that can't be read is refused, with a reason");
+        }
+    }
+    {
+        // Save a Copy (Live 12 manual 5.4.1), Collect All and Save (5.7) and Collect and Export (ADI's,
+        // MR 11.3) from the document (A4, N30). The copy opens and the open project stays where it is;
+        // collecting brings an outside file into `audio/` beside the project and the view re-reads it;
+        // the export runs on its own worker and leaves the project as it was. No ZIP is opened here.
+        const auto home = temp.path() / "collect";
+        std::filesystem::create_directories(home / "outside");
+        auto copying = ui::ProjectDocument::open(home / "song.adi", true, {}, error);
+        check(copying != nullptr, "a project to copy and collect");
+        if (copying) {
+            const auto wav = home / "outside" / "snare.wav";
+            {
+                std::array<float, 4800> samples{};
+                for (std::size_t i = 0; i < samples.size(); ++i)
+                    samples[i] = static_cast<float>(std::sin(static_cast<double>(i) * .1) * .4);
+                audio::WavWriter writer(wav, 48000, 1, audio::WavFormat::Pcm16);
+                writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+            }
+            ui::AudioImport import;
+            auto ok = copying->prepareImport(wav.string(), 1'700'000'000'000'000, import);
+            auto edit = ui::dropAudio(*copying->view().current(), 4, 0, "snare", import);
+            check(ok && edit.refusal.empty() && copying->ops().submit(std::move(edit.ops)).ok && copying->synchronise(),
+                  "an outside file dropped on 3 Audio");
+            const auto copy = home / "copy.adi";
+            check(copying->saveCopy(copy) && copying->error().empty() && std::filesystem::exists(copy) &&
+                      std::filesystem::equivalent(copying->store().path(), home / "song.adi") && copying->name() == "song",
+                  "Save a Copy writes a second project, and the open one stays where it is");
+            {
+                StoreError opened{};
+                auto copied = Store::open(copy, opened, true);
+                check(copied && opened == StoreError::Ok &&
+                          copied->db().execAndGet("SELECT count(*) FROM tracks").getInt() ==
+                              copying->store().db().execAndGet("SELECT count(*) FROM tracks").getInt(),
+                      "the copy opens, with the same tracks");
+            }
+            check(!copying->saveCopy(copy) && copying->error().find("already exists") != std::string::npos,
+                  "a copy over an existing file is refused, with the name");
+            const auto collectGeneration = copying->view().generation();
+            check(copying->collectAllAndSave() && copying->error().empty() && copying->view().generation() > collectGeneration,
+                  "Collect All and Save succeeds, and the view reads the project again");
+            std::size_t collected = 0;
+            if (std::filesystem::is_directory(home / "audio"))
+                for ([[maybe_unused]] const auto &entry : std::filesystem::directory_iterator(home / "audio"))
+                    ++collected;
+            check(collected == 1 &&
+                      copying->store().db().execAndGet("SELECT rel_path FROM media_files").getString().rfind("audio/", 0) == 0,
+                  "the outside file is in audio/ beside the project, and the pool points at it there");
+            const auto archive = home / "song.zip";
+            const auto opsBeforeExport = copying->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+            ui::ProjectDocument::ExportJob job;
+            check(copying->prepareCollectAndExport(archive, job) && copying->error().empty() && job.zip == archive &&
+                      std::filesystem::equivalent(job.project, copying->store().path()),
+                  "Collect and Export is prepared on the message thread: the project's file and the ZIP");
+            // The app runs it on a worker of its own while the project stays open and writable.
+            StoreFileResult exported;
+            std::thread worker([&] { exported = ui::ProjectDocument::runCollectAndExport(job); });
+            worker.join();
+            if (!exported.ok)
+                std::printf("export: %s\n", exported.error.c_str());
+            check(exported.ok && std::filesystem::exists(archive) &&
+                      copying->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBeforeExport,
+                  "run on a worker, it writes the ZIP and leaves the project unchanged");
+            ui::ProjectDocument::ExportJob again;
+            check(!copying->prepareCollectAndExport(archive, again) && copying->error().find("already exists") != std::string::npos,
+                  "an export over an existing file is refused before it starts");
+            copying->release();
+        }
+    }
+    {
+        // New captures the registry's recording defaults for its four tracks (#397, N31).
+        const ui::RecordingDefaults defaults{"off", false};
+        auto fresh = ui::ProjectDocument::open(temp.path() / "defaults.adi", true, {}, error, &defaults);
+        check(fresh != nullptr, "a new project with recording defaults");
+        if (fresh) {
+            const auto options = readTrackRecordingOptions(fresh->store());
+            bool all = options.size() >= 4;
+            for (const auto &[id, o] : options)
+                all = all && !o.recordEnabled && !o.keepMonitoringLatency;
+            check(all && !fresh->ops().canUndo(), "New stores Rec-Q Free and Keep Monitoring Latency off on its tracks, in the root");
+            fresh->release();
         }
     }
     {
@@ -303,6 +421,118 @@ int main(int argc, char **argv) {
                   "a folder that does not exist is refused with the store's reason");
             check(saving->ops().redo().ok && saving->synchronise() && saving->view().current()->tracks.size() == 8,
                   "and the history still redoes after a refusal");
+        }
+    }
+    {
+        // A built-in device from the browser (D4; N15, #395): Auto Filter onto a track with no chain
+        // makes the plug-in reference, the chain and the device in one undo step, and undo removes
+        // all three; with Pd off the load is refused with the catalogue's reason.
+        auto built = ui::ProjectDocument::open(temp.path() / "builtin.adi", true, {}, error);
+        check(built != nullptr, "a project for a built-in device");
+        if (built) {
+            const auto count = [&](const char *sql) { return built->store().db().execAndGet(sql).getInt(); };
+            [[maybe_unused]] const auto refs = count("SELECT count(*) FROM plugin_refs");
+            [[maybe_unused]] const auto chains = count("SELECT count(*) FROM device_chains");
+            const auto devices = count("SELECT count(*) FROM devices");
+#if ADI_WITH_PD
+            check(count("SELECT count(*) FROM device_chains WHERE track_id = 2") == 0 &&
+                      built->insertBuiltin("org.adidaw.builtin.auto-filter", 2, std::nullopt),
+                  "Auto Filter loads onto 1 MIDI, which has no chain");
+            check(count("SELECT count(*) FROM plugin_refs") == refs + 1 &&
+                      count("SELECT count(*) FROM device_chains") == chains + 1 &&
+                      count("SELECT count(*) FROM devices") == devices + 1 &&
+                      built->ops().nextUndo()->label == "Insert Auto Filter",
+                  "the reference, the chain and the device, in one step named Insert Auto Filter");
+            check(built->ops().undo().ok && built->synchronise() && count("SELECT count(*) FROM plugin_refs") == refs &&
+                      count("SELECT count(*) FROM device_chains") == chains &&
+                      count("SELECT count(*) FROM devices") == devices,
+                  "one undo removes all three");
+#else
+            check(!built->insertBuiltin("org.adidaw.builtin.auto-filter", 2, std::nullopt) &&
+                      built->error().find("not available") != std::string::npos &&
+                      count("SELECT count(*) FROM devices") == devices,
+                  "with Pd off, the load is refused with the catalogue's reason");
+#endif
+            built->release();
+        }
+    }
+    {
+        // Live's device clipboard (manual 23.2.1; D2, N18, #394), on a device the project stores and
+        // no plug-in loaded: Copy reads the stored rows only; Paste in front of a device is one undo
+        // step with a new id and the source's stored parameters; Cut and Paste bring it back.
+        auto clip = ui::ProjectDocument::open(temp.path() / "clipboard.adi", true, {}, error);
+        check(clip != nullptr, "a project with no plug-in loader");
+        if (clip) {
+            clip->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                    test::kKnobsUid + "','UI knobs')");
+            std::vector<OpRequest> make(3);
+            make[0].opType = "chain.create";
+            make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+            make[1].opType = "device.insert";
+            make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+            make[2].opType = "device.setParam";
+            make[2].payload = {{"dev", 3}, {"param", "cutoff"}, {"norm", 0.75}};
+            check(clip->ops().submit(std::move(make)).ok && clip->synchronise(), "a stored device with a parameter set");
+            const auto chainOrder = [&] {
+                std::vector<std::int64_t> out;
+                SQLite::Statement q(clip->store().db(), "SELECT id FROM devices WHERE chain_id = 3 ORDER BY ord, id");
+                while (q.executeStep())
+                    out.push_back(q.getColumn(0).getInt64());
+                return out;
+            };
+            DeviceCopy copied;
+            check(clip->copyDevice(3, copied) && copied.ok && chainOrder() == std::vector<std::int64_t>{3},
+                  "Copy reads the stored device, with no plug-in loaded, and writes nothing");
+            check(clip->pasteDevice(copied, 2, 3), "Paste in front of the device");
+            const auto order = chainOrder();
+            DeviceCopy pasted;
+            check(order.size() == 2 && order[1] == 3 && order[0] > 3 && clip->copyDevice(order[0], pasted) &&
+                      pasted.insert.value("params", Payload::array()) == copied.insert.value("params", Payload::array()) &&
+                      !copied.insert.value("params", Payload::array()).empty() &&
+                      clip->ops().nextUndo()->label == "Paste Device",
+                  "a new id in front of it, with the source's stored parameters, one step named Paste Device");
+            check(clip->ops().undo().ok && clip->synchronise() && chainOrder() == std::vector<std::int64_t>{3},
+                  "one undo takes it away");
+            DeviceCopy cut;
+            check(clip->copyDevice(3, cut) && clip->deviceAction("device.remove", {{"id", 3}}) && chainOrder().empty(),
+                  "Cut: the copy kept, the device removed");
+            check(clip->pasteDevice(cut, 2, std::nullopt) && chainOrder().size() == 1,
+                  "Paste at the empty chain's end brings it back");
+            DeviceCopy back;
+            check(!chainOrder().empty() && clip->copyDevice(chainOrder()[0], back) &&
+                      back.insert.value("params", Payload::array()) == cut.insert.value("params", Payload::array()) &&
+                      back.insert.value("name", "") == "UI knobs",
+                  "with its name and stored parameters");
+            check(!clip->pasteDevice(cut, 999, std::nullopt) && clip->error().find("no device chain") != std::string::npos,
+                  "a track with no chain is refused, with the reason");
+            // A rack with a chain inside it: the engine cannot paste it yet, so Copy (and Cut) refuse.
+            {
+                const auto rack = chainOrder()[0];
+                OpRequest nested;
+                nested.opType = "chain.create";
+                nested.payload = {{"id", 60}, {"device", rack}, {"ord", 0}, {"name", "Nested"}};
+                DeviceCopy refused;
+                check(clip->ops().submit(nested).ok && clip->synchronise() && !clip->copyDevice(rack, refused) &&
+                          clip->error().find("nested chain") != std::string::npos,
+                      "a rack with chains inside it is refused at Copy, with the engine's reason");
+                check(clip->ops().undo().ok && clip->synchronise(), "the nested chain undone");
+            }
+            // Save As: the same project under a new file; the app moves a held copy over to it.
+            {
+                DeviceCopy held;
+                const auto before = clip->deviceCopyIdentity();
+                check(!before.empty() && clip->copyDevice(chainOrder()[0], held) && held.sourceFile == before,
+                      "a copy names its project by the engine's file identity");
+                check(clip->saveAs(temp.path() / "clipboard-renamed.adi") && clip->deviceCopyIdentity() != before,
+                      "Save As moves the project to a new file");
+                check(!clip->pasteDevice(held, 2, std::nullopt) &&
+                          clip->error().find("different project") != std::string::npos,
+                      "a copy still keyed to the old file reads as another project");
+                held.sourceFile = clip->deviceCopyIdentity();
+                check(clip->pasteDevice(held, 2, std::nullopt) && chainOrder().size() == 2,
+                      "moved over to the new file, as ui_main.cpp does after Save As, it pastes");
+            }
+            clip->release();
         }
     }
     {

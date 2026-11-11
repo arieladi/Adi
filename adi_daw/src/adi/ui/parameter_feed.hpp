@@ -8,11 +8,15 @@
 namespace adi::ui {
 struct DevicePanelData {
     std::int64_t id = 0, track = 0;
+    // The track's device chain holding it (`device_chains.id`): where a paste in front of it goes.
+    std::int64_t chain = 0;
     std::string name;
     bool enabled = true;
     // Whether it plays notes as sound: a plug-in of the instrument subtype (`plugin_refs.subtype`).
     // A MIDI track holding one has an audio mixer, as Live's.
     bool instrument = false;
+    // Whether it is a plug-in (a `plugin_refs` row), which has a window of its own (manual 23.3).
+    bool plugin = false;
     panel::Resolved resolved;
     std::vector<panel::Declared> declared;
     std::vector<panel::Record> records;

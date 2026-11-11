@@ -78,6 +78,10 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // the row under ADI's slots in the track controls, and as the section under the mixer in the
     // Mixer View.
     juce::Slider delay;
+    // Live 12's Keep Latency toggle under Track Delay in the Mixer's Track Options (manual 18.8, its
+    // figure): Keep Monitoring Latency in Recorded Audio, lit from the snapshot (#397, N31), on a
+    // track that records.
+    juce::TextButton keepLatency{"Keep Latency"};
     // The drag's travel: the box's 2000 ms over this many pixels, 0.1 ms a pixel (PROVISIONAL,
     // Live's step is M1-06).
     static constexpr int kDelayDragPixels = 20000;
@@ -90,6 +94,11 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     PeakHold peakHold; // the Mixer View's only
     // Whether the row shows its In/Out column: when the panel is wide enough.
     bool showsInOut() const noexcept;
+    // Live 12 manual 18.8: a right-click on the In or Auto monitor button switches Keep Monitoring
+    // Latency in Recorded Audio (#397, N31). Whether a point is on those two buttons in the track
+    // controls' column, and the menu they open.
+    bool onMonitorInOrAuto(juce::Point<int>) const noexcept;
+    juce::PopupMenu monitorMenu();
     // Whether the sends show, in the row and in the Mixer View: the View menu's Sends (§42.1).
     bool showsSends() const noexcept;
     // The switches the keyboard reaches, in the row's order: the Track Activator, Solo, Arm,
@@ -125,7 +134,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
     // Whether the Mixer View strip shows Live's Track Delay section under its mixer: when the Mixer
     // Controls' Track Options shows it and the strip has room for it and the mixer.
     bool showsTrackDelay() const noexcept { return delay_ > 0; }
-    static constexpr int kDelayHeight = 36;
+    static constexpr int kDelayHeight = 54;
     // Commits the track's delay at the box's value, in ms, as one undo step: what a drag's end and
     // a typed value do. The project's rate turns it into samples (`setTrackDelay`).
     void commitDelay();
@@ -143,6 +152,7 @@ class MixerStrip final : public juce::Component, public juce::SettableTooltipCli
 
   private:
     void paintInOut(juce::Graphics &, int x) const;
+
     // The Mixer View strip's In/Out section, as Live 12's Mixer draws it.
     void paintMixerInOut(juce::Graphics &) const;
     // Live's "ms" unit box beside the Track Delay's value box, lit as Live's.

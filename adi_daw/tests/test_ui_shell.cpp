@@ -10,13 +10,18 @@
 #include "adi/store.hpp"
 #include "adi/textproj.hpp"
 #include "adi/transport_settings.hpp"
+#include "adi/ui/midi_tracks.hpp"
+#include "adi/ui/library_listing.hpp"
 #include "adi/ui/project_document.hpp"
+#include "adi/ui/recording_edits.hpp"
+#include "adi/ui/audio_drop.hpp"
 #include "adi/ui/send_edits.hpp"
 #include "knobs_device.hpp"
 #include "temp_directory.hpp"
 #include "ui_fake_peer.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -143,9 +148,16 @@ void reference(AdiRootComponent &root, const char *name, bool write) {
         g.fillRect(area.getX(), area.getY() + ArrangementView::kOverviewHeight, area.getWidth(),
                    ArrangementView::kRulerHeight);
         const auto headers = root.arrangement.headers.getBounds() + area.getPosition();
-        for (const auto track : laneOrder(root))
-            if (const int top = root.arrangement.geometry.rowTop(root.reader(), track); top >= 0)
+        for (const auto row : root.arrangement.geometry.rows(root.reader()))
+            if (const int top = root.arrangement.geometry.rowTop(root.reader(), row.track->id); top >= 0) {
                 g.fillRect(headers.getX() + 6, headers.getY() + top + 4, std::max(0, headers.getWidth() - 8), 24);
+                // A MIDI track's Rec-Q and Play-Q boxes hold text too: their place, not their glyphs.
+                const int height = root.arrangement.geometry.heightFor(row.track->id);
+                for (const bool record : {true, false})
+                    if (adi::ui::isMidiTrack(*row.track))
+                    g.fillRect(root.arrangement.headers.quantizeBox(row.place.depth, top, height, record) +
+                               headers.getPosition());
+            }
         const auto devices = root.deviceArea();
         if (!devices.isEmpty())
             g.fillRect(devices.getX(), devices.getY() + 10, devices.getWidth(), 30);
@@ -715,15 +727,12 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
                   root.state().foldedGroups.empty() && lanes.heightFor(14) > 0,
               "Alt+U unfolds every group");
     }
-    // Above the names, Live's locator buttons and its two toggles wait for the engine; a click on
-    // each says what for (the director's R6, 2 November).
+    // Above the names, Live's two automation toggles wait for the engine; a click on each says what
+    // for (the director's R6, 2 November). The locator buttons act since C3 (the `locators` scene).
     {
         auto &arr = root.arrangement;
         using B = ArrangementView::TopButton;
-        for (const auto &[button, words] : {std::pair{B::Set, "Set Locator waits for the engine's locators"},
-                                            std::pair{B::Previous, "Previous Locator waits"},
-                                            std::pair{B::Next, "Next Locator waits"},
-                                            std::pair{B::Automation, "Automation Mode waits for the engine's automation"},
+        for (const auto &[button, words] : {std::pair{B::Automation, "Automation Mode waits for the engine's automation"},
                                             std::pair{B::Lock, "Lock Envelopes waits for the engine's automation"}}) {
             root.say({});
             arr.mouseDown(pressAt(arr, arr.topButton(button).getCentre()));
@@ -1451,11 +1460,12 @@ void groupTracks(AppCommands &commands, const std::filesystem::path &dir) {
     };
     root.arrangement.selectedMeter = -1;
     const auto inFragment = names(scrub.menu(13 * q + q / 2));
-    check(inFragment.size() == 3 && inFragment[1] == std::pair<std::string, bool>{"Delete Fragmentary Bar Time", false} &&
-              inFragment[2] == std::pair<std::string, bool>{"Complete Fragmentary Bar (Insert Time)", false} &&
+    check(inFragment.size() == 4 && inFragment[0].first == "Add Locator" &&
+              inFragment[2] == std::pair<std::string, bool>{"Delete Fragmentary Bar Time", false} &&
+              inFragment[3] == std::pair<std::string, bool>{"Complete Fragmentary Bar (Insert Time)", false} &&
               root.error().find("time ops") != std::string::npos,
           "the menu on the fragment: Live's two commands, dimmed, and the Status Bar says why");
-    check(names(scrub.menu(10 * q)).size() == 1, "elsewhere: Insert Time Signature Change alone");
+    check(names(scrub.menu(10 * q)).size() == 2, "elsewhere: Add Locator and Insert Time Signature Change alone");
     lanes.left = 7;
     root.mark(DirtySet::All);
     root.frame();
@@ -2409,6 +2419,183 @@ void sendKnobs(AppCommands &commands, const std::filesystem::path &dir) {
 // Live's file drop (manual 6.1): an audio file on an audio track's lane makes a clip there, named
 // after the file, on the nearest grid line; on a MIDI track it is refused; below the tracks it
 // makes a new audio track. Each drop is one undo step (#308).
+// D4: the browser's devices (Live 12 manual 4.1, 4.10, 41.4; N15's catalogue part, #395). Audio
+// Effects lists Live's seven folders with ADI's built-in effects, Pd Devices ADI's own; an entry this
+// build cannot load is dimmed and says why; double-click or Enter loads onto the selected track in
+// front of the device chosen in the strip; a drag drops onto a lane's track or into the chain; each
+// load is one undo step, the reference and the chain made in it.
+void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "browser-devices.adi", true, {}, error);
+    check(document != nullptr, "a project for the browser's devices");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "devices");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.loadBuiltin = [&](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
+        const bool ok = document->insertBuiltin(uid, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.setSize(1440, 900);
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    // 3 Audio, track 4: no chain of its own yet.
+    root.arrangement.geometry.selection.track = 4;
+    refresh();
+    auto &browser = root.browser;
+    int audioEffects = -1, pdDevices = -1, plugIns = -1;
+    for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+        const auto &e = browser.sidebar()[i];
+        if (e.name == "Audio Effects")
+            audioEffects = static_cast<int>(i);
+        if (e.name == "Pd Devices")
+            pdDevices = static_cast<int>(i);
+        if (e.name == "Plug-Ins")
+            plugIns = static_cast<int>(i);
+    }
+    browser.choose(audioEffects);
+    std::vector<juce::String> folders;
+    bool dimmedRight = true;
+    int rowOf = -1;
+    const auto find = [&](const char *name) {
+        for (std::size_t i = 0; i < browser.rows().size(); ++i)
+            if (browser.rows()[i].device != nullptr && browser.rows()[i].device->name == name)
+                return static_cast<int>(i);
+        return -1;
+    };
+    for (const auto &r : browser.rows()) {
+        if (r.heading.isNotEmpty())
+            folders.push_back(r.heading);
+        // Every entry loads but Hybrid Reverb with Pd on; none with it off.
+#if ADI_WITH_PD
+        const bool expected = r.device == nullptr || r.device->name != "Hybrid Reverb";
+#else
+        const bool expected = r.device == nullptr;
+#endif
+        if (r.device != nullptr && BrowserPanel::unavailable(*r.device).empty() != expected)
+            dimmedRight = false;
+    }
+    check(folders == std::vector<juce::String>{"EQ & Filters", "Delay & Loop", "Dynamics", "Drive & Color",
+                                               "Pitch & Modulation", "Reverb & Resonance", "Utilities"} &&
+              dimmedRight && find("Auto Filter") >= 0 && find("Chord Comb") < 0,
+          "Audio Effects lists Live's seven folders with their effects, each dimmed when this build cannot load it");
+    rowOf = find("Hybrid Reverb");
+    check(rowOf >= 0 && !browser.load(rowOf) && root.error().find("not built in ADI yet") != std::string::npos,
+          "Hybrid Reverb is dimmed always, and a double-click says why");
+    browser.choose(pdDevices);
+    check(browser.rows().size() == 2 && browser.rows()[0].device != nullptr && browser.rows()[1].device != nullptr,
+          "Pd Devices lists ADI's own: Chord Comb and Color Cab");
+    browser.choose(plugIns);
+    check(root.error().find("#438") != std::string::npos, "Plug-Ins says it waits for the scanner");
+    browser.choose(audioEffects);
+    const auto chainOf = [&](std::int64_t track) {
+        std::vector<std::string> out;
+        SQLite::Statement q(document->store().db(),
+                            "SELECT d.name FROM devices d JOIN device_chains c ON c.id = d.chain_id "
+                            "WHERE c.track_id = ? ORDER BY d.ord, d.id");
+        q.bind(1, track);
+        while (q.executeStep())
+            out.push_back(q.getColumn(0).getString());
+        return out;
+    };
+    [[maybe_unused]] const auto chains = [&](std::int64_t track) {
+        return document->store().db().execAndGet("SELECT count(*) FROM device_chains WHERE track_id = " +
+                                                 std::to_string(track)).getInt();
+    };
+#if ADI_WITH_PD
+    check(browser.load(find("Auto Filter")), "a double-click on Auto Filter loads it");
+    refresh();
+    check(chainOf(4) == std::vector<std::string>{"Auto Filter"} && chains(4) == 1 &&
+              document->ops().nextUndo() && document->ops().nextUndo()->label == "Insert Auto Filter",
+          "onto 3 Audio, its chain made with it: one step, Insert Auto Filter");
+    check(root.command(AppCommands::Undo), "undo");
+    refresh();
+    check(chainOf(4).empty() && chains(4) == 0, "one undo takes the device and the chain away together");
+    check(browser.load(find("Utility")), "Utility");
+    refresh();
+    check(root.devices.panels.size() == 1, "the strip shows it");
+    // In front of the device chosen in the strip, though the browser now has the focus.
+    root.devices.chose(root.devices.panels[0]->id);
+    check(browser.load(find("EQ Eight")), "EQ Eight with Utility chosen");
+    refresh();
+    check(chainOf(4) == std::vector<std::string>{"EQ Eight", "Utility"}, "goes in front of it");
+    // A drag: into the chain past the last device, and onto another track's lane.
+    const juce::DragAndDropTarget::SourceDetails reverb(
+        BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.reverb")), nullptr,
+        {root.devices.getWidth() - 20, root.devices.getHeight() / 2});
+    check(root.devices.isInterestedInDragSource(reverb), "the strip takes a dragged device");
+    root.devices.itemDropped(reverb);
+    refresh();
+    check(chainOf(4) == std::vector<std::string>{"EQ Eight", "Utility", "Reverb"}, "dropped past the last device: at the end");
+    auto &canvas = root.arrangement.canvas;
+    const juce::DragAndDropTarget::SourceDetails onLane(
+        BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.delay")), nullptr,
+        {40, laneTop(root, 3) + 10});
+    check(canvas.isInterestedInDragSource(onLane), "the lanes take a dragged device");
+    const auto clipsBefore = document->store().db().execAndGet("SELECT count(*) FROM clips").getInt();
+    canvas.itemDropped(onLane);
+    refresh();
+    check(chainOf(3) == std::vector<std::string>{"Delay"} &&
+              document->store().db().execAndGet("SELECT count(*) FROM clips").getInt() == clipsBefore,
+          "dropped on 2 MIDI's lane: onto that track, never a clip in the lane");
+#else
+    check(!browser.load(find("Auto Filter")) && root.error().find("leaves out") != std::string::npos &&
+              chainOf(4).empty(),
+          "with Pd off, Auto Filter is refused with the reason, and nothing is written");
+#endif
+    // With no track selected a load says to select one (the root's own refusal, Pd or not).
+    check(!root.insertDevice("org.adidaw.builtin.utility", 0, std::nullopt) &&
+              root.error().find("Select a track") != std::string::npos,
+          "with no track selected, a load says to select one");
+    // Below the tracks a dragged device says where to drop it, and loads nothing.
+    {
+        const juce::DragAndDropTarget::SourceDetails below(
+            BrowserPanel::deviceDescription(*findBuiltin("org.adidaw.builtin.utility")), nullptr,
+            {40, root.arrangement.canvas.getHeight() - 2});
+        if (root.arrangement.geometry.trackAt(root.reader(), root.arrangement.canvas.getHeight() - 2) == nullptr) {
+            root.arrangement.canvas.itemDropped(below);
+            check(root.error().find("on a track's lane") != std::string::npos, "a device dropped below the tracks says to drop it on a lane");
+        }
+    }
+    // The keyboard never lands on a folder's heading: into the list, the first entry is a device.
+    browser.choose(audioEffects);
+    browser.search.setText("reverb", false);
+    browser.search.onTextChange();
+    browser.searchKeys().keyPressed(juce::KeyPress(juce::KeyPress::downKey), &browser.search);
+    const int picked = browser.list.getSelectedRow();
+    check(picked >= 0 && browser.rows()[static_cast<std::size_t>(picked)].device != nullptr &&
+              browser.rows()[static_cast<std::size_t>(picked)].device->name == "Hybrid Reverb",
+          "search, then Down: the first entry is selected, never the folder's heading");
+    browser.list.selectRow(0);
+    check(browser.list.getSelectedRow() > 0 && browser.rows()[static_cast<std::size_t>(browser.list.getSelectedRow())].heading.isEmpty(),
+          "a heading clicked or stepped onto passes the selection to an entry");
+    browser.search.setText({}, false);
+    browser.search.onTextChange();
+    // The browser with Audio Effects chosen, for the picture beside Live 12's.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        browser.choose(audioEffects);
+        browser.list.selectRow(1);
+        juce::Image picture(juce::Image::ARGB, 2 * browser.getWidth(), 2 * browser.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            browser.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-browser-devices.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
+    document->release();
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -2585,6 +2772,139 @@ void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
           "the Snare dropped twice below the tracks: a new track, one after the other, pooled once");
     check(root.command(AppCommands::Undo), "undo");
     root.frame();
+
+    // The browser's Samples and Places (D1; Live 12 manual 4.1, 4.6, 4.7; N15's index part): a folder
+    // registered and scanned into the library index (#102) lists its audio files, and not its others;
+    // right goes from the sidebar into the list, left back; the search narrows it; a row dragged onto a
+    // lane is the audio drop.
+    {
+        const auto library = dir / "Library";
+        std::filesystem::create_directories(library / "Drums");
+        for (const auto &[name, value] : {std::pair{"Drums/Clap.wav", .2f}, std::pair{"Bass Hit.wav", .4f}}) {
+            std::vector<float> samples(4800, value);
+            audio::WavWriter writer(library / name, 48000, 1, audio::WavFormat::Pcm16);
+            writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        }
+        std::ofstream(library / "notes.txt") << "not audio";
+        std::string why;
+        auto index = library::Index::open(dir / "library.sqlite", why, false);
+        check(index != nullptr, "a library index");
+        if (!index)
+            return;
+        // An added folder whose name is a sidebar label's: told apart by its volume, not its name.
+        const auto addedFolder = dir / "Samples";
+        std::filesystem::create_directories(addedFolder);
+        {
+            std::vector<float> samples(4800, .3f);
+            audio::WavWriter writer(addedFolder / "Rim.wav", 48000, 1, audio::WavFormat::Pcm16);
+            writer.write(samples.data(), static_cast<std::uint32_t>(samples.size()));
+        }
+        library::MarkerVolumeProvider volumes;
+        const std::vector<LibraryFolder> folders{{"User Library", library, true}, {"Samples", addedFolder, false},
+                                                 {"Drums", library / "Drums", false}};
+        auto listing = scanLibrary(*index, folders, volumes);
+        check(listing.error.empty() && listing.places.size() == 3 && listing.samples.size() == 3 &&
+                  listing.samples[0].name == "Bass Hit.wav" && listing.samples[1].name == "Clap.wav" &&
+                  listing.samples[2].name == "Rim.wav" && listing.places[0].userLibrary,
+              "the scan lists the three audio files once each by name (Clap.wav under two folders), and no text file");
+        std::atomic<bool> stopNow{true};
+        check(scanLibrary(*index, folders, volumes, &stopNow).places.empty(), "a stop before the first folder scans none");
+        auto &browser = root.browser;
+        browser.setListing(listing);
+        int samples = -1, user = -1;
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+            if (browser.sidebar()[i].samples)
+                samples = static_cast<int>(i);
+            if (browser.sidebar()[i].name == "User Library")
+                user = static_cast<int>(i);
+        }
+        int addedSamples = -1, addedDrums = -1, drumsLabel = -1;
+        for (std::size_t i = 0; i < browser.sidebar().size(); ++i) {
+            const auto &e = browser.sidebar()[i];
+            if (e.name == "Samples" && !e.samples)
+                addedSamples = static_cast<int>(i);
+            if (e.name == "Drums" && !e.place.empty())
+                addedDrums = static_cast<int>(i);
+            if (e.name == "Drums" && e.place.empty() && !e.heading)
+                drumsLabel = static_cast<int>(i);
+        }
+        root.say({});
+        browser.choose(samples);
+        check(browser.shown().size() == 3 && browser.shown()[0]->name == "Bass Hit.wav" && root.error().empty() &&
+                  browser.list.getNumRowsOnScreen() > 0,
+              "Samples lists all three, and says nothing");
+        browser.choose(user);
+        check(browser.shown().size() == 2, "the User Library place lists its two, its Drums folder's included");
+        browser.choose(addedSamples);
+        check(addedSamples > user && browser.shown().size() == 1 && browser.shown()[0]->name == "Rim.wav",
+              "an addedFolder folder named Samples is a Place of its own, listing its one file");
+        browser.choose(addedDrums);
+        check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav",
+              "an addedFolder Drums folder inside the User Library lists the file under it");
+        browser.choose(drumsLabel);
+        check(browser.shown().empty() && root.error().find("devices lane") != std::string::npos,
+              "the Drums category stays the catalogue's, whatever a folder is called, and says what it waits for");
+        browser.setListing(listing, true);
+        check(browser.selected() == drumsLabel, "a new listing keeps the label chosen");
+        browser.setListing(listing, false);
+        browser.choose(samples);
+        check(root.error().find("still being indexed") != std::string::npos,
+              "while the first scan runs, the Status Bar says so");
+        browser.setListing(listing, true);
+        browser.choose(user);
+        check(browser.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)) && browser.list.getSelectedRow() == 0,
+              "right goes into the list, its first row selected");
+        check(browser.list.keyPressed(juce::KeyPress(juce::KeyPress::downKey)) && browser.list.getSelectedRow() == 1,
+              "down moves to the next row");
+        browser.choose(user);
+        // JUCE posts a typed change; the test runs the editor's callback as the message loop would.
+        browser.search.setText("clap", false);
+        browser.search.onTextChange();
+        check(browser.shown().size() == 1 && browser.shown()[0]->name == "Clap.wav", "the search narrows the list");
+        browser.list.deselectAllRows();
+        check(browser.searchKeys().keyPressed(juce::KeyPress(juce::KeyPress::downKey), &browser.search) &&
+                  browser.list.getSelectedRow() == 0,
+              "the down arrow in the search goes to its results, the first selected");
+        browser.search.setText({}, false);
+        browser.search.onTextChange();
+        // Dragged onto Drums at bar 5: the audio drop, one clip, one step.
+        const auto drag = BrowserPanel::dragDescription({browser.shown()[1]});
+        const auto bar5 = 4 * textproj::kWhole;
+        const juce::Point<int> at{static_cast<int>(geometry.x(bar5)) + 3, laneTop(root, 1) + 10};
+        const auto carried = BrowserPanel::droppedFiles(drag);
+        check(carried.size() == 1 && juce::File::createFileWithoutCheckingPath(carried[0]).getFileName() == "Clap.wav",
+              "the drag carries the sample's native path, its file name Clap.wav on every system");
+        juce::DragAndDropTarget::SourceDetails details(drag, nullptr, at);
+        check(canvas.isInterestedInDragSource(details) &&
+                  !canvas.isInterestedInDragSource(juce::DragAndDropTarget::SourceDetails("something else", nullptr, at)),
+              "the lanes take a browser sample, and nothing else dragged");
+        const auto before = clipsOn(1).size();
+        canvas.itemDropped(details);
+        root.frame();
+        const auto after = clipsOn(1);
+        check(after.size() == before + 1 && after.back().first == "Clap" && after.back().second == bar5 &&
+                  submitter.nextUndo() && submitter.nextUndo()->label == "Insert Audio Clip",
+              "Clap.wav dropped from the browser on Drums at bar 5: one clip there, one step, as a file from the desktop");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+            browser.choose(samples);
+            browser.list.selectRow(1);
+            root.frame();
+            juce::Image picture(juce::Image::ARGB, 2 * browser.getWidth(), 2 * browser.getHeight(), true,
+                                juce::SoftwareImageType{});
+            {
+                juce::Graphics g(picture);
+                g.addTransform(juce::AffineTransform::scale(2.f));
+                browser.paintEntireComponent(g, true);
+            }
+            const auto file = juce::File(folder).getChildFile("adi-browser-samples.png");
+            file.deleteFile();
+            if (auto stream = file.createOutputStream())
+                juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+        }
+        check(root.command(AppCommands::Undo), "undo");
+        root.frame();
+        browser.setListing({});
+    }
 }
 // Live's time selection across tracks (manual 6.9): a drag across lanes reaches every track between,
 // Shift+click and Shift+Down extend it, it is drawn on every selected lane, and Delete and 0 act on
@@ -3274,6 +3594,457 @@ void newProject(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// Live's Undo History (A5; Live 12 manual 5.4.2): Ctrl/Cmd+Alt+Z lists the history newest first, the
+// undone steps greyed; Enter on a selected step restores it; a step on another branch is shown with
+// its branch, and a Take Snapshot name beside its step.
+void undoHistoryWindow(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "history.adi", true, {}, error);
+    check(document != nullptr, "a new project for the Undo History");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "history");
+    int synchronised = 0;
+    root.afterEdit = [&] {
+        ++synchronised;
+        document->synchronise();
+    };
+    root.setSize(1440, 900);
+    root.frame();
+    for (const auto &[id, name] : {std::pair{2, "Keys"}, std::pair{3, "Pads"}, std::pair{4, "Drums"}}) {
+        OpRequest r;
+        r.opType = "track.rename";
+        r.payload = {{"id", id}, {"name", name}};
+        r.label = std::string("Rename ") + name;
+        document->ops().submit(std::move(r));
+    }
+    check(document->takeSnapshot("Before drums", 1'700'000'000'000'000, 0).ok, "a snapshot after the three renames");
+    check(root.command(AppCommands::Undo), "undo Rename Drums");
+    root.frame();
+    auto &history = root.undoHistory;
+    history.setSize(320, 420);
+    check(root.keyPressed(juce::KeyPress('z', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0)),
+          "Ctrl/Cmd+Alt+Z");
+    const auto &rows = history.rows();
+    // New's project is the history's root (#307), listed last as Live lists "Open Live Set".
+    check(rows.size() == 4 && rows[0].label == "Rename Drums" && rows[1].label == "Rename Pads" &&
+              rows[2].label == "Rename Keys" && rows[3].root && rows[3].label == history.rootLabel && !rows[3].current,
+          "the Undo History lists the steps newest first, the project as opened last");
+    check(!rows[0].applied && rows[1].applied && rows[1].current && rows[2].applied && history.list.getSelectedRow() == 1,
+          "the undone step is greyed; the current one selected");
+    check(rows[0].detail.find("Before drums") != std::string::npos,
+          "the snapshot taken after Rename Drums stands beside it");
+    // Enter on the step two down restores it: one refresh, the session re-read.
+    history.list.selectRow(2);
+    const auto generation = document->view().generation();
+    check(history.list.keyPressed(juce::KeyPress(juce::KeyPress::returnKey)), "Enter");
+    root.frame();
+    check(root.reader().findTrack(3)->name != "Pads" && root.reader().findTrack(2)->name == "Keys" &&
+              document->view().generation() == generation + 1 && synchronised == 2 && history.rows()[2].current &&
+              !history.rows()[1].applied,
+          "Enter restores the selected step: Rename Pads undone, one refresh, the list following");
+    // A click on the greyed newest step redoes down to it.
+    history.restoreRow(0);
+    root.frame();
+    check(root.reader().findTrack(4)->name == "Drums" && history.rows()[0].current && history.rows()[0].applied,
+          "a click on the greyed newest step redoes down to it");
+    // The last row puts the project back as it was opened: every step undone, all greyed.
+    check(history.restoreRow(3), "the project as opened");
+    root.frame();
+    check(root.reader().findTrack(2)->name != "Keys" && history.rows()[3].current && !history.rows()[2].applied &&
+              root.undoTitle(false) == "Nothing to Undo",
+          "restoring the first action undoes every step: Nothing to Undo, every step greyed");
+    check(history.restoreRow(0), "and the newest again");
+    root.frame();
+    check(root.reader().findTrack(4)->name == "Drums", "redoes all three");
+    // An edit after an undo starts a branch: the old step is shown on its branch.
+    root.command(AppCommands::Undo);
+    {
+        OpRequest r;
+        r.opType = "track.rename";
+        r.payload = {{"id", 5}, {"name", "Bass"}};
+        r.label = "Rename Bass";
+        document->ops().submit(std::move(r));
+    }
+    root.frame();
+    history.refresh();
+    bool branchShown = false;
+    int drumsRow = -1;
+    for (std::size_t i = 0; i < history.rows().size(); ++i)
+        if (history.rows()[i].label == "Rename Drums") {
+            drumsRow = static_cast<int>(i);
+            branchShown = history.rows()[i].otherBranch && history.rows()[i].detail.rfind("on ", 0) == 0;
+        }
+    check(history.rows()[0].label == "Rename Bass" && branchShown, "Rename Drums is shown on its own branch");
+    check(history.restoreRow(drumsRow), "restoring it");
+    root.frame();
+    check(root.reader().findTrack(4)->name == "Drums" && root.reader().findTrack(5)->name != "Bass",
+          "switches to its branch");
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        history.refresh();
+        juce::Image picture(juce::Image::ARGB, 2 * history.getWidth(), 2 * history.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            history.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-undo-history.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    // A restored step takes a locator with it, and the locator's selection: Set reads Set and adds again.
+    const auto located = [&] { return locatorsOf(*document->view().current()); };
+    check(root.command(AppCommands::AddLocator), "Add Locator");
+    root.frame();
+    history.refresh();
+    check(located().size() == 1 && root.arrangement.selectedLocator != 0 && history.rows()[0].label == "Add Locator",
+          "a locator added and selected, the newest step");
+    check(history.restoreRow(1), "the step before it");
+    root.frame();
+    check(located().empty() && root.arrangement.selectedLocator == 0,
+          "the step before the Add Locator restored: the locator and its selection are gone");
+    check(root.setLocator() && located().size() == 1, "Set adds again after the restore");
+    root.afterEdit = nullptr;
+    document->release();
+}
+// Live's locators (C3, N25; Live 12 manual 6.4, 6.9; MR 3.3): Set, which reads Del on a selected
+// locator; Previous and Next, to the arrangement's start or end past the first or the last; a click
+// jumps, a double-click while stopped plays; Ctrl/Cmd+R renames, Edit Info Text, the arrows move it,
+// Delete removes it; Loop to Next Locator; Ctrl+arrows step to locators too.
+void locators(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "locators.adi", true, {}, error);
+    check(document != nullptr, "a new project for the locators");
+    if (!document)
+        return;
+    const auto q = textproj::kPPQ, bar = 4 * q;
+    {
+        OpRequest clip;
+        clip.opType = "clip.create";
+        clip.payload = {{"id", 1}, {"track", 2}, {"kind", "midi"}, {"name", "Chords"}, {"pos", 0}, {"length", 8 * bar}};
+        clip.label = "Insert MIDI Clip";
+        check(document->ops().submit(std::move(clip)).ok && document->synchronise(), "a clip of eight bars on 1 MIDI");
+    }
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "locators");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    auto &lanes = root.arrangement.geometry;
+    auto &sel = lanes.selection;
+    auto &arrangement = root.arrangement;
+    lanes.scale = 30;
+    lanes.left = 0;
+    root.frame();
+    root.frame();
+    const auto located = [&] { return locatorsOf(*document->view().current()); };
+    const auto step = [&] { return document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0; };
+    auto click = [&](ArrangementView::TopButton which) {
+        const auto at = arrangement.topButton(which).getCentre();
+        arrangement.mouseDown(pressAt(arrangement, at));
+        root.frame();
+    };
+
+    // Set while stopped (manual 6.4): a locator at the insert marker, one undo step, selected.
+    sel.track = 2;
+    sel.insert = sel.start = sel.end = 2 * bar;
+    sel.marked = true;
+    const auto before = step();
+    click(ArrangementView::TopButton::Set);
+    check(located().size() == 1 && located()[0].pos == 2 * bar && located()[0].name == "1" && step() != before &&
+              document->ops().nextUndo()->label == "Add Locator" && document->ops().nextUndo()->opCount == 1 &&
+              arrangement.selectedLocator == located()[0].id,
+          "Set while stopped adds a locator at the insert marker, named 1, in one undo step, and selects it");
+    // With it selected, Set reads Del and deletes it.
+    click(ArrangementView::TopButton::Set);
+    check(located().empty() && document->ops().nextUndo()->label == "Delete Locator" && arrangement.selectedLocator == 0,
+          "with that locator selected, Set deletes it");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(located().size() == 1 && located()[0].pos == 2 * bar, "undo brings it back");
+    // A time selection's start, while stopped.
+    arrangement.selectedLocator = 0;
+    sel.start = 5 * bar;
+    sel.end = 6 * bar;
+    sel.insert = 5 * bar;
+    check(root.command(AppCommands::AddLocator), "Add Locator, the Create menu's");
+    root.frame();
+    check(located().size() == 2 && located()[1].pos == 5 * bar && located()[1].name == "2",
+          "Add Locator over a time selection: at its start, named 2");
+
+    // Previous and Next.
+    arrangement.selectedLocator = 0;
+    sel.insert = sel.start = sel.end = 0;
+    click(ArrangementView::TopButton::Next);
+    check(sel.insert == 2 * bar && sel.start == sel.end, "Next from the start: the first locator");
+    click(ArrangementView::TopButton::Next);
+    check(sel.insert == 5 * bar, "Next: the second");
+    click(ArrangementView::TopButton::Next);
+    check(sel.insert == 8 * bar && root.arrangementEnd() == 8 * bar, "Next past the last: the arrangement's end (the clip's)");
+    click(ArrangementView::TopButton::Previous);
+    click(ArrangementView::TopButton::Previous);
+    click(ArrangementView::TopButton::Previous);
+    check(sel.insert == 0, "Previous past the first: the arrangement's start");
+
+    // A click on a locator selects it and jumps there; a drag moves it.
+    auto &scrub = arrangement.scrub;
+    const auto first = located()[0];
+    const juce::Point<float> onFirst{static_cast<float>(lanes.x(first.pos)) + 4.f, 14.f};
+    check(scrub.locatorAt(onFirst.x) == first.id, "the first locator is under the mouse");
+    scrub.mouseDown(pressAt(scrub, onFirst));
+    scrub.mouseUp(pressAt(scrub, onFirst));
+    root.frame();
+    check(arrangement.selectedLocator == first.id && sel.insert == first.pos && !document->mailbox().desiredPlaying(),
+          "a click selects it and jumps there, playing nothing");
+    // Ctrl/Cmd+R renames it.
+    check(root.command(AppCommands::RenameTrack) && scrub.locatorEditing() == first.id && scrub.editor.isVisible() &&
+              scrub.editor.getText() == "1",
+          "Ctrl/Cmd+R on it opens a field over it holding its name");
+    scrub.editor.setText("Verse", false);
+    scrub.editor.onCommit();
+    root.frame();
+    check(located()[0].name == "Verse" && !scrub.editor.isVisible() && document->ops().nextUndo()->label == "Rename Locator",
+          "Enter renames it, one step");
+    check(root.command(AppCommands::EditInfoText) && scrub.editor.isVisible() && scrub.editor.getText().isEmpty(),
+          "Edit Info Text opens its info text");
+    scrub.editor.setText("Big drums in", false);
+    scrub.editor.onCommit();
+    root.frame();
+    check(located()[0].note == "Big drums in" && document->ops().nextUndo()->label == "Edit Info Text",
+          "the info text is the marker's note, one step");
+    // The right arrow moves it one grid step, one undo step.
+    const auto beforeMove = step();
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "right");
+    root.frame();
+    check(located()[0].pos == lanes.nextGridLine(first.pos, true) && step() != beforeMove &&
+              document->ops().nextUndo()->label == "Move Locator" && arrangement.selectedLocator == first.id &&
+              sel.insert == first.pos,
+          "the right arrow moves the selected locator one grid step, one undo step, the insert marker staying");
+    check(root.command(AppCommands::Undo), "undo the move");
+    root.frame();
+    // Dragged three bars on, onto the other locator.
+    const juce::Point<float> twoOn{onFirst.x + static_cast<float>(lanes.x(3 * bar) - lanes.x(0)), 14.f};
+    scrub.mouseDown(pressAt(scrub, onFirst));
+    scrub.mouseDrag(dragAt(scrub, onFirst, twoOn));
+    check(scrub.locatorMovingTo() == first.pos + 3 * bar, "dragged three bars on: it would land where the other locator stands");
+    scrub.mouseUp(dragAt(scrub, onFirst, twoOn));
+    root.frame();
+    check(located().size() == 2 && located()[0].pos == 2 * bar && root.error().find("Another") != std::string::npos,
+          "onto the other locator: it stays, and the Status Bar says why");
+
+    // Loop to Next Locator: from it to the next.
+    check(root.loopToNextLocator(first.id), "Loop to Next Locator");
+    root.frame();
+    check(root.reader().transport().loopEnabled && root.reader().transport().loopStartTicks == 2 * bar &&
+              root.reader().transport().loopEndTicks == 5 * bar,
+          "the loop on from the locator to the next, outside undo");
+
+    // Ctrl+arrows (Option on the Mac) step to the locators as well as the selected track's clip edges.
+    arrangement.selectedLocator = 0;
+    sel.track = 2;
+    sel.insert = sel.start = sel.end = 0;
+#if JUCE_MAC
+    const auto edgeMods = juce::ModifierKeys::altModifier;
+#else
+    const auto edgeMods = juce::ModifierKeys::ctrlModifier;
+#endif
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey, edgeMods, 0)) && sel.insert == 2 * bar,
+          "Ctrl+right from the start stops at the first locator before the clip's end");
+
+    // A double-click on a locator while stopped selects it and plays from it.
+    const auto second = located()[1];
+    const juce::Point<float> onSecond{static_cast<float>(lanes.x(second.pos)) + 4.f, 14.f};
+    scrub.mouseDoubleClick(pressAt(scrub, onSecond));
+    check(arrangement.selectedLocator == second.id && document->mailbox().desiredPlaying(),
+          "a double-click while stopped selects it and plays from it");
+    document->mailbox().post(TransportMailbox::Command::Stop);
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        arrangement.selectedLocator = first.id;
+        root.mark(DirtySet::All);
+        root.frame();
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-locators.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    // Delete removes the selected locator.
+    arrangement.selectedLocator = second.id;
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete");
+    root.frame();
+    check(located().size() == 1 && arrangement.selectedLocator == 0 && document->ops().nextUndo()->label == "Delete Locator",
+          "Delete removes the selected locator, one step");
+
+    // One thing selected at a time: the brace pressed lets a locator go, so Delete cannot reach it.
+    const auto pressBrace = [&] {
+        lanes.scale = 30; // the jumps above scrolled the lanes
+        lanes.left = 0;
+        root.mark(DirtySet::All);
+        root.frame();
+        const auto &loop = root.reader().transport(); // Loop to Next Locator above moved it
+        const juce::Point<float> onBrace{static_cast<float>(lanes.x((loop.loopStartTicks + loop.loopEndTicks) / 2)), 3.f};
+        check(scrub.bracePart(onBrace) == ScrubArea::BracePart::Bar, "the brace's bar is under the press");
+        scrub.mouseDown(pressAt(scrub, onBrace));
+        scrub.mouseUp(pressAt(scrub, onBrace));
+    };
+    arrangement.selectedLocator = first.id;
+    pressBrace();
+    check(arrangement.loopSelected && arrangement.selectedLocator == 0, "the brace pressed lets the selected locator go");
+    const auto beforeDelete = step();
+    arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey));
+    root.frame();
+    check(located().size() == 1 && located()[0].id == first.id, "locator, brace, Delete: the locator stays");
+    if (step() != beforeDelete)
+        root.command(AppCommands::Undo); // Delete took the material the brace selected; put it back
+    root.frame();
+
+    // And the other way: Set with the brace selected leaves the new locator the selection; the arrows move it.
+    pressBrace();
+    sel.insert = sel.start = sel.end = first.pos + bar; // the brace starts on the first locator, and two cannot share a place
+    click(ArrangementView::TopButton::Set);
+    const auto loopBefore = root.reader().transport();
+    check(located().size() == 2 && !arrangement.loopSelected && arrangement.selectedLocator != 0 &&
+              arrangement.selectedLocator != first.id,
+          "brace, Set: the new locator is selected and the brace let go");
+    const auto added = arrangement.selectedLocator;
+    const auto posOf = [&](std::int64_t id) {
+        const auto all = located();
+        const auto *l = locatorById(all, id);
+        return l != nullptr ? l->pos : std::int64_t{-1};
+    };
+    const auto addedAt = posOf(added);
+    check(arrangement.canvas.keyPressed(juce::KeyPress(juce::KeyPress::rightKey)), "right");
+    root.frame();
+    check(posOf(added) > addedAt &&
+              root.reader().transport().loopStartTicks == loopBefore.loopStartTicks &&
+              root.reader().transport().loopEndTicks == loopBefore.loopEndTicks,
+          "brace, Set, right: the locator moves, not the brace");
+
+    // Undo takes the locator away, and its selection with it: Set reads Set again and adds.
+    arrangement.selectedLocator = 0;
+    sel.insert = sel.start = sel.end = 7 * bar;
+    const auto count = located().size();
+    click(ArrangementView::TopButton::Set);
+    check(located().size() == count + 1 && arrangement.selectedLocator != 0, "Set adds one, selected");
+    check(root.command(AppCommands::Undo), "undo the Set");
+    root.frame();
+    check(located().size() == count && arrangement.selectedLocator == 0, "Undo: the locator and its selection are gone");
+    click(ArrangementView::TopButton::Set);
+    check(located().size() == count + 1 && arrangement.selectedLocator != 0, "Set adds again after the Undo");
+    root.afterEdit = nullptr;
+    document->release();
+}
+// Live's audio clips draw their waveforms (C4, N40; Live 12 manual 6.1, chapter 9): a stereo file
+// of decaying bursts dropped on 3 Audio, its peaks built on the document's worker, each channel in
+// a band of the clip's body, and nothing past the clip's source window once the clip is longer.
+void clipWaveforms(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "waves.adi", true, {}, error);
+    check(document != nullptr, "a new project for the waveforms");
+    if (!document)
+        return;
+    // Two seconds at 48 kHz, stereo: a burst on each beat, the right channel quieter.
+    const auto wav = dir / "Break.wav";
+    {
+        std::vector<float> samples(2 * 96000);
+        for (std::size_t i = 0; i < 96000; ++i) {
+            const double t = static_cast<double>(i % 24000) / 48000.;
+            const double v = std::sin(2 * 3.14159265358979 * 80 * t) * std::exp(-t * 9) +
+                             .15 * std::sin(static_cast<double>(i) * .9) * std::exp(-t * 30);
+            samples[2 * i] = static_cast<float>(v * .9);
+            samples[2 * i + 1] = static_cast<float>(v * .55);
+        }
+        audio::WavWriter writer(wav, 48000, 2, audio::WavFormat::Pcm16);
+        writer.write(samples.data(), 96000);
+    }
+    AudioImport import;
+    check(document->prepareImport(wav.string(), 1'700'000'000'000'000, import), "the file is read");
+    auto edit = dropAudio(*document->view().current(), 4, 0, "Break", import);
+    check(edit.refusal.empty() && document->ops().submit(std::move(edit.ops)).ok && document->synchronise(),
+          "dropped on 3 Audio at bar 1: four beats at 120 BPM");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "waves");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.arrangement.waveforms = &document->waveforms();
+    root.setSize(1440, 900);
+    auto &lanes = root.arrangement.geometry;
+    lanes.scale = 40;
+    lanes.left = 0;
+    lanes.selection.track = 4;
+    root.frame();
+    root.frame();
+    auto &canvas = root.arrangement.canvas;
+    auto paintCanvas = [&canvas] {
+        juce::Image image(juce::Image::RGB, canvas.getWidth(), canvas.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(image);
+            canvas.paintEntireComponent(g, true);
+        }
+        return image;
+    };
+    auto &waves = document->waveforms();
+    check(waves.builds() == 0 && waves.idle(), "nothing asked before the clip is painted");
+    paintCanvas(); // the first paint asks for the file's peaks and draws the clip without them
+    for (int i = 0; i < 2000 && !(waves.idle() && waves.builds() > 0); ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const auto seenBefore = root.arrangement.waveformsSeen;
+    root.frame();
+    check(waves.builds() == 1 && waves.problem().empty() && root.arrangement.waveformsSeen != seenBefore,
+          "the worker built the file's peaks, and the next frame saw them land");
+    const auto *clip = root.reader().findTrack(4)->clips.empty() ? nullptr : root.reader().findTrack(4)->clips[0].get();
+    check(clip != nullptr && clip->audio && clip->audio->sourceLengthFrames == 96000, "the clip and its source window");
+    if (clip == nullptr)
+        return;
+    // The clip twice as long as its file: its body past the source window holds no waveform.
+    check(document->ops().submit([&] {
+        OpRequest r;
+        r.opType = "clip.resize";
+        r.payload = {{"id", clip->id}, {"pos", 0}, {"length", 2 * clip->lengthTicks}};
+        r.label = "Resize Clip";
+        return r;
+    }()).ok && document->synchronise(), "the clip lengthened past its file's end");
+    root.frame();
+    clip = root.reader().findTrack(4)->clips[0].get();
+    const auto image = paintCanvas();
+    const int top = laneTop(root, 4) + 1 + ArrangementCanvas::kClipBarHeight + 2,
+              bottom = laneTop(root, 4) + lanes.heightFor(4) - 5;
+    const int sourceEnd = static_cast<int>(lanes.x(clip->lengthTicks / 2)), clipEnd = static_cast<int>(lanes.x(clip->lengthTicks));
+    // A waveform pixel is much darker than the clip's body around it.
+    const auto body = image.getPixelAt(sourceEnd + 20, top + 1).getBrightness();
+    auto darkIn = [&](int x0, int x1) {
+        int dark = 0;
+        for (int x = std::max(0, x0); x < std::min(x1, image.getWidth()); ++x)
+            for (int y = top; y < bottom; ++y)
+                if (image.getPixelAt(x, y).getBrightness() < body - .2f)
+                    ++dark;
+        return dark;
+    };
+    const int inside = darkIn(static_cast<int>(lanes.x(0)) + 2, sourceEnd - 1), past = darkIn(sourceEnd + 2, clipEnd - 2);
+    check(inside > 200 && past == 0, "waveform pixels inside the clip's body over its file, none past its source window");
+    if (inside <= 200 || past != 0)
+        std::printf("waveform pixels: %d inside, %d past\n", inside, past);
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-waveforms.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    root.afterEdit = nullptr;
+    document->release();
+}
 // Live's metronome and Arrangement Loop (C2, N19; Live 12 manual 6.6, 19.4.1, §42.8, §42.16,
 // §42.20): O and the control bar's switches, Loop Selection, the brace dragged and moved by its keys,
 // the Loop Start and Loop Length fields, and editing.linkLoopToSelection. Each writes the transport's
@@ -3467,9 +4238,464 @@ void loopMetronome(AppCommands &commands, settings::AppSettings &settings, const
     root.afterEdit = nullptr;
     document->release();
 }
+// A track's recording options (C6, N31; MR V.2 §9; Live 12 manual 18.8): a MIDI track's Rec-Q and
+// Play-Q on its header, Keep Monitoring Latency from a right-click on In or Auto, each one undo step,
+// read back from `TrackNode::recording`; Insert MIDI Track carries the registry's defaults.
+void recordingOptions(AppCommands &commands, settings::AppSettings &settings, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "recording.adi", true, {}, error);
+    check(document != nullptr, "a new project for the recording options");
+    if (!document)
+        return;
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "recording");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    root.frame();
+    auto &headers = root.arrangement.headers;
+    const auto *midi = root.reader().findTrack(2);
+    check(midi != nullptr && recordQuantizeText(midi->recording) == "1/16" && playQuantizeText(midi->recording) == "Off" &&
+              !headers.quantizeBox(0, 0, root.arrangement.geometry.heightFor(2), true).isEmpty(),
+          "1 MIDI's header shows Rec-Q 1/16 and Play-Q Off");
+    auto pick = [](const juce::PopupMenu &menu, const juce::String &text) {
+        for (juce::PopupMenu::MenuItemIterator it(menu); it.next();)
+            if (it.getItem().text == text && it.getItem().action) {
+                it.getItem().action();
+                return true;
+            }
+        return false;
+    };
+    const auto step = [&] { return document->ops().nextUndo() ? document->ops().nextUndo()->txnId : 0; };
+    const auto before = step();
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        renderMenu(look::liveLook(), headers.quantizeMenu(2, true), juce::File(folder).getChildFile("adi-rec-q-menu.png"));
+        juce::Image picture(juce::Image::ARGB, 2 * root.getWidth(), 2 * root.getHeight(), true, juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-recording-options.png");
+        file.deleteFile();
+        if (auto stream = file.createOutputStream())
+            juce::PNGImageFormat{}.writeImageToStream(picture, *stream);
+    }
+    check(pick(headers.quantizeMenu(2, true), "1/8"), "Rec-Q's menu, 1/8");
+    root.frame();
+    midi = root.reader().findTrack(2);
+    check(midi->recording.recordEnabled && midi->recording.recordGrid == "1/8" && step() != before &&
+              document->ops().nextUndo()->label == "Change Record Quantization" && document->ops().nextUndo()->opCount == 1,
+          "Rec-Q writes track.setRecordQuantize, one undo step, read back from the snapshot");
+    check(pick(headers.quantizeMenu(2, true), "Free"), "Rec-Q Free");
+    root.frame();
+    check(!root.reader().findTrack(2)->recording.recordEnabled && recordQuantizeText(root.reader().findTrack(2)->recording) == "Free",
+          "and Free turns it off");
+    check(pick(headers.quantizeMenu(2, false), "1/4"), "Play-Q 1/4");
+    root.frame();
+    check(root.reader().findTrack(2)->recording.playEnabled && root.reader().findTrack(2)->recording.playGrid == "1/4" &&
+              document->ops().nextUndo()->label == "Change Live Quantization",
+          "Play-Q writes track.setPlayQuantize, one step");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(!root.reader().findTrack(2)->recording.playEnabled, "undo puts Play-Q back off");
+    // Keep Monitoring Latency from 3 Audio's In or Auto button.
+    MixerStrip *audio = nullptr;
+    for (const auto &strip : root.mixer.strips())
+        if (strip->track() == 4)
+            audio = strip.get();
+    check(audio != nullptr, "3 Audio's row");
+    if (audio != nullptr) {
+        check(!audio->showsInOut() || audio->onMonitorInOrAuto({30, 40}), "a right-click on Auto is the monitor's");
+        if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty())
+            renderMenu(look::liveLook(), audio->monitorMenu(), juce::File(folder).getChildFile("adi-monitor-menu.png"));
+        check(pick(audio->monitorMenu(), "Keep Monitoring Latency in Recorded Audio"), "its menu's one item");
+        root.frame();
+        check(!root.reader().findTrack(4)->recording.keepMonitoringLatency &&
+                  document->ops().nextUndo()->label == "Keep Monitoring Latency",
+              "Keep Monitoring Latency off, one step, read back");
+    }
+    // Live 12's Keep Latency toggle under Track Delay in the Mixer View's Track Options (manual 18.8).
+    root.command(AppCommands::ToggleMixerView);
+    if (!root.state().mixerTrackOptions)
+        root.command(AppCommands::ToggleMixerTrackOptions);
+    const bool inOutWasOn = root.state().mixerInOut;
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.frame();
+    MixerStrip *wide = nullptr;
+    for (const auto &strip : root.mixerView.strips())
+        if (strip->track() == 4)
+            wide = strip.get();
+    check(wide != nullptr && wide->keepLatency.isVisible() && !wide->keepLatency.getToggleState(),
+          "the Mixer View's Track Options: 3 Audio's Keep Latency, unlit as the project holds it");
+    if (wide != nullptr) {
+        wide->keepLatency.onClick();
+        root.frame();
+        check(root.reader().findTrack(4)->recording.keepMonitoringLatency && wide->keepLatency.getToggleState(),
+              "clicked: on again, lit from the snapshot");
+        // The Mixer View's own In/Out section draws In and Auto 59 px under the mixer's top (40): a
+        // right-click there is the monitor's too, as the toggle's tooltip says; Audio From is not.
+        // A strip tall enough for the In/Out section, Track Options and the mixer together.
+        const auto keptHeight = wide->getHeight();
+        wide->setSize(wide->getWidth(), 360);
+        check(wide->onMonitorInOrAuto({10, 40 + 65}) && wide->onMonitorInOrAuto({35, 40 + 65}) &&
+                  !wide->onMonitorInOrAuto({10, 40 + 20}),
+              "a right-click on In or Auto in the Mixer View's In/Out section is the monitor's");
+        wide->setSize(wide->getWidth(), keptHeight);
+    }
+    if (!inOutWasOn)
+        root.command(AppCommands::ToggleMixerInOut);
+    root.command(AppCommands::ToggleMixerTrackOptions);
+    root.command(AppCommands::ToggleMixerView);
+    root.frame();
+    // Insert MIDI Track takes the registry's defaults.
+    std::string why;
+    check(settings.set("record.quantize", "1/32", {}, why), "record.quantize 1/32");
+    commands.reload();
+    root.arrangement.geometry.selection.track = 2;
+    check(root.command(AppCommands::InsertMidiTrack), "Insert MIDI Track");
+    root.frame();
+    const auto *added = root.reader().findTrack(root.arrangement.geometry.selection.track);
+    check(added != nullptr && added->kind == "midi" && added->recording.recordGrid == "1/32",
+          "the new MIDI track records quantized to 1/32, the registry's default");
+    settings.set("record.quantize", "1/16", {}, why);
+    commands.reload();
+    root.afterEdit = nullptr;
+    document->release();
+}
 // A parameter drag in the device strip is one undo step (N7, worklist A3; ADR-0124 d4, ADR-0181
 // d5; MR 9.1): the real ParameterControl, through the document's gesture, into the engine's window
 // producer. The plug-in is the loader's headless Knobs, on 1 MIDI.
+// D2: Live's device clipboard (manual 23.2.1, 41.5; N18, #394). Cut, Copy, Paste and Duplicate on
+// a device the project stores, from the keys through the peer, with the app's clipboard wired as
+// ui_main.cpp wires it; a click past the last device chooses the chain's end.
+void deviceClipboard(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "device-clipboard.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "a project for the device clipboard");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(2);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a device on 1 MIDI to copy");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "clipboard");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.devices.submit = [&](const std::string &op, Payload p) {
+        const bool ok = document->deviceAction(op, std::move(p));
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    std::optional<DeviceCopy> clipboard;
+    root.devices.copy = [&](std::int64_t id, bool cut) {
+        DeviceCopy copy;
+        bool ok = document->copyDevice(id, copy);
+        if (ok) {
+            clipboard = std::move(copy);
+            if (cut)
+                ok = document->deviceAction("device.remove", {{"id", id}});
+        }
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.paste = [&](std::int64_t track, std::optional<std::int64_t> before) {
+        const bool ok = clipboard && document->pasteDevice(*clipboard, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.duplicate = [&](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
+        DeviceCopy copy;
+        const bool ok = document->copyDevice(id, copy) && document->pasteDevice(copy, track, before);
+        if (!ok)
+            root.say(document->error());
+        return ok;
+    };
+    root.devices.holdsCopy = [&] { return clipboard.has_value(); };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    refresh();
+    const auto chain = [&] {
+        std::vector<std::int64_t> out;
+        SQLite::Statement q(document->store().db(), "SELECT id FROM devices WHERE chain_id = 3 ORDER BY ord, id");
+        while (q.executeStep())
+            out.push_back(q.getColumn(0).getInt64());
+        return out;
+    };
+    const auto label = [&] { return document->ops().nextUndo() ? document->ops().nextUndo()->label : std::string(); };
+    using Clip = DeviceChainStrip::Clip;
+    check(root.devices.panels.size() == 1 && !root.devices.canClipboard(Clip::Copy) &&
+              !root.devices.canClipboard(Clip::Paste) && !root.command(AppCommands::Copy) &&
+              root.error().find("Select a device") != std::string::npos,
+          "with no device chosen, Copy has nothing to act on and the Status Bar says so");
+    UiPeerRoot host;
+    host.setSize(root.getWidth(), root.getHeight());
+    host.addAndMakeVisible(root);
+    host.setVisible(true);
+    host.addToDesktop(0);
+    auto *peer = host.getPeer();
+    const auto key = [&](char c) {
+        return peer != nullptr && peer->handleKeyPress(juce::KeyPress(c, juce::ModifierKeys::commandModifier, 0));
+    };
+    const auto focus = [&](std::size_t i) {
+        if (i >= root.devices.panels.size())
+            return false;
+        root.devices.panels[i]->grabKeyboardFocus();
+        return root.devices.panels[i]->hasKeyboardFocus(true);
+    };
+    // While a device's name is being edited the keys are the editor's: no device is chosen.
+    check(focus(0) && root.devices.panels[0]->beginRename() && !root.devices.focusedDevice() &&
+              !root.devices.canClipboard(Clip::Duplicate),
+          "while its name is edited, the device is not the clipboard's: Ctrl/Cmd+D stays the editor's");
+    root.devices.panels[0]->rename.keyPressed(juce::KeyPress(juce::KeyPress::escapeKey));
+    const auto opsBefore = document->store().db().execAndGet("SELECT count(*) FROM ops").getInt();
+    check(focus(0) && key('c') && clipboard.has_value() && chain() == std::vector<std::int64_t>{3} &&
+              document->store().db().execAndGet("SELECT count(*) FROM ops").getInt() == opsBefore,
+          "Ctrl/Cmd+C on the focused device copies it, and writes nothing");
+    check(focus(0) && key('v'), "Ctrl/Cmd+V on the focused device pastes");
+    refresh();
+    auto order = chain();
+    check(order.size() == 2 && order[0] > 3 && order[1] == 3 && label() == "Paste Device" &&
+              document->store()
+                      .db()
+                      .execAndGet("SELECT name FROM devices WHERE id = " + std::to_string(order[0]))
+                      .getString() == "UI knobs" &&
+              root.devices.panels.size() == 2,
+          "a new device in front of it, with the next free id and the copy's name: one step, Paste Device");
+    check(root.command(AppCommands::Undo), "undo");
+    refresh();
+    check(chain() == std::vector<std::int64_t>{3}, "undo takes the pasted device away in one step");
+    const auto held = clipboard->insert.dump();
+    check(focus(0) && key('d'), "Ctrl/Cmd+D on the focused device duplicates");
+    refresh();
+    order = chain();
+    check(order.size() == 2 && order[0] == 3 && order[1] > 3 && clipboard->insert.dump() == held,
+          "the duplicate goes after it, at the chain's end, and the clipboard keeps what it held");
+    const auto duplicateId = order[1];
+    check(focus(1) && key('x'), "Ctrl/Cmd+X on the duplicate cuts it");
+    refresh();
+    check(chain() == std::vector<std::int64_t>{3} && clipboard->insert.value("name", "") == "UI knobs" &&
+              clipboard->insert.value("id", std::int64_t{0}) == duplicateId,
+          "cut: the device goes, and the clipboard holds it");
+    // A click past the last device chooses the chain's end; Paste lands there.
+    const auto past = host.getLocalPoint(&root.devices, juce::Point<int>{root.devices.panels.back()->getRight() + 40,
+                                                                          root.devices.getHeight() / 2})
+                          .toFloat();
+    juce::int64 when = 200000;
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past, juce::ModifierKeys(), 1.f, 0.f,
+                           when += 100);
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past,
+                           juce::ModifierKeys(juce::ModifierKeys::leftButtonModifier), 1.f, 0.f, when += 100);
+    peer->handleMouseEvent(juce::MouseInputSource::InputSourceType::mouse, past, juce::ModifierKeys(), 1.f, 0.f,
+                           when += 100);
+    check(root.devices.endChosen() && !root.devices.focusedDevice() && root.devices.canClipboard(Clip::Paste) &&
+              !root.devices.canClipboard(Clip::Copy),
+          "a click past the last device chooses the chain's end: Paste can go there, Copy has no device");
+    check(key('v'), "Ctrl/Cmd+V at the chain's end");
+    refresh();
+    order = chain();
+    check(order.size() == 2 && order[0] == 3 && order[1] > 3 && label() == "Paste Device",
+          "the cut device comes back at the chain's end, a new id, one step");
+    // The device's menu and the strip with its end chosen, for the picture beside Live 12's.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        renderMenu(look::liveLook(), root.devices.panels[0]->commands(),
+                   juce::File(folder).getChildFile("adi-device-menu.png"));
+        root.devices.grabKeyboardFocus();
+        juce::Image picture(juce::Image::ARGB, 2 * root.devices.getWidth(), 2 * root.devices.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.devices.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-device-strip.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
+    // A copy from one project does not paste into another: the engine's refusal, in the Status Bar.
+    {
+        auto other = ProjectDocument::open(dir / "device-clipboard-other.adi", true, {}, error);
+        check(other != nullptr, "a second project");
+        if (other) {
+            check(!other->pasteDevice(*clipboard, 2, std::nullopt) &&
+                      other->error().find("different project") != std::string::npos,
+                  "a copy from another project is refused, with the engine's reason");
+            other->release();
+        }
+    }
+    host.removeChildComponent(&root);
+    document->release();
+}
+// D3: a plug-in's own window (Live 12 manual 23.3, 23.3.1.1, 41.4; N8, #391), with a fake opener in
+// the app's place: the wrench on plug-in devices only; a click opens the editor in a floating window
+// at its own size, never scaled, and a second closes it; one window at a time unless Ctrl/Cmd or
+// Multiple Plug-In Windows; Ctrl/Cmd+Alt+P hides and shows them all; Auto-Hide shows only the
+// selected track's; the opener's error and the editor's reach the Status Bar.
+void pluginWindows(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "plugin-windows.adi", true, test::knobsLoader(), error);
+    check(document != nullptr, "a project for the plug-in windows");
+    if (!document)
+        return;
+    document->store().db().exec(std::string("INSERT INTO plugin_refs(id,format,uid,name) VALUES(3,'clap','") +
+                                test::kKnobsUid + "','UI knobs')");
+    std::vector<OpRequest> make(4);
+    make[0].opType = "chain.create";
+    make[0].payload = {{"id", 3}, {"track", 2}, {"ord", 0}, {"name", "Devices"}};
+    make[1].opType = "device.insert";
+    make[1].payload = {{"id", 3}, {"chain", 3}, {"ord", 0}, {"ref", 3}, {"name", "UI knobs"}, {"latency", 0}};
+    make[2].opType = "device.insert";
+    make[2].payload = {{"id", 4}, {"chain", 3}, {"ord", 1}, {"name", "Rack"}, {"latency", 0}};
+    make[3].opType = "device.insert";
+    make[3].payload = {{"id", 5}, {"chain", 3}, {"ord", 2}, {"ref", 3}, {"name", "UI knobs 2"}, {"latency", 0}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(),
+          "two plug-ins and a device of no plug-in on 1 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "plugins");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.devices.publication = [&] { return document->parameterFeed().current(); };
+    root.setSize(1440, 900);
+    root.arrangement.geometry.selection.track = 2;
+    const auto refresh = [&] {
+        document->tick(0);
+        root.frame();
+        root.frame();
+    };
+    refresh();
+    FloatingHost host(root, commands, document->views(), document->view(), [](std::int64_t) { return true; }, false);
+    int opened = 0;
+    std::string refuse, editorError;
+    bool editorGone = false;
+    check(!root.togglePluginWindow(3, false) && root.error().find("in the application") != std::string::npos,
+          "with no opener wired, the wrench says plug-in windows open in the application");
+    root.pluginHost = &host;
+    root.pluginEditor = [&](std::int64_t, std::string &why) {
+        AdiRootComponent::PluginEditorView view;
+        if (!refuse.empty()) {
+            why = refuse;
+            return view;
+        }
+        ++opened;
+        auto editor = std::make_unique<juce::Component>();
+        editor->setSize(320, 200);
+        view.view = std::move(editor);
+        view.frame = [&] { return editorError; };
+        view.gone = [&] { return editorGone; };
+        return view;
+    };
+    auto &panels = root.devices.panels;
+    check(panels.size() == 3 && panels[0]->wrench.isVisible() && !panels[1]->wrench.isVisible() &&
+              panels[2]->wrench.isVisible(),
+          "the wrench shows on the plug-ins' title bars, not on a device of no plug-in");
+    const auto key3 = AdiRootComponent::pluginWindowKey(3), key5 = AdiRootComponent::pluginWindowKey(5);
+    check(panels[0]->wrench.getX() < panels[0]->title.getX() && panels[0]->title.getX() > panels[1]->title.getX(),
+          "the wrench sits before the name, after the fold switch, as Live's");
+    panels[0]->wrench.onClick();
+    root.frame();
+    // The strip with a plug-in's window open, for the picture beside Live 12's.
+    if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
+        juce::Image picture(juce::Image::ARGB, 2 * root.devices.getWidth(), 2 * root.devices.getHeight(), true,
+                            juce::SoftwareImageType{});
+        {
+            juce::Graphics g(picture);
+            g.addTransform(juce::AffineTransform::scale(2.f));
+            root.devices.paintEntireComponent(g, true);
+        }
+        const auto file = juce::File(folder).getChildFile("adi-plugin-wrench.png");
+        file.deleteFile();
+        juce::FileOutputStream out(file);
+        juce::PNGImageFormat().writeImageToStream(picture, out);
+    }
+    check(opened == 1 && host.contains(key3) && host.content(key3) != nullptr &&
+              host.content(key3)->getWidth() == 320 && host.content(key3)->getHeight() == 200 &&
+              !host.zoom(key3, true) && host.alwaysOnTop(key3) && panels[0]->wrench.getToggleState(),
+          "a click opens the editor at the plug-in's own size, never scaled, on top, the wrench lit");
+    {
+        auto *window = dynamic_cast<juce::DocumentWindow *>(host.window(key3));
+        const auto *track = root.reader().findTrack(2);
+        check(window != nullptr && track != nullptr && window->getName() == juce::String(track->name + "/UI knobs") &&
+                  !window->isResizable() && window->getContentComponentBorder().addedTo(host.content(key3)->getBounds()).getWidth() == window->getWidth(),
+              "its window is titled track/device, fits the plug-in, and does not resize");
+    }
+    panels[0]->wrench.onClick();
+    root.frame();
+    check(!host.contains(key3) && !panels[0]->wrench.getToggleState(), "a second click closes it");
+    // One at a time; Ctrl/Cmd keeps the others open.
+    check(root.togglePluginWindow(3, false) && root.togglePluginWindow(5, false) && !host.contains(key3) &&
+              host.contains(key5),
+          "opening another plug-in's window closes the first (Multiple Plug-In Windows off)");
+    check(root.togglePluginWindow(3, true) && host.contains(key3) && host.contains(key5),
+          "with Ctrl/Cmd both stay open");
+    // A plug-in with no editor refuses before any other window closes.
+    root.togglePluginWindow(5, true);
+    refuse = "This VST3 has no editor";
+    check(!root.togglePluginWindow(5, false) && host.contains(key3) && root.error() == refuse,
+          "a refusal leaves the open plug-in window open");
+    refuse.clear();
+    check(root.togglePluginWindow(5, true) && host.contains(key3) && host.contains(key5), "both open again");
+    // Ctrl/Cmd+Alt+P hides and shows them all.
+    const juce::KeyPress hideAll('p', juce::ModifierKeys::commandModifier | juce::ModifierKeys::altModifier, 0);
+    juce::ApplicationCommandInfo info(AppCommands::TogglePluginWindows);
+    commands.activate(root);
+    commands.getCommandInfo(AppCommands::TogglePluginWindows, info);
+    check(info.shortName == "Hide Plug-In Windows" && info.defaultKeypresses.contains(hideAll),
+          "View > Hide Plug-In Windows on Ctrl/Cmd+Alt+P while they show");
+    check(root.keyPressed(hideAll) && !root.pluginWindowsShown() && !host.shown(key3) && !host.shown(key5) &&
+              host.contains(key3),
+          "Ctrl/Cmd+Alt+P hides every plug-in window, open still");
+    commands.getCommandInfo(AppCommands::TogglePluginWindows, info);
+    root.frame();
+    check(info.shortName == "Show Plug-In Windows" && !host.shown(key3), "then the menu offers to show them");
+    check(root.keyPressed(hideAll) && root.pluginWindowsShown() && host.shown(key3) && host.shown(key5),
+          "and again shows them where they stood");
+    // Auto-Hide Plug-In Windows (on by default): only the selected track's show.
+    root.arrangement.geometry.selection.track = 3;
+    root.frame();
+    check(!host.shown(key3) && !host.shown(key5) && host.contains(key3), "another track selected: they hide");
+    root.arrangement.geometry.selection.track = 2;
+    root.frame();
+    check(host.shown(key3) && host.shown(key5), "their track selected again: they show");
+    // A window opened on purpose while they are hidden shows, and the others with it.
+    check(root.keyPressed(hideAll) && !root.pluginWindowsShown(), "hidden");
+    check(root.togglePluginWindow(5, true) && !host.contains(key5), "a wrench click closes the hidden one");
+    check(root.togglePluginWindow(5, true) && root.pluginWindowsShown() && host.shown(key5) && host.shown(key3),
+          "and opening one on purpose shows it, and the others Show/Hide had hidden");
+    // Errors reach the Status Bar: the editor's, on its window's clock, and the opener's.
+    editorError = "Plug-in refused to show its editor";
+    host.frame(key3);
+    check(root.error() == editorError, "an editor's error reaches the Status Bar");
+    editorGone = true;
+    host.frame(key3);
+    check(root.error().find("closed its window") != std::string::npos && !host.shown(key3),
+          "an editor the plug-in dropped hides its window at once and says so");
+    host.collect();
+    root.frame();
+    check(!host.contains(key3) && host.contains(key5) && !panels[0]->wrench.getToggleState(),
+          "and the next collect closes it, the wrench unlit");
+    editorGone = false;
+    host.closeAll(false);
+    refuse = "This VST3 has no editor";
+    check(!root.togglePluginWindow(3, false) && root.error() == refuse && !host.contains(key3),
+          "an opener's refusal reaches the Status Bar, and no window opens");
+    commands.detach(root);
+    root.pluginHost = nullptr;
+    document->release();
+}
 void stripParamUndo(AppCommands &commands, const std::filesystem::path &dir) {
     std::string error;
     auto document = ProjectDocument::open(dir / "strip-undo.adi", true, test::knobsLoader(), error);
@@ -4710,15 +5936,17 @@ int main(int argc, char **argv) {
         check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace},
               "the Options menu: Follow (§6.2), the grid (§6.10), then Solo in Place (§18.6)");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
-                                                C::TakeSnapshot, C::SaveAs},
-              "the File menu; Quit is the application menu's on the Mac");
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport},
+              "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
+              "Collect and Export after them; Quit is the application menu's on the Mac");
 #else
         check(names == juce::StringArray{"File", "Edit", "Create", "View", "Options", "Navigate"},
               "the menu bar: File, Edit, Create, View, Options, Navigate");
-        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0,
-                                                C::TakeSnapshot, C::SaveAs, 0, C::Quit},
-              "the File menu ends with Quit and no longer holds Settings");
+        check(items("File") == std::vector<int>{C::NewProject, C::OpenProject, 0, C::TakeSnapshot, C::SaveAs,
+                                                C::SaveCopy, C::CollectAllAndSave, C::CollectAndExport, 0, C::Quit},
+              "the File menu: Save As, then Save a Copy and Collect All and Save (5.4.1, 5.7), ADI's "
+              "Collect and Export after them; it ends with Quit and no longer holds Settings");
         check(items("Options") == std::vector<int>{C::Follow, 0, C::NarrowGrid, C::WidenGrid, C::TripletGrid,
                                                    C::SnapToGrid, C::FixedGrid, 0, C::SoloInPlace, 0, C::Settings},
               "the Options menu: Follow (§6.2), the grid (§6.10), Solo in Place (§18.6), then Settings off the Mac "
@@ -4737,20 +5965,42 @@ int main(int argc, char **argv) {
             commands.getCommandInfo(C::Metronome, metronome);
             commands.getCommandInfo(C::LoopSelection, loop);
             commands.getCommandInfo(C::SelectLoop, selectLoop);
+            juce::ApplicationCommandInfo copy(C::SaveCopy), collect(C::CollectAllAndSave), exportZip(C::CollectAndExport);
+            commands.getCommandInfo(C::SaveCopy, copy);
+            commands.getCommandInfo(C::CollectAllAndSave, collect);
+            commands.getCommandInfo(C::CollectAndExport, exportZip);
+            juce::ApplicationCommandInfo cut(C::Cut), copyInfo(C::Copy), paste(C::Paste), duplicate(C::Duplicate);
+            commands.getCommandInfo(C::Cut, cut);
+            commands.getCommandInfo(C::Copy, copyInfo);
+            commands.getCommandInfo(C::Paste, paste);
+            commands.getCommandInfo(C::Duplicate, duplicate);
+            const auto keyed = [](const juce::ApplicationCommandInfo &info, char key) {
+                return info.defaultKeypresses.contains(juce::KeyPress(key, juce::ModifierKeys::commandModifier, 0));
+            };
             check(solo.shortName == "Solo in Place" && rows.shortName == "Track Options" &&
                       mixer.shortName == "Mixer Track Options" && metronome.shortName == "Metronome" &&
                       loop.shortName == "Loop Selection" && selectLoop.shortName == "Select Loop" &&
-                      C::LastId == C::SelectLoop,
+                      copy.shortName == "Save a Copy..." && collect.shortName == "Collect All and Save" &&
+                      exportZip.shortName == "Collect and Export..." && cut.shortName == "Cut" && keyed(cut, 'x') &&
+                      copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
+                      keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
+                      C::LastId == C::TogglePluginWindows,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
-                  "Select Loop (the last id), each named");
+                  "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, then Show/Hide Plug-In Windows (the "
+                  "last id), each named");
         }
+        // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
+        if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
+            renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("File"), "File"),
+                       juce::File(pictures).getChildFile("adi-file-menu.png"));
         // The Options menu as drawn, with Solo in Place ticked, for the picture beside Live 12's.
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::DeleteTrack, 0, C::RenameTrack, C::SelectAll, 0,
-                                                C::LoopSelection, C::SelectLoop, 0, C::GroupTracks, C::UngroupTracks},
-              "the Edit menu deletes the selected track, before Rename (§18.2) and Select All, then Loop Selection "
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText,
+                                                C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0, C::GroupTracks,
+                                                C::UngroupTracks},
+              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), before Rename (§18.2) and Select All, then Loop Selection "
               "and Select Loop (§6.6), then Group and Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
@@ -4785,8 +6035,9 @@ int main(int argc, char **argv) {
                   "and undo brings the track back");
         }
         check(items("Create") == std::vector<int>{C::InsertAudioTrack, C::InsertMidiTrack, C::InsertReturnTrack, 0,
-                                                  C::InsertTimeSignatureChange},
-              "the Create menu inserts tracks, returns too (§18.4), then a time signature change (§6.5)");
+                                                  C::InsertTimeSignatureChange, 0, C::AddLocator, C::DeleteLocator},
+              "the Create menu inserts tracks, returns too (§18.4), then a time signature change (§6.5), then Add "
+              "and Delete Locator (§6.4)");
         check(items("Navigate") == std::vector<int>{C::FocusControlBar, C::FocusArrangement,
                                                     C::FocusDeviceView, C::FocusBrowser, 0,
                                                     C::NextNeighbor, C::PreviousNeighbor, 0,
@@ -5690,8 +6941,9 @@ int main(int argc, char **argv) {
                     if (it.getItem().text == "Rename")
                         renameAction = it.getItem().action;
                 }
-            check(items == juce::StringArray{"Delete", "Rename", "Fold", "Configure"},
-                  "a device's menu: Delete, Rename, then the device's own, in Live's order");
+            check(items == juce::StringArray{"Cut", "Copy", "Duplicate", "Rename", "Delete", "Fold", "Configure"},
+                  "a device's menu in Live 12's order (23.2.1's figure): Cut, Copy and Duplicate; Rename; Delete and "
+                  "Fold; then the device's own");
             std::string renameOp;
             Payload renamed;
             integrated.devices.submit = [&](const std::string &op, Payload p) {
@@ -6854,13 +8106,20 @@ int main(int argc, char **argv) {
     footRows(commands, temp.path());
     newProject(commands, temp.path());
     stripParamUndo(commands, temp.path());
+    deviceClipboard(commands, temp.path());
+    pluginWindows(commands, temp.path());
     automationArm(commands, temp.path());
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
+    browserDevices(commands, temp.path());
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());
+    recordingOptions(commands, settings, temp.path());
+    undoHistoryWindow(commands, temp.path());
+    clipWaveforms(commands, temp.path());
     loopMetronome(commands, settings, temp.path());
+    locators(commands, temp.path());
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures ? 1 : 0;
 }

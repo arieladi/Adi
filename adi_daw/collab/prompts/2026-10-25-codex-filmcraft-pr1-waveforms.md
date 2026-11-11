@@ -1,5 +1,7 @@
 # 2026-10-25 — Codex: FilmCraft PR 1, the stale waveform after a media reload
 
+> **Withdrawn by the director on 11 November 2026 (ADR-0234). Do not run this prompt.**
+
 **Approved by the director on 2026-10-25** (the rustup install included). Review by win, from the clone at a504f3c5 and the live PR state; two skeptics corrected it. Hand this file to Codex as it stands.
 
 ```text

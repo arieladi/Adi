@@ -1,23 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+#include "adi/appdata.hpp"
 #include "adi/ui/project_document.hpp"
 #include "juce/device_bridge.hpp"
+#include "juce/editor_host_component.hpp"
 #include "juce/juce_device_loader.hpp"
 #include "app_audio_page.hpp"
 #include "ui_floating.hpp"
 #include "ui_settings.hpp"
 #include "ui_shell.hpp"
+#include <optional>
 #include <juce_audio_utils/juce_audio_utils.h>
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <thread>
 namespace adi::ui {
 namespace {
 // A name typed into a save chooser, as an `.adi` file. Appended, never swapped in: JUCE's
 // `withFileExtension` cuts the name at its last dot, so "Song v1.2" would become "Song v1.adi"
 // where Live writes "Song v1.2.als". The native choosers on Windows and macOS add the extension
 // themselves; Linux's hand the typed name back.
-juce::File withAdiExtension(const juce::File &file) {
-    if (file.hasFileExtension("adi"))
+juce::File withExtension(const juce::File &file, const char *extension) {
+    if (file.hasFileExtension(extension))
         return file;
-    return file.getParentDirectory().getChildFile(file.getFileName() + ".adi");
+    return file.getParentDirectory().getChildFile(file.getFileName() + "." + extension);
 }
+juce::File withAdiExtension(const juce::File &file) { return withExtension(file, "adi"); }
+// Live's Undo History window (manual 5.4.2; A5): the main window's list in a window of its own,
+// which closing hides. The list stays the root's; the window only shows it.
+class UndoHistoryWindow final : public juce::DocumentWindow {
+  public:
+    explicit UndoHistoryWindow(UndoHistoryPanel &panel)
+        : juce::DocumentWindow("Undo History", look::frame, juce::DocumentWindow::closeButton) {
+        setUsingNativeTitleBar(true);
+        setContentNonOwned(&panel, false);
+        setResizable(true, false);
+        centreWithSize(320, 420);
+    }
+    void closeButtonPressed() override { setVisible(false); }
+};
 } // namespace
 class AdiApplication final : public juce::JUCEApplication,
                              private juce::Timer,
@@ -75,9 +97,100 @@ class AdiApplication final : public juce::JUCEApplication,
             quit();
             return;
         }
+        startLibrary();
         startTimer(20);
     }
+    // The browser's Samples and Places (D1): the library index (#102) at its app-data file, on one
+    // background owner. It registers and scans the User Library and the added content folders the
+    // settings name, then hands the browser what it lists, and keeps the index open so it goes on
+    // hashing while `library.backgroundIndexing` is on, until Quit. A smoke run or a machine with no
+    // app-data folder, or no folder named, indexes nothing.
+    //
+    // Quit never waits on a folder still being walked: `Index::scan` cannot be stopped part way (N50),
+    // so the owner checks its stop flag between folders, and Quit leaves an owner still scanning to
+    // end on its own. Everything it touches is its own or held in the shared state.
+    struct LibraryOwner {
+        std::mutex mutex;
+        std::condition_variable wake;
+        std::atomic<bool> stop{false}, scanned{false};
+    };
+    void startLibrary() {
+        const auto file = appdata::libraryIndexFile();
+        std::vector<LibraryFolder> folders;
+        if (const auto user = settings_->get("library.userLibrary"); user.is_string() && !user.get<std::string>().empty())
+            folders.push_back({"User Library", pathFromUtf8(user.get<std::string>()), true});
+        if (const auto added = settings_->get("library.contentFolders"); added.is_array())
+            for (const auto &folder : added)
+                if (folder.is_string() && !folder.get<std::string>().empty()) {
+                    const auto path = pathFromUtf8(folder.get<std::string>());
+                    folders.push_back({media::pathUtf8(path.filename().empty() ? path.parent_path().filename()
+                                                                               : path.filename()),
+                                       path});
+                }
+        if (file.empty() || smokeOutput_ != juce::File{} || folders.empty()) {
+            libraryReady_ = true;
+            if (root_)
+                root_->browser.setListing(library_, true);
+            return;
+        }
+        const auto background = settings_->get("library.backgroundIndexing");
+        const bool hashing = !background.is_boolean() || background.get<bool>();
+        auto owner = libraryOwner_ = std::make_shared<LibraryOwner>();
+        libraryThread_ = std::thread([this, owner, file, folders, hashing] {
+            LibraryListing listing;
+            std::unique_ptr<library::Index> index;
+            try {
+                std::string error;
+                index = library::Index::open(file, error, hashing);
+                if (index) {
+                    library::MarkerVolumeProvider volumes;
+                    listing = scanLibrary(*index, folders, volumes, &owner->stop);
+                } else {
+                    listing.error = "The library index could not be opened: " + error;
+                }
+            } catch (const std::exception &e) {
+                listing.error = std::string("The library could not be indexed: ") + e.what();
+            }
+            owner->scanned = true;
+            if (!owner->stop.load())
+                juce::MessageManager::callAsync([this, owner, found = std::move(listing)] {
+                    if (owner->stop.load() || juce::JUCEApplicationBase::getInstance() != this)
+                        return;
+                    library_ = found;
+                    libraryReady_ = true;
+                    if (root_) {
+                        root_->browser.setListing(library_, true);
+                        if (!library_.error.empty())
+                            root_->say(library_.error);
+                    }
+                });
+            // The index stays open, hashing in the background, until Quit.
+            std::unique_lock lock(owner->mutex);
+            owner->wake.wait(lock, [&owner] { return owner->stop.load(); });
+            lock.unlock();
+            index.reset();
+        });
+    }
+    void stopLibrary() {
+        if (!libraryThread_.joinable())
+            return;
+        {
+            std::lock_guard lock(libraryOwner_->mutex);
+            libraryOwner_->stop = true;
+        }
+        libraryOwner_->wake.notify_all();
+        // An owner still walking a folder is left to finish on its own; one waiting only stops its
+        // hashing and ends.
+        if (libraryOwner_->scanned.load())
+            libraryThread_.join();
+        else
+            libraryThread_.detach();
+    }
     void shutdown() override {
+        // A Collect and Export still running finishes first: its ZIP is not left half written.
+        if (export_.joinable())
+            export_.join();
+        stopLibrary();
         stopTimer();
         chooser_.reset();
         settingsWindow_.reset();
@@ -86,6 +199,7 @@ class AdiApplication final : public juce::JUCEApplication,
         manager_.removeChangeListener(this);
         detachAudio();
         floating_.reset();
+        historyWindow_.reset();
         window_.reset();
         document_.reset();
         commands_.reset();
@@ -127,8 +241,8 @@ class AdiApplication final : public juce::JUCEApplication,
     }
     bool install(const juce::File &file, bool create) {
         std::string error;
-        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()),
-                                          create, loader_.fn(), error);
+        auto next = ProjectDocument::open(pathFromUtf8(file.getFullPathName().toStdString()), create, loader_.fn(), error,
+                                          &commands_->recordingDefaults());
         if (!next) {
             report(error);
             return false;
@@ -136,6 +250,7 @@ class AdiApplication final : public juce::JUCEApplication,
         // Detach callbacks BEFORE their processor, window services or plug-ins die.
         detachAudio();
         floating_.reset();
+        historyWindow_.reset();
         window_.reset();
         document_ = std::move(next);
         auto root = std::make_unique<AdiRootComponent>(document_->view(), document_->ops(),
@@ -143,6 +258,7 @@ class AdiApplication final : public juce::JUCEApplication,
                                                        document_->views(),
                                                        document_->sessionState(), "main");
         root_ = root.get();
+        root->browser.setListing(library_, libraryReady_); // the library listed so far, if anything
         root->devices.publication = [this] { return document_->parameterFeed().current(); };
         root->devices.gesture = [this](std::int64_t id, const std::string &param,
                                        engine::ParamEventKind kind, double value) {
@@ -153,6 +269,38 @@ class AdiApplication final : public juce::JUCEApplication,
         };
         root->devices.submit = [this](const std::string &op, Payload p) {
             const bool ok = document_->deviceAction(op, std::move(p));
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->devices.copy = [this](std::int64_t id, bool cut) {
+            // Cut keeps the copy only once the device is gone, so a refused Cut leaves the
+            // clipboard as it was.
+            adi::DeviceCopy copy;
+            bool ok = document_->copyDevice(id, copy) && (!cut || document_->deviceAction("device.remove", {{"id", id}}));
+            if (ok)
+                deviceClipboard_ = std::move(copy);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->devices.paste = [this](std::int64_t track, std::optional<std::int64_t> before) {
+            const bool ok = deviceClipboard_ && document_->pasteDevice(*deviceClipboard_, track, before);
+            if (!ok && root_)
+                root_->say(deviceClipboard_ ? document_->error() : std::string("Copy a device first."));
+            return ok;
+        };
+        root->devices.duplicate = [this](std::int64_t id, std::int64_t track, std::optional<std::int64_t> before) {
+            adi::DeviceCopy copy;
+            const bool ok = document_->copyDevice(id, copy) && document_->pasteDevice(copy, track, before);
+            if (!ok && root_)
+                root_->say(document_->error());
+            return ok;
+        };
+        root->devices.holdsCopy = [this] { return deviceClipboard_.has_value(); };
+        // A built-in device from the browser (D4): one undo step, its reason in the Status Bar.
+        root->loadBuiltin = [this](const std::string &uid, std::int64_t track, std::optional<std::int64_t> before) {
+            const bool ok = document_->insertBuiltin(uid, track, before);
             if (!ok && root_)
                 root_->say(document_->error());
             return ok;
@@ -195,7 +343,12 @@ class AdiApplication final : public juce::JUCEApplication,
             if (!document_->synchronise())
                 report(document_->error());
         };
+        // The audio clips' waveforms, from the document's own worker (N40).
+        root->arrangement.waveforms = &document_->waveforms();
         root->applicationCommand = [this](int id) { return applicationCommand(id); };
+        // The Undo History's first action, as Live's "Open Live Set" row names the file.
+        root->undoHistory.rootLabel = std::string(create ? "New Project: \u201c" : "Open Project: \u201c") +
+                                      file.getFileName().toStdString() + "\u201d";
         window_ = std::make_unique<AdiWindow>(std::move(root), *commands_);
         window_->onClose = [this] { systemRequestedQuit(); };
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
@@ -212,6 +365,29 @@ class AdiApplication final : public juce::JUCEApplication,
                 const auto *e = document_->session().entryFor(id);
                 return e && !e->retired;
             });
+        // A plug-in's own window (Live 12 manual 23.3; N8, #391): the hosted editor at the
+        // plug-in's size, in a floating window the root opens from a device's wrench. Its frame
+        // runs on that window's clock; an error it reports reaches the Status Bar.
+        root_->pluginHost = floating_.get();
+        root_->pluginEditor = [this](std::int64_t id, std::string &why) {
+            AdiRootComponent::PluginEditorView out;
+            auto *instance = document_->session().instanceFor(id);
+            if (instance == nullptr || !instance->loaded()) {
+                why = "The plug-in is not loaded, so it has no window.";
+                return out;
+            }
+            auto editor = device::createEditorComponent(*instance, why);
+            if (!editor)
+                return out;
+            auto *raw = editor.get();
+            out.frame = [raw] {
+                raw->frame();
+                return raw->error();
+            };
+            out.gone = [raw] { return !raw->editor() || !raw->editor()->valid(); };
+            out.view = std::move(editor);
+            return out;
+        };
         window_->setVisible(true);
         // A Mix View kept open in its own window opens there again.
         syncMixView(*floating_, *root_, true);
@@ -298,12 +474,58 @@ class AdiApplication final : public juce::JUCEApplication,
     void saveAs(const juce::File &file) {
         if (!document_ || !root_ || !window_)
             return;
+        const auto before = document_->deviceCopyIdentity();
         if (!document_->saveAs(pathFromUtf8(file.getFullPathName().toStdString()))) {
             root_->say(document_->error());
             return;
         }
+        // The same project under a new file: a copy held from it still pastes into it.
+        if (deviceClipboard_ && deviceClipboard_->sourceFile == before)
+            deviceClipboard_->sourceFile = document_->deviceCopyIdentity();
         window_->setName("ADI - " + file.getFileNameWithoutExtension());
         root_->say(document_->warning());
+    }
+    // Save a Copy, once the chooser has a file. The Status Bar says where it went, since nothing
+    // else in the window changes.
+    void saveCopy(const juce::File &file) {
+        if (!document_ || !root_)
+            return;
+        if (!document_->saveCopy(pathFromUtf8(file.getFullPathName().toStdString()))) {
+            root_->say(document_->error());
+            return;
+        }
+        root_->say(document_->warning().empty() ? ("Saved a copy as " + file.getFileName()).toStdString()
+                                                : document_->warning());
+    }
+    // Collect and Export, once the chooser has a file: on a worker the application owns, so the
+    // window keeps working and a project opened meanwhile does not wait for it; the Status Bar says it
+    // runs, then how it ended. One at a time. Quitting waits for it, the window still up.
+    void collectAndExport(const juce::File &file) {
+        if (!document_ || !root_)
+            return;
+        if (exportRunning_->load()) {
+            root_->say("Collect and Export is already running.");
+            return;
+        }
+        ProjectDocument::ExportJob job;
+        if (!document_->prepareCollectAndExport(pathFromUtf8(file.getFullPathName().toStdString()), job)) {
+            root_->say(document_->error());
+            return;
+        }
+        if (export_.joinable())
+            export_.join(); // the last one has finished
+        const auto name = file.getFileName().toStdString();
+        exportRunning_->store(true);
+        export_ = std::thread([this, job, name, running = exportRunning_] {
+            const auto result = ProjectDocument::runCollectAndExport(job);
+            running->store(false);
+            juce::MessageManager::callAsync([this, name, result] {
+                if (juce::JUCEApplicationBase::getInstance() != this || !root_ || !window_)
+                    return;
+                root_->say(result.ok ? "Exported " + name : "Collect and Export failed: " + result.error);
+            });
+        });
+        root_->say("Collecting and exporting to " + name + "...");
     }
     bool applicationCommand(int id) {
         if (id == AppCommands::Quit) {
@@ -336,12 +558,58 @@ class AdiApplication final : public juce::JUCEApplication,
                                   });
             return true;
         }
+        // Live's Save a Copy (manual 5.4.1): a save chooser, then the copy; the open project and
+        // its window stay as they are (`Store::saveCopy`, N30).
+        if (id == AppCommands::SaveCopy || id == AppCommands::CollectAndExport) {
+            if (chooser_ || !document_)
+                return false;
+            const bool zip = id == AppCommands::CollectAndExport;
+            const auto current = juce::File(juce::String::fromUTF8(reinterpret_cast<const char *>(
+                document_->store().path().u8string().c_str())));
+            chooser_ = std::make_unique<juce::FileChooser>(
+                zip ? "Collect and export ADI project as" : "Save a copy of the ADI project as",
+                zip ? current.withFileExtension("zip") : current, zip ? "*.zip" : "*.adi");
+            chooser_->launchAsync(juce::FileBrowserComponent::saveMode | juce::FileBrowserComponent::canSelectFiles,
+                                  [this, zip](const juce::FileChooser &chooser) {
+                                      const auto file = chooser.getResult();
+                                      if (file != juce::File{})
+                                          zip ? collectAndExport(withExtension(file, "zip"))
+                                              : saveCopy(withAdiExtension(file));
+                                      juce::MessageManager::callAsync([this] {
+                                          if (juce::JUCEApplicationBase::getInstance() == this)
+                                              chooser_.reset();
+                                      });
+                                  });
+            return true;
+        }
+        // Live's Collect All and Save (manual 5.7): the outside media copied into `audio/`; the
+        // store collects every location, where Live's dialog lets one choose (window log, A4).
+        if (id == AppCommands::CollectAllAndSave) {
+            if (!document_ || !root_)
+                return false;
+            if (!document_->collectAllAndSave()) {
+                root_->say(document_->error());
+                return false;
+            }
+            root_->say(document_->warning().empty() ? "Collected every file the project uses into its audio folder."
+                                                    : document_->warning());
+            return true;
+        }
         // The Mix View in a window of its own, or docked back (ADR-0209 d11); F4 while it opens
         // in a window opens or closes that window.
         if (id == AppCommands::DetachMixView)
             return detachMixView(*floating_, *root_, !root_->state().mixViewDetached);
         if (id == AppCommands::ToggleMixView)
             return toggleMixViewWindow(*floating_, *root_);
+        if (id == AppCommands::UndoHistory) {
+            if (!root_)
+                return false;
+            if (!historyWindow_)
+                historyWindow_ = std::make_unique<UndoHistoryWindow>(root_->undoHistory);
+            historyWindow_->setVisible(true);
+            historyWindow_->toFront(true);
+            return true;
+        }
         if (id == AppCommands::Settings) {
             // Live's Settings window (ADR-0203 d11): its Audio page holds the device
             // chooser of STEP-7-PLAN §3.0, unless this run has no audio device.
@@ -457,8 +725,20 @@ class AdiApplication final : public juce::JUCEApplication,
     AdiRootComponent *root_ = nullptr;
     std::unique_ptr<FloatingHost> floating_;
     std::unique_ptr<juce::FileChooser> chooser_;
+    // The library index's owner and what it last listed (D1).
+    std::thread libraryThread_;
+    std::shared_ptr<LibraryOwner> libraryOwner_;
+    LibraryListing library_;
+    bool libraryReady_ = false;
+    // Collect and Export's worker and whether it runs (A4); the flag is shared with the worker.
+    std::thread export_;
+    // Live's device clipboard (manual 23.2.1): the app's, so a copy outlives the document it came
+    // from; the engine refuses a paste into another project and says so.
+    std::optional<adi::DeviceCopy> deviceClipboard_;
+    std::shared_ptr<std::atomic<bool>> exportRunning_ = std::make_shared<std::atomic<bool>>(false);
     juce::Component::SafePointer<juce::AlertWindow> snapshotPrompt_;
     std::unique_ptr<SettingsWindow> settingsWindow_;
+    std::unique_ptr<UndoHistoryWindow> historyWindow_; // shows the main root's list; goes before it
 };
 } // namespace adi::ui
 START_JUCE_APPLICATION(adi::ui::AdiApplication)

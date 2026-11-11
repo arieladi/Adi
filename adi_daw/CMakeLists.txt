@@ -24,6 +24,78 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
 endif()
 
 # ---------------------------------------------------------------------------
+# The suites run in parallel (ci.yml: ctest --parallel N), so no two may share
+# state a test can see. Audited 2026-11-10 (win):
+#
+#   temp folders   tests/temp_directory.hpp names each by suite, PID and an
+#                  exclusive create; the four Pd suites with their own stems
+#                  are each one binary; warp staging (warp.cpp) also claims its
+#                  folder with an exclusive create. Nothing to do.
+#   build dir      the only files written to ctest's working directory are the
+#                  per-suite *-render.wav artifacts, one name per suite
+#                  (checked by listing the build dir before and after a run).
+#   ports          no test binds a socket; remote hosts are database rows.
+#   scanner        child processes, registries and quarantine rows all live in
+#                  each suite's own TempDirectory; the CLAP fixtures are copied
+#                  there before a probe, so their .pids logs are private.
+#   app data       NOT private before this block. A test that reaches the
+#                  default decode cache, analysis cache, plug-in registry or
+#                  settings without setting ADI_HOME itself reads and writes
+#                  the real %LOCALAPPDATA%\ADI (or XDG / Library equivalent):
+#                  one folder for every suite, and on a desk the director's
+#                  own. Measured: ui_document (default analysis cache) and
+#                  progressive_decode (default decode cache) did; the others
+#                  that use those caches set ADI_HOME themselves and still do.
+#                  Fixed below for every test, not only those two, so a new
+#                  suite cannot reopen it: each gets its own ADI_HOME under
+#                  build/test_home/<test>.
+#   Link           adi_link_session_tests opens two real Ableton Link peers
+#                  over local multicast and requires EXACTLY one peer each. A
+#                  second Link session on the machine joins that session and
+#                  breaks it, so the Link suites hold one lock.
+#                  adi_link_playback_tests opens peers only with --peers, which
+#                  ctest does not pass; it holds the lock so that turning that
+#                  on later cannot race.
+#   the disk       shared by every suite, and the one that decided the speed:
+#                  four suites that each flush the disk hundreds of times only
+#                  queue behind one another. Store::createEmpty was the
+#                  flusher (one durable commit per schema statement); it now
+#                  commits its schema once. Keep new fixtures from flushing
+#                  per statement, or --parallel stops paying on Windows.
+#
+# Deferred to the end of this directory so that a suite added anywhere below,
+# including the cmake/devices modules, is covered without remembering to.
+# ---------------------------------------------------------------------------
+function(adi_isolate_tests)
+    get_property(_adi_tests DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" PROPERTY TESTS)
+    foreach(_adi_test IN LISTS _adi_tests)
+        set_property(TEST "${_adi_test}" APPEND PROPERTY ENVIRONMENT
+            "ADI_HOME=${CMAKE_CURRENT_BINARY_DIR}/test_home/${_adi_test}")
+    endforeach()
+    foreach(_adi_test IN ITEMS adi_link_session_tests adi_link_playback_tests)
+        if(_adi_test IN_LIST _adi_tests)
+            set_property(TEST "${_adi_test}" APPEND PROPERTY RESOURCE_LOCK adi_link_network)
+        endif()
+    endforeach()
+    # Longest first. A CI runner is fresh, so ctest has no timings from a
+    # previous run and would start suites in registration order, leaving the
+    # heaviest to start late and finish alone. COST is in seconds, from a
+    # local serial run (MSVC Debug, 2026-11-11); only the order matters, and a
+    # local rerun replaces it with measured times.
+    foreach(_adi_cost IN ITEMS clip_playback:62 hybrid_reverb:40 external_tempo:39
+            auto_filter:34 changeset:32 migrate:32 gesture_playback:31
+            plugin_scanner:30)
+        string(REPLACE ":" ";" _adi_cost "${_adi_cost}")
+        list(GET _adi_cost 0 _adi_name)
+        list(GET _adi_cost 1 _adi_seconds)
+        if("adi_${_adi_name}_tests" IN_LIST _adi_tests)
+            set_property(TEST "adi_${_adi_name}_tests" PROPERTY COST "${_adi_seconds}")
+        endif()
+    endforeach()
+endfunction()
+cmake_language(DEFER CALL adi_isolate_tests)
+
+# ---------------------------------------------------------------------------
 # Dependencies, from third_party/ (see docs/EXTERNAL-CODE.md).
 # Both are MIT and GPLv3-compatible; neither is vendored into git.
 # ---------------------------------------------------------------------------

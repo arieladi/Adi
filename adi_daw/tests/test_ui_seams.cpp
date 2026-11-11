@@ -2060,6 +2060,97 @@ void soloRules() {
           "Main refused; the step named as before");
 }
 
+// Live's Undo History (manual 5.4.2; A5): a step restored is undone or redone to, or its branch
+// switched to, and the view is refreshed once.
+void undoHistoryRestores() {
+    section("the Undo History restores a step with one refresh");
+    adi::test::TempDirectory temp("ui_seams", "history");
+    auto store = freshProject(temp.path() / "p.adi");
+    check(store != nullptr, "store created");
+    if (!store) return;
+    engine::ProjectView view;
+    view.refresh(*store);
+    ui::OpSubmitter sub(*store, view);
+    std::vector<std::int64_t> txns;
+    for (std::int64_t id = 1; id <= 4; ++id)
+        txns.push_back(sub.submit(trackCreate(id, ("T" + std::to_string(id)).c_str())).txnId);
+    auto timeline = sub.timeline();
+    check(timeline.error.empty() && timeline.steps.size() == 4 && timeline.steps[0].step.txnId == txns[3] &&
+              timeline.steps[3].step.txnId == txns[0] && timeline.steps[0].applied,
+          "the timeline lists the four steps newest first, all applied");
+    auto generation = view.generation();
+    auto r = sub.restore(timeline.steps[2].step.txnId); // the third from the top: T2
+    check(r.ok && countTracks(*store) == 2 && view.generation() == generation + 1 &&
+              view.current()->tracks.size() == 2,
+          "restoring the third step from the top undoes two, and refreshes once");
+    timeline = sub.timeline();
+    check(!timeline.steps[0].applied && !timeline.steps[1].applied && timeline.steps[2].applied &&
+              timeline.steps[0].onCurrentLine,
+          "the two undone are greyed (not applied) and still on the current line");
+    generation = view.generation();
+    r = sub.restore(txns[3]);
+    check(r.ok && countTracks(*store) == 4 && view.generation() == generation + 1,
+          "restoring a greyed step redoes down to it, one refresh");
+    generation = view.generation();
+    r = sub.restore(txns[3]);
+    check(r.ok && view.generation() == generation, "restoring the head moves nothing and refreshes nothing");
+    // A new edit after two undos starts a branch; T4 is then on the other one.
+    sub.undo();
+    sub.undo();
+    const auto t5 = sub.submit(trackCreate(5, "T5")).txnId;
+    timeline = sub.timeline();
+    const History::TimelineStep* four = nullptr;
+    for (const auto& s : timeline.steps)
+        if (s.step.txnId == txns[3]) four = &s;
+    check(t5 != 0 && four != nullptr && !four->onCurrentLine && !four->branchIds.empty() && timeline.branches.size() >= 2,
+          "after an edit on undone steps, T4 is on another branch");
+    const auto branchBefore = timeline.currentBranchId;
+    generation = view.generation();
+    r = sub.restore(txns[3]);
+    timeline = sub.timeline();
+    check(r.ok && countTracks(*store) == 4 && view.current()->findTrack(4) != nullptr &&
+              view.current()->findTrack(5) == nullptr && timeline.currentBranchId != branchBefore &&
+              view.generation() == generation + 1,
+          "a step on another branch switches to that branch, one refresh");
+    r = sub.restore(txns[1]);
+    check(r.ok && countTracks(*store) == 2, "and undoes along it to an earlier step");
+    r = sub.restore(t5);
+    check(r.ok && countTracks(*store) == 3 && view.current()->findTrack(5) != nullptr,
+          "and back to T5's branch");
+    generation = view.generation();
+    r = sub.restore(0);
+    check(r.ok && countTracks(*store) == 0 && !sub.canUndo() && view.generation() == generation + 1,
+          "the root (0) undoes every step on the line, one refresh");
+    r = sub.restore(999999);
+    check(!r.ok && !r.error.empty(), "a step not in the history is refused, with a reason");
+}
+
+// The registry's recording defaults ride the new-track batch (#397, N31): Insert MIDI Track's batch
+// carries Rec-Q and Keep Monitoring Latency as the settings name them, one undo step.
+void recordingDefaultsRideTheBatch() {
+    section("a new track's batch carries the registry's recording defaults");
+    ui::SnapshotTracks none;
+    const ui::RecordingDefaults defaults{"1/8", false};
+    const auto edit = ui::insertTrack(none, 0, true, &defaults);
+    bool record = false, keep = false, labelled = true;
+    for (const auto &op : edit.ops) {
+        labelled = labelled && op.label == "Insert MIDI Track";
+        if (op.opType == "track.setRecordQuantize")
+            record = op.payload.at("on").get<bool>() && op.payload.at("grid").get<std::string>() == "1/8";
+        if (op.opType == "track.setKeepMonitoringLatency")
+            keep = !op.payload.at("on").get<bool>();
+    }
+    check(edit.ops.front().opType == "track.create" && record && keep && labelled,
+          "Insert MIDI Track: the track, then Rec-Q 1/8 and Keep Monitoring Latency off, one label");
+    const ui::RecordingDefaults free{"off", true};
+    bool off = false;
+    for (const auto &op : ui::insertTrack(none, 0, false, &free).ops)
+        if (op.opType == "track.setRecordQuantize")
+            off = !op.payload.at("on").get<bool>() && !op.payload.contains("grid");
+    check(off, "record.quantize off: Rec-Q Free");
+    check(ui::insertTrack(none, 0, true).ops.size() == 1, "without defaults, the track alone, as before");
+}
+
 int main() {
     theWrongThingDoesNotCompile();
     invalidReaderAnswersEmpty();
@@ -2100,6 +2191,8 @@ int main() {
     meterMarkers();
     midiTrackMixer();
     soloRules();
+    undoHistoryRestores();
+    recordingDefaultsRideTheBatch();
 
     std::printf("%s -- %d checks, %d failure(s)\n", g_failures ? "FAIL" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;
