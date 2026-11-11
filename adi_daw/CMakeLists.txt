@@ -1954,6 +1954,9 @@ add_test(NAME adi_automation_edits_tests COMMAND adi_automation_edits_tests)
 add_executable(adi_automation_lanes_tests tests/test_automation_lanes.cpp)
 target_link_libraries(adi_automation_lanes_tests PRIVATE adi_core adi_warnings)
 add_test(NAME adi_automation_lanes_tests COMMAND adi_automation_lanes_tests)
+add_executable(adi_automation_range_undo_tests tests/test_automation_range_undo.cpp)
+target_link_libraries(adi_automation_range_undo_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_automation_range_undo_tests COMMAND adi_automation_range_undo_tests)
 
 
 add_executable(adi_automation_shapes_tests tests/test_automation_shapes.cpp)
