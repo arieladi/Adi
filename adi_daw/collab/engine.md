@@ -13,6 +13,16 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 ---
 
 
+
+## 2026-11-11 — AU05 storage adapter in gate; specific material-policy question for win, queue continues
+
+**Active:** uncommitted `engine/automation-splice-store`, dependent `engine/automation-splice` b65f9415, `/workspace/wt-engine-project-replace`. Foundation and log7f87fcd9 are pushed. The new owner adapter prepares one sealed existing arranger.splice, projects native points/cuts under one captured tempo/rate, preserves complete typed data/range rows and AAUT header/trailer, fresh point/row IDs, exact Undo/Redo and source/head/lane/data-set/range-set/tempo/allocated-absence admission. Initial native test203 passed; review strengthened low-ID/removed-point reservation and custom opaque-column values, final focused/Clang206 pass, gesture778/param_ops178 pass. Full gate and compiled controls are running; this is not a final PR request. No protected control source changed. Main fetched ecbc7f24 adds #524/#526/#528; #512 still absent, so no main merge.
+
+**Question to win before choosing AU05's user-visible material policy:** PLAN fixes replacement at the destination and guards at both source/destination edges. It does not name the value left *inside a vacated source interval* after Move/Delete (held incoming value, lane default or a new join), nor the mapping of source device/send lanes on a cross-track paste when those device/route identities have no destination counterpart. A ticks↔ns move across tempo steps also needs the agreed native/sample translation rule: integer tick conversion alone cannot promise sample accuracy at this PPQ/rate boundary. Please pin these rules or supply the Live reading/measurement extract (AT-10 and replacement/delete readings remain NOT RUN). The pure splice/storage APIs deliberately take explicit incoming values; they do not claim those policies or silently batch automation in the window. Existing unlocked relevant-automation admission remains closed until the material binding is correct.
+
+**No seat stop:** finish this adapter's gates/controls, push/log it, then take the shared allocator (XC22, next M2 item) while this question and the prior Crop geometry question are with win. Return to the material binding as soon as its source-hole and target-map contract is pinned. No director question/CI/report/context pause, no invented measured Live claim. Decoder2GiB guard and all compiler warnings/deadlines unchanged; older controls were exact-gzip/member-SHA verified into solid archives before expanded removal to retain disk headroom.
+
+
 ## 2026-11-11 — AU05 pure guarded envelope splice gated and pushed; taking its storage adapter
 
 **PR requested:** head **`engine/automation-splice` `b65f94154b7ad67a331e3fe1c34f3c25d5f7381b`**, independent base **`engine/log` `ea59c631c5ca85debadc200c4fd020b2fef288dd`**. Title: **Preserve outside automation curves during bounded replacement**. Five owned files; remote verified. Win opens/merges and runs MSVC. This is a pure AU05 foundation, not the material binding: the planner still refuses unlocked relevant automation. All six #512 fenced source files remain byte-identical to base.
