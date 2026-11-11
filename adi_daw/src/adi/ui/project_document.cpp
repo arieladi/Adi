@@ -309,6 +309,58 @@ bool ProjectDocument::insertBuiltin(const std::string &uid, std::int64_t track, 
     feed_.publish(session_);
     return true;
 }
+namespace {
+// Commits a prepared sample batch and hands each new state to the live device, as the engine's
+// contract asks (ENGINE-SAMPLE-SLOTS.md): forward payloads after the commit.
+std::vector<Payload> loadStates(const PreparedSampleAssignment &prepared) {
+    std::vector<Payload> out;
+    for (const auto &r : prepared.requests)
+        if (r.opType == "device.loadState")
+            out.push_back(r.payload);
+    return out;
+}
+} // namespace
+bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file,
+                                   std::int64_t nowUtc) {
+    auto prepared = prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc);
+    if (!prepared.ok) {
+        error_ = prepared.error.empty() ? "The sample could not be prepared." : prepared.error;
+        return false;
+    }
+    const auto states = loadStates(prepared);
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedSampleAssignment &p, Actor actor) {
+        return commitSampleAssignment(s, p, actor);
+    });
+    error_ = result.error;
+    if (!result.ok)
+        return false;
+    for (const auto &state : states)
+        parameterOps_.appliedState(*store_, state, captureNowMs());
+    if (!synchronise())
+        return false;
+    feed_.publish(session_);
+    return true;
+}
+bool ProjectDocument::clearSample(std::int64_t device, std::int32_t slot) {
+    auto prepared = prepareSampleClear(*store_, device, slot);
+    if (!prepared.ok) {
+        error_ = prepared.error.empty() ? "The slot could not be cleared." : prepared.error;
+        return false;
+    }
+    const auto states = loadStates(prepared);
+    const auto result = ops_.commitPrepared(std::move(prepared), [](Store &s, PreparedSampleAssignment &p, Actor actor) {
+        return commitSampleAssignment(s, p, actor);
+    });
+    error_ = result.error;
+    if (!result.ok)
+        return false;
+    for (const auto &state : states)
+        parameterOps_.appliedState(*store_, state, captureNowMs());
+    if (!synchronise())
+        return false;
+    feed_.publish(session_);
+    return true;
+}
 std::string ProjectDocument::deviceCopyIdentity() const {
     SQLite::Statement row(store_->db(), "PRAGMA database_list");
     while (row.executeStep())
@@ -427,6 +479,7 @@ std::string ProjectDocument::refusalReason(std::int64_t id, const std::string &p
     return "The plug-in did not take the value.";
 }
 void ProjectDocument::prepare(double rate, std::int32_t frames) {
+    engineRate_ = rate;
     session_.prepare(rate, frames);
     mailbox_.setSampleRate(rate);
 }
