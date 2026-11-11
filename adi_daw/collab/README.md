@@ -273,6 +273,8 @@ subject, say so in your log instead of writing it twice.
 | 0230 | win | `win/m0-records` | the modulation schema: contributor kinds, one evaluator per block, one playing value and one ownership state per parameter; Arrangement clip envelopes are modulation (P-8 item 15; DEV-07, AU-06, XC-16) | used |
 | 0231 | win | `win/m0-records` | how the UI is tested: multi-instance test launches under ADI_HOME never on the director's desktop, the input clock seam, goldens that check text, UiControl, the headless runner, parity bookkeeping (P-8 item 16; WTS-01 to WTS-10) | used |
 | 0232 | win | `win/m0-records` | one control stack: one JUCE-free dispatcher, one loopback listener, one wire, one actor rule, named owners; starts now on a seat of its own (P-8 item 17; CTL-01; his Q-C a; Q-O stays his) | used |
+| 0235 | win | `win/adr-0235-0236` | ADiJ stays light: no Mix View and no unified built-in feature; CLAP and VST3 hosted; a small DAW side whose automation is anchored to each track's beat grid; CPU is a requirement (director) | used |
+| 0236 | win | `win/adr-0235-0236` | the Mix View seat: his plug-in list is in, ADR-0212's gate opens; a dedicated local Codex seat builds the Mix View across the lanes, starting with a decision guide; his device-area tab model is the baseline; ADI-Clip is the clipper, ADI-C the compressor (director) | used |
 
 `tools/validate_schema.py` check 8 enforces it: a number that exists in
 `DECISIONS.md` while its row still says `reserved` is a row someone forgot, a
