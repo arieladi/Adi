@@ -363,9 +363,20 @@ remaining kinds name a role in the signal graph and do bind.
 
 ### 6.2 Clips and lanes
 
-`clips` sit on a `(track_id, lane_id)` pair. `lanes` gives us take lanes and
-comping for free: a comp is a set of clips across lanes on the same track with an
-active-region selection, which is how both Ableton 11+ and Cubase model it.
+`clips` sit on a `(track_id, lane_id)` pair. Under ADR-0225, a NULL `lane_id`
+is the main lane. A comp is copies of chosen take segments on that main lane,
+as Live 12: the copies' own fades over their handles form any enabled crossfades.
+Take lanes are heard only while auditioned; one auditioned lane per track is
+session state, not an undo operation. REAPER's lane masking/play-all layering
+and Bitwig's comp-region sliding are not adopted.
+
+The existing `lanes` table and nullable clip address support this representation;
+they do not supply a comping engine by themselves. CT-01 still has to provide
+the single accessor for timeline clips that play and move every reader to it:
+main lane, or the auditioned take lane, never a Session slot. The current engine
+has no such lane filter. Loop recording, take selection/main-lane copying and
+their undo behavior remain CT-01 to CT-05 work. Live audition and crossfade
+boundary measurements remain NOT RUN.
 
 A track may hold clips of **several kinds at once** — an audio clip and a MIDI
 clip on one track is the normal case, not an edge case (ADR-0045). The device
