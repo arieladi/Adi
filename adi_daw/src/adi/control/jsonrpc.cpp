@@ -127,7 +127,9 @@ std::string encodeError(const Json& id, const RpcError& e) {
     if (!e.data.is_null()) err["data"] = e.data;
     Json m = Json::object();
     m["jsonrpc"] = "2.0";
-    m["id"] = id;
+    // MCP's error response carries an id only when one could be read; a null
+    // id is not an MCP id (2025-11-25 and 2026-07-28 schemas).
+    if (!id.is_null()) m["id"] = id;
     m["error"] = std::move(err);
     return dumpJson(m);
 }

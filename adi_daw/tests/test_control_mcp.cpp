@@ -109,15 +109,22 @@ struct Bridge {
     McpEndpoint endpoint{service, projects, McpServerInfo{"adi-mcp", "ADI", "test"}};
     McpEndpoint::Session session;
 
-    explicit Bridge(std::shared_ptr<ProjectAccess> project, Tier tier = Tier::Propose) {
-        projects.add(std::move(project));
+    explicit Bridge(std::vector<std::shared_ptr<ProjectAccess>> bound, Tier tier = Tier::Propose) {
+        const bool one = bound.size() == 1;
+        for (auto& b : bound) projects.add(std::move(b));
+        // adi-mcp's rule: an omitted project is allowed only when the server is
+        // bound to one for its life.
+        projects.allowImplicitSingle(one);
         session.credential = "cred-test";
         grants.grant(session.credential, tier);
         registerControlMethods(service, ctx);
     }
+    explicit Bridge(std::shared_ptr<ProjectAccess> project, Tier tier = Tier::Propose)
+        : Bridge(std::vector<std::shared_ptr<ProjectAccess>>{std::move(project)}, tier) {}
 
-    Json send(const Json& message) {
-        const auto reply = endpoint.handle(parseMessage(dumpJson(message)), session);
+    Json send(const Json& message) { return sendAs(session, message); }
+    Json sendAs(McpEndpoint::Session& as, const Json& message) {
+        const auto reply = endpoint.handle(parseMessage(dumpJson(message)), as);
         return reply ? Json::parse(*reply) : Json();
     }
     Json request(int id, const std::string& method, Json params = Json::object()) {
@@ -131,9 +138,13 @@ struct Bridge {
     }
     /// tools/call; returns the result object (or the whole reply on a JSON-RPC error).
     Json tool(const std::string& name, Json args, Json meta = nullptr) {
+        return toolAs(session, name, std::move(args), std::move(meta));
+    }
+    Json toolAs(McpEndpoint::Session& as, const std::string& name, Json args, Json meta = nullptr) {
         Json params = {{"name", name}, {"arguments", std::move(args)}};
         if (!meta.is_null()) params["_meta"] = std::move(meta);
-        const Json reply = request(++calls, "tools/call", std::move(params));
+        const Json reply =
+            sendAs(as, {{"jsonrpc", "2.0"}, {"id", ++calls}, {"method", "tools/call"}, {"params", std::move(params)}});
         return reply.contains("result") ? reply.at("result") : reply;
     }
     int calls = 100;
@@ -197,6 +208,10 @@ void testHandshakes() {
     check(mid.request(1, "initialize", {{"protocolVersion", "2025-06-18"}}).at("result").value("protocolVersion", "") ==
               "2025-06-18",
           "an older supported version is echoed");
+    Bridge batchEra(openHeadless(f.path));
+    check(batchEra.request(1, "initialize", {{"protocolVersion", "2025-03-26"}}).at("result").value("protocolVersion", "") ==
+              "2025-11-25",
+          "2025-03-26, which requires batches this server refuses, is answered with 2025-11-25");
 
     Bridge m(openHeadless(f.path));
     const Json list = m.request(5, "tools/list", modern(Json::object()));
@@ -252,7 +267,7 @@ void testToolsAndReads() {
             proposeWrites = t.at("annotations").value("readOnlyHint", true) == false;
     }
     check(names == std::set<std::string>{"project_read", "ops_describe", "changeset_propose", "changeset_status"},
-          "exactly the four tools of ADR-0168 d3");
+          "exactly CTL-08's four tools: a few, never one per op (ADR-0168 d3)");
     check(closed, "every tool's input is a closed object");
     check(proposeWrites, "changeset_propose is not marked read-only");
 
@@ -337,12 +352,17 @@ void testProposeLeavesTheFile() {
           "actor_detail names the client and the changeset: " + actor);
     check(isToolError(b.tool("changeset_status", {{"id", "cs-999"}})), "an unknown id is refused");
 
-    Bridge stranger(openHeadless(f.path));
-    stranger.session.credential = "cred-other";
-    stranger.grants.grant("cred-other", Tier::Propose);
-    stranger.initialize();
-    check(isToolError(stranger.tool("changeset_status", {{"id", "cs-1"}})),
-          "another client cannot see a changeset that is not its own");
+    // Another client of the SAME server, with its own credential.
+    b.grants.grant("cred-other", Tier::Propose);
+    McpEndpoint::Session other;
+    other.credential = "cred-other";
+    b.sendAs(other, {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "initialize"},
+                     {"params", {{"protocolVersion", "2025-11-25"}}}});
+    const Json theirs = b.toolAs(other, "changeset_status", {{"id", "cs-1"}});
+    check(isToolError(theirs) && theirs.at("content").at(0).value("text", "").find("no changeset of yours") !=
+                                     std::string::npos,
+          "another client of the same server cannot see a changeset that is not its own");
+    check(!isToolError(b.tool("changeset_status", {{"id", "cs-1"}})), "while its owner still can");
 }
 
 void testRefusals() {
@@ -377,6 +397,19 @@ void testRefusals() {
               "invalid",
           "the remote bounds: a name over 16 KiB characters is refused");
 
+    std::string hebrew;
+    for (int i = 0; i < 2100; ++i) hebrew += "\xD7\x90";   // 2,100 letters, 4,200 bytes
+    check(!isToolError(propose({{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}},
+                                 {"label", hebrew.substr(0, 400)}}},
+                               {{"request", hebrew}})),
+          "lengths are characters, as the schema says: 2,100 Hebrew letters (4,200 bytes) are a valid "
+          "request and 200 a valid label");
+    std::string tooLong;
+    for (int i = 0; i < 4097; ++i) tooLong += "\xD7\x90";
+    check(refusalOf(propose({{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}}}},
+                            {{"request", tooLong}})) == "invalid",
+          "4,097 characters are one too many");
+
     Bridge observer(openHeadless(f.path), Tier::Observe);
     observer.initialize();
     const Json denied = observer.tool("changeset_propose",
@@ -386,6 +419,11 @@ void testRefusals() {
               denied.at("structuredContent").at("error").value("message", "") == "not granted",
           "at Observe, proposing is not granted");
     check(!isToolError(observer.tool("project_read", Json::object())), "but reading is");
+    std::set<std::string> offered;
+    const Json observerTools = observer.request(2, "tools/list");
+    for (const auto& t : observerTools.at("result").at("tools")) offered.insert(t.value("name", ""));
+    check(!offered.count("changeset_propose") && offered.count("project_read"),
+          "an Observe client is not offered changeset_propose at all");
 }
 
 void testIdempotentPropose() {
@@ -524,7 +562,7 @@ public:
         : inner_(std::move(inner)), board_(board) {}
     const std::string& handle() const override { return inner_->handle(); }
     std::string label() const override { return inner_->label(); }
-    rows::Model readModel(std::string& e) override { return inner_->readModel(e); }
+    ReadSnapshot read(std::string& e) override { return inner_->read(e); }
     std::optional<std::int64_t> head(std::string& e) override { return inner_->head(e); }
     std::string fileSchema() override { return inner_->fileSchema(); }
     agent::Preview preview(const agent::Changeset& c, const agent::Limits& l) override { return inner_->preview(c, l); }
@@ -580,6 +618,11 @@ void testTelemetry() {
                                             {{"uri", "adi://projects/" + live->handle() + "/telemetry"}})
                                       .at("result").at("contents").at(0).value("text", "{}"));
     check(read.value("available", false) && read.at("strips").size() == 2, "the resource serves the live board");
+    const Json manifestLive = Json::parse(b.request(3, "resources/read",
+                                                    {{"uri", "adi://projects/" + live->handle() + "/manifest"}})
+                                              .at("result").at("contents").at(0).value("text", "{}"));
+    check(manifestLive.contains("transport") && manifestLive.at("transport").value("playing", false),
+          "a live manifest carries the transport");
 }
 
 void testHostileLines() {
@@ -621,9 +664,18 @@ void testHostileLines() {
         replies.push_back(j);
     }
     check(allJson, "every reply is one line of valid JSON");
+    bool connected = false, disconnected = false;
+    for (const auto& ev : b.service.audit().snapshot()) {
+        connected = connected || ev.kind == "connect";
+        disconnected = disconnected || ev.kind == "disconnect";
+    }
+    check(connected && disconnected, "the audit records the connection and its end");
     check(replies.size() == 7, "five refusals, then initialize and the read: " + std::to_string(replies.size()));
     if (replies.size() == 7) {
         check(replies[0].at("error").at("code") == errc::InvalidRequest, "too deep: refused");
+        bool noNullIds = true;
+        for (std::size_t i = 0; i < 5; ++i) noNullIds = noNullIds && !replies[i].contains("id");
+        check(noNullIds, "a refusal whose id could not be read carries no id (MCP ids are never null)");
         check(replies[1].at("error").at("code") == errc::InvalidRequest, "a batch: refused");
         check(replies[2].at("error").at("code") == errc::InvalidRequest, "a null id: refused");
         check(replies[3].at("error").at("code") == errc::ParseError, "not JSON: a parse error");
@@ -632,6 +684,84 @@ void testHostileLines() {
         const auto& tracks = replies[6].at("result").at("structuredContent").at("tracks");
         check(tracks.at(0).value("name", "").find("Ba") == 0, "a name that is not UTF-8 is replaced, not fatal");
     }
+}
+
+void testGrantGate() {
+    section("no grant: the MCP layer answers nothing about tools or projects");
+    ProjectFile f("gate");
+    Bridge b(openHeadless(f.path));
+    b.initialize();
+    b.grants.revoke(b.session.credential);
+    for (const char* method : {"tools/list", "resources/list", "resources/templates/list"}) {
+        const Json r = b.request(7, method);
+        check(r.contains("error") && r.at("error").at("code") == errc::NotGranted &&
+                  r.at("error").value("message", "") == "not granted",
+              std::string(method) + " without a grant: -32006, one text");
+    }
+    const Json unknownTool = b.request(8, "tools/call", {{"name", "nope"}, {"arguments", Json::object()}});
+    check(unknownTool.at("error").at("code") == errc::NotGranted,
+          "even an unknown tool: the grant comes first, so the tool names are not given away");
+    check(b.request(9, "server/discover", modern(Json::object())).contains("result"),
+          "server/discover, the protocol's static self-description, still answers");
+}
+
+void testTwoProjects() {
+    section("AC-17: two projects open, a request naming B never touches A");
+    ProjectFile fa("two-a"), fb("two-b");
+    const std::string bytesA = fileBytes(fa.path);
+    auto a = openHeadless(fa.path);
+    auto bProject = openHeadless(fb.path);
+    check(a->handle() != bProject->handle(), "two files, two handles");
+    Bridge b(std::vector<std::shared_ptr<ProjectAccess>>{a, bProject});
+    b.initialize();
+    const Json unnamed = b.tool("project_read", Json::object());
+    check(isToolError(unnamed) &&
+              unnamed.at("content").at(0).value("text", "").find("several projects are open") != std::string::npos,
+          "with two open, a request must name its project");
+    const Json readB = b.tool("project_read", {{"project", bProject->handle()}});
+    check(!isToolError(readB) && readB.at("structuredContent").value("project", "") == bProject->handle(),
+          "a read naming B reads B");
+    const Json proposeB = b.tool("changeset_propose",
+                                 {{"project", bProject->handle()},
+                                  {"request", "B's bass down"},
+                                  {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -4.0}}}}}}});
+    check(!isToolError(proposeB) && proposeB.at("structuredContent").value("project", "") == bProject->handle(),
+          "a proposal naming B is B's");
+    check(a->scratchFolder().empty() && !bProject->scratchFolder().empty(),
+          "only B was snapshotted: A was not touched");
+    check(fileBytes(fa.path) == bytesA, "A's bytes are unchanged");
+}
+
+void testProjectionDetails() {
+    section("the projection: devices inside racks, key events, the next free ids");
+    ProjectFile f("racks");
+    {
+        StoreError e = StoreError::Ok;
+        auto s = Store::open(f.path, e);
+        s->db().exec("INSERT INTO device_chains(id, track_id, ord) VALUES (1, 3, 0)");
+        s->db().exec("INSERT INTO devices(id, chain_id, ord, name, is_rack) VALUES (10, 1, 0, 'Rack', 1)");
+        s->db().exec("INSERT INTO device_chains(id, parent_device_id, ord) VALUES (2, 10, 0)");
+        s->db().exec("INSERT INTO devices(id, chain_id, ord, name) VALUES (11, 2, 0, 'Synth')");
+        s->db().exec("INSERT INTO plugin_params(device_id, param_id, normalized_value) VALUES (11, 'cutoff', 0.5)");
+        s->close();
+    }
+    Bridge b(openHeadless(f.path));
+    b.initialize();
+    const Json l0 = b.tool("project_read", Json::object()).at("structuredContent");
+    const auto& bass = l0.at("tracks").at(2).at("devices");
+    bool synthInRack = false;
+    for (const auto& d : bass) synthInRack = synthInRack || (d.value("id", 0) == 11 && d.value("inRack", 0) == 10);
+    check(bass.size() == 2 && synthInRack, "the synth inside the rack is listed under its track, in its rack");
+    const auto& next = l0.at("nextIds");
+    check(next.contains("keyEvent") && next.contains("remark") && next.contains("tuning") && next.contains("note") &&
+              next.value("device", 0) == 12 && next.value("chain", 0) == 3,
+          "nextIds covers key events, remarks, tunings and notes too");
+    check(l0.contains("keyEvents") && l0.at("keyEvents").is_array(), "key events are listed with their ids");
+    const Json l1 = b.tool("project_read", {{"level", 1}, {"tracks", {3.0}}}).at("structuredContent");
+    bool cutoff = false;
+    for (const auto& prm : l1.at("params")) cutoff = cutoff || (prm.value("device", 0) == 11 && prm.value("param", "") == "cutoff");
+    check(cutoff, "level 1 reads the racked synth's parameters (tracks given as 3.0, an integer)");
+    check(l1.contains("remarks") && l1.contains("tunings"), "level 1 carries remarks and tunings");
 }
 
 // --- the real binary --------------------------------------------------------------------
@@ -704,6 +834,9 @@ int runAll() {
     testResources();
     testTelemetry();
     testHostileLines();
+    testGrantGate();
+    testTwoProjects();
+    testProjectionDetails();
     testBinary();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

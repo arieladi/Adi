@@ -6,8 +6,9 @@
 // Protocol only, no sockets. Both eras the plan requires, as the published
 // specification fixes them:
 //
-//   legacy (2025-11-25, also 2025-06-18 and 2025-03-26): `initialize`
-//     negotiates a version for the session (the stdio process); `ping`.
+//   legacy (2025-11-25, also 2025-06-18): `initialize` negotiates a version
+//     for the session (the stdio process); `ping`. Not 2025-03-26, which
+//     requires receiving JSON-RPC batches: such a client is answered 2025-11-25.
 //   modern (2026-07-28): stateless. Each request carries
 //     _meta["io.modelcontextprotocol/protocolVersion"] and
 //     _meta["io.modelcontextprotocol/clientCapabilities"]; every result
@@ -72,6 +73,9 @@ public:
     /// `call` returns, as adi-mcp's inline executor does.
     [[nodiscard]] std::optional<std::string> handle(const Incoming& message, Session& session);
 
+    /// Records a connection event ("connect", "disconnect") in the audit.
+    void noteConnection(const Session& session, const char* kind);
+
 private:
     struct Era {
         bool modern = false;
@@ -80,7 +84,7 @@ private:
 
     [[nodiscard]] Json initializeResult(const Json& params, Session& session) const;
     [[nodiscard]] Json discoverResult() const;
-    [[nodiscard]] Json toolsList() const;
+    [[nodiscard]] Json toolsList(Tier tier) const;
     [[nodiscard]] Json resourcesList() const;
     [[nodiscard]] Json resourceTemplates() const;
     [[nodiscard]] Json capabilities(bool modern) const;

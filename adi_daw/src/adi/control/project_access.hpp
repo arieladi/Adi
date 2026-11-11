@@ -30,6 +30,14 @@ namespace adi::control {
 
 struct TelemetryFrame;
 
+/// The rows and the undo head, read under ONE read transaction: a read never
+/// pairs one state's rows with a later head, so a changeset built on what was
+/// read and stamped with this head is refused as stale if anything moved.
+struct ReadSnapshot {
+    rows::Model model;
+    std::optional<std::int64_t> head;
+};
+
 class ProjectAccess {
 public:
     virtual ~ProjectAccess() = default;
@@ -40,11 +48,11 @@ public:
     /// What a person calls it: the project row's name, else the file's stem.
     [[nodiscard]] virtual std::string label() const = 0;
 
-    /// Any thread: one read transaction on a read-only connection, so a read
-    /// never sees half of one edit (rows::readModel). Empty with `error` set
-    /// when the file cannot be read.
-    [[nodiscard]] virtual rows::Model readModel(std::string& error) = 0;
-    /// Any thread: the undo head (ADR-0153), on the read-only connection.
+    /// Any thread: the rows and the head, in one read transaction on a
+    /// read-only connection. `error` set when the file cannot be read.
+    [[nodiscard]] virtual ReadSnapshot read(std::string& error) = 0;
+    /// Any thread: the undo head alone (ADR-0153). `error` set, and nullopt,
+    /// when it cannot be read -- never confused with the root.
     [[nodiscard]] virtual std::optional<std::int64_t> head(std::string& error) = 0;
     /// The file's schema, as `major.minor` (user_version).
     [[nodiscard]] virtual std::string fileSchema() = 0;
@@ -72,14 +80,19 @@ public:
     [[nodiscard]] std::shared_ptr<ProjectAccess> find(std::string_view handle) const;
     [[nodiscard]] std::vector<std::shared_ptr<ProjectAccess>> all() const;
 
-    /// ADR-0232 d2: `params.project` names a bound project, or -- only when
-    /// exactly one is bound -- may be absent. A name that is not bound is
-    /// refused (−32602) and touches nothing (AC-17).
+    /// ADR-0232 d2: `params.project` names a bound project. A name that is
+    /// not bound is refused (−32602) and touches nothing (AC-17). Omitting it
+    /// is allowed only when the host opted in with allowImplicitSingle() and
+    /// exactly one project is bound -- adi-mcp, which serves one file.
     [[nodiscard]] std::shared_ptr<ProjectAccess> resolve(const Json& params, RpcError& error) const;
+    /// For a host bound to one project for its whole life (adi-mcp --project).
+    /// Never for the app, where projects open and close (ADR-0068).
+    void allowImplicitSingle(bool allow);
 
 private:
     mutable std::mutex mutex_;
     std::vector<std::shared_ptr<ProjectAccess>> projects_;
+    bool implicitSingle_ = false;
 };
 
 }  // namespace adi::control

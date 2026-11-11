@@ -3,16 +3,24 @@
 // adi-mcp --project: a project file with no ADI running (CTL-08's headless
 // backend; docs/CONTROL-MCP.md §2).
 //
-// It holds NO writable handle to the user's file. Reads go through a
-// read-only connection, and previews through a private copy: the SQLite backup
-// API takes a consistent snapshot of the committed file into a scratch folder,
-// which is opened writable and thrown away. So the file is never written,
-// never upgraded, never locked for writing against a running ADI, and a
-// preview of an older minor works without touching the original. Applying is
-// the user's act: Apply in the app, or `adi_tool propose ... --apply`.
+// It holds NO writable handle to the user's file, and no handle at all
+// between requests:
+//   * every read opens a read-only connection, reads the rows and the head in
+//     one read transaction, and closes it again -- so an idle bridge holds no
+//     lock that could stop ADI leaving WAL mode at close (SPEC §3.3), and a
+//     file upgraded in place meanwhile is read as it now is;
+//   * a preview runs on a private copy: the SQLite backup API takes a
+//     consistent snapshot of the committed file into a scratch folder, which
+//     is opened writable and thrown away (ADR-0233 d5; ADR-0148 d1's
+//     rolled-back preview, run on the copy). The copy is taken again whenever
+//     the file's head has moved, so a preview runs on the project as it is.
 //
-// The snapshot is taken again whenever the file's head has moved, so a
-// preview always runs on the project as it is.
+// The scratch folder is named for this process; one whose process is gone (a
+// crash, a kill) is swept the next time a bridge starts, so no copy of
+// somebody's unreleased project accumulates in the temp folder.
+//
+// Applying is the user's act: `adi_tool propose ... --apply` with the
+// changeset that changeset_status returns.
 
 #pragma once
 
@@ -32,7 +40,7 @@ namespace adi::control {
 
 class HeadlessProject final : public ProjectAccess {
 public:
-    /// Opens `file` read-only. Null, with `error`, when it cannot be read.
+    /// Checks that `file` opens read-only. Null, with `error`, when it does not.
     [[nodiscard]] static std::shared_ptr<HeadlessProject> open(const std::filesystem::path& file,
                                                                std::string& error);
     ~HeadlessProject() override;
@@ -41,7 +49,7 @@ public:
 
     [[nodiscard]] const std::string& handle() const override { return handle_; }
     [[nodiscard]] std::string label() const override;
-    [[nodiscard]] rows::Model readModel(std::string& error) override;
+    [[nodiscard]] ReadSnapshot read(std::string& error) override;
     [[nodiscard]] std::optional<std::int64_t> head(std::string& error) override;
     [[nodiscard]] std::string fileSchema() override;
     [[nodiscard]] agent::Preview preview(const agent::Changeset&, const agent::Limits&) override;
@@ -51,16 +59,21 @@ public:
     [[nodiscard]] std::string applyHint() const override;
 
     /// Where the snapshot lives: a private folder, never beside the file.
+    /// Empty until the first preview.
     [[nodiscard]] const std::filesystem::path& scratchFolder() const { return scratch_; }
+
+    /// Removes `adi-mcp-<pid>-*` folders in the temp folder whose process is
+    /// gone. Returns how many it removed. Called once per bridge start.
+    static std::size_t sweepAbandonedScratch();
 
 private:
     HeadlessProject();
+    [[nodiscard]] std::unique_ptr<Store> openReader(std::string& error) const;
     bool refreshSnapshotLocked(std::string& error);
     void dropSnapshotLocked();
 
     std::filesystem::path file_;
     std::filesystem::path scratch_;
-    std::unique_ptr<Store> reader_;
     std::unique_ptr<Store> snapshot_;
     std::optional<std::int64_t> snapshotHead_;
     std::string handle_;

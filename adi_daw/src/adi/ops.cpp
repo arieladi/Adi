@@ -196,15 +196,6 @@ std::span<const OpDescriptor> OpRegistry::all() const { return ops_; }
 
 namespace {
 
-/// Characters as JSON Schema's maxLength counts them: Unicode code points,
-/// which in UTF-8 is every byte that does not continue a sequence.
-std::size_t codePoints(const std::string& s) {
-    std::size_t n = 0;
-    for (const char c : s)
-        if ((static_cast<unsigned char>(c) & 0xC0u) != 0x80u) ++n;
-    return n;
-}
-
 std::string renderBound(double v) {
     if (std::isfinite(v) && std::floor(v) == v && std::fabs(v) < 9.0e15)
         return std::to_string(static_cast<long long>(v));
@@ -230,15 +221,10 @@ void checkValue(const Field& f, const Payload& v, Bounds bounds, const std::stri
     if (!typed) return;
 
     switch (f.type) {
+        // An Int is any JSON integer nlohmann holds, signed or unsigned: a
+        // note's persisted id is a full uint64 (ANOT), so the handler, not
+        // this check, decides which of the two it reads.
         case FieldType::Int:
-            // A JSON integer above INT64_MAX parses as unsigned and would wrap
-            // when a handler reads it as std::int64_t.
-            if (v.is_number_unsigned() &&
-                v.get<std::uint64_t>() > static_cast<std::uint64_t>(INT64_MAX)) {
-                out.push_back({key, "out of the 64-bit integer range"});
-                return;
-            }
-            [[fallthrough]];
         case FieldType::Real: {
             if (!f.minimum && !f.maximum) break;
             if (v.is_number_float() && !std::isfinite(v.get<double>())) break;
@@ -269,7 +255,7 @@ void checkValue(const Field& f, const Payload& v, Bounds bounds, const std::stri
                 f.maxLength ? f.maxLength
                 : bounds == Bounds::Remote ? std::optional<std::size_t>(kRemoteMaxTextLength)
                                            : std::nullopt;
-            if (cap && codePoints(s) > *cap)
+            if (cap && utf8CodePoints(s) > *cap)
                 out.push_back({key, "longer than " + std::to_string(*cap) + " characters"});
             break;
         }
@@ -326,6 +312,13 @@ void checkObject(std::span<const Field> fields, const Payload& p, Bounds bounds,
 }
 
 }  // namespace
+
+std::size_t utf8CodePoints(std::string_view text) noexcept {
+    std::size_t n = 0;
+    for (const char c : text)
+        if ((static_cast<unsigned char>(c) & 0xC0u) != 0x80u) ++n;
+    return n;
+}
 
 std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p) {
     return validateSubmission(d, p, Bounds::Local);

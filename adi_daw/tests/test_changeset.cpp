@@ -29,7 +29,9 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -429,6 +431,86 @@ void testLargeProject() {
     check(previewMs < 60000.0, "the preview finishes in bounded time (under 60 s)");
 }
 
+std::vector<std::string> linesOf(const std::string& text) {
+    std::vector<std::string> out;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        const auto nl = text.find('\n', at);
+        if (nl == std::string::npos) {
+            out.push_back(text.substr(at));
+            break;
+        }
+        out.push_back(text.substr(at, nl - at));
+        at = nl + 1;
+    }
+    return out;
+}
+
+/// Applies a unified diff as unifiedDiff writes it; empty on a malformed one.
+std::optional<std::vector<std::string>> applyDiff(const std::vector<std::string>& before, const std::string& diff) {
+    std::vector<std::string> out;
+    std::size_t next = 0;   // the next line of `before` not yet copied
+    for (const auto& line : linesOf(diff)) {
+        if (line.rfind("--- ", 0) == 0 || line.rfind("+++ ", 0) == 0) continue;
+        if (line.rfind("@@ -", 0) == 0) {
+            const auto comma = line.find_first_of(", ", 4);
+            const auto first = std::stoul(line.substr(4, comma - 4));
+            std::size_t count = 1;
+            if (line[comma] == ',') count = std::stoul(line.substr(comma + 1, line.find(' ', comma) - comma - 1));
+            const std::size_t start = count == 0 ? first : first - 1;
+            if (start < next || start > before.size()) return std::nullopt;
+            while (next < start) out.push_back(before[next++]);
+            continue;
+        }
+        if (line.empty()) return std::nullopt;
+        if (line[0] == ' ' || line[0] == '-') {
+            if (next >= before.size() || before[next] != line.substr(1)) return std::nullopt;
+            if (line[0] == ' ') out.push_back(before[next]);
+            ++next;
+        } else if (line[0] == '+') {
+            out.push_back(line.substr(1));
+        } else {
+            return std::nullopt;
+        }
+    }
+    while (next < before.size()) out.push_back(before[next++]);
+    return out;
+}
+
+void testDiffStaysBounded() {
+    section("the diff stays bounded: what a request touches cannot exhaust memory (ADR-0233)");
+    // Every other line of 40,000 changed: an edit distance far past the
+    // trace budget, which before cost (D+1) x 2(N+M) words -- gigabytes.
+    std::string before, after;
+    for (int i = 0; i < 40000; ++i) {
+        before += "line " + std::to_string(i) + "\n";
+        after += std::string(i % 2 ? "changed " : "line ") + std::to_string(i) + "\n";
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    const std::string coarse = unifiedDiff(before, after);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+    const auto applied = applyDiff(linesOf(before), coarse);
+    check(applied && *applied == linesOf(after), "past the budget the diff is coarser, and still correct");
+    check(ms < 60000, "and it finishes (" + std::to_string(ms) + " ms)");
+
+    // A contiguous block deleted from a long text: the common prefix and
+    // suffix are trimmed, so the diff is exact and cheap.
+    std::string longBefore, longAfter;
+    for (int i = 0; i < 30000; ++i) {
+        longBefore += "row " + std::to_string(i) + "\n";
+        if (i < 10000 || i >= 20000) longAfter += "row " + std::to_string(i) + "\n";
+    }
+    const std::string cut = unifiedDiff(longBefore, longAfter);
+    const auto cutApplied = applyDiff(linesOf(longBefore), cut);
+    std::size_t minus = 0, plus = 0;
+    for (const auto& l : linesOf(cut)) {
+        if (l.rfind("-row", 0) == 0) ++minus;
+        if (l.rfind("+row", 0) == 0) ++plus;
+    }
+    check(cutApplied && *cutApplied == linesOf(longAfter) && minus == 10000 && plus == 0,
+          "ten thousand lines deleted in one block: exactly those, nothing re-inserted");
+}
+
 int runAll() {
     std::printf("adi_changeset_tests -- ADR-0145 d9, AI-AGENT 6, ADR-0148\n\n");
     testGuardrails();
@@ -438,6 +520,7 @@ int runAll() {
     testRequestRowIsInTheTransaction();
     testMediaUnlinkLeavesTheFile();
     testUnifiedDiff();
+    testDiffStaysBounded();
     testJson();
     testLargeProject();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks,

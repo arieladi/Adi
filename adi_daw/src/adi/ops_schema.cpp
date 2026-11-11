@@ -39,11 +39,12 @@ Payload fieldSchema(const Field& f, Bounds bounds) {
 
     switch (f.type) {
         case FieldType::Int:
-            // The handler reads a std::int64_t; the schema says so.
+            // What an Int can hold: a signed or an unsigned 64-bit integer (a
+            // note's persisted id is a full uint64). The schema says so.
             s["minimum"] = f.minimum ? boundValue(*f.minimum)
                                      : Payload(std::numeric_limits<std::int64_t>::min());
             s["maximum"] = f.maximum ? boundValue(*f.maximum)
-                                     : Payload(std::numeric_limits<std::int64_t>::max());
+                                     : Payload(std::numeric_limits<std::uint64_t>::max());
             break;
         case FieldType::Real:
             if (f.minimum) s["minimum"] = boundValue(*f.minimum);
@@ -102,10 +103,14 @@ void normalizeFields(std::span<const Field> fields, Payload& p) {
         Payload& v = *it;
         if (f.type == FieldType::Int && v.is_number_float()) {
             const double d = v.get<double>();
-            // [-2^63, 2^63): both ends are exact in a double.
-            if (std::isfinite(d) && std::floor(d) == d && d >= -9223372036854775808.0 &&
-                d < 9223372036854775808.0)
-                v = static_cast<std::int64_t>(d);
+            // [-2^63, 2^63) as signed, [2^63, 2^64) as unsigned: every bound
+            // is exact in a double, and so is every whole double inside them.
+            if (std::isfinite(d) && std::floor(d) == d) {
+                if (d >= -9223372036854775808.0 && d < 9223372036854775808.0)
+                    v = static_cast<std::int64_t>(d);
+                else if (d >= 9223372036854775808.0 && d < 18446744073709551616.0)
+                    v = static_cast<std::uint64_t>(d);
+            }
         } else if (f.type == FieldType::Array && v.is_array() && !f.items.empty()) {
             for (auto& element : v) normalizeFields(f.items, element);
         } else if (f.type == FieldType::Object && v.is_object() && !f.items.empty()) {

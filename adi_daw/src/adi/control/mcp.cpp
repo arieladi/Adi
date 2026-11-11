@@ -53,7 +53,14 @@ std::string labelOf(const Json& clientInfo) {
     if (const auto n = clientInfo.find("name"); n != clientInfo.end() && n->is_string()) label = n->get<std::string>();
     if (const auto v = clientInfo.find("version"); v != clientInfo.end() && v->is_string())
         label += (label.empty() ? "" : " ") + v->get<std::string>();
-    if (label.size() > 120) label.resize(120);
+    if (label.size() > 120) {
+        // Cut on a character boundary: the label goes into actor_detail, which
+        // must survive the JSON round trip byte for byte (changeset.status
+        // finds an applied changeset by it).
+        std::size_t cut = 120;
+        while (cut > 0 && (static_cast<unsigned char>(label[cut]) & 0xC0u) == 0x80u) --cut;
+        label.resize(cut);
+    }
     return label;
 }
 
@@ -73,7 +80,9 @@ Json allVersions() {
 }  // namespace
 
 const std::vector<std::string>& McpEndpoint::legacyVersions() {
-    static const std::vector<std::string> versions = {"2025-11-25", "2025-06-18", "2025-03-26"};
+    // Not 2025-03-26: that revision requires receiving JSON-RPC batches, which
+    // this server refuses; a client asking for it is answered with 2025-11-25.
+    static const std::vector<std::string> versions = {"2025-11-25", "2025-06-18"};
     return versions;
 }
 
@@ -129,11 +138,13 @@ Json McpEndpoint::discoverResult() const {
             {"instructions", instructions_}};
 }
 
-Json McpEndpoint::toolsList() const {
+Json McpEndpoint::toolsList(Tier tier) const {
     Json tools = Json::array();
     for (const auto& t : kTools) {
         const MethodSpec* spec = service_.find(t.method);
-        if (!spec) continue;
+        // Only what this caller may call: an Observe client is not offered a
+        // tool that would only ever answer "not granted".
+        if (!spec || spec->minTier > tier) continue;
         tools.push_back({{"name", t.tool},
                          {"title", t.title},
                          {"description", spec->summary + ". " + t.guidance},
@@ -181,14 +192,19 @@ Json McpEndpoint::resourceTemplates() const {
 
 Outcome McpEndpoint::run(const Principal& who, std::string_view method, const Json& params,
                          const RequestMeta& meta) {
-    std::optional<Outcome> result;
-    auto pending = service_.call(who, method, params, meta, [&result](Outcome o) { result = std::move(o); });
-    if (!result) {
-        // Only an executor that does not run before returning gets here.
+    // Shared, so a late completion (an executor that does not run inline,
+    // which this endpoint does not support) writes into live memory.
+    auto result = std::make_shared<std::optional<Outcome>>();
+    auto pending = service_.call(who, method, params, meta, [result](Outcome o) { *result = std::move(o); });
+    if (!*result) {
         pending->abandon();
         return Outcome::fail(errc::Internal, "the call did not complete");
     }
-    return std::move(*result);
+    return std::move(**result);
+}
+
+void McpEndpoint::noteConnection(const Session& session, const char* kind) {
+    service_.audit().record({service_.now(), kind, session.clientLabel, "", 0, "stdio"});
 }
 
 std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& who, RpcError& error) {
@@ -328,6 +344,14 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
     }
     const Principal who{session.credential, era.label};
 
+    // --- the grant, before anything else (ADR-0232 d5) ------------------------------
+    // server/discover is the protocol's own static self-description; every
+    // other method -- listing tools or resources included -- needs a grant, so
+    // a caller with none learns nothing about the projects or the tools.
+    const auto granted = service_.grants().tierOf(session.credential);
+    if (!granted && !(method == "server/discover" && era.modern))
+        return encodeError(id, {errc::NotGranted, "not granted", nullptr});
+
     // --- the methods ----------------------------------------------------------------
     std::optional<Json> result;
     bool cacheable = false;
@@ -336,7 +360,7 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
         result = discoverResult();
         cacheable = true;
     } else if (method == "tools/list") {
-        result = toolsList();
+        result = toolsList(*granted);
         cacheable = true;
     } else if (method == "resources/list") {
         result = resourcesList();

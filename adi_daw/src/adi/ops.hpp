@@ -236,6 +236,11 @@ inline constexpr std::size_t kRemoteMaxArrayItems = 4096;
 
 std::vector<ValidationIssue> validateSubmission(const OpDescriptor&, const Payload&, Bounds);
 
+/// Characters as JSON Schema's maxLength counts them: Unicode code points, which
+/// in UTF-8 is every byte that does not continue a sequence. One definition, so
+/// every length the control boundary checks agrees with the schema it shows.
+[[nodiscard]] std::size_t utf8CodePoints(std::string_view text) noexcept;
+
 /// Permissive: decodes CBOR and keeps everything, including fields this build
 /// does not know. For payloads already in the log.
 std::optional<Payload> decodeFromLog(std::span<const std::byte> cbor, std::string& err);

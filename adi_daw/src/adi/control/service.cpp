@@ -14,6 +14,37 @@ namespace {
 /// grant, or a tier too low -- so a refusal never tells a caller which.
 constexpr const char* kNotGranted = "not granted";
 
+/// At most `max` bytes, never ending inside a UTF-8 sequence.
+std::string clipUtf8(std::string text, std::size_t max) {
+    if (text.size() <= max) return text;
+    std::size_t cut = max;
+    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0u) == 0x80u) --cut;
+    text.resize(cut);
+    return text;
+}
+
+/// What the audit keeps of a refusal: its code's name and, when the method
+/// gave one, its refusal kind. Never the message, which may quote the request.
+std::string auditDetail(const RpcError& e) {
+    std::string name;
+    switch (e.code) {
+        case errc::ParseError: name = "parse error"; break;
+        case errc::InvalidRequest: name = "invalid request"; break;
+        case errc::MethodNotFound: name = "unknown method"; break;
+        case errc::InvalidParams: name = "invalid params"; break;
+        case errc::Stale: name = "stale"; break;
+        case errc::DeadlinePassed: name = "deadline passed"; break;
+        case errc::OverLimit: name = "over a limit"; break;
+        case errc::NotGranted: name = kNotGranted; break;
+        default: name = "error " + std::to_string(e.code); break;
+    }
+    if (e.data.is_object()) {
+        const auto r = e.data.find("refusal");
+        if (r != e.data.end() && r->is_string()) name += ": " + clipUtf8(r->get<std::string>(), 32);
+    }
+    return name;
+}
+
 }  // namespace
 
 std::string_view toString(Tier t) {
@@ -158,8 +189,10 @@ std::string AuditRing::redact(std::string text) const {
 
 void AuditRing::record(AuditEvent event) {
     std::lock_guard lock(mutex_);
-    event.detail = redactLocked(std::move(event.detail));
-    event.label = redactLocked(std::move(event.label));
+    event.detail = clipUtf8(redactLocked(std::move(event.detail)), kMaxField);
+    event.label = clipUtf8(redactLocked(std::move(event.label)), kMaxField);
+    event.method = clipUtf8(redactLocked(std::move(event.method)), kMaxField);
+    event.kind = clipUtf8(std::move(event.kind), kMaxField);
     events_.push_back(std::move(event));
     while (events_.size() > kCapacity) events_.pop_front();
 }
@@ -244,10 +277,10 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     auto pending = std::make_shared<PendingCall>();
     const std::string methodName(method);
 
-    // Every refusal is audited; nothing of the payload is.
+    // Every refusal is audited, by its code and kind; nothing the caller sent is.
     Done finish = [this, label = who.label, methodName, done = std::move(done)](Outcome out) {
         if (out.error && out.error->code != errc::Internal)
-            audit_.record({now(), "refused", label, methodName, out.error->code, out.error->message});
+            audit_.record({now(), "refused", label, methodName, out.error->code, auditDetail(*out.error)});
         done(std::move(out));
     };
 
@@ -284,10 +317,29 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
             return pending;
         }
     }
-    // 4. The deadline, and the hop to the owner.
+    // 4. The screen, on this (the calling) thread: params checked and
+    //    normalised, payloads validated, before the owner sees anything.
+    Json prepared = params;
+    if (spec->screen) {
+        CallContext screenCtx{who, *tier, meta};
+        std::optional<Outcome> refusal;
+        try {
+            refusal = spec->screen(screenCtx, prepared);
+        } catch (const std::exception& e) {
+            refusal = Outcome::fail(errc::Internal, std::string("internal error: ") + e.what());
+        }
+        if (refusal) {
+            pending->take();
+            if (!cacheKey.empty() && !(refusal->error && refusal->error->code == errc::Internal))
+                remember(cacheKey, *refusal);
+            finish(std::move(*refusal));
+            return pending;
+        }
+    }
+    // 5. The deadline, and the hop to the owner.
     const std::int64_t deadlineAt = now() + meta.deadlineMs.value_or(options_.defaultDeadlineMs);
-    Task run = [this, spec, who, meta, params, granted = *tier, cacheKey, deadlineAt, pending,
-                finish]() mutable {
+    Task run = [this, spec, who, meta, params = std::move(prepared), granted = *tier, cacheKey, deadlineAt,
+                pending, finish]() mutable {
         if (!pending->take()) return;   // the transport abandoned it and answered
         if (now() > deadlineAt) {
             // It waited past its deadline and nobody abandoned it: refuse

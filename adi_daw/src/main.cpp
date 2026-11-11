@@ -12,6 +12,7 @@
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
 #include "adi/ops_schema.hpp"
+#include "adi/settings/store.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj_store.hpp"
 #include "adi/version.hpp"
@@ -261,6 +262,21 @@ int cmdCheck(const char* path) {
 
 /// ADR-0145 d9, ADR-0148. Exit codes: 0 previewed (or applied), 1 refused or
 /// failed, 3 stale -- the file moved on and the changeset must be rebuilt.
+/// AGT-01: the per-request cap is the user's agent.maxOpsPerRequest, the same
+/// one adi-mcp previews with, so a changeset it queued is held to the same cap
+/// here. Unreadable settings keep the default (ADR-0203 d20: 6000).
+adi::agent::Limits userLimits() {
+    adi::agent::Limits limits;
+    try {
+        const auto settings = adi::settings::AppSettings::forApp(adi::appdata::App::Daw);
+        const auto cap = settings.get("agent.maxOpsPerRequest");
+        if (cap.is_number_integer() && cap.get<std::int64_t>() > 0)
+            limits.maxOps = static_cast<std::size_t>(cap.get<std::int64_t>());
+    } catch (const std::exception&) {
+    }
+    return limits;
+}
+
 int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
     using namespace adi;
     const auto path = std::filesystem::absolute(file);
@@ -309,7 +325,8 @@ int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
         return 1;
     }
 
-    const auto p = agent::preview(*store, *cs);
+    const auto limits = userLimits();
+    const auto p = agent::preview(*store, *cs, limits);
     if (!p.ok) {
         std::fprintf(stderr, "propose: refused (%s): %s\n", agent::toString(p.refusal), p.error.c_str());
         return p.refusal == agent::Refusal::Stale ? 3 : 1;
@@ -330,7 +347,7 @@ int cmdPropose(const char* file, const char* changesetPath, bool doApply) {
         return 0;
     }
 
-    const auto r = agent::apply(*store, *cs);
+    const auto r = agent::apply(*store, *cs, limits);
     if (!r.ok) {
         std::fprintf(stderr, "propose: apply refused (%s): %s\n", agent::toString(r.refusal),
                      r.error.c_str());

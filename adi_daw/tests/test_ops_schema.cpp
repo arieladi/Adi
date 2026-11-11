@@ -213,8 +213,10 @@ std::vector<Payload> oddValues() {
             Payload(static_cast<std::uint64_t>(INT64_MAX) + 6u),
             Payload(std::numeric_limits<std::int64_t>::min()),
             Payload(1e19),
+            Payload(2e19),
             Payload(kTwo63),
-            Payload(-kTwo63)};
+            Payload(-kTwo63),
+            Payload(std::numeric_limits<std::uint64_t>::max())};
 }
 
 /// Every generated case for one op: true when the schema and the boundary agree on all.
@@ -243,6 +245,35 @@ int compareOp(const OpDescriptor& d, Bounds b, std::string& firstMismatch) {
             cases.push_back(p);
         }
     }
+    // Declared items: every odd value placed inside the element, the
+    // element missing each required key, and an unknown key inside it.
+    for (const auto& f : d.fields) {
+        if (f.items.empty() || (f.type != FieldType::Array && f.type != FieldType::Object)) continue;
+        const std::string k(f.key);
+        const Payload element = baseOf(f.items);
+        const auto place = [&](const Payload& inner) {
+            Payload p = base;
+            p[k] = f.type == FieldType::Array ? Payload::array({inner}) : inner;
+            return p;
+        };
+        for (const auto& g : f.items) {
+            const std::string k2(g.key);
+            for (const auto& odd : oddValues()) {
+                Payload inner = element;
+                inner[k2] = odd;
+                cases.push_back(place(inner));
+            }
+            if (g.required) {
+                Payload inner = element;
+                inner.erase(k2);
+                cases.push_back(place(inner));
+            }
+        }
+        Payload extra = element;
+        extra["zzInner"] = 1;
+        cases.push_back(place(extra));
+    }
+
     Payload unknown = base;
     unknown["zzUnknown"] = 1;
     cases.push_back(unknown);
@@ -361,7 +392,18 @@ void testRichMetadata() {
     check(names(issuesOf(d, {{"mode", "a"}, {"obj", Payload::object()}}), "obj.t"),
           "a declared object is closed and complete");
     check(names(issuesOf(d, {{"mode", "a"}, {"count", static_cast<std::uint64_t>(INT64_MAX) + 1u}}), "count"),
-          "an integer above the 64-bit range is refused, never wrapped");
+          "a declared maximum holds for an unsigned value too");
+
+    // An Int holds what nlohmann holds: signed or unsigned 64-bit. A note's
+    // persisted id is a full uint64, so nothing between INT64_MAX and
+    // UINT64_MAX may be refused, and nothing beyond it may be accepted.
+    const auto* vol = OpRegistry::instance().find("mixer.setVolume");
+    check(vol && issuesOf(*vol, {{"id", std::numeric_limits<std::uint64_t>::max()}, {"db", 1.0}}).empty(),
+          "a full uint64 is an Int (note ids are)");
+    check(vol && names(issuesOf(*vol, {{"id", 2e19}, {"db", 1.0}}), "id"),
+          "a whole number beyond UINT64_MAX is refused, naming the key");
+    check(vol && issuesOf(*vol, {{"id", 1e19}, {"db", 1.0}}).empty(),
+          "1e19, a whole float inside the unsigned range, is that integer at the boundary");
 }
 
 void testBoundsProfiles() {

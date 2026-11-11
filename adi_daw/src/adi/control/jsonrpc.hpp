@@ -53,7 +53,7 @@ struct Incoming {
         Request,        ///< has an id: exactly one reply
         Notification,   ///< no id: never a reply
         Response,       ///< a client's reply to a request; ADI sends none, so it is dropped
-        Invalid,        ///< reply with `error` to `id` (null when no id could be read)
+        Invalid,        ///< reply with `error` to `id`; with no id member when none could be read
     };
     Kind kind = Kind::Invalid;
     Json id = nullptr;

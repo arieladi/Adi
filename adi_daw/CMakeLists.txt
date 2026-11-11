@@ -704,7 +704,7 @@ add_library(adi_changeset STATIC src/adi/changeset.cpp)
 target_link_libraries(adi_changeset PUBLIC adi_core PRIVATE adi_warnings)
 
 add_executable(adi_tool src/main.cpp)
-target_link_libraries(adi_tool PRIVATE adi_core adi_changeset adi_warnings)
+target_link_libraries(adi_tool PRIVATE adi_settings adi_core adi_changeset adi_warnings)
 
 # ---------------------------------------------------------------------------
 # Tests. No framework yet on purpose — a dependency we would have to justify,

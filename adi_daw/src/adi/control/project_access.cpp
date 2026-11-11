@@ -18,6 +18,11 @@ std::shared_ptr<ProjectAccess> ProjectSet::find(std::string_view handle) const {
     return nullptr;
 }
 
+void ProjectSet::allowImplicitSingle(bool allow) {
+    std::lock_guard lock(mutex_);
+    implicitSingle_ = allow;
+}
+
 std::vector<std::shared_ptr<ProjectAccess>> ProjectSet::all() const {
     std::lock_guard lock(mutex_);
     return projects_;
@@ -28,10 +33,11 @@ std::shared_ptr<ProjectAccess> ProjectSet::resolve(const Json& params, RpcError&
     const bool named = params.is_object() && it != params.end() && !it->is_null();
     std::lock_guard lock(mutex_);
     if (!named) {
-        if (projects_.size() == 1) return projects_.front();
+        if (implicitSingle_ && projects_.size() == 1) return projects_.front();
         error = {errc::InvalidParams,
                  projects_.empty() ? "no project is open"
-                                   : "several projects are open: name one (project.list)",
+                 : projects_.size() > 1 ? "several projects are open: name one (project.list)"
+                                        : "name the project (project.list)",
                  nullptr};
         return nullptr;
     }

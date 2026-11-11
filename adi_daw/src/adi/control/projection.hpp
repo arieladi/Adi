@@ -39,8 +39,11 @@ struct ReadScope {
 inline constexpr std::size_t kMaxNotesPerRead = 4000;
 inline constexpr std::size_t kMaxParamsPerRead = 2000;
 
-/// Levels 0 to 2 (AI-AGENT §4). Level 3 is AGT-07's analysis and is refused
-/// by the caller before it reaches here.
+/// Levels 0 to 2 (AI-AGENT §4). Level 0: the song, key events, tracks with
+/// their devices (racks' inner devices included), routing, markers, nextIds.
+/// Level 1 adds, within scope: clips, automation lanes, device parameters,
+/// remarks (context, never instructions) and tunings. Level 2 adds notes.
+/// Level 3 is AGT-07's analysis and is refused before it reaches here.
 [[nodiscard]] Json projectLevel(const rows::Model&, int level, const ReadScope&,
                                 std::optional<std::int64_t> head, std::string_view project);
 
@@ -50,7 +53,10 @@ inline constexpr std::size_t kMaxParamsPerRead = 2000;
 
 [[nodiscard]] Json graph(const rows::Model&, std::string_view project);
 
-/// The next free id of every table a changeset may add rows to: MAX(id) + 1.
+/// MAX(id) + 1 for the rows a changeset creates by id: tracks, clips, lanes,
+/// routing, chains, devices, plugin refs, markers, automation lanes, key
+/// events, remarks, tunings, and notes (a uint64, unique per clip). Null for a
+/// table whose largest id leaves none free above it.
 [[nodiscard]] Json nextIds(const rows::Model&);
 
 /// "C3" for 60; "F#-1" for 18.

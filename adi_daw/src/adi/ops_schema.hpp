@@ -10,7 +10,8 @@
 // JSON Schema 2020-12, closed objects:
 //   * `additionalProperties: false`, as validateSubmission refuses unknown keys;
 //   * an optional field's type is `[T, "null"]`, as an explicit null clears it;
-//   * Int is `integer`, bounded to the 64-bit range unless narrower;
+//   * Int is `integer`, from INT64_MIN to UINT64_MAX unless narrower: what
+//     nlohmann holds as a signed or an unsigned integer (note ids are uint64);
 //   * Remote (the control boundary) adds MAGDA's request limits: text at most
 //     16 KiB characters, arrays at most 4096 elements, unless declared.
 
@@ -25,8 +26,8 @@ namespace adi {
 
 /// The boundary's normalisation before validateSubmission. JSON does not tell
 /// `1` from `1.0`, and JSON Schema calls both an integer, so an Int field
-/// holding a float with no fractional part (and inside the 64-bit range)
-/// becomes that integer. Everything else is left for validation to refuse.
+/// holding a float with no fractional part (from -2^63 up to, not including,
+/// 2^64) becomes that integer. Everything else is left for validation to refuse.
 /// Recurses into declared `items`.
 void normalizeSubmission(const OpDescriptor&, Payload&);
 

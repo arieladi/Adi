@@ -39,6 +39,7 @@ std::size_t runStdio(std::istream& in, std::ostream& out, McpEndpoint& endpoint,
     std::size_t handled = 0;
     std::string line;
     bool tooLong = false;
+    endpoint.noteConnection(session, "connect");
     while (readBoundedLine(in, line, limits.maxMessageBytes, tooLong)) {
         if (tooLong) {
             // The id is in the part we did not keep, so the refusal has none.
@@ -58,6 +59,7 @@ std::size_t runStdio(std::istream& in, std::ostream& out, McpEndpoint& endpoint,
         if (message.kind == Incoming::Kind::Invalid && log)
             *log << "adi-mcp: refused a message: " << message.error.message << '\n';
     }
+    endpoint.noteConnection(session, "disconnect");
     return handled;
 }
 

@@ -12,12 +12,16 @@
 //   2. the method, and the tier it needs (a write needs more than Observe);
 //   3. the idempotent replay, keyed by the credential plus the caller's key,
 //      so a retried write is answered once and queued once;
-//   4. the hop to the model's owner thread through the injected Executor,
-//      where a request whose deadline passed while it waited is ABANDONED
-//      and never runs late (PENDING -> TAKEN or ABANDONED, one CAS);
-//   5. the handler, which validates its own params and refuses with
-//      −32602; op payloads are validated by the registry's validateSubmission
-//      and nothing else (ADR-0039 d2: no second validator).
+//   4. the method's screen, on the CALLING thread (ADR-0232 d4: validation
+//      runs on the calling thread): params checked and normalised, every op
+//      payload validated by the registry's validateSubmission and nothing
+//      else (ADR-0039 d2: no second validator), refused with −32602;
+//   5. the hop to the model's owner thread through the injected Executor:
+//      the call is PENDING until the owner TAKES it (one CAS). A transport
+//      whose deadline fires first ABANDONS it, and it never runs; one that
+//      waited past its deadline without being abandoned is taken and
+//      answered −32003, unrun -- never applied late;
+//   6. the handler, which does what needs the owner: previews, commits.
 //
 // Grants are keyed by a credential the transport holds -- a paired surface's
 // token, adi-mcp's per-process secret -- and never by the name a caller gives
@@ -120,6 +124,10 @@ struct MethodSpec {
     bool idempotent = false;
     bool readOnly = true;       ///< for MCP's readOnlyHint
     Json paramsSchema = Json::object();   ///< the closed schema of params; tools/list shows it
+    /// Optional, on the CALLING thread before the hop: checks and normalises
+    /// `params` in place, or returns the refusal. A heavy check -- thousands
+    /// of op payloads -- then costs the owner thread nothing.
+    std::function<std::optional<Outcome>(CallContext&, Json& params)> screen;
     std::function<Outcome(CallContext&, const Json& params)> run;
 };
 
@@ -150,11 +158,14 @@ struct AuditEvent {
 };
 
 /// ADR-0232 d5: a ring of the last 512 connection events and refusals.
-/// Ops are audited where they always were, in the op log. Payloads never
-/// enter it, and every registered secret is redacted from what does.
+/// Ops are audited where they always were, in the op log. What a caller sent
+/// never enters it -- a refusal is recorded by its code and its refusal kind,
+/// not its message -- every field is capped, and every registered secret is
+/// redacted.
 class AuditRing {
 public:
     static constexpr std::size_t kCapacity = 512;
+    static constexpr std::size_t kMaxField = 256;   ///< bytes, cut on a UTF-8 boundary
 
     void registerSecret(std::string secret);
     void record(AuditEvent event);

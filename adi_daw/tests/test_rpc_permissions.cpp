@@ -213,10 +213,67 @@ void testAudit() {
     check(!payload, "a payload never enters it");
     check(rig.service.audit().redact("a " + secret + " b") == "a [redacted] b", "redact replaces every occurrence");
 
+    // A GRANTED caller whose request reaches a handler that refuses, quoting
+    // what it was sent: the audit keeps the code and the kind, not the text.
+    MethodSpec echo;
+    echo.name = "test.echo";
+    echo.run = [](CallContext&, const Json& params) -> Outcome {
+        return Outcome::fail(errc::InvalidParams, "rejected " + params.dump(), {{"refusal", "invalid"}});
+    };
+    rig.service.add(std::move(echo));
+    const Principal granted{"cred-g", "granted client"};
+    rig.grants.grant(granted.credential, Tier::Observe);
+    rig.call(granted, "test.echo", {{"payload-marker", std::string(4096, 'p')}});
+    const auto after = rig.service.audit().snapshot();
+    check(!after.empty() && after.back().detail == "invalid params: invalid" &&
+              after.back().detail.find("payload-marker") == std::string::npos,
+          "a granted caller's refusal is audited by its code and kind, never its text");
+
     AuditRing ring;
+    ring.record({0, "connect", std::string(1000, 'L'), std::string(1000, 'M'), 0, std::string(1000, 'D')});
+    const auto capped = ring.snapshot();
+    check(capped.back().label.size() <= AuditRing::kMaxField && capped.back().method.size() <= AuditRing::kMaxField &&
+              capped.back().detail.size() <= AuditRing::kMaxField,
+          "every field is capped");
     for (int i = 0; i < 600; ++i) ring.record({i, "connect", "c", "", 0, std::to_string(i)});
     const auto kept = ring.snapshot();
     check(kept.size() == AuditRing::kCapacity && kept.front().detail == "88", "a ring of 512: the oldest go first");
+}
+
+void testScreen() {
+    section("the screen runs on the calling thread, before the hop (ADR-0232 d4)");
+    ManualExecutor manual;
+    GrantTable grants;
+    Service service(manual.executor(), grants);
+    int runs = 0;
+    MethodSpec m;
+    m.name = "test.screened";
+    m.minTier = Tier::Propose;
+    m.readOnly = false;
+    m.ownerThread = true;
+    m.screen = [](CallContext&, Json& params) -> std::optional<Outcome> {
+        if (params.contains("bad")) return Outcome::fail(errc::InvalidParams, "bad");
+        params["normalised"] = true;
+        return std::nullopt;
+    };
+    m.run = [&runs](CallContext&, const Json& params) -> Outcome {
+        ++runs;
+        return Outcome::ok(params);
+    };
+    service.add(std::move(m));
+    const Principal p{"cred-s", "S"};
+    grants.grant(p.credential, Tier::Propose);
+
+    std::optional<Outcome> refused;
+    service.call(p, "test.screened", {{"bad", 1}}, {}, [&refused](Outcome o) { refused = std::move(o); });
+    check(refused && refused->error && refused->error->code == errc::InvalidParams && manual.tasks.empty(),
+          "a refusal comes from the calling thread: nothing was queued for the owner");
+    std::optional<Outcome> ok;
+    service.call(p, "test.screened", {{"x", 1}}, {}, [&ok](Outcome o) { ok = std::move(o); });
+    check(!ok && manual.tasks.size() == 1, "an accepted call is queued for the owner");
+    manual.drain();
+    check(ok && !ok->error && ok->result.value("normalised", false) && runs == 1,
+          "and the owner runs it with the params the screen normalised");
 }
 
 void testSecureEquals() {
@@ -326,6 +383,7 @@ int runAll() {
     testIdempotency();
     testDeadlines();
     testAudit();
+    testScreen();
     testSecureEquals();
     testRegistration();
     testMeta();

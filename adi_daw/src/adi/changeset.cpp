@@ -115,66 +115,115 @@ std::vector<std::string> splitLines(const std::string& s) {
 
 enum class Edit : char { Keep = ' ', Del = '-', Ins = '+' };
 
-/// Myers' O(ND) shortest edit script. A project's projection is tens of
-/// thousands of lines and a changeset touches few of them, so D is small and
-/// the quadratic LCS table this replaces would be the wrong trade.
+/// The most diagonals the edit script's trace may hold: about 64 MB. Past it
+/// the changed middle is shown as one replacement instead (see editScript).
+constexpr std::size_t kTraceBudget = std::size_t{8} << 20;
+
+/// Myers' O(ND) shortest edit script, in bounded memory.
+///
+/// A project's projection is tens of thousands of lines and a changeset
+/// usually touches few of them, so D is small and the quadratic LCS table this
+/// replaces would be the wrong trade. But a preview is reachable from a remote
+/// caller (the control stack, ADR-0233), and one request may delete a track of
+/// ten thousand notes or insert six thousand, so the edit script must not grow
+/// with what a request touches:
+///   * the common prefix and suffix are trimmed first: a contiguous edit (a
+///     track deleted, notes added to one clip) then costs no trace at all;
+///   * each step keeps only its live diagonals, -(d-1)..d-1, not the whole V;
+///   * past kTraceBudget diagonals the untrimmed middle becomes one deletion
+///     and one insertion -- still a correct diff, only a coarser one.
 std::vector<Edit> editScript(const std::vector<std::string>& a, const std::vector<std::string>& b) {
-    const auto n = static_cast<std::ptrdiff_t>(a.size());
-    const auto m = static_cast<std::ptrdiff_t>(b.size());
-    const std::ptrdiff_t max = n + m;
-    const std::ptrdiff_t offset = max + 1;
-    std::vector<std::ptrdiff_t> v(static_cast<std::size_t>(2 * max + 3), 0);
-    std::vector<std::vector<std::ptrdiff_t>> trace;
+    std::size_t prefix = 0;
+    while (prefix < a.size() && prefix < b.size() && a[prefix] == b[prefix]) ++prefix;
+    std::size_t suffix = 0;
+    while (suffix < a.size() - prefix && suffix < b.size() - prefix &&
+           a[a.size() - 1 - suffix] == b[b.size() - 1 - suffix])
+        ++suffix;
 
-    const auto at = [&](std::ptrdiff_t k) -> std::ptrdiff_t& {
-        return v[static_cast<std::size_t>(k + offset)];
+    const auto n = static_cast<std::ptrdiff_t>(a.size() - prefix - suffix);
+    const auto m = static_cast<std::ptrdiff_t>(b.size() - prefix - suffix);
+    const auto A = [&](std::ptrdiff_t i) -> const std::string& {
+        return a[prefix + static_cast<std::size_t>(i)];
     };
-    std::ptrdiff_t dFound = -1;
-    for (std::ptrdiff_t d = 0; d <= max && dFound < 0; ++d) {
-        trace.push_back(v);
-        for (std::ptrdiff_t k = -d; k <= d; k += 2) {
-            std::ptrdiff_t x = (k == -d || (k != d && at(k - 1) < at(k + 1))) ? at(k + 1)
-                                                                            : at(k - 1) + 1;
-            std::ptrdiff_t y = x - k;
-            while (x < n && y < m &&
-                   a[static_cast<std::size_t>(x)] == b[static_cast<std::size_t>(y)]) {
-                ++x;
-                ++y;
-            }
-            at(k) = x;
-            if (x >= n && y >= m) {
-                dFound = d;
-                break;
+    const auto B = [&](std::ptrdiff_t i) -> const std::string& {
+        return b[prefix + static_cast<std::size_t>(i)];
+    };
+
+    std::vector<Edit> middle;
+    bool found = false;
+    if (n > 0 && m > 0) {
+        const std::ptrdiff_t max = n + m;
+        const std::ptrdiff_t offset = max + 1;
+        std::vector<std::ptrdiff_t> v(static_cast<std::size_t>(2 * max + 3), 0);
+        const auto at = [&](std::ptrdiff_t k) -> std::ptrdiff_t& {
+            return v[static_cast<std::size_t>(k + offset)];
+        };
+        // trace[d] holds V as step d found it, diagonals -(d-1)..d-1: exactly
+        // what the walk back reads for step d.
+        std::vector<std::vector<std::ptrdiff_t>> trace;
+        std::size_t held = 0;
+        std::ptrdiff_t dFound = -1;
+        for (std::ptrdiff_t d = 0; d <= max && dFound < 0; ++d) {
+            const std::size_t width = d == 0 ? 0 : static_cast<std::size_t>(2 * d - 1);
+            if (held + width > kTraceBudget) break;
+            held += width;
+            std::vector<std::ptrdiff_t> snapshot(width);
+            for (std::size_t i = 0; i < width; ++i) snapshot[i] = at(-(d - 1) + static_cast<std::ptrdiff_t>(i));
+            trace.push_back(std::move(snapshot));
+            for (std::ptrdiff_t k = -d; k <= d; k += 2) {
+                std::ptrdiff_t x = (k == -d || (k != d && at(k - 1) < at(k + 1))) ? at(k + 1) : at(k - 1) + 1;
+                std::ptrdiff_t y = x - k;
+                while (x < n && y < m && A(x) == B(y)) {
+                    ++x;
+                    ++y;
+                }
+                at(k) = x;
+                if (x >= n && y >= m) {
+                    dFound = d;
+                    break;
+                }
             }
         }
+
+        if (dFound >= 0) {
+            found = true;
+            // Walk the trace backwards from (n, m).
+            std::ptrdiff_t x = n, y = m;
+            for (std::ptrdiff_t d = dFound; d > 0; --d) {
+                const auto& pv = trace[static_cast<std::size_t>(d)];
+                const auto prev = [&](std::ptrdiff_t k) { return pv[static_cast<std::size_t>(k + (d - 1))]; };
+                const std::ptrdiff_t k = x - y;
+                const bool down = (k == -d || (k != d && prev(k - 1) < prev(k + 1)));
+                const std::ptrdiff_t pk = down ? k + 1 : k - 1;
+                const std::ptrdiff_t px = prev(pk);
+                const std::ptrdiff_t py = px - pk;
+                while (x > px && y > py) {
+                    middle.push_back(Edit::Keep);
+                    --x;
+                    --y;
+                }
+                middle.push_back(down ? Edit::Ins : Edit::Del);
+                x = px;
+                y = py;
+            }
+            while (x > 0 && y > 0) {
+                middle.push_back(Edit::Keep);
+                --x;
+                --y;
+            }
+            std::reverse(middle.begin(), middle.end());
+        }
+    }
+    if (!found) {
+        // Only deletions or only insertions (exact), or over the budget (a
+        // coarser but correct diff): the changed middle, deleted then inserted.
+        middle.assign(static_cast<std::size_t>(n), Edit::Del);
+        middle.insert(middle.end(), static_cast<std::size_t>(m), Edit::Ins);
     }
 
-    // Walk the trace backwards from (n, m).
-    std::vector<Edit> out;
-    std::ptrdiff_t x = n, y = m;
-    for (std::ptrdiff_t d = dFound; d > 0; --d) {
-        const auto& pv = trace[static_cast<std::size_t>(d)];
-        const auto prev = [&](std::ptrdiff_t k) { return pv[static_cast<std::size_t>(k + offset)]; };
-        const std::ptrdiff_t k = x - y;
-        const bool down = (k == -d || (k != d && prev(k - 1) < prev(k + 1)));
-        const std::ptrdiff_t pk = down ? k + 1 : k - 1;
-        const std::ptrdiff_t px = prev(pk);
-        const std::ptrdiff_t py = px - pk;
-        while (x > px && y > py) {
-            out.push_back(Edit::Keep);
-            --x;
-            --y;
-        }
-        out.push_back(down ? Edit::Ins : Edit::Del);
-        x = px;
-        y = py;
-    }
-    while (x > 0 && y > 0) {
-        out.push_back(Edit::Keep);
-        --x;
-        --y;
-    }
-    std::reverse(out.begin(), out.end());
+    std::vector<Edit> out(prefix, Edit::Keep);
+    out.insert(out.end(), middle.begin(), middle.end());
+    out.insert(out.end(), suffix, Edit::Keep);
     return out;
 }
 

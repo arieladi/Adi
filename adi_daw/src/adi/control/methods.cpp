@@ -18,39 +18,56 @@
 namespace adi::control {
 namespace {
 
-constexpr std::size_t kMaxRequestText = 4096;
-constexpr std::size_t kMaxLabel = 200;
-constexpr std::size_t kMaxActorLabel = 120;
+constexpr std::size_t kMaxRequestText = 4096;   ///< characters
+constexpr std::size_t kMaxLabel = 200;          ///< characters
+constexpr std::size_t kMaxQuery = 128;          ///< characters
+constexpr std::size_t kMaxActorLabel = 120;     ///< bytes, cut on a UTF-8 boundary
+constexpr std::size_t kMaxEcho = 64;            ///< bytes of caller text a refusal repeats
 constexpr std::size_t kMaxChangesShown = 200;
 constexpr std::size_t kMaxDiffBytes = 256 * 1024;
 
+/// At most `max` bytes, never ending inside a UTF-8 sequence.
+std::string clipUtf8(std::string_view text, std::size_t max) {
+    if (text.size() <= max) return std::string(text);
+    std::size_t cut = max;
+    while (cut > 0 && (static_cast<unsigned char>(text[cut]) & 0xC0u) == 0x80u) --cut;
+    return std::string(text.substr(0, cut)) + "...";
+}
+
 /// Method params are closed objects, like op payloads: an unknown key is a
-/// typo the caller believes did something.
+/// typo the caller believes did something. The refusal repeats a bounded part
+/// of the key, never an unbounded one.
 std::optional<RpcError> closedKeys(const Json& params, std::initializer_list<std::string_view> keys) {
     if (params.is_null()) return std::nullopt;
     if (!params.is_object()) return RpcError{errc::InvalidParams, "params must be an object", nullptr};
     for (auto it = params.begin(); it != params.end(); ++it)
         if (std::find(keys.begin(), keys.end(), it.key()) == keys.end())
-            return RpcError{errc::InvalidParams, "unknown parameter: " + it.key(), nullptr};
+            return RpcError{errc::InvalidParams, "unknown parameter: " + clipUtf8(it.key(), kMaxEcho), nullptr};
     return std::nullopt;
 }
 
 Outcome failWith(const RpcError& e) { return Outcome::fail(e.code, e.message, e.data); }
 
-/// An optional integer param in [lo, hi]; a JSON float with no fraction counts.
+/// A JSON integer, or a float with no fraction (JSON Schema calls both an
+/// integer), as an int64; nullopt otherwise.
+std::optional<std::int64_t> asInt64(const Json& v) {
+    if (v.is_number_integer() && !v.is_number_unsigned()) return v.get<std::int64_t>();
+    if (v.is_number_unsigned() && v.get<std::uint64_t>() <= static_cast<std::uint64_t>(INT64_MAX))
+        return static_cast<std::int64_t>(v.get<std::uint64_t>());
+    if (v.is_number_float()) {
+        const double d = v.get<double>();
+        if (std::isfinite(d) && std::floor(d) == d && d >= -9223372036854775808.0 && d < 9223372036854775808.0)
+            return static_cast<std::int64_t>(d);
+    }
+    return std::nullopt;
+}
+
+/// An optional integer param in [lo, hi].
 bool readInt(const Json& params, const char* key, std::int64_t lo, std::int64_t hi,
              std::optional<std::int64_t>& out, RpcError& error) {
     const auto it = params.is_object() ? params.find(key) : params.end();
     if (!params.is_object() || it == params.end() || it->is_null()) return true;
-    std::optional<std::int64_t> v;
-    if (it->is_number_integer() && !it->is_number_unsigned()) v = it->get<std::int64_t>();
-    else if (it->is_number_unsigned() && it->get<std::uint64_t>() <= static_cast<std::uint64_t>(hi))
-        v = static_cast<std::int64_t>(it->get<std::uint64_t>());
-    else if (it->is_number_float()) {
-        const double d = it->get<double>();
-        if (std::isfinite(d) && std::floor(d) == d && d >= -9.0e18 && d <= 9.0e18)
-            v = static_cast<std::int64_t>(d);
-    }
+    const auto v = asInt64(*it);
     if (!v || *v < lo || *v > hi) {
         error = {errc::InvalidParams,
                  std::string(key) + " is an integer from " + std::to_string(lo) + " to " + std::to_string(hi),
@@ -69,12 +86,32 @@ bool readIdList(const Json& params, const char* key, std::vector<std::int64_t>& 
         return false;
     }
     for (const auto& v : *it) {
-        if (!v.is_number_integer()) {
+        const auto id = asInt64(v);
+        if (!id) {
             error = {errc::InvalidParams, std::string(key) + " holds integer ids", nullptr};
             return false;
         }
-        out.push_back(v.get<std::int64_t>());
+        out.push_back(*id);
     }
+    return true;
+}
+
+/// A text param of 1..max characters (code points, as the schema counts).
+bool readText(const Json& params, const char* key, std::size_t max, bool required, std::string& out,
+              RpcError& error) {
+    const auto it = params.is_object() ? params.find(key) : params.end();
+    if (!params.is_object() || it == params.end() || it->is_null()) {
+        if (!required) return true;
+        error = {errc::InvalidParams, std::string(key) + " is required", nullptr};
+        return false;
+    }
+    if (!it->is_string() || it->get_ref<const std::string&>().empty() ||
+        utf8CodePoints(it->get_ref<const std::string&>()) > max) {
+        error = {errc::InvalidParams, std::string(key) + " is text of 1 to " + std::to_string(max) + " characters",
+                 nullptr};
+        return false;
+    }
+    out = it->get<std::string>();
     return true;
 }
 
@@ -86,7 +123,8 @@ std::string lower(std::string s) {
 
 Json projectSchemaProperty() {
     return {{"type", "string"},
-            {"description", "the project's handle (project.list); optional when exactly one is open"}};
+            {"description", "the project's handle (project.list); optional only when the server is bound to "
+                            "one project for its life, as adi-mcp is"}};
 }
 
 Json onlyProjectSchema() {
@@ -107,7 +145,83 @@ Json changeJson(const agent::Change& c) {
     return row;
 }
 
-const char* refusalText(agent::Refusal r) { return agent::toString(r); }
+Outcome refusal(int code, std::string message, const char* kind, Json extra = Json::object()) {
+    extra["refusal"] = kind;
+    return Outcome::fail(code, std::move(message), std::move(extra));
+}
+
+/// changeset.propose's screen: everything that needs no project and no owner,
+/// on the calling thread (ADR-0232 d4). Normalises the payloads in place.
+std::optional<Outcome> screenProposal(const ControlContext& ctx, Json& p) {
+    if (auto e = closedKeys(p, {"project", "request", "ops", "baseHead"})) return failWith(*e);
+    RpcError e;
+    std::string request;
+    if (!readText(p, "request", kMaxRequestText, true, request, e))
+        return refusal(errc::InvalidParams, "request is the user's request, 1 to 4096 characters (AI-AGENT 6.8)",
+                       "invalid");
+    if (const auto project = p.find("project"); project != p.end() && !project->is_null() && !project->is_string())
+        return refusal(errc::InvalidParams, "project is a project handle (a string)", "invalid");
+    if (const auto bh = p.find("baseHead"); bh != p.end()) {
+        if (!bh->is_null()) {
+            const auto v = asInt64(*bh);
+            if (!v) return refusal(errc::InvalidParams, "baseHead is an integer or null", "invalid");
+            *bh = *v;
+        }
+    }
+    const auto opsIt = p.find("ops");
+    if (opsIt == p.end() || !opsIt->is_array())
+        return refusal(errc::InvalidParams, "ops is a list of {op, payload, label?}", "invalid");
+    if (opsIt->empty()) return refusal(errc::InvalidParams, "the changeset is empty", "empty");
+    if (opsIt->size() > ctx.limits.maxOps)
+        return refusal(errc::OverLimit,
+                       std::to_string(opsIt->size()) + " ops, over the per-request cap of " +
+                           std::to_string(ctx.limits.maxOps),
+                       "too many ops", {{"cap", ctx.limits.maxOps}});
+
+    // Every op screened with the remote bounds (CTL-02): the allow-list, then
+    // the registry's own validation -- the one validator.
+    std::size_t index = 0;
+    for (auto& o : *opsIt) {
+        const std::string at = "ops[" + std::to_string(index) + "]";
+        if (!o.is_object())
+            return refusal(errc::InvalidParams, at + " is an object", "invalid", {{"index", index}});
+        for (auto it = o.begin(); it != o.end(); ++it)
+            if (it.key() != "op" && it.key() != "payload" && it.key() != "label")
+                return refusal(errc::InvalidParams, at + ": unknown key " + clipUtf8(it.key(), kMaxEcho), "invalid",
+                               {{"index", index}});
+        const auto op = o.find("op");
+        if (op == o.end() || !op->is_string())
+            return refusal(errc::InvalidParams, at + ".op is an op name", "invalid", {{"index", index}});
+        const auto& name = op->get_ref<const std::string&>();
+        const auto* d = OpRegistry::instance().find(name);
+        if (!d || !agent::agentMayEmit(name))
+            return refusal(errc::InvalidParams,
+                           "'" + clipUtf8(name, kMaxEcho) + "' is not an op a changeset may contain (ops.describe)",
+                           "op not allowed", {{"index", index}});
+        const auto payload = o.find("payload");
+        if (payload == o.end() || !payload->is_object())
+            return refusal(errc::InvalidParams, at + ".payload is an object", "invalid",
+                           {{"index", index}, {"op", std::string(d->name)}});
+        normalizeSubmission(*d, *payload);
+        const auto issues = validateSubmission(*d, *payload, Bounds::Remote);
+        if (!issues.empty()) {
+            Json list = Json::array();
+            for (std::size_t i = 0; i < issues.size() && i < 8; ++i)
+                list.push_back({{"key", clipUtf8(issues[i].key, kMaxEcho)}, {"problem", issues[i].problem}});
+            return refusal(errc::InvalidParams,
+                           std::string(d->name) + ": " + clipUtf8(issues.front().key, kMaxEcho) + " " +
+                               issues.front().problem,
+                           "invalid", {{"index", index}, {"op", std::string(d->name)}, {"issues", std::move(list)}});
+        }
+        if (const auto label = o.find("label"); label != o.end()) {
+            if (!label->is_string() || utf8CodePoints(label->get_ref<const std::string&>()) > kMaxLabel)
+                return refusal(errc::InvalidParams, at + ".label is text of at most 200 characters", "invalid",
+                               {{"index", index}});
+        }
+        ++index;
+    }
+    return std::nullopt;
+}
 
 }  // namespace
 
@@ -161,8 +275,9 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         MethodSpec m;
         m.name = "project.read";
         m.summary =
-            "Read the project: level 0 is the song, tracks with their devices, routing, markers and "
-            "the next free ids; 1 adds clips, automation lanes and device parameters; 2 adds notes";
+            "Read the project: level 0 is the song, key events, tracks with their devices, routing, markers "
+            "and the next free ids; 1 adds clips, automation lanes, device parameters, remarks and tunings; "
+            "2 adds notes";
         m.paramsSchema = {
             {"type", "object"},
             {"properties",
@@ -196,11 +311,10 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             scope.fromBar = fromBar;
             scope.toBar = toBar;
             std::string err;
-            const auto model = project->readModel(err);
+            const auto snapshot = project->read(err);
             if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project: " + err);
-            const auto head = project->head(err);
-            return Outcome::ok(projectLevel(model, static_cast<int>(level.value_or(0)), scope, head,
-                                            project->handle()));
+            return Outcome::ok(projectLevel(snapshot.model, static_cast<int>(level.value_or(0)), scope,
+                                            snapshot.head, project->handle()));
         };
         service.add(std::move(m));
     }
@@ -209,7 +323,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
     {
         MethodSpec m;
         m.name = "project.manifest";
-        m.summary = "Sample rate, ppq, length, tempo, meter, key, schema, head and counts";
+        m.summary = "Sample rate, ppq, length, tempo, meter, key, schema, head and counts; the transport "
+                    "when a running engine plays the project";
         m.paramsSchema = onlyProjectSchema();
         m.run = [&ctx](CallContext&, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"project"})) return failWith(*e);
@@ -217,10 +332,18 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             auto project = ctx.projects.resolve(p, e);
             if (!project) return failWith(e);
             std::string err;
-            const auto model = project->readModel(err);
+            const auto snapshot = project->read(err);
             if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project: " + err);
-            return Outcome::ok(manifest(model, project->head(err), project->handle(), project->label(),
-                                        project->fileSchema()));
+            Json out = manifest(snapshot.model, snapshot.head, project->handle(), project->label(),
+                                project->fileSchema());
+            if (project->live()) {
+                const auto frame = project->telemetry();
+                if (frame && frame->transport)
+                    out["transport"] = {{"playing", frame->transport->playing},
+                                        {"positionSamples", frame->transport->positionSamples},
+                                        {"sampleRate", frame->transport->sampleRate}};
+            }
+            return Outcome::ok(std::move(out));
         };
         service.add(std::move(m));
     }
@@ -235,9 +358,9 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             auto project = ctx.projects.resolve(p, e);
             if (!project) return failWith(e);
             std::string err;
-            const auto model = project->readModel(err);
+            const auto snapshot = project->read(err);
             if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the project: " + err);
-            return Outcome::ok(graph(model, project->handle()));
+            return Outcome::ok(graph(snapshot.model, project->handle()));
         };
         service.add(std::move(m));
     }
@@ -271,7 +394,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             {"properties",
              {{"names", {{"type", "array"}, {"items", {{"type", "string"}, {"maxLength", 64}}}, {"maxItems", 64},
                          {"description", "op names, e.g. [\"routing.connect\"]: their full schemas"}}},
-              {"query", {{"type", "string"}, {"maxLength", 128},
+              {"query", {{"type", "string"}, {"maxLength", kMaxQuery},
                          {"description", "words to find in op names and summaries"}}}}},
             {"additionalProperties", false}};
         m.run = [](CallContext&, const Json& p) -> Outcome {
@@ -287,7 +410,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                     if (!n.is_string()) return Outcome::fail(errc::InvalidParams, "names holds strings");
                     const auto* d = reg.find(n.get<std::string>());
                     if (!d) {
-                        unknown.push_back(n);
+                        unknown.push_back(clipUtf8(n.get_ref<const std::string&>(), kMaxEcho));
                         continue;
                     }
                     Json o = describeOp(*d);
@@ -300,8 +423,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             }
             std::string query;
             if (p.is_object() && p.contains("query") && !p.at("query").is_null()) {
-                if (!p.at("query").is_string() || p.at("query").get_ref<const std::string&>().size() > 128)
-                    return Outcome::fail(errc::InvalidParams, "query is a string of at most 128 characters");
+                if (!p.at("query").is_string() || utf8CodePoints(p.at("query").get_ref<const std::string&>()) > kMaxQuery)
+                    return Outcome::fail(errc::InvalidParams, "query is text of at most 128 characters");
                 query = lower(p.at("query").get<std::string>());
             }
             Json index = Json::array();
@@ -365,27 +488,11 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                                             "Omitted: the head now"}}}}},
             {"required", Json::array({"request", "ops"})},
             {"additionalProperties", false}};
+        m.screen = [&ctx](CallContext&, Json& p) -> std::optional<Outcome> { return screenProposal(ctx, p); };
         m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
-            if (auto e = closedKeys(p, {"project", "request", "ops", "baseHead"})) return failWith(*e);
             RpcError e;
             auto project = ctx.projects.resolve(p, e);
             if (!project) return failWith(e);
-
-            const auto requestIt = p.find("request");
-            if (requestIt == p.end() || !requestIt->is_string() || requestIt->get_ref<const std::string&>().empty() ||
-                requestIt->get_ref<const std::string&>().size() > kMaxRequestText)
-                return Outcome::fail(errc::InvalidParams,
-                                     "request is the user's request, 1 to 4096 characters (AI-AGENT 6.8)");
-            const auto opsIt = p.find("ops");
-            if (opsIt == p.end() || !opsIt->is_array())
-                return Outcome::fail(errc::InvalidParams, "ops is a list of {op, payload, label?}");
-            if (opsIt->empty())
-                return Outcome::fail(errc::InvalidParams, "the changeset is empty", {{"refusal", "empty"}});
-            if (opsIt->size() > ctx.limits.maxOps)
-                return Outcome::fail(errc::OverLimit,
-                                     std::to_string(opsIt->size()) + " ops, over the per-request cap of " +
-                                         std::to_string(ctx.limits.maxOps),
-                                     {{"refusal", "too many ops"}, {"cap", ctx.limits.maxOps}});
 
             // The same key from the same caller answers with what it queued
             // the first time, even after the service's cache forgot it.
@@ -394,96 +501,50 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                     return Outcome::ok(prior->proposal);
             }
 
-            // Every op screened at the boundary, with the remote bounds
-            // (CTL-02): the allow-list, then the registry's own validation.
-            std::vector<OpRequest> ops;
-            ops.reserve(opsIt->size());
-            std::size_t index = 0;
-            for (const auto& o : *opsIt) {
-                if (!o.is_object())
-                    return Outcome::fail(errc::InvalidParams, "ops[" + std::to_string(index) + "] is an object",
-                                         {{"refusal", "invalid"}, {"index", index}});
-                for (auto it = o.begin(); it != o.end(); ++it)
-                    if (it.key() != "op" && it.key() != "payload" && it.key() != "label")
-                        return Outcome::fail(errc::InvalidParams,
-                                             "ops[" + std::to_string(index) + "]: unknown key " + it.key(),
-                                             {{"refusal", "invalid"}, {"index", index}});
-                if (!o.contains("op") || !o.at("op").is_string())
-                    return Outcome::fail(errc::InvalidParams, "ops[" + std::to_string(index) + "].op is an op name",
-                                         {{"refusal", "invalid"}, {"index", index}});
-                const auto name = o.at("op").get<std::string>();
-                const auto* d = OpRegistry::instance().find(name);
-                if (!d || !agent::agentMayEmit(name))
-                    return Outcome::fail(errc::InvalidParams,
-                                         "'" + name + "' is not an op a changeset may contain (ops.describe)",
-                                         {{"refusal", "op not allowed"}, {"index", index}, {"op", name}});
-                if (!o.contains("payload") || !o.at("payload").is_object())
-                    return Outcome::fail(errc::InvalidParams,
-                                         "ops[" + std::to_string(index) + "].payload is an object",
-                                         {{"refusal", "invalid"}, {"index", index}, {"op", name}});
-                Payload payload = o.at("payload");
-                normalizeSubmission(*d, payload);
-                const auto issues = validateSubmission(*d, payload, Bounds::Remote);
-                if (!issues.empty()) {
-                    Json list = Json::array();
-                    for (std::size_t i = 0; i < issues.size() && i < 8; ++i)
-                        list.push_back({{"key", issues[i].key}, {"problem", issues[i].problem}});
-                    return Outcome::fail(errc::InvalidParams,
-                                         name + ": " + issues.front().key + " " + issues.front().problem,
-                                         {{"refusal", "invalid"}, {"index", index}, {"op", name},
-                                          {"issues", std::move(list)}});
-                }
-                OpRequest q;
-                q.opType = name;
-                q.payload = std::move(payload);
-                q.actor = Actor::Agent;
-                if (o.contains("label")) {
-                    if (!o.at("label").is_string() || o.at("label").get_ref<const std::string&>().size() > kMaxLabel)
-                        return Outcome::fail(errc::InvalidParams,
-                                             "ops[" + std::to_string(index) + "].label is at most 200 characters",
-                                             {{"refusal", "invalid"}, {"index", index}});
-                    q.label = o.at("label").get<std::string>();
-                }
-                ops.push_back(std::move(q));
-                ++index;
-            }
-
             // The head the caller built on: params.baseHead, then meta.expectHead,
             // then the head now.
             std::optional<std::int64_t> baseHead;
             std::string err;
-            const auto headNow = project->head(err);
             if (const auto bh = p.find("baseHead"); bh != p.end()) {
-                if (bh->is_null()) baseHead = std::nullopt;
-                else if (bh->is_number_integer()) baseHead = bh->get<std::int64_t>();
-                else return Outcome::fail(errc::InvalidParams, "baseHead is an integer or null");
+                if (!bh->is_null()) baseHead = bh->get<std::int64_t>();
             } else if (call.meta.expectHead) {
                 baseHead = *call.meta.expectHead;
             } else {
-                baseHead = headNow;
+                baseHead = project->head(err);
+                if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the head: " + err);
             }
 
             agent::Changeset cs;
             cs.baseHead = baseHead;
-            cs.request = requestIt->get<std::string>();
+            cs.request = p.at("request").get<std::string>();
             cs.createdUtc = ctx.nowUtcMicros ? ctx.nowUtcMicros() : 0;
             const std::string id = ctx.queue.nextId();
             std::string label = call.who.label.empty() ? std::string("unnamed client") : call.who.label;
-            if (label.size() > kMaxActorLabel) label.resize(kMaxActorLabel);
+            if (label.size() > kMaxActorLabel) {
+                std::size_t cut = kMaxActorLabel;
+                while (cut > 0 && (static_cast<unsigned char>(label[cut]) & 0xC0u) == 0x80u) --cut;
+                label.resize(cut);
+            }
             // ops.actor_detail: who wrote these, through what, and which
             // proposal -- so changeset.status can find it once applied.
             cs.actorDetail = "mcp:" + label + " via " + ctx.transport + " (" + id + ")";
-            for (auto& q : ops) {
+            for (const auto& o : p.at("ops")) {
+                OpRequest q;
+                q.opType = o.at("op").get<std::string>();
+                q.payload = o.at("payload");   // normalised by the screen
+                q.actor = Actor::Agent;
                 q.actorDetail = cs.actorDetail;
-                if (q.label.empty()) q.label = q.opType;
+                q.label = o.contains("label") ? o.at("label").get<std::string>() : q.opType;
+                cs.ops.push_back(std::move(q));
             }
-            cs.ops = std::move(ops);
 
             const agent::Preview pv = project->preview(cs, ctx.limits);
             if (!pv.ok) {
-                Json data = {{"refusal", refusalText(pv.refusal)}};
+                Json data = {{"refusal", agent::toString(pv.refusal)}};
                 if (pv.refusal == agent::Refusal::Stale) {
-                    data["headFound"] = headJson(headNow);
+                    // The head the check found, read again now: what to build on.
+                    std::string headError;
+                    data["headFound"] = headJson(project->head(headError));
                     data["baseHead"] = headJson(baseHead);
                     return Outcome::fail(errc::Stale, pv.error, std::move(data));
                 }
@@ -543,38 +604,51 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             if (!p.is_object() || !p.contains("id") || !p.at("id").is_string())
                 return Outcome::fail(errc::InvalidParams, "id is the changeset's id");
             const auto& id = p.at("id").get_ref<const std::string&>();
-            ctx.queue.expire(ctx.steadyMs());
             auto entry = ctx.queue.find(id, call.who.credential);
             // Another caller's id answers exactly like no id at all.
             if (!entry) return Outcome::fail(errc::InvalidParams, "no changeset of yours has that id");
 
+            // Applied wins over everything, and is checked first: a changeset
+            // applied within the window but first asked about after it is
+            // applied, not expired. Stale is worked out on every call and
+            // never stored, so a head that comes back makes it current again.
+            auto project = ctx.projects.find(entry->project);
+            Review state = entry->state;
             std::optional<std::int64_t> headNow;
-            if (auto project = ctx.projects.find(entry->project)) {
-                std::string err;
-                headNow = project->head(err);
-                if (entry->state == Review::AwaitingReview) {
-                    Review next = entry->state;
-                    if (project->wasApplied(entry->changeset.actorDetail)) next = Review::Applied;
-                    else if (headNow != entry->changeset.baseHead) next = Review::Stale;
-                    if (next != entry->state) {
-                        ctx.queue.setState(id, call.who.credential, next);
-                        entry->state = next;
+            if (state != Review::Applied && state != Review::Rejected && project) {
+                if (project->wasApplied(entry->changeset.actorDetail)) {
+                    ctx.queue.setState(id, call.who.credential, Review::Applied);
+                    state = Review::Applied;
+                } else {
+                    ctx.queue.expire(ctx.steadyMs());
+                    if (auto fresh = ctx.queue.find(id, call.who.credential)) state = fresh->state;
+                    if (state == Review::AwaitingReview) {
+                        std::string err;
+                        headNow = project->head(err);
+                        // A head that cannot be read changes nothing.
+                        if (err.empty() && headNow != entry->changeset.baseHead) state = Review::Stale;
                     }
                 }
             }
+            if (!headNow && project) {
+                std::string err;
+                headNow = project->head(err);
+            }
             Json out = {{"id", entry->id},
-                        {"status", std::string(toString(entry->state))},
+                        {"status", std::string(toString(state))},
                         {"project", entry->project},
                         {"baseHead", headJson(entry->changeset.baseHead)},
                         {"headNow", headJson(headNow)},
                         {"request", entry->changeset.request},
                         {"ops", entry->changeset.ops.size()}};
-            if (entry->state == Review::AwaitingReview) {
-                if (auto project = ctx.projects.find(entry->project)) out["apply"] = project->applyHint();
+            if (state == Review::AwaitingReview) {
+                if (project) out["apply"] = project->applyHint();
                 out["changeset"] = changesetJson(entry->changeset);
-            } else if (entry->state == Review::Stale) {
+            } else if (state == Review::Stale) {
                 out["why"] = "the project changed since the changeset was built; read it again and "
                              "propose anew (a stale changeset is never rebased)";
+            } else if (state == Review::Expired) {
+                out["why"] = "it was not applied within 24 hours; read the project again and propose anew";
             }
             return Outcome::ok(std::move(out));
         };

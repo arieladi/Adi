@@ -115,6 +115,11 @@ int run(const std::vector<fs::path>& args) {
     }
     if (asked && *asked < tier) tier = *asked;
 
+    // A copy of a project left by a bridge that crashed or was killed is
+    // removed before anything else (ADR-0233; headless_project.hpp).
+    if (const auto swept = HeadlessProject::sweepAbandonedScratch())
+        std::cerr << "adi-mcp: removed " << swept << " abandoned snapshot folder(s)\n";
+
     std::string error;
     auto headless = HeadlessProject::open(*project, error);
     if (!headless) {
@@ -130,6 +135,7 @@ int run(const std::vector<fs::path>& args) {
 
     ProjectSet projects;
     projects.add(headless);
+    projects.allowImplicitSingle(true);   // one file for the bridge's whole life
     ChangesetQueue queue;
     ControlContext context{projects, queue, limits, {}, {}, "adi", adi::kVersion, "adi-mcp"};
     context.nowUtcMicros = [] {
@@ -141,8 +147,13 @@ int run(const std::vector<fs::path>& args) {
     McpEndpoint endpoint(service, projects, McpServerInfo{"adi-mcp", "ADI", adi::kVersion});
     McpEndpoint::Session session;
     session.credential = credential;
+    // What reaches the client, said once where the user's MCP host shows it:
+    // the client may be a cloud model, and project content goes to it.
     std::cerr << "adi-mcp " << adi::kVersion << ": " << headless->label() << " ("
-              << headless->handle() << "), tier " << toString(tier) << ", read-only\n";
+              << headless->handle() << "), tier " << toString(tier) << ", read-only\n"
+              << "adi-mcp: the client reads this project's structure -- names, routing, devices, "
+                 "parameters, clips, notes and remarks -- never audio or media files; nothing is "
+                 "written unless you apply a changeset yourself\n";
     runStdio(std::cin, std::cout, endpoint, session, WireLimits{}, &std::cerr);
     return 0;
 }
