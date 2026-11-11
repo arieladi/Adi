@@ -132,6 +132,8 @@ class ProjectDocument final : public engine::BlockProcessor {
     // audio) come back in `error()`. Preparation decodes on the calling thread.
     bool assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file, std::int64_t nowUtc);
     bool clearSample(std::int64_t device, std::int32_t slot);
+    // The parameter glue's counters (for the tests: a sample's state reached the live device).
+    const engine::ParamOps::Stats &parameterStats() const noexcept { return parameterOps_.stats(); }
     // An audio file dropped on the arrangement (#308, N5): reads the file and the media pool and
     // captures the media row without writing anything; the window adds the clip and commits the
     // batch as one undo step. `nowUtc` in microseconds, as the history's own times. False with

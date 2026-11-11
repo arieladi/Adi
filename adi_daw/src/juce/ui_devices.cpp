@@ -140,6 +140,7 @@ void WrenchButton::paintButton(juce::Graphics &g, bool over, bool) {
 SampleTile::SampleTile(DeviceChainStrip &s, std::int64_t d, std::int32_t sl, juce::String n)
     : device(d), slot(sl), slotName(std::move(n)), strip_(s) {
     setTitle(slotName + " sample");
+    setTooltip("Drop a sample file here, from the desktop or the browser.");
     clear.getProperties().set("live.small", true);
     clear.setTooltip("Empties the " + slotName + " slot: one undo step.");
     clear.onClick = [this] {
@@ -613,21 +614,26 @@ bool DeviceChainStrip::clipboard(Clip c, std::optional<std::int64_t> device) {
     }
     return false;
 }
+void DeviceChainStrip::showSamples() {
+    // A sample tile shows its slot as the snapshot holds it: empty, loaded or missing.
+    const auto *snapshot = root.reader().get();
+    if (snapshot == nullptr)
+        return;
+    for (auto &p : panels)
+        if (p->sample) {
+            const engine::SampleSlotNode *node = nullptr;
+            for (const auto &slot : snapshot->sampleSlots)
+                if (slot && slot->deviceId == p->id && slot->slot == p->sample->slot)
+                    node = slot.get();
+            p->sample->show(node);
+        }
+}
 void DeviceChainStrip::frame(std::int64_t track) {
     // A wrench is lit while its window is open, however it closed (its own button, the host).
     for (auto &p : panels)
         if (p->wrench.isVisible() && p->wrench.getToggleState() != root.pluginWindowOpen(p->id))
             p->wrench.setToggleState(root.pluginWindowOpen(p->id), juce::dontSendNotification);
-    // A sample tile shows its slot as the snapshot holds it: empty, loaded or missing.
-    if (const auto *snapshot = root.reader().get())
-        for (auto &p : panels)
-            if (p->sample) {
-                const engine::SampleSlotNode *node = nullptr;
-                for (const auto &slot : snapshot->sampleSlots)
-                    if (slot && slot->deviceId == p->id && slot->slot == p->sample->slot)
-                        node = slot.get();
-                p->sample->show(node);
-            }
+    showSamples();
     auto next = publication ? publication() : nullptr;
     if (next == presented && track == selectedTrack)
         return;
@@ -658,6 +664,8 @@ void DeviceChainStrip::frame(std::int64_t track) {
     for (std::size_t i = 0; i < panels.size(); ++i)
         panels[i]->present(*visible[i]);
     presented = std::move(next);
+    // The panels just made show their sample slots in this frame, not the next.
+    showSamples();
     resized();
     repaint();
 }

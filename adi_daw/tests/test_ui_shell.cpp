@@ -2643,9 +2643,9 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
               panels[0]->sample->slotName == "Impulse" && panels[0]->sample->state() == SampleTile::State::Empty &&
               !panels[0]->sample->clear.isVisible() && !panels[0]->wrench.isVisible(),
           "Color Cab's panel draws its Impulse tile, empty, with no Clear and no wrench");
-    check(panels[0]->sample->getRight() <= panels[0]->getWidth() &&
-              panels[0]->sample->getY() >= DevicePanelView::kTitleHeight,
-          "the tile stands inside the panel, under its title bar");
+    check(panels[0]->sample->getTooltip().contains("Drop a sample") &&
+              panels[0]->sample->getX() >= (panels[0]->controls.empty() ? 0 : panels[0]->controls.back()->getRight()),
+          "the empty tile hints where to drop, and stands beside the controls, not over them");
     const auto wav = dir / "cab-impulse.wav";
     {
         std::vector<float> silence(256);
@@ -2677,6 +2677,14 @@ void colorCabTile(AppCommands &commands, const std::filesystem::path &dir) {
     check(panels[0]->sample->isInterestedInDragSource(fromBrowser) &&
               !panels[0]->sample->isInterestedInDragSource(juce::DragAndDropTarget::SourceDetails("other", nullptr, {10, 10})),
           "the tile takes a sample dragged from the browser, and nothing else");
+    root.say("");
+    panels[0]->sample->itemDropped(fromBrowser);
+#if ADI_WITH_PD
+    // The file was moved away above: the drop reaches the engine, which says why it cannot read it.
+    check(!root.error().empty(), "a sample dropped from the browser reaches the assignment, its refusal said");
+#else
+    check(!root.error().empty(), "a sample dropped from the browser reaches the assignment, and Pd off is said");
+#endif
     // The tile as drawn, for the picture.
     if (const auto folder = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); folder.isNotEmpty()) {
         juce::Image picture(juce::Image::ARGB, 2 * panels[0]->getWidth(), 2 * panels[0]->getHeight(), true,

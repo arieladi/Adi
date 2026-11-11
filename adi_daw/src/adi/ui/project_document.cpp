@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "project_document.hpp"
+#include "adi/audio/decode.hpp"
 #include "adi/media/collect_export.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -322,7 +323,8 @@ std::vector<Payload> loadStates(const PreparedSampleAssignment &prepared) {
 } // namespace
 bool ProjectDocument::assignSample(std::int64_t device, std::int32_t slot, const std::filesystem::path &file,
                                    std::int64_t nowUtc) {
-    auto prepared = prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc);
+    // The decode cache takes every format the browser lists (AIFF, FLAC, MP3...), not WAV alone.
+    auto prepared = prepareSampleAssignment(*store_, device, slot, file, engineRate_, nowUtc, &audio::defaultDecodeCache());
     if (!prepared.ok) {
         error_ = prepared.error.empty() ? "The sample could not be prepared." : prepared.error;
         return false;

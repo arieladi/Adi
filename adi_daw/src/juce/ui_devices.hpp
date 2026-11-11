@@ -187,6 +187,7 @@ class DeviceChainStrip final : public juce::Component, public juce::DragAndDropT
 
   private:
     const DevicePanelData *dataOf(std::int64_t device) const;
+    void showSamples();
     std::int64_t selectedTrack = -1;
     std::optional<std::int64_t> chosen_;
     int end_ = 0; // where the chain ends, in the content's pixels
