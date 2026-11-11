@@ -27,6 +27,14 @@ performs it (SPEC §8.1, ADR-0003). History naming/navigation and UI/session
 metadata use their stated metadata APIs; they do not invent undo operations.
 This document defines the editing contract and the intended vocabulary.
 
+Optional history retention (ADR-0213, SPEC §8.3) has a separate savepoint inside
+`OpJournal::commit`. A recoverable checkpoint/pruning failure returns a successful
+edit with `CommitResult::retentionWarning`; the edit's rows, journal clocks,
+caller hook and applied-batch delivery still complete. A final caller hook may
+reject the entire transaction as before. Protected history above its budget also
+reports through the warning; callers can surface that deferral without treating
+the edit as failed. Compaction does not append an undo operation.
+
 ---
 
 ## 1. What we took, and from where
@@ -1361,12 +1369,16 @@ selection. An existing ID refuses creation instead of overwriting the lane.
 
 Delete and clear payloads contain `id`; setters contain `id` and `value` (boolean
 for enable/visibility, finite double within lane bounds for default value).
-Clear removes points from every arrangement/clip stream while retaining data-row
-IDs, clip addresses, header version/stride/flags and trailers. An unreadable
-stream refuses the whole transaction, including any earlier clears. Delete
+Clear removes points and their `automation_segment_ranges` rows from every
+arrangement/clip stream while retaining data-row IDs, clip addresses, header
+version/stride/flags and trailers. An unreadable stream refuses the whole transaction, including any earlier clears. Delete
 cascades all streams. `automation.restoreLane` captures a `state` object holding
 the exact original row or null and every data row (`id`, `clip`, CBOR binary
-`bytes`), and restores its own inverse. Legacy scalar metadata and malformed
+`bytes`, and `ranges` containing each complete typed `automation_segment_ranges`
+row), and restores its own inverse. Range IDs, nullable clip addresses, source
+values, progress intervals and unknown SQLite columns survive exactly. Historical
+packets without `ranges` restore their recorded bytes but cannot reconstruct
+curve metadata that was never captured. Legacy scalar metadata and malformed
 opaque stream bytes are preserved by deletion undo, without applying new-lane
 validation to the captured state. Explicit row/stream ID collisions fail within
 the journal transaction. Each setter currently captures the full lane rather
@@ -1396,16 +1408,26 @@ No handler generates IDs, reads UI selection, or consults the grid.
   uint64 IDs. setCurve also carries curve and tension. A duplicate or missing
   selection refuses the whole edit. Empty resulting streams remain addressed.
 - `restoreData`: internal inverse packet with the same address, object `state` containing boolean
-  `present` and CBOR binary `bytes`; restores original bytes or row absence.
-  It captures its own inverse and does not normalize the original stream.
+  `present`, CBOR binary `bytes` and an array `ranges` of complete typed range
+  rows; restores original bytes, range cells and IDs, or row absence. It captures
+  its own inverse and does not normalize the original stream. Range addresses
+  must match the data row and clip. Legacy packets without `ranges` clear the
+  addressed range rows rather than applying stale ordinals to restored bytes.
 
 Edits sort whole records stably by time, including coincident-point order. Known
 prefix edits and deletion retain header version/flags, per-record opaque suffixes,
 reserved bytes and trailing data. Insertion into a wider, newer or unknown-flag
 stream is refused because unknown fields cannot be invented. Duplicate/zero
 stored point IDs and unreadable streams refuse edits. Undo/redo retains the exact
-original layout even across reordering. Caller beforeCommit rejection rolls back
-stream and journal together. Caller-provided shape points use the existing six
+original layout even across reordering. Retained curve ranges follow the actual
+point identity to its new record index. A slice survives time-only movement
+while its endpoint identities, values and outgoing curve/tension remain the
+same; insertion, deletion, changed adjacency or endpoint values invalidate the
+replaced segments, and a curve edit invalidates its old source domain. Unrelated
+slices and all their unknown columns survive. Invalid stored range addresses or
+ordinals refuse point edits atomically; clear can remove their rows. Caller
+beforeCommit rejection rolls back streams, range rows and journal together.
+Caller-provided shape points use the existing six
 curve formulas; this increment adds no Live shape preset or parity claim, Automation Arm, clip-envelope playback, or automated send levels.
 
 `automation_shapes.hpp` adds owner-thread shape generation and prepared inclusive
@@ -2146,3 +2168,14 @@ bypass, baked input-gain reset and optional disarm. Both play Warp off and use
 one undo transaction with project/document/head guards. No new opcode or schema
 is required. In-place preparation refuses partial extents or live incoming
 main/send audio rather than applying a baked mix twice.
+
+### Stored history baselines (schema 1.21)
+
+`history.root` is internal history metadata with a single required Text field,
+`state_hash`. Its Read descriptor has no apply handler or inverse: journal
+submission is refused. It is excluded from the editing catalogue count above.
+Compaction may replace an old transaction boundary with this hash reference or
+allocate an origin metadata record. Neither is a user edit or undo step.
+`history_roots` verifies the reference; named snapshots and dead ends keep their
+existing sequence references when their step history is compacted. All roots
+are hidden from `recent`, Undo/Redo steps and the timeline's step list.

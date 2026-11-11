@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/check.hpp"
+#include "adi/applied_batches.hpp"
+#include "adi/media/blake3.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
 #include "adi/store.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
+#include <sqlite3.h>
+#include <string_view>
 #include <algorithm>
 #include <cstdio>
 #include <stdexcept>
@@ -58,6 +62,7 @@ void linear() {
     check(retained.ok && retained.baseSeq == 4 && retained.transactions == 3 &&
               OpJournal(*p.store).count() == 4,
           "commits compact to three complete transactions plus the checkpoint root");
+    check(p.store->db().execAndGet("SELECT count(*) FROM history_checkpoint_content c JOIN history_state_manifests m ON m.hash=c.state_hash WHERE c.id=1").getInt64()==1,"automatic compaction attaches its root to a real content manifest");
     check(p.name() == "7" && checkProject(*p.store).clean(),
           "checkpoint capture restores the live state and keeps integrity");
     int undone = 0;
@@ -96,24 +101,25 @@ void transactionsAndReplay() {
             throw std::runtime_error(result.error);
         if (i == 3)
             check(p.store->db().execAndGet("SELECT base_seq FROM history_checkpoint WHERE id=1").getInt64() ==
-                          2 &&
-                      OpJournal(*p.store).count() == 5,
+                          4 &&
+                      OpJournal(*p.store).count() == 3,
                   "first batch compaction stops at the complete oldest transaction immediately");
     }
-    check(h.compactUndo().baseSeq == 6 && OpJournal(*p.store).count() == 5,
+    check(h.compactUndo().baseSeq == 8 && OpJournal(*p.store).count() == 3,
           "multi-op transactions are never split by the retained boundary");
-    check(h.undo().opsApplied == 2 && h.undo().opsApplied == 2 && !h.canUndo() && p.name() == "6",
+    check(h.undo().opsApplied == 2 && !h.canUndo() && p.name() == "8",
           "each retained batch remains one undo step");
-    check(h.redo().ok && h.redo().ok && p.name() == "10", "batch redo returns to final state");
+    check(h.redo().ok && p.name() == "10", "batch redo returns to final state");
     Project target;
     target.store->db().exec("INSERT INTO session_state(key,value) VALUES('checkpoint-test','keep-ui')");
     const auto restored = History::restoreReplayBase(*p.store, *target.store);
-    check(restored.ok && restored.baseSeq == 6 && target.name() == "6",
+    check(restored.ok && restored.baseSeq == 8 && target.name() == "8",
           "replay begins with checkpoint state, including edits no longer in ops");
     auto log = OpJournal(*p.store).recent(100);
     std::reverse(log.begin(), log.end());
     for (const auto &op : log)
-        if (op.seq > restored.baseSeq) {
+        if (std::find(restored.retainedSeqs.begin(), restored.retainedSeqs.end(), op.seq) !=
+            restored.retainedSeqs.end()) {
             OpRequest request;
             request.opType = op.opType;
             request.payload = op.payload;
@@ -187,42 +193,59 @@ void exactBytesAndLegacy() {
           "legacy embedded-media rows retain their replay log until extraction");
 }
 void anchors() {
+    constexpr auto prepared = History::StoredRestore::SessionReloadPrepared;
     Project p;
     History h(*p.store);
     p.edits(1, 2);
     const auto named = h.takeSnapshot("Pinned", 1, 0);
     p.edits(3, 7);
     const auto retained = h.setUndoRetentionPolicy(budget(2));
-    check(named.ok && retained.ok && retained.protectedHistory && retained.baseSeq == 2,
-          "named snapshot limits compaction even above the budget");
-    check(h.revertToSnapshot(named.id, 2).ok && p.name() == "2", "protected named point remains navigable");
-    Project root;
-    History rootHistory(*root.store);
-    const auto point = rootHistory.takeSnapshot("Before edits", 1, 0);
-    root.edits(1, 5);
-    const auto blocked = rootHistory.setUndoRetentionPolicy(budget(2));
-    check(point.ok && blocked.ok && blocked.protectedHistory && blocked.baseSeq == 0 &&
-              OpJournal(*root.store).count() == 5,
-          "a named root preserves the whole prefix");
+    check(named.ok && retained.ok && !retained.protectedHistory && retained.baseSeq == 6 &&
+              retained.transactions == 1,
+          "named snapshots become stored states without blocking the active undo cap");
+    const auto before = digestProject(*p.store).text;
+    const auto oldHead = h.head();
+    const auto refused = h.revertToSnapshot(named.id, 2);
+    check(!refused.ok && refused.sessionReloadRequired && h.head() == oldHead &&
+              digestProject(*p.store).text == before,
+          "cross-baseline default refuses before mutation and requests document reload");
+    const auto restored = h.revertToSnapshot(named.id, 2, prepared);
+    check(restored.ok && restored.sessionReloadRequired && p.name() == "2" && !h.canUndo(),
+          "prepared stored snapshot restores its exact point without fabricated undo history");
+    check(h.listSnapshots().front().storedStateHash.has_value() && checkProject(*p.store).clean(),
+          "stored named point exposes a content identity and passes integrity");
+    Project origin;
+    History root(*origin.store);
+    const auto emptyName = origin.name();
+    const auto point = root.takeSnapshot("Before edits", 1, 0);
+    origin.edits(1, 5);
+    const auto capped = root.setUndoRetentionPolicy(budget(2));
+    check(point.ok && capped.ok && !capped.protectedHistory && capped.transactions == 1 &&
+              capped.baseSeq == 4,
+          "a named original root no longer pins the edit prefix");
+    check(root.revertToSnapshot(point.id, 2, prepared).ok && origin.name() == emptyName &&
+              !root.canUndo(),
+          "synthetic origin metadata restores the actual pre-edit state");
+    check(checkProject(*origin.store).clean() && root.readTimeline().error.empty(),
+          "a later synthetic origin sequence is a valid structural parent");
     Project fork;
     History tree(*fork.store);
     fork.edits(1, 6);
     check(tree.undo().ok && tree.undo().ok && tree.undo().ok, "fork fixture rewinds");
-    check(fork.edit("B1").ok && fork.edit("B2").ok, "fork fixture creates a second reachable line");
-    const auto branchList = tree.branches();
+    check(fork.edit("B1").ok && fork.edit("B2").ok, "fork fixture creates second reachable line");
     std::int64_t old = 0;
-    for (const auto &branch : branchList)
+    for (const auto &branch : tree.branches())
         if (!branch.isCurrent)
             old = branch.id;
     const auto cap = tree.setUndoRetentionPolicy(budget(2));
-    check(cap.ok && cap.protectedHistory && cap.baseSeq == 3 && old != 0,
-          "reachable fork point prevents compaction crossing either branch");
-    check(old != 0 && tree.switchToBranch(old).ok && fork.name() == "6",
-          "old branch still replays after shared-prefix compaction");
-    const auto oldBranchCap = tree.compactUndo();
-    check(oldBranchCap.ok && oldBranchCap.protectedHistory && oldBranchCap.baseSeq == 3,
-          "compaction after switching to the older branch also preserves the reachable fork");
-    check(checkProject(*fork.store).clean(), "forked compacted tree passes integrity checks");
+    check(cap.ok && !cap.protectedHistory && cap.baseSeq == 7 && cap.transactions == 1 && old != 0,
+          "dead ends become stored states before their bridge is pruned");
+    check(tree.switchToBranch(old, prepared).ok && fork.name() == "6" && !tree.canUndo(),
+          "old dead end opens from its saved baseline after active history crosses the fork");
+    const auto oldCap = tree.compactUndo();
+    check(oldCap.ok && !oldCap.protectedHistory && oldCap.baseSeq == 6 &&
+              checkProject(*fork.store).clean(),
+          "switching to a stored dead end preserves cap and integrity");
 }
 void collaborationAndFailures() {
     Project p;
@@ -247,12 +270,14 @@ void collaborationAndFailures() {
     failure.edits(1, 2);
     failure.store->db().exec("CREATE TRIGGER refuse_checkpoint BEFORE INSERT ON history_checkpoint BEGIN "
                              "SELECT RAISE(ABORT,'planted checkpoint failure'); END");
-    check(!failure.edit("3").ok && failure.name() == "2" && OpJournal(*failure.store).count() == 2 &&
-              journal.compactUndo().baseSeq == 0,
-          "checkpoint failure rolls back the whole edit, state and log together");
+    const auto deferred=failure.edit("3");
+    check(deferred.ok && !deferred.retentionWarning.empty() && deferred.error.empty() &&
+              failure.name()=="3" && OpJournal(*failure.store).count()==3 && !journal.compactUndo().ok,
+          "checkpoint failure reports deferral while preserving the edit, state and log");
     failure.store->db().exec("DROP TRIGGER refuse_checkpoint");
-    check(failure.edit("3").ok && journal.compactUndo().baseSeq == 1,
-          "retry after checkpoint failure succeeds");
+    const auto retry=journal.compactUndo();const auto subsequent=failure.edit("4");
+    check(retry.ok && retry.baseSeq==2 && subsequent.ok && subsequent.retentionWarning.empty(),
+          "successful retry compacts deferred history and later commits clear the warning");
     Project late;
     History lateHistory(*late.store);
     if (!lateHistory.setUndoRetentionPolicy(budget(2)).ok)
@@ -287,6 +312,66 @@ void collaborationAndFailures() {
     auto invalid = budget(2001);
     check(!h.setUndoRetentionPolicy(invalid).ok, "project budget cannot exceed the director's maximum");
 }
+std::string internState(SQLite::Database& db,const Payload& state) {
+    SQLite::Transaction transaction(db);const auto hash=history_detail::storeCheckpointContent(db,state);transaction.commit();return hash;
+}
+void contentAndBestEffort() {
+    Project p;auto& db=p.store->db();
+    const std::string extension="CREATE TABLE future_content(id INTEGER PRIMARY KEY,i INTEGER,r REAL,t TEXT,b BLOB,n TEXT) STRICT;";
+    db.exec(extension+"INSERT INTO future_content VALUES(1,1,1.25,'1',X'',NULL),(2,2,-0.5,'α',X'0001FF','');");
+    const auto digest=digestProject(*p.store).text;
+    const auto initial=history_detail::checkpointState(*p.store);
+    const auto hash=internState(db,initial);
+    const auto rowCount=db.execAndGet("SELECT count(*) FROM history_state_rows").getInt64();
+    const auto manifestCount=db.execAndGet("SELECT count(*) FROM history_state_manifests").getInt64();
+    check(hash.size()==64 && rowCount>0 && manifestCount==1,"checkpoint content stores typed rows and one manifest by hash");
+    const auto beforeRepeat=db.execAndGet("SELECT total_changes()").getInt64();
+    check(internState(db,initial)==hash && db.execAndGet("SELECT count(*) FROM history_state_rows").getInt64()==rowCount && db.execAndGet("SELECT count(*) FROM history_state_manifests").getInt64()==manifestCount && db.execAndGet("SELECT total_changes()").getInt64()==beforeRepeat,"repeated checkpoint content reuses every immutable row and manifest");
+    check(digestProject(*p.store).text==digest,"content-addressed history is excluded from the musical digest");
+    Project target;target.store->db().exec(extension);{SQLite::Transaction restore(target.store->db());history_detail::installCheckpoint(*target.store,history_detail::readCheckpointContent(db,hash));restore.commit();}
+    check(digestProject(*target.store).text==digest,"row-deduplicated checkpoint restores the same typed project");
+    check(p.edit("Changed").ok,"content change fixture");
+    const auto changed=internState(db,history_detail::checkpointState(*p.store));
+    check(changed!=hash && db.execAndGet("SELECT count(*) FROM history_state_rows").getInt64()==rowCount+1 && db.execAndGet("SELECT count(*) FROM history_state_manifests").getInt64()==manifestCount+1,"a one-row edit adds exactly one content row and one manifest");
+    db.exec("UPDATE project SET name='Untitled'");
+    check(internState(db,history_detail::checkpointState(*p.store))==hash,"returning to an earlier state reuses its original content identity");
+    Payload altered;std::string rowHash;
+    for(const auto& table:initial.at("tables"))if(table.at("name")=="project"){
+        altered=table.at("rows").at(0);const auto original=encodePayload(altered);rowHash=media::blake3Bytes(original).hex;
+        const auto columns=table.at("columns").get<std::vector<std::string>>();const auto name=std::find(columns.begin(),columns.end(),"name");if(name==columns.end())throw std::runtime_error("project name column missing");
+        altered.at(static_cast<std::size_t>(name-columns.begin()))=Payload::array({"text","Tampered valid row"});
+    }
+    const auto tampered=encodePayload(altered);{SQLite::Statement corrupt(db,"UPDATE history_state_rows SET data=? WHERE hash=?");corrupt.bind(1,tampered.data(),static_cast<int>(tampered.size()));corrupt.bind(2,rowHash);corrupt.exec();}
+    bool refused=false;
+    try{(void)history_detail::readCheckpointContent(db,hash);}catch(const std::exception&){refused=true;}
+    check(refused,"corrupt content bytes cannot masquerade as a referenced row hash");
+    refused=false;try{(void)internState(db,initial);}catch(const std::exception&){refused=true;}
+    check(refused,"interning never trusts a corrupt pre-existing immutable object");
+
+    Project failure;History history(*failure.store);check(history.setUndoRetentionPolicy(budget(2)).ok,"late-compaction failure policy");failure.edits(1,2);
+    struct Observer final:AppliedObserver {unsigned deliveries=0;std::optional<std::int64_t> after;void committed(std::shared_ptr<const AppliedBatch> batch)override{++deliveries;after=batch->afterHead();}void sourceInvalidated(const AppliedSource&,AppliedSourceInvalidation)override{}};
+    auto observer=std::make_shared<Observer>();auto subscription=appliedSource(*failure.store).observe(observer);check(subscription.ok,"observe the edit across optional retention failure");
+    failure.store->db().exec("CREATE TRIGGER refuse_prune BEFORE DELETE ON ops WHEN OLD.seq=1 BEGIN SELECT RAISE(ABORT,'late prune failure'); END");
+    bool hook=false;CommitOptions options;options.beforeCommit=[&](SQLite::Database& database,std::int64_t,std::string&){hook=database.execAndGet("SELECT name FROM project").getString()=="3";return true;};
+    OpRequest request;request.opType="project.setName";request.payload={{"name","3"}};
+    const auto edit=OpJournal(*failure.store).commit(std::span<const OpRequest>(&request,1),options);
+    check(edit.ok && edit.error.empty() && edit.retentionWarning.find("late prune failure")!=std::string::npos && failure.name()=="3" && edit.seqs.size()==1,"late pruning failure preserves the complete actual edit and reports why");
+    check(hook && observer->deliveries==1 && observer->after==history.head(),"caller hook and applied delivery still run after optional retention rollback");
+    check(failure.store->db().execAndGet("SELECT count(*) FROM history_checkpoint").getInt64()==0 && failure.store->db().execAndGet("SELECT count(*) FROM history_state_rows").getInt64()==0 && failure.store->db().execAndGet("SELECT count(*) FROM history_state_manifests").getInt64()==0,"failed compaction rolls back its checkpoint, content objects and root retapping");
+    check(OpJournal(*failure.store).count()==3 && failure.store->db().execAndGet("SELECT count(*) FROM op_clocks").getInt64()==3 && checkProject(*failure.store).clean(),"deferred compaction retains journal clocks and a valid undo tree");
+    failure.store->db().exec("DROP TRIGGER refuse_prune");check(history.compactUndo().ok && history.canUndo(),"late-failure history remains compactable and undoable on retry");
+
+    Project denied;
+    sqlite3_set_authorizer(denied.store->db().getHandle(),+[](void*,int action,const char* operation,const char* name,const char*,const char*){
+        return action==SQLITE_SAVEPOINT && operation && name && std::string_view(operation)=="BEGIN" && std::string_view(name)=="adi_optional_compaction"?SQLITE_DENY:SQLITE_OK;
+    },nullptr);
+    const auto deniedSavepoint=denied.edit("Still committed");sqlite3_set_authorizer(denied.store->db().getHandle(),nullptr,nullptr);
+    check(deniedSavepoint.ok && !deniedSavepoint.retentionWarning.empty() && denied.name()=="Still committed","inability to start optional compaction cannot reject a valid edit");
+
+    Project daily;History dailyHistory(*daily.store);check(dailyHistory.setUndoRetentionPolicy(budget(3)).ok,"daily non-anchor fixture policy");
+    const auto automatic=dailyHistory.takeSnapshot("Daily",1,0,true);check(automatic.ok,"daily automatic root snapshot fixture");daily.edits(1,10);
+    const auto retained=dailyHistory.compactUndo();check(retained.ok && !retained.protectedHistory && retained.baseSeq>0 && dailyHistory.listSnapshots().empty(),"automatic snapshots never block compaction and compacted daily metadata is removed");
+}
 void bytesAndDefault() {
     Project p;
     History h(*p.store);
@@ -304,8 +389,8 @@ void bytesAndDefault() {
     actual.edits(1, 2001);
     History real(*actual.store);
     const auto cap = real.compactUndo();
-    check(cap.ok && cap.baseSeq == 1 && cap.transactions == 2000 && OpJournal(*actual.store).count() == 2001,
-          "default automatic compaction starts at the actual 2000-transaction boundary");
+    check(cap.ok && cap.baseSeq == 201 && cap.transactions == 1800 && OpJournal(*actual.store).count() == 1801,
+          "default compaction triggers above 2000 and retains the 1800-step low-water budget");
     const auto path = actual.store->path();
     actual.store.reset();
     StoreError error{};
@@ -323,6 +408,7 @@ int main() {
         exactBytesAndLegacy();
         anchors();
         collaborationAndFailures();
+        contentAndBestEffort();
         bytesAndDefault();
     } catch (const std::exception &error) {
         check(false, error.what());

@@ -272,6 +272,7 @@ template <typename T>
 void StripNode::writeMeter(const NodeIo& io, const T* const* audio) noexcept {
     if (io.frames <= 0 || io.channels <= 0) return;
     if (io.blockOffset == 0) meterPeak_ = meterEnergy_ = meterCount_ = 0;
+    double segmentPeak = 0;
     constexpr double ceiling = std::numeric_limits<float>::max();
     for (std::int32_t c = 0; c < io.channels; ++c) {
         if (audio == nullptr || audio[c] == nullptr) continue;
@@ -281,12 +282,16 @@ void StripNode::writeMeter(const NodeIo& io, const T* const* audio) noexcept {
             // float's range; neither that nor a bad device may publish NaN/Inf.
             const double magnitude = std::isnan(sample) ? 0.0 : std::min(std::abs(sample), ceiling);
             meterPeak_ = std::max(meterPeak_, magnitude);
+            segmentPeak = std::max(segmentPeak, magnitude);
             meterEnergy_ += magnitude*magnitude;
         }
     }
     meterCount_ += static_cast<double>(io.frames)*io.channels;
     meter_.peak.store(static_cast<float>(meterPeak_), std::memory_order_relaxed);
     meter_.rms.store(static_cast<float>(std::sqrt(meterEnergy_/meterCount_)), std::memory_order_relaxed);
+    // A frame can consume the hold between processing parts. Republishing the
+    // cumulative callback peak would resurrect an already consumed transient.
+    meter_.holdPeak(static_cast<float>(segmentPeak));
 }
 
 template <typename T>
