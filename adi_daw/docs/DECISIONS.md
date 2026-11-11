@@ -18093,3 +18093,137 @@ infrastructure, on a seat of its own, in parallel with the lanes.
 | ADR-0206 d1, d4 | the ArtCraft bridge is a client of this stack (d1, d3) |
 | LANES §1 | a control seat row and the paths of d7, per `docs/PLAN.md` §8.1 and his Q-C answer |
 | CTL-01, CTL-03, CTL-04 (`docs/PLAN.md`) | decided; the record at M0, the code with Track C |
+
+## ADR-0233 — The director's MCP request of 11 November is ADR-0232's control stack, built now: the registry's own schema, the transport-free core with its MCP projection, telemetry from what the engine already publishes, and a headless `adi-mcp` that holds no writable handle; win builds the first slice — `DECIDED` (2026-11-11) — **WIN'S CONTRACT UNDER ADR-0232, ADR-0168 d3, ADR-0039, ADR-0148, ADR-0209 d11, ADR-0203 d8/d14/d20 AND ADR-0222, AT THE DIRECTOR'S REQUEST OF 11 NOVEMBER; Q-O STAYS HIS; THE DIRECTOR MAY STRIKE IT**
+
+**Where this comes from.** On 11 November the director asked for "a native C++20/JUCE MCP server and
+unified tool registry" and pasted a specification:
+- one registry serving an in-app assistant and external clients;
+- atomic undo and a proposal mode;
+- resources for the manifest, the graph, the Mix Radar's telemetry and the browser's catalogue;
+- one tool per action, and ML jobs.
+
+He asked for Gemini's help to make sure it all makes sense. ADR-0232 had already decided the
+control stack on 8 November, but the seat it named never ran, and no control code existed on main.
+This entry:
+- maps the request onto that stack;
+- records what of the request is adopted, what conflicts with a ruling and why;
+- records what the first slice builds.
+
+`docs/CONTROL-MCP.md` is the design: its §1 has the request, part by part, and §3 the threading
+diagram.
+
+### Decisions
+
+1. **The request is ADR-0232's stack, built now, and win builds its first slice.** The director
+   asked win directly, so win takes the control seat's first items on branches `control/*`, under
+   the seat prompt's rules for owners, the gate and one PR per item:
+   - CTL-02;
+   - the in-process part of CTL-03;
+   - AGT-01's caps and queue;
+   - AGT-02's levelled read;
+   - CTL-08's headless backend.
+
+   The prompt of 5 November stays for whichever seat continues with CTL-04, CTL-09 and
+   `--connect`.
+2. **Adopted from the request.**
+   - **MCP resources** join the four tools as read-only views on the same methods:
+     `adi://projects/{project}/manifest`, `.../graph` and `.../telemetry`, plus `adi://ops` and
+     `adi://ops/{name}`. ADR-0168 d3's tools are unchanged.
+   - **A telemetry resource** that reads only what the engine already publishes: `StripMeter`,
+     `MainLoudnessReadout` and the transport.
+     - It is sampled on the message thread at the UI clock into one immutable frame.
+     - No new audio-to-anything path is added (ADR-0050 §4; MX-30).
+     - Each value is labelled with what it is: the latest callback, not held; four independent
+       loudness reads.
+     - Every Mix Radar input that does not exist yet is listed, with its milestone.
+   - **In-process callers** are `Principal`s of the same dispatcher, under the same grants, with no
+     side door. A model-backed button such as the Mix Radar's [Propose Fix] (AI-AGENT §8) is one.
+3. **Mapped onto what exists, not adopted as named.**
+   - The "unified tool registry" is the op registry, which already is the one vocabulary
+     (AI-AGENT §3). CTL-02's generated schema is how registering once produces the schemas.
+   - `adi.batch_transaction`, SQLite savepoints and `dry_run` / `stage_proposal` are the changeset
+     (ADR-0148): one transaction, one `txn_id`, one undo step. The Propose preview runs in a
+     transaction that is always rolled back. No savepoint API is added.
+   - Tools per action (`create_track`, `set_routing`, `configure_sidechain`, ...) are ops inside
+     one `changeset_propose`. ADR-0168 d3 stands: one tool per op was rejected, and the director
+     approved that on 25 September.
+   - "Mix Radar telemetry" is `adi://projects/{project}/telemetry`. The AI Mix Radar itself stays
+     at P2 (ADR-0209 §6, d11; MX-21), because its inputs (MX-30's spectra, AGT-07's `analyze.*`)
+     do not exist yet.
+4. **Not adopted, because a ruling says otherwise.** The director may strike the ruling.
+   - HTTP+SSE, which MCP itself deprecated in 2025-03-26, and named pipes: one listener, one
+     network stack (ADR-0232 d1).
+   - LAN clients by default: loopback, off by default, and a bearer token always (ADR-0039 d4).
+   - A `juce::Thread` in the core: the core is JUCE-free (ADR-0232).
+   - A model inside the DAW process: the agent is the sidecar (ADR-0168).
+   - Live LUFS per bus: rejected (ADR-0203 d14).
+5. **Refinements made while building.**
+   - **CTL-02's default bounds apply at the remote boundary only** (`Bounds::Remote`): text at
+     most 16 KiB characters, arrays at most 4096 elements, unless a field declares otherwise.
+     - Applied to local submissions, they would refuse a long automation pass or a large note
+       diff.
+     - Declared metadata applies everywhere, with one authority: `validateSubmission` enforces
+       what `opInputSchema` says.
+     - The "ids at least 0" default needs an id marker on `Field`, so it is deferred.
+     - At the boundary, a float with no fractional part in an Int field becomes the integer,
+       because JSON Schema calls 1.0 an integer.
+     - An integer above the 64-bit range is refused. It used to pass validation and wrap when a
+       handler read it.
+   - **`project_read` is its own derived view, with durable ids and `nextIds`.** It is not the
+     canonical text projection, whose rule R2 forbids row ids. Ops never allocate ids (ADR-0021),
+     so a caller creating rows takes them from `nextIds`, and the stale check keeps them free.
+   - **`adi-mcp --project` holds no writable handle** (AI-AGENT §6 rule 1).
+     - Reads go through a read-only connection.
+     - Previews run on a private snapshot, taken with SQLite's backup API and retaken whenever the
+       head moves.
+     - The file is never written, upgraded or locked for writing.
+     - Applying stays the user's act: Apply in ADI, or `adi_tool propose --apply` with the
+       changeset that `changeset_status` returns.
+   - **A request whose deadline passed while it waited is −32003** and never runs. ADR-0232 d5
+     named no code for it.
+   - **Both MCP eras, as published:**
+     - 2025-11-25 (and 2025-06-18 and 2025-03-26) through `initialize`.
+     - 2026-07-28, stateless:
+       - each request carries `_meta` with the protocol version and the client's capabilities;
+       - `resultType` on every result;
+       - `ttlMs` and `cacheScope` on discover, list and read results (0 and `private`);
+       - a mandatory `server/discover`, and no `ping`;
+       - −32022 with `{supported, requested}` for an unsupported version.
+     - In `tools/call`, a refusal is a tool execution error carrying ADI's refusal, so the model
+       can correct itself. An unknown tool is −32602.
+   - **ADI's `_meta` prefix is `io.github.arieladi.adi/`**, the reverse DNS of the project's
+     GitHub Pages domain.
+   - **`Limits::maxOps` defaults to 6000** (ADR-0203 d20), and adi-mcp reads
+     `agent.maxOpsPerRequest`. This is AGT-01's first half. The per-minute cap applies at Apply,
+     which no MCP client reaches yet.
+6. **Jobs and models.**
+   - `jobs_*` arrive with AGT-04, at M5. MCP's `notifications/progress` and its
+     `io.modelcontextprotocol/tasks` extension map onto ADR-0222's states.
+   - The request's model claims are corrected in CONTROL-MCP §10.2:
+     - Demucs runs at 44.1 kHz.
+     - Whisper gives no syllable or transient alignment.
+     - RVC is voice conversion: it needs a model per voice and is Tier 2 by ADR-0086.
+     - Timbre transfer is a P3 row.
+7. **Q-O, where the session token lives, stays the director's**, asked with this first PR
+   (ADR-0232 d8). This slice writes no token and no discovery file. adi-mcp's grant is keyed by a
+   per-process secret, because stdio is private to the client that started it.
+8. **The Gemini round.** At the director's request, the design and the code go to a Gemini check
+   of at most five file-and-prompt pairs, which he runs. Win verifies every claim, and the PRs
+   merge after that round.
+9. **Acceptance:**
+   - `adi_ops_schema_tests` (AC-24);
+   - `adi_rpc_permissions_tests` (`test_rpc_permissions`);
+   - `adi_control_mcp_tests`: AC-23, AC-17, CONTROL-MCP §6.3's group-and-sidechain changeset that
+     one undo restores, telemetry, hostile lines, and the binary over pipes.
+
+### Amendments, in one place
+
+| Entry | What this entry does to it |
+|---|---|
+| ADR-0232 d1, d7 | the first slice is win's, at the director's request; the listener and the app host come next |
+| ADR-0168 d3 | resources join the four tools as read-only views; the tools are unchanged |
+| CTL-02 (`docs/PLAN.md`) | default bounds at the remote boundary only; whole-number floats normalised; ids-at-least-0 deferred |
+| CTL-08 | the headless backend previews on a snapshot and holds no writable handle; the 2026-07-28 details as published |
+| AGT-01 | the cap defaults to 6000 and adi-mcp reads the row; the queue is in memory, by credential |
+| AGT-02 | `project_read` carries ids and `nextIds`; levels 0 to 2 are built, and 3 is refused with its card |
