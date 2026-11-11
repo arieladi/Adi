@@ -857,6 +857,11 @@ add_dependencies(adi_control_mcp_tests adi_mcp)
 target_compile_definitions(adi_control_mcp_tests PRIVATE ADI_MCP_PATH="$<TARGET_FILE:adi_mcp>")
 add_test(NAME adi_control_mcp_tests COMMAND adi_control_mcp_tests)
 
+# The read levels on a seeded project, called directly (AGT-02; R5.6, R5.11).
+add_executable(adi_control_projection_tests tests/test_control_projection.cpp)
+target_link_libraries(adi_control_projection_tests PRIVATE adi_control adi_changeset adi_core adi_warnings)
+add_test(NAME adi_control_projection_tests COMMAND adi_control_projection_tests)
+
 add_executable(adi_migrate_tests tests/test_migrate.cpp)
 target_link_libraries(adi_migrate_tests PRIVATE adi_core adi_warnings)
 target_compile_definitions(adi_migrate_tests PRIVATE

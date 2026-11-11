@@ -26,6 +26,8 @@
 
 namespace adi::control {
 
+/// Rejected is reserved for the app host's review panel (AGT-05, CTL-09):
+/// nothing in this slice sets it yet, and changeset.status passes it through.
 enum class Review { AwaitingReview, Applied, Rejected, Stale, Expired };
 [[nodiscard]] std::string_view toString(Review);
 
@@ -33,6 +35,9 @@ struct QueuedChangeset {
     std::string id;
     std::string credential;       ///< whose it is; never shown
     std::string idempotencyKey;   ///< empty: none
+    /// A digest of the screened params, the project's handle included: the
+    /// same key with other arguments is refused, never answered with this.
+    std::size_t paramsDigest = 0;
     std::string project;
     agent::Changeset changeset;
     Json proposal = Json::object();   ///< what changeset.propose answered
@@ -56,7 +61,8 @@ public:
 
     [[nodiscard]] std::string nextId();
 
-    /// The entry this credential already queued under this key, if any.
+    /// The entry this credential already queued under this key, if any. The
+    /// caller compares its paramsDigest and project before replaying it.
     [[nodiscard]] std::optional<QueuedChangeset> findByKey(const std::string& credential,
                                                            const std::string& key) const;
     /// The entry with this id, only if this credential owns it.

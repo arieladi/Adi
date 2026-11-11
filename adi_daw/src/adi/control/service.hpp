@@ -11,7 +11,8 @@
 //      not even which methods exist (−32006, one text whatever was wrong);
 //   2. the method, and the tier it needs (a write needs more than Observe);
 //   3. the idempotent replay, keyed by the credential plus the caller's key,
-//      so a retried write is answered once and queued once;
+//      so a retried write is answered once and queued once; the same key
+//      with other params is refused, never answered with the old outcome;
 //   4. the method's screen, on the CALLING thread (ADR-0232 d4: validation
 //      runs on the calling thread): params checked and normalised, every op
 //      payload validated by the registry's validateSubmission and nothing
@@ -21,7 +22,9 @@
 //      whose deadline fires first ABANDONS it, and it never runs; one that
 //      waited past its deadline without being abandoned is taken and
 //      answered −32003, unrun -- never applied late;
-//   6. the handler, which does what needs the owner: previews, commits.
+//   6. the grant again, as the owner takes the call: one revoked while the
+//      call waited is refused −32006 and the handler never runs;
+//   7. the handler, which does what needs the owner: previews, commits.
 //
 // Grants are keyed by a credential the transport holds -- a paired surface's
 // token, adi-mcp's per-process secret -- and never by the name a caller gives
@@ -82,7 +85,7 @@ struct RequestMeta {
 };
 
 /// A closed object: `expectHead` (integer or null), `deadlineMs` (1 to
-/// 600000), `idempotencyKey` (1 to 128 characters). Anything else is refused.
+/// 600000), `idempotencyKey` (1 to 128 bytes). Anything else is refused.
 [[nodiscard]] std::optional<RequestMeta> parseMeta(const Json& meta, RpcError& error);
 
 struct Outcome {
@@ -120,7 +123,8 @@ struct MethodSpec {
     /// or an immutable snapshot, and runs on the calling thread.
     bool ownerThread = false;
     /// True: a call carrying an idempotencyKey is answered from the cache
-    /// when the same credential sent the same key before.
+    /// when the same credential sent the same key, with the same params,
+    /// before; the same key with other params is refused (−32602).
     bool idempotent = false;
     bool readOnly = true;       ///< for MCP's readOnlyHint
     Json paramsSchema = Json::object();   ///< the closed schema of params; tools/list shows it
@@ -188,6 +192,11 @@ struct ServiceOptions {
     std::size_t idempotencyEntries = 256;
     /// A steady clock in milliseconds. Injected so tests own time.
     std::function<std::int64_t()> nowMs;
+    /// Optional diagnostics sink (adi-mcp: stderr). An internal error says
+    /// only "internal error" on the wire, which may reach a cloud model; what
+    /// was thrown comes here instead, as "internal error in <method>: <what>",
+    /// with every registered secret redacted.
+    std::function<void(std::string_view)> log;
 };
 
 class Service {
@@ -213,8 +222,18 @@ public:
     [[nodiscard]] std::int64_t now() const;
 
 private:
-    void remember(const std::string& key, const Outcome& outcome);
-    [[nodiscard]] std::optional<Outcome> recall(const std::string& key) const;
+    /// A remembered answer, with a digest of the params it answered, so the
+    /// same key sent with other params is refused rather than replayed.
+    struct Cached {
+        std::size_t paramsDigest = 0;
+        Outcome outcome;
+    };
+
+    void remember(const std::string& key, std::size_t paramsDigest, const Outcome& outcome);
+    [[nodiscard]] std::optional<Cached> recall(const std::string& key) const;
+    /// The fixed wire answer for an exception out of a screen or a handler;
+    /// what was thrown goes to options_.log, never to the caller.
+    [[nodiscard]] Outcome internalError(std::string_view method, std::string_view what) const;
 
     Executor owner_;
     GrantTable& grants_;
@@ -223,7 +242,7 @@ private:
     AuditRing audit_;
 
     mutable std::mutex cacheMutex_;
-    std::unordered_map<std::string, Outcome> cache_;
+    std::unordered_map<std::string, Cached> cache_;
     std::deque<std::string> cacheOrder_;
 };
 

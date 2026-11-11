@@ -2,6 +2,8 @@
 #include "adi/control/mcp.hpp"
 
 #include <algorithm>
+#include <initializer_list>
+#include <string>
 #include <utility>
 
 namespace adi::control {
@@ -71,10 +73,48 @@ const Json* metaOf(const Json& params) {
     return &*it;
 }
 
+/// Both eras' versions, as server/discover's supportedVersions and the
+/// −32022 data list them: the legacy ones are reached through initialize,
+/// never through _meta (a legacy version in _meta is served in the legacy era).
 Json allVersions() {
     Json v = Json::array({std::string(McpEndpoint::kModernVersion)});
     for (const auto& l : McpEndpoint::legacyVersions()) v.push_back(l);
     return v;
+}
+
+/// The MCP method a refusal is recorded under: a fixed name, so nothing the
+/// caller typed reaches the audit as a method.
+const char* fixedMethodName(std::string_view method) {
+    for (const char* known : {"initialize", "ping", "server/discover", "tools/list", "tools/call",
+                              "resources/list", "resources/templates/list", "resources/read"})
+        if (method == known) return known;
+    return "(unknown method)";
+}
+
+bool isLegacyVersion(std::string_view v) {
+    const auto& versions = McpEndpoint::legacyVersions();
+    return std::find(versions.begin(), versions.end(), v) != versions.end();
+}
+
+/// 2025-11-25 resources: "Resource not found: -32002" (a SHOULD). Only in a
+/// legacy session: 2026-07-28 requires −32602 and forbids emitting −32002.
+/// The number is errc::Stale on ADI's own /rpc table, which resources/read
+/// never answers.
+constexpr int kLegacyResourceNotFound = -32002;
+
+/// What the audit records of a refusal made here: its code's name, never the
+/// message, which may repeat what the caller sent (ADR-0232 d5).
+std::string codeName(int code) {
+    switch (code) {
+        case errc::ParseError: return "parse error";
+        case errc::InvalidRequest: return "invalid request";
+        case errc::MethodNotFound: return "unknown method";
+        case errc::InvalidParams: return "invalid params";
+        case errc::NotGranted: return "not granted";
+        case errc::UnsupportedProtocolVersion: return "unsupported protocol version";
+        case kLegacyResourceNotFound: return "resource not found";
+        default: return "error " + std::to_string(code);
+    }
 }
 
 }  // namespace
@@ -82,7 +122,9 @@ Json allVersions() {
 const std::vector<std::string>& McpEndpoint::legacyVersions() {
     // Not 2025-03-26: that revision requires receiving JSON-RPC batches, which
     // this server refuses; a client asking for it is answered with 2025-11-25.
-    static const std::vector<std::string> versions = {"2025-11-25", "2025-06-18"};
+    // 2024-11-05 carries no batch obligation, so a client pinned to it is
+    // served rather than answered with a version it cannot speak.
+    static const std::vector<std::string> versions = {"2025-11-25", "2025-06-18", "2024-11-05"};
     return versions;
 }
 
@@ -98,6 +140,8 @@ std::string McpEndpoint::defaultInstructions() {
            "- Work like this: project_read at level 0 (ids, nextIds, head) -> ops_describe with names "
            "(their schemas) -> changeset_propose with ids from nextIds and baseHead set to the head "
            "you read -> show the user the diff -> changeset_status.\n"
+           "- A proposal does not change the file: to build on it, the user applies it first; then "
+           "read the project again before the next proposal.\n"
            "- Positions are ticks (ppq in project_read) and bar|beat|tick; ops never allocate ids.\n"
            "- A refusal says why (invalid, op not allowed, stale, too many ops): correct it and "
            "propose again; a stale changeset means the project changed, so read it again.";
@@ -207,33 +251,51 @@ void McpEndpoint::noteConnection(const Session& session, const char* kind) {
     service_.audit().record({service_.now(), kind, session.clientLabel, "", 0, "stdio"});
 }
 
+void McpEndpoint::auditRefusal(const std::string& label, const char* method, const RpcError& error) {
+    // CONTROL-MCP §7: every refusal is recorded by its code and kind. These
+    // are the ones made here, around Service::call, which audits its own;
+    // the method is the fixed MCP name, never what the wire said.
+    service_.audit().record({service_.now(), "refused", label, method, error.code, codeName(error.code)});
+}
+
+std::string McpEndpoint::refuse(const Json& id, const std::string& label, const char* method, RpcError error) {
+    auditRefusal(label, method, error);
+    return encodeError(id, std::move(error));
+}
+
 std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& who, RpcError& error) {
-    if (!params.is_object() || !params.contains("name") || !params.at("name").is_string()) {
-        error = {errc::InvalidParams, "tools/call needs a tool name", nullptr};
+    // A refusal made here is audited here; one from the method came through
+    // Service::call, which audited it already.
+    const auto local = [this, &who, &error](RpcError e) -> std::optional<Json> {
+        error = std::move(e);
+        auditRefusal(who.label, "tools/call", error);
         return std::nullopt;
-    }
+    };
+    if (!params.is_object() || !params.contains("name") || !params.at("name").is_string())
+        return local({errc::InvalidParams, "tools/call needs a tool name", nullptr});
     const auto& name = params.at("name").get_ref<const std::string&>();
     const ToolDef* tool = findTool(name);
-    if (!tool) {
-        error = {errc::InvalidParams, "unknown tool: " + name, {{"tools", Json::array({"project_read", "ops_describe",
-                                                                                         "changeset_propose",
-                                                                                         "changeset_status"})}}};
-        return std::nullopt;
-    }
+    if (!tool)
+        return local({errc::InvalidParams, "unknown tool: " + name,
+                      {{"tools", Json::array({"project_read", "ops_describe", "changeset_propose",
+                                              "changeset_status"})}}});
     Json arguments = Json::object();
     if (const auto a = params.find("arguments"); a != params.end() && !a->is_null()) {
-        if (!a->is_object()) {
-            error = {errc::InvalidParams, "tool arguments are an object", nullptr};
-            return std::nullopt;
-        }
+        if (!a->is_object()) return local({errc::InvalidParams, "tool arguments are an object", nullptr});
         arguments = *a;
     }
     RequestMeta meta;
     if (const Json* m = metaOf(params)) {
+        // Present but not a key is refused, as parseMeta refuses it on the
+        // RPC path: ignoring it would silently turn off the dedup a retry
+        // relies on.
         const auto key = std::string(kMetaPrefix) + "idempotencyKey";
-        if (const auto k = m->find(key); k != m->end() && k->is_string() && !k->get_ref<const std::string&>().empty() &&
-                                         k->get_ref<const std::string&>().size() <= 128)
+        if (const auto k = m->find(key); k != m->end()) {
+            if (!k->is_string() || k->get_ref<const std::string&>().empty() ||
+                k->get_ref<const std::string&>().size() > 128)
+                return local({errc::InvalidParams, "_meta[\"" + key + "\"] is text of 1 to 128 bytes", nullptr});
             meta.idempotencyKey = k->get<std::string>();
+        }
     }
 
     Outcome out = run(who, tool->method, arguments, meta);
@@ -256,11 +318,16 @@ std::optional<Json> McpEndpoint::callTool(const Json& params, const Principal& w
                 {"isError", false}};
 }
 
-std::optional<Json> McpEndpoint::readResource(const Json& params, const Principal& who, RpcError& error) {
+std::optional<Json> McpEndpoint::readResource(const Json& params, const Principal& who, bool modern,
+                                              RpcError& error) {
     if (!params.is_object() || !params.contains("uri") || !params.at("uri").is_string()) {
         error = {errc::InvalidParams, "resources/read needs a uri", nullptr};
+        auditRefusal(who.label, "resources/read", error);
         return std::nullopt;
     }
+    // Not found: −32602 for a 2026-07-28 request (a MUST, and −32002 is a
+    // MUST NOT there); −32002 in a legacy session (2025-11-25's SHOULD).
+    const int notFound = modern ? errc::InvalidParams : kLegacyResourceNotFound;
     const auto& uri = params.at("uri").get_ref<const std::string&>();
     std::string method;
     Json args = Json::object();
@@ -284,13 +351,19 @@ std::optional<Json> McpEndpoint::readResource(const Json& params, const Principa
         }
     }
     if (method.empty()) {
-        error = {errc::InvalidParams, "no such resource", {{"uri", uri}}};
+        error = {notFound, "no such resource", {{"uri", uri}}};
+        auditRefusal(who.label, "resources/read", error);
         return std::nullopt;
     }
     Outcome out = run(who, method, args, RequestMeta{});
     if (out.error) {
+        // Already audited by Service::call. The params are ours, so its
+        // −32602 means the project or the op is not there: not found.
         error = *out.error;
-        if (error.code == errc::InvalidParams) error.data = {{"uri", uri}};
+        if (error.code == errc::InvalidParams) {
+            error.code = notFound;
+            error.data = {{"uri", uri}};
+        }
         return std::nullopt;
     }
     return Json{{"contents", Json::array({{{"uri", uri}, {"mimeType", "application/json"},
@@ -311,35 +384,56 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
     const std::string& method = message.method;
     const Json params = message.params.is_null() ? Json::object() : message.params;
 
+    // The method as the audit names it: one of ours, never the wire's text.
+    const char* audited = fixedMethodName(method);
+
     // --- which era ----------------------------------------------------------------
     Era era;
     const Json* meta = metaOf(params);
+    bool modernShaped = false;
     if (meta && meta->contains(kVersionKey)) {
+        // Who a refusal is recorded against: the label this request gives.
+        std::string asked;
+        if (const auto ci = meta->find(kClientInfoKey); ci != meta->end()) asked = labelOf(*ci);
         const auto& v = meta->at(kVersionKey);
         if (!v.is_string())
-            return encodeError(id, {errc::InvalidParams, "the protocol version is a string", nullptr});
-        if (v.get_ref<const std::string&>() != kModernVersion)
-            return encodeError(id, {errc::UnsupportedProtocolVersion, "Unsupported protocol version",
-                                    {{"supported", allVersions()}, {"requested", v}}});
-        const auto caps = meta->find(kCapabilitiesKey);
-        if (caps == meta->end() || !caps->is_object())
-            return encodeError(id, {errc::InvalidParams,
-                                    "a 2026-07-28 request carries _meta[\"" + kCapabilitiesKey + "\"]",
-                                    nullptr});
-        era.modern = true;
-        if (const auto ci = meta->find(kClientInfoKey); ci != meta->end()) era.label = labelOf(*ci);
-    } else {
+            return refuse(id, asked, audited, {errc::InvalidParams, "the protocol version is a string", nullptr});
+        const auto& version = v.get_ref<const std::string&>();
+        if (version == kModernVersion) {
+            modernShaped = true;
+        } else if (!isLegacyVersion(version)) {
+            return refuse(id, asked, audited,
+                          {errc::UnsupportedProtocolVersion, "Unsupported protocol version",
+                           {{"supported", allVersions()}, {"requested", v}}});
+        }
+        // A legacy version in a modern _meta: the spec is silent, and −32022
+        // listing the very version asked for would invite a loop. The modern
+        // _meta is ignored and the request served in the legacy era, which
+        // needs initialize first (R3.1).
+        if (modernShaped) {
+            const auto caps = meta->find(kCapabilitiesKey);
+            if (caps == meta->end() || !caps->is_object())
+                return refuse(id, asked, audited,
+                              {errc::InvalidParams,
+                               "a 2026-07-28 request carries _meta[\"" + kCapabilitiesKey + "\"]", nullptr});
+            era.modern = true;
+            era.label = std::move(asked);
+        }
+    }
+    if (!modernShaped) {
         if (method == "initialize") {
             if (session.initialized)
-                return encodeError(id, {errc::InvalidRequest, "already initialized", nullptr});
+                return refuse(id, session.clientLabel, audited,
+                              {errc::InvalidRequest, "already initialized", nullptr});
             return encodeResult(id, initializeResult(params, session));
         }
         if (method == "ping") return encodeResult(id, Json::object());
         if (!session.initialized)
-            return encodeError(id, {errc::InvalidRequest,
-                                    "send initialize first, or a 2026-07-28 request carrying "
-                                    "_meta[\"" + kVersionKey + "\"]",
-                                    nullptr});
+            return refuse(id, session.clientLabel, audited,
+                          {errc::InvalidRequest,
+                           "send initialize first, or a 2026-07-28 request carrying "
+                           "_meta[\"" + kVersionKey + "\"]",
+                           nullptr});
         era.label = session.clientLabel;
     }
     const Principal who{session.credential, era.label};
@@ -350,7 +444,7 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
     // a caller with none learns nothing about the projects or the tools.
     const auto granted = service_.grants().tierOf(session.credential);
     if (!granted && !(method == "server/discover" && era.modern))
-        return encodeError(id, {errc::NotGranted, "not granted", nullptr});
+        return refuse(id, era.label, audited, {errc::NotGranted, "not granted", nullptr});
 
     // --- the methods ----------------------------------------------------------------
     std::optional<Json> result;
@@ -369,15 +463,17 @@ std::optional<std::string> McpEndpoint::handle(const Incoming& message, Session&
         result = resourceTemplates();
         cacheable = true;
     } else if (method == "resources/read") {
-        result = readResource(params, who, error);
+        // Refusals are audited inside: those made there, by readResource;
+        // those from the method, by Service::call.
+        result = readResource(params, who, era.modern, error);
         cacheable = true;
         if (!result) return encodeError(id, error);
     } else if (method == "tools/call") {
-        result = callTool(params, who, error);
+        result = callTool(params, who, error);   // audited inside, as above
         if (!result) return encodeError(id, error);
     } else {
         // initialize under modern _meta, ping in the modern era, or anything else.
-        return encodeError(id, {errc::MethodNotFound, "method not found: " + method, nullptr});
+        return refuse(id, era.label, audited, {errc::MethodNotFound, "method not found: " + method, nullptr});
     }
 
     if (era.modern) {

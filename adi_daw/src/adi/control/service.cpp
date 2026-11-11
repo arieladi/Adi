@@ -115,7 +115,7 @@ std::optional<RequestMeta> parseMeta(const Json& meta, RpcError& error) {
         } else if (key == "idempotencyKey") {
             if (!v.is_string() || v.get_ref<const std::string&>().empty() ||
                 v.get_ref<const std::string&>().size() > 128) {
-                error = {errc::InvalidParams, "meta.idempotencyKey is a string of 1 to 128 characters",
+                error = {errc::InvalidParams, "meta.idempotencyKey is a string of 1 to 128 bytes",
                          nullptr};
                 return std::nullopt;
             }
@@ -205,15 +205,19 @@ std::vector<AuditEvent> AuditRing::snapshot() const {
 bool secureEquals(std::string_view a, std::string_view b) noexcept {
     // The lengths are not secret (a token's length is fixed and public); the
     // content is. Every byte of the longer string is visited and nothing
-    // branches on content.
-    std::size_t diff = a.size() ^ b.size();
+    // branches on content. The accumulator is volatile, an optimisation
+    // barrier: every byte's difference must be stored, so the compiler cannot
+    // turn the loop into an early-exit compare. It is updated by plain
+    // assignment, since C++20 deprecates compound assignment to a volatile.
+    volatile unsigned char diff = 0;
     const std::size_t n = std::max(a.size(), b.size());
     for (std::size_t i = 0; i < n; ++i) {
         const auto x = i < a.size() ? static_cast<unsigned char>(a[i]) : static_cast<unsigned char>(0);
         const auto y = i < b.size() ? static_cast<unsigned char>(b[i]) : static_cast<unsigned char>(0);
-        diff |= static_cast<std::size_t>(x ^ y);
+        diff = static_cast<unsigned char>(diff | static_cast<unsigned char>(x ^ y));
     }
-    return diff == 0;
+    const unsigned char contentDiff = diff;
+    return (static_cast<std::size_t>(contentDiff) | (a.size() ^ b.size())) == 0;
 }
 
 // --- the service -------------------------------------------------------------------
@@ -254,10 +258,10 @@ std::vector<const MethodSpec*> Service::methods() const {
     return out;
 }
 
-void Service::remember(const std::string& key, const Outcome& outcome) {
+void Service::remember(const std::string& key, std::size_t paramsDigest, const Outcome& outcome) {
     std::lock_guard lock(cacheMutex_);
     if (cache_.count(key)) return;
-    cache_.emplace(key, outcome);
+    cache_.emplace(key, Cached{paramsDigest, outcome});
     cacheOrder_.push_back(key);
     while (cacheOrder_.size() > options_.idempotencyEntries) {
         cache_.erase(cacheOrder_.front());
@@ -265,11 +269,29 @@ void Service::remember(const std::string& key, const Outcome& outcome) {
     }
 }
 
-std::optional<Outcome> Service::recall(const std::string& key) const {
+std::optional<Service::Cached> Service::recall(const std::string& key) const {
     std::lock_guard lock(cacheMutex_);
     const auto it = cache_.find(key);
     if (it == cache_.end()) return std::nullopt;
     return it->second;
+}
+
+Outcome Service::internalError(std::string_view method, std::string_view what) const {
+    if (options_.log) {
+        // A sink that throws (or a line that cannot be allocated) must not
+        // turn one failed call into a crash of the dispatcher; the caller
+        // still gets its fixed answer.
+        try {
+            std::string line = "internal error in ";
+            line += method;
+            line += ": ";
+            line += what;
+            options_.log(audit_.redact(std::move(line)));
+        } catch (...) {
+            // nothing more to do: the log is diagnostics only
+        }
+    }
+    return Outcome::fail(errc::Internal, "internal error");
 }
 
 std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_view method,
@@ -277,7 +299,9 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
     auto pending = std::make_shared<PendingCall>();
     const std::string methodName(method);
 
-    // Every refusal is audited, by its code and kind; nothing the caller sent is.
+    // Every refusal is audited, by its code and kind. Of what the caller sent,
+    // only its self-declared label is kept (capped and redacted by the ring);
+    // nothing else it sent is.
     Done finish = [this, label = who.label, methodName, done = std::move(done)](Outcome out) {
         if (out.error && out.error->code != errc::Internal)
             audit_.record({now(), "refused", label, methodName, out.error->code, auditDetail(*out.error)});
@@ -303,17 +327,29 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         finish(Outcome::fail(errc::NotGranted, kNotGranted));
         return pending;
     }
-    // 3. The idempotent replay: the same credential, method and key.
+    // 3. The idempotent replay: the same credential, method and key, and the
+    //    same params. The digest is of the params as sent, before the screen
+    //    normalises them, so equal requests match byte for byte (an object's
+    //    keys dump in order). The same key with other params is a caller's
+    //    mistake -- a corrected retry under the old key -- and is refused, not
+    //    answered with the old outcome. A hash collision could only replay
+    //    the caller's own earlier answer to itself.
     std::string cacheKey;
+    std::size_t paramsDigest = 0;
     if (spec->idempotent && meta.idempotencyKey) {
         cacheKey = who.credential;
         cacheKey += '\n';
         cacheKey += spec->name;
         cacheKey += '\n';
         cacheKey += *meta.idempotencyKey;
+        paramsDigest = std::hash<std::string>{}(dumpJson(params));
         if (auto hit = recall(cacheKey)) {
             pending->take();
-            finish(std::move(*hit));
+            if (hit->paramsDigest != paramsDigest)
+                finish(Outcome::fail(errc::InvalidParams, "idempotencyKey reused with different arguments",
+                                     {{"refusal", "invalid"}}));
+            else
+                finish(std::move(hit->outcome));
             return pending;
         }
     }
@@ -326,19 +362,23 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
         try {
             refusal = spec->screen(screenCtx, prepared);
         } catch (const std::exception& e) {
-            refusal = Outcome::fail(errc::Internal, std::string("internal error: ") + e.what());
+            refusal = internalError(methodName, e.what());
+        } catch (...) {
+            refusal = internalError(methodName, "unknown exception");
         }
         if (refusal) {
             pending->take();
+            // A refusal other than Internal is deterministic for equal params,
+            // so it is remembered; an Internal one may pass on a retry.
             if (!cacheKey.empty() && !(refusal->error && refusal->error->code == errc::Internal))
-                remember(cacheKey, *refusal);
+                remember(cacheKey, paramsDigest, *refusal);
             finish(std::move(*refusal));
             return pending;
         }
     }
     // 5. The deadline, and the hop to the owner.
     const std::int64_t deadlineAt = now() + meta.deadlineMs.value_or(options_.defaultDeadlineMs);
-    Task run = [this, spec, who, meta, params = std::move(prepared), granted = *tier, cacheKey, deadlineAt,
+    Task run = [this, spec, who, meta, params = std::move(prepared), cacheKey, paramsDigest, deadlineAt,
                 pending, finish]() mutable {
         if (!pending->take()) return;   // the transport abandoned it and answered
         if (now() > deadlineAt) {
@@ -348,15 +388,26 @@ std::shared_ptr<PendingCall> Service::call(const Principal& who, std::string_vie
                                  "the deadline passed before the request ran; nothing was applied"));
             return;
         }
-        CallContext ctx{who, granted, meta};
+        // The grant again, now that the owner has the call: the user may have
+        // revoked or lowered it while the call waited in the queue (ADR-0232
+        // d5). The same one refusal text; never remembered, so a later grant
+        // is not answered from a stale refusal.
+        const auto granted = grants_.tierOf(who.credential);
+        if (!granted || *granted < spec->minTier) {
+            finish(Outcome::fail(errc::NotGranted, kNotGranted));
+            return;
+        }
+        CallContext ctx{who, *granted, meta};
         Outcome out;
         try {
             out = spec->run(ctx, params);
         } catch (const std::exception& e) {
-            out = Outcome::fail(errc::Internal, std::string("internal error: ") + e.what());
+            out = internalError(spec->name, e.what());
+        } catch (...) {
+            out = internalError(spec->name, "unknown exception");
         }
         if (!cacheKey.empty() && !(out.error && out.error->code == errc::Internal))
-            remember(cacheKey, out);
+            remember(cacheKey, paramsDigest, out);
         finish(std::move(out));
     };
     if (spec->ownerThread) owner_(std::move(run));

@@ -20,7 +20,7 @@
 // somebody's unreleased project accumulates in the temp folder.
 //
 // Applying is the user's act: `adi_tool propose ... --apply` with the
-// changeset that changeset_status returns.
+// changeset that changeset_propose (or changeset_status) returns.
 
 #pragma once
 

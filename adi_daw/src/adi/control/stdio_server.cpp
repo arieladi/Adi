@@ -24,6 +24,12 @@ bool readBoundedLine(std::istream& in, std::string& line, std::size_t maxBytes, 
         if (ch == '\n') break;
         if (tooLong) continue;   // consume the rest of an over-long line
         if (line.size() >= maxBytes) {
+            // One CR at the bound is the CRLF of a line of exactly maxBytes:
+            // keep it for the strip below, so a "\r\n" line frames as a "\n" one does.
+            if (ch == '\r' && line.size() == maxBytes) {
+                line.push_back(ch);
+                continue;
+            }
             tooLong = true;
             line.clear();
             continue;

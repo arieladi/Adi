@@ -88,12 +88,31 @@ Change describe(const OpRequest& q, const OpDescriptor& d, const std::optional<P
         // the before-state, in the op's own keys -- a parameter's old value.
         c.before = *inverse;
         c.after = q.payload;
-    } else if (inverse->size() < q.payload.size()) {
-        // Paired, and the inverse is only the identity: a creation.
-        c.after = q.payload;
     } else {
-        // Paired, and the inverse captured the row: a deletion.
-        c.before = *inverse;
+        // Paired. Classified by content, not by key count (R4.6): a capture
+        // op's inverse may have as many keys as its payload -- automation.
+        // createLane is {id,row} against {id,state} -- and must not read as a
+        // deletion.
+        const bool objects = inverse->is_object() && q.payload.is_object();
+        const auto everyKeyIn = [](const Payload& from, const Payload& in, bool equalValues) {
+            for (auto it = from.begin(); it != from.end(); ++it) {
+                const auto found = in.find(it.key());
+                if (found == in.end()) return false;
+                if (equalValues && *found != it.value()) return false;
+            }
+            return true;
+        };
+        if (objects && everyKeyIn(*inverse, q.payload, true)) {
+            // The inverse is only the identity, repeated from the payload: a creation.
+            c.after = q.payload;
+        } else if (objects && everyKeyIn(q.payload, *inverse, false)) {
+            // The inverse captured the row the payload names: a deletion.
+            c.before = *inverse;
+        } else {
+            // A capture beside new values: the old state, then the new.
+            c.before = *inverse;
+            c.after = q.payload;
+        }
     }
     return c;
 }

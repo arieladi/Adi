@@ -11,7 +11,11 @@
 namespace adi::control {
 namespace {
 
-double round2(double x) { return std::round(x * 100.0) / 100.0; }
+/// Two decimals; -0.0 (a level just under 0 dB, say) comes back as 0.0 (R5.4).
+double round2(double x) {
+    const double r = std::round(x * 100.0) / 100.0;
+    return r == 0.0 ? 0.0 : r;
+}
 
 /// Linear to dBFS; silence (or anything not positive and finite) is null.
 Json dbfs(float linear) {
@@ -127,8 +131,10 @@ Json telemetryJson(const TelemetryFrame* frame, std::int64_t nowMs, bool live) {
     }
     out["semantics"] = {
         {"strips",
-         "sample peak (not true peak) and RMS of the most recent audio callback, post-fader, not "
-         "held: a poll sees a fraction of callbacks and cannot show that a strip never clipped"},
+         "sample peak (not true peak) and RMS, post-fader, as last stored by the audio thread: "
+         "two independent reads, possibly from different callbacks or from part of one, so rms may "
+         "exceed peak; not held, and a poll sees at most one callback in many (about 1 in 9 at "
+         "10 Hz), so it cannot show that a strip never clipped"},
         {"main",
          "Main's momentary, short-term and integrated LUFS and held true peak: four independent "
          "reads, not a coherent set, and not a certified EBU R128 measurement; null is silence or a "

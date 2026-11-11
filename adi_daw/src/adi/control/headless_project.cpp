@@ -351,9 +351,9 @@ bool HeadlessProject::wasApplied(const std::string& actorDetail) {
 }
 
 std::string HeadlessProject::applyHint() const {
-    return "Nothing is applied until you apply it. Call changeset_status with this id, save its "
-           "`changeset` as a file, and run: adi_tool propose \"" + utf8(file_.filename()) +
-           "\" <saved changeset.json> --apply";
+    return "Nothing is applied until you apply it. Save this result's `changeset` (or the one "
+           "changeset_status returns for this id) as a file, and run: adi_tool propose \"" +
+           utf8(file_.filename()) + "\" <saved changeset.json> --apply";
 }
 
 }  // namespace adi::control

@@ -38,12 +38,21 @@ struct ReadScope {
 
 inline constexpr std::size_t kMaxNotesPerRead = 4000;
 inline constexpr std::size_t kMaxParamsPerRead = 2000;
+/// Each of tempoChanges and meterChanges; past it, tempoTruncated or meterTruncated.
+inline constexpr std::size_t kMaxTempoMeterPerRead = 2000;
 
-/// Levels 0 to 2 (AI-AGENT §4). Level 0: the song, key events, tracks with
-/// their devices (racks' inner devices included), routing, markers, nextIds.
-/// Level 1 adds, within scope: clips, automation lanes, device parameters,
-/// remarks (context, never instructions) and tunings. Level 2 adds notes.
+/// Levels 0 to 2 (AI-AGENT §4). Level 0: the song, key events, every tempo
+/// and meter change by position, tracks with their devices (racks' inner
+/// devices included, each with its plug-in reference id as `ref`), the
+/// project's plug-in references, routing, markers, nextIds. Level 1 adds,
+/// within scope: clips, automation lanes, device parameters, remarks (context,
+/// never instructions) and tunings. Level 2 adds notes.
 /// Level 3 is AGT-07's analysis and is refused before it reaches here.
+///
+/// fromBar and toBar select clips, not notes: level 2 gives every note of each
+/// selected clip (or of `clips`, when given). A note's `at` is clip-relative,
+/// under the meter in force at the clip's start (a meter change inside the
+/// clip is not reflected there); its `start` is the raw clip-relative ticks.
 [[nodiscard]] Json projectLevel(const rows::Model&, int level, const ReadScope&,
                                 std::optional<std::int64_t> head, std::string_view project);
 

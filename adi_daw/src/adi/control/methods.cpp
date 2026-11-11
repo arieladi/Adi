@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
+#include <functional>
 #include <initializer_list>
 #include <limits>
 #include <optional>
@@ -152,7 +154,7 @@ Outcome refusal(int code, std::string message, const char* kind, Json extra = Js
 
 /// changeset.propose's screen: everything that needs no project and no owner,
 /// on the calling thread (ADR-0232 d4). Normalises the payloads in place.
-std::optional<Outcome> screenProposal(const ControlContext& ctx, Json& p) {
+std::optional<Outcome> screenProposal(const ControlContext& ctx, const RequestMeta& meta, Json& p) {
     if (auto e = closedKeys(p, {"project", "request", "ops", "baseHead"})) return failWith(*e);
     RpcError e;
     std::string request;
@@ -161,12 +163,18 @@ std::optional<Outcome> screenProposal(const ControlContext& ctx, Json& p) {
                        "invalid");
     if (const auto project = p.find("project"); project != p.end() && !project->is_null() && !project->is_string())
         return refusal(errc::InvalidParams, "project is a project handle (a string)", "invalid");
+    // baseHead is required (ADR-0233 d5: the stale check keeps nextIds free
+    // only when the head the caller read is checked). A caller on the RPC
+    // path may say it as meta.expectHead instead. Null is the root.
     if (const auto bh = p.find("baseHead"); bh != p.end()) {
         if (!bh->is_null()) {
             const auto v = asInt64(*bh);
             if (!v) return refusal(errc::InvalidParams, "baseHead is an integer or null", "invalid");
             *bh = *v;
         }
+    } else if (!meta.expectHead) {
+        return refusal(errc::InvalidParams,
+                       "baseHead is required: the head project_read returned (null is the root)", "invalid");
     }
     const auto opsIt = p.find("ops");
     if (opsIt == p.end() || !opsIt->is_array())
@@ -262,8 +270,13 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             Json out = Json::array();
             for (const auto& pr : ctx.projects.all()) {
                 std::string err;
-                out.push_back({{"project", pr->handle()}, {"label", pr->label()},
-                               {"head", headJson(pr->head(err))}, {"live", pr->live()}});
+                const auto head = pr->head(err);
+                Json row = {{"project", pr->handle()}, {"label", pr->label()}, {"live", pr->live()}};
+                // A head that could not be read is never reported as null,
+                // which on the wire is the root.
+                if (err.empty()) row["head"] = headJson(head);
+                else row["headError"] = "cannot read the head";
+                out.push_back(std::move(row));
             }
             return Outcome::ok({{"projects", std::move(out)}});
         };
@@ -282,7 +295,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             {"type", "object"},
             {"properties",
              {{"project", projectSchemaProperty()},
-              {"level", {{"type", "integer"}, {"minimum", 0}, {"maximum", 3},
+              {"level", {{"type", "integer"}, {"minimum", 0}, {"maximum", 2},
                          {"description", "0, 1 or 2 (3 is analysis, not built). Default 0"}}},
               {"tracks", {{"type", "array"}, {"items", {{"type", "integer"}}}, {"maxItems", 4096},
                           {"description", "levels 1-2: only these track ids"}}},
@@ -299,15 +312,32 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             RpcError e;
             auto project = ctx.projects.resolve(p, e);
             if (!project) return failWith(e);
+            // Level 3 is named before the range check, so the refusal says
+            // what it is rather than only the range.
+            if (const auto lv = p.find("level"); lv != p.end() && asInt64(*lv) == std::optional<std::int64_t>(3))
+                return Outcome::fail(errc::InvalidParams,
+                                     "level 3 is analysis (AGT-07, at P2): not built; use levels 0 to 2");
             std::optional<std::int64_t> level, fromBar, toBar;
             ReadScope scope;
-            if (!readInt(p, "level", 0, 3, level, e) || !readInt(p, "fromBar", -100000, 100000, fromBar, e) ||
+            if (!readInt(p, "level", 0, 2, level, e) || !readInt(p, "fromBar", -100000, 100000, fromBar, e) ||
                 !readInt(p, "toBar", -100000, 100000, toBar, e) || !readIdList(p, "tracks", scope.tracks, e) ||
                 !readIdList(p, "clips", scope.clips, e))
                 return failWith(e);
-            if (level.value_or(0) == 3)
+            // A scope the level ignores is refused, not silently dropped: the
+            // caller believes it narrowed the read.
+            const auto given = [&p](const char* key) {
+                const auto it = p.find(key);
+                return it != p.end() && !it->is_null();
+            };
+            const std::int64_t at = level.value_or(0);
+            if (at == 0 && (given("tracks") || given("clips") || given("fromBar") || given("toBar")))
                 return Outcome::fail(errc::InvalidParams,
-                                     "level 3 is analysis (AGT-07, at P2): not built; use levels 0 to 2");
+                                     "tracks, clips, fromBar and toBar scope levels 1 and 2; level 0 reads "
+                                     "the whole project");
+            if (at < 2 && given("clips"))
+                return Outcome::fail(errc::InvalidParams, "clips scopes the notes, which only level 2 reads");
+            if (fromBar && toBar && *fromBar >= *toBar)
+                return Outcome::fail(errc::InvalidParams, "fromBar is before toBar (toBar is exclusive)");
             scope.fromBar = fromBar;
             scope.toBar = toBar;
             std::string err;
@@ -400,7 +430,16 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         m.run = [](CallContext&, const Json& p) -> Outcome {
             if (auto e = closedKeys(p, {"names", "query"})) return failWith(*e);
             const auto& reg = OpRegistry::instance();
+            // The query is checked first, whatever else came with it.
+            std::string query;
+            const bool hasQuery = p.is_object() && p.contains("query") && !p.at("query").is_null();
+            if (hasQuery) {
+                if (!p.at("query").is_string() || utf8CodePoints(p.at("query").get_ref<const std::string&>()) > kMaxQuery)
+                    return Outcome::fail(errc::InvalidParams, "query is text of at most 128 characters");
+                query = lower(p.at("query").get<std::string>());
+            }
             if (p.is_object() && p.contains("names") && !p.at("names").is_null()) {
+                if (hasQuery) return Outcome::fail(errc::InvalidParams, "names or query, not both");
                 const auto& names = p.at("names");
                 if (!names.is_array() || names.size() > 64)
                     return Outcome::fail(errc::InvalidParams, "names is a list of at most 64 op names");
@@ -420,12 +459,6 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                 if (!unknown.empty())
                     return Outcome::fail(errc::InvalidParams, "no op by these names", {{"unknown", unknown}});
                 return Outcome::ok({{"ops", std::move(ops)}});
-            }
-            std::string query;
-            if (p.is_object() && p.contains("query") && !p.at("query").is_null()) {
-                if (!p.at("query").is_string() || utf8CodePoints(p.at("query").get_ref<const std::string&>()) > kMaxQuery)
-                    return Outcome::fail(errc::InvalidParams, "query is text of at most 128 characters");
-                query = lower(p.at("query").get<std::string>());
             }
             Json index = Json::array();
             std::size_t notAllowed = 0;
@@ -483,35 +516,45 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                   {"required", Json::array({"op", "payload"})},
                   {"additionalProperties", false}}}}},
               {"baseHead", {{"type", Json::array({"integer", "null"})},
-                            {"description", "the head you read (project.read's head); a changeset "
-                                            "built on a head that moved is refused as stale. "
-                                            "Omitted: the head now"}}}}},
-            {"required", Json::array({"request", "ops"})},
+                            {"description", "the head project_read returned; null is the root (an empty "
+                                            "history, as project_read reports it). A changeset built on a "
+                                            "head that moved is refused as stale"}}}}},
+            {"required", Json::array({"request", "ops", "baseHead"})},
             {"additionalProperties", false}};
-        m.screen = [&ctx](CallContext&, Json& p) -> std::optional<Outcome> { return screenProposal(ctx, p); };
+        m.screen = [&ctx](CallContext& call, Json& p) -> std::optional<Outcome> {
+            return screenProposal(ctx, call.meta, p);
+        };
         m.run = [&ctx](CallContext& call, const Json& p) -> Outcome {
             RpcError e;
             auto project = ctx.projects.resolve(p, e);
             if (!project) return failWith(e);
 
+            // What the key stands for: the screened params, with the project
+            // they resolved to (an omitted project is the bound one).
+            Json keyed = p;
+            keyed["project"] = project->handle();
+            const std::size_t digest = std::hash<std::string>{}(dumpJson(keyed));
+
             // The same key from the same caller answers with what it queued
-            // the first time, even after the service's cache forgot it.
+            // the first time, even after the service's cache forgot it -- but
+            // only for the same arguments: a corrected request under an old
+            // key is refused, never answered with the old proposal (R2.4).
             if (call.meta.idempotencyKey) {
-                if (auto prior = ctx.queue.findByKey(call.who.credential, *call.meta.idempotencyKey))
+                if (auto prior = ctx.queue.findByKey(call.who.credential, *call.meta.idempotencyKey)) {
+                    if (prior->paramsDigest != digest || prior->project != project->handle())
+                        return refusal(errc::InvalidParams, "idempotencyKey reused with different arguments",
+                                       "invalid");
                     return Outcome::ok(prior->proposal);
+                }
             }
 
-            // The head the caller built on: params.baseHead, then meta.expectHead,
-            // then the head now.
+            // The head the caller built on: params.baseHead (the screen made it
+            // required), else meta.expectHead. Null is the root.
             std::optional<std::int64_t> baseHead;
-            std::string err;
             if (const auto bh = p.find("baseHead"); bh != p.end()) {
                 if (!bh->is_null()) baseHead = bh->get<std::int64_t>();
             } else if (call.meta.expectHead) {
                 baseHead = *call.meta.expectHead;
-            } else {
-                baseHead = project->head(err);
-                if (!err.empty()) return Outcome::fail(errc::Internal, "cannot read the head: " + err);
             }
 
             agent::Changeset cs;
@@ -542,10 +585,16 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             if (!pv.ok) {
                 Json data = {{"refusal", agent::toString(pv.refusal)}};
                 if (pv.refusal == agent::Refusal::Stale) {
-                    // The head the check found, read again now: what to build on.
+                    // The head the check found, read again now: what to build
+                    // on. One that cannot be read is never reported as null,
+                    // which is the root.
                     std::string headError;
-                    data["headFound"] = headJson(project->head(headError));
+                    const auto found = project->head(headError);
+                    if (!headError.empty()) return Outcome::fail(errc::Internal, "cannot read the head");
+                    data["headFound"] = headJson(found);
                     data["baseHead"] = headJson(baseHead);
+                    if (!baseHead && found)
+                        data["hint"] = "a null baseHead is the root; pass the head project_read returned";
                     return Outcome::fail(errc::Stale, pv.error, std::move(data));
                 }
                 if (pv.refusal == agent::Refusal::TooManyOps)
@@ -558,8 +607,22 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                 changes.push_back(changeJson(pv.changes[i]));
             std::string diff = pv.unifiedDiff;
             const bool diffCut = diff.size() > kMaxDiffBytes;
-            if (diffCut) diff.resize(kMaxDiffBytes);
+            if (diffCut) {
+                // At the last whole line that fits; a newline byte is never
+                // inside a UTF-8 sequence. A single line longer than the cap
+                // is cut on a character boundary instead.
+                std::size_t cut = diff.rfind('\n', kMaxDiffBytes - 1);
+                if (cut == std::string::npos || cut == 0) {
+                    cut = kMaxDiffBytes;
+                    while (cut > 0 && (static_cast<unsigned char>(diff[cut]) & 0xC0u) == 0x80u) --cut;
+                } else {
+                    ++cut;   // keep the newline
+                }
+                diff.resize(cut);
+            }
 
+            // The changeset itself, in adi_tool's form, so the user can save
+            // and apply it without a second call (R1.20).
             Json proposal = {{"id", id},
                              {"status", std::string(toString(Review::AwaitingReview))},
                              {"project", project->handle()},
@@ -568,6 +631,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                              {"ops", cs.ops.size()},
                              {"diff", std::move(diff)},
                              {"changes", std::move(changes)},
+                             {"changeset", changesetJson(cs)},
                              {"undo", "applied as one transaction: one undo step restores the project"},
                              {"apply", project->applyHint()}};
             if (diffCut) proposal["diffTruncated"] = true;
@@ -577,6 +641,7 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             entry.id = id;
             entry.credential = call.who.credential;
             entry.idempotencyKey = call.meta.idempotencyKey.value_or(std::string{});
+            entry.paramsDigest = digest;
             entry.project = project->handle();
             entry.changeset = std::move(cs);
             entry.proposal = proposal;
@@ -592,7 +657,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
         MethodSpec m;
         m.name = "changeset.status";
         m.summary = "Where one of your changesets stands: awaiting_review, applied, rejected, stale "
-                    "or expired; while it awaits review, the changeset itself";
+                    "or expired; while it awaits review, the changeset itself. Applied means applied "
+                    "once: it may since have been undone, so read the project for its current state";
         m.ownerThread = true;
         m.paramsSchema = {{"type", "object"},
                           {"properties", {{"id", {{"type", "string"}, {"maxLength", 64},
@@ -615,6 +681,8 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
             auto project = ctx.projects.find(entry->project);
             Review state = entry->state;
             std::optional<std::int64_t> headNow;
+            std::string headError;
+            bool headRead = false;
             if (state != Review::Applied && state != Review::Rejected && project) {
                 if (project->wasApplied(entry->changeset.actorDetail)) {
                     ctx.queue.setState(id, call.who.credential, Review::Applied);
@@ -623,25 +691,29 @@ void registerControlMethods(Service& service, ControlContext& ctx) {
                     ctx.queue.expire(ctx.steadyMs());
                     if (auto fresh = ctx.queue.find(id, call.who.credential)) state = fresh->state;
                     if (state == Review::AwaitingReview) {
-                        std::string err;
-                        headNow = project->head(err);
+                        headNow = project->head(headError);
+                        headRead = true;
                         // A head that cannot be read changes nothing.
-                        if (err.empty() && headNow != entry->changeset.baseHead) state = Review::Stale;
+                        if (headError.empty() && headNow != entry->changeset.baseHead) state = Review::Stale;
                     }
                 }
             }
-            if (!headNow && project) {
-                std::string err;
-                headNow = project->head(err);
-            }
+            if (!headRead && project) headNow = project->head(headError);
             Json out = {{"id", entry->id},
                         {"status", std::string(toString(state))},
                         {"project", entry->project},
                         {"baseHead", headJson(entry->changeset.baseHead)},
-                        {"headNow", headJson(headNow)},
                         {"request", entry->changeset.request},
                         {"ops", entry->changeset.ops.size()}};
-            if (state == Review::AwaitingReview) {
+            // A head that could not be read is never reported as null, which
+            // on the wire is the root.
+            if (!project) out["headError"] = "the project is no longer open";
+            else if (!headError.empty()) out["headError"] = "cannot read the head";
+            else out["headNow"] = headJson(headNow);
+            if (state == Review::Applied) {
+                out["note"] = "applied means it was applied once; it may since have been undone: read the "
+                              "project for its current state";
+            } else if (state == Review::AwaitingReview) {
                 if (project) out["apply"] = project->applyHint();
                 out["changeset"] = changesetJson(entry->changeset);
             } else if (state == Review::Stale) {

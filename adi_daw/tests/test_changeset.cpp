@@ -12,6 +12,7 @@
 
 #include "temp_directory.hpp"
 
+#include "adi/automation_lanes.hpp"
 #include "adi/changeset.hpp"
 #include "adi/digest.hpp"
 #include "adi/history.hpp"
@@ -210,6 +211,40 @@ void testPreviewDoesNotWrite() {
               p2.changes[1].before->at("name") == "Keys",
           "a creation shows only after, a deletion only what it removes");
     check(count(s, "SELECT COUNT(*) FROM tracks") == 2, "and neither happened");
+}
+
+void testDescribeByContent() {
+    section("paired ops are told apart by content, not key count (R4.6)");
+    Fixture f("describe");
+    if (!f.store) return;
+    Store& s = *f.store;
+    // automation.createLane is {id,row} against the inverse {id,state}: two
+    // keys each. Counting keys read it as a deletion with a null row and no
+    // `after`; setLaneEnabled ({id,value} against {id,state}) lost its new value.
+    automation::LaneSpec spec;
+    spec.id = 1;
+    spec.ownerId = 2;
+    spec.paramRef = "volume";
+    spec.paramName = "Volume";
+    Changeset cs = begin(s, "automate the bass fader", "m", kT0);
+    cs.ops.push_back(automation::createLane(spec));
+    cs.ops.push_back(automation::setLaneEnabled(1, false));
+    const auto p = preview(s, cs);
+    check(p.ok && p.changes.size() == 2, "the lane ops preview: " + p.error);
+    if (p.ok && p.changes.size() == 2) {
+        const auto& created = p.changes[0];
+        check(created.after && created.after->contains("row") &&
+                  created.after->at("row").at("param_ref") == "volume",
+              "createLane: `after` is the new lane's row");
+        check(created.before && created.before->at("state").at("row").is_null(),
+              "createLane: `before` says there was no lane");
+        const auto& enabled = p.changes[1];
+        check(enabled.before && enabled.before->at("state").at("row").at("enabled") == 1,
+              "setLaneEnabled: `before` holds the lane as it was, enabled");
+        check(enabled.after && enabled.after->at("value") == false,
+              "setLaneEnabled: `after` holds the new value");
+    }
+    check(count(s, "SELECT COUNT(*) FROM automation_lanes") == 0, "and nothing was written");
 }
 
 // --- apply ------------------------------------------------------------------------------
@@ -515,6 +550,7 @@ int runAll() {
     std::printf("adi_changeset_tests -- ADR-0145 d9, AI-AGENT 6, ADR-0148\n\n");
     testGuardrails();
     testPreviewDoesNotWrite();
+    testDescribeByContent();
     testApplyIsOneStep();
     testStale();
     testRequestRowIsInTheTransaction();

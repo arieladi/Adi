@@ -129,8 +129,11 @@ Json devicesOfTrack(const rows::Model& m, std::int64_t trackId) {
                         break;
                     }
             }
+            // `ref` is the plug-in reference's id (pluginRefs below), which
+            // device.insert takes: a second instance reuses it (R1.22).
             Json row = {{"id", d->id}, {"chain", c->id}, {"name", d->name}, {"enabled", d->enabled},
-                        {"rack", d->isRack}, {"plugin", plugin}, {"missing", d->missing}};
+                        {"rack", d->isRack}, {"plugin", plugin},
+                        {"ref", d->pluginRefId ? Json(*d->pluginRefId) : Json(nullptr)}, {"missing", d->missing}};
             if (c->parentDeviceId) row["inRack"] = *c->parentDeviceId;
             out.push_back(std::move(row));
         }
@@ -189,7 +192,9 @@ Json nextOf(const Rows& rowsIn, Id id) {
 
 std::string noteName(std::int64_t key) {
     const std::int64_t pitch = ((key % 12) + 12) % 12;
-    const std::int64_t octave = (key - pitch) / 12 - 2;   // 60 -> C3
+    // Floor division without computing key - pitch, which overflows for a
+    // key near INT64_MIN (a key is data from a file).
+    const std::int64_t octave = key / 12 - (key % 12 < 0 ? 1 : 0) - 2;   // 60 -> C3
     return std::string(kPitchNames[pitch]) + std::to_string(octave);
 }
 
@@ -312,6 +317,48 @@ Json projectLevel(const rows::Model& m, int level, const ReadScope& scope,
                         {"root", kPitchNames[root]}, {"scale", k.scaleId}});
     }
     out["keyEvents"] = std::move(keys);
+
+    // Every tempo and meter change, by position: project.removeTempoEvent and
+    // project.removeTimeSignature address them by position, so a caller has to
+    // see where they are (R1.21). Bounded like the other lists.
+    std::vector<const rows::TempoEvent*> tempoRows;
+    for (const auto& e : m.tempo) tempoRows.push_back(&e);
+    std::stable_sort(tempoRows.begin(), tempoRows.end(),
+                     [](const auto* a, const auto* b) { return a->posTicks < b->posTicks; });
+    Json tempoChanges = Json::array();
+    for (const auto* e : tempoRows) {
+        if (tempoChanges.size() >= kMaxTempoMeterPerRead) {
+            out["tempoTruncated"] = true;
+            break;
+        }
+        tempoChanges.push_back({{"pos", e->posTicks}, {"at", at(e->posTicks)}, {"bpm", e->bpm}});
+    }
+    out["tempoChanges"] = std::move(tempoChanges);
+
+    std::vector<const rows::TimeSignature*> meterRows;
+    for (const auto& s : m.signatures) meterRows.push_back(&s);
+    std::stable_sort(meterRows.begin(), meterRows.end(),
+                     [](const auto* a, const auto* b) { return a->posTicks < b->posTicks; });
+    Json meterChanges = Json::array();
+    for (const auto* s : meterRows) {
+        if (meterChanges.size() >= kMaxTempoMeterPerRead) {
+            out["meterTruncated"] = true;
+            break;
+        }
+        meterChanges.push_back({{"pos", s->posTicks}, {"at", at(s->posTicks)},
+                                {"numerator", s->numerator}, {"denominator", s->denominator}});
+    }
+    out["meterChanges"] = std::move(meterChanges);
+
+    // The project's plug-in references, so that device.insert can name one
+    // already in the project by its id (R1.6, R1.22). A plug-in not yet in the
+    // project waits for the catalogue (AGT-05).
+    Json pluginRefs = Json::array();
+    for (const auto& r : m.pluginRefs)
+        pluginRefs.push_back({{"id", r.id}, {"format", r.format}, {"uid", r.uid}, {"vendor", r.vendor},
+                              {"name", r.name}, {"version", r.version}, {"subtype", r.subtype}});
+    out["pluginRefs"] = std::move(pluginRefs);
+
     out["nextIds"] = nextIds(m);
     if (!m.problems.empty()) out["problems"] = m.problems;
     if (level < 1) return out;

@@ -4,11 +4,15 @@
 // docs/CONTROL-MCP.md §4.3, §8), in process, with no project and no socket:
 //
 //   * the grant comes before anything else, with one refusal text;
-//   * a write needs more than Observe, and a revoked grant is never replayed;
-//   * idempotent replay is keyed by the credential and the caller's key;
+//   * a write needs more than Observe, and a revoked grant is never replayed,
+//     not even for a call revoked while it waited for the owner thread;
+//   * idempotent replay is keyed by the credential and the caller's key, and
+//     the same key with other params is refused, never replayed;
 //   * a request whose deadline passed while it waited never runs late;
 //   * secrets never reach the audit, and payloads never enter it;
-//   * the wire is strict and bounded before it is parsed.
+//   * an exception says only "internal error" on the wire;
+//   * the wire is strict and bounded before it is parsed, and a peer's
+//     response is never answered, whatever its id.
 
 #include "adi/control/jsonrpc.hpp"
 #include "adi/control/service.hpp"
@@ -22,6 +26,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
 
 using namespace adi::control;
 
@@ -56,14 +62,26 @@ struct ManualExecutor {
     }
 };
 
+/// The defaults (10 s deadline, 256 remembered keys) with the test's clock
+/// and log. Set field by field, so a field added later needs no edit here.
+ServiceOptions rigOptions(std::function<std::int64_t()> nowMs, std::function<void(std::string_view)> log) {
+    ServiceOptions o;
+    o.nowMs = std::move(nowMs);
+    o.log = std::move(log);
+    return o;
+}
+
 struct Rig {
     GrantTable grants;
     std::int64_t clock = 1000;
     int readRuns = 0;
     int writeRuns = 0;
+    std::vector<std::string> logged;   ///< what the Service sent to its log
     Service service;
     explicit Rig(Executor ex)
-        : service(std::move(ex), grants, ServiceOptions{10000, 256, [this] { return clock; }}) {
+        : service(std::move(ex), grants,
+                  rigOptions([this] { return clock; },
+                             [this](std::string_view line) { logged.emplace_back(line); })) {
         MethodSpec read;
         read.name = "test.read";
         read.summary = "a read";
@@ -143,6 +161,44 @@ void testTiers() {
     check(rig.writeRuns == 1, "and nothing ran");
 }
 
+void testRevokedWhileQueued() {
+    section("the grant again when the owner takes the call: revoked while queued, never run");
+    ManualExecutor manual;
+    Rig rig(manual.executor());
+    const Principal p{"cred-q", "Q"};
+    rig.grants.grant(p.credential, Tier::Propose);
+
+    std::optional<Outcome> out;
+    rig.service.call(p, "test.write", Json::object(), {}, [&out](Outcome o) { out = std::move(o); });
+    check(!out && manual.tasks.size() == 1, "a Propose write is queued for the owner");
+    rig.grants.revoke(p.credential);
+    manual.drain();
+    check(refusedNotGranted(out) && rig.writeRuns == 0, "revoked while it waited: not granted, the handler never ran");
+
+    rig.grants.grant(p.credential, Tier::Propose);
+    std::optional<Outcome> lowered;
+    rig.service.call(p, "test.write", Json::object(), {}, [&lowered](Outcome o) { lowered = std::move(o); });
+    rig.grants.grant(p.credential, Tier::Observe);
+    manual.drain();
+    check(refusedNotGranted(lowered) && rig.writeRuns == 0, "lowered to Observe while it waited: the same refusal");
+
+    // The refusal is not remembered under the key: granted again, the same
+    // key runs rather than replaying "not granted".
+    rig.grants.grant(p.credential, Tier::Propose);
+    RequestMeta keyed;
+    keyed.idempotencyKey = "q1";
+    std::optional<Outcome> first;
+    rig.service.call(p, "test.write", Json::object(), keyed, [&first](Outcome o) { first = std::move(o); });
+    rig.grants.revoke(p.credential);
+    manual.drain();
+    check(refusedNotGranted(first), "a keyed call revoked while queued is refused");
+    rig.grants.grant(p.credential, Tier::Propose);
+    std::optional<Outcome> retry;
+    rig.service.call(p, "test.write", Json::object(), keyed, [&retry](Outcome o) { retry = std::move(o); });
+    manual.drain();
+    check(retry && !retry->error && rig.writeRuns == 1, "granted again, the same key runs: no stale refusal replayed");
+}
+
 void testIdempotency() {
     section("idempotent replay: the credential plus the key");
     Rig rig(inlineExecutor());
@@ -161,6 +217,64 @@ void testIdempotency() {
     rig.call(a, "test.write");
     rig.call(a, "test.write");
     check(rig.writeRuns == 4, "no key: every call runs");
+
+    RequestMeta d;
+    d.idempotencyKey = "args";
+    auto x1 = rig.call(a, "test.write", {{"v", 1}, {"w", 2}}, d);
+    auto x2 = rig.call(a, "test.write", {{"w", 2}, {"v", 1}}, d);
+    check(rig.writeRuns == 5 && x1 && x2 && !x1->error && x1->result == x2->result,
+          "the same key and the same params (in any key order): replayed, the handler ran once");
+    auto x3 = rig.call(a, "test.write", {{"v", 3}, {"w", 2}}, d);
+    check(x3 && x3->error && x3->error->code == errc::InvalidParams &&
+              x3->error->message == "idempotencyKey reused with different arguments" &&
+              x3->error->data.value("refusal", "") == "invalid",
+          "the same key with other params: refused (−32602), not answered with the old outcome");
+    check(rig.writeRuns == 5, "and the handler did not run again");
+    auto x4 = rig.call(a, "test.write", {{"v", 1}, {"w", 2}}, d);
+    check(x4 && !x4->error && x4->result == x1->result, "the original params still replay after the refusal");
+}
+
+void testInternalErrors() {
+    section("an exception: \"internal error\" on the wire, what was thrown to the log only");
+    Rig rig(inlineExecutor());
+    MethodSpec throwsInt;
+    throwsInt.name = "test.throwsInt";
+    throwsInt.run = [](CallContext&, const Json&) -> Outcome { throw 42; };
+    rig.service.add(std::move(throwsInt));
+    MethodSpec throwsStd;
+    throwsStd.name = "test.throwsStd";
+    throwsStd.run = [](CallContext&, const Json&) -> Outcome { throw std::runtime_error("secret path C:/x"); };
+    rig.service.add(std::move(throwsStd));
+    MethodSpec screenThrows;
+    screenThrows.name = "test.screenThrows";
+    screenThrows.screen = [](CallContext&, Json&) -> std::optional<Outcome> { throw 7; };
+    screenThrows.run = [](CallContext&, const Json&) { return Outcome::ok(nullptr); };
+    rig.service.add(std::move(screenThrows));
+    MethodSpec throwsToken;
+    throwsToken.name = "test.throwsToken";
+    throwsToken.run = [](CallContext&, const Json&) -> Outcome { throw std::runtime_error("bad tok-zzz9"); };
+    rig.service.add(std::move(throwsToken));
+    const Principal p{"cred-i", "I"};
+    rig.grants.grant(p.credential, Tier::Observe);
+
+    auto i = rig.call(p, "test.throwsInt");
+    check(i && i->error && i->error->code == errc::Internal && i->error->message == "internal error",
+          "a handler that throws a non-std type: Internal, \"internal error\", nothing escapes");
+    check(!rig.logged.empty() && rig.logged.back() == "internal error in test.throwsInt: unknown exception",
+          "and the log is told");
+    auto s = rig.call(p, "test.throwsStd");
+    check(s && s->error && s->error->code == errc::Internal && s->error->message == "internal error",
+          "a std::exception's text never reaches the wire: exactly \"internal error\"");
+    check(!rig.logged.empty() && rig.logged.back() == "internal error in test.throwsStd: secret path C:/x",
+          "it goes to the log instead");
+    auto sc = rig.call(p, "test.screenThrows");
+    check(sc && sc->error && sc->error->code == errc::Internal && sc->error->message == "internal error" &&
+              !rig.logged.empty() && rig.logged.back() == "internal error in test.screenThrows: unknown exception",
+          "a screen that throws a non-std type: the same");
+    rig.service.audit().registerSecret("tok-zzz9");
+    rig.call(p, "test.throwsToken");
+    check(!rig.logged.empty() && rig.logged.back() == "internal error in test.throwsToken: bad [redacted]",
+          "a registered secret is redacted from the log too");
 }
 
 void testDeadlines() {
@@ -323,7 +437,12 @@ void testMeta() {
     check(root && root->expectHead && !*root->expectHead, "a null expectHead means the root");
     check(!parseMeta({{"other", 1}}, e) && e.code == errc::InvalidParams, "an unknown key is refused");
     check(!parseMeta({{"deadlineMs", 0}}, e), "a zero deadline is refused");
-    check(!parseMeta({{"idempotencyKey", std::string(129, 'k')}}, e), "a key over 128 characters is refused");
+    check(!parseMeta({{"idempotencyKey", std::string(129, 'k')}}, e) &&
+              e.message == "meta.idempotencyKey is a string of 1 to 128 bytes",
+          "a key over 128 bytes is refused, and the refusal says bytes");
+    std::string wide;
+    for (int k = 0; k < 65; ++k) wide += "\xc3\xa9";   // 65 characters, 130 bytes
+    check(!parseMeta({{"idempotencyKey", wide}}, e), "the bound is in bytes, not characters");
     check(!parseMeta({{"expectHead", "7"}}, e), "a head is an integer");
     check(parseMeta(nullptr, e).has_value(), "no meta at all is fine");
 }
@@ -336,6 +455,23 @@ void testWire() {
     check(parseMessage(R"({"jsonrpc":"2.0","method":"n"})").kind == Incoming::Kind::Notification, "a notification");
     check(parseMessage(R"({"jsonrpc":"2.0","id":"x","result":{}})").kind == Incoming::Kind::Response,
           "a client's response is recognised, and dropped");
+    check(parseMessage(R"({"jsonrpc":"2.0","result":{}})").kind == Incoming::Kind::Response,
+          "a result response with no id is a response too");
+    check(parseMessage(R"({"jsonrpc":"2.0","error":{"code":-32700,"message":"Parse error"}})").kind ==
+              Incoming::Kind::Response,
+          "an id-less error response is a response: never answered");
+    const auto nullIdError = parseMessage(R"({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"x"}})");
+    check(nullIdError.kind == Incoming::Kind::Response && nullIdError.id.is_null(),
+          "an error response with \"id\": null (JSON-RPC 2.0 §5) is a response: never answered");
+    const auto bareFoo = parseMessage(R"({"foo":"boo"})");
+    check(bareFoo.kind == Incoming::Kind::Invalid && bareFoo.error.code == errc::InvalidRequest,
+          "a malformed id-less message with no result or error is still answered -32600 (the spec's example)");
+    const auto badMethod = parseMessage(R"({"jsonrpc":"2.0","method":1,"params":"bar"})");
+    check(badMethod.kind == Incoming::Kind::Invalid && badMethod.error.code == errc::InvalidRequest,
+          "an id-less message whose method is not a string is answered -32600 (the spec's example)");
+    const Json unaddressed = Json::parse(encodeError(nullptr, {errc::InvalidRequest, "x", nullptr}), nullptr, false);
+    check(unaddressed.is_object() && !unaddressed.contains("id"),
+          "an error with no readable id carries no id member (MCP: id?: RequestId)");
     const auto noVersion = parseMessage(R"({"id":3,"method":"m"})");
     check(noVersion.kind == Incoming::Kind::Invalid && noVersion.error.code == errc::InvalidRequest &&
               noVersion.id == 3,
@@ -375,12 +511,26 @@ void testLines() {
     check(readBoundedLine(in, line, 8, tooLong) && tooLong && line.empty(), "over the bound: flagged, discarded");
     check(readBoundedLine(in, line, 8, tooLong) && line == "three" && !tooLong, "and the next line is whole");
     check(!readBoundedLine(in, line, 8, tooLong), "then the end");
+
+    std::istringstream bound("12345678\r\n12345678\n123456789\r\n12345678\rX\n12345678\r\r\nend\n");
+    check(readBoundedLine(bound, line, 8, tooLong) && line == "12345678" && !tooLong,
+          "exactly the bound, ended by CRLF: whole, CR stripped");
+    check(readBoundedLine(bound, line, 8, tooLong) && line == "12345678" && !tooLong,
+          "exactly the bound, ended by LF: whole");
+    check(readBoundedLine(bound, line, 8, tooLong) && tooLong && line.empty(), "one over the bound with CRLF: refused");
+    check(readBoundedLine(bound, line, 8, tooLong) && tooLong && line.empty(),
+          "a CR at the bound followed by more bytes: refused");
+    check(readBoundedLine(bound, line, 8, tooLong) && tooLong && line.empty(),
+          "only one CR is tolerated at the bound");
+    check(readBoundedLine(bound, line, 8, tooLong) && line == "end" && !tooLong, "and the next line is whole");
 }
 
 int runAll() {
     testGrantsComeFirst();
     testTiers();
+    testRevokedWhileQueued();
     testIdempotency();
+    testInternalErrors();
     testDeadlines();
     testAudit();
     testScreen();

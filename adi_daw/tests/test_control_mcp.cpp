@@ -13,8 +13,10 @@
 //     ONE changeset that, applied by the user, one undo restores exactly;
 //   * a request naming another project touches nothing;
 //   * the resources, and telemetry with honest labels;
+//   * every refusal made at the MCP layer is audited by its code;
+//   * changeset_status: awaiting_review, applied, stale, expired;
 //   * hostile lines never crash the loop, and the real adi-mcp binary over
-//     pipes.
+//     pipes, at both tiers.
 
 #include "temp_directory.hpp"
 
@@ -101,7 +103,7 @@ struct ProjectFile {
 /// adi-mcp's wiring, in process: the same objects main() builds.
 struct Bridge {
     GrantTable grants;
-    Service service{inlineExecutor(), grants};
+    Service service;
     ProjectSet projects;
     int ids = 0;
     ChangesetQueue queue{[this] { return "cs-" + std::to_string(++ids); }};
@@ -109,7 +111,9 @@ struct Bridge {
     McpEndpoint endpoint{service, projects, McpServerInfo{"adi-mcp", "ADI", "test"}};
     McpEndpoint::Session session;
 
-    explicit Bridge(std::vector<std::shared_ptr<ProjectAccess>> bound, Tier tier = Tier::Propose) {
+    explicit Bridge(std::vector<std::shared_ptr<ProjectAccess>> bound, Tier tier = Tier::Propose,
+                    ServiceOptions options = {})
+        : service(inlineExecutor(), grants, std::move(options)) {
         const bool one = bound.size() == 1;
         for (auto& b : bound) projects.add(std::move(b));
         // adi-mcp's rule: an omitted project is allowed only when the server is
@@ -119,8 +123,8 @@ struct Bridge {
         grants.grant(session.credential, tier);
         registerControlMethods(service, ctx);
     }
-    explicit Bridge(std::shared_ptr<ProjectAccess> project, Tier tier = Tier::Propose)
-        : Bridge(std::vector<std::shared_ptr<ProjectAccess>>{std::move(project)}, tier) {}
+    explicit Bridge(std::shared_ptr<ProjectAccess> project, Tier tier = Tier::Propose, ServiceOptions options = {})
+        : Bridge(std::vector<std::shared_ptr<ProjectAccess>>{std::move(project)}, tier, std::move(options)) {}
 
     Json send(const Json& message) { return sendAs(session, message); }
     Json sendAs(McpEndpoint::Session& as, const Json& message) {
@@ -148,7 +152,18 @@ struct Bridge {
         return reply.contains("result") ? reply.at("result") : reply;
     }
     int calls = 100;
+    /// project_read's head: what a proposal names as its baseHead.
+    Json head(const Json& args = Json::object()) {
+        return tool("project_read", args).at("structuredContent").at("head");
+    }
 };
+
+/// Whether the audit holds a refusal with this code under this method.
+bool auditedRefusal(Service& service, const std::string& method, int code) {
+    for (const auto& ev : service.audit().snapshot())
+        if (ev.kind == "refused" && ev.method == method && ev.code == code) return true;
+    return false;
+}
 
 Json modern(Json params) {
     params["_meta"] = {{"io.modelcontextprotocol/protocolVersion", "2026-07-28"},
@@ -208,6 +223,10 @@ void testHandshakes() {
     check(mid.request(1, "initialize", {{"protocolVersion", "2025-06-18"}}).at("result").value("protocolVersion", "") ==
               "2025-06-18",
           "an older supported version is echoed");
+    Bridge pinned(openHeadless(f.path));
+    check(pinned.request(1, "initialize", {{"protocolVersion", "2024-11-05"}}).at("result").value("protocolVersion", "") ==
+              "2024-11-05",
+          "2024-11-05, which has no batch obligation, is echoed");
     Bridge batchEra(openHeadless(f.path));
     check(batchEra.request(1, "initialize", {{"protocolVersion", "2025-03-26"}}).at("result").value("protocolVersion", "") ==
               "2025-11-25",
@@ -246,6 +265,20 @@ void testHandshakes() {
           "ping is gone in 2026-07-28");
     check(m.request(10, "initialize", modern(Json::object())).at("error").at("code") == errc::MethodNotFound,
           "initialize under modern _meta is not a method");
+
+    // R3.1: a legacy version in a modern _meta is served in the legacy era,
+    // never refused −32022 with that same version listed as supported.
+    Bridge lm(openHeadless(f.path));
+    Json legacyMeta = modern(Json::object());
+    legacyMeta["_meta"]["io.modelcontextprotocol/protocolVersion"] = "2025-11-25";
+    const Json beforeInit = lm.request(11, "tools/list", legacyMeta);
+    check(beforeInit.contains("error") && beforeInit.at("error").at("code") == errc::InvalidRequest,
+          "a legacy version in _meta, before initialize: send initialize first, not −32022");
+    lm.initialize();
+    const Json afterInit = lm.request(12, "tools/list", legacyMeta);
+    check(afterInit.contains("result") && afterInit.at("result").at("tools").size() == 4 &&
+              !afterInit.at("result").contains("resultType"),
+          "after initialize it is served, in the legacy era (no resultType)");
 }
 
 // --- tools -----------------------------------------------------------------------------
@@ -270,6 +303,16 @@ void testToolsAndReads() {
           "exactly CTL-08's four tools: a few, never one per op (ADR-0168 d3)");
     check(closed, "every tool's input is a closed object");
     check(proposeWrites, "changeset_propose is not marked read-only");
+    for (const auto& t : tools) {
+        if (t.value("name", "") == "project_read")
+            check(t.at("inputSchema").at("properties").at("level").value("maximum", -1) == 2,
+                  "project_read's level schema stops at 2");
+        if (t.value("name", "") == "changeset_propose") {
+            const auto& req = t.at("inputSchema").at("required");
+            check(std::find(req.begin(), req.end(), Json("baseHead")) != req.end(),
+                  "changeset_propose requires baseHead");
+        }
+    }
 
     const Json unknown = b.request(3, "tools/call", {{"name", "create_track"}, {"arguments", Json::object()}});
     check(unknown.contains("error") && unknown.at("error").at("code") == errc::InvalidParams,
@@ -298,6 +341,19 @@ void testToolsAndReads() {
     const Json r3 = b.tool("project_read", {{"level", 3}});
     check(isToolError(r3) && r3.at("content").at(0).value("text", "").find("AGT-07") != std::string::npos,
           "level 3 is refused with its card (analysis, P2)");
+    const Json r4 = b.tool("project_read", {{"level", 4}});
+    check(isToolError(r4) && r4.at("content").at(0).value("text", "").find("0 to 2") != std::string::npos,
+          "level 4 is out of range: 0 to 2");
+    check(isToolError(b.tool("project_read", {{"tracks", {3}}})), "level 0 refuses tracks, which it would ignore");
+    check(isToolError(b.tool("project_read", {{"fromBar", 1}})), "level 0 refuses fromBar");
+    check(isToolError(b.tool("project_read", {{"level", 1}, {"clips", {1}}})),
+          "level 1 refuses clips, which only level 2 reads");
+    check(!isToolError(b.tool("project_read", {{"level", 2}, {"clips", {1}}})), "level 2 takes clips");
+    const Json emptyWindow = b.tool("project_read", {{"level", 1}, {"fromBar", 5}, {"toBar", 5}});
+    check(isToolError(emptyWindow) &&
+              emptyWindow.at("content").at(0).value("text", "").find("fromBar is before toBar") != std::string::npos,
+          "fromBar must be before toBar");
+    check(!isToolError(b.tool("project_read", {{"level", 1}, {"fromBar", 1}, {"toBar", 5}})), "a real window reads");
     check(isToolError(b.tool("project_read", {{"levl", 0}})), "an unknown argument is refused");
     const Json other = b.tool("project_read", {{"project", "file-0000000000000000"}});
     check(isToolError(other) && other.at("content").at(0).value("text", "").find("no open project") != std::string::npos,
@@ -317,6 +373,13 @@ void testToolsAndReads() {
     check(std::find(kinds.begin(), kinds.end(), Json("sidechain")) != kinds.end() && rc.value("agentMayEmit", false),
           "routing.connect's generated schema lists sidechain");
     check(isToolError(b.tool("ops_describe", {{"names", {"no.such"}}})), "an unknown op name is refused");
+    const Json both = b.tool("ops_describe", {{"names", {"routing.connect"}}, {"query", "route"}});
+    check(isToolError(both) && both.at("content").at(0).value("text", "").find("not both") != std::string::npos,
+          "names and query together are refused");
+    const Json badQuery = b.tool("ops_describe", {{"names", {"routing.connect"}}, {"query", 5}});
+    check(isToolError(badQuery) && badQuery.at("content").at(0).value("text", "").find("query is text") !=
+                                       std::string::npos,
+          "the query is validated first, even beside names");
 }
 
 // --- propose ---------------------------------------------------------------------------
@@ -342,6 +405,11 @@ void testProposeLeavesTheFile() {
     check(change.at("before").value("db", 1.0) == 0.0 && change.at("after").value("db", 0.0) == -6.0,
           "the change shows before 0 dB and after -6 dB");
     check(fileBytes(f.path) == before, "the project file's bytes are unchanged");
+    check(p.contains("changeset") && p.at("changeset").at("ops").at(0).value("op", "") == "mixer.setVolume" &&
+              p.at("changeset").at("baseHead") == head,
+          "the proposal carries the changeset itself, in adi_tool's form");
+    check(p.value("apply", "").find("this result's") != std::string::npos,
+          "the apply hint says to save this result's changeset");
 
     const Json s = b.tool("changeset_status", {{"id", "cs-1"}}).at("structuredContent");
     check(s.value("status", "") == "awaiting_review" && s.at("changeset").at("ops").at(0).value("op", "") ==
@@ -370,8 +438,9 @@ void testRefusals() {
     ProjectFile f("refusals");
     Bridge b(openHeadless(f.path));
     b.initialize();
-    const auto propose = [&b](Json ops, Json extra = Json::object()) {
-        Json args = {{"request", "test"}, {"ops", std::move(ops)}};
+    const Json head = b.head();
+    const auto propose = [&b, &head](Json ops, Json extra = Json::object()) {
+        Json args = {{"request", "test"}, {"ops", std::move(ops)}, {"baseHead", head}};
         for (auto it = extra.begin(); it != extra.end(); ++it) args[it.key()] = it.value();
         return b.tool("changeset_propose", std::move(args));
     };
@@ -384,6 +453,12 @@ void testRefusals() {
               bogus.at("structuredContent").at("error").at("data").at("issues").at(0).value("key", "") == "kind",
           "a kind outside the CHECK list is refused, naming kind");
     check(refusalOf(propose(Json::array())) == "empty", "an empty changeset is refused");
+    const Json noBase = b.tool("changeset_propose",
+                               {{"request", "test"},
+                                {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}}}}}});
+    check(refusalOf(noBase) == "invalid" &&
+              noBase.at("content").at(0).value("text", "").find("baseHead is required") != std::string::npos,
+          "baseHead is required: the head project_read returned");
     const Json stale = propose({{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}}}},
                                {{"baseHead", 999}});
     check(refusalOf(stale) == "stale" && stale.at("structuredContent").at("error").at("code") == errc::Stale &&
@@ -404,16 +479,35 @@ void testRefusals() {
                                {{"request", hebrew}})),
           "lengths are characters, as the schema says: 2,100 Hebrew letters (4,200 bytes) are a valid "
           "request and 200 a valid label");
+    check(refusalOf(propose({{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}},
+                              {"label", std::string(201, 'l')}}})) == "invalid",
+          "a 201-character label is one too many");
     std::string tooLong;
     for (int i = 0; i < 4097; ++i) tooLong += "\xD7\x90";
     check(refusalOf(propose({{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}}}},
                             {{"request", tooLong}})) == "invalid",
           "4,097 characters are one too many");
 
+    Bridge capped(openHeadless(f.path));
+    capped.ctx.limits.maxOps = 2;   // read at call time by the screen
+    capped.initialize();
+    const Json over = capped.tool(
+        "changeset_propose",
+        {{"request", "three"},
+         {"baseHead", head},
+         {"ops",
+          {{{"op", "mixer.setVolume"}, {"payload", {{"id", 1}, {"db", -1.0}}}},
+           {{"op", "mixer.setVolume"}, {"payload", {{"id", 2}, {"db", -1.0}}}},
+           {{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}}}}}});
+    check(refusalOf(over) == "too many ops" &&
+              over.at("structuredContent").at("error").at("data").value("cap", 0) == 2,
+          "three ops over a cap of 2: too many ops, with the cap");
+
     Bridge observer(openHeadless(f.path), Tier::Observe);
     observer.initialize();
     const Json denied = observer.tool("changeset_propose",
                                       {{"request", "x"},
+                                       {"baseHead", head},
                                        {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -1.0}}}}}}});
     check(isToolError(denied) &&
               denied.at("structuredContent").at("error").value("message", "") == "not granted",
@@ -431,13 +525,42 @@ void testIdempotentPropose() {
     ProjectFile f("idem");
     Bridge b(openHeadless(f.path));
     b.initialize();
-    const Json args = {{"request", "quieter"}, {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 1}, {"db", -2.0}}}}}}};
+    const Json args = {{"request", "quieter"},
+                       {"baseHead", b.head()},
+                       {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 1}, {"db", -2.0}}}}}}};
     const Json key = {{"io.github.arieladi.adi/idempotencyKey", "req-42"}};
     const std::string first = b.tool("changeset_propose", args, key).at("structuredContent").value("id", "");
     const std::string again = b.tool("changeset_propose", args, key).at("structuredContent").value("id", "");
     check(!first.empty() && first == again && b.queue.size() == 1, "the same key: the same changeset, queued once");
     const std::string fresh = b.tool("changeset_propose", args).at("structuredContent").value("id", "");
     check(fresh != first && b.queue.size() == 2, "no key: a new changeset");
+    for (const Json& bad : {Json(5), Json(""), Json(std::string(129, 'k'))}) {
+        const Json r = b.tool("changeset_propose", args, {{"io.github.arieladi.adi/idempotencyKey", bad}});
+        check(r.contains("error") && r.at("error").at("code") == errc::InvalidParams,
+              "an idempotencyKey that is not 1 to 128 bytes of text is refused, not ignored: " + bad.dump().substr(0, 20));
+    }
+    check(b.queue.size() == 2, "and nothing was queued for them");
+
+    // The queue's own memory (R5.8): a service that remembers nothing, so the
+    // second call reaches the method and ChangesetQueue::findByKey answers.
+    ServiceOptions forgetful;
+    forgetful.idempotencyEntries = 0;
+    Bridge q(openHeadless(f.path), Tier::Propose, std::move(forgetful));
+    q.initialize();
+    const Json qargs = {{"request", "quieter"},
+                        {"baseHead", q.head()},
+                        {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 1}, {"db", -2.0}}}}}}};
+    const std::string one = q.tool("changeset_propose", qargs, key).at("structuredContent").value("id", "");
+    const std::string two = q.tool("changeset_propose", qargs, key).at("structuredContent").value("id", "");
+    check(!one.empty() && one == two && q.queue.size() == 1,
+          "with the service's cache off, the queue answers the same key with the same changeset");
+    Json changed = qargs;
+    changed["ops"][0]["payload"]["db"] = -3.0;
+    const Json reused = q.tool("changeset_propose", changed, key);
+    check(refusalOf(reused) == "invalid" &&
+              reused.at("content").at(0).value("text", "").find("idempotencyKey reused") != std::string::npos &&
+              q.queue.size() == 1,
+          "the same key with other arguments is refused, never answered with the old proposal");
 }
 
 void testSidechainIsOneUndo() {
@@ -469,6 +592,7 @@ void testSidechainIsOneUndo() {
     check(r.at("structuredContent").value("diff", "").find("Drums") != std::string::npos, "the diff shows the group");
     check(fileBytes(f.path) == bytes, "and the file is still untouched");
     const Json cs = b.tool("changeset_status", {{"id", id}}).at("structuredContent").at("changeset");
+    check(r.at("structuredContent").at("changeset") == cs, "the proposal's changeset is the status's");
 
     // The user's act: Apply, as `adi_tool propose --apply` does it.
     StoreError e = StoreError::Ok;
@@ -489,6 +613,8 @@ void testSidechainIsOneUndo() {
 
     const Json status = b.tool("changeset_status", {{"id", id}}).at("structuredContent");
     check(status.value("status", "") == "applied", "status: applied (" + status.value("status", "") + ")");
+    check(status.value("note", "").find("may since have been undone") != std::string::npos,
+          "applied says it may since have been undone");
     const Json graph = Json::parse(b.request(50, "resources/read",
                                              {{"uri", "adi://projects/" + headless->handle() + "/graph"}})
                                        .at("result").at("contents").at(0).value("text", "{}"));
@@ -537,12 +663,26 @@ void testResources() {
     const Json op = Json::parse(b.request(5, "resources/read", {{"uri", "adi://ops/routing.connect"}})
                                     .at("result").at("contents").at(0).value("text", "{}"));
     check(op.at("ops").at(0).value("name", "") == "routing.connect", "one op's schema as a resource");
+    constexpr int kResourceNotFound = -32002;   // 2025-11-25 resources, legacy sessions only
     const Json missing = b.request(6, "resources/read", {{"uri", "adi://projects/nope/manifest"}});
-    check(missing.at("error").at("code") == errc::InvalidParams && missing.at("error").at("data").value("uri", "") ==
-                                                                        "adi://projects/nope/manifest",
-          "an unknown project's resource: −32602 with the uri");
-    check(b.request(7, "resources/read", {{"uri", "adi://weird"}}).at("error").at("code") == errc::InvalidParams,
-          "an unknown resource: −32602");
+    check(missing.at("error").at("code") == kResourceNotFound &&
+              missing.at("error").at("data").value("uri", "") == "adi://projects/nope/manifest",
+          "legacy: an unknown project's resource is −32002 with the uri");
+    const Json weird = b.request(7, "resources/read", {{"uri", "adi://weird"}});
+    check(weird.at("error").at("code") == kResourceNotFound && weird.at("error").at("data").value("uri", "") ==
+                                                                     "adi://weird",
+          "legacy: an unknown resource is −32002 with the uri");
+    check(b.request(70, "resources/read", {{"uri", "adi://ops/no.such"}}).at("error").at("code") == kResourceNotFound,
+          "legacy: an unknown op's schema is not found");
+    const Json missingModern = b.request(71, "resources/read", modern({{"uri", "adi://projects/nope/manifest"}}));
+    check(missingModern.at("error").at("code") == errc::InvalidParams &&
+              missingModern.at("error").at("data").value("uri", "") == "adi://projects/nope/manifest",
+          "modern: not found is −32602 (2026-07-28 must not emit −32002)");
+    check(b.request(72, "resources/read", modern({{"uri", "adi://weird"}})).at("error").at("code") ==
+              errc::InvalidParams,
+          "modern: an unknown resource is −32602");
+    check(auditedRefusal(b.service, "resources/read", kResourceNotFound),
+          "a not-found made at the MCP layer is audited");
     const Json tele = Json::parse(b.request(8, "resources/read", {{"uri", base + "telemetry"}})
                                       .at("result").at("contents").at(0).value("text", "{}"));
     check(tele.value("available", true) == false &&
@@ -599,6 +739,11 @@ void testTelemetry() {
     check(t.value("available", false) && t.value("ageMs", 0) == 250 && t.value("sequence", 0) == 7,
           "available, with its age and sequence");
     check(std::fabs(t.at("strips").at(0).value("peakDbfs", 0.0) - (-6.02)) < 0.01, "0.5 linear is -6.02 dBFS");
+    check(t.at("strips").at(0).value("peak", 0.0) == 0.5 && t.at("strips").at(0).value("rms", 0.0) == 0.25,
+          "the raw peak 0.5 and rms 0.25");
+    check(std::fabs(t.at("strips").at(0).value("rmsDbfs", 0.0) - (-12.04)) < 0.01, "0.25 linear is -12.04 dBFS");
+    check(t.at("main").value("shortTermLufs", 0.0) == -15.0 && t.at("main").value("truePeakDbtp", 0.0) == -1.0,
+          "short-term -15 LUFS and true peak -1 dBTP, each in its own field");
     check(t.at("strips").at(1).at("peakDbfs").is_null(), "silence is null, never -inf");
     check(t.at("main").at("momentaryLufs").is_null() && t.at("main").value("integratedLufs", 0.0) == -16.0,
           "an unwarmed window is null; integrated -16 LUFS");
@@ -682,7 +827,8 @@ void testHostileLines() {
         check(replies[4].at("error").at("code") == errc::InvalidRequest, "over 4 MiB: refused, and the loop goes on");
         check(replies[5].at("id") == 1 && replies[5].contains("result"), "then initialize is answered");
         const auto& tracks = replies[6].at("result").at("structuredContent").at("tracks");
-        check(tracks.at(0).value("name", "").find("Ba") == 0, "a name that is not UTF-8 is replaced, not fatal");
+        check(tracks.at(0).value("name", "") == "Ba\xEF\xBF\xBD" "d",
+              "a name that is not UTF-8 has the bad byte replaced by U+FFFD, not fatal");
     }
 }
 
@@ -698,9 +844,20 @@ void testGrantGate() {
                   r.at("error").value("message", "") == "not granted",
               std::string(method) + " without a grant: -32006, one text");
     }
+    check(auditedRefusal(b.service, "tools/list", errc::NotGranted),
+          "an ungranted tools/list leaves a refused event with -32006 in the audit");
     const Json unknownTool = b.request(8, "tools/call", {{"name", "nope"}, {"arguments", Json::object()}});
     check(unknownTool.at("error").at("code") == errc::NotGranted,
           "even an unknown tool: the grant comes first, so the tool names are not given away");
+    const Json readUngranted = b.request(10, "resources/read", {{"uri", "adi://ops"}});
+    check(readUngranted.contains("error") && readUngranted.at("error").at("code") == errc::NotGranted,
+          "resources/read without a grant: -32006");
+    b.grants.grant(b.session.credential, Tier::Propose);
+    b.request(11, "no/such/method");
+    check(auditedRefusal(b.service, "(unknown method)", errc::MethodNotFound),
+          "an unknown method is audited under a fixed name, never the wire's text");
+    b.request(12, "tools/call", {{"name", "nope"}, {"arguments", Json::object()}});
+    check(auditedRefusal(b.service, "tools/call", errc::InvalidParams), "an unknown tool is audited");
     check(b.request(9, "server/discover", modern(Json::object())).contains("result"),
           "server/discover, the protocol's static self-description, still answers");
 }
@@ -724,6 +881,7 @@ void testTwoProjects() {
     const Json proposeB = b.tool("changeset_propose",
                                  {{"project", bProject->handle()},
                                   {"request", "B's bass down"},
+                                  {"baseHead", readB.at("structuredContent").at("head")},
                                   {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 3}, {"db", -4.0}}}}}}});
     check(!isToolError(proposeB) && proposeB.at("structuredContent").value("project", "") == bProject->handle(),
           "a proposal naming B is B's");
@@ -762,6 +920,83 @@ void testProjectionDetails() {
     for (const auto& prm : l1.at("params")) cutoff = cutoff || (prm.value("device", 0) == 11 && prm.value("param", "") == "cutoff");
     check(cutoff, "level 1 reads the racked synth's parameters (tracks given as 3.0, an integer)");
     check(l1.contains("remarks") && l1.contains("tunings"), "level 1 carries remarks and tunings");
+}
+
+void testStatusStaleAndExpired() {
+    section("changeset_status: stale after the head moves, expired after 24 hours");
+    const auto volumeDown = [](const Json& head) {
+        return Json{{"request", "quieter"},
+                    {"baseHead", head},
+                    {"ops", {{{"op", "mixer.setVolume"}, {"payload", {{"id", 2}, {"db", -3.0}}}}}}};
+    };
+    {
+        ProjectFile f("stale");
+        Bridge b(openHeadless(f.path));
+        b.initialize();
+        const Json head = b.head();
+        const std::string id = b.tool("changeset_propose", volumeDown(head)).at("structuredContent").value("id", "");
+        check(id == "cs-1", "proposed");
+
+        // The user edits the file meanwhile: the head moves.
+        {
+            StoreError e = StoreError::Ok;
+            auto store = Store::open(f.path, e);
+            check(store != nullptr, "the user opens the project writable");
+            if (!store) return;
+            OpJournal j(*store);
+            OpRequest r;
+            r.opType = "track.rename";
+            r.payload = {{"id", 1}, {"name", "Kick In"}};
+            r.label = "Rename Kick";
+            check(j.commit(r).ok, "an external commit");
+            store->close();
+        }
+        const Json s1 = b.tool("changeset_status", {{"id", id}}).at("structuredContent");
+        check(s1.value("status", "") == "stale" && !s1.contains("changeset") && s1.contains("why"),
+              "stale once the head moved, with no changeset to apply (" + s1.value("status", "") + ")");
+        check(s1.contains("headNow") && !s1.at("headNow").is_null() && s1.at("headNow") != s1.at("baseHead") &&
+                  !s1.contains("headError"),
+              "headNow is the moved head");
+    }
+    {
+        ProjectFile f("expired");
+        Bridge b(openHeadless(f.path));
+        b.initialize();
+        std::int64_t steadyNow = 1000;
+        b.ctx.steadyMs = [&steadyNow] { return steadyNow; };   // read at call time by both methods
+        const std::string id =
+            b.tool("changeset_propose", volumeDown(b.head())).at("structuredContent").value("id", "");
+        check(b.tool("changeset_status", {{"id", id}}).at("structuredContent").value("status", "") == "awaiting_review",
+              "awaiting review within the window");
+        steadyNow += ChangesetQueue::kReviewWindowMs + 1;
+        const Json s2 = b.tool("changeset_status", {{"id", id}}).at("structuredContent");
+        check(s2.value("status", "") == "expired" && !s2.contains("changeset") && s2.contains("why"),
+              "expired more than 24 hours later (" + s2.value("status", "") + ")");
+    }
+}
+
+void testSweepAbandonedScratch() {
+    section("a snapshot folder whose process is gone is swept; this process's is kept");
+    std::error_code ec;
+    const fs::path base = fs::temp_directory_path(ec);
+    check(!ec, "a temp folder");
+    if (ec) return;
+    // No process can have this id: above Linux's pid_max (2^22) and macOS's
+    // 99999, not a multiple of 4 on Windows; and within pid_t, which the
+    // sweep needs before it calls a process gone.
+    const fs::path dead = base / "adi-mcp-2147483646-x";
+    const fs::path mine = base / ("adi-mcp-" + std::to_string(adi::test::processId()) + "-x");
+    fs::create_directories(dead, ec);
+    fs::create_directories(mine, ec);
+    {
+        std::ofstream copy(dead / "snapshot.adi", std::ios::binary);
+        copy << "somebody's unreleased project";
+    }
+    const std::size_t removed = HeadlessProject::sweepAbandonedScratch();
+    check(!fs::exists(dead, ec) && removed >= 1, "the dead process's folder is removed");
+    check(fs::exists(mine, ec), "this process's folder is kept");
+    fs::remove_all(mine, ec);
+    fs::remove_all(dead, ec);
 }
 
 // --- the real binary --------------------------------------------------------------------
@@ -822,6 +1057,35 @@ void testBinary() {
     }
     check(fileBytes(f.path) == bytes, "the file is unchanged by the binary");
     check(fileBytes(err).find("read-only") != std::string::npos, "it says on stderr that it is read-only");
+
+    // --tier observe: the user's lower tier; changeset_propose is not offered.
+    const fs::path observeIn = f.temp.path() / "observe-in.jsonl", observeOut = f.temp.path() / "observe-out.jsonl";
+    {
+        std::ofstream o(observeIn, std::ios::binary);
+        o << R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}})"
+          << "\n"
+          << R"({"jsonrpc":"2.0","id":2,"method":"tools/list"})" << "\n";
+    }
+    std::string observe = quote(fs::path(ADI_MCP_PATH)) + " --project " + quote(f.path) + " --tier observe < " +
+                          quote(observeIn) + " > " + quote(observeOut) + " 2> " + quote(err);
+#if defined(_WIN32)
+    observe = "\"" + observe + "\"";
+#endif
+    const int observeRc = std::system(observe.c_str());
+    check(observeRc == 0, "adi-mcp --tier observe exits 0 (" + std::to_string(observeRc) + "): " + fileBytes(err));
+    std::istringstream observeLines(fileBytes(observeOut));
+    std::vector<Json> observed;
+    while (std::getline(observeLines, line))
+        if (!line.empty()) observed.push_back(Json::parse(line, nullptr, false));
+    check(observed.size() == 2, "two requests, two replies");
+    if (observed.size() == 2 && observed[1].contains("result")) {
+        std::set<std::string> offered;
+        for (const auto& t : observed[1].at("result").at("tools")) offered.insert(t.value("name", ""));
+        check(!offered.count("changeset_propose") && offered.count("project_read") && offered.size() == 3,
+              "at --tier observe, tools/list omits changeset_propose");
+    } else {
+        check(false, "at --tier observe, tools/list answers");
+    }
 }
 
 int runAll() {
@@ -837,6 +1101,8 @@ int runAll() {
     testGrantGate();
     testTwoProjects();
     testProjectionDetails();
+    testStatusStaleAndExpired();
+    testSweepAbandonedScratch();
     testBinary();
     std::printf("\n%s -- %d checks, %d failure(s)\n", g_failures ? "FAILED" : "PASS", g_checks, g_failures);
     return g_failures ? 1 : 0;

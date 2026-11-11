@@ -31,6 +31,8 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #if defined(_WIN32)
@@ -130,7 +132,11 @@ int run(const std::vector<fs::path>& args) {
     GrantTable grants;
     const std::string credential = processSecret();
     grants.grant(credential, tier);
-    Service service(inlineExecutor(), grants);
+    // What the service has to say (a call that failed inside, say) goes to
+    // stderr, where the user's MCP host shows it; stdout carries only frames.
+    ServiceOptions serviceOptions;
+    serviceOptions.log = [](std::string_view line) { std::cerr << "adi-mcp: " << line << '\n'; };
+    Service service(inlineExecutor(), grants, std::move(serviceOptions));
     service.audit().registerSecret(credential);
 
     ProjectSet projects;

@@ -4,9 +4,11 @@
 //
 // One message per line, strict: `jsonrpc` is "2.0"; an id is a string or a
 // number and never null (MCP forbids a null id); params are an object; batches
-// are refused (MCP removed them in 2025-06-18). A line is bounded in bytes and
-// in nesting depth BEFORE it is parsed, so a hostile line costs nothing to
-// refuse and cannot exhaust the stack of anything that walks it afterwards.
+// are refused (MCP removed them in 2025-06-18). A response (no method, a
+// result or an error) is recognised by its shape whatever its id, and
+// dropped. A line is bounded in bytes and in nesting depth BEFORE it is
+// parsed, so a hostile line costs nothing to refuse and cannot exhaust the
+// stack of anything that walks it afterwards.
 //
 // JUCE-free and transport-free: stdio (adi-mcp) and the loopback WebSocket
 // (CTL-04) both frame lines and hand them here.
@@ -52,7 +54,8 @@ struct Incoming {
     enum class Kind {
         Request,        ///< has an id: exactly one reply
         Notification,   ///< no id: never a reply
-        Response,       ///< a client's reply to a request; ADI sends none, so it is dropped
+        Response,       ///< a client's reply (no method; a result or an error), whatever its id;
+                        ///< ADI sends no requests, so it is dropped and never answered
         Invalid,        ///< reply with `error` to `id`; with no id member when none could be read
     };
     Kind kind = Kind::Invalid;

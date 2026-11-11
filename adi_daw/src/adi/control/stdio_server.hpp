@@ -20,8 +20,9 @@
 namespace adi::control {
 
 /// Reads one line (without its '\n', and without a trailing '\r'). False at
-/// end of input with nothing read. A line longer than `maxBytes` is read to
-/// its end and discarded, with `tooLong` set.
+/// end of input with nothing read. A line longer than `maxBytes` (counted
+/// without its line ending, so a CRLF line of exactly `maxBytes` is whole) is
+/// read to its end and discarded, with `tooLong` set.
 bool readBoundedLine(std::istream& in, std::string& line, std::size_t maxBytes, bool& tooLong);
 
 /// Runs until end of input. Returns the number of messages handled.

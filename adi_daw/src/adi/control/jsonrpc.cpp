@@ -61,6 +61,20 @@ Incoming parseMessage(std::string_view line, const WireLimits& limits) {
         return invalid(errc::InvalidRequest, "batches are not supported (MCP removed them in 2025-06-18)");
     if (!j.is_object()) return invalid(errc::InvalidRequest, "a message is a JSON object");
 
+    // A response -- no method, and a result or an error -- is recognised by its
+    // shape before anything else is checked, and never answered, whatever its
+    // id: a peer that could not read our id sends it as null (JSON-RPC 2.0 §5)
+    // or leaves it out (MCP's schemas, id?: RequestId). Answering it would
+    // invite the peer to answer back. A message that carries a method is not a
+    // response, and a malformed one is still answered -32600, as the JSON-RPC
+    // spec's own examples answer {"foo":"boo"}.
+    if (!j.contains("method") && (j.contains("result") || j.contains("error"))) {
+        Incoming m;
+        m.kind = Incoming::Kind::Response;
+        if (const auto it = j.find("id"); it != j.end() && validId(*it)) m.id = *it;
+        return m;
+    }
+
     // The id first, so every later refusal can be addressed to it.
     Json id = nullptr;
     const auto idIt = j.find("id");
@@ -76,15 +90,7 @@ Incoming parseMessage(std::string_view line, const WireLimits& limits) {
         return invalid(errc::InvalidRequest, "\"jsonrpc\" must be \"2.0\"", id);
 
     const auto method = j.find("method");
-    if (method == j.end()) {
-        if (hasId && (j.contains("result") || j.contains("error"))) {
-            Incoming m;
-            m.kind = Incoming::Kind::Response;
-            m.id = std::move(id);
-            return m;
-        }
-        return invalid(errc::InvalidRequest, "\"method\" is required", id);
-    }
+    if (method == j.end()) return invalid(errc::InvalidRequest, "\"method\" is required", id);
     if (!method->is_string()) return invalid(errc::InvalidRequest, "\"method\" must be a string", id);
 
     Incoming m;
