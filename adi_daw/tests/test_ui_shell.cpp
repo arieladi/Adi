@@ -2596,6 +2596,107 @@ void browserDevices(AppCommands &commands, const std::filesystem::path &dir) {
     }
     document->release();
 }
+// E1: Split at the insert marker (Ctrl/Cmd+E; Live 12 manual 6.12, 41.5), and Delete and 0 over a
+// selection that crosses a clip (6.9; N17, #393): one undo step each, from the keys.
+void splitAndRangeEdits(AppCommands &commands, const std::filesystem::path &dir) {
+    std::string error;
+    auto document = ProjectDocument::open(dir / "split.adi", true, {}, error);
+    check(document != nullptr, "a project for Split");
+    if (!document)
+        return;
+    const auto bar = textproj::kWhole;
+    std::vector<OpRequest> make(2);
+    make[0].opType = "clip.create";
+    make[0].payload = {{"id", 50}, {"track", 2}, {"kind", "midi"}, {"pos", 0}, {"length", 2 * bar}};
+    make[1].opType = "clip.create";
+    make[1].payload = {{"id", 51}, {"track", 3}, {"kind", "midi"}, {"pos", 0}, {"length", 2 * bar}};
+    check(document->ops().submit(std::move(make)).ok && document->synchronise(), "a two-bar clip on 1 MIDI and on 2 MIDI");
+    AdiRootComponent root(document->view(), document->ops(), document->mailbox(), commands, document->views(),
+                          document->sessionState(), "split");
+    root.afterEdit = [&] { document->synchronise(); };
+    root.setSize(1440, 900);
+    root.frame();
+    commands.activate(root);
+    const auto clipsOf = [&](std::int64_t track) {
+        std::vector<std::pair<std::int64_t, std::int64_t>> out; // (pos, length)
+        if (const auto *t = root.reader().findTrack(track))
+            for (const auto &c : t->clips)
+                out.emplace_back(c->posTicks, c->lengthTicks);
+        std::sort(out.begin(), out.end());
+        return out;
+    };
+    auto &sel = root.arrangement.geometry.selection;
+    // Ctrl/Cmd+E inside a clip: two clips, one undo step.
+    sel = {};
+    sel.track = 2;
+    sel.insert = bar;
+    sel.marked = true;
+    const juce::KeyPress split('e', juce::ModifierKeys::commandModifier, 0);
+    check(root.keyPressed(split), "Ctrl/Cmd+E");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}, {bar, bar}} && clipsOf(3).size() == 1 &&
+              document->ops().nextUndo() && document->ops().nextUndo()->label == "Split Clip",
+          "Ctrl/Cmd+E at bar 2 on 1 MIDI splits its clip there: two clips, one step; 2 MIDI is untouched");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(clipsOf(2).size() == 1, "one undo makes it whole again");
+    // Nothing chosen, editing.splitAllWithNoSelection on (its default): every track splits.
+    sel = {};
+    sel.insert = bar;
+    sel.marked = true;
+    check(commands.splitAllWithNoSelection() && root.command(AppCommands::Split), "Split with nothing chosen");
+    root.frame();
+    check(clipsOf(2).size() == 2 && clipsOf(3).size() == 2, "splits the clips under the marker on every track");
+    check(root.command(AppCommands::Undo) && root.command(AppCommands::Undo), "two undos");
+    root.frame();
+    // A marker outside every clip says where to put it.
+    sel = {};
+    sel.track = 2;
+    sel.insert = 4 * bar;
+    sel.marked = true;
+    check(!root.command(AppCommands::Split) && root.error().find("inside a clip") != std::string::npos,
+          "a marker outside the clips says to place it inside one");
+    // Delete over the clip's second half on 1 MIDI trims it there.
+    auto &canvas = root.arrangement.canvas;
+    sel = {};
+    sel.track = 2;
+    sel.start = bar;
+    sel.end = 3 * bar;
+    check(canvas.keyPressed(juce::KeyPress(juce::KeyPress::deleteKey)), "Delete over bars 2 to 3");
+    root.frame();
+    check(clipsOf(2) == std::vector<std::pair<std::int64_t, std::int64_t>>{{0, bar}}, "the clip is trimmed at the selection");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    // 0 over 2 MIDI's clip's right edge: split there, the right part deactivated, one step.
+    sel = {};
+    sel.track = 3;
+    sel.start = bar;
+    sel.end = 3 * bar;
+    check(canvas.keyPressed(juce::KeyPress('0')), "0 over the clip's right edge");
+    root.frame();
+    bool rightOff = false, leftOn = false;
+    if (const auto *t = root.reader().findTrack(3))
+        for (const auto &c : t->clips) {
+            if (c->posTicks == bar)
+                rightOff = c->muted;
+            if (c->posTicks == 0)
+                leftOn = !c->muted;
+        }
+    check(clipsOf(3).size() == 2 && rightOff && leftOn, "split at bar 2, the right part deactivated");
+    check(root.command(AppCommands::Undo), "undo");
+    root.frame();
+    check(clipsOf(3).size() == 1, "one undo puts the whole clip back");
+    // 0 inside one clip waits for the two-point split.
+    sel = {};
+    sel.track = 3;
+    sel.start = bar / 2;
+    sel.end = bar;
+    canvas.keyPressed(juce::KeyPress('0'));
+    check(clipsOf(3).size() == 1 && root.error().find("two-point split") != std::string::npos,
+          "0 inside one clip says it waits for the two-point split");
+    commands.detach(root);
+    document->release();
+}
 void audioDrop(AppCommands &commands, const std::filesystem::path &dir) {
     StoreError err{};
     auto store = Store::createEmpty(dir / "drop.adi", err);
@@ -5984,10 +6085,10 @@ int main(int argc, char **argv) {
                       exportZip.shortName == "Collect and Export..." && cut.shortName == "Cut" && keyed(cut, 'x') &&
                       copyInfo.shortName == "Copy" && keyed(copyInfo, 'c') && paste.shortName == "Paste" &&
                       keyed(paste, 'v') && duplicate.shortName == "Duplicate" && keyed(duplicate, 'd') &&
-                      C::LastId == C::TogglePluginWindows,
+                      C::LastId == C::Split,
                   "AppCommands' tail: Solo in Place, Track Options, Mixer Track Options, Metronome, Loop Selection, "
-                  "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, then Show/Hide Plug-In Windows (the "
-                  "last id), each named");
+                  "Select Loop, Save a Copy, Collect All and Save, Collect and Export, Cut, Copy, Paste, Duplicate, "
+                  "Show/Hide Plug-In Windows, then Split (the last id), each named");
         }
         // The File menu as drawn, for A4's picture (Save a Copy, Collect All and Save, Collect and Export).
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
@@ -5997,10 +6098,10 @@ int main(int argc, char **argv) {
         if (const auto pictures = juce::SystemStats::getEnvironmentVariable("ADI_UI_PARITY", {}); pictures.isNotEmpty())
             renderMenu(look::liveLook(), bar->getMenuForIndex(names.indexOf("Options"), "Options"),
                        juce::File(pictures).getChildFile("adi-options-menu.png"));
-        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, 0, C::RenameTrack, C::EditInfoText,
+        check(items("Edit") == std::vector<int>{C::Undo, C::Redo, 0, C::Cut, C::Copy, C::Paste, C::Duplicate, C::DeleteTrack, C::Split, 0, C::RenameTrack, C::EditInfoText,
                                                 C::SelectAll, 0, C::LoopSelection, C::SelectLoop, 0, C::GroupTracks,
                                                 C::UngroupTracks},
-              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete (41.5), before Rename (§18.2) and Select All, then Loop Selection "
+              "the Edit menu: Cut, Copy, Paste and Duplicate, then Delete and Split (41.5), before Rename (§18.2) and Select All, then Loop Selection "
               "and Select Loop (§6.6), then Group and Ungroup Tracks");
         // The Edit menu as drawn after a Delete Track, for the picture beside Live 12's (the director's
         // LK-02 capture): its Undo item names the step, as Live's "Undo Change Value" does, and its
@@ -8112,6 +8213,7 @@ int main(int argc, char **argv) {
     sendKnobs(commands, temp.path());
     audioDrop(commands, temp.path());
     browserDevices(commands, temp.path());
+    splitAndRangeEdits(commands, temp.path());
     rangeSelection(commands, temp.path());
     clipToTrack(commands, temp.path());
     mixViewShell(commands, temp.path());

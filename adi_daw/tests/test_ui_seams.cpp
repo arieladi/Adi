@@ -1347,6 +1347,67 @@ void audioDropAsOneStep() {
           "no audio, or a MIDI track, is refused with the reason");
 }
 
+void rangeEditsSplitCrossingClips() {
+    section("E1: Delete over half a clip trims it; 0 over a clip's right edge splits it and deactivates the right part");
+    {
+        adi::test::TempDirectory temp("ui_seams", "range-delete");
+        auto store = clipProject(temp.path() / "p.adi");
+        if (!store) { check(false, "store created"); return; }
+        engine::ProjectView view;
+        ui::OpSubmitter sub(*store, view);
+        view.refresh(*store);
+        // The selection: the clip's second half, on its track.
+        const auto content = ui::rangeContent(view.current()->tracks, {21}, kHalfTicks, kClipTicks);
+        check(content.inside.empty() && content.crossing == 1 && content.crossers.size() == 1 &&
+                  content.crossers.front()->id == 7,
+              "half a clip selected: no clip inside, the one clip crossing the selection's start");
+        clip_edit::RangeSelection range{{21}, {0, kHalfTicks}, {0, kClipTicks}};
+        auto prepared = clip_edit::prepareDeleteRange(*store, range, 48000);
+        check(prepared.ok && prepared.options.expectHead.has_value(), "the engine prepared the delete, with the head it expects");
+        const auto ops = prepared.requests.size();
+        const auto r = sub.commitPrepared(std::move(prepared), &clip_edit::commitPrepared);
+        check(r.ok && r.txnId != 0 && r.seqs.size() == ops, "committed in one transaction, every prepared op");
+        check(clipLength(*store, 7) == kHalfTicks, "the outside half stays as a clip");
+        const auto step = sub.nextUndo();
+        check(step && step->txnId == r.txnId && static_cast<std::size_t>(step->opCount) == ops, "one undo step");
+        check(sub.undo().ok && clipLength(*store, 7) == kClipTicks, "undo makes the clip whole again");
+    }
+    {
+        adi::test::TempDirectory temp("ui_seams", "range-zero");
+        auto store = clipProject(temp.path() / "p.adi");
+        if (!store) { check(false, "store created"); return; }
+        engine::ProjectView view;
+        ui::OpSubmitter sub(*store, view);
+        view.refresh(*store);
+        // From the clip's middle past its end: the right edge is inside the selection.
+        const auto content = ui::rangeContent(view.current()->tracks, {21}, kHalfTicks, kClipTicks + kHalfTicks);
+        const auto split = ui::edgeSplit(content, kHalfTicks, kClipTicks + kHalfTicks);
+        check(split && split->clip == 7 && split->at == kHalfTicks && split->insideIsRight,
+              "the split falls at the selection's start, the right part inside it");
+        const auto right = ui::audio_drop_detail::newClipId(*view.current());
+        auto prepared = clip_edit::prepareSplit(*store, 7, right, {0, kHalfTicks}, 48000);
+        OpRequest mute;
+        mute.opType = "clip.setMute";
+        mute.payload = {{"id", right}, {"muted", true}};
+        mute.label = "Deactivate Clip";
+        mute.targetKind = "clip";
+        mute.targetId = right;
+        const auto ops = prepared.requests.size() + 1;
+        const auto r = sub.commitPrepared(std::move(prepared), &clip_edit::commitPrepared, std::move(mute));
+        check(r.ok && r.seqs.size() == ops, "the split and the window's deactivation in one batch");
+        check(clipLength(*store, 7) == kHalfTicks && clipLength(*store, right) == kHalfTicks && !clipMuted(*store, 7) &&
+                  clipMuted(*store, right),
+              "the left part plays, the right part is deactivated");
+        const auto step = sub.nextUndo();
+        check(step && static_cast<std::size_t>(step->opCount) == ops, "one undo step");
+        check(sub.undo().ok && clipLength(*store, 7) == kClipTicks && clipLength(*store, right) == -1 && !clipMuted(*store, 7),
+              "undo puts the whole clip back, playing");
+        // A selection inside the clip (both edges in it) has no edge split: it waits for N17's open part.
+        view.refresh(*store);
+        const auto inside = ui::rangeContent(view.current()->tracks, {21}, kHalfTicks / 2, kHalfTicks);
+        check(!ui::edgeSplit(inside, kHalfTicks / 2, kHalfTicks), "a selection inside one clip waits for the two-point split");
+    }
+}
 void rangeEditsAsBatches() {
     section("A time selection across tracks: Delete and 0 on its whole clips, one step each (Live 12 manual 6.9)");
     adi::test::TempDirectory temp("ui_seams", "range");
@@ -2181,6 +2242,7 @@ int main() {
     sendsAsBatches();
     audioDropAsOneStep();
     rangeEditsAsBatches();
+    rangeEditsSplitCrossingClips();
     referenceTapAndHold();
     momentaryLatch();
     meterGrid();
