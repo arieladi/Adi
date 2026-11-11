@@ -97,7 +97,13 @@ void poolBounds() {
     std::atomic<unsigned> entered{0},active{0},maximum{0},stops{0};std::atomic<bool> release{false};
     ProgressiveHooks hooks{[&](std::uint64_t,std::stop_token stop){
         const auto count=active.fetch_add(1)+1;auto old=maximum.load();while(old<count && !maximum.compare_exchange_weak(old,count)){}
-        ++entered;while(!release && !stop.stop_requested())std::this_thread::sleep_for(std::chrono::milliseconds(1));if(stop.stop_requested())++stops;--active;
+        // Lease destruction can let a worker begin a queued job before that
+        // job's lease is dropped. Acknowledge the two initially blocked hooks,
+        // not a scheduling-dependent total of every later cancelled checkpoint.
+        const auto ticket=entered.fetch_add(1);
+        while(!release && !stop.stop_requested())std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if(ticket<2 && stop.stop_requested())++stops;
+        --active;
     }};
     ProgressiveDecoder decoder(cache,hooks,2);std::vector<std::shared_ptr<ProgressiveFile>> files;
     for(unsigned i=0;i<33;++i) {
@@ -108,9 +114,13 @@ void poolBounds() {
     }
     check(wait([&]{return entered.load()==2;}) && maximum==2,"exactly two codec workers can run while thirty jobs remain queued");
     check(std::count_if(files.begin(),files.end(),[](const auto& file){return file->snapshot().readyFrames!=0;})==2,"queued jobs do not allocate a decoded prefix or start another codec thread");
-    files.clear();release=true;
+    files.clear();
+    const bool initiallyStopped=wait([&]{return stops==2;});
+    // Release only after the actual token acknowledgments. On a failed wait it
+    // still frees the fake codec for cleanup; the assertion remains a failure.
+    release=true;
     check(wait([&]{return active==0;}),"dropping every lease cancels active jobs and drains their checkpoints");
-    check(wait([&]{return stops==2;}) && cache.entries().empty(),"last leases request both active stop tokens and leave cancelled work unpublished");
+    check(initiallyStopped && cache.entries().empty(),"last leases request both active stop tokens and leave cancelled work unpublished");
     std::shared_ptr<ProgressiveFile> retry;check(wait([&]{try{retry=decoder.open(temp.path()/"source-32.wav");return true;}catch(const DecodeError& e){if(e.problem()!=DecodeProblem::Unsupported)throw;return false;}}),"cancelled jobs release their admission slots");
     check(wait([&]{return retry->snapshot().status!=ProgressiveStatus::Pending;}) && retry->snapshot().status==ProgressiveStatus::Complete,"cancelled queue drains and admits fresh work without restarting the pool");
     check(maximum<=2,"worker count stays bounded through cancellation and queue recovery");

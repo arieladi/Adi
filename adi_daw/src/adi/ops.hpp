@@ -240,6 +240,8 @@ struct CommitResult {
     /// ADR-0153: refused because the undo head was not `expectHead`.
     bool stale = false;
     std::optional<std::int64_t> headFound;   ///< the head it found, when stale
+    /// HI-02: compaction deferred/failed; the successful edit is still committed.
+    std::string retentionWarning{};
 };
 
 /// ADR-0153: what a caller may ask of one commit, INSIDE its transaction.

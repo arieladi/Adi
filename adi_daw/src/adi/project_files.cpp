@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "adi/store.hpp"
+#include "adi/audio/io_audit.hpp"
 #include "adi/gesture_navigation_detail.hpp"
 #include "adi/applied_batches_detail.hpp"
 #include "adi/ops.hpp"
+#include "adi/history_content.hpp"
 #include "adi/media/media_ops.hpp"
 #include "adi/media/publish_file.hpp"
 #include "adi/media/collect_export.hpp"
@@ -86,6 +88,26 @@ void visitPaths(SQLite::Database& db,const PathTransform& transform,bool write) 
             update.bind(4,rows.getColumn(0).getInt64());update.exec();
         }
     }
+    history_detail::visitCheckpointState(db,[&](Payload& state){
+        bool changed=false;
+        for(auto& table:state.at("tables")){
+            if(table.at("name")!="media_files")continue;
+            const auto names=table.at("columns").get<std::vector<std::string>>();
+            std::map<std::string,std::size_t> columns;for(std::size_t i=0;i<names.size();++i)columns.emplace(names[i],i);
+            for(auto& row:table.at("rows")){
+                const auto value=[&](const char* name)->Payload&{return row.at(columns.at(name)).at(1);};
+                if(value("embedded")!=0)continue;
+                Payload paths={{"rel_path",value("rel_path")},{"abs_path_hint",value("abs_path_hint")},{"missing",value("missing")}};
+                if(!transform(paths,value("orig_name").get<std::string>(),value("hash_blake3").get<std::string>()))continue;
+                changed=true;
+                if(write)for(const auto* field:{"rel_path","abs_path_hint","missing"}){
+                    const auto& cell=paths.at(field);const char* type=cell.is_null()?"null":cell.is_string()?"text":"int";
+                    row.at(columns.at(field))=Payload::array({type,cell});
+                }
+            }
+        }
+        return changed;
+    },write);
     SQLite::Statement rows(db,"SELECT seq,payload,inverse FROM ops WHERE op_type IN ('media.import','media.unlink','media.relink')");
     while(rows.executeStep()) {
         for(int column=1;column<=2;++column) {
@@ -116,6 +138,26 @@ void rebaseHistory(SQLite::Database& db,const fs::path& oldFolder,const fs::path
     },true);
     transaction.commit();
 }
+std::error_code projectDestinationReady(const fs::path& target) {
+    // A closed backup must never inherit another database's WAL or rollback
+    // journal. Do not checkpoint/delete someone else's recovery material.
+    for(const auto* suffix:{"-wal","-shm","-journal"}){
+        auto sidecar=target;sidecar+=suffix;std::error_code error;
+        const auto status=fs::symlink_status(sidecar,error);
+        if(error==std::errc::no_such_file_or_directory)continue;
+        if(error)return error;
+        if(status.type()!=fs::file_type::not_found)return std::make_error_code(std::errc::device_or_resource_busy);
+    }
+    return {};
+}
+bool validCollision(StoreFileCollision collision) noexcept {
+    return collision==StoreFileCollision::Fail || collision==StoreFileCollision::ReplaceConfirmed;
+}
+std::string joinedWarning(std::string first,const std::string& next) {
+    if(next.empty())return first;
+    if(!first.empty())first+="; ";
+    first+=next;return first;
+}
 struct CollectedFiles {
     std::vector<fs::path> owned;
     bool committed=false;
@@ -128,13 +170,35 @@ std::string collectionName(const std::string& hash,const fs::path& source) {
     return hash+extension;
 }
 }
-StoreFileResult Store::saveCopy(const std::filesystem::path& output) const {
+struct Store::CopyState : StoreFileResult {
+    std::optional<media::FileIdentity> identity;
+    CopyState(bool value,std::string why={},std::string note={},std::optional<media::FileIdentity> file={})
+        :StoreFileResult{value,std::move(why),std::move(note)},identity(file){}
+};
+StoreFileResult Store::saveCopy(const std::filesystem::path& output,StoreFileCollision collision) const {
+    auto result=saveCopyImpl(output,collision);
+    return {result.ok,std::move(result.error),std::move(result.warning)};
+}
+Store::CopyState Store::saveCopyImpl(const std::filesystem::path& output,StoreFileCollision collision) const {
+    if(audio::onAudioThread)return {false,{},{}};
     try {
+        if(!validCollision(collision))return {false,"unknown save collision mode",{}};
         if(closed_ || !db_)return {false,"project is closed",{}};
         if(!sqlite3_get_autocommit(db_->getHandle()))return {false,"finish the current transaction before saving a copy",{}};
         const auto target=fs::absolute(output).lexically_normal();
         if(!fs::is_directory(target.parent_path()))return {false,"output directory does not exist",{}};
-        if(fs::exists(target) || fs::is_symlink(fs::symlink_status(target)))return {false,"output already exists",{}};
+        if(fileLease_){
+            std::error_code error;
+            const bool alias=fs::equivalent(fileLease_->path(),target,error);
+            if(alias || fs::weakly_canonical(fileLease_->path())==fs::weakly_canonical(target))
+                return {false,"destination is the active project",{}};
+        }
+        const auto targetStatus=fs::symlink_status(target);
+        if(collision==StoreFileCollision::Fail && targetStatus.type()!=fs::file_type::not_found)
+            return {false,"output already exists",{}};
+        if(targetStatus.type()!=fs::file_type::not_found && !fs::is_regular_file(targetStatus))
+            return {false,"destination is not a regular file",{}};
+        if(projectDestinationReady(target))return {false,"destination is open or has unrecovered SQLite sidecars",{}};
         Stage stage(target.parent_path());const auto staged=stage.path/"project.adi";
         {
             SQLite::Database destination(media::pathUtf8(staged),SQLite::OPEN_READWRITE|SQLite::OPEN_CREATE);
@@ -151,24 +215,37 @@ StoreFileResult Store::saveCopy(const std::filesystem::path& output) const {
             destination.exec("PRAGMA wal_checkpoint(TRUNCATE)");
             destination.exec("PRAGMA journal_mode=DELETE");
         }
-        const auto result=media::publishFile(staged,target);
+        media::PublishResult result;
+        if(collision==StoreFileCollision::ReplaceConfirmed){
+            media::ReplaceHooks hooks;hooks.validateTarget=projectDestinationReady;
+            result=media::replaceFile(staged,target,hooks);
+        }else{
+            if(projectDestinationReady(target))return {false,"destination acquired unrecovered SQLite sidecars",{}};
+            result=media::publishFile(staged,target,{},media::PublishPolicy::AtomicOnly);
+        }
         if(result.status!=media::PublishStatus::published)return {false,"publish project: "+result.error,{}};
-        return {true,{},major_==kSchemaMajor?std::string{}:std::string("newer schema copied verbatim; media paths were not relocated")};
+        auto warning=major_==kSchemaMajor?std::string{}:std::string("newer schema copied verbatim; media paths were not relocated");
+        warning=joinedWarning(std::move(warning),result.warning);
+        if(!result.durabilityConfirmed && result.warning.empty())warning=joinedWarning(std::move(warning),"file published; durability could not be confirmed");
+        return {true,{},std::move(warning),result.identity};
     }catch(const std::exception& e){return {false,e.what(),{}};}
 }
-StoreFileResult Store::saveAs(const std::filesystem::path& output) {
+StoreFileResult Store::saveAs(const std::filesystem::path& output,StoreFileCollision collision) {
+    if(audio::onAudioThread)return {false,{},{}};
     if(detail::appliedDispatchActive(*this))return {false,"reentrant Save As during applied-batch delivery",{}};
     if(closed_ || !db_)return {false,"project is closed",{}};
     auto change=gesture::detail::beginSourceChange(*this);
     if(!change.status.ok())return {false,change.status.message,{}};
     if(major_!=kSchemaMajor)return {false,"use Save a Copy for an unsupported schema major",{}};
     if(sqlite3_next_stmt(db_->getHandle(),nullptr))return {false,"finish database statements before Save As",{}};
-    const auto copied=saveCopy(output);
+    const auto copied=saveCopyImpl(output,collision);
     if(!copied.ok)return copied;
     StoreError error{};
     auto replacement=Store::open(fs::absolute(output),error);
     if(!replacement || error!=StoreError::Ok || replacement->readOnly())
         return {false,"copy saved but could not switch projects: "+std::string(toString(error)),{}};
+    if(!copied.identity || !replacement->fileLease_ || replacement->fileLease_->identity()!=*copied.identity)
+        return {false,"copy saved but destination changed before switching",copied.warning};
     try {
         detail::prepareAppliedReplacement(*replacement,*this);
     } catch(const std::exception& exception) {
@@ -179,13 +256,14 @@ StoreFileResult Store::saveAs(const std::filesystem::path& output) {
     gesture::detail::invalidateSource(*this);
     detail::invalidateAppliedDomain(*this,AppliedSourceInvalidation::Replaced);
     db_.swap(replacement->db_);path_.swap(replacement->path_);
+    fileLease_.swap(replacement->fileLease_);
     appliedDomain_.swap(replacement->appliedDomain_);
     gestureDomain_.swap(replacement->gestureDomain_);
     detail::rebindAppliedDomain(*this);
     std::swap(readOnly_,replacement->readOnly_);std::swap(major_,replacement->major_);std::swap(minor_,replacement->minor_);
     upgradedFrom_.swap(replacement->upgradedFrom_);lastError_.clear();
     const bool folded=replacement->closeFinalized();
-    return {true,{},folded?std::string{}:std::string("old project is still in use; its WAL could not be folded")};
+    return {true,{},joinedWarning(copied.warning,folded?std::string{}:std::string("old project is still in use; its WAL could not be folded"))};
 }
 }
 

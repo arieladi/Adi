@@ -140,8 +140,8 @@ a gesture. Runtime restoration retains no Store pointer. Clean N47 consumers
 may follow the proven immediate Save As replacement; a gap or lost capture
 requires explicit recovery.
 
-ADR-0216 supersedes OPS §6.4's old time-window text. Its consolidated rewrite is
-reserved for the engine's M0 owned-documents change in LANES §3. This API adds
+[OPS §6.4](OPS.md#64-gestures-preview-then-one-committed-action) records
+ADR-0216's gesture contract and retires the old time-window merge. This API adds
 no automation recording, opcode, project schema or ANOT layout. The tempo
 handler's backward-compatible optional fields are documented in OPS §9.1.
 M-LIVE-UNDO remains NOT RUN until the measurement seat records Live 12.4's

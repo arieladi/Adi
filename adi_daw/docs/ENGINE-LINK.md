@@ -3,12 +3,19 @@
 `engine::LinkSession` owns one actual Ableton Link SDK participant. Create and
 retire it on the application owner; retain it through the last audio callback.
 The private implementation hides all SDK types from engine consumers. The
-official SDK is pinned to **Link-3.1.5**, commit
-`45931b8bd2a7066f1950f2a0beab81a0c51f28fe`; its Asio gitlink is
-`231cb29bab30f82712fcd54faaea42424cc6e710`. GPL-2.0-or-later and Boost-1.0
+official SDK is pinned to **Link-4.1.1**, commit
+`5ba907ae027a8c2ec8824463e37296dcefc5e9be`; its Asio gitlink is
+`8806a6803cde7054c3049d3666d3ec36786568c5`. GPL-2.0-or-later and Boost-1.0
 licenses were read at those commits. `fetch_external.sh --build-only` fetches
-both, and CMake requires both header trees. This is musical synchronization,
+both, and CMake requires the new Asio root include tree (1.38.2). The SDK
+configuration is scoped so its C++17 default cannot downgrade ADI's C++20
+targets. This is musical synchronization,
 separate from PTP sample-clock synchronization, audio streaming or collaboration.
+
+Link Audio remains off. This translation unit uses `ableton::Link`, never
+`LinkAudio.hpp` or an audio-sharing participant. Compile-time macro/type guards
+require the SDK's musical-only controller. The SDK and Asio stay private to the
+adapter; no new audio-sharing API or setting is exposed.
 
 Networking starts **disabled**. Only explicit owner `enable(true)` joins the
 network. Start/stop sharing is separately off until `enableStartStopSync(true)`;
@@ -49,11 +56,13 @@ can differ between participants; their phase and tempo synchronize. Network
 tempo is quantized to integer microseconds per beat, so peer comparison needs
 that precision rather than exact floating-point BPM equality.
 
-This first adapter does not yet change `Session` tempo, schedule its transport,
-rebuild pre-rendered Warp/MIDI or wire UI settings. Those require the next native
-transport integration: project tempo automation and peer authority must be
-coherent with prepared playback, not merely substituted into a display field.
-No complete D11/UI/Live parity claim follows from a passing SDK wrapper.
+The native performed-history consumer now integrates these frames with Session
+transport, prepared audio/MIDI and effective tempo; see
+[ENGINE-LINK-PLAYBACK.md](ENGINE-LINK-PLAYBACK.md) for publication, source readiness,
+continuity and held-note ownership. This SDK re-pin preserves that consumer.
+UI settings/device-clock integration and the director's LinkHut/Live latency
+measurement remain their stated work; passing the wrapper is not measured
+D11/UI/Live parity.
 
 The default native test never enables networking and uses the actual SDK to
 exercise clocks, negative phase, tempo continuity, transport independence,

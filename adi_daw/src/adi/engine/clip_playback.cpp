@@ -93,6 +93,10 @@ struct Clip {
         try { audio::defaultDecodeCache().release(pinned); } catch (...) {}
     }
     std::array<Page, slots> pages;
+    // Single request producer/renderer only. Admission is a real lease: a
+    // worker must not even temporarily claim a page until rendering releases
+    // or supersedes it. No callback allocation or shared ownership operation.
+    std::array<Page*,slots> admitted{};
     std::array<std::atomic<std::int64_t>, slots> requests;
     std::atomic<std::uint32_t> requestSeq{0}, underruns{0}, errors{0};
     Clip() { for (auto& r : requests) r.store(-1); }
@@ -174,7 +178,19 @@ struct Clip {
         for(std::size_t i=0;i<slots;++i) requests[i].store(w[i],std::memory_order_seq_cst);
         requestSeq.fetch_add(1,std::memory_order_seq_cst);
     }
+    void releaseAdmission() noexcept {
+        for(auto& page:admitted)if(page){auto* held=page;page=nullptr;held->state.store(2,std::memory_order_release);}
+    }
+    void trimAdmission(const std::array<std::int64_t,slots>& wantedPages) noexcept {
+        for(auto& page:admitted)if(page && std::find(wantedPages.begin(),wantedPages.end(),page->number.load(std::memory_order_relaxed))==wantedPages.end()){
+            auto* held=page;page=nullptr;held->state.store(2,std::memory_order_release);
+        }
+    }
+    void release(Page* page) noexcept {
+        if(std::find(admitted.begin(),admitted.end(),page)==admitted.end())page->state.store(2,std::memory_order_release);
+    }
     Page* acquire(std::int64_t number) noexcept {
+        for(auto* page:admitted)if(page && page->number.load(std::memory_order_relaxed)==number)return page;
         for (auto& p : pages) {
             int ready=2;
             if (!p.state.compare_exchange_strong(ready,3,std::memory_order_acquire)) continue;
@@ -182,6 +198,11 @@ struct Clip {
             p.state.store(2,std::memory_order_release);
         }
         return nullptr;
+    }
+    bool reserve(std::int64_t number) noexcept {
+        for(auto* page:admitted)if(page && page->number.load(std::memory_order_relaxed)==number)return true;
+        for(auto& page:admitted)if(!page){page=acquire(number);return page!=nullptr;}
+        return false;
     }
     void readSource(std::uint64_t first,float* out,std::uint32_t count) {
         if(progressive) {
@@ -305,7 +326,11 @@ struct Clip {
             for(auto& p:pages) {
                 int state=p.state.load(std::memory_order_relaxed);
                 if(state!=0 && state!=2) continue;
-                if(!p.state.compare_exchange_strong(state,1,std::memory_order_acquire)) continue;
+                const auto oldPage=p.number.load(std::memory_order_relaxed);
+                if(probe && probe->beforePageClaim)probe->beforePageClaim(probe->context,oldPage,number);
+                const bool claimed=p.state.compare_exchange_strong(state,1,std::memory_order_acquire);
+                if(probe && probe->afterPageClaimAttempt)probe->afterPageClaimAttempt(probe->context,oldPage,number,claimed);
+                if(!claimed)continue;
                 // The audio driver can replace the request while this worker
                 // is walking an older snapshot. Recheck AFTER owning the page:
                 // a ready query that acquired/released this page after posting
@@ -355,7 +380,10 @@ public:
     template <typename T>
     void play(const NodeIo& io, T* const* out) noexcept {
         for(std::int32_t c=0;c<io.channels;++c) std::fill_n(out[c]+io.blockOffset,io.frames,T{0});
-        if(!transport.playing()) return;
+        if(!transport.playing()){
+            for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex)clips[clipIndex]->releaseAdmission();
+            return;
+        }
         // One clip is not a sum: its samples go straight out, bit for bit.
         // Two or more may overlap, and then every sample is summed in double:
         // at 32 into `wide`, converted once at the end; at 64 the output is
@@ -369,15 +397,22 @@ public:
             return wide[static_cast<std::size_t>(c)*static_cast<std::size_t>(maxFrames)+static_cast<std::size_t>(io.blockOffset+i)];
         };
         if(sum) for(std::int32_t c=0;c<io.channels;++c) for(std::int32_t i=0;i<io.frames;++i) at(c,i)=0.0;
-        for(auto* clip:clips) {
-            if(io.blockOffset==0) clip->request(clip->wanted(transport,maxFrames));
+        // Raw indices avoid MSVC Debug vector-iterator ownership locks.
+        for(std::size_t clipIndex=0;clipIndex<clips.size();++clipIndex) {
+            auto* clip=clips[clipIndex];
+            if(io.blockOffset==0){
+                const auto required=clip->wanted(transport,maxFrames,false);
+                clip->trimAdmission(required);
+                clip->request(clip->wanted(transport,maxFrames));
+                for(const auto number:required)if(number>=0)(void)clip->reserve(number);
+            }
             Page* page=nullptr; std::int64_t number=-1; std::uint32_t missing=0;
             for(std::int32_t i=0;i<io.frames;++i) {
                 const auto time=transport.sampleAt(io.blockOffset+i);
                 const auto n=clip->sourceAt(time);
                 if(n<0) continue;
                 if(n/clip->pageFrames!=number) {
-                    if(page) page->state.store(2,std::memory_order_release);
+                    if(page) clip->release(page);
                     number=n/clip->pageFrames; page=clip->acquire(number);
                 }
                 if(!page) { ++missing; continue; }
@@ -395,7 +430,7 @@ public:
                         out[c][io.blockOffset+i]+=gain*clip->valueOf<double>(sample,c);
                 }
             }
-            if(page) page->state.store(2,std::memory_order_release);
+            if(page) clip->release(page);
             if(missing) clip->underruns.fetch_add(missing,std::memory_order_relaxed);
         }
         if(sum) for(std::int32_t c=0;c<io.channels;++c) for(std::int32_t i=0;i<io.frames;++i)
@@ -617,17 +652,17 @@ ClipPlayback::Readiness ClipPlayback::readiness() const {
         const Transport target=snapshot;
         // No checked vector iterators on the callback (MSVC Debug can lock
         // their shared proxy). Source generations have a fixed clip count.
+        const auto releaseAll=[&]()noexcept{for(std::size_t i=0;i<held->clips.size();++i)held->clips[i]->releaseAdmission();};
+        releaseAll();
         for(std::size_t i=0;i<held->clips.size();++i) {
             auto& clip=held->clips[i];clip->request(clip->wanted(target,frames));
         }
         for(std::size_t i=0;i<held->clips.size();++i) {
             auto& clip=held->clips[i];
-            if(clip->errors.load(std::memory_order_relaxed))return false;
+            if(clip->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
             for(const auto number:clip->wanted(target,frames,false)) {
                 if(number<0)continue;
-                Page* page=clip->acquire(number);
-                if(!page)return false;
-                page->state.store(2,std::memory_order_release);
+                if(!clip->reserve(number)){releaseAll();return false;}
             }
         }
         return true;
@@ -659,22 +694,24 @@ bool ClipPlayback::primeTargets(const Transport& snapshot,const Transport* alter
     std::array<std::int64_t,slots> pages;
     // Refuse the complete preparation before posting any partial union.
     for(const auto& clip:impl_->clips)if(!wanted(*clip,pages))return false;
+    const auto releaseAll=[&]()noexcept{for(auto& clip:impl_->clips)clip->releaseAdmission();};
+    releaseAll();
     for(auto& clip:impl_->clips){(void)wanted(*clip,pages);clip->request(pages);}
     do {
         bool ready=true;
-        for(const auto& c:impl_->clips)if(c->errors.load(std::memory_order_relaxed))return false;
+        for(const auto& c:impl_->clips)if(c->errors.load(std::memory_order_relaxed)){releaseAll();return false;}
         for(auto& clip:impl_->clips) {
             (void)wanted(*clip,pages);
             for(const auto number:pages) {
                 if(number<0)continue;
-                if(auto* page=clip->acquire(number))page->state.store(2,std::memory_order_release);else ready=false;
+                if(!clip->reserve(number))ready=false;
             }
         }
         if(ready)return true;
         // Compare elapsed milliseconds rather than adding an arbitrary timeout
         // to a nanosecond time_point, which can overflow for a large duration.
         if(std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now()-started)>=timeout)return false;
+               std::chrono::steady_clock::now()-started)>=timeout){releaseAll();return false;}
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     } while(true);
 }

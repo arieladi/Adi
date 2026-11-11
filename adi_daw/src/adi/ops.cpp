@@ -8,6 +8,7 @@
 #include "adi/applied_batches_detail.hpp"
 
 #include "adi/history_compaction.hpp"
+#include "adi/history_roots.hpp"
 #include "adi/store.hpp"
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -376,7 +377,7 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
         // becomes unreachable the moment the new op takes its place in redo.
         {
             SQLite::Statement kids(db,
-                "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND "
+                "SELECT seq FROM ops WHERE tags <> 'ephemeral' AND op_type<>'history.root' AND "
                 "  ((? IS NULL AND parent_seq IS NULL) OR parent_seq = ?) "
                 "ORDER BY seq DESC LIMIT 1");
             if (head) { kids.bind(1, *head); kids.bind(2, *head); }
@@ -388,7 +389,7 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
                 std::int64_t tip = kids.getColumn(0).getInt64();
                 for (;;) {
                     SQLite::Statement nxt(db,
-                        "SELECT seq FROM ops WHERE parent_seq = ? AND tags <> 'ephemeral' "
+                        "SELECT seq FROM ops WHERE parent_seq = ? AND tags <> 'ephemeral' AND op_type<>'history.root' "
                         "ORDER BY seq DESC LIMIT 1");
                     nxt.bind(1, tip);
                     if (!nxt.executeStep()) break;
@@ -490,13 +491,13 @@ CommitResult OpJournal::commitImpl(std::span<const OpRequest> reqs, const Commit
             return r;
         }
 
-        // ADR-0203 d13: checkpoint and prefix pruning share the edit transaction.
-        const auto retention = history_detail::compactUndo(store_, history_detail::undoPolicy(db));
-        if (!retention.ok) {
-            r.error = "history compaction: " + retention.error;
-            r.seqs.clear();
-            return r;
-        }
+        // ADR-0213: optional compaction has its own savepoint. Its failure
+        // reports a warning and cannot discard the edit or its applied batch.
+        const auto retention = history_detail::tryCompactUndo(store_);
+        if (!retention.ok)
+            r.retentionWarning = "history compaction: " + retention.error;
+        else if (retention.protectedHistory)
+            r.retentionWarning = "history remains above its undo budget; protected content retained";
 
         // ADR-0153: the caller's last word, still inside the transaction.
         if (options.beforeCommit) {
@@ -545,9 +546,9 @@ std::vector<OpJournal::LoggedOp> OpJournal::recent(int limit) const {
         SQLite::Statement st(store_.db(), clocks
             ? "SELECT o.seq, o.txn_id, o.ts_utc, o.actor, o.actor_detail, o.op_type, o.label, "
               "o.payload, o.inverse, o.parent_seq, o.tags, c.client_id, c.lamport "
-              "FROM ops o LEFT JOIN op_clocks c ON c.seq = o.seq ORDER BY o.seq DESC LIMIT ?"
+              "FROM ops o LEFT JOIN op_clocks c ON c.seq = o.seq WHERE o.op_type<>'history.root' ORDER BY o.seq DESC LIMIT ?"
             : "SELECT seq, txn_id, ts_utc, actor, actor_detail, op_type, label, "
-              "payload, inverse, parent_seq, tags FROM ops ORDER BY seq DESC LIMIT ?");
+              "payload, inverse, parent_seq, tags FROM ops WHERE op_type<>'history.root' ORDER BY seq DESC LIMIT ?");
         st.bind(1, limit);
         while (st.executeStep()) {
             LoggedOp o;
@@ -611,20 +612,36 @@ std::optional<std::int64_t> OpJournal::headSeq() const {
 bool OpJournal::setHeadSeq(std::optional<std::int64_t> seq) {
     auto navigation = gesture::detail::beginNavigation(store_);
     if (!navigation.status.ok()) return false;
-    return writeHeadSeq(seq);
+    auto& db=store_.db();bool active=false;
+    try{
+        db.exec("SAVEPOINT adi_history_head");active=true;
+        if(history_detail::hasStoredRoots(db) && (!seq ||
+           history_detail::rootForPoint(db,seq)!=history_detail::rootForPoint(db,headSeq())))
+            throw std::runtime_error("head move crosses a stored baseline");
+        if(!writeHeadSeq(seq))throw std::runtime_error("cannot move history head");
+        db.exec("RELEASE adi_history_head");return true;
+    }catch(...){
+        if(active){try{db.exec("ROLLBACK TO adi_history_head");db.exec("RELEASE adi_history_head");}catch(...){}}
+        return false;
+    }
 }
 
 bool OpJournal::writeHeadSeq(std::optional<std::int64_t> seq) {
     if (detail::appliedDispatchActive(store_) || !appliedSource(store_).alive()) return false;
     try {
-        SQLite::Statement base(store_.db(), "SELECT base_seq FROM history_checkpoint WHERE id=1");
-        if (base.executeStep() && (!seq || *seq < base.getColumn(0).getInt64()))
-            return false;
+        if(history_detail::hasStoredRoots(store_.db())){
+            if(!seq)return false;
+            (void)history_detail::rootForPoint(store_.db(),seq);
+        }else{
+            SQLite::Statement base(store_.db(), "SELECT base_seq FROM history_checkpoint WHERE id=1");
+            if (base.executeStep() && (!seq || *seq < base.getColumn(0).getInt64()))return false;
+        }
 
         SQLite::Statement st(store_.db(),
             "UPDATE op_branches SET head_seq = ? WHERE is_current = 1");
         if (seq) st.bind(1, *seq); else st.bind(1);
-        return st.exec() > 0;
+        if(st.exec()<=0)return false;
+        history_detail::syncCurrentRoot(store_);return true;
     } catch (const std::exception&) {
         return false;
     }

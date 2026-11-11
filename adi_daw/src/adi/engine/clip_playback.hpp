@@ -44,8 +44,9 @@ public:
     // Owner-created query retained with the graph's source generation. Calling
     // it on the single audio driver requests read-ahead and checks only the
     // pages needed for the given frames, without allocation, waits or I/O.
-    // A true result remains valid until this generation receives a different
-    // request; call immediately before rendering the same transport range.
+    // A true result retains actual page reservations until rendering or a
+    // superseding request. Partial/refused admission releases its reservations;
+    // call immediately before rendering the same transport range.
     // The closure retains its source generation even after this wrapper dies.
     // Construction on the audio callback refuses with an empty function.
     [[nodiscard]] Readiness readiness() const;
@@ -55,10 +56,12 @@ public:
         void* context = nullptr;
         void (*afterSnapshot)(void*,std::int64_t firstPage) noexcept = nullptr;
         void (*afterService)(void*) noexcept = nullptr;
+        void (*beforePageClaim)(void*,std::int64_t oldPage,std::int64_t requestedPage) noexcept = nullptr;
+        void (*afterPageClaimAttempt)(void*,std::int64_t oldPage,std::int64_t requestedPage,bool claimed) noexcept = nullptr;
     };
     // Deterministic worker-race tests only. The immutable probe and its context
     // must outlive this source generation's worker (including readiness holds).
-    // Both hooks run on the disk worker, never the audio callback.
+    // All hooks run on the disk worker, never the audio callback.
     void setRequestSnapshotProbeForTest(const RequestSnapshotProbeForTest*) noexcept;
     std::uint32_t underrunSamples() const noexcept;
     std::uint32_t readErrors() const noexcept;
