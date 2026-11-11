@@ -5,7 +5,7 @@ namespace adi::engine {
 struct ScalaImport {
     std::optional<TuningDefinition> definition;
     std::string error;
-    std::size_t line=0; // one-based physical source line; zero for metadata/budget
+    std::size_t line=0; // physical error/reference line; zero for pre-source identity/input budget
 };
 // Owner-only parsing of already-read .scl bytes. Explicit project identity and
 // display name; no path, Store mutation, keyboard map or absolute tonic guess.
