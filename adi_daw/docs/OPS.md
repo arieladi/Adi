@@ -1596,6 +1596,25 @@ images are not supplied and return explicit refusals. The reader still exposes
 a rack's root metadata and hasNestedChains. Flush pending host edit capture
 before reading if the clipboard should include that gesture.
 
+`prepareDevicePasteForTrack(Store&, copy, newId, track)` (N51) appends through
+the track's first top-level chain in `(ord,id)` order. If none exists it stages
+`chain.create` before `device.insert`, with no preparation writes. Both are one
+undoable transaction: Undo removes the new device and its new chain; Redo restores
+the same identities. `PreparedDevicePaste::chainId` reports the selected/staged
+chain. The existing chain/before-device API retains its insertion behavior.
+The track-target packet carries the expected head, source connection, exact
+track/chain/device destination guards (including absent sets/identities), and
+plug-in-reference row through the common captured submission path. Submit that
+packet intact with `commitDevicePaste` or the ordinary journal/submitter;
+partial/tampered/appended packets refuse, and an invalid partial offer does not
+poison the authentic offer. Same-head external target changes refuse before any
+order move or chain write. All owned state/parameters remain the stored clipboard
+image; nested-rack and cross-project limitations still apply. The caller refreshes
+Session/ProjectView after commit; the window binds the new append API when it
+has a track destination without a selected device. Preparation uses the existing
+bounded native MAX-id strategy; shared allocator consolidation is the M2 follow-up.
+
+
 The browser calls prepareBuiltinInsert(store, uid, track, beforeDevice) then
 commitBuiltinInsert with its captured expected head. Preparation allocates all
 IDs and captures the complete typed plugin_refs row (including future columns
