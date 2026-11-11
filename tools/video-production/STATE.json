@@ -182,6 +182,19 @@
       "w3_rule": "a -w3 take replaces a slot only on a strictly better verdict",
       "video_onset": "245 slots: 5 frozen (K038b, K059b, K115, K120, K142a), 3 start 0.5-1 s late (K042b, K047a, K083b)",
       "status": "sent to Adi, awaiting verdict; drum test and pilot not started"
+    },
+    "flf_minute_20261111": {
+      "root": "D:/AvasthaAI/FLFMinute-20261111",
+      "bars": [
+        30,
+        66
+      ],
+      "shots": 18,
+      "method": "start still (img2img 0.85 of landing) -> landing still pinned as last latent (AvasthaFLF node, Wan 2.2 5B), 85 frames rendered, 80-81 shown so the landing is the frame before the cut on the bar line",
+      "file": "Cosmic Rain - start-landing test - 1 minute - phone.mp4",
+      "eye": "real drumming/strikes in M01, M04, M09, M11, M13, M15; dancing M12; near-still M05, M14, M17 (eyes never opened); morphs between start and landing M07, M16; glitter on goddess M08; odd hand M06",
+      "status": "sent to Adi 2026-11-11 14:30, awaiting verdict",
+      "adi_pc_control": "F:/AvasthaAI/control controller + Studio desktop Stop/Continue video AI buttons (2026-11-11)"
     }
   },
   "avastha": {
