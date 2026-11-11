@@ -1743,10 +1743,15 @@ endfunction()
 adi_add_samplerate()
 target_sources(adi_core PRIVATE src/adi/engine/transport.cpp src/adi/engine/clip_playback.cpp)
 if(NOT EXISTS "${ADI_THIRD_PARTY}/link/include/ableton/Link.hpp" OR
-   NOT EXISTS "${ADI_THIRD_PARTY}/link/modules/asio-standalone/asio/include/asio.hpp")
+   NOT EXISTS "${ADI_THIRD_PARTY}/link/modules/asio-standalone/include/asio.hpp")
     message(FATAL_ERROR "Missing pinned Link SDK/Asio; run tools/fetch_external.sh --build-only")
 endif()
-include("${ADI_THIRD_PARTY}/link/AbletonLinkConfig.cmake")
+# Link4's config sets CMAKE_CXX_STANDARD=17. Keep that SDK-local value out of
+# the ADI directory, including targets declared after this import (C++20).
+function(adi_add_link_sdk)
+    include("${ADI_THIRD_PARTY}/link/AbletonLinkConfig.cmake")
+endfunction()
+adi_add_link_sdk()
 target_sources(adi_core PRIVATE src/adi/engine/link_session.cpp)
 target_link_libraries(adi_core PRIVATE Ableton::Link)
 

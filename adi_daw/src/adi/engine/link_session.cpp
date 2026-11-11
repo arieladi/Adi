@@ -1,12 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "adi/engine/link_session.hpp"
 #include "adi/audio/io_audit.hpp"
+#ifdef LINK_AUDIO
+#error "ADI LinkSession is musical sync only; Link Audio must remain disabled"
+#endif
 #include <ableton/Link.hpp>
+#ifdef LINK_AUDIO
+#error "ADI LinkSession must not select the Link Audio SDK controller"
+#endif
+#include <type_traits>
 #include <atomic>
 #include <cmath>
 #include <utility>
 namespace adi::engine {
 namespace {
+// Link4's audio header selects a different API controller before Link.hpp.
+// Pin the adapter to the musical-only controller as well as rejecting its macro.
+using MusicalLinkController=ableton::link::SessionController<ableton::link::PeerCountCallback,
+    ableton::link::TempoCallback,ableton::link::StartStopStateCallback,ableton::Link::Clock,
+    ableton::link::platform::Random,ableton::link::platform::IoContext>;
+static_assert(std::is_same_v<ableton::link::ApiController<ableton::Link::Clock>,MusicalLinkController>);
 bool validTempo(double tempo)noexcept{return std::isfinite(tempo) && tempo>=20 && tempo<=999;}
 bool valid(const LinkBuffer& buffer,const LinkCommand& command)noexcept {
     constexpr std::int64_t limit=std::int64_t{1}<<50;
