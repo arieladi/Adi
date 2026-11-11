@@ -11,6 +11,7 @@
 #include "adi/media/collect_export.hpp"
 #include "adi/digest.hpp"
 #include "adi/ops.hpp"
+#include "adi/ops_schema.hpp"
 #include "adi/store.hpp"
 #include "adi/textproj_store.hpp"
 #include "adi/version.hpp"
@@ -37,6 +38,9 @@ int usage() {
         "  adi_tool digest <file>   canonical digest of the project tier\n"
         "                           --full prints it; default prints the id\n"
         "  adi_tool ops             list every registered op\n"
+        "  adi_tool ops --schema [name...]\n"
+        "                           each op's closed JSON Schema, as the control\n"
+        "                           boundary enforces it (CTL-02)\n"
         "  adi_tool check <file>    verify structure and external media hashes\n"
         "  adi_tool collect-export <in.adi> <out.zip>  portable ZIP64 copy\n"
         "  adi_tool extract-media <file.adi>  extract legacy embedded media\n"
@@ -176,6 +180,28 @@ int cmdOps() {
                 reg.all().size(), byScope[0], byScope[1], byScope[2], byScope[3],
                 byScope[4]);
     std::printf("%d ephemeral, %d coalescable\n", ephemeral, coalescable);
+    return 0;
+}
+
+/// CTL-02: the registry describes itself. The same generated schema the
+/// control boundary enforces (Bounds::Remote), so what this prints is what a
+/// remote caller is held to -- and nothing here is written by hand.
+int cmdOpsSchema(int argc, char** argv) {
+    const auto& reg = adi::OpRegistry::instance();
+    adi::Payload out = adi::Payload::array();
+    if (argc <= 3) {
+        for (const auto& o : reg.all()) out.push_back(adi::describeOp(o));
+    } else {
+        for (int i = 3; i < argc; ++i) {
+            const auto* d = reg.find(argv[i]);
+            if (!d) {
+                std::fprintf(stderr, "ops --schema: no op named '%s'\n", argv[i]);
+                return 1;
+            }
+            out.push_back(adi::describeOp(*d));
+        }
+    }
+    std::printf("%s\n", out.dump(2, ' ', false, adi::Payload::error_handler_t::replace).c_str());
     return 0;
 }
 
@@ -361,6 +387,8 @@ int main(int argc, char** argv) {
         return cmdDigest(argv[2], argc > 3 && std::string(argv[3]) == "--full");
     }
     if (cmd == "ops") {
+        if (argc > 2 && std::string(argv[2]) == "--schema") return cmdOpsSchema(argc, argv);
+        if (argc > 2) return usage();
         return cmdOps();
     }
     if (cmd == "export") {

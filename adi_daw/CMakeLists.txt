@@ -331,6 +331,7 @@ add_library(adi_core STATIC
     src/adi/store.cpp
     src/adi/project_files.cpp
     src/adi/ops.cpp
+    src/adi/ops_schema.cpp
     src/adi/row_capture.cpp
     src/adi/marker_ops.cpp
     src/adi/clip_property_ops.cpp
@@ -816,6 +817,11 @@ add_test(NAME adi_settings_tests COMMAND adi_settings_tests)
 add_executable(adi_changeset_tests tests/test_changeset.cpp)
 target_link_libraries(adi_changeset_tests PRIVATE adi_changeset adi_core adi_warnings)
 add_test(NAME adi_changeset_tests COMMAND adi_changeset_tests)
+
+# CTL-02: the registry describes itself; AC-24, schema and boundary agree.
+add_executable(adi_ops_schema_tests tests/test_ops_schema.cpp)
+target_link_libraries(adi_ops_schema_tests PRIVATE adi_core adi_warnings)
+add_test(NAME adi_ops_schema_tests COMMAND adi_ops_schema_tests)
 
 add_executable(adi_migrate_tests tests/test_migrate.cpp)
 target_link_libraries(adi_migrate_tests PRIVATE adi_core adi_warnings)

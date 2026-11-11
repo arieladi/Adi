@@ -913,12 +913,19 @@ constexpr Field kFSummingEnabled[] = {{"id", FieldType::Int, true}, {"enabled", 
 constexpr Field kFSummingFlavor[] = {{"id", FieldType::Int, true}, {"flavor", FieldType::Text, true}};
 constexpr Field kFSummingDrive[] = {{"id", FieldType::Int, true}, {"db", FieldType::Real, true}};
 constexpr Field kFTrackRole[] = {{"id", FieldType::Int, true}, {"role", FieldType::Text, false}};
-constexpr Field kFTrackCreate[] = {{"id", FieldType::Int, true},
-                                   {"kind", FieldType::Text, true},
-                                   {"name", FieldType::Text, false},
-                                   {"parent", FieldType::Int, false},
-                                   {"index", FieldType::Int, false},
-                                   {"contents", FieldType::Object, false}};
+// CTL-02: the `tracks.kind` CHECK list, so a caller is refused naming the key
+// rather than by the database.
+constexpr std::string_view kTrackKinds[] = {
+    "audio", "midi", "instrument", "group", "return", "master", "vca",
+    "marker", "tempo", "signature", "chord", "arranger", "video", "transposition"};
+constexpr Field kFTrackCreate[] = {
+    {"id", FieldType::Int, true, "the new track's id; ops never allocate ids (nextIds)"},
+    {"kind", FieldType::Text, true, "what the track is; group, return and master bind a role",
+     kTrackKinds},
+    {"name", FieldType::Text, false, "its name"},
+    {"parent", FieldType::Int, false, "the group track it sits in; absent or null: top level"},
+    {"index", FieldType::Int, false, "its position among its siblings, from 0"},
+    {"contents", FieldType::Object, false, "captured contents, as undo restores them"}};
 constexpr Field kFId[] = {{"id", FieldType::Int, true}};
 constexpr Field kFClipCreate[] = {{"id", FieldType::Int, true},
                                   {"track", FieldType::Int, true},
@@ -967,13 +974,18 @@ constexpr Field kFPos[] = {{"pos", FieldType::Int, true}};
 constexpr Field kFSigIns[] = {{"pos", FieldType::Int, true},
                               {"num", FieldType::Int, true},
                               {"den", FieldType::Int, true}};
-constexpr Field kFRouting[] = {{"id", FieldType::Int, true},
-                               {"srcKind", FieldType::Text, true},
-                               {"src", FieldType::Int, true},
-                               {"dstKind", FieldType::Text, true},
-                               {"dst", FieldType::Int, true},
-                               {"kind", FieldType::Text, true},
-                               {"row", FieldType::Object, false}};
+// CTL-02: the `routing` table's CHECK lists.
+constexpr std::string_view kRoutingEnds[] = {"track", "device", "hw_in", "hw_out"};
+constexpr std::string_view kRoutingKinds[] = {"main", "send", "sidechain", "vca", "cue"};
+constexpr Field kFRouting[] = {
+    {"id", FieldType::Int, true, "the new routing row's id; ops never allocate ids (nextIds)"},
+    {"srcKind", FieldType::Text, true, "what the signal leaves", kRoutingEnds},
+    {"src", FieldType::Int, true, "the source's id"},
+    {"dstKind", FieldType::Text, true, "what the signal enters", kRoutingEnds},
+    {"dst", FieldType::Int, true, "the destination's id"},
+    {"kind", FieldType::Text, true,
+     "main: the output; send: to a return; sidechain: a key; vca; cue", kRoutingKinds},
+    {"row", FieldType::Object, false, "a captured row, as undo restores it"}};
 constexpr Field kFChainCreate[] = {{"id", FieldType::Int, true},
                                    {"track", FieldType::Int, false},
                                    {"device", FieldType::Int, false},

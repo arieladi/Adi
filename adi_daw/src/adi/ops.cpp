@@ -15,6 +15,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdio>
 #include <regex>
 #include <stdexcept>
 
@@ -192,27 +194,124 @@ std::span<const OpDescriptor> OpRegistry::all() const { return ops_; }
 // Validation and codec
 // ---------------------------------------------------------------------------
 
-std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p) {
-    std::vector<ValidationIssue> out;
-    if (!p.is_object()) {
-        out.push_back({"", "payload is not an object"});
-        return out;
-    }
+namespace {
 
-    for (const auto& f : d.fields) {
-        const std::string key(f.key);
-        if (!p.contains(key)) {
+/// Characters as JSON Schema's maxLength counts them: Unicode code points,
+/// which in UTF-8 is every byte that does not continue a sequence.
+std::size_t codePoints(const std::string& s) {
+    std::size_t n = 0;
+    for (const char c : s)
+        if ((static_cast<unsigned char>(c) & 0xC0u) != 0x80u) ++n;
+    return n;
+}
+
+std::string renderBound(double v) {
+    if (std::isfinite(v) && std::floor(v) == v && std::fabs(v) < 9.0e15)
+        return std::to_string(static_cast<long long>(v));
+    char text[40];
+    std::snprintf(text, sizeof text, "%.17g", v);
+    return text;
+}
+
+void checkObject(std::span<const Field> fields, const Payload& p, Bounds bounds,
+                 const std::string& prefix, std::string_view opName,
+                 std::vector<ValidationIssue>& out);
+
+/// One present, non-null value against its Field: the type, then (only when
+/// the type matched) every declared constraint and the profile's defaults.
+void checkValue(const Field& f, const Payload& v, Bounds bounds, const std::string& key,
+                std::string_view opName, std::vector<ValidationIssue>& out) {
+    const bool typed = typeMatches(f.type, v);
+    if (!typed) out.push_back({key, "expected " + std::string(typeName(f.type))});
+    // Non-finite floats have no single encoding and no musical meaning.
+    // Letting one through would put a NaN in a project file.
+    if (v.is_number_float() && !std::isfinite(v.get<double>()))
+        out.push_back({key, "value is not finite"});
+    if (!typed) return;
+
+    switch (f.type) {
+        case FieldType::Int:
+            // A JSON integer above INT64_MAX parses as unsigned and would wrap
+            // when a handler reads it as std::int64_t.
+            if (v.is_number_unsigned() &&
+                v.get<std::uint64_t>() > static_cast<std::uint64_t>(INT64_MAX)) {
+                out.push_back({key, "out of the 64-bit integer range"});
+                return;
+            }
+            [[fallthrough]];
+        case FieldType::Real: {
+            if (!f.minimum && !f.maximum) break;
+            if (v.is_number_float() && !std::isfinite(v.get<double>())) break;
+            // Compared as double: a declared bound is a small number, and the
+            // 64-bit range itself is checked above, exactly.
+            const double x = v.is_number_float() ? v.get<double>()
+                           : v.is_number_unsigned() ? static_cast<double>(v.get<std::uint64_t>())
+                                                    : static_cast<double>(v.get<std::int64_t>());
+            if (f.minimum && x < *f.minimum)
+                out.push_back({key, "below the minimum " + renderBound(*f.minimum)});
+            if (f.maximum && x > *f.maximum)
+                out.push_back({key, "above the maximum " + renderBound(*f.maximum)});
+            break;
+        }
+        case FieldType::Text: {
+            const auto& s = v.get_ref<const std::string&>();
+            if (!f.enumValues.empty() &&
+                std::none_of(f.enumValues.begin(), f.enumValues.end(),
+                             [&](std::string_view e) { return e == s; })) {
+                std::string list;
+                for (const auto e : f.enumValues) {
+                    if (!list.empty()) list += ", ";
+                    list += e;
+                }
+                out.push_back({key, "must be one of: " + list});
+            }
+            const std::optional<std::size_t> cap =
+                f.maxLength ? f.maxLength
+                : bounds == Bounds::Remote ? std::optional<std::size_t>(kRemoteMaxTextLength)
+                                           : std::nullopt;
+            if (cap && codePoints(s) > *cap)
+                out.push_back({key, "longer than " + std::to_string(*cap) + " characters"});
+            break;
+        }
+        case FieldType::Array: {
+            const std::optional<std::size_t> cap =
+                f.maxItems ? f.maxItems
+                : bounds == Bounds::Remote ? std::optional<std::size_t>(kRemoteMaxArrayItems)
+                                           : std::nullopt;
+            if (cap && v.size() > *cap)
+                out.push_back({key, "more than " + std::to_string(*cap) + " items"});
+            if (f.items.empty()) break;
+            std::size_t i = 0;
+            for (const auto& element : v) {
+                const std::string at = key + "[" + std::to_string(i++) + "]";
+                if (!element.is_object()) {
+                    out.push_back({at, "expected object"});
+                    continue;
+                }
+                checkObject(f.items, element, bounds, at + ".", opName, out);
+            }
+            break;
+        }
+        case FieldType::Object:
+            if (!f.items.empty()) checkObject(f.items, v, bounds, key + ".", opName, out);
+            break;
+        case FieldType::Bool:
+            break;
+    }
+}
+
+void checkObject(std::span<const Field> fields, const Payload& p, Bounds bounds,
+                 const std::string& prefix, std::string_view opName,
+                 std::vector<ValidationIssue>& out) {
+    for (const auto& f : fields) {
+        const std::string key = prefix + std::string(f.key);
+        const auto it = p.find(std::string(f.key));
+        if (it == p.end()) {
             if (f.required) out.push_back({key, "required field missing"});
             continue;
         }
-        const auto& v = p.at(key);
-        if (v.is_null() && !f.required) continue;   // explicit null clears an optional
-        if (!typeMatches(f.type, v))
-            out.push_back({key, "expected " + std::string(typeName(f.type))});
-        // Non-finite floats have no single encoding and no musical meaning.
-        // Letting one through would put a NaN in a project file.
-        if (v.is_number_float() && !std::isfinite(v.get<double>()))
-            out.push_back({key, "value is not finite"});
+        if (it->is_null() && !f.required) continue;   // explicit null clears an optional
+        checkValue(f, *it, bounds, key, opName, out);
     }
 
     // Closed schema. An unknown field from a CALLER is a typo or a version
@@ -220,10 +319,26 @@ std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Pay
     // they did not. (An unknown field read back from the LOG is a different
     // thing entirely and is preserved -- see decodeFromLog.)
     for (auto it = p.begin(); it != p.end(); ++it) {
-        const bool known = std::any_of(d.fields.begin(), d.fields.end(),
+        const bool known = std::any_of(fields.begin(), fields.end(),
                                        [&](const Field& f) { return f.key == it.key(); });
-        if (!known) out.push_back({it.key(), "unknown field for " + std::string(d.name)});
+        if (!known) out.push_back({prefix + it.key(), "unknown field for " + std::string(opName)});
     }
+}
+
+}  // namespace
+
+std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p) {
+    return validateSubmission(d, p, Bounds::Local);
+}
+
+std::vector<ValidationIssue> validateSubmission(const OpDescriptor& d, const Payload& p,
+                                                Bounds bounds) {
+    std::vector<ValidationIssue> out;
+    if (!p.is_object()) {
+        out.push_back({"", "payload is not an object"});
+        return out;
+    }
+    checkObject(d.fields, p, bounds, "", d.name, out);
     return out;
 }
 
