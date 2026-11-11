@@ -6,6 +6,8 @@
 #include "adi/store.hpp"
 #include "adi/ops.hpp"
 #include "adi/history.hpp"
+#include "adi/edit_plan.hpp"
+#include "adi/engine/clip_details.hpp"
 #include "temp_directory.hpp"
 #include <SQLiteCpp/SQLiteCpp.h>
 #include <algorithm>
@@ -165,6 +167,46 @@ void overflowRelease(){
     for(int i=0;i<4;++i)graph->pushInputEvent(target,filler);
     f.render();check(f.instrument->balance()==1,"full destination refused the scheduled off");
     f.render();check(f.instrument->balance()==0,"a dropped forwarded off is retried without hanging");
+}
+void trimSourcePrefix(){
+    Fixture f(48000,4096);f.clip(1,0,5765760,5765760);
+    f.store->db().exec("UPDATE clips SET pos_ticks=11531520");
+    const std::array<std::int64_t,1> tracks{1};
+    edit_plan::Options options;options.policy.automationFollowsClips=false;
+    const auto prepared=edit_plan::prepareTrim(*f.store,
+        edit_plan::materialScope(tracks,edit_plan::PlacementClock::Ticks,{0,4*5765760}),
+        {1,{0,5765760}},options);
+    check(prepared.ok && clip_edit::commitPrepared(*f.store,prepared).ok,
+          "MIDI left extension commits a signed source prefix through the material planner");
+    const auto details=readClipDetails(*f.store,1);
+    check(details.clip && details.clip->contentOffsetTicks==-5765760 &&
+              details.clip->endMarkerTicks==5765760 && details.clip->propertiesProblem.empty(),
+          "Clip View derives the original End from a signed Start and extended visible span");
+    f.load();while(f.clock<76000)f.render();
+    bool on=false,off=false;
+    for(std::size_t i=0;i<f.instrument->count;++i) {
+        const auto& heard=f.instrument->heard[i];
+        if(heard.e.type==EventType::NoteOn)on=on || heard.clock==48000;
+        if(heard.e.type==EventType::NoteOff)off=off || heard.clock==72000;
+    }
+    check(on && off && f.instrument->balance()==0,
+          "MIDI signed source prefix preserves anchored note-on/off and releases at the original end");
+    OpRequest marker;marker.opType="clip.setStartMarker";marker.payload={{"id",1},{"ticks",0}};
+    check(OpJournal(*f.store).commit(marker).ok &&
+              f.store->db().execAndGet("SELECT end_marker_ticks FROM clip_properties WHERE clip_id=1").getInt64()==5765760,
+          "moving Start after a signed trim pins the original derived End");
+    check(History(*f.store).undo().ok &&
+              f.store->db().execAndGet("SELECT content_offset_ticks FROM clips WHERE id=1").getInt64()==-5765760,
+          "marker undo restores the signed trimmed source prefix");
+    for(const int begin:{0,5}) {
+        Fixture tie(44100,2048);tie.clip(1,0,5765760,5765760);
+        SQLite::Statement row(tie.store->db(),"UPDATE clips SET time_base=1,pos_ticks=NULL,length_ticks=NULL,pos_ns=?,length_ns=?");
+        row.bind(1,begin);row.bind(2,35000000-begin);row.exec();tie.load();tie.render();
+        bool end=false;
+        for(std::size_t i=0;i<tie.instrument->count;++i)
+            if(tie.instrument->heard[i].e.type==EventType::NoteOff)end=end || tie.instrument->heard[i].clock==1544;
+        check(end && tie.instrument->balance()==0,"linear MIDI retains the native end sample when its left edge changes");
+    }
 }
 void nanosecondEnd(){
     Fixture f;f.clip(1,0,5765760);
@@ -613,7 +655,7 @@ int main(int argc,char** argv){
     std::setvbuf(stdout,nullptr,_IONBF,0);const std::string only=argc>1?argv[1]:"all";
     try { if (only == "all" || only == "signed") signedOrigins(); }
     catch (const std::exception& e) { check(false, e.what()); }
-    try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns")nanosecondEnd();if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
+    try{if(only=="all"||only=="split")twoPointSplits();if(only=="all"||only=="controllers")sessionControllers();if(only=="all"||only=="active")activeFlag();if(only=="all"||only=="markers")sourceMarkers();if(only=="all"||only=="placement")placement();if(only=="all"||only=="cleanup")cleanup();if(only=="all"||only=="musical")musical();if(only=="all"||only=="pending")pendingRelease();if(only=="all"||only=="concurrent")concurrentPublication();if(only=="all"||only=="capacity")capacity();if(only=="all"||only=="overflow")overflowRelease();if(only=="all"||only=="ns"){nanosecondEnd();trimSourcePrefix();}if(only=="all"||only=="maximum")maximumLocate();if(only=="all"||only=="entry")loopEntry();if(only=="all"||only=="held")heldNote();}catch(const std::exception& e){check(false,e.what());}
     check(allocations.load()==0,"MIDI callback allocates nothing");check(audio::callbackFileIo.load()==0,"MIDI callback performs no file I/O");
     std::printf("%s -- %d checks, %d failure(s)\n",failures?"FAIL":"PASS",checks,failures);return failures?1:0;
 }

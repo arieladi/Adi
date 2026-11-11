@@ -344,6 +344,27 @@ clip_edit::PreparedEdit prepareResizeEnd(Store& store,const EditScope& scope,Res
         return detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Resize Material End");
     } catch(const std::exception& error) {clip_edit::PreparedEdit result;result.error=error.what();return result;}
 }
+clip_edit::PreparedEdit prepareTrim(Store& store,const EditScope& scope,Trim trim,const Options& options) {
+    try {
+        Read read(store.db());validateScope(store,scope,options);edit::TimeMap time(store.db());
+        OpContext context{store,store.db()};auto image=clip_edit::captureImage(context,trim.id);
+        if(trim.begin.base!=clockBase(scope.clock))throw std::runtime_error("trim begin must use the declared operation clock");
+        const auto begin=convert(trim.begin.value,trim.begin.base,nativeBase(image),time);
+        const auto first=nativeSpan(image).begin;
+        if(begin!=first) {
+            // A source-zero clamp can turn an extension into a no-op. Retain
+            // absent optional clock rows and opaque original bytes in that case.
+            auto original=image;
+            detail::freezeImage(store,image,time,options.referenceRate);
+            detail::trimFrozenStart(image,begin,time,options.referenceRate);
+            if(nativeSpan(image).begin==first)image=std::move(original);
+        }
+        clip_edit::CopyIds ids(store.db());detail::PlacementBatch batch;
+        batch.incomingKind=EffectKind::Trimmed;batch.relocated.push_back(trim.id);
+        batch.incoming.push_back(std::move(image));
+        return detail::prepareCaptured(store,scope,std::move(batch),options,ids,"Trim Material Start");
+    } catch(const std::exception& error) {clip_edit::PreparedEdit result;result.error=error.what();return result;}
+}
 Description describe(const clip_edit::PreparedEdit& prepared) {
     Description result;
     if(!prepared.ok){result.error=prepared.error;return result;}

@@ -282,10 +282,10 @@ MidiControllerPrograms::MidiControllerPrograms(const rows::Model &model, double 
                 first = roundedSample(realStart);
                 last = roundedSample(clock->sampleAt(origin + length));
             } else if (clip.timeBase == 1 && clip.posNs && clip.lengthNs && *clip.posNs >= 0 &&
-                       *clip.lengthNs > 0) {
+                       *clip.lengthNs > 0 && *clip.posNs <= INT64_MAX - *clip.lengthNs) {
                 realStart = static_cast<double>(*clip.posNs) * 1e-9 * rate;
                 first = roundedSample(realStart);
-                const auto realEnd = realStart + static_cast<double>(*clip.lengthNs) * 1e-9 * rate;
+                const auto realEnd = static_cast<double>(*clip.posNs + *clip.lengthNs) * 1e-9 * rate;
                 last = roundedSample(realEnd);
                 origin = clock->wholeTick(realStart);
                 offset = realStart - clock->sampleAt(origin);
@@ -298,7 +298,7 @@ MidiControllerPrograms::MidiControllerPrograms(const rows::Model &model, double 
                 continue;
             const auto sourceOffset = clip.contentOffsetTicks, loop = clip.loopLenTicks.value_or(0),
                        loopStart = clip.loopStartTicks;
-            if (sourceOffset < 0 || sourceOffset > tickLimit ||
+            if (sourceOffset < -tickLimit || sourceOffset > tickLimit ||
                 (clip.loopEnabled &&
                  (loop <= 0 || loop > tickLimit || loopStart < 0 || loopStart > tickLimit)))
                 throw std::runtime_error("invalid controller clip source window/loop");

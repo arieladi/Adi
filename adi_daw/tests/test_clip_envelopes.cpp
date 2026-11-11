@@ -60,6 +60,20 @@ void placement() {
     check(near(valueAt(lane(p),48000),0.5) && near(valueAt(lane(p),72000),1) && valueAt(lane(p),144000)==0.25,"nanosecond envelope on linear placement with musical content offset");
     m.clips[0].muted=true;AutomationProgram muted(m,48000);check(lane(muted).clipRegions.empty() && valueAt(lane(muted),48000)==0.25,"muted clip falls back");
 }
+void signedPrefixAndNativeEnd() {
+    auto m=model();auto c=clip(10,0,3*Q);c.contentOffsetTicks=-Q;m.clips.push_back(c);
+    data(m,10,{pt(0,0),pt(Q,1)});AutomationProgram prefix(m,48000);
+    check(prefix.problems().empty() && valueAt(lane(prefix),0)==0 &&
+              valueAt(lane(prefix),24000)==0 && near(valueAt(lane(prefix),36000),0.5) && valueAt(lane(prefix),48000)==1,
+          "clip envelope signed source prefix retains its anchored curve and holds before the first point");
+    for(const int begin:{0,5}) {
+        auto linear=model();auto row=clip(10,0,Q);row.timeBase=1;row.posTicks.reset();row.lengthTicks.reset();
+        row.posNs=begin;row.lengthNs=35000000-begin;linear.clips.push_back(row);data(linear,10,{pt(0,0.75)});
+        AutomationProgram program(linear,44100);
+        check(program.problems().empty() && valueAt(lane(program),1543)==0.75 && valueAt(lane(program),1544)==0.25,
+              "linear clip envelope retains its native absolute end through a left-edge change");
+    }
+}
 void curvesAndTempo() {
     bool good=true;
     for(std::uint8_t shape=0;shape<=5;++shape)for(float tension:{-1.0f,0.0f,0.6f,1.0f}) {
@@ -159,4 +173,4 @@ void refusals() {
     bad=m;bad.clips[0].loopEnabled=true;bad.clips[0].loopLenTicks=Q;bad.clips[0].lengthTicks=Q*1100000;AutomationProgram huge(bad,48000);check(problem(huge,"repeat budget"),"excessive loop expansion refuses without unbounded allocation");
 }
 } // namespace
-int main(){try{placement();curvesAndTempo();loopsAndOverlap();boundariesAndRealtime();rendersAndStore();refusals();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}
+int main(){try{placement();signedPrefixAndNativeEnd();curvesAndTempo();loopsAndOverlap();boundariesAndRealtime();rendersAndStore();refusals();}catch(const std::exception& e){++failures;std::printf("EXCEPTION: %s\n",e.what());}std::printf("%d checks, %d failures\n",checks,failures);return failures?1:0;}

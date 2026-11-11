@@ -481,8 +481,9 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 if(ticks<0 || origin>std::numeric_limits<std::int64_t>::max()-ticks) throw std::runtime_error("invalid tick duration");
                 return samples(tempo.ticksToSeconds(origin+ticks)-tempo.ticksToSeconds(origin),rate);
             };
-            if(row.contentOffsetTicks<0)throw std::runtime_error("negative clip content offset");
-            const auto sourceOrigin=origin-row.contentOffsetTicks;
+            if(row.contentOffsetTicks<0 && (a->warpEnabled || !row.contentOffsetNs))
+                throw std::runtime_error("negative clip content offset needs an unwarped source clock");
+            const auto sourceOrigin=a->warpEnabled?origin-row.contentOffsetTicks:origin;
             auto sourceDuration=[&](std::int64_t ticks){return a->warpEnabled?warpSourceSamples(tempo,sourceOrigin,ticks,rate):duration(ticks);};
             if(a->warpEnabled) {
                 if(row.contentOffsetTicks<0 || !a->warpMarkers)throw std::runtime_error("warp needs valid source offsets and a stored marker map");
@@ -544,10 +545,12 @@ ClipPlayback::ClipPlayback(std::shared_ptr<const ClipProject> project, Transport
                 }
             }
             clip->playEnd = clip->length; // after the warp length and the source-end pin (chain)
-            if (!row.loopEnabled && row.endMarkerTicks) {
+            // Independent physical clocks were already applied above. Tick
+            // ordering is meaningful only for Warp or wholly legacy audio.
+            if (!row.loopEnabled && row.endMarkerTicks &&
+                (a->warpEnabled || (!row.contentOffsetNs && !row.sourceEndNs))) {
                 if (*row.endMarkerTicks <= row.contentOffsetTicks)
                     throw std::runtime_error("invalid audio clip End marker; silent");
-                clip->playEnd = std::min(clip->length, duration(*row.endMarkerTicks));
             }
             clip->fadeIn=duration(row.fadeInTicks);
             if(row.fadeOutTicks<0 || endTicks<row.fadeOutTicks) throw std::runtime_error("invalid fade-out duration");

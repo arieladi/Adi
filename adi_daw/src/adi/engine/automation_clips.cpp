@@ -193,9 +193,9 @@ void compileClipEnvelopes(AutomationLaneProgram& lane,const rows::AutomationLane
                 if(!c->posNs || !c->lengthNs || *c->posNs<0 || *c->lengthNs<=0 || *c->posNs>INT64_MAX-*c->lengthNs)
                     throw std::runtime_error("invalid linear placement");
                 e.originSeconds=static_cast<long double>(*c->posNs)*1e-9L;e.originTick=clock.ticksAt(e.originSeconds);
-                e.begin=sampleAt(e.originSeconds,rate);e.end=sampleAt(e.originSeconds+static_cast<long double>(*c->lengthNs)*1e-9L,rate);
+                e.begin=sampleAt(e.originSeconds,rate);e.end=sampleAt(static_cast<long double>(*c->posNs+*c->lengthNs)*1e-9L,rate);
             } else throw std::runtime_error("unknown clip time base");
-            if(e.end<=e.begin || c->contentOffsetTicks<0 || c->loopStartTicks<0)throw std::runtime_error("invalid clip interval or offset");
+            if(e.end<=e.begin || static_cast<long double>(c->contentOffsetTicks)<-maxTime || c->loopStartTicks<0)throw std::runtime_error("invalid clip interval or offset");
             e.offsetTicks=static_cast<long double>(c->contentOffsetTicks);e.loopStart=static_cast<long double>(c->loopStartTicks);
             e.loopLength=static_cast<long double>(c->loopLenTicks.value_or(0));
             if(e.offsetTicks>maxTime || e.loopStart>maxTime || e.loopLength>maxTime ||
