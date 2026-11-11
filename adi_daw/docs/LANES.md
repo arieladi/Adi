@@ -237,7 +237,7 @@ bridge) stay P2 in their own lanes.
    magda; SoundCraft and FilmCraft for ADR-0206; the DSP references of the plug-in line): each a
    short report in `collab/clones.md` naming what ADI should copy (behaviour) and what it already
    does better; the drone's summaries in `D:\adi-drone\missions\` are the starting point.
-3. **The FilmCraft contribution** (the stale-waveform PR 1, `collab/prompts/2026-10-25-codex-filmcraft-pr1-waveforms.md`), on **adi-ubuntu** (192.168.1.97) for the Linux gate: the director's own Linux box, so no new machine is needed.
+3. **Withdrawn (ADR-0234).** ~~**The FilmCraft contribution**~~ (the stale-waveform PR 1, `collab/prompts/2026-10-25-codex-filmcraft-pr1-waveforms.md`), on **adi-ubuntu** (192.168.1.97) for the Linux gate: the director's own Linux box, so no new machine is needed.
 4. **ADI Spacer and ADI Fuser (ADR-0209 d12, ruled 1 November):** the SPAN, s(M)exoscope and VISU
    work is a parity pass on the existing analyser and Scope, not this lane's; **ADI Spacer** (the
    Trackspacer class) and **ADI Fuser** (the FUSER class) are new DSP after ADI-C, the Bluprint
@@ -275,8 +275,8 @@ Standing prompt: `collab/prompts/2026-11-05-devices-lane-codex.md` (it replaces
 
 | Gate | When | What he does |
 |---|---|---|
-| Rust toolchain on adi-ubuntu for the FilmCraft work | approved 2026-10-25 | the box has 8 GB of RAM and a 3rd-gen i5 with its iGPU; builds are slow but unattended (`CARGO_BUILD_JOBS=2`, the target dir on its disk); no discrete GPU needed (Mesa's software Vulkan, as FilmCraft's own CI) |
-| Open the FilmCraft PR | when the clones lane reports PR 1 green on Linux | "go", then the PR is opened from his GitHub account |
+| ~~Rust toolchain on adi-ubuntu for the FilmCraft work~~ (withdrawn, ADR-0234) | approved 2026-10-25 | the box has 8 GB of RAM and a 3rd-gen i5 with its iGPU; builds are slow but unattended (`CARGO_BUILD_JOBS=2`, the target dir on its disk); no discrete GPU needed (Mesa's software Vulkan, as FilmCraft's own CI) |
+| ~~Open the FilmCraft PR~~ (withdrawn, ADR-0234) | when the clones lane reports PR 1 green on Linux | "go", then the PR is opened from his GitHub account |
 | His list of plug-ins to rework | when he declares all his plug-ins finished | sends the list; the unified feature's design starts then |
 | The first window | passed 2 November on build `add5102` (ADR-0210 d6; R1 to R7 in `collab/director.md`); every later Windows build win hands him the same way | open it, say what is wrong; each remark becomes a window-lane item |
 | Live measurements | any time | `docs/AWAITING.md` rows 6 to 17, on his Mac (Live 11) and the PC (Live 12) |
