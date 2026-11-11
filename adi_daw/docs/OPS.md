@@ -2006,7 +2006,8 @@ advances. Count-In clicks use the launch's effective tempo and meter, through
 Cue Out/volume, even when the ordinary metronome is off. The callback splits at
 the exact launch sample, preserving the suffix's input/output pointers and
 physical stream timestamp. No lead-in audio is written to a take. Stop, explicit
-Play, locate or a device format change cancels the pending lead-in. Direct
+Play, locate, a device format change or a device stop (`Session::release`) cancels
+the pending lead-in. Direct
 `transport().locate/play` is the explicit-seek path and bypasses default-start
 policy; the window must marshal these commands to the driver, not mutate it
 concurrently. Offline `performanceState=false` ignores both saved start choices.

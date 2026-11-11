@@ -1781,6 +1781,12 @@ void Session::renderMetronome(const TimingView& timing,const AudioIo& io) noexce
 void Session::release() {
     ++runtimeEpoch_;
     recording_->stop();
+    // A device stop cancels a pending lead-in, as a format change does in
+    // prepare(): the recorder it was counting in for has just stopped, so a
+    // same-format restart must not resume clicking and then start the
+    // timeline with nothing recording. Nothing renders now; no race.
+    if (transport_.countInRemaining() > 0)
+        transport_.play(false);
     // The device has stopped; nothing is rendering. Release the plugins so a
     // later `prepare` -- at the same format or not -- prepares them again
     // rather than finding ADR-0090 d5's guard satisfied on a released

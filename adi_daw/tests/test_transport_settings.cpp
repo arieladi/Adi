@@ -386,6 +386,18 @@ void countInSound() {
         render(session, 128);
         check(!session.transport().playing() && session.transport().countInRemaining() == 0,
               "device format change cancels rather than retiming a pending lead-in");
+        {
+            auto block = session.beginRender();
+            check(block.startPlayback(0, true), "restart count-in before a same-format device stop");
+        }
+        render(session, 128);
+        check(session.transport().countInRemaining() > 0, "the lead-in is under way");
+        session.release();
+        session.prepare(44100, 128);
+        const auto resumed = render(session, 48000);
+        check(!session.transport().playing() && session.transport().countInRemaining() == 0 &&
+                  std::all_of(resumed.begin(), resumed.end(), [](float value) { return value == 0; }),
+              "a device stop cancels the lead-in: a same-format restart neither clicks nor starts the timeline");
     }
 }
 AudioRecordingResult finishStartRecording(AudioInputRecorder &recorder) {
