@@ -12,6 +12,22 @@ whenever convenient. Each entry names its PR, so nothing is lost if this merges 
 
 ---
 
+
+## 2026-11-11 — AU05 pure guarded envelope splice gated and pushed; taking its storage adapter
+
+**PR requested:** head **`engine/automation-splice` `b65f94154b7ad67a331e3fe1c34f3c25d5f7381b`**, independent base **`engine/log` `ea59c631c5ca85debadc200c4fd020b2fef288dd`**. Title: **Preserve outside automation curves during bounded replacement**. Five owned files; remote verified. Win opens/merges and runs MSVC. This is a pure AU05 foundation, not the material binding: the planner still refuses unlocked relevant automation. All six #512 fenced source files remain byte-identical to base.
+
+`automation::planEnvelopeSplice` takes owned decoded lane-native/sample knots, explicit replacement including both boundaries, old default and point budget. It preserves the actual old renderer outside [begin,end), incoming inside, stable coincident steps, held/default regions and both nonlinear outside subdomains, including pre-existing CurveSlices. Provenance distinguishes old uint64MAX/legacy-zero point IDs from new guards and identifies a range split twice; the owner must allocate/preserve persistent IDs, complete native rows/header/trailer and the single guarded transaction. No Store/SQL/files/transport/callback or user-visible clear-hole policy is hidden in this kernel. Unknown stream layouts/tails remain an owner validation responsibility.
+
+**Final gate:** GCC14 Debug/PD/Werror **35,336 checks /207 suites**, explicit gate.exit0; all suite rows/aggregate and all four validators plus layout audited. Strict GCC extra Wshadow and Clang19 compile the new production/test units; Clang completes **1,312**. All6 curves ×5 tensions ×old/new subdomains ×3 cuts, exact steps, quantization, defaults, bounded clocks including native int64MAX, malformed inputs and budgets; tests use the actual engine::valueAt, not a duplicate interpolation. Inputs remain immutable. Vector/index accesses guarded for MSVC Debug.
+
+**Faults / composed oracle:** **17 compiled negatives /2,955 ordinary assertion failures**, each full1,312. Private seed0xa005c017,40 composed replacements: per-step inside/outside actual-renderer oracle plus original raw-record/ordinal preservation, **1,472 each GCC/Clang**; compiled prefix-domain control completes1,472/310 and trips27/40 outside oracles. Initial ignore-clock-projection private plant failed compilation from generated indentation; source/log retained, not credited. Reformatted plant compiles and fails the ordinary full runner. No exceptions, crashes, compiler failures or shortened runs credited; no warning, timeout or decoder2GiB guard relaxed, no Live/platform/sanitizer claim.
+
+**Evidence:** `/workspace/adi-cloud/automation-splice/` holds source/core hashes, exact commands, private sequence and controls, frozen release audit **AUDITED b65f9415**, full patch, and decompressed-SHA-verified17-file native bundle. Review binaries/core/objects are being compressed and verified before expanded removal. To retain earlier evidence within disk limits, clip-trim's24 final per-control gzip archives were solid-packed into175,773,464 bytes: every original compressed SHA was reconstructed exactly and every native member SHA checked before removing1,027,462,459 old bytes. Restore recipe/manifest in `clip-trim/review-last/faults/solid-retention.json`; no evidence discarded.
+
+**Next immediately, same turn:** dependent **`engine/automation-splice-store`** from b65f9415: current-layout AAUT storage adapter, outside IDs/range rows and opaque native fields, fresh guards/copied incoming IDs, captured lane/data/range/tempo/absence read sets and exact one-step Undo/Redo. Then bind AU05 material intents, shared allocator and remaining queue; Crop question remains with win, no seat stop. Latest main5bcc6781 / #512 director hold, N45 win501bc849 untouched. Never main; gate, push, log, next.
+
+
 ## 2026-11-11 — ED-04 anchored left trim gated and pushed; taking AU-05's envelope replacement foundation
 
 **PR requested:** head **`engine/clip-trim` `e9712ecbafece15686a78048cccdd7792f839590`**, dependent base **`engine/linear-audio-endpoint` `4548c7d851de73f8ffe0c1a86104e1f0e3c452c8`**. Title: **Add anchored left trim and honor independent source clocks**. Seventeen owned files. Remote head verified; win opens/merges and runs MSVC. No UI, schema/library version, opcode, protected control source or item-log change. This supplies anchored left trim; Crop remains open under the precise question in checkpoint25404ca9 below.
